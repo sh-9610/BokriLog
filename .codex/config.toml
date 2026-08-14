@@ -1,0 +1,4 @@
+# BMAD's Python helpers emit Unicode and run through uv.
+# Keep them reliable in Windows Korean consoles and Codex's workspace sandbox.
+[shell_environment_policy]
+set = { PYTHONUTF8 = "1", PYTHONIOENCODING = "utf-8" }

@@ -1,0 +1,712 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>BokriLog Forge Report — HARDENED</title>
+  <style>
+    :root {
+      --ink: #f5f7fb;
+      --muted: #aab4c8;
+      --dim: #7f8aa0;
+      --night: #071018;
+      --panel: #0d1823;
+      --panel-2: #111f2d;
+      --line: #26384a;
+      --mint: #79f2c0;
+      --mint-2: #1cc98a;
+      --amber: #ffd166;
+      --coral: #ff8a7a;
+      --blue: #76b8ff;
+      --violet: #b8a1ff;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .34);
+      --radius: 22px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 85% 4%, rgba(28, 201, 138, .14), transparent 30rem),
+        radial-gradient(circle at 8% 32%, rgba(118, 184, 255, .10), transparent 34rem),
+        var(--night);
+      font-family: Inter, Pretendard, "Noto Sans KR", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.66;
+      letter-spacing: -.012em;
+    }
+
+    a { color: var(--blue); text-underline-offset: .2em; }
+    a:hover { color: #a8d3ff; }
+    code, .formula {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+    .skip {
+      position: absolute;
+      left: -9999px;
+      top: 0;
+      padding: .75rem 1rem;
+      color: #00140d;
+      background: var(--mint);
+      z-index: 20;
+    }
+    .skip:focus { left: 1rem; top: 1rem; }
+    .shell { width: min(1160px, calc(100% - 2rem)); margin: 0 auto; }
+
+    header { padding: 4.5rem 0 2.2rem; }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 250px;
+      gap: 2rem;
+      align-items: center;
+      padding: clamp(1.6rem, 4vw, 3.4rem);
+      border: 1px solid rgba(121, 242, 192, .26);
+      border-radius: 30px;
+      background:
+        linear-gradient(145deg, rgba(17, 31, 45, .96), rgba(8, 19, 27, .96)),
+        var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      width: 24rem;
+      height: 24rem;
+      right: -10rem;
+      bottom: -15rem;
+      border: 1px solid rgba(121, 242, 192, .18);
+      border-radius: 50%;
+      box-shadow: 0 0 0 3rem rgba(121, 242, 192, .025), 0 0 0 7rem rgba(121, 242, 192, .018);
+      pointer-events: none;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: .55rem;
+      margin-bottom: 1.1rem;
+      color: var(--mint);
+      font-size: .78rem;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    .eyebrow::before {
+      content: "";
+      width: .55rem;
+      height: .55rem;
+      border-radius: 50%;
+      background: var(--mint);
+      box-shadow: 0 0 0 .3rem rgba(121, 242, 192, .12);
+    }
+    h1, h2, h3 { margin: 0; line-height: 1.16; letter-spacing: -.04em; }
+    h1 { max-width: 18ch; font-size: clamp(2.45rem, 6vw, 5.5rem); }
+    h1 span { color: var(--mint); }
+    h2 { font-size: clamp(1.65rem, 3vw, 2.65rem); }
+    h3 { font-size: 1.08rem; letter-spacing: -.02em; }
+    .lead {
+      max-width: 63ch;
+      margin: 1.35rem 0 1.5rem;
+      color: #d9e2ef;
+      font-size: clamp(1.03rem, 1.8vw, 1.26rem);
+    }
+    .meta { display: flex; flex-wrap: wrap; gap: .55rem; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 2rem;
+      padding: .3rem .72rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, .025);
+      font-size: .8rem;
+      font-weight: 700;
+    }
+    .pill.good { color: var(--mint); border-color: rgba(121, 242, 192, .34); }
+    .seal { position: relative; z-index: 1; width: 100%; max-width: 230px; justify-self: end; }
+
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-block: 1px solid rgba(38, 56, 74, .75);
+      background: rgba(7, 16, 24, .90);
+      backdrop-filter: blur(14px);
+    }
+    nav .shell { display: flex; gap: .35rem; overflow-x: auto; padding-block: .55rem; }
+    nav a {
+      flex: 0 0 auto;
+      padding: .45rem .7rem;
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: .8rem;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    nav a:hover { color: var(--ink); background: var(--panel-2); }
+
+    main { padding: 2.7rem 0 5rem; }
+    section { scroll-margin-top: 5rem; margin-top: 4.7rem; }
+    section:first-child { margin-top: 0; }
+    .section-head {
+      display: grid;
+      grid-template-columns: 3.2rem 1fr;
+      gap: .9rem;
+      align-items: start;
+      margin-bottom: 1.5rem;
+    }
+    .index {
+      display: grid;
+      place-items: center;
+      width: 3rem;
+      height: 3rem;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      color: var(--mint);
+      background: var(--panel);
+      font-weight: 900;
+    }
+    .kicker { margin: .3rem 0 0; color: var(--muted); }
+    .grid { display: grid; gap: 1rem; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card, .callout, .table-wrap {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(155deg, rgba(17, 31, 45, .92), rgba(12, 24, 35, .94));
+      box-shadow: 0 10px 38px rgba(0, 0, 0, .13);
+    }
+    .card { padding: 1.25rem; }
+    .card p:last-child, .callout p:last-child { margin-bottom: 0; }
+    .card p { color: var(--muted); }
+    .card strong { color: var(--ink); }
+    .callout { padding: clamp(1.25rem, 3vw, 2rem); }
+    .callout.hardened { border-color: rgba(121, 242, 192, .34); }
+    .callout.risk { border-color: rgba(255, 138, 122, .42); background: linear-gradient(145deg, rgba(53, 27, 29, .60), rgba(18, 25, 34, .96)); }
+    .callout.info { border-color: rgba(118, 184, 255, .40); }
+    .big-line { margin: 0; font-size: clamp(1.2rem, 2.4vw, 1.75rem); font-weight: 800; letter-spacing: -.025em; }
+    .muted { color: var(--muted); }
+    .tiny { color: var(--dim); font-size: .78rem; }
+    ul.clean { margin: .65rem 0 0; padding-left: 1.15rem; }
+    ul.clean li { margin: .35rem 0; color: var(--muted); }
+    .mark { color: var(--mint); font-weight: 800; }
+    .warn { color: var(--amber); font-weight: 800; }
+    .danger { color: var(--coral); font-weight: 800; }
+
+    .boundary {
+      display: grid;
+      grid-template-columns: 1fr auto 1.25fr;
+      gap: 1rem;
+      align-items: stretch;
+    }
+    .zone { padding: 1.35rem; border: 1px solid var(--line); border-radius: 18px; background: rgba(7, 16, 24, .5); }
+    .zone.in { border-color: rgba(121, 242, 192, .36); }
+    .arrow { display: grid; place-items: center; color: var(--mint); font-size: 1.8rem; }
+    .zone-label { color: var(--dim); font-size: .72rem; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }
+    .zone h3 { margin-top: .35rem; }
+    .zone p { margin-bottom: 0; color: var(--muted); }
+
+    .formula {
+      overflow-x: auto;
+      margin-top: 1rem;
+      padding: 1rem 1.15rem;
+      border-left: 3px solid var(--mint-2);
+      border-radius: 0 12px 12px 0;
+      color: #dffbef;
+      background: #07140f;
+      font-size: .86rem;
+      white-space: pre;
+    }
+
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; min-width: 720px; }
+    th, td { padding: .9rem 1rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--mint); background: rgba(121, 242, 192, .035); font-size: .76rem; letter-spacing: .06em; text-transform: uppercase; }
+    td { color: var(--muted); font-size: .9rem; }
+    tr:last-child td { border-bottom: 0; }
+    td strong { color: var(--ink); }
+
+    .state-row { display: flex; flex-wrap: wrap; gap: .7rem; margin-top: 1rem; }
+    .state {
+      flex: 1 1 13rem;
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: rgba(7, 16, 24, .45);
+    }
+    .state b { display: block; margin-bottom: .25rem; }
+    .state.ok b { color: var(--mint); }
+    .state.estimate b { color: var(--amber); }
+    .state.review b { color: var(--coral); }
+
+    .timeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: .7rem; margin-top: 1rem; }
+    .step { position: relative; padding: 1.1rem; border: 1px solid var(--line); border-radius: 16px; background: rgba(7, 16, 24, .48); }
+    .step b { display: block; color: var(--mint); }
+    .step span { color: var(--muted); font-size: .86rem; }
+
+    .decision-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; }
+    .decision {
+      display: flex;
+      gap: .65rem;
+      padding: .9rem 1rem;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      color: var(--muted);
+      background: rgba(7, 16, 24, .45);
+    }
+    .decision::before { content: "×"; flex: 0 0 auto; color: var(--coral); font-weight: 900; }
+
+    .sources { columns: 2; column-gap: 2rem; margin: 0; padding-left: 1.15rem; }
+    .sources li { break-inside: avoid; margin: 0 0 .65rem; color: var(--muted); }
+    footer { padding: 2rem 0 3.5rem; border-top: 1px solid var(--line); color: var(--dim); font-size: .82rem; }
+
+    @media (max-width: 820px) {
+      .hero { grid-template-columns: 1fr; }
+      .seal { justify-self: start; width: 180px; }
+      .grid.two, .grid.three, .decision-list { grid-template-columns: 1fr; }
+      .boundary { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      .timeline { grid-template-columns: 1fr 1fr; }
+      .sources { columns: 1; }
+    }
+    @media (max-width: 520px) {
+      header { padding-top: 1.2rem; }
+      .shell { width: min(100% - 1rem, 1160px); }
+      .hero { border-radius: 22px; padding: 1.3rem; }
+      .timeline { grid-template-columns: 1fr; }
+      .section-head { grid-template-columns: 2.5rem 1fr; }
+      .index { width: 2.4rem; height: 2.4rem; }
+    }
+    @media print {
+      :root { --night: #fff; --ink: #111; --muted: #394150; --dim: #5b6470; --panel: #fff; --panel-2: #f5f7f9; --line: #cbd2da; }
+      body { background: white; }
+      nav { display: none; }
+      .hero, .card, .callout, .table-wrap { box-shadow: none; }
+      a { color: #164c86; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">본문으로 건너뛰기</a>
+
+  <header class="shell">
+    <div class="hero">
+      <div>
+        <div class="eyebrow">BMad Forge · Final Product Direction</div>
+        <h1>복리 목표를<br><span>현재 계정가치</span>와 비교한다</h1>
+        <p class="lead">BokriLog는 사용자가 정한 복리 계획을 보존하고, Bybit 읽기 전용 연동으로 가져온 USD 환산 Unified 계정가치가 목표 경로의 어디에 있는지 보여주는 웹 서비스다.</p>
+        <div class="meta">
+          <span class="pill good">HARDENED</span>
+          <span class="pill">2026-08-14</span>
+          <span class="pill">Bybit UTA · MVP</span>
+          <span class="pill">구현 미착수</span>
+          <span class="pill">후속 결정 · 18</span>
+          <span class="pill">정본 · forged-idea.md</span>
+        </div>
+      </div>
+
+      <svg class="seal" viewBox="0 0 240 240" role="img" aria-labelledby="seal-title seal-desc">
+        <title id="seal-title">HARDENED 제품 방향 확정 봉인</title>
+        <desc id="seal-desc">BMad Forge 검증을 통해 BokriLog 제품 방향이 확정되었음을 표시한다.</desc>
+        <defs>
+          <linearGradient id="seal-ring" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#79f2c0"/>
+            <stop offset="1" stop-color="#1cc98a"/>
+          </linearGradient>
+          <filter id="seal-glow" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="3" result="blur"/>
+            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        <circle cx="120" cy="120" r="105" fill="#081710" stroke="url(#seal-ring)" stroke-width="3"/>
+        <circle cx="120" cy="120" r="91" fill="none" stroke="#79f2c0" stroke-opacity=".34" stroke-width="1" stroke-dasharray="4 7"/>
+        <path d="M64 82 L120 49 L176 82 L176 146 L120 179 L64 146 Z" fill="#0d2118" stroke="#79f2c0" stroke-width="2"/>
+        <path d="M91 114 L111 134 L151 94" fill="none" stroke="#79f2c0" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" filter="url(#seal-glow)"/>
+        <text x="120" y="203" text-anchor="middle" fill="#79f2c0" font-size="15" font-family="system-ui, sans-serif" font-weight="800" letter-spacing="3">HARDENED</text>
+        <text x="120" y="31" text-anchor="middle" fill="#aab4c8" font-size="8" font-family="system-ui, sans-serif" font-weight="700" letter-spacing="2">PRODUCT DIRECTION</text>
+      </svg>
+    </div>
+  </header>
+
+  <nav aria-label="보고서 목차">
+    <div class="shell">
+      <a href="#verdict">판정</a>
+      <a href="#handoff">인계 원장</a>
+      <a href="#problem">사용자·문제</a>
+      <a href="#contract">산정 계약</a>
+      <a href="#cashflow">자금 경계</a>
+      <a href="#experience">MVP 경험</a>
+      <a href="#security">보안</a>
+      <a href="#beta">공개 베타</a>
+      <a href="#data">데이터·조언</a>
+      <a href="#rejected">기각·위험</a>
+    </div>
+  </nav>
+
+  <main id="main" class="shell">
+    <section id="verdict">
+      <div class="section-head">
+        <div class="index">01</div>
+        <div><h2>Forge 판정</h2><p class="kicker">제품의 중심과 경계가 서로 충돌하지 않는다.</p></div>
+      </div>
+      <div class="callout hardened">
+        <p class="big-line"><span class="mark">HARDENED</span> — 최초 계획을 보존하고, UTA 전체 USD 환산 계정가치로 현재 위치를 추적한다.</p>
+        <p class="muted">핵심 사용자, 제품 경계, MVP 범위와 공개 베타 위험 수용 원칙이 결정됐다. 계산 예외·운영 규칙·아키텍처에는 아래 <code>OPEN-*</code> 항목이 남아 있으며 서비스 구현은 시작하지 않았다.</p>
+      </div>
+      <div class="grid three" style="margin-top:1rem">
+        <article class="card"><h3>보증하지 않는 것</h3><p>법률 준수, 보안 무결성, 계산 무오류, API 지속성, 사업성 또는 투자 성과를 인증하지 않는다.</p></article>
+        <article class="card"><h3>직접 검증할 것</h3><p>사용자가 목표 차이를 반복 확인하는지, 읽기 전용 키 등록 마찰을 견디는지, 한도 없는 베타를 1인이 운영 가능한지 확인한다.</p></article>
+        <article class="card"><h3>바꾸면 재검토할 것</h3><p>다중 거래소, 상품별 분석, 과거 계획 복원, 24시간 수집, 거래 추천은 MVP 확장이 아니라 방향 변경이다.</p></article>
+      </div>
+    </section>
+
+    <section id="handoff">
+      <div class="section-head">
+        <div class="index">02</div>
+        <div><h2>다음 BMAD 워크플로 인계 원장</h2><p class="kicker">결정된 것, 정하지 않은 것, 아직 검증되지 않은 것을 같은 상태로 읽지 않는다.</p></div>
+      </div>
+
+      <div class="grid three">
+        <article class="card">
+          <h3 class="mark">현재 존재</h3>
+          <p>Forge 결정 정본 <code>forged-idea.md</code>와 이 시각 보고서만 존재한다.</p>
+        </article>
+        <article class="card">
+          <h3 class="danger">아직 없음</h3>
+          <p>시장 검증, Product Brief, PRD, UX, 계산 SPEC, 아키텍처, 코드, 배포, 운영·법률 문서.</p>
+        </article>
+        <article class="card">
+          <h3 class="warn">다음 권장 단계</h3>
+          <p><code>bmad-prd</code>. 구현은 승인되지 않았으며 <code>OPEN-*</code>를 요구사항과 acceptance criteria로 닫아야 한다.</p>
+        </article>
+      </div>
+
+      <div class="callout info" style="margin-top:1rem">
+        <h3>상태 ID 읽는 법</h3>
+        <p class="muted"><code>INV</code> 불변식 · <code>DEC</code> 확정 결정 · <code>REJ</code> 검토 후 기각 · <code>NG</code> MVP 비목표 · <code>OPEN</code> 후속 결정 · <code>ASM</code> 미검증 가정 · <code>RISK</code> 인지 또는 수용 위험. 전체 ID와 이유의 정본은 <code>forged-idea.md</code>다.</p>
+      </div>
+
+      <h3 style="margin:2rem 0 .8rem">남은 결정 18개</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>아직 정하지 않은 것</th><th>이미 잠긴 경계</th><th>해결 단계</th></tr></thead>
+          <tbody>
+            <tr><td><code>OPEN-001</code></td><td>베타 성공·중단 지표와 임계치</td><td>연동 계정 숫자 상한 없음</td><td>Product Brief/PRD</td></tr>
+            <tr><td><code>OPEN-002</code></td><td>광고·가격·수익모델</td><td>금융정보 타기팅·광고망 제공 금지</td><td>Product Brief/PRD</td></tr>
+            <tr><td><code>OPEN-003</code></td><td>회원·인증·국가·언어·연령·다중 UID</td><td>한 계획의 경계는 UTA 하나</td><td>PRD</td></tr>
+            <tr><td><code>OPEN-004</code></td><td>목표 기간·주기·수익률 허용 범위</td><td>목표값은 사용자가 직접 선택</td><td>PRD+계산 SPEC</td></tr>
+            <tr><td><code>OPEN-005</code></td><td>시간대·달력·반올림·산술 예외·앞선 목표 표시</td><td>계산 커널과 지표 의미</td><td>계산 SPEC+UX</td></tr>
+            <tr><td><code>OPEN-006</code></td><td>비-USDT 가격 소스·결측·USDT 환산 원칙</td><td>이벤트 시점 USD 원금과 추정 전파</td><td>기술 스파이크+SPEC</td></tr>
+            <tr><td><code>OPEN-007</code></td><td>Bybit 사건 매핑·중복 제거·커서·복원 범위</td><td>UTA 경계 사용자 자본만 원금</td><td>기술 스파이크+SPEC</td></tr>
+            <tr><td><code>OPEN-008</code></td><td>stale 시간·재시도·KRW 참고 환율</td><td>MVP 갱신 트리거와 USD 공식 기준</td><td>PRD+아키텍처</td></tr>
+            <tr><td><code>OPEN-009</code></td><td>클라우드·비밀관리·키회전·고정 출구 IP. Lightsail은 조사 후보일 뿐 미선정</td><td>읽기 전용 검증·암호화·키 교체 정책</td><td>아키텍처+보안</td></tr>
+            <tr><td><code>OPEN-010</code></td><td>모니터링·비상 정지 임계치·지원·공지</td><td>비상 정지 능력과 베타 무SLA</td><td>운영 설계</td></tr>
+            <tr><td><code>OPEN-011</code></td><td>실제 Day 0과 Day 60의 운영 분기</td><td>서비스 Day 60/90 시간 경계</td><td>베타 시작/Day 60</td></tr>
+            <tr><td><code>OPEN-012</code></td><td>보존기간·약관·개인정보·법률 검토</td><td>최소수집·삭제·조언 금지선</td><td>PRD+법률/개인정보</td></tr>
+            <tr><td><code>OPEN-013</code></td><td>MVP 보조통계와 상세 화면·경고 UX</td><td>공식 주지표와 조언 금지선</td><td>PRD+UX</td></tr>
+            <tr><td><code>OPEN-014</code></td><td>열린 화면 준실시간의 출시 조건·방식</td><td>MVP 밖, 24시간 수집 금지</td><td>MVP 검증 후</td></tr>
+            <tr><td><code>OPEN-015</code></td><td>종료일에 사용자가 접속하지 않은 계획의 최종값 확정</td><td>24시간 백그라운드 수집은 MVP 밖</td><td>PRD+계산 SPEC</td></tr>
+            <tr><td><code>OPEN-016</code></td><td>‘검토 필요’ 화면과 복원 불가 계획의 보관 상태</td><td>복원 불가 시 공식 계산 중단</td><td>PRD+UX+SPEC</td></tr>
+            <tr><td><code>OPEN-017</code></td><td>UTA 마진 모드별 지원·isolated margin 허용</td><td>공식 기준가치는 <code>totalEquity</code></td><td>기술 스파이크+PRD</td></tr>
+            <tr><td><code>OPEN-018</code></td><td>개별 키 만료 표시·사전 경고 시점·채널</td><td>서비스 일정과 개별 키 만료 시계 분리</td><td>PRD+UX</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout risk" style="margin-top:1rem">
+        <h3>하위 워크플로 가드레일</h3>
+        <p class="muted"><code>INV-*</code>와 <code>DEC-*</code>는 구체화할 수 있지만 묵시적으로 바꿀 수 없다. <code>REJ-*</code>와 <code>NG-*</code>를 단순 백로그로 되살리지 않는다. API 조사나 구현 편의가 불변식과 충돌하면 산정 의미를 바꾸지 말고 Forge 변경안으로 돌아간다.</p>
+      </div>
+    </section>
+
+    <section id="problem">
+      <div class="section-head">
+        <div class="index">03</div>
+        <div><h2>누구의 어떤 문제인가</h2><p class="kicker">계산기는 있지만, 보존되는 계획과 실제 비교가 없다.</p></div>
+      </div>
+      <div class="grid two">
+        <article class="card">
+          <h3>첫 사용자</h3>
+          <ul class="clean">
+            <li>월·주 단위 복리 목표를 직접 세우는 Bybit 개인 투자자</li>
+            <li>현물이나 USDT 무기한을 쓰되 전체 계정 기준으로 성과를 보고 싶은 사람</li>
+            <li>매 거래 뒤 엑셀이나 계산기를 다시 입력하지 않을 사람</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>깨지는 순간</h3>
+          <p>사용자가 현재 잔액을 새 원금으로 복리 계산기에 넣을 때마다 최초 목표와 조정 이력이 사라진다. 목표가 현실을 평가하는 기준이 아니라 현실에 맞춰 계속 움직이는 숫자가 된다.</p>
+        </article>
+      </div>
+      <div class="callout info" style="margin-top:1rem">
+        <p class="big-line">핵심 가치는 <span class="mark">복리 계산</span>이 아니라 <span class="mark">계획 보존 + 자동 실제값 비교</span>다.</p>
+        <p class="muted">수동 입력은 보조 경로가 아니라 반복 사용을 무너뜨리는 마찰로 판단했다. 거래소 읽기 전용 연동은 편의 기능이 아니라 제품의 중심이다.</p>
+      </div>
+    </section>
+
+    <section id="contract">
+      <div class="section-head">
+        <div class="index">04</div>
+        <div><h2>공식 산정 계약</h2><p class="kicker">한 계획, 한 UTA, 한 기준가치.</p></div>
+      </div>
+
+      <div class="boundary" aria-label="계획 경계 도식">
+        <div class="zone">
+          <span class="zone-label">Outside plan</span>
+          <h3>Funding 지갑 · 외부 지갑</h3>
+          <p>예비금은 이곳에 둘 수 있다. UTA로 옮기기 전까지 목표 원금과 계정 성과에 들어오지 않는다.</p>
+        </div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="zone in">
+          <span class="zone-label">One plan boundary</span>
+          <h3>Bybit Unified Trading Account 전체</h3>
+          <p><code>totalEquity</code>가 공식 현재가치다. 현물·USDT 무기한을 직접 설명하지만 다른 UTA 자산·부채·상품도 총액에는 포함된다.</p>
+        </div>
+      </div>
+
+      <div class="grid two" style="margin-top:1rem">
+        <article class="card">
+          <h3>목표 경로</h3>
+          <p>최초 정상 연동 시점부터 시작한다. 과거 계획은 복원하지 않는다. 월복리 체크포인트 사이는 지수 보간한 계획 곡선으로 표시한다.</p>
+          <div class="formula">G(t) = E₀ × (1+r)^p(t)
+     + Σ Cᵢ × (1+r)^(p(t)-p(tᵢ))</div>
+        </article>
+        <article class="card">
+          <h3>조정 최종 목표</h3>
+          <p>추가 원금은 들어온 날부터 남은 기간만 복리 목표에 더하고, 출금은 대칭적으로 차감한다. 목표율과 종료일은 유지한다.</p>
+          <div class="formula">G(T) = E₀ × (1+r)^N
+     + Σ Cᵢ × (1+r)^(N-p(tᵢ))</div>
+        </article>
+      </div>
+
+      <div class="table-wrap" style="margin-top:1rem">
+        <table>
+          <thead><tr><th>대시보드 질문</th><th>공식 답</th><th>주의</th></tr></thead>
+          <tbody>
+            <tr><td><strong>오늘 얼마여야 하나?</strong></td><td>현재 목표금액 <code>G(t)</code></td><td>현금흐름 추정 상태가 전파됨</td></tr>
+            <tr><td><strong>얼마나 앞서거나 뒤졌나?</strong></td><td><code>totalEquity - G(t)</code>의 signed gap</td><td>양수·음수를 숨기지 않음</td></tr>
+            <tr><td><strong>최종 목표는?</strong></td><td>현재까지 모든 입출금을 반영한 <code>G(T)</code></td><td>미래 입출금이 생기면 다시 조정됨</td></tr>
+            <tr><td><strong>앞으로 어느 정도가 필요한가?</strong></td><td><code>(G(T)/V(t))^(1/남은 주기)-1</code></td><td>추가 현금흐름 없음 가정의 등가율, 추천 아님</td></tr>
+            <tr><td><strong>전체 수익 목표의 어디까지 왔나?</strong></td><td>누적 계정 성과금액 ÷ 최종 목표 성장금액</td><td>‘수익률’이 아닌 ‘전체 목표 수익 달성도’로 표시</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="cashflow">
+      <div class="section-head">
+        <div class="index">05</div>
+        <div><h2>자금흐름과 성과의 경계</h2><p class="kicker">원금을 수익으로 세지 않고, 입금 뒤 가격변화는 성과로 센다.</p></div>
+      </div>
+      <div class="callout">
+        <p class="big-line">UTA 경계를 넘은 것으로 <span class="mark">확인된 사용자 자본</span>만 원금을 조정한다.</p>
+        <p class="muted">거래손익, 가격변동, 미실현손익, 펀딩비, UTA에서 실제 차감된 수수료, 이자와 리베이트는 계정 성과다. UTA 도달 전 외부에서 차감된 비용과 차입·상환은 원금 조정이 아니다. 보너스·보상은 ‘기타 계정 증감’으로 구분하지만 전체 계정가치에는 포함한다. <code>cashFlow</code> 부호만으로 분류하지 않으며 동일 자금이 입금·이체 기록 양쪽에 있어도 UTA 경계 사건 한 번만 센다.</p>
+      </div>
+      <div class="grid two" style="margin-top:1rem">
+        <article class="card">
+          <h3>비-USDT 입금 예시</h3>
+          <p>0.1 BTC가 들어올 때 BTC가 60,000 USD라면 <strong>6,000 USD는 새 원금</strong>이다. 이후 BTC가 70,000 USD가 되며 생긴 <strong>1,000 USD는 계정 성과</strong>다.</p>
+          <p class="tiny">자산·수량·시각은 거래소 기록, USD 가치는 이벤트 시점에 가장 가까운 Bybit 가격으로 추정한다.</p>
+        </article>
+        <article class="card">
+          <h3>출금과 종료</h3>
+          <p>사용자 자본 출금은 남은 기간 목표에서 대칭적으로 차감한다. UTA에서 실제 차감된 수수료는 성과 비용이다. 확인된 출금 뒤 <code>G(t)≤0</code>이거나 <code>V(t)≤0</code>으로 계정가치가 남지 않으면 마지막 신뢰 동기화 시점에 종료한다. 먼지 잔액 기준은 <code>OPEN-005</code>다.</p>
+        </article>
+      </div>
+
+      <h3 style="margin:1.5rem 0 .6rem">입력 신뢰도</h3>
+      <div class="state-row" aria-label="입력 신뢰도 범례">
+        <div class="state ok"><b>검증됨</b><span class="muted">필요 사건과 가치가 신뢰 가능한 기록으로 확인됐다.</span></div>
+        <div class="state estimate"><b>추정치 포함</b><span class="muted">비-USDT 이벤트 가격 등 일부 입력이 추정됐다.</span></div>
+        <div class="state review"><b>검토 필요</b><span class="muted">분류가 모호하거나 사건 누락 가능성이 있어 공식 계산을 확정할 수 없다.</span></div>
+      </div>
+
+      <div class="grid two" style="margin-top:1rem">
+        <article class="card"><h3>신선도 축</h3><p><span class="mark">최신</span> 또는 <span class="warn">stale</span>. 마지막 REST 스냅샷 시각과 함께 표시한다.</p></article>
+        <article class="card"><h3>계산 성격 축</h3><p><span class="mark">정확 구간수익률</span> 또는 <span class="warn">Modified Dietz 추정</span>. 입력이 검증돼도 계산은 추정일 수 있다.</p></article>
+      </div>
+
+      <div class="callout info" style="margin-top:1rem">
+        <h3>수익률의 정직한 표시</h3>
+        <p class="muted">외부 현금흐름이 없는 구간은 정확 구간수익률을 표시한다. 현금흐름이 있는 구간은 <code>R_MD = [V₁−V₀−ΣCᵢ] / [V₀+Σ(wᵢ×Cᵢ)]</code>인 Modified Dietz <strong>추정 수익률</strong>로 표시하며 정확 TWR이라고 부르지 않는다. 분모가 0 이하이거나 사건이 불완전하면 산출하지 않는다.</p>
+      </div>
+    </section>
+
+    <section id="experience">
+      <div class="section-head">
+        <div class="index">06</div>
+        <div><h2>MVP 경험과 범위</h2><p class="kicker">연결은 한 번, 확인은 반복해서.</p></div>
+      </div>
+      <div class="grid three">
+        <article class="card"><h3>최초 연결</h3><p>읽기 전용 키 검증 → 현재 <code>totalEquity</code> 확인 → 목표 기간·주기·수익률 입력 → 최초 스냅샷에서 계획 시작.</p></article>
+        <article class="card"><h3>자동 갱신</h3><p>대시보드 진입, 탭 재활성화, ‘지금 새로고침’에서 동기화한다. 화면의 ‘현재’는 마지막 성공한 REST <code>totalEquity</code> 스냅샷이며 시각과 stale 여부를 항상 보인다.</p></article>
+        <article class="card"><h3>후속 고도화</h3><p>대시보드가 열린 동안만 준실시간 추정치를 제공하고 REST <code>totalEquity</code>와 대조한다. 24시간 수집은 하지 않는다.</p></article>
+      </div>
+      <div class="grid two" style="margin-top:1rem">
+        <article class="card"><h3 class="mark">포함</h3><ul class="clean"><li>Bybit 한 곳, UTA 한 계정당 한 활성 계획</li><li>현물·USDT 무기한을 설명하는 전체 계정가치</li><li>목표 경로, 차이, 조정 목표, 필요 등가율</li><li>자금흐름 조정 이력과 신뢰 상태</li></ul></article>
+        <article class="card"><h3 class="danger">제외</h3><ul class="clean"><li>다중 거래소와 상품별 성과 분석</li><li>주문·출금·이체 실행</li><li>과거 계획 자동 복원</li><li>24시간 수집과 금융 행동 추천</li></ul></article>
+      </div>
+    </section>
+
+    <section id="security">
+      <div class="section-head">
+        <div class="index">07</div>
+        <div><h2>보안 경계와 키 교체</h2><p class="kicker">읽기 전용은 자산 이동을 막지만 금융정보 유출까지 막지는 않는다.</p></div>
+      </div>
+      <div class="grid two">
+        <article class="card">
+          <h3>연결 허용 조건</h3>
+          <ul class="clean">
+            <li><code>readOnly=1</code>, UTA, UID, IP 상태, 실제 조회 성공 검증</li>
+            <li>쓰기 권한 키는 거부</li>
+            <li>주문·출금·이체 기능과 호출 경로 자체를 두지 않음</li>
+            <li>허용 목록에 든 조회 API만 사용</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>자격정보 처리</h3>
+          <ul class="clean">
+            <li>Key·Secret 서버 암호화 저장</li>
+            <li>로그·분석도구·화면 노출 금지</li>
+            <li>연결 해제와 교체 완료 시 이전 암호문 삭제</li>
+            <li>인증된 비공개 요청은 고정 출구 IP를 계속 사용</li>
+          </ul>
+        </article>
+      </div>
+      <div class="callout" style="margin-top:1rem">
+        <h3>새 고정-IP 키 사전 검증 후 원자적 교체</h3>
+        <div class="timeline">
+          <div class="step"><b>1 · Old active</b><span>기존 비제한 키는 계속 동작</span></div>
+          <div class="step"><b>2 · New pending</b><span>새 고정-IP 읽기 전용 키 등록</span></div>
+          <div class="step"><b>3 · Verify</b><span>권한·IP·UTA·동일 UID·잔액 확인</span></div>
+          <div class="step"><b>4 · Atomic swap</b><span>활성 키 교체 후 서버의 이전 식별자·Secret 삭제</span></div>
+        </div>
+        <p class="tiny">Bybit에 존재하는 이전 키의 폐기는 사용자가 Bybit에서 수행한다. 동일 UID는 재개의 필요조건일 뿐이며, 키 교체·만료 복구는 계획을 잇지만 사용자가 명시적으로 연결 해제한 뒤에는 동일 UID여도 새 계획이다.</p>
+      </div>
+    </section>
+
+    <section id="beta">
+      <div class="section-head">
+        <div class="index">08</div>
+        <div><h2>공개 베타: 수용한 균열</h2><p class="kicker">숫자 한도 없이 운영하되, 시간 경계와 비상 정지는 유지한다.</p></div>
+      </div>
+      <div class="callout risk">
+        <p class="big-line"><span class="danger">IP 비제한 활성 연동 수에 한도를 두지 않는다.</span></p>
+        <p class="muted">실제 운영에서 유입, 장애, 비용과 지원 부하를 직접 경험하고 싶다는 제품 소유자의 명시적 선택이다. 이는 위험이 낮다는 판단이 아니다. 사용자 수와 함께 민감 금융정보의 노출면과 사고 영향범위가 커지는 것을 의식적으로 수용한 베타 운영 위험이다.</p>
+      </div>
+      <div class="callout info" style="margin-top:1rem">
+        <h3>서로 다른 두 시계</h3>
+        <p class="muted">서비스의 Day 0·60·90은 공개 베타 전체 운영 일정이다. 각 Bybit 키의 <code>deadlineDay</code>·<code>expiredAt</code>은 키 생성·연장 시점에 따른 개별 만료 정보다. 두 시계를 합쳐 해석하지 않는다.</p>
+      </div>
+      <div class="timeline">
+        <div class="step"><b>Day 0</b><span>IP 비제한 읽기 전용 키로 공개 베타</span></div>
+        <div class="step"><b>Day 60</b><span>고정 IP가 준비되면 신규는 고정-IP만; 아니면 신규 연결 중단</span></div>
+        <div class="step"><b>Day 60–90</b><span>준비된 경우 기존 사용자를 사전 검증 키로 이전</span></div>
+        <div class="step"><b>Day 90</b><span>모든 비제한 요청 중단, 미이전 계획은 보존·동기화 정지</span></div>
+      </div>
+      <div class="grid two" style="margin-top:1rem">
+        <article class="card"><h3>비상 정지</h3><p>보안 사고 의심, 비정상 접근, 클라우드 자원 초과, Bybit 제한·장애 시 신규 연동 또는 동기화를 즉시 멈춘다. 공개 베타에 무중단 SLA는 없다.</p></article>
+        <article class="card"><h3>90일 뒤 복귀</h3><p>키 교체·만료·이전 중단 건은 동일 UID의 고정-IP 키가 검증되면 기존 계획을 잇는다. 사용자가 명시적으로 연결 해제했다면 동일 UID라도 새 계획이다. 공백 복구 실패의 보관 방식은 <code>OPEN-016</code>이다.</p></article>
+      </div>
+    </section>
+
+    <section id="data">
+      <div class="section-head">
+        <div class="index">09</div>
+        <div><h2>데이터 최소화와 금융 조언 경계</h2><p class="kicker">맞춤화를 위해 먼저 모으지 않는다. 목표의 차이를 행동 추천으로 바꾸지 않는다.</p></div>
+      </div>
+      <div class="grid two">
+        <article class="card">
+          <h3 class="mark">MVP 저장</h3>
+          <ul class="clean"><li><code>totalEquity</code> 스냅샷과 동기화 시각</li><li>정규화 자금흐름·이벤트 ID</li><li>목표 생성·조정·종료 이력</li><li>계산 버전·신뢰 상태·암호화 자격정보</li></ul>
+        </article>
+        <article class="card">
+          <h3 class="danger">MVP 미저장</h3>
+          <ul class="clean"><li>원시 주문·체결·포지션 응답</li><li>매매전략 추론 목적의 상세 행동 이력</li><li>목적이 정해지지 않은 미래 활용용 데이터</li><li>광고 타기팅을 위한 잔액·수익률·보유정보</li></ul>
+        </article>
+      </div>
+      <div class="grid two" style="margin-top:1rem">
+        <article class="card">
+          <h3>허용 경계 · 실제 MVP 포함은 OPEN-013</h3>
+          <p>공식 주지표는 목표 진행, 계정가치, 차이와 필요 등가수익률이다. 변동성, 최대 낙폭, 구성 비중은 허용 가능한 중립 통계 후보일 뿐 MVP 포함이 확정되지 않았다.</p>
+        </article>
+        <article class="card">
+          <h3>금지되는 행동 추천</h3>
+          <p>종목, 매수·매도, Long·Short, 레버리지, 비중, 진입·청산 시점, 손실 회복 행동 또는 서비스가 선택한 적정 목표율.</p>
+        </article>
+      </div>
+      <div class="callout info" style="margin-top:1rem">
+        <p class="big-line">“금융 조언이 아님”이라는 문구보다 <span class="mark">실제 기능의 경계</span>가 우선한다.</p>
+        <p class="muted">향후 맞춤 통계는 별도 옵트인과 동의 시점 이후의 최소 데이터로만 만든다. 광고는 금융정보를 사용하거나 광고망에 제공하지 않는 문맥형 배치만 허용한다.</p>
+      </div>
+    </section>
+
+    <section id="rejected">
+      <div class="section-head">
+        <div class="index">10</div>
+        <div><h2>기각한 방향과 미검증 가정</h2><p class="kicker">무엇을 하지 않는지, 무엇이 아직 증명되지 않았는지 구분한다.</p></div>
+      </div>
+      <h3 style="margin-bottom:.8rem">검토 후 기각 · 전체 이유와 재검토 조건은 정본의 REJ-*</h3>
+      <div class="decision-list">
+        <div class="decision"><code>REJ-001</code> · <code>REJ-002</code> 수동 입력·현재 잔액 재계산 — 반복 마찰과 최초 기준선 소실</div>
+        <div class="decision"><code>REJ-003</code> 과거 계획 자동 복원 — 연동 전 사건·가격의 불완전성</div>
+        <div class="decision"><code>REJ-004</code> · <code>REJ-005</code> 다중 거래소·상품별 성과 — 1인 범위와 UTA 전체 경계 초과</div>
+        <div class="decision"><code>REJ-006</code> 실현손익·체결만 공식 성과 — 실제 <code>totalEquity</code>와 불일치</div>
+        <div class="decision"><code>REJ-007</code> 같은 UTA 추가금 가상 제외 — 실제 계정과 가상 원장을 분리할 수 없음</div>
+        <div class="decision"><code>REJ-008</code> <code>cashFlow</code> 숫자만 사용 — 원금 오분류 위험</div>
+        <div class="decision"><code>REJ-009</code> MVP 지속갱신·24시간 수집 — 핵심 검증보다 운영 복잡도가 큼</div>
+        <div class="decision"><code>REJ-010</code> 원시 거래·포지션 기본 저장 — 불필요한 금융 프라이버시 확대</div>
+        <div class="decision"><code>REJ-011</code> 쓰기 권한·주문·출금·이체 — 조회 전용 보안 경계 이탈</div>
+        <div class="decision"><code>REJ-012</code> 기존 키에 IP만 수정 — 전환 단절·사전 검증·롤백 문제</div>
+        <div class="decision"><code>REJ-013</code> · <code>REJ-014</code> 행동 추천·금융 광고·수익까지 보안 연기 — 신뢰·법률·보안 경계 위반</div>
+        <div class="decision"><code>REJ-015</code> IP 비제한 30계정 상한 — 실제 공개 운영 학습을 위해 사용자 명시 기각</div>
+      </div>
+
+      <h3 style="margin:2rem 0 .8rem">미검증 가정과 수용 위험 · OPEN 항목과 다름</h3>
+      <div class="grid two">
+        <article class="card"><ul class="clean"><li><code>ASM-001</code> 반복 사용 수요 — 창업자 경험 중심, 낮은 확신</li><li><code>ASM-002</code> API 키 온보딩 수용성 — 미검증</li><li><code>ASM-003</code> <code>totalEquity</code> 충분성 — 문서 근거는 높으나 실제 계정 테스트 전</li><li><code>ASM-004</code> · <code>ASM-005</code> 사건 복원과 추정치 이해 — 기술·사용성 검증 전</li></ul></article>
+        <article class="card"><ul class="clean"><li><code>RISK-001</code> 무제한 비제한 키 베타 — 명시적으로 수용</li><li><code>RISK-002</code> 읽기 전용 키의 금융정보 노출 — 높은 위험</li><li><code>RISK-003</code> Bybit 정책·API 변경 — 지속 외부 의존</li><li><code>RISK-004</code> 한국 법률의 제품 적용 해석 — 출시 전 검토 필요</li></ul></article>
+      </div>
+    </section>
+
+    <section id="credits">
+      <div class="section-head">
+        <div class="index">11</div>
+        <div><h2>Forge 목소리와 근거</h2><p class="kicker">제품을 강하게 만든 질문의 출처.</p></div>
+      </div>
+      <div class="grid three">
+        <article class="card"><h3>사용자·경험</h3><p><strong>Mary 📊</strong>는 반복 문제를, <strong>Sally 🎨</strong>는 잔액·원금·성과·목표가 섞이지 않는 표시를, 현우·소연은 첫 사용자와 1인 운영자의 현실을 압박했다.</p></article>
+        <article class="card"><h3>산정·경계</h3><p><strong>Winston 🏗️</strong>은 UTA와 동기화 불변식을, <strong>Boundary 🌶️</strong>는 비-USDT 입금·출금·복원 불가를, <strong>Killjoy 🛑</strong>는 과도한 범위를 제거했다.</p></article>
+        <article class="card"><h3>보안·운영</h3><p><strong>Vex 🔒</strong>는 읽기 전용 키의 금융정보 위험, 고정 IP 이전, 공개 베타의 사고 영향범위를 끝까지 드러냈다.</p></article>
+      </div>
+
+      <div class="callout" style="margin-top:1rem">
+        <h3>주요 공식 출처</h3>
+        <ul class="sources">
+          <li><a href="https://bybit-exchange.github.io/docs/v5/account/wallet-balance">Bybit Wallet Balance — totalEquity</a></li>
+          <li><a href="https://bybit-exchange.github.io/docs/v5/account/transaction-log">Bybit Transaction Log</a></li>
+          <li><a href="https://bybit-exchange.github.io/docs/v5/asset/deposit/deposit-record">Bybit Deposit Records</a></li>
+          <li><a href="https://bybit-exchange.github.io/docs/v5/user/apikey-info">Bybit API Key Information</a></li>
+          <li><a href="https://bybit-exchange.github.io/docs/faq">Bybit API FAQ</a></li>
+          <li><a href="https://bybit-exchange.github.io/docs/changelog/v5">Bybit V5 Changelog</a></li>
+          <li><a href="https://www.law.go.kr/LSW/lsLinkCommonInfo.do?chrClsCd=010202&amp;lsJoLnkSeq=1027642775">자본시장법상 투자판단 관련 문언</a></li>
+          <li><a href="https://www.law.go.kr/LSW/lsLinkCommonInfo.do?chrClsCd=010202&amp;lsJoLnkSeq=1031737809">자본시장법상 파생상품 정의</a></li>
+          <li><a href="https://law.go.kr/lsLinkCommonInfo.do?chrClsCd=010202&amp;lsJoLnkSeq=1029335671">개인정보보호법상 최소수집 원칙</a></li>
+          <li><a href="https://www.law.go.kr/LSW/lsLawLinkInfo.do?chrClsCd=010202&amp;lsJoLnkSeq=900078586">개인정보보호법상 목적 외 이용 제한</a></li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell">
+      <strong>BokriLog · BMad Forge Report</strong><br>
+      제품 방향 확정본 · 2026-08-14 · 구현 미착수
+    </div>
+  </footer>
+</body>
+</html>

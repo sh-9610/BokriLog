@@ -1,0 +1,2 @@
+# Keep uv's cache inside the repository so BMAD helpers work in Codex's sandbox.
+cache-dir = "./.uv-cache"

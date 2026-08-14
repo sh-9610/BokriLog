@@ -1,0 +1,6 @@
+# Local uv cache used by BMAD's Python helper scripts.
+.uv-cache/
+
+# Python bytecode generated while BMAD validates helper scripts.
+__pycache__/
+*.py[cod]
