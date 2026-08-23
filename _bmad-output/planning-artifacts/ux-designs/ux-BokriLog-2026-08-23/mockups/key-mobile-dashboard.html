@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BokriLog 모바일 대시보드 목업</title>
+  <style>
+    /* Governed by DESIGN.md: Colors, Typography, Layout & Spacing, Components/app-shell,
+       trust-status-panel, metric-card, sync-control. EXPERIENCE.md: Information Architecture/대시보드,
+       Component Patterns rows above, State Patterns/원자적 갱신 계약,
+       Responsive & Platform/<768px, Key Flows/UJ-1 steps 1–3 and 6. */
+    :root{--base:#F7F8F6;--raised:#FFF;--subtle:#EEF1EE;--ink:#17211B;--ink2:#47564D;--muted:#64726A;--border:#C7D0CA;--strong:#87958C;--primary:#245C48;--on:#FFF;--focus:#1D4F91;--ok:#1F6A4D;--okbg:#E7F4ED;--info:#1D4F91;--infobg:#EAF2FF;--r-sm:6px;--r-md:10px;--r-lg:14px}
+    *{box-sizing:border-box}body{margin:0;background:#E4E8E4;color:var(--ink);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:16px;line-height:1.5}button,a{font:inherit}button:focus-visible,a:focus-visible{outline:2px solid var(--focus);outline-offset:2px}.canvas{min-height:100vh;display:grid;place-items:start center;padding:32px 16px}.phone{width:min(390px,100%);height:844px;background:var(--base);border:1px solid #AEB8B1;border-radius:28px;box-shadow:0 18px 50px rgba(23,33,27,.16);overflow:hidden;display:flex;flex-direction:column}.statusbar{height:28px;display:flex;align-items:center;justify-content:space-between;padding:0 18px;font-size:12px;font-weight:650}.appbar{height:58px;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);background:rgba(247,248,246,.96)}.brand{font-weight:750;letter-spacing:-.02em}.settings{width:44px;height:44px;border:0;background:transparent;border-radius:var(--r-md);color:var(--ink2);font-size:20px}.scroll{flex:1;overflow:auto;padding:18px 16px 28px}.pagehead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.kicker{margin:0;color:var(--ink2);font-size:13px}.pagehead h1{margin:2px 0 0;font-size:24px;line-height:1.35;letter-spacing:-.02em}.plan{font-size:13px;color:var(--ink2);white-space:nowrap;padding-top:7px}.value-card{margin-top:14px;padding:18px;background:var(--raised);border:1px solid var(--border);border-radius:var(--r-lg)}.label{font-size:14px;font-weight:650;color:var(--ink2)}.value{margin:4px 0 2px;font-size:30px;font-weight:700;line-height:1.25;letter-spacing:-.02em;font-variant-numeric:tabular-nums}.measured{font-size:13px;color:var(--muted)}.trust{margin-top:12px;background:var(--raised);border:1px solid var(--border);border-radius:var(--r-lg);overflow:hidden}.trust h2{font-size:15px;margin:0;padding:14px 14px 8px}.trustrow{min-height:64px;display:grid;grid-template-columns:82px 1fr 44px;align-items:center;gap:8px;padding:10px 8px 10px 14px;border-top:1px solid var(--border)}.trustrow:first-of-type{border-top:0}.axis{font-size:13px;color:var(--ink2)}.state{font-size:14px;font-weight:700}.state small{display:block;font-weight:400;color:var(--muted);font-size:12px;margin-top:2px}.status-pill{display:inline-flex;align-items:center;gap:5px;color:var(--ok)}.dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}.detail{width:44px;height:44px;border:0;background:transparent;color:var(--info);font-size:13px;text-decoration:underline;text-underline-offset:3px}.sync{margin-top:12px;width:100%;min-height:48px;border:0;border-radius:var(--r-md);background:var(--primary);color:var(--on);font-weight:700}.syncmeta{margin:7px 2px 0;color:var(--muted);font-size:12px}.sectionhead{display:flex;justify-content:space-between;align-items:end;margin:24px 0 10px}.sectionhead h2{margin:0;font-size:20px;line-height:1.4}.sectionhead a{font-size:13px;color:var(--info);text-underline-offset:3px}.metrics{display:grid;grid-template-columns:1fr;gap:10px}.metric{padding:14px;background:var(--raised);border:1px solid var(--border);border-radius:var(--r-md)}.metric .name{font-size:14px;font-weight:650;color:var(--ink2)}.metric .amount{margin-top:3px;font-size:23px;line-height:1.3;font-weight:680;letter-spacing:-.02em;font-variant-numeric:tabular-nums}.metric .meta{margin-top:4px;font-size:12px;color:var(--muted)}.note{margin:14px 0 0;padding:12px;background:var(--infobg);color:var(--info);border-radius:var(--r-md);font-size:12px}.bottomnav{height:70px;display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--border);background:var(--raised);padding-bottom:4px}.navitem{border:0;background:transparent;color:var(--ink2);font-size:12px;display:grid;place-items:center;align-content:center;gap:2px}.navitem span:first-child{font-size:18px}.navitem.active{color:var(--primary);font-weight:700}
+    @media(max-width:420px){.canvas{padding:0}.phone{width:100%;height:100vh;border:0;border-radius:0;box-shadow:none}}
+  </style>
+</head>
+<body>
+  <main class="canvas">
+    <section class="phone" aria-label="BokriLog 모바일 대시보드 정상 상태">
+      <div class="statusbar"><span>7:44</span><span aria-hidden="true">● ● ▰</span></div>
+      <header class="appbar"><div class="brand">BokriLog</div><button class="settings" type="button" aria-label="설정">⚙</button></header>
+      <div class="scroll">
+        <div class="pagehead"><div><p class="kicker">내 복리 계획</p><h1>오늘의 기록</h1></div><div class="plan">월 복리 · 2027.08.23까지</div></div>
+        <section class="value-card" aria-labelledby="current-value">
+          <div class="label" id="current-value">마지막 정상 현재가치</div>
+          <div class="value">$12,486.23</div>
+          <div class="measured">2026년 8월 23일 07:42 측정</div>
+        </section>
+        <section class="trust" aria-labelledby="trust-title">
+          <h2 id="trust-title">이 값의 신뢰 상태</h2>
+          <div class="trustrow"><div class="axis">신선도</div><div class="state"><span class="status-pill"><span class="dot"></span>최신</span><small>2분 전에 정상 동기화했습니다.</small></div><button class="detail" type="button" aria-label="신선도 자세히">자세히</button></div>
+          <div class="trustrow"><div class="axis">입력 신뢰도</div><div class="state"><span class="status-pill"><span class="dot"></span>확인됨</span><small>확인되지 않은 자금흐름이 없습니다.</small></div><button class="detail" type="button" aria-label="입력 신뢰도 자세히">자세히</button></div>
+          <div class="trustrow"><div class="axis">계산 성격</div><div class="state"><span class="status-pill"><span class="dot"></span>공식</span><small>같은 스냅샷과 계산 버전입니다.</small></div><button class="detail" type="button" aria-label="계산 성격 자세히">자세히</button></div>
+        </section>
+        <button class="sync" type="button">수동 동기화</button>
+        <p class="syncmeta">자동 확인은 광고를 열지 않습니다. 마지막 정상 동기화 07:42</p>
+        <div class="sectionhead"><h2>계획 지표</h2><a href="#">계산 근거 보기</a></div>
+        <section class="metrics" aria-label="여섯 가지 계획 지표">
+          <article class="metric"><div class="name">현재가치</div><div class="amount">$12,486.23</div><div class="meta">07:42 측정 · 공식</div></article>
+          <article class="metric"><div class="name">현재 시점 계획금액</div><div class="amount">$12,320.00</div><div class="meta">월 복리 · 공식</div></article>
+          <article class="metric"><div class="name">계획 대비 차이</div><div class="amount">+$166.23</div><div class="meta">현재가치 − 계획금액 · 공식</div></article>
+          <article class="metric"><div class="name">조정 최종 목표</div><div class="amount">$18,200.00</div><div class="meta">확인된 자금흐름 반영 · 공식</div></article>
+          <article class="metric"><div class="name">남은 필요 등가수익률</div><div class="amount">월 3.22%</div><div class="meta">남은 12주기 기준 · 공식</div></article>
+          <article class="metric"><div class="name">목표 수익 달성도</div><div class="amount">31.08%</div><div class="meta">조정 원금 기준 · 공식</div></article>
+        </section>
+        <p class="note">복리 계획 비교입니다. 투자성과·계좌 수익률·투자 추천이 아닙니다.</p>
+      </div>
+      <nav class="bottomnav" aria-label="주요 탐색"><button class="navitem active" type="button"><span aria-hidden="true">▦</span><span>대시보드</span></button><button class="navitem" type="button"><span aria-hidden="true">≡</span><span>조정 이력</span></button><button class="navitem" type="button"><span aria-hidden="true">⚙</span><span>설정</span></button></nav>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BokriLog 로그인 목업</title>
+  <style>
+    /* Governed by DESIGN.md: Brand & Style, Colors, Typography, Layout & Spacing,
+       Components/social-sign-in. EXPERIENCE.md: Information Architecture/인증,
+       Voice and Tone, Component Patterns/social-sign-in, State Patterns/소셜 인증·계정 연결 계약,
+       Interaction Primitives, Accessibility Floor, Key Flows/Flow 9 steps 1–3. */
+    :root{--surface-base:#F7F8F6;--surface-raised:#FFF;--surface-subtle:#EEF1EE;--ink-primary:#17211B;--ink-secondary:#47564D;--ink-muted:#64726A;--border-default:#C7D0CA;--border-strong:#87958C;--primary:#245C48;--focus:#1D4F91;--r-sm:6px;--r-md:10px;--r-lg:14px;--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--target:44px}
+    *{box-sizing:border-box}body{margin:0;background:#E4E8E4;color:var(--ink-primary);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:16px;line-height:1.6}button,a{font:inherit}button:focus-visible,a:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+    .canvas{min-height:100vh;display:grid;place-items:center;padding:32px 16px}.phone{width:min(390px,100%);min-height:780px;background:var(--surface-base);border:1px solid #AEB8B1;border-radius:28px;box-shadow:0 18px 50px rgba(23,33,27,.16);overflow:hidden;display:flex;flex-direction:column}.statusbar{height:30px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;font-size:12px;font-weight:650}.appbar{padding:20px 20px 12px}.brand{font-weight:750;letter-spacing:-.02em}.content{flex:1;display:flex;flex-direction:column;justify-content:center;padding:24px 20px 40px}.eyebrow{margin:0 0 8px;color:var(--primary);font-size:14px;font-weight:700}.content h1{margin:0;font-size:28px;line-height:1.3;letter-spacing:-.02em}.lead{margin:12px 0 28px;color:var(--ink-secondary)}.signin{display:grid;gap:12px}.provider{width:100%;min-height:52px;border-radius:8px;border:1px solid var(--border-strong);display:grid;grid-template-columns:28px 1fr 28px;align-items:center;padding:0 16px;font-size:15px;font-weight:650;cursor:pointer}.provider .mark{width:24px;height:24px;display:grid;place-items:center;font-weight:800}.provider span:nth-child(2){text-align:center}.google{background:#FFF;color:#1F1F1F;border-color:#747775}.google .mark{font-size:19px;color:#4285F4}.naver{background:#03C75A;color:#FFF;border-color:#03A84A}.naver .mark{font-family:Arial,sans-serif}.kakao{background:#FEE500;color:rgba(0,0,0,.85);border-color:#D5C000}.kakao .mark{font-family:Arial,sans-serif}.privacy{margin:20px 0 0;padding:16px;background:var(--surface-subtle);border-radius:var(--r-md);font-size:13px;line-height:1.55;color:var(--ink-secondary)}.privacy strong{display:block;color:var(--ink-primary);font-size:14px;margin-bottom:4px}.terms{margin:18px 0 0;text-align:center;font-size:13px;color:var(--ink-muted)}.terms a{color:var(--ink-secondary);text-underline-offset:3px}.footer{padding:0 20px 24px;text-align:center;font-size:13px;color:var(--ink-muted)}
+    @media(max-width:420px){.canvas{padding:0}.phone{width:100%;min-height:100vh;border:0;border-radius:0;box-shadow:none}}
+  </style>
+</head>
+<body>
+  <main class="canvas">
+    <section class="phone" aria-label="BokriLog 모바일 로그인 화면">
+      <div class="statusbar"><span>9:41</span><span aria-hidden="true">● ● ▰</span></div>
+      <header class="appbar"><div class="brand">BokriLog</div></header>
+      <div class="content">
+        <p class="eyebrow">복리 계획 기록</p>
+        <h1>계획과 근거를<br>한곳에 보관하세요</h1>
+        <p class="lead">사용할 로그인 방식을 선택해 주세요.</p>
+        <div class="signin" aria-label="소셜 로그인 선택">
+          <button class="provider google" type="button"><span class="mark" aria-hidden="true">G</span><span>Google로 계속하기</span><span></span></button>
+          <button class="provider naver" type="button"><span class="mark" aria-hidden="true">N</span><span>네이버로 계속하기</span><span></span></button>
+          <button class="provider kakao" type="button"><span class="mark" aria-hidden="true">K</span><span>카카오로 계속하기</span><span></span></button>
+        </div>
+        <div class="privacy">
+          <strong>로그인 정보의 사용 범위</strong>
+          Google·네이버·카카오는 본인 확인에만 사용합니다. Bybit 자격정보와 금융 데이터, 계획 및 조정 이력은 공유하지 않습니다.
+        </div>
+        <p class="terms">계속하면 <a href="#">이용약관</a>과 <a href="#">개인정보 처리방침</a>에 동의하게 됩니다.</p>
+      </div>
+      <footer class="footer">BokriLog는 거래를 실행하거나 투자를 추천하지 않습니다.</footer>
+    </section>
+  </main>
+</body>
+</html>
