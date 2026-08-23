@@ -1,5 +1,11 @@
+# macOS Finder metadata.
+.DS_Store
+
 # Local uv cache used by BMAD's Python helper scripts.
 .uv-cache/
+
+# Local Python environment, if the application later adopts Python.
+.venv/
 
 # Python bytecode generated while BMAD validates helper scripts.
 __pycache__/
