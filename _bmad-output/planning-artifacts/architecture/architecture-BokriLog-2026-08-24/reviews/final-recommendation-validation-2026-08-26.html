@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BokriLog 최종 권고안 재검증</title>
+  <style>
+    :root{--ink:#172033;--muted:#667085;--line:#dfe4ec;--paper:#fff;--bg:#f3f6fa;--amber:#b54708;--amber-bg:#fff6e8;--green:#027a48;--green-bg:#ecfdf3;--red:#b42318;--red-bg:#fef3f2;--blue:#175cd3;--blue-bg:#eff8ff}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}
+    main{max-width:1040px;margin:36px auto;padding:0 20px 60px}.hero,.card{background:var(--paper);border:1px solid var(--line);border-radius:16px;box-shadow:0 6px 20px rgba(16,24,40,.05)}
+    .hero{padding:34px}.eyebrow{color:var(--blue);font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-size:12px}h1{font-size:34px;line-height:1.25;margin:8px 0 12px}h2{font-size:22px;margin:0 0 14px}h3{font-size:17px;margin:0 0 8px}.muted{color:var(--muted)}
+    .verdict{margin-top:24px;padding:18px 20px;border-radius:12px;background:var(--amber-bg);border-left:5px solid var(--amber)}.verdict strong{color:var(--amber);font-size:18px}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:18px}.card{padding:24px}.wide{grid-column:1/-1}.tag{display:inline-block;font-size:12px;font-weight:700;padding:3px 9px;border-radius:999px;margin-bottom:9px}.p0{color:var(--red);background:var(--red-bg)}.pass{color:var(--green);background:var(--green-bg)}
+    ul,ol{padding-left:21px;margin:8px 0}li+li{margin-top:6px}code{background:#f2f4f7;padding:2px 6px;border-radius:5px}a{color:var(--blue)}
+    table{width:100%;border-collapse:collapse;margin-top:10px}th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:13px}.gate li{list-style:none;margin-left:-20px}.gate li:before{content:"□";margin-right:9px;color:var(--blue);font-weight:700}
+    footer{color:var(--muted);font-size:13px;margin-top:18px;text-align:center}@media(max-width:760px){.grid{grid-template-columns:1fr}.hero{padding:24px}h1{font-size:28px}}
+  </style>
+</head>
+<body><main>
+  <section class="hero">
+    <div class="eyebrow">Architecture validation · 2026-08-26</div>
+    <h1>BokriLog 최종 인프라 권고안 재검증</h1>
+    <p class="muted">OCI A1 단일 서버 + Spring Modulith + PostgreSQL + Grafana Cloud 구성을 신뢰성, 보안·복구, 자원·관측성 관점에서 독립 검토했습니다.</p>
+    <div class="verdict"><strong>조건부 통과</strong><br>큰 방향은 적합합니다. 아래 필수 수정 5건을 반영하면 포트폴리오와 초기 공개 베타에 사용할 수 있습니다.</div>
+  </section>
+
+  <section class="grid">
+    <article class="card"><span class="tag p0">P0 · 최신 한도</span><h3>A1은 2 OCPU / 12GB 기준</h3><p>무료 전용 계정의 최신 공식 한도입니다. 4/24GB는 tenancy 또는 PAYG 무료 적용이 콘솔에서 확인될 때만 사용합니다. 배포 전 Always Free 표시와 예상 비용 $0를 확인합니다.</p></article>
+    <article class="card"><span class="tag p0">P0 · 고정 주소</span><h3>Reserved public IPv4</h3><p>Bybit IP 화이트리스트를 위해 ephemeral IP 대신 리전 고정 IP를 VNIC에 연결합니다. 복구 시 같은 리전 VM에 재할당한 뒤 송신 IP와 동기화를 검증합니다.</p></article>
+    <article class="card"><span class="tag p0">P0 · 복구 가능성</span><h3>키와 백업은 OCI 밖에도</h3><p>암호화 dump를 OCI와 별도 저장소 두 곳에 보관하고, 애플리케이션 key ring과 백업 키도 OCI 밖 비밀번호 관리자에 둡니다. 월간 복원에서 실제 복호화까지 확인합니다.</p></article>
+    <article class="card"><span class="tag p0">P0 · 관측성</span><h3>AD-14 단일화 + 외부 생존 확인</h3><p>개발은 self-hosted, 운영은 Alloy + Grafana Cloud로 확정합니다. 외부 synthetic가 <code>/health/live</code>를 5분마다 확인하고 telemetry 부재도 경보합니다.</p></article>
+    <article class="card wide"><span class="tag p0">P0 · 운영 등급</span><h3>24×7 실행 목표와 가용성 보장을 구분</h3><p>Always Free에는 idle 회수, capacity 부족, SLA·지원 부재 위험이 있습니다. 따라서 <strong>24×7 상시 실행 목표, best-effort, SLA 없음</strong>으로 표현하고, 최초 회수·8시간 capacity 실패·유료 사용자 발생 시 PAYG 또는 유료 VPS로 옮깁니다.</p></article>
+
+    <article class="card wide"><h2>2 OCPU / 12GB 시작 자원안</h2><table><thead><tr><th>구성요소</th><th>시작 상한</th><th>운영 원칙</th></tr></thead><tbody>
+      <tr><td>API active/inactive</td><td>각 768MiB</td><td>inactive는 배포 시에만 기동</td></tr><tr><td>Worker</td><td>512MiB</td><td>배포 전 drain 후 정지</td></tr><tr><td>PostgreSQL</td><td>3GiB</td><td>shared_buffers 512MiB~1GiB부터 측정</td></tr><tr><td>Alloy</td><td>256MiB</td><td>전송 실패와 queue 감시</td></tr><tr><td>Nginx</td><td>128MiB</td><td>고정 외부 진입점</td></tr>
+    </tbody></table><p class="muted">메모리보다 2 OCPU의 배포 피크 경합이 우선 검증 대상입니다. 빌드·테스트는 CI에서만 실행합니다.</p></article>
+
+    <article class="card"><span class="tag pass">유지</span><h3>타당한 결정</h3><ul><li>Spring Modulith 모듈형 모놀리스 + 별도 Worker</li><li>PostgreSQL 작업 큐 우선, broker/outbox는 확장 경로</li><li>Bybit totalEquity 권위 입력</li><li>배포 시에만 blue/green</li><li>운영 서버에서 테스트 도구 제외</li></ul></article>
+    <article class="card"><h3>RPO / RTO</h3><ul><li><strong>RPO:</strong> 공개 베타에서 최대 24시간을 명시적으로 수용</li><li><strong>RTO:</strong> A1 capacity 때문에 best-effort</li><li><strong>복원 성공:</strong> DB뿐 아니라 키, 자격 증명 복호화, 세션 폐기, reserved IP, Bybit smoke까지</li></ul></article>
+
+    <article class="card wide"><h2>구현 승인 게이트</h2><ul class="gate"><li>OCI 콘솔에서 home region, entitlement, capacity, $0 확인</li><li>reserved public IPv4와 Bybit IP 검증</li><li>AD-14를 개발 self-hosted / 운영 Grafana Cloud로 단일화</li><li>OCI 밖 key 사본과 두 번째 암호화 백업</li><li>외부 synthetic와 telemetry absence 경보</li><li>ARM64 동일 digest 배포 피크 smoke</li><li>RPO 24h, best-effort RTO, 유료 호스트 전환 조건 문서화</li></ul></article>
+
+    <article class="card wide"><h2>공식 근거</h2><ul><li><a href="https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier.htm">OCI Free Tier</a> · <a href="https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm">Always Free Resources</a></li><li><a href="https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/managingpublicIPs.htm">OCI Public IP Addresses</a></li><li><a href="https://bybit-exchange.github.io/docs/v5/user/apikey-info">Bybit API Key Information</a></li><li><a href="https://grafana.com/pricing/">Grafana Cloud Pricing</a></li></ul></article>
+  </section>
+  <footer>검증 대상은 현재 결정 기록입니다. 아키텍처 본문 최종화 후 자동 린트를 별도로 통과해야 합니다.</footer>
+</main></body></html>
