@@ -1,0 +1,96 @@
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created, ready for development
+#   - in-progress: Developer actively working on implementation
+#   - review: Implementation complete, ready for review
+#   - done: Story completed
+
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+
+# Action Item Status:
+#   - open: Committed during a retrospective, not yet addressed
+#   - in-progress: Actively being worked on
+#   - done: Completed
+
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when its first story starts (via build's sprint sync)
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates the next story after the previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Retrospective appends its action items to action_items; the status view surfaces open ones
+generated: 09-02-2026 16:34
+last_updated: 09-02-2026 16:34
+project: BokriLog
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+development_status:
+  epic-1: backlog
+  1-1-서비스-이용-범위와-인증-경계를-확인하는-진입-화면: backlog
+  1-2-동일-출처에서-서비스-화면과-서버-상태-확인하기: backlog
+  1-3-계정-소유권과-삭제-상태에-따라-접근을-판정하기: backlog
+  1-4-google로-가입-로그인하기: backlog
+  1-5-안전하게-로그아웃하고-만료-의심-세션을-차단하기: backlog
+  1-6-네이버로-독립적으로-가입-로그인하기: backlog
+  1-7-카카오로-가입-로그인하고-세-가지-로그인-수단-중-선택하기: backlog
+  1-8-민감-작업-전에-본인임을-다시-확인하고-세션을-회전하기: backlog
+  1-9-민감-작업에-5분-일회성-재인증-허가-적용하기: backlog
+  1-10-새-로그인-수단을-현재-계정에-연결하기: backlog
+  1-11-로그인-수단을-안전하게-해제하기: backlog
+  epic-1-retrospective: optional
+
+  epic-2: backlog
+  2-1-읽기-전용-bybit-uta-연결을-검증하고-안전하게-저장하기: backlog
+  2-2-첫-정상-현재가치와-측정-시각-확인하기: backlog
+  2-3-첫-정상-스냅샷으로-복리-계획-조건을-검증하고-미리보기: backlog
+  2-4-초기-계산에-필요한-bybit-현재가치와-원천-사건을-완전하게-수집하기: backlog
+  2-5-원천-사건을-외부-자금흐름과-계정가치-변동으로-판정하기: backlog
+  2-6-확인된-외부-자금흐름을-사건-시점의-usd-가치로-환산하기: backlog
+  2-7-최초-계획을-계산하고-활성-계획과-공식-결과를-원자-발행하기: backlog
+  2-8-공식-대시보드에서-여섯-지표와-세-신뢰-상태를-함께-확인하기: backlog
+  2-9-현재-공식-계산의-입력과-버전-근거-확인하기: backlog
+  2-10-계획에-반영된-외부-자금흐름-조정-이력-확인하기: backlog
+  2-11-활성-계획을-사용자-시점에-증분-동기화하고-공식-결과-갱신하기: backlog
+  2-12-필요한-이력-구간을-정밀-재검증하고-늦은-사건을-새-버전으로-반영하기: backlog
+  2-13-활성-계획을-명시적으로-중도-종료하고-기록-보존하기: backlog
+  2-14-자연-만료-계획의-첫-종료-후-관측값과-완료-결과-확정하기: backlog
+  2-15-새-정상-스냅샷을-기준으로-후속-계획-생성하기: backlog
+  2-16-bybit-연결을-해제하고-기존-계획-기록을-읽기-전용으로-보존하기: backlog
+  epic-2-retrospective: optional
+
+  epic-3: backlog
+  3-1-보호된-운영자-표면과-추가-전용-감사-원장-마련하기: backlog
+  3-2-문제-영향-범위만-수동으로-제한하기: backlog
+  3-3-승인된-강한-신호를-감지해-60초-안에-자동-정지하기: backlog
+  3-4-검증-증거를-확인한-뒤-제한을-수동-복구하기: backlog
+  3-5-제한-장애-복구-상태를-서비스-내부-공지로-안내하기: backlog
+  3-6-사용자-문의를-접수하고-영업일-3일-답변-목표-추적하기: backlog
+  3-7-개인정보를-배제한-관측-경보와-운영-목표-계측하기: backlog
+  3-8-arm64-단일-서버를-blue-green으로-안전하게-배포하고-rollback하기: backlog
+  3-9-일일-암호화-백업을-두-저장소에-검증-보관하고-30일-내-파기하기: backlog
+  3-10-외부-복구-매니페스트로-격리-복원하고-삭제-계정-재활성화를-차단하기: backlog
+  epic-3-retrospective: optional
+
+  epic-4: backlog
+  4-1-문맥형-광고-동의를-선택하고-철회하기: backlog
+  4-2-수동-동기화-성공-결과에-광고-자격과-빈도-제한-적용하기: backlog
+  4-3-금융정보-없는-중립-화면에서-닫을-수-있는-광고-시도하기: backlog
+  4-4-모든-광고-실패에서-저장된-결과로-fail-open하고-광고만-비활성화하기: backlog
+  epic-4-retrospective: optional
+
+  epic-5: backlog
+  5-1-삭제-범위와-보존-정책을-확인하고-계정-삭제-요청하기: backlog
+  5-2-모든-모듈의-사용자-데이터를-삭제하고-부분-실패-추적하기: backlog
+  5-3-외부-tombstone으로-복원을-차단하고-30일-내-백업-파기-추적하기: backlog
+  5-4-삭제-계정이-복원-후-재활성화되지-않음을-통합-검증하고-완료-안내하기: backlog
+  epic-5-retrospective: optional
