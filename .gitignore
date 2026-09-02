@@ -1,6 +1,15 @@
 # macOS Finder metadata.
 .DS_Store
 
+# Windows Explorer metadata.
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# JetBrains IDE local state. 두 기기의 모듈·SDK 경로가 달라 공유하지 않는다.
+.idea/
+*.iml
+
 # Local uv cache used by BMAD's Python helper scripts.
 .uv-cache/
 
@@ -10,3 +19,11 @@
 # Python bytecode generated while BMAD validates helper scripts.
 __pycache__/
 *.py[cod]
+
+# 제품 코드 도입 시점(Epic 1 Story 1.1~1.2)의 빌드 산출물.
+# node_modules는 OS별 네이티브 바이너리를 포함하므로 절대 커밋하지 않는다.
+node_modules/
+dist/
+build/
+target/
+.gradle/
