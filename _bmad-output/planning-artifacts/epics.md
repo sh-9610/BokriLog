@@ -2412,7 +2412,7 @@ Google·네이버·카카오 중 하나로 가입·로그인하고, 최근 재�
 
 **결정 상태:** 계획 중도 종료는 `SECURITY-ACTION-1.0`의 민감 행동으로 확정하며, 5분 내 재인증으로 발급된 command-bound 일회성 허가를 요구한다.
 
-**연결 요구사항:** FR-1·FR-5·FR-12, NFR-8~NFR-10·NFR-13~NFR-17, AR-6·AR-7·AR-9·AR-13·AR-14, UX `confirmation-dialog`·계획 종료 표면.
+**연결 요구사항:** FR-1·FR-5·FR-12, NFR-8~NFR-10·NFR-13~NFR-17, AR-6·AR-7·AR-9·AR-13·AR-14, UX-DR14의 자연 만료·중도 종료 구분 범위, UX `confirmation-dialog`·계획 종료 표면.
 
 **Acceptance Criteria:**
 
@@ -2498,7 +2498,7 @@ Google·네이버·카카오 중 하나로 가입·로그인하고, 최근 재�
 
 **선행:** Story 2.11~Story 2.13.
 
-**연결 요구사항:** FR-1·FR-5·FR-7·FR-9·FR-11~FR-13, NFR-1~NFR-5·NFR-8~NFR-10·NFR-13~NFR-17, AR-5~AR-9·AR-14, UX 완료 결과·Flow 4.
+**연결 요구사항:** FR-1·FR-5·FR-7·FR-9·FR-11~FR-13, NFR-1~NFR-5·NFR-8~NFR-10·NFR-13~NFR-17, AR-5~AR-9·AR-14, UX-DR14, UX 완료 결과·Flow 4.
 
 **Acceptance Criteria:**
 

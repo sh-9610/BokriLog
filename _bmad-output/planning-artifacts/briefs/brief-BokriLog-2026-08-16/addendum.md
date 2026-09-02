@@ -2,12 +2,12 @@
 title: "BokriLog Product Brief Addendum"
 status: final
 created: 2026-08-16
-updated: 2026-08-17
+updated: 2026-09-02
 ---
 
 # BokriLog Product Brief — 후속 인계 부록
 
-이 문서는 1~2페이지 제품 브리프에 넣지 않은 조사 근거와 PRD·계산 SPEC·아키텍처 인계사항을 보존한다. 제품 결정의 정본은 `forged-idea.md`이며, 이 부록은 해당 문서의 `INV-*`, `DEC-*`, `REJ-*`를 변경하지 않는다.
+이 문서는 1~2페이지 제품 브리프에 넣지 않은 조사 근거와 PRD·계산 SPEC·아키텍처 인계사항을 보존한다. 제품 결정의 정본은 [forged-idea.md](../../../forge/read-only-crypto-goal-tracker/forged-idea.md)이며, 이 부록은 해당 문서의 `INV-*`, `DEC-*`, `REJ-*`를 변경하지 않는다.
 
 ## 변경 금지 경계
 

@@ -1,3 +1,16 @@
+<!--
+이 파일은 `bmad-build`가 `defer` 판정마다 항목을 추가만 하는 로그다.
+스킬 정의가 기존 항목의 수정을 금지하므로 항목 본문을 손으로 고치지 않는다.
+
+`source_spec`은 항목을 기록한 세션의 spec 파일 경로이며 그 기기의 절대경로다
+(`none`도 유효한 값이다). 이 저장소는 macOS와 Windows 양쪽에서 개발하므로
+아래 `/Users/hwan/...` 경로는 현재 기기에서 열리지 않는다. 저장소 기준 위치는
+`_bmad-output/implementation-artifacts/spec-bmad-environment-setup.md`다.
+경로가 기기에 묶이는 것은 스킬 출력 형식이며 항목 내용의 오류가 아니다.
+
+각 항목의 해소 여부는 이 파일이 아니라 `deferred-work-resolutions.md`에 기록한다.
+-->
+
 - source_spec: `/Users/hwan/Desktop/SeongHwan/Side_Project/BokriLog/_bmad-output/implementation-artifacts/spec-bmad-environment-setup.md`
   summary: 장기 미접속 시 Bybit Transaction Log 보존기간 밖 자금흐름을 탐지·격리하는 규칙을 계산 SPEC에서 결정한다.
   evidence: 화면 기반 동기화와 API 보존기간 제한이 함께 적용되면 장기 공백 동안의 자금흐름을 놓칠 수 있다.
