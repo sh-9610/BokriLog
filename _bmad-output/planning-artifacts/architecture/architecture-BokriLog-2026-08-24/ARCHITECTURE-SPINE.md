@@ -4,10 +4,10 @@ type: architecture-spine
 purpose: build-substrate
 altitude: feature
 paradigm: 'Modular Monolith with Ports and Adapters'
-scope: 'BokriLog MVP의 거래소 연동, 계산, 저장, 보안, 배포 및 운영 경계'
+scope: 'BokriLog MVP의 금융소스 연동, 통합 포트폴리오, 계산, 저장, 보안, 배포 및 운영 경계'
 status: final
 created: '2026-08-24'
-updated: '2026-08-26'
+updated: '2026-09-02'
 binds:
   - 'BokriLog MVP'
 sources:
@@ -16,6 +16,7 @@ sources:
   - '../../ux-designs/ux-BokriLog-2026-08-23/EXPERIENCE.md'
 companions:
   - 'PORTFOLIO-SOLUTION-DESIGN.md'
+  - '../../EPIC-IMPLEMENTATION-READINESS.md'
   - 'reviews/final-recommendation-validation-2026-08-26.md'
 ---
 
@@ -29,13 +30,16 @@ companions:
 flowchart LR
   UI[React SPA] --> API[Web/API adapters]
   API --> ID[identity]
+  API --> PORT[portfolio]
   API --> PLAN[plan]
   API --> SYNC[sync]
   API --> ENG[engagement]
-  SYNC --> EX[exchange port]
+  SYNC --> SRC[financial source port]
+  SYNC --> PORT
   SYNC --> PLAN
   SYNC --> CALC[calculation: pure]
-  EX --> BYBIT[Bybit adapter]
+  PLAN --> PORT
+  SRC --> BYBIT[Bybit adapter]
   API --> OPS[operations restriction API]
   SYNC --> OPS
   ENG --> OPS
@@ -48,7 +52,7 @@ flowchart LR
 
 ### AD-1 — 모듈형 모놀리스와 소유권 경계 [ADOPTED]
 
-- **Binds:** identity, exchange, sync, plan, calculation, engagement, operations
+- **Binds:** identity, source, portfolio, sync, plan, calculation, engagement, operations
 - **Prevents:** 같은 엔티티에 복수 소유자와 상충하는 상태 변경 경로가 생기는 것
 - **Rule:** 각 모듈은 자기 데이터와 상태 변경을 소유하고 공개 application API로만 협력한다. 외부 제공자는 port 뒤의 adapter로 구현한다.
 
@@ -78,7 +82,7 @@ flowchart LR
 
 ### AD-6 — 추가 전용 사실과 공식 버전 포인터 [ADOPTED]
 
-- **Binds:** exchange facts, cash flows, snapshots, calculation versions, audit
+- **Binds:** provider facts, cash flows, source snapshots, portfolio snapshots, calculation versions, audit
 - **Prevents:** 늦게 발견한 사건이 과거 계산을 덮어써 재현성을 잃는 것
 - **Rule:** 원 사건·외부 자금흐름·정상 스냅샷·계산 버전·감사 기록은 계정의 허용 보존기간 안에서 추가 전용으로 보존한다. 현재 공식 상태는 검증된 버전 포인터로 표현하고 수정은 새 버전으로 수행한다. 검증된 계정 삭제는 이 규칙의 명시적 예외다.
 
@@ -92,13 +96,13 @@ flowchart LR
 
 - **Binds:** Bybit wallet balance, transaction log, user-visible freshness
 - **Prevents:** 매 조회의 전체 이력 재검증 비용과 서로 다른 시점의 데이터를 하나의 완전한 스냅샷처럼 표시하는 것
-- **Rule:** 일상 동기화는 `totalEquity` 1회와 마지막 watermark 이전 안전 중첩 구간부터 닫힌 상한까지 거래 로그의 모든 페이지를 조회한다. 모든 page가 영속화된 뒤에만 watermark를 전진시킨다. 화면과 API는 `measured_at`과 `cashflow_verified_through`를 분리 표시한다. 최근 사건 미반영은 사용자 재동기화로 수렴하고, 전체 검증은 종료·이상·장기 미동기화·정밀 검증 요청 때만 수행한다. Bybit 재구성 가능 범위는 최대 2년을 넘는다고 약속하지 않는다.
+- **Rule:** 일상 동기화는 `totalEquity` 1회와 `ERD-1.0.0`이 정한 24시간 또는 7일 중첩 구간부터 닫힌 상한까지 거래 로그의 모든 페이지를 조회한다. 모든 page가 영속화된 뒤에만 watermark를 전진시킨다. 화면과 API는 `measured_at`과 `cashflow_verified_through`를 분리 표시한다. 30일 초과 장기 미접속은 사용자의 계속/새 계획 선택 뒤 하나의 catch-up 작업으로 처리한다. 계획 종료는 전체 이력을 무조건 다시 읽지 않고 기존 완전성 증거의 공백과 마지막 미확정 구간만 검증한다. Bybit 재구성 가능 범위는 최대 2년을 넘는다고 약속하지 않는다.
 
-### AD-9 — Bybit 현재가치와 BokriLog 계산 경계 [ADOPTED]
+### AD-9 — 제공자 현재가치·포트폴리오와 BokriLog 계산 경계 [ADOPTED]
 
-- **Binds:** current value, compounding plan, return calculations
-- **Prevents:** BokriLog가 코인별 가격으로 거래소의 공식 현재가치를 다르게 재계산하는 것
-- **Rule:** Bybit `totalEquity` 원문 십진 문자열을 현재가치의 권위 입력으로 보존한다. 계산 모듈은 이 값과 검증된 외부 자금흐름으로 계획금액, 차이, 조정 목표, 남은 필요 등가수익률, 목표 달성도만 계산한다. 내부는 DECIMAL128 34자리 HALF_EVEN, 화면 반올림은 HALF_UP 2자리의 버전된 정책을 사용한다.
+- **Binds:** provider current value, source snapshot, portfolio snapshot, compounding plan, return calculations
+- **Prevents:** BokriLog가 제공자의 공식 현재가치를 임의로 재계산하거나 계산 모듈이 Bybit 전용 타입에 결합되는 것
+- **Rule:** Bybit adapter는 `totalEquity` 원문 십진 문자열을 USD 기준 source snapshot의 권위 입력으로 보존한다. `portfolio`는 같은 기준통화로 검증된 구성 source snapshot ID와 합계가 담긴 불변 portfolio snapshot을 만들고, 계획의 `P0`·`t0`·`E(t)`는 이 portfolio snapshot을 참조한다. 계산 모듈은 제공자 DTO가 아니라 portfolio value와 검증된 외부 자금흐름만 받아 계획금액, 차이, 조정 목표, 남은 필요 등가수익률, 목표 달성도를 계산한다. MVP portfolio는 `USD` 기준통화와 활성 `BYBIT` source 정확히 하나만 허용하므로 합계는 해당 `totalEquity`와 같다. 내부는 DECIMAL128 34자리 HALF_EVEN, 화면 반올림은 HALF_UP 2자리의 버전된 정책을 사용한다.
 
 ### AD-10 — 서버 세션 기반 소셜 로그인 [ADOPTED]
 
@@ -138,15 +142,15 @@ flowchart LR
 
 ### AD-16 — 발행 소유권, 원 사건 정체성과 fencing [ADOPTED]
 
-- **Binds:** exchange adapter, sync Worker, source facts, calculation result, official pointer
+- **Binds:** provider adapter, sync Worker, source facts, source/portfolio snapshots, calculation result, official pointer
 - **Prevents:** 모듈별 부분 커밋, 중복·누락된 외부 사건, 만료 lease Worker의 공식 포인터 역행
-- **Rule:** `sync`가 immutable `sync_run`, 정규화 source fact, calculation result, official pointer를 소유한다. `exchange`는 source DTO만 반환하고 `calculation`은 부작용 없는 결정 함수다. source fact는 provider/account/category/stable source ID, raw hash, source/observed/effective time, revision/supersedes를 가지며 재수집은 no-op이고 정정은 새 superseding fact다. publication은 하나의 REQUIRED 트랜잭션에서 현재 `(job, lease_generation, owner, expiry)`를 검증하고 connection별 `sync_sequence`가 증가할 때만 포인터를 CAS한다. stale Worker는 `LOST_LEASE` 또는 `SUPERSEDED`로 종료한다.
+- **Rule:** `source`는 provider connection과 안정적인 provider account를, `sync`는 immutable `sync_run`, 정규화 source fact, source snapshot, calculation result와 plan-result publication을, `portfolio`는 membership·portfolio snapshot·현재 snapshot pointer를 소유한다. adapter는 provider-neutral DTO만 반환하고 `calculation`은 부작용 없는 결정 함수다. source fact와 source snapshot은 교체 가능한 connection이 아니라 `(provider, verified_external_account_id)`로 유일한 내부 `provider_account_id`에 귀속하며 connection ID는 수집 provenance로만 기록한다. fact 고유성은 `(provider_account_id, category, stable_source_id, revision)`이고 동일 revision 재수집은 no-op, 정정은 새 superseding fact다. source별 `sync_sequence`는 수집 provenance·fencing에만 쓰며 공식 portfolio/plan 상태의 순서를 결정하지 않는다. stale Worker는 `LOST_LEASE` 또는 `SUPERSEDED`로 종료한다.
 
 ### AD-17 — 범위별 비상정지와 공지 소유권 [ADOPTED]
 
 - **Binds:** new connection, sync admission/lease, calculation publication/display, advertising, service notices
 - **Prevents:** UI-only 정지, 범위마다 다른 제한 해석, 자동 정지 뒤 검증 없는 자동 복구
-- **Rule:** `operations`가 durable restriction·service notice·protected operator command·감사 기록을 소유한다. scope는 `plan`, `calculation_policy_version`, `exchange_connection`, `sync`, `advertising`, global feature이며 구체 scope가 global보다 우선한다. 모든 관련 read·admission·lease·publication·display는 effective restriction을 fail-closed로 확인한다. 강한 신호는 60초 안에 설정 범위를 자동 정지하고, 자동 복구는 금지하며 증거·복구 조건을 기록한 권한 있는 수동 명령만 재개할 수 있다. 영향을 특정할 수 없으면 신규 연결과 동기화를 전역 정지한다.
+- **Rule:** `operations`가 durable restriction·service notice·protected operator command·감사 기록을 소유한다. scope는 `plan`, `portfolio`, `calculation_policy_version`, `provider_connection`, `sync`, `advertising`, global feature이며 구체 scope가 global보다 우선한다. 모든 관련 read·admission·lease·publication·display는 effective restriction을 fail-closed로 확인한다. 강한 신호는 60초 안에 설정 범위를 자동 정지하고, 자동 복구는 금지하며 증거·복구 조건을 기록한 권한 있는 수동 명령만 재개할 수 있다. 영향을 특정할 수 없으면 신규 연결과 동기화를 전역 정지한다.
 
 ### AD-18 — 광고 경계와 fail-open [ADOPTED]
 
@@ -168,15 +172,27 @@ flowchart LR
 
 ### AD-21 — 읽기 전용 Bybit 연결 admission [ADOPTED]
 
-- **Binds:** exchange connection creation and replacement
+- **Binds:** Bybit provider connection creation and replacement
 - **Prevents:** write-capable·미지원·IP 불일치 key를 먼저 저장하고 나중에 검증하는 것
-- **Rule:** `readOnly=1`, supported UTA, expected `userID`, regional reserved IP 포함, 필요한 최소 permission, 실제 wallet read가 하나의 accepted validation result로 모두 성공한 뒤에만 암호화 자격 증명과 connection을 저장한다. write capability, 모호하거나 초과된 permission, UID/IP 불일치, live read 실패는 저장 없이 거부하며 자동 retry escalation을 하지 않는다.
+- **Rule:** `readOnly=1`, supported UTA, expected `userID`, regional reserved IP 포함, 필요한 최소 permission, 실제 wallet read가 하나의 accepted validation result로 모두 성공한 뒤에만 암호화 자격 증명과 connection을 저장한다. 검증된 Bybit main UID는 `provider=BYBIT`의 안정적인 provider account에 귀속하고 자격 증명 교체·재연결은 같은 account를 재사용한다. write capability, 모호하거나 초과된 permission, UID/IP 불일치, live read 실패는 저장 없이 거부하며 자동 retry escalation을 하지 않는다.
+
+### AD-22 — 계획은 제공자가 아니라 통합 포트폴리오에 귀속 [ADOPTED]
+
+- **Binds:** user portfolio, provider connection, portfolio source membership, source snapshot, portfolio snapshot, plan baseline
+- **Prevents:** 계획이 Bybit connection에 직접 묶여 이후 다른 거래소·증권 자산을 같은 계획에 넣을 때 데이터 이관이나 계산 의미 변경이 필요한 것
+- **Rule:** 사용자에게 기준통화가 불변인 portfolio를 두고 plan은 provider connection이 아니라 portfolio를 참조한다. portfolio source membership은 UTC 반개구간 `[included_at, excluded_at)`이며 같은 portfolio와 provider account의 구간은 겹칠 수 없다. MVP는 사용자별 자동 생성된 `USD` portfolio 하나에 활성 `BYBIT` provider account membership 하나만 허용한다. 다른 거래소·토스증권 source 추가, 여러 source의 cutoff·freshness 합성, 포함 source 간 transfer matching, source 추가·제거 시 scope adjustment는 후속 범위이며 이를 구현하기 전까지 둘 이상의 활성 source를 허용하지 않는다. 포함 시점 가치의 scope adjustment는 비실행 설계 방향일 뿐이며 평가시각·환율/가격 증거·반올림·실패·제거·transfer matching 규칙이 별도 AD와 Story로 채택되기 전에는 구현하지 않는다.
+
+### AD-23 — 포트폴리오 스냅샷 구성과 공식 발행 계약 [ADOPTED]
+
+- **Binds:** provider account, membership interval, source snapshot, portfolio snapshot component, official portfolio pointer, official plan result
+- **Prevents:** 연결 해제 뒤 늦은 값, 다른 사용자·계정의 값, 서로 다른 기준시각·통화 또는 부분 결과가 공식 포트폴리오와 계획 계산에 섞이는 것
+- **Rule:** `portfolio_snapshot`은 정규화된 `portfolio_snapshot_component` 행으로만 구성하며 component는 `(portfolio_snapshot_id, membership_id)` 유일, `source_snapshot_id`, portfolio 기준통화 환산값과 적용 정책·가격 증거 참조를 가진다. snapshot 합계는 기록된 계산 정책으로 완전한 component 집합을 정확히 합산한 값이어야 한다. MVP는 component 정확히 하나이며 그 USD 값은 Bybit source snapshot의 `totalEquity`와 같다. 구성 source snapshot은 같은 user·provider account의 membership에 속하고 그 권위 `measured_at`이 `[included_at, excluded_at)` 안이며 portfolio 기준통화가 같고 superseded·제한 상태가 아니어야 한다. membership은 작업 admission과 최종 발행 시점 모두 활성이어야 한다. MVP `portfolio_snapshot.measured_at`은 유일한 source snapshot의 provider 측정시각이고 `composed_at`·`published_at`과 분리한다. `portfolio`는 portfolio별 단조 증가 `publication_sequence`와 current snapshot pointer를, `sync`는 plan별 `official_plan_result` pointer를 소유하며 둘 다 `max(created_at)`으로 현재값을 추론하지 않는다. `sync` publication application service가 외부 호출 없는 하나의 outer `REQUIRED` 트랜잭션을 소유하고 portfolio public command는 반드시 여기에 참여한다. `REQUIRES_NEW`, 비동기/after-commit 발행은 금지하며 eligibility·lease·restriction을 CAS 직전에 재검사하고 candidate·component·계산·포인터 중 하나라도 실패하면 모두 롤백한다.
 
 ## Consistency Conventions
 
 | Concern | Convention |
 | --- | --- |
-| Module ownership | `identity`, `exchange`, `sync`, `plan`, `calculation`, `engagement`, `operations`가 각자 entity·repository·table을 소유한다. |
+| Module ownership | `identity`, `source`, `portfolio`, `sync`, `plan`, `calculation`, `engagement`, `operations`가 각자 entity·repository·table을 소유한다. |
 | IDs | 내부 식별자는 UUID, 외부 식별자는 제공자 namespace와 함께 저장한다. |
 | Time | 외부 원본과 저장은 UTC instant, 계획 일자 경계와 표시는 `Asia/Seoul`이다. |
 | Numbers | 외부 숫자는 문자열로 수신해 `BigDecimal`/`numeric`으로 보존하고 계산 정책 버전을 기록한다. |
@@ -207,8 +223,9 @@ flowchart LR
 ```text
 backend/src/main/java/.../bokrILog/
   identity/       # social identity and session-facing application API
-  exchange/       # credential ownership, Bybit port and adapter
-  sync/           # jobs, source facts, calculation results and official publication
+  source/         # provider connection, credential ownership and Bybit adapter
+  portfolio/      # source membership and immutable portfolio snapshots
+  sync/           # jobs, source facts/snapshots, calculation results and publication
   plan/           # immutable plan inputs and active-plan rule
   calculation/    # pure versioned calculation policy and value objects
   engagement/     # consent, ad cap and provider adapter
@@ -251,8 +268,9 @@ sequenceDiagram
   W->>D: lease job
   W->>B: wallet + incremental transaction log
   B-->>W: source values and timestamps
-  W->>D: append facts and calculation version
-  W->>D: atomic official pointer publication
+  W->>D: append facts + source snapshot
+  W->>D: compose portfolio snapshot components
+  W->>D: calculate + atomic portfolio/plan pointer publication
   U->>A: poll result
   A-->>U: official result + freshness timestamps
 ```
@@ -262,11 +280,12 @@ sequenceDiagram
 | Capability / Area | Lives in | Governed by |
 | --- | --- | --- |
 | Social login and session | identity | AD-1, AD-10 |
-| Read-only Bybit connection | exchange | AD-1, AD-11, AD-15, AD-21 |
-| Synchronization and freshness | sync + Worker | AD-6, AD-7, AD-8 |
-| Compounding plan | plan | AD-5, AD-6 |
-| Return calculation policy | calculation; persisted result in sync | AD-2, AD-9, AD-16 |
-| Official result publication and fencing | sync publication service | AD-6, AD-7, AD-16 |
+| Read-only Bybit connection | source | AD-1, AD-11, AD-15, AD-21, AD-22 |
+| Synchronization and freshness | sync + Worker | AD-6, AD-7, AD-8, AD-23 |
+| Portfolio composition and snapshot | portfolio | AD-6, AD-9, AD-22, AD-23 |
+| Compounding plan | portfolio + plan | AD-5, AD-6, AD-22, AD-23 |
+| Return calculation policy | calculation; persisted result in sync | AD-2, AD-9, AD-16, AD-22, AD-23 |
+| Official result publication and fencing | sync publication service + portfolio pointer API | AD-6, AD-7, AD-16, AD-23 |
 | Deployment and rollback | deploy + Nginx | AD-12, AD-15 |
 | Backup and recovery | deploy backup job | AD-11, AD-13 |
 | Observability and verification | Alloy + Grafana Cloud + CI | AD-14 |
@@ -283,7 +302,8 @@ sequenceDiagram
 - 외부 KMS: 사용자 수·보안 등급·키 순환 빈도가 단일 호스트 secret 운영 범위를 넘을 때 검토한다.
 - WAL 기반 PITR: 공개 베타가 24시간보다 짧은 RPO를 요구할 때 도입한다.
 - 두 번째 고정 egress와 자동 장애조치: 유료 사용자 또는 명시적 가용성 계약이 생길 때 도입한다.
-- 다중 거래소와 주문 실행: MVP 범위 밖이며 별도 요구사항·위협 모델 없이는 추가하지 않는다.
-- **출시 차단:** 안전 중첩 길이, 지원 Bybit 사건 allowlist와 ID fallback, 비-USDT 환산 정책, 강한 신호 판정표는 공개 베타 전 확정한다. 미인식 사건이나 필수 환산 누락은 공식 발행을 기본 거부한다.
-- **출시 차단:** 광고 공급자·실제 데이터 흐름·접근성 승인과 법정 분리 보존 필드·근거·목적·기간을 공개 베타 전 확정한다.
-- Day 90 기존 IP 미제한 연결의 유지·유예·중단 정책은 Day 60에 확정한다. Day 90 이후 신규 IP 미제한 연결은 거부한다.
+- Binance·다른 거래소·토스증권 adapter와 다중 금융소스 합산은 MVP 범위 밖이다. source별 공통 valuation cutoff·freshness, 기준통화 환산, source membership 변경, scope adjustment, 포함 source 간 transfer matching 계약이 승인되기 전에는 둘 이상의 활성 source를 허용하지 않는다. 다중 source 활성화 전에는 각 publication sequence가 참조하는 source revision 집합과 동시 갱신 순서도 별도 정책으로 고정한다.
+- 주문 실행은 MVP 범위 밖이며 별도 요구사항·위협 모델 없이는 추가하지 않는다.
+- `ERD-1.0.0`이 안전 중첩, 지원 Bybit 사건·ID, 비-USDT 환산, 강한 신호 판정표를 고정한다. 미인식 사건이나 필수 환산 누락은 공식 발행을 기본 거부한다.
+- **외부 production 출시 차단:** 실제 Google Ad Manager 계정·ad unit·소재·개인정보·접근성 승인과 법정 분리 보존 필드·근거·목적·기간의 법률 승인은 공개 베타 전에 확보한다. 부재 시 광고와 실제 계정 삭제 실행은 비활성화한다.
+- `BYBIT-IP-1.0`에 따라 Day 60에 기존 IP 미제한 연결에 30일 전환 공지를 하고 Day 90부터 동기화·재연결을 정지한다. Day 90 이후 신규 IP 미제한 연결은 거부한다.

@@ -1,6 +1,6 @@
 # 개발 환경
 
-이 저장소의 BMAD 도구는 macOS 기본 `python3`를 직접 사용하지 않는다. BMAD 스크립트가 요구하는 Python 3.11 이상을 `uv`가 선택하거나 내려받아 실행한다. 현재 제품 애플리케이션의 기술 스택은 아직 확정되지 않았으므로, 애플리케이션용 Python 버전이나 가상환경은 별도로 고정하지 않는다.
+이 저장소의 BMAD 도구는 macOS 기본 `python3`를 직접 사용하지 않는다. BMAD 스크립트가 요구하는 Python 3.11 이상을 `uv`가 선택하거나 내려받아 실행한다. 제품 애플리케이션의 기술 기준선은 `ARCHITECTURE-SPINE.md`에서 Java/Spring/PostgreSQL과 React/Vite로 확정되었으며, 이 Python 환경은 제품 런타임과 무관한 기획 도구 전용이다. 제품 코드·lockfile·image digest는 아직 생성 전이다.
 
 ## 최초 준비
 
@@ -37,4 +37,4 @@ uv run --managed-python --no-cache _bmad/scripts/resolve_config.py \
 - `.gitignore`: 로컬 캐시, 가상환경, Python 바이트코드, macOS 메타데이터를 제외한다.
 - `scripts/check-bmad-env.sh`: 위 설정이 실제로 동작하는지 한 번에 검증한다.
 
-애플리케이션 기술 스택과 런타임 버전은 PRD·UX 이후 아키텍처 단계에서 결정한다. 그 결정 전에는 `.python-version`, `pyproject.toml`, 애플리케이션 `.venv`를 임의로 만들지 않는다.
+애플리케이션 기술 스택과 허용 버전은 아키텍처 문서를 권위 기준으로 삼고, 실제 설치 버전은 향후 Gradle/frontend lockfile과 image digest가 소유한다. 제품이 Python 애플리케이션이라는 전제에서 `.python-version`, `pyproject.toml`, 애플리케이션 `.venv`를 만들지 않는다.
