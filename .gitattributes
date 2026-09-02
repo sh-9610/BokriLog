@@ -1,0 +1,29 @@
+# 이 저장소는 Windows와 macOS 양쪽에서 개발한다.
+# core.autocrlf 같은 로컬 설정은 공유되지 않으므로 줄바꿈 규칙을 저장소에 고정한다.
+
+# 기본: 텍스트는 인덱스와 작업 트리 모두 LF로 통일한다.
+* text=auto eol=lf
+
+# 셸 스크립트에 CR이 섞이면 bash가 즉시 실패한다(`$'\r': command not found`).
+*.sh   text eol=lf
+*.bash text eol=lf
+
+# 빌드 wrapper 진입점도 LF를 요구한다.
+gradlew text eol=lf
+mvnw    text eol=lf
+
+# Windows 전용 배치 스크립트만 CRLF를 유지한다.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 바이너리는 줄바꿈 정규화 대상에서 제외한다.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.woff binary
+*.woff2 binary
+*.jar  binary
+*.keystore binary
