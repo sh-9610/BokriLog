@@ -10,6 +10,9 @@ desktop.ini
 .idea/
 *.iml
 
+# Claude Code가 기기별 권한 허용을 기록한다. 기기마다 다르므로 공유하지 않는다.
+.claude/settings.local.json
+
 # Local uv cache used by BMAD's Python helper scripts.
 .uv-cache/
 

@@ -38,9 +38,21 @@ uv run --managed-python --no-cache _bmad/scripts/resolve_config.py --project-roo
 
 기획은 완료됐다. `epics.md`는 5개 에픽·45개 스토리가 승인된 상태이고 `implementationReadinessStatus: ready-for-sprint-planning`이다. 구현 계약은 `EPIC-IMPLEMENTATION-READINESS.md`의 `ERD-1.0.0`이 권위 기준이다.
 
-다음 단계는 `bmad-sprint-planning`으로 `sprint-status.yaml`을 생성하는 것이다. 아직 생성되지 않았다.
+`sprint-status.yaml`은 2026-09-02에 생성됐다(5 에픽·45 스토리, 전부 `backlog`). 다음 단계는 `bmad-build`로 Story 1.1부터 구현하는 것이다. 첫 스프린트는 Story 1.1~1.5(진입 화면 → 동일 출처 셸 → 소유권·삭제 상태 → Google 로그인 → 로그아웃)이며 1.6~1.7은 스트레치다.
 
 제품 범위 충돌 시 우선순위는 PRD의 제품 범위, 아키텍처의 불변식, `ERD-1.0.0`의 하위 구현 계약 순이다. 결정을 바꿀 때는 기존 문서를 덮어쓰지 않고 새 버전으로 발행한다.
+
+## 브랜치·커밋
+
+git flow를 따른다. `main`은 릴리스만 받고 직접 커밋하지 않는다. `develop`이 통합 브랜치이며 모든 토픽 브랜치는 `develop`에서 분기해 `--no-ff`로 병합한 뒤 삭제한다.
+
+- `feature/<에픽>-<스토리>-<slug>` — 스토리 구현. 예: `feature/1-1-entry-screen`
+- `chore/<slug>` — 도구·환경·저장소 정비
+- `docs/<slug>` — 기획 산출물·문서
+- `fix/<slug>` — `develop` 위 결함 수정
+- `hotfix/<slug>`, `release/<version>` — 릴리스 이후·릴리스 준비에만 사용
+
+slug는 짧은 영문 소문자 kebab-case다. 한글 브랜치명은 Windows·macOS 터미널 인코딩과 URL에서 문제를 일으키므로 쓰지 않는다. 도구 이름(`claude` 등)을 접두사로 쓰지 않는다. 커밋 메시지는 Conventional Commits의 영문 소문자 subject를 따른다. 커밋·푸시는 사용자가 요청할 때만 한다.
 
 ## 주의
 
