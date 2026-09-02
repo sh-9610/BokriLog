@@ -42,6 +42,26 @@ git rm --cached -r . && git reset --hard
 
 저장소를 두는 경로에는 비ASCII 문자를 피한다. Git 자체에는 영향이 없지만 Java·Gradle 도구가 일부 환경에서 경로 인코딩 문제를 일으킬 수 있다.
 
+## 브랜치 전략
+
+git flow를 따른다.
+
+| 브랜치 | 역할 | 분기 원본 → 병합 대상 |
+|---|---|---|
+| `main` | 릴리스 상태. 직접 커밋하지 않는다 | — |
+| `develop` | 통합 브랜치. 모든 토픽 브랜치의 병합 대상 | `main` → `main`(릴리스 시) |
+| `feature/<에픽>-<스토리>-<slug>` | 스토리 구현. 예: `feature/1-1-entry-screen` | `develop` → `develop` |
+| `chore/<slug>` | 도구·환경·저장소 정비 | `develop` → `develop` |
+| `docs/<slug>` | 기획 산출물·문서 | `develop` → `develop` |
+| `fix/<slug>` | `develop` 위 결함 수정 | `develop` → `develop` |
+| `hotfix/<slug>` | 릴리스된 `main`의 긴급 수정 | `main` → `main` + `develop` |
+| `release/<version>` | 릴리스 준비. 공개 베타 시점부터 사용 | `develop` → `main` + `develop` |
+
+- 병합은 항상 `--no-ff`로 해서 토픽 브랜치 경계가 이력에 남게 한다. 병합 후 토픽 브랜치는 삭제한다.
+- slug는 짧은 영문 소문자 kebab-case다. 한글 브랜치명은 두 운영체제의 터미널 인코딩과 GitHub URL에서 문제를 일으키므로 쓰지 않는다. 도구 이름(`claude` 등)을 접두사로 쓰지 않는다.
+- 스토리 브랜치의 번호는 `sprint-status.yaml` 키의 앞부분(`1-1`, `2-14`)과 같다.
+- 커밋 메시지는 Conventional Commits를 따른다. subject는 영문 소문자, 유형은 `feat` `fix` `chore` `docs` `refactor` `test`.
+
 ## BMAD 명령 실행 원칙
 
 BMAD Python 도구는 항상 저장소 루트에서 `uv run --managed-python --no-cache`로 실행한다.
