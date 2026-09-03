@@ -30,3 +30,7 @@ dist/
 build/
 target/
 .gradle/
+
+# Playwright 실행 산출물. 실패 추적·스크린샷·리포트는 기기별 결과라 공유하지 않는다.
+frontend/test-results/
+frontend/playwright-report/
