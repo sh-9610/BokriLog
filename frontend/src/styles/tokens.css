@@ -1,0 +1,152 @@
+/*
+ * BokriLog 디자인 토큰 단일 출처.
+ *
+ * 정본: _bmad-output/planning-artifacts/ux-designs/ux-BokriLog-2026-08-23/DESIGN.md 의 frontmatter.
+ * 규칙:
+ *   - frontmatter의 평면 이름을 그대로 옮긴다. 값을 재해석하거나 새 이름을 만들지 않는다.
+ *   - 색·크기 리터럴을 컴포넌트 CSS에 직접 쓰지 않고 반드시 이 파일의 변수를 참조한다.
+ *   - MVP는 라이트 모드만 제공한다. 다크 모드는 별도 대비 검증 뒤 후속 범위다.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* colors -------------------------------------------------------------- */
+  --color-surface-base: #f7f8f6;
+  --color-surface-raised: #ffffff;
+  --color-surface-subtle: #eef1ee;
+  --color-ink-primary: #17211b;
+  --color-ink-secondary: #47564d;
+  --color-ink-muted: #64726a;
+  --color-border-default: #c7d0ca;
+  --color-border-strong: #87958c;
+  --color-primary: #245c48;
+  --color-on-primary: #ffffff;
+  --color-focus-ring: #1d4f91;
+  --color-trust-confirmed: #1f6a4d;
+  --color-trust-confirmed-bg: #e7f4ed;
+  --color-trust-review: #7a4b00;
+  --color-trust-review-bg: #fff4d6;
+  --color-trust-unavailable: #9f2f2f;
+  --color-trust-unavailable-bg: #fdecec;
+  --color-info: #1d4f91;
+  --color-info-bg: #eaf2ff;
+  --color-destructive: #9f2f2f;
+  --color-on-destructive: #ffffff;
+
+  /* typography ----------------------------------------------------------- */
+  --font-family-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-family-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --type-page-title-font-family: var(--font-family-sans);
+  --type-page-title-font-size: 28px;
+  --type-page-title-font-weight: 700;
+  --type-page-title-line-height: 1.3;
+  --type-page-title-letter-spacing: -0.02em;
+
+  --type-section-title-font-family: var(--font-family-sans);
+  --type-section-title-font-size: 20px;
+  --type-section-title-font-weight: 700;
+  --type-section-title-line-height: 1.4;
+  --type-section-title-letter-spacing: -0.01em;
+
+  --type-metric-font-family: var(--font-family-sans);
+  --type-metric-font-size: 28px;
+  --type-metric-font-weight: 650;
+  --type-metric-line-height: 1.25;
+  --type-metric-letter-spacing: -0.02em;
+
+  --type-body-font-family: var(--font-family-sans);
+  --type-body-font-size: 16px;
+  --type-body-font-weight: 400;
+  --type-body-line-height: 1.6;
+
+  --type-label-font-family: var(--font-family-sans);
+  --type-label-font-size: 14px;
+  --type-label-font-weight: 600;
+  --type-label-line-height: 1.45;
+
+  --type-meta-font-family: var(--font-family-sans);
+  --type-meta-font-size: 13px;
+  --type-meta-font-weight: 400;
+  --type-meta-line-height: 1.5;
+
+  --type-mono-font-family: var(--font-family-mono);
+  --type-mono-font-size: 13px;
+  --type-mono-font-weight: 500;
+  --type-mono-line-height: 1.5;
+
+  /* rounded -------------------------------------------------------------- */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-full: 9999px;
+
+  /* spacing -------------------------------------------------------------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-page-mobile: 16px;
+  --space-page-tablet: 24px;
+  --space-page-desktop: 32px;
+  --space-target-min: 44px;
+  --space-focus-width: 2px;
+  --space-focus-offset: 2px;
+
+  /* components ----------------------------------------------------------- */
+  --component-app-shell-background: var(--color-surface-base);
+  --component-app-shell-foreground: var(--color-ink-primary);
+  --component-app-shell-max-content-width: 1120px;
+
+  --component-trust-status-panel-background: var(--color-surface-raised);
+  --component-trust-status-panel-border: var(--color-border-default);
+  --component-trust-status-panel-radius: var(--radius-lg);
+  --component-trust-status-panel-gap: var(--space-3);
+
+  --component-metric-card-background: var(--color-surface-raised);
+  --component-metric-card-border: var(--color-border-default);
+  --component-metric-card-radius: var(--radius-md);
+  --component-metric-card-value-font-size: var(--type-metric-font-size);
+  --component-metric-card-value-font-weight: var(--type-metric-font-weight);
+  --component-metric-card-value-line-height: var(--type-metric-line-height);
+
+  --component-sync-control-background: var(--color-primary);
+  --component-sync-control-foreground: var(--color-on-primary);
+  --component-sync-control-radius: var(--radius-md);
+  --component-sync-control-focus: var(--color-focus-ring);
+
+  --component-social-sign-in-min-target-size: var(--space-target-min);
+  --component-social-sign-in-gap: var(--space-3);
+  --component-social-sign-in-focus: var(--color-focus-ring);
+
+  --component-secure-input-form-background: var(--color-surface-raised);
+  --component-secure-input-form-foreground: var(--color-ink-primary);
+  --component-secure-input-form-border: var(--color-border-strong);
+  --component-secure-input-form-radius: var(--radius-sm);
+
+  --component-confirmation-dialog-background: var(--color-surface-raised);
+  --component-confirmation-dialog-foreground: var(--color-ink-primary);
+  --component-confirmation-dialog-radius: var(--radius-lg);
+  --component-confirmation-dialog-destructive: var(--color-destructive);
+
+  --component-history-row-background: var(--color-surface-raised);
+  --component-history-row-divider: var(--color-border-default);
+  --component-history-row-meta: var(--color-ink-secondary);
+
+  --component-neutral-ad-transition-background: var(--color-surface-base);
+  --component-neutral-ad-transition-foreground: var(--color-ink-secondary);
+  --component-neutral-ad-transition-border: var(--color-border-strong);
+
+  --component-service-notice-background: var(--color-info-bg);
+  --component-service-notice-foreground: var(--color-info);
+  --component-service-notice-border: var(--color-info);
+
+  --component-operator-control-background: var(--color-surface-raised);
+  --component-operator-control-foreground: var(--color-ink-primary);
+  --component-operator-control-border: var(--color-border-strong);
+  --component-operator-control-destructive: var(--color-destructive);
+}

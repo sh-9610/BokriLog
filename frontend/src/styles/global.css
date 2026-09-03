@@ -1,0 +1,110 @@
+/*
+ * 전역 reset, 기본 타이포그래피, 전역 focus-visible, 모션 감소 규칙.
+ * 값은 모두 tokens.css의 변수를 참조한다. 리터럴을 직접 쓰지 않는다.
+ * 근거: DESIGN.md(Typography, Components 마지막 문단), EXPERIENCE.md(Accessibility Floor,
+ *      Interaction Primitives, Responsive & Platform).
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  /* 사용자 확대를 막지 않는다. 200%·400% 확대에서 리플로만으로 읽혀야 한다. */
+  -webkit-text-size-adjust: 100%;
+  scroll-padding-block: var(--space-6);
+}
+
+body {
+  margin: 0;
+  background-color: var(--component-app-shell-background);
+  color: var(--component-app-shell-foreground);
+  font-family: var(--type-body-font-family);
+  font-size: var(--type-body-font-size);
+  font-weight: var(--type-body-font-weight);
+  line-height: var(--type-body-line-height);
+  /* 한국어는 어절 단위로 끊고, 끊을 수 없는 긴 토큰만 강제로 접는다. */
+  word-break: keep-all;
+  overflow-wrap: break-word;
+  text-size-adjust: 100%;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+ul,
+ol,
+figure {
+  margin: 0;
+}
+
+ul,
+ol {
+  padding: 0;
+  list-style: none;
+}
+
+img,
+svg,
+video {
+  max-width: 100%;
+  height: auto;
+}
+
+button,
+input,
+select,
+textarea,
+a {
+  font: inherit;
+  color: inherit;
+}
+
+/* 숫자는 자리 이동 없이 읽히게 한다(DESIGN.md Typography). */
+:where(output, data, time, .tabular) {
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * 전역 focus-visible: focus-ring 색, focus-width 두께, focus-offset 간격.
+ * 강제 색상 모드에서는 시스템 포커스 색을 허용한다(DESIGN.md Components 마지막 문단).
+ */
+:focus-visible {
+  outline: var(--space-focus-width) solid var(--color-focus-ring);
+  outline-offset: var(--space-focus-offset);
+}
+
+/*
+ * 강제 색상 모드에서는 시스템 포커스 색을 쓴다.
+ * 컴포넌트 CSS Module의 `.foo:focus-visible`은 특이도 (0,2,0)이라 이 규칙 (0,1,0)을 이긴다.
+ * 접근성 탈출구는 특이도 경쟁에 지면 안 되므로 `!important`로 고정한다.
+ * 이 선언은 forced-colors 모드 안에서만 유효하며 일반 렌더링에는 영향이 없다.
+ */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline-color: Highlight !important;
+  }
+}
+
+/*
+ * 모션 감소: 전환·애니메이션을 남기지 않고 정적 표현만 유지한다(UX-DR21).
+ * 지속시간을 0s로 두어 "전환이 제거되었는지"를 계산 스타일로 관측할 수 있게 한다.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}
