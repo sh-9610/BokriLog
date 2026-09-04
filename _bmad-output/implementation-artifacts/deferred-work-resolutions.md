@@ -2,7 +2,7 @@
 title: 'Deferred Work 해소 원장'
 status: living
 created: '2026-09-02'
-updated: '2026-09-04'
+updated: '2026-09-05'
 applies_to: '_bmad-output/implementation-artifacts/deferred-work.md'
 decision_baseline: 'ERD-1.0.0'
 ---
@@ -17,11 +17,11 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 9 |
+| 해소 | 10 |
 | 부분 해소 | 2 |
-| 미해소 | 5 |
+| 미해소 | 6 |
 
-미해소·부분 해소 7건 중 개발 스프린트를 막는 항목은 없다. 부분 해소 2건은 외부 승인 게이트(G-5, 출시 전 사용자 과업)에 묶여 있고, 미해소 5건(12–16)은 각각 소유 스토리 또는 별도 정책 PR이 정해져 있다. 그중 12(린터·포매터)는 CI-PLAN §8에 따라 Story 1.2 완료 전에 끝나야 한다. 표는 항목별 판정을 다시 세어 2026-09-04에 맞췼다. 이전 표는 항목 2가 해소되기 전 값이었다.
+미해소·부분 해소 8건 중 개발 스프린트를 막는 항목은 없다. 부분 해소 2건은 외부 승인 게이트(G-5, 출시 전 사용자 과업)에 묶여 있고, 미해소 6건(13–18)은 각각 소유 스토리, 조건부 의존 갱신 PR 또는 별도 작업이 정해져 있다. Story 1.2 완료 전 조건이던 12(린터·포매터)는 2026-09-05에 해소됐다. 표는 항목별 판정을 다시 세어 2026-09-05에 맞췼다.
 
 ## 항목별 판정
 
@@ -75,7 +75,7 @@ decision_baseline: 'ERD-1.0.0'
 
 ### 12. 린터·포매터(ESLint·stylelint) 도입
 
-**미해소.** CI-PLAN §8이 Story 1.2 완료 전 별도 품질정책 PR에서 도구·규칙·예외를 합의하고 lint, stylelint, format check를 required gate로 승격하도록 정했다. 그 전까지 코드 리뷰가 표류를 확인하며 "검사가 없음"을 "검사 성공"으로 기록하지 않는다. 개발 스프린트를 막지 않지만 Story 1.2 완료의 선행 조건이다.
+**해소(2026-09-05).** `spec-frontend-lint-policy.md`(PR #6, `develop` 병합 커밋 e0452a5)가 CI-PLAN §6·§8이 정한 품질 정책 PR이다. `frontend/stylelint.config.js`의 `declaration-strict-value`가 `DESIGN.md` 네 범주(색·타이포그래피·모서리·간격)에서 리터럴을 금지하고 `tokens.css` 참조를 강제하며, `frontend/eslint.config.ts`의 perfectionist가 import 순서를 고정한다. `frontend/lint-policy.test.ts`의 fixture 49개가 규칙이 실제로 위반을 잡는지 고정하고, `ci.yml`의 `ci-required`가 타입 검사 뒤·빌드 앞에 ESLint·stylelint·Prettier 단계를 필수로 실행한다. CI-PLAN §16의 "검사가 실제로 성공한 뒤" 조건은 PR #6과 병합 후 `develop` push 실행 green으로, "실패가 병합을 차단한다"는 리터럴 색을 넣은 일회용 PR #7이 stylelint 단계에서 실패해 BLOCKED가 된 것으로 확인했다. 정적 접근성 lint(jsx-a11y)는 ESLint 10 peer 미지원으로 항목 17에 분리했다.
 
 ### 13. Playwright 시험 대상에 WebKit 추가 여부
 
@@ -92,6 +92,14 @@ decision_baseline: 'ERD-1.0.0'
 ### 16. `bmad-contract` 검사 구현
 
 **미해소.** CI-PLAN §14가 `_bmad/**`·`.agents/skills/**`·`.claude/skills/**`·`.codex/**`·`scripts/check-bmad-env.sh`·`uv.toml` 변경에만 도는 별도 검사로 정했다. 러너에 `uv`와 관리 Python 다운로드가 필요해 frontend 필수 경로와 분리했다(`spec-ci-foundation.md`). 그때까지 이 경로만 바뀐 PR은 fail-closed 분류로 전체 frontend 검사를 돌고, BMAD 계약 자체는 어떤 게이트도 검증하지 않는다. 개발 스프린트를 막지 않는다.
+
+### 17. `eslint-plugin-jsx-a11y` 도입
+
+**미해소.** 2026-09-05 기준 최신판(6.10.2)의 peerDependencies가 ESLint 9까지만 선언해 항목 12의 정책 PR에서 제외했다. CI-PLAN §11이 정한 별도 의존 갱신 PR로 추가한다. 렌더 결과의 접근성은 E2E axe 검사가 담당하므로 개발 스프린트를 막지 않는다.
+
+### 18. noscript 인라인 스타일 폴백 값의 표류 시험
+
+**미해소.** `frontend/index.html`의 noscript 인라인 스타일은 JS 없이 `tokens.css`가 로드되지 않아 `var(--…, 폴백)` 폴백 리터럴이 필요하고, stylelint 대상(`src/**/*.css`) 밖이다. 폴백 값을 `tokens.css`와 비교하는 시험이 없어 토큰 변경을 따라가지 못해도 CI가 알지 못한다. `DEVELOPMENT.md` 예외 목록에 근거를 기록했고 시험은 별도 작업이다. 개발 스프린트를 막지 않는다.
 
 ## 갱신 규칙
 
