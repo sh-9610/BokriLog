@@ -7,7 +7,7 @@ paradigm: 'Modular Monolith with Ports and Adapters'
 scope: 'BokriLog MVP의 금융소스 연동, 통합 포트폴리오, 계산, 저장, 보안, 배포 및 운영 경계'
 status: final
 created: '2026-08-24'
-updated: '2026-09-02'
+updated: '2026-09-04'
 binds:
   - 'BokriLog MVP'
 sources:
@@ -16,6 +16,7 @@ sources:
   - '../../ux-designs/ux-BokriLog-2026-08-23/EXPERIENCE.md'
 companions:
   - 'PORTFOLIO-SOLUTION-DESIGN.md'
+  - 'CI-PLAN.md'
   - '../../EPIC-IMPLEMENTATION-READINESS.md'
   - 'reviews/final-recommendation-validation-2026-08-26.md'
 ---

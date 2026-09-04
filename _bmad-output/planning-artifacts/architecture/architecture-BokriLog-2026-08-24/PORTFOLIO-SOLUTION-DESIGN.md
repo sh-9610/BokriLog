@@ -3,8 +3,10 @@ name: 'BokriLog MVP Portfolio Solution Design'
 type: solution-design
 audience: '개발 포트폴리오 검토자와 미래 구현자'
 status: final
-updated: '2026-09-02'
+updated: '2026-09-04'
 source: 'ARCHITECTURE-SPINE.md'
+companions:
+  - 'CI-PLAN.md'
 ---
 
 # BokriLog MVP 상세 설계
@@ -200,6 +202,16 @@ PostgreSQL을 작업 큐로 사용하면 DB와 작업 요청을 같은 짧은 �
 7. Nginx upstream을 바꾸고 무중단 reload한다.
 8. 새 Worker 하나를 기동하고 관찰 기간 후 이전 API를 종료한다.
 9. contract migration은 rollback 창이 닫히고 이전 버전이 제거된 뒤 다음 배포에서 수행한다.
+
+### CI-CD 인계와 배포 직렬화
+
+CD는 보호된 `main`의 Release Gate가 만든 서명 evidence를 입력으로 받고 image를 다시 빌드하지 않는다. Evidence의 issuer, workflow identity, commit, `linux/arm64` image subject, migration bundle, SBOM·provenance와 시험 결과가 같은 digest를 가리킬 때만 운영 승인을 받을 수 있다. Candidate와 evidence key는 commit SHA와 run attempt별로 유일하며 overwrite하지 않고, 탐색용 mutable tag는 promotion 성공 뒤에만 갱신한다.
+
+Production 배포는 environment별 durable lease와 fencing token으로 직렬화한다. Lock 획득 뒤 append-only production record와 실제 active container에서 predecessor를 교차 확인하고, migration 직전과 Nginx cutover 직전에 target evidence와 predecessor를 compare-and-swap으로 다시 검증한다. Evidence가 실제 predecessor와의 old-binary/new-schema 호환 범위를 증명하지 못하면 중단한다. 기본 전진 배포는 현재 release의 descendant만 허용하며 downgrade와 rollback은 별도 승인과 사유가 필요하다.
+
+Migration은 DB가 권위인 lock과 schema history 아래 같은 image의 불변 bundle만 사용한다. Timeout이나 연결 끊김은 성공으로 간주하지 않고 실제 schema와 history를 확인한 뒤 재시도한다. `deployment_id`로 migration과 cutover를 멱등하게 만들며 inactive readiness, smoke 또는 telemetry 확인이 실패하면 upstream을 바꾸지 않는다.
+
+Append-only deployment record는 최소 `APPROVED → MIGRATED → INACTIVE_VERIFIED → CUTOVER → OBSERVING → VERIFIED` 상태를 가지며 실패와 `ROLLED_BACK`을 분리한다. Deployment ID, environment, 승인자, target·previous·evidence digest, migration, readiness·smoke·telemetry, cutover, Worker singleton, 관찰과 rollback 결과를 기록한다. Versioned observation policy의 시간, health, 오류율, telemetry와 queue 기준을 통과한 `VERIFIED` 전에는 출시 완료로 표시하지 않는다. 실행 중 production 배포는 더 새 commit 때문에 자동 취소하지 않으며, current와 rollback window 안의 predecessor image·evidence를 registry garbage collection에서 보호한다.
 
 이 blue/green은 배포 실패만 완화한다. VM, PostgreSQL, volume, Nginx, OCI 리전 장애를 이중화하지 않는다.
 
