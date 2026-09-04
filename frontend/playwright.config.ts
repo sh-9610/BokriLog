@@ -21,8 +21,14 @@ export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
   forbidOnly: isCi,
-  retries: isCi ? 1 : 0,
+  /*
+   * 필수 CI는 재시도하지 않는다. 재시도는 flaky 실패를 green으로 덮어 첫 실패의 원인을 지운다.
+   * flaky 조사는 배포 권한이 없는 별도 진단 실행에서 `--retries=N`으로 덮어쓴다.
+   */
+  retries: 0,
   workers: isCi ? 1 : undefined,
+  /* CI의 Playwright 단계 timeout(4분)보다 짧다. 남는 시간에 실패 진단 artifact를 업로드한다. */
+  globalTimeout: 180_000,
   reporter: [
     ['list'],
     ['html', { open: 'never', outputFolder: 'playwright-report' }],
@@ -30,7 +36,8 @@ export default defineConfig({
   outputDir: 'test-results',
   use: {
     baseURL: BASE_URL,
-    trace: 'on-first-retry',
+    // `on-first-retry`는 retries가 0이면 trace를 하나도 남기지 않는다. 첫 실패부터 보존한다.
+    trace: 'retain-on-failure',
   },
   projects: [
     {
