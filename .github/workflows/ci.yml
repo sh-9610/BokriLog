@@ -164,6 +164,22 @@ jobs:
         if: steps.classify.outputs.docs-only != 'true'
         run: npm --prefix frontend run typecheck
 
+      # 아래 세 단계는 spec-frontend-lint-policy.md가 합의한 품질 정책이다(CI-PLAN §6·§8).
+      # 타입 검사 뒤, 빌드 앞에 둔다. 빠른 실패를 브라우저 준비보다 먼저 찾는다(CI-PLAN §10).
+      # 규칙과 예외는 frontend/eslint.config.ts·stylelint.config.js·.prettierrc.json이 소유하고,
+      # 규칙이 실제로 위반을 잡는지는 frontend/lint-policy.test.ts가 Vitest 단계에서 고정한다.
+      - name: ESLint
+        if: steps.classify.outputs.docs-only != 'true'
+        run: npm --prefix frontend run lint
+
+      - name: stylelint
+        if: steps.classify.outputs.docs-only != 'true'
+        run: npm --prefix frontend run lint:css
+
+      - name: Prettier 검사
+        if: steps.classify.outputs.docs-only != 'true'
+        run: npm --prefix frontend run format:check
+
       - name: 프로덕션 빌드
         if: steps.classify.outputs.docs-only != 'true'
         run: npm --prefix frontend run build

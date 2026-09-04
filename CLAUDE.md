@@ -21,6 +21,9 @@ Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개�
 ```bash
 npm --prefix frontend ci
 npm --prefix frontend run typecheck
+npm --prefix frontend run lint
+npm --prefix frontend run lint:css
+npm --prefix frontend run format:check
 npm --prefix frontend run build
 npm --prefix frontend run test
 npm --prefix frontend run test:e2e
@@ -28,7 +31,7 @@ npm --prefix frontend run test:e2e
 
 `test:e2e`는 `vite build` 뒤 Playwright가 산출물을 `preview`로 띄운다. 빌드가 이미 끝난 CI에서는 빌드를 건너뛰는 `test:e2e:run`을 쓴다. 처음 한 번은 `npm --prefix frontend exec -- playwright install chromium`이 필요하다.
 
-디자인 토큰 정본은 `frontend/src/styles/tokens.css`이며 `DESIGN.md` frontmatter의 평면 이름을 그대로 옮긴 것이다. 색·크기 리터럴을 컴포넌트에 직접 쓰지 않는다. 화면 카피는 `frontend/src/content/`가 소유하고 화면과 시험이 같은 문자열을 참조한다. 외부 폰트·CDN·분석·광고 SDK와 브라우저 저장소 쓰기는 금지이며 시험이 이를 고정한다. 자세한 절차는 `DEVELOPMENT.md`의 `## 프런트엔드` 절에 있다.
+디자인 토큰 정본은 `frontend/src/styles/tokens.css`이며 `DESIGN.md` frontmatter의 평면 이름을 그대로 옮긴 것이다. 색·크기 리터럴을 컴포넌트에 직접 쓰지 않는다. stylelint가 색·타이포그래피·모서리·간격에서 이를 강제하고, ESLint(타입 인지)·Prettier와 함께 CI `ci-required`의 필수 단계다. 인라인 예외는 `-- 이유`가 붙은 disable 주석만 허용한다. 자동 정리는 `npm --prefix frontend run lint -- --fix`, `npm --prefix frontend run lint:css -- --fix`, `npm --prefix frontend run format`이다. 화면 카피는 `frontend/src/content/`가 소유하고 화면과 시험이 같은 문자열을 참조한다. 외부 폰트·CDN·분석·광고 SDK와 브라우저 저장소 쓰기는 금지이며 시험이 이를 고정한다. 자세한 절차는 `DEVELOPMENT.md`의 `## 프런트엔드` 절에 있다.
 
 ## Python 도구 실행
 

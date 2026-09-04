@@ -68,12 +68,12 @@ function toUrl(input: unknown): string {
   return String(input)
 }
 
-globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> =>
-  Promise.reject(refuse('fetch', toUrl(input)))) as typeof fetch
+globalThis.fetch = (input: RequestInfo | URL): Promise<Response> =>
+  Promise.reject(refuse('fetch', toUrl(input)))
 
 XMLHttpRequest.prototype.open = function open(method: string, url: string | URL): void {
   throw refuse(`xhr:${method}`, toUrl(url))
-} as XMLHttpRequest['open']
+}
 
 Object.defineProperty(navigator, 'sendBeacon', {
   configurable: true,

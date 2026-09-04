@@ -617,13 +617,16 @@ done
 # 문서-only 게이트. 개수까지 단정한다. 게이트를 하나 더 달면 검사가 조용히 줄고,
 # 하나 지우면 문서-only PR이 전체 검사를 돈다. 둘 다 여기서 걸린다.
 docs_gate="if: steps.classify.outputs.docs-only != 'true'"
-assert_equals 'ci.yml · docs-only 게이트를 단 단계는 7개' \
-  "$(grep -cF "        ${docs_gate}" "${workflow_file}")" '7'
+assert_equals 'ci.yml · docs-only 게이트를 단 단계는 10개' \
+  "$(grep -cF "        ${docs_gate}" "${workflow_file}")" '10'
 
 for gated_step in \
   'Node 준비' \
   '의존 설치' \
   '타입 검사' \
+  'ESLint' \
+  'stylelint' \
+  'Prettier 검사' \
   '프로덕션 빌드' \
   'Vitest' \
   'Chromium headless shell 설치' \
@@ -635,6 +638,35 @@ for gated_step in \
       '단계를 찾지 못했거나 게이트가 없다.'
   fi
 done
+
+# lint·stylelint·format 검사는 타입 검사 뒤, 프로덕션 빌드 앞이다(spec-frontend-lint-policy.md,
+# CI-PLAN §6). 빌드 뒤로 밀리면 빠른 실패가 늦어지고, 타입 검사 앞으로 가면 타입 인지 lint가
+# 타입 오류를 lint 오류로 다시 보고한다.
+step_line() {
+  grep -n "^      - name: $1\$" "${workflow_file}" | head -1 | cut -d: -f1
+}
+typecheck_step_line="$(step_line '타입 검사')"
+build_step_line="$(step_line '프로덕션 빌드')"
+for quality_step in 'ESLint' 'stylelint' 'Prettier 검사'; do
+  quality_step_line="$(step_line "${quality_step}")"
+  if [ -n "${typecheck_step_line}" ] && [ -n "${build_step_line}" ] && [ -n "${quality_step_line}" ] \
+    && [ "${typecheck_step_line}" -lt "${quality_step_line}" ] \
+    && [ "${quality_step_line}" -lt "${build_step_line}" ]; then
+    record_pass "ci.yml · '${quality_step}' 단계가 타입 검사 뒤, 프로덕션 빌드 앞에 있다"
+  else
+    record_fail "ci.yml · '${quality_step}' 단계가 타입 검사 뒤, 프로덕션 빌드 앞에 있다" \
+      "타입 검사 줄 '${typecheck_step_line}', '${quality_step}' 줄 '${quality_step_line}', 빌드 줄 '${build_step_line}'"
+  fi
+done
+
+# 세 단계가 package.json의 명령을 그대로 부르는지 고정한다. 인라인 옵션이 붙으면 로컬 재현 명령과 어긋난다.
+# 행 전체를 앵커로 잡는다. 부분 문자열이면 `run lint`가 `run lint:css` 줄에도 맞아 단정이 비어 버린다.
+assert_equals 'ci.yml · ESLint 단계는 npm run lint를 그대로 쓴다' \
+  "$(count_lines '^        run: npm --prefix frontend run lint$')" '1'
+assert_equals 'ci.yml · stylelint 단계는 npm run lint:css를 그대로 쓴다' \
+  "$(count_lines '^        run: npm --prefix frontend run lint:css$')" '1'
+assert_equals 'ci.yml · Prettier 단계는 npm run format:check를 그대로 쓴다' \
+  "$(count_lines '^        run: npm --prefix frontend run format:check$')" '1'
 
 # 계약 시험이 분류보다 뒤로 가면 분류기를 분류기로 게이트하게 된다.
 test_step_line="$(grep -n '^      - name: CI 스크립트 계약 시험$' "${workflow_file}" | head -1 | cut -d: -f1)"

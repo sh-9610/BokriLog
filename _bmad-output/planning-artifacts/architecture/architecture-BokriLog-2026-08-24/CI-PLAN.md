@@ -4,9 +4,9 @@ type: ci-plan
 purpose: '현재 구현부터 OCI 배포 후보까지 빠르고 재현 가능한 품질 게이트를 단계적으로 확장하는 정본'
 audience: 'BokriLog 구현자, 리뷰어, 운영자와 후속 자동화 작업을 수행하는 에이전트'
 status: final
-version: '1.2.0'
+version: '1.3.0'
 created: '2026-09-03'
-updated: '2026-09-04'
+updated: '2026-09-05'
 source: 'ARCHITECTURE-SPINE.md'
 companions:
   - 'PORTFOLIO-SOLUTION-DESIGN.md'
@@ -26,7 +26,7 @@ CI는 코드를 운영 환경에 배포하지 않는다. CI의 마지막 책임�
 
 ### 최종 권장 실행 프로필
 
-현재 frontend만 있는 동안에는 이름이 고정된 `ci-required` **단일 job**을 사용한다. 제품 변경 PR에서는 install, typecheck, build, Vitest와 Chromium E2E를 순서대로 실행하고 문서-only PR은 같은 job 안에서 가벼운 문서 경로만 탄다. 별도 classifier나 aggregator job을 만들지 않아 checkout·설치와 최소 과금 단위의 중복을 피한다.
+현재 frontend만 있는 동안에는 이름이 고정된 `ci-required` **단일 job**을 사용한다. 제품 변경 PR에서는 install, typecheck, lint·stylelint·format check, build, Vitest와 Chromium E2E를 순서대로 실행하고 문서-only PR은 같은 job 안에서 가벼운 문서 경로만 탄다. 별도 classifier나 aggregator job을 만들지 않아 checkout·설치와 최소 과금 단위의 중복을 피한다.
 
 Backend가 생기는 Story 1.2부터는 다음 구조로 전환한다.
 
@@ -204,17 +204,20 @@ Workflow, classifier, lockfile, Dockerfile, migration, deploy 또는 build/test 
 
 1. 저장소 checkout
 2. 모든 PR에서 committed-secret 검사와 job 내부 변경 분류
-3. 문서-only면 문서/BMAD 검사 후 11번으로 이동
+3. 문서-only면 문서/BMAD 검사 후 14번으로 이동
 4. `frontend/.nvmrc` 기준 Node 24 준비
 5. `frontend/package-lock.json` 기준 npm 다운로드 캐시 복원
 6. `npm --prefix frontend ci --prefer-offline --no-audit --fund=false`
 7. `npm --prefix frontend run typecheck`
-8. `npm --prefix frontend run build`와 Vitest
-9. `npm --prefix frontend exec -- playwright install chromium --with-deps --only-shell`로 Chromium headless shell과 Linux 의존성 설치
-10. 이미 생성한 `dist`를 대상으로 CI 모드 Playwright 실행
-11. 실패·timeout·취소 시 report, trace와 screenshot 업로드
+8. `npm --prefix frontend run lint` — ESLint(타입 인지). 경고도 실패다
+9. `npm --prefix frontend run lint:css` — stylelint. `DESIGN.md` 네 범주의 토큰 참조 강제
+10. `npm --prefix frontend run format:check` — Prettier 서식 검사
+11. `npm --prefix frontend run build`와 Vitest
+12. `npm --prefix frontend exec -- playwright install chromium --with-deps --only-shell`로 Chromium headless shell과 Linux 의존성 설치
+13. 이미 생성한 `dist`를 대상으로 CI 모드 Playwright 실행
+14. 실패·timeout·취소 시 report, trace와 screenshot 업로드
 
-`test:e2e`는 `vite build && playwright test`이므로 CI에서 명시적인 build 단계와 함께 실행하면 동일한 build가 중복된다. 그래서 로컬 완결 명령 `test:e2e`를 유지한 채 `playwright test`만 수행하는 `test:e2e:run`을 분리했다(2026-09-04 적용). CI는 10번 단계에서 `test:e2e:run`을 쓴다.
+`test:e2e`는 `vite build && playwright test`이므로 CI에서 명시적인 build 단계와 함께 실행하면 동일한 build가 중복된다. 그래서 로컬 완결 명령 `test:e2e`를 유지한 채 `playwright test`만 수행하는 `test:e2e:run`을 분리했다(2026-09-04 적용). CI는 13번 단계에서 `test:e2e:run`을 쓴다.
 
 ### 초기 실행 설정
 
@@ -234,7 +237,7 @@ Workflow, classifier, lockfile, Dockerfile, migration, deploy 또는 build/test 
 - 외부 action은 허용 목록과 full commit SHA로 고정하며 정확한 SHA는 구현 시점의 공식 release에서 확인한다.
 - 시작 timeout은 frontend job 8분, Vitest 2분, Playwright 4분이다. 시험 명령의 내부 deadline은 job timeout보다 짧게 두어 하위 프로세스 종료와 진단 업로드 시간을 확보한다. Timeout은 실패이며 report·trace·screenshot 등 비밀정보가 없는 자료를 업로드한다.
 
-현재 저장소에 ESLint·stylelint·formatter 설정과 명령은 없으므로 초기 CI는 현재 존재하는 명령만 자동화한다. Story 1.2 완료 전 별도 품질정책 PR에서 도구·규칙·예외를 합의하고 lint, stylelint와 format check를 required gate로 승격한다. 그 전까지 코드 리뷰가 해당 표류를 확인하며, “검사가 없음”을 “검사 성공”으로 기록하지 않는다.
+ESLint 10(typescript-eslint strict·stylistic 타입 인지, React hooks·refresh, perfectionist import 정렬, 파일군별 Vitest·Testing Library·Playwright), stylelint 17(`stylelint-config-standard` + `declaration-strict-value`로 `DESIGN.md` 네 범주의 토큰 참조 강제), Prettier 3을 `frontend/`에 도입하고 8~10번 단계로 `ci-required`에 승격했다(2026-09-05, `spec-frontend-lint-policy.md`). 규칙이 실제로 위반을 잡고 준수 코드를 통과시키는지는 `frontend/lint-policy.test.ts`가 Vitest 단계에서 fixture로 고정한다. 인라인 예외는 이유가 붙은 disable 주석만 허용하며 이유 없는·불필요한·범위가 틀린 disable은 양쪽 도구에서 오류다. 정적 접근성 검사(`eslint-plugin-jsx-a11y`)는 ESLint 10 peer 미지원으로 제외했고 `deferred-work.md`에 남겼다. 렌더 결과의 접근성은 기존 E2E axe 검사가 담당한다.
 
 ## 7. 브라우저 실행 정책
 
@@ -254,7 +257,7 @@ Firefox나 Windows·macOS runner는 지원 브라우저 정책, 실제 결함 �
 | 도입 시점 | CI에 추가하는 검증 | 실행 위치 |
 | --- | --- | --- |
 | 현재 Story 1.1 | TypeScript, Vite build, Vitest, Chromium 접근성·키보드·리플로·네트워크·저장소 E2E | 단일 `ci-required` |
-| Story 1.2 완료 전 | 합의된 ESLint·stylelint·format check와 정책 시험 | frontend 품질 |
+| Story 1.2 완료 전 (2026-09-05 적용) | 합의된 ESLint·stylelint·format check와 정책 시험(`lint-policy.test.ts`) | 단일 `ci-required`, Story 1.2 이후 frontend 품질 |
 | Story 1.2 | Java 25, Gradle, Spring Boot build/test, Nginx root·`/api`·오류, Story 1.1 회귀 | `backend-quality`, `same-origin-integration` |
 | Story 1.3 이후 | PostgreSQL Testcontainers, migration, schema validation, 교차 사용자·삭제 상태 | backend/integration |
 | Story 1.4~1.11 | OIDC stub, state·nonce·PKCE·JWS, 세션 회전, redaction, 삭제 경로 | backend/integration |
