@@ -4,7 +4,7 @@ type: ci-plan
 purpose: '현재 구현부터 OCI 배포 후보까지 빠르고 재현 가능한 품질 게이트를 단계적으로 확장하는 정본'
 audience: 'BokriLog 구현자, 리뷰어, 운영자와 후속 자동화 작업을 수행하는 에이전트'
 status: final
-version: '1.1.0'
+version: '1.2.0'
 created: '2026-09-03'
 updated: '2026-09-04'
 source: 'ARCHITECTURE-SPINE.md'
@@ -69,10 +69,10 @@ flowchart LR
 - 제품 코드는 `frontend/`의 React 19.2.x, Vite 8.2.x, TypeScript strict SPA뿐이다.
 - Node major는 `frontend/.nvmrc`와 `package.json`에서 24로 고정한다.
 - `package-lock.json`이 실제 프런트엔드 의존 버전의 권위 원본이다.
-- Vitest 단위·화면 시험 9개와 Playwright Chromium E2E 13개가 있다.
-- `backend/`, `deploy/`, `.github/workflows/`는 아직 없다.
-- Story 1.1은 검토 중이며 Story 1.2 이후의 제품·운영 기능은 백로그 상태다.
-- GitHub 원격 저장소는 private, 기본 브랜치는 `main`이고 Actions는 활성화됐지만(`allowed_actions: all`) workflow와 `main`·`develop` 보호 규칙은 없다.
+- Vitest 24개(진입 화면 9, `playwright.config.ts` 계약 15)와 Playwright Chromium E2E 13개가 있다.
+- `backend/`, `deploy/`는 아직 없다. `.github/workflows/ci.yml`이 단일 `ci-required` job으로 동작한다. 구현 계약은 `spec-ci-foundation.md`가 소유한다.
+- Story 1.1은 완료됐고 Story 1.2 이후의 제품·운영 기능은 백로그 상태다.
+- GitHub 원격 저장소는 private, 기본 브랜치는 `main`이고 Actions는 활성화됐다(`allowed_actions: all`). Ruleset `protect-integration-branches`가 `develop`·`main`에 PR 필수(허용 병합 방식 `merge`만), `ci-required` 필수(최신 base 통합 검증), 직접 push·force push·삭제 차단을 우회 없이 적용한다.
 - 계정은 GitHub Pro다. private 저장소에서도 branch protection과 ruleset을 쓸 수 있다.
 
 로컬 기준선에서 `npm ci`, typecheck, production build, Vitest와 Chromium E2E가 모두 성공한다. 2026-09-04 Windows 재측정에서 `CI=1` 직렬 실행과 기본 병렬 실행 모두 exit 0으로 정상 종료했다. 이전 초안이 적었던 "프로세스가 종료되지 않는다"는 재현되지 않으므로 철회한다.
@@ -83,7 +83,20 @@ flowchart LR
 | Vitest 9개 | 최초 실행 24.3초 (그중 17.7초가 jsdom 환경 준비), 재실행 1.5초 |
 | Chromium E2E 13개, `CI=1` 직렬 | 6.5초 |
 
-이 값이 §6 timeout과 §17 재보정의 출발점이다. GitHub-hosted Ubuntu 첫 실행에서 같은 항목을 다시 측정해 갱신한다.
+GitHub-hosted `ubuntu-24.04`에서 2026-09-04 첫 6회 실행(PR 2, `develop` push 3, `workflow_dispatch` 1)을 측정했다. 전체 경로 5회와 문서-only 경로 1회다. 값은 GitHub Actions job API의 단계 시작·완료 시각 차이다.
+
+| 단계 | Ubuntu 실측 (전체 경로 5회) | 예산 | 여유 |
+| --- | ---: | ---: | --- |
+| `ci-required` job 전체 | 55–97초, 중앙값 66초 | job timeout 8분, PR 중앙값 3분·p95 5분(§4) | 가장 느린 실행도 목표 중앙값의 절반 아래 |
+| `npm ci` | 3–8초 | — | npm 다운로드 캐시만 사용 |
+| typecheck | 2–4초 | — | |
+| `vite build` | 1초 | — | |
+| Vitest 24개 | 3–4초 | 2분 | jsdom 준비 비용이 로컬 최초 실행(24.3초)과 달리 나타나지 않는다 |
+| Chromium headless shell 설치 | 20–53초 | — | 전체 경로에서 가장 큰 단계. §6에 따라 browser cache는 이 다운로드 시간과 cache 복원 비용을 비교한 뒤 판단하며, 이 값이 그 비교의 첫 측정값이다 |
+| Chromium E2E 13개, `CI=1` 직렬 | 8–14초 | Playwright 4분, `globalTimeout` 3분 | |
+| 문서-only 경로 전체 | 8초 (1회) | — | secret 검사·계약 시험·분류만 실행 |
+
+이 Ubuntu 실측이 §6 timeout과 §17 재보정의 출발점이다. 로컬 표는 개발 기기 참고값으로만 남긴다. §16의 "최근 10회 실행시간" 조건은 6회로 아직 미달이며, 10회에 도달하면 이 표를 갱신하고 그때부터 §17의 초과 판정에 쓴다. 현재 실행시간의 대부분은 시험이 아니라 브라우저 설치이므로 §17의 최적화 검토가 필요해지면 이 단계를 먼저 본다.
 
 ## 4. 채택한 CI 운영 모델
 

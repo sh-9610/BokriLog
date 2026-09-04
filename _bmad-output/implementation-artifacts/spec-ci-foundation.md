@@ -97,11 +97,11 @@ context:
 - [x] `.github/scripts/classify-changes.sh` -- 판정 결과를 `GITHUB_STEP_SUMMARY`에 기록 -- PR 화면에서 frontend 검사가 왜 건너뛰어졌는지 단계 로그를 펼치지 않고 보이게 한다
 - [x] `.github/workflows/ci.yml` -- artifact 업로드를 `if-no-files-found: warn`으로 변경 -- `ignore`는 경로가 어긋나도 조용히 성공해 실패한 실행에 진단물이 없다는 사실을 감춘다
 - [x] `frontend/playwright.config.test.ts` -- `retries: 0`·trace·screenshot·`globalTimeout`·`CI` 해석을 고정하는 Vitest 시험 추가 -- CI-PLAN §6이 "한 묶음"으로 못박은 값들이 설정 한 줄로 뒤집히는 것을 막는다
-- [ ] [원격] `CI-PLAN.md` -- Ubuntu 실측값으로 §3 기준선 갱신, 단계 timeout 여유 확인 -- §17 재보정의 출발점을 hosted 러너 기준으로 바꾸고, job 8분·Vitest 2분·Playwright 4분과 `globalTimeout` 3분이 실측 대비 얼마나 남는지 기록한다
+- [x] [원격] `CI-PLAN.md` -- Ubuntu 실측값으로 §3 기준선 갱신, 단계 timeout 여유 확인 -- §17 재보정의 출발점을 hosted 러너 기준으로 바꾸고, job 8분·Vitest 2분·Playwright 4분과 `globalTimeout` 3분이 실측 대비 얼마나 남는지 기록한다 -- 2026-09-04 첫 6회(전체 경로 5회) 기준으로 갱신. job 55–97초(중앙값 66초), Vitest 3–4초, E2E 8–14초. 가장 큰 단계는 Chromium 설치 20–53초. §16의 10회 조건은 미달로 표시했다
 - [x] [원격] gitleaks 전수 기준선 스캔 1회 -- `workflow_dispatch`로 전체 이력을 한 번 훑고 결과를 보고한다. 필수 경로는 PR 커밋 범위만 검사하므로 기존 이력의 결과는 이 1회 스캔이 아니면 드러나지 않는다 -- 2026-09-04 실행(run 33881744463). 16 commit을 훑어 탐지 1건. `_bmad/_config/files-manifest.csv:48`의 SHA-256 파일 해시가 파일명 `key-screens.md`의 "key" 때문에 `generic-api-key`에 걸린 오탐. 규칙은 두고 `.gitleaksignore`에 그 fingerprint 한 줄만 등록했다
 - [x] [원격] `develop`·`main` 브랜치 보호 -- `ci-required` 필수, 직접 push·force push·삭제 차단 -- 실행이 green임을 확인한 뒤에만 건다 -- 2026-09-04 develop push 실행 2건 green 확인 뒤 ruleset `protect-integration-branches`(active, bypass 없음)로 적용. PR 필수(승인 0, 허용 병합 방식 `merge`만), `ci-required` 필수(GitHub Actions 출처만 인정, 최신 base 통합 검증), 직접 push·force push·삭제 차단. classic branch protection이 아니라 ruleset이므로 `branches/<name>/protection`은 404를 반환한다
 - [x] [원격] 열려 있는 토픽 브랜치 rebase -- CI-PLAN §13. `pull_request`의 workflow 정의는 PR head에서 읽으므로 workflow보다 먼저 분기한 브랜치는 `ci-required`를 만들지 않고 필수 검사가 영구 대기로 남는다 -- 2026-09-04 보호 적용 시점에 열린 토픽 브랜치가 없어 대상 없음. `chore/sprint-status-1-1-done`(PR #3)은 workflow 이전 분기였으나 보호 전에 병합됐다
-- [ ] [원격] `deferred-work-resolutions.md` -- "프런트엔드 시험을 자동 실행하는 CI 워크플로" 항목의 해소를 기록 -- CI-PLAN §16은 "검사가 실제로 성공한 뒤에만 해당 deferred CI 항목을 해결된 것으로 기록한다"고 요구하므로 hosted 러너 green 이후에만 쓴다
+- [x] [원격] `deferred-work-resolutions.md` -- "프런트엔드 시험을 자동 실행하는 CI 워크플로" 항목의 해소를 기록 -- CI-PLAN §16은 "검사가 실제로 성공한 뒤에만 해당 deferred CI 항목을 해결된 것으로 기록한다"고 요구하므로 hosted 러너 green 이후에만 쓴다 -- 2026-09-04 항목 11을 해소로 기록. 같은 시점에 원장에 없던 항목 12–16도 미해소로 추가해 `deferred-work.md`와 순서를 맞췼다
 
 **Acceptance Criteria:**
 - Given 열려 있는 PR, when `ci-required`가 실패하면, then 병합 버튼이 차단된다.
