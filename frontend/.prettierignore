@@ -1,0 +1,5 @@
+# 생성물과 lockfile은 서식 검사 대상이 아니다. lockfile은 npm이 소유한다.
+dist
+playwright-report
+test-results
+package-lock.json

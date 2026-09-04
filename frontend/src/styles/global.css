@@ -13,6 +13,7 @@
 
 html {
   /* 사용자 확대를 막지 않는다. 200%·400% 확대에서 리플로만으로 읽혀야 한다. */
+  /* stylelint-disable-next-line property-no-vendor-prefix -- iOS Safari는 접두사 없는 text-size-adjust를 지원하지 않는다. 아래 표준 속성과 함께 둔다. */
   -webkit-text-size-adjust: 100%;
   scroll-padding-block: var(--space-6);
 }
@@ -25,6 +26,7 @@ body {
   font-size: var(--type-body-font-size);
   font-weight: var(--type-body-font-weight);
   line-height: var(--type-body-line-height);
+
   /* 한국어는 어절 단위로 끊고, 끊을 수 없는 긴 토큰만 강제로 접는다. */
   word-break: keep-all;
   overflow-wrap: break-word;

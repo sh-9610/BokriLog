@@ -24,6 +24,8 @@
     "vite.config.ts",
     "playwright.config.ts",
     "playwright.config.test.ts",
+    "eslint.config.ts",
+    "lint-policy.test.ts",
     "e2e"
   ]
 }

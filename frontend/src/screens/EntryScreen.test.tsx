@@ -37,9 +37,7 @@ describe('EntryScreen', () => {
     const title = screen.getByRole('heading', { level: 1 })
 
     expect(title.textContent).toBe('복리 계획 비교')
-    expect(title.nextElementSibling?.textContent).toBe(
-      '투자성과·계좌 수익률·투자 추천이 아닙니다.',
-    )
+    expect(title.nextElementSibling?.textContent).toBe('투자성과·계좌 수익률·투자 추천이 아닙니다.')
 
     // 카피 정본이 같은 값을 들고 있는지도 함께 고정한다.
     expect(entryContent.pageTitle).toBe('복리 계획 비교')
@@ -64,7 +62,7 @@ describe('EntryScreen', () => {
   it('문구 표류 방지: 카피 정본의 모든 문자열이 화면에 렌더된다', () => {
     render(<EntryScreen />)
 
-    const rendered = document.body.textContent ?? ''
+    const rendered = document.body.textContent
 
     for (const copy of entryCopyStrings) {
       expect(rendered).toContain(copy)
@@ -92,6 +90,7 @@ describe('EntryScreen', () => {
     const skipLink = screen.getByRole('link', { name: entryContent.skipLink })
     const target = skipLink.getAttribute('href')?.slice(1) ?? ''
 
+    // eslint-disable-next-line testing-library/no-node-access -- href가 가리키는 id를 문서에서 직접 해석해야 한다. 역할 조회로는 "그 id의 요소가 main인지"를 검증할 수 없다.
     expect(document.getElementById(target)?.tagName.toLowerCase()).toBe('main')
   })
 

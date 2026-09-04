@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test'
 // `vite preview` 기본 포트(4173)를 피한다. 손으로 띄워 둔 preview와 포트가 겹치지 않게 한다.
 const PORT = 4183
 const HOST = '127.0.0.1'
-export const BASE_URL = `http://${HOST}:${PORT}`
+export const BASE_URL = `http://${HOST}:${String(PORT)}`
 
 /** `CI=''`·`CI=0`·`CI=false`는 거짓으로 본다. */
 function isTruthyEnv(name: string): boolean {
@@ -29,10 +29,7 @@ export default defineConfig({
   workers: isCi ? 1 : undefined,
   /* CI의 Playwright 단계 timeout(4분)보다 짧다. 남는 시간에 실패 진단 artifact를 업로드한다. */
   globalTimeout: 180_000,
-  reporter: [
-    ['list'],
-    ['html', { open: 'never', outputFolder: 'playwright-report' }],
-  ],
+  reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
   outputDir: 'test-results',
   use: {
     baseURL: BASE_URL,
@@ -53,7 +50,7 @@ export default defineConfig({
    * 그래서 `reuseExistingServer`는 항상 false다. 백엔드·DB·제공자 자격정보는 요구하지 않는다.
    */
   webServer: {
-    command: `npm run preview -- --host ${HOST} --port ${PORT} --strictPort`,
+    command: `npm run preview -- --host ${HOST} --port ${String(PORT)} --strictPort`,
     url: BASE_URL,
     reuseExistingServer: false,
     timeout: 120_000,

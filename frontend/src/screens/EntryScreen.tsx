@@ -34,7 +34,7 @@ export function EntryScreen(): ReactElement {
               aria-labelledby={section.id}
               className={
                 section.tone === 'notice'
-                  ? `${styles.section} ${styles.sectionNotice}`
+                  ? [styles.section, styles.sectionNotice].join(' ')
                   : styles.section
               }
             >
@@ -45,7 +45,7 @@ export function EntryScreen(): ReactElement {
               <ul className={styles.itemList} role="list">
                 {/* 카피 문자열은 한 섹션 안에서 중복될 수 있으므로 key로 쓰지 않는다. */}
                 {section.items.map((item, index) => (
-                  <li className={styles.item} key={`${section.id}-${index}`}>
+                  <li className={styles.item} key={`${section.id}-${String(index)}`}>
                     <span>{item}</span>
                   </li>
                 ))}

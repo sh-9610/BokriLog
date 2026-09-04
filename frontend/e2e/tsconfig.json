@@ -1,0 +1,7 @@
+{
+  // ESLint `projectService`가 이 디렉터리의 파일을 타입 인지하기 위한 위치 표지다.
+  // 타입 검사 자체는 `tsconfig.node.json`이 `e2e`를 include해 수행하고, 여기서는 그 설정을
+  // 그대로 상속만 한다. 컴파일 옵션을 여기서 덧붙이지 않는다.
+  "extends": "../tsconfig.node.json",
+  "include": ["."]
+}

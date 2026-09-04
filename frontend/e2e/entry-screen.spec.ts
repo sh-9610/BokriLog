@@ -69,7 +69,9 @@ async function clippedElements(page: Page): Promise<string[]> {
           (clipsY && element.scrollHeight > element.clientHeight + 1)
         )
       })
-      .map((element) => element.tagName.toLowerCase() + (element.id === '' ? '' : `#${element.id}`)),
+      .map(
+        (element) => element.tagName.toLowerCase() + (element.id === '' ? '' : `#${element.id}`),
+      ),
   )
 }
 
@@ -79,14 +81,18 @@ test.describe('진입 화면', () => {
     await expectScreenMounted(page)
 
     const desktop = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
-    expect(desktop.violations.map((violation) => `desktop ${violation.id}: ${violation.help}`)).toEqual([])
+    expect(
+      desktop.violations.map((violation) => `desktop ${violation.id}: ${violation.help}`),
+    ).toEqual([])
 
     // 좁은 폭에서만 나타나는 대비·목표 크기 위반을 잡는다.
     await page.setViewportSize(VIEWPORTS.narrow)
     await expectScreenMounted(page)
 
     const narrow = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
-    expect(narrow.violations.map((violation) => `320px ${violation.id}: ${violation.help}`)).toEqual([])
+    expect(
+      narrow.violations.map((violation) => `320px ${violation.id}: ${violation.help}`),
+    ).toEqual([])
   })
 
   test('키보드 탐색: 문서 순서로 도달하고 focus-visible 외곽선이 보인다', async ({ page }) => {
@@ -96,7 +102,7 @@ test.describe('진입 화면', () => {
     const expectedOrder = await page.evaluate(
       (selector) =>
         Array.from(document.querySelectorAll(selector)).map(
-          (element) => `${element.tagName.toLowerCase()}:${(element.textContent ?? '').trim()}`,
+          (element) => `${element.tagName.toLowerCase()}:${element.textContent.trim()}`,
         ),
       FOCUSABLE_SELECTOR,
     )
@@ -116,7 +122,7 @@ test.describe('진입 화면', () => {
         const style = getComputedStyle(element)
         const rect = element.getBoundingClientRect()
         return {
-          key: `${element.tagName.toLowerCase()}:${(element.textContent ?? '').trim()}`,
+          key: `${element.tagName.toLowerCase()}:${element.textContent.trim()}`,
           outlineStyle: style.outlineStyle,
           outlineWidth: style.outlineWidth,
           outlineOffset: style.outlineOffset,
@@ -126,8 +132,9 @@ test.describe('진입 화면', () => {
         }
       })
 
+      // eslint-disable-next-line playwright/no-conditional-in-test -- 타입 좁히기 가드. 도달 실패는 단정이 아니라 예외로 즉시 종료한다.
       if (focused === null) {
-        throw new Error(`Tab ${index + 1}회 뒤 focusable 요소에 도달하지 못했습니다.`)
+        throw new Error(`Tab ${String(index + 1)}회 뒤 focusable 요소에 도달하지 못했습니다.`)
       }
 
       // focus-ring 2px 두께, 2px 간격 (DESIGN.md Components 마지막 문단).
@@ -207,6 +214,7 @@ test.describe('진입 화면', () => {
     const noticeSection = entryContent.sections.find((section) => section.tone === 'notice')
     const plainSection = entryContent.sections.find((section) => section.tone === 'plain')
 
+    // eslint-disable-next-line playwright/no-conditional-in-test -- 타입 좁히기 가드. 카피 정본에 두 tone이 없으면 시험 전제가 깨진 것이라 예외로 종료한다.
     if (noticeSection === undefined || plainSection === undefined) {
       throw new Error('notice 섹션과 plain 섹션이 모두 있어야 한다.')
     }
@@ -235,6 +243,7 @@ test.describe('진입 화면', () => {
     })
 
     await page.goto('/')
+    // eslint-disable-next-line playwright/no-networkidle -- "요청 0건" 단정은 네트워크가 잠잠해진 뒤에만 의미가 있다. 이 화면은 외부 요청이 없어 idle 대기가 흔들리지 않는다.
     await page.waitForLoadState('networkidle')
     await expectScreenMounted(page)
 
@@ -268,11 +277,12 @@ test.describe('진입 화면', () => {
     const failed: string[] = []
     page.on('response', (response) => {
       if (response.status() >= 400) {
-        failed.push(`${response.status()} ${response.url()}`)
+        failed.push(`${String(response.status())} ${response.url()}`)
       }
     })
 
     await page.goto('/')
+    // eslint-disable-next-line playwright/no-networkidle -- "요청 0건" 단정은 네트워크가 잠잠해진 뒤에만 의미가 있다. 이 화면은 외부 요청이 없어 idle 대기가 흔들리지 않는다.
     await page.waitForLoadState('networkidle')
     await expectScreenMounted(page)
 
@@ -298,6 +308,7 @@ test.describe('진입 화면', () => {
 
   test('브라우저 저장소에 항목이 생기지 않는다', async ({ page }) => {
     await page.goto('/')
+    // eslint-disable-next-line playwright/no-networkidle -- "요청 0건" 단정은 네트워크가 잠잠해진 뒤에만 의미가 있다. 이 화면은 외부 요청이 없어 idle 대기가 흔들리지 않는다.
     await page.waitForLoadState('networkidle')
     await expectScreenMounted(page)
 
@@ -320,13 +331,14 @@ test.describe('진입 화면', () => {
     await page.goto('/')
     await expectScreenMounted(page)
 
-    const animated = await page.evaluate(() =>
-      Array.from(document.querySelectorAll('body *')).filter((element) => {
-        const style = getComputedStyle(element)
-        return style.transitionDuration
-          .split(',')
-          .some((duration) => Number.parseFloat(duration) > 0)
-      }).length,
+    const animated = await page.evaluate(
+      () =>
+        Array.from(document.querySelectorAll('body *')).filter((element) => {
+          const style = getComputedStyle(element)
+          return style.transitionDuration
+            .split(',')
+            .some((duration) => Number.parseFloat(duration) > 0)
+        }).length,
     )
 
     expect(animated).toBeGreaterThan(0)
