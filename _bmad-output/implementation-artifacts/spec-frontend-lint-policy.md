@@ -89,7 +89,7 @@ context:
 - [x] `.github/workflows/ci.yml`, `.github/scripts/test-ci-scripts.sh` -- 3단계 추가와 계약 시험 갱신 -- required gate 승격
 - [x] `DEVELOPMENT.md`, `CLAUDE.md`, `CI-PLAN.md` -- 명령·예외 규칙·적용 사실 -- 문서와 구현 일치
 - [x] `_bmad-output/implementation-artifacts/deferred-work.md` -- `eslint-plugin-jsx-a11y` 도입 항목 append -- ESLint 10 peer 지원 시 별도 의존 갱신 PR(CI-PLAN §11)로 추가한다
-- [ ] [원격] `deferred-work-resolutions.md` 항목 12 -- 해소 기록 -- 병합 후 `ci-required` green 확인 뒤에만
+- [x] [원격] `deferred-work-resolutions.md` 항목 12 -- 해소 기록 -- 병합 후 `ci-required` green 확인 뒤에만 -- 2026-09-05 기록. PR #6 병합(e0452a5), develop push green, PR #7로 차단 확인 뒤 작성. 항목 17·18도 원장에 미해소로 추가
 
 **Acceptance Criteria:**
 - Given 기존 `develop`의 frontend 코드, when 세 검사를 실행하면, then 모두 통과하고 `vite build`·Vitest·E2E 결과가 변경 전과 같다.
