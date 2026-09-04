@@ -111,6 +111,7 @@ Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패
 | `frontend/src/screens/` | 화면 컴포넌트와 CSS Module |
 | `frontend/src/test/setup.ts` | Testing Library 등록과 `fetch`·`XMLHttpRequest`·`sendBeacon` 감시 훅 |
 | `frontend/e2e/` | Playwright 명세 |
+| `frontend/playwright.config.test.ts` | `playwright.config.ts`의 실행 정책(`retries: 0`, trace·screenshot, `globalTimeout`, `CI` 해석) 고정. 대상이 `src/` 밖이라 시험도 그 옆에 두고 `vite.config.ts`의 `test.include`가 이 파일 하나를 더 받는다 |
 | `frontend/.nvmrc`, `frontend/.npmrc` | Node major 고정과 `engine-strict` 강제 |
 
 - `DESIGN.md`가 실제로 소유하는 범주(색, 타이포그래피, 모서리, 간격)는 컴포넌트 CSS에서 리터럴을 쓰지 않고 반드시 `tokens.css`의 변수를 참조한다.
@@ -119,6 +120,29 @@ Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패
 - `localStorage`·`sessionStorage`·쿠키·IndexedDB에 쓰지 않는다. 인증 토큰과 금융 원본은 브라우저 영속 저장소에 두지 않는다.
 - 라이트 모드만 제공한다. 다크 모드는 별도 대비 검증 뒤 후속 범위다.
 - 확대 검증은 브라우저 zoom 설정 대신 **뷰포트 폭 = 1280px ÷ 배율**로 재현한다(WCAG 1.4.10 표준 해석). 400%는 320×512, 200%는 640×512다.
+
+## CI (`.github/`)
+
+`.github/workflows/ci.yml`이 이 저장소의 유일한 workflow이고 job은 `ci-required` 하나다. `develop`·`main`의 PR과 push, 그리고 배포 권한이 없는 수동 진단(`workflow_dispatch`)에서 돈다. 이 이름이 branch protection의 필수 검사 이름이므로 바꾸지 않는다. 정본은 `CI-PLAN.md`이고 구현 계약은 `_bmad-output/implementation-artifacts/spec-ci-foundation.md`가 소유한다.
+
+판정 논리는 YAML이 아니라 `.github/scripts/`의 셸 스크립트가 소유한다. YAML 안의 인라인 `run` 블록은 저장소에서 실행할 수 없어 시험 대상이 되지 못하기 때문이다.
+
+| 경로 | 역할 |
+|---|---|
+| `.github/workflows/ci.yml` | 이벤트·권한·단계 순서. 판정은 아래 스크립트에 위임한다 |
+| `.github/scripts/verify-merge-commit.sh` | PR merge commit의 부모가 이벤트의 base·head와 같은 순서인지 검증 |
+| `.github/scripts/classify-changes.sh` | 문서-only 여부 판정. `docs-only`·`reason`을 `GITHUB_OUTPUT`과 job summary에 기록 |
+| `.github/scripts/test-ci-scripts.sh` | 위 두 스크립트와 `ci.yml`의 계약 시험 |
+
+문서-only 변경(`_bmad-output/**`와 최상위 `*.md`)은 secret 검사만 돌고 frontend 검사를 건너뛴다. 분류는 fail-closed다. 규칙에 없는 경로가 하나라도 있으면 전체 검사를 실행한다. PR에서는 체크아웃된 head가 아니라 target base의 승인된 분류기를 꺼내 실행한다. PR이 자기 분류 규칙을 고쳐 그 PR의 검사를 축소할 수 없게 한다.
+
+### 명령
+
+| 명령 | 역할 |
+|---|---|
+| `bash .github/scripts/test-ci-scripts.sh` | CI 계약 시험. 임시 git fixture로 분류 규칙·`reason` enum·merge commit 검증을 실행하고, `ci.yml`의 job 이름·러너·고정 action SHA·문서-only 게이트 수를 단정한다 |
+
+종료 코드는 0(전부 통과), 1(단정 실패), 2(fixture 준비 실패)다. 준비 실패는 단정 결과가 없다는 뜻이라 단정 실패와 구분한다. Windows에서는 Git Bash로 실행한다. CI도 이 시험을 조건 없이 항상 실행하며, 분류 단계보다 앞에 둔다. 분류기를 분류기로 게이트하지 않기 위해서다.
 
 ## BMAD 명령 실행 원칙
 
@@ -169,6 +193,7 @@ npx bmad-method@6.11.0 install \
 - `_bmad/render/`: 스킬 렌더링 스냅샷. 생성물이며 Git에 포함되지 않는다.
 - `_bmad-output/`: 기획·구현 산출물 정본.
 - `frontend/`: React/Vite 정적 SPA. 위 `## 프런트엔드` 절을 따른다.
+- `.github/`: GitHub Actions workflow와 CI 판정 스크립트. 위 `## CI` 절을 따른다.
 - `.gitattributes`: 줄바꿈 규칙을 저장소에 고정한다. Windows·macOS가 같은 바이트를 보게 한다.
 - `.gitignore`: 로컬 캐시, 가상환경, Python 바이트코드, 두 운영체제의 메타데이터, IDE 로컬 상태와 빌드 산출물을 제외한다.
 - `scripts/check-bmad-env.sh`: 위 설정이 실제로 동작하는지 한 번에 검증한다.
