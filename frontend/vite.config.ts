@@ -20,7 +20,9 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
-    include: ['src/**/*.test.{ts,tsx}'],
+    // `playwright.config.test.ts`는 저장소 루트의 `playwright.config.ts`를 검사한다.
+    // 대상이 `src/` 밖이라 시험도 그 옆에 두고 여기서 한 파일만 명시적으로 더 받는다.
+    include: ['src/**/*.test.{ts,tsx}', 'playwright.config.test.ts'],
     exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
     restoreMocks: true,
   },

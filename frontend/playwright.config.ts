@@ -38,6 +38,8 @@ export default defineConfig({
     baseURL: BASE_URL,
     // `on-first-retry`는 retries가 0이면 trace를 하나도 남기지 않는다. 첫 실패부터 보존한다.
     trace: 'retain-on-failure',
+    // CI가 업로드하는 진단물은 report·trace·screenshot 세 가지다. 기본값 `off`면 screenshot이 없다.
+    screenshot: 'only-on-failure',
   },
   projects: [
     {

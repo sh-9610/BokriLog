@@ -1,0 +1,209 @@
+# BokriLog 필수 CI. 정본은 CI-PLAN.md(§5 이벤트, §6 실행 순서, §11 보안, §13 보호 규칙)이고
+# 구현 계약은 _bmad-output/implementation-artifacts/spec-ci-foundation.md가 소유한다.
+#
+# 이 저장소의 유일한 workflow이며 job은 하나뿐이다. 지금은 frontend만 존재하므로
+# 별도 classifier·aggregator job을 만들지 않는다. Story 1.2에서 backend가 생기면
+# CI-PLAN §1의 병렬 구조로 전환하되 branch protection이 참조하는 이름은 `ci-required`로 유지한다.
+#
+# 판정 논리는 `.github/scripts/`의 셸 스크립트가 소유한다. YAML 안의 인라인 스크립트는
+# 저장소의 시험으로 고정할 수 없기 때문이다(CI-PLAN §5).
+#   verify-merge-commit.sh -- PR merge commit의 부모가 이벤트의 base·head와 같은지 검증
+#   classify-changes.sh    -- 문서-only 여부 판정. `docs-only`·`reason`을 GITHUB_OUTPUT과
+#                             GITHUB_STEP_SUMMARY에 기록
+#   test-ci-scripts.sh     -- 위 두 스크립트와 이 파일의 계약 시험. job 안에서 조건 없이 실행한다
+#
+# 예외는 `변경 분류` 단계의 인라인 블록 하나다. "어느 분류기를 실행할지" 고르는 일은
+# 분류기 자신이 결정할 수 없으므로 스크립트 밖에 있어야 한다. 대신 그 선택을
+# test-ci-scripts.sh가 이 파일에서 직접 단정해 고정한다.
+name: CI
+
+on:
+  # `branches`는 source branch가 아니라 PR의 target branch다.
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+  # 배포 권한이 없는 수동 진단. release evidence나 배포 입력이 될 수 없다.
+  workflow_dispatch:
+
+# top-level `paths` 필터를 두지 않는다. workflow가 생략돼 `ci-required` status가
+# 생성되지 않는 분기를 막는다. 문서-only 여부는 job 안에서 분류한다.
+
+permissions:
+  contents: read
+
+concurrency:
+  # PR: workflow·target branch·PR 번호가 group을 만든다. 같은 PR의 이전 실행만 취소하고
+  #     다른 PR은 독립적으로 진행한다.
+  # push·workflow_dispatch: run_id를 넣어 실행마다 group을 분리한다. 통합 결과를
+  #     취소하지도 직렬화하지도 않는다.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.base.ref || github.ref }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ci-required:
+    # 이 이름이 branch protection의 required status check 이름이다. 바꾸지 않는다.
+    name: ci-required
+    # Playwright 지원 Ubuntu 고정 버전. `ubuntu-latest`는 러너 갱신이 CI 판정을 바꾼다.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      # gitleaks-action은 PR 이벤트에서 `GET /repos/{o}/{r}/pulls/{n}/commits`로
+      # 스캔할 commit 범위를 정한다. 변경 분류가 아니라 이 호출 때문에 필요한 읽기 권한이다.
+      pull-requests: read
+
+    steps:
+      - name: 저장소 checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # 이벤트가 고정한 commit이다. PR에서는 그 시점의 merge commit이며,
+          # 움직이는 `refs/pull/<n>/merge`를 다시 해석하지 않는다.
+          ref: ${{ github.sha }}
+          # 변경 분류(merge commit 부모 비교)와 gitleaks의 commit 범위 스캔이 전체 이력을 요구한다.
+          # 이 방식은 토큰에 권한을 더하지 않고 PR·push 양쪽에서 같게 동작한다.
+          fetch-depth: 0
+          # 이후 단계는 git 인증을 쓰지 않는다. 토큰을 작업 트리의 git config에 남기지 않는다.
+          persist-credentials: false
+
+      - name: PR merge commit 검증
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # 스크립트로 분리해 저장소의 시험이 계약을 고정할 수 있게 한다.
+        # `bash <경로>`로 부른다. 실행 비트가 체크아웃에서 유실돼도 동작이 같다.
+        run: bash .github/scripts/verify-merge-commit.sh
+
+      - name: committed-secret 검사
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          # workflow 토큰이다. repository·environment·provider secret을 PR에 전달하지 않는다.
+          GITHUB_TOKEN: ${{ github.token }}
+          # 소유자 `sh-9610`은 type `User`라 라이선스 키가 필요 없다.
+          # 저장소를 조직으로 옮기면 GITLEAKS_LICENSE가 필요해지므로 그때 재검토한다.
+          #
+          # action이 내장한 기본값과 같은 값을 명시해 스캐너 버전을 파일에서 읽을 수 있게 둔다.
+          # 버전 갱신은 별도 review PR로 한다.
+          GITLEAKS_VERSION: '8.24.3'
+          # PR 리뷰 코멘트 작성은 `pull-requests: write`를 요구한다. 이 job의 토큰은 읽기 전용이다.
+          GITLEAKS_ENABLE_COMMENTS: 'false'
+          # 이 job이 보관하는 artifact는 Playwright 진단뿐이다(CI-PLAN §11).
+          # 결과는 job summary와 단계 로그로만 본다.
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+          # 탐지가 있을 때만 표를 그린다. 값은 `--redact`로 가려지지만 표에는 commit 작성자
+          # email이 들어간다. git 이력에 이미 있는 저장소 소유자 자신의 값이고, 탐지는
+          # 어차피 사람이 판단해야 하는 중단 사건이라 유일한 진단 경로를 남겨 둔다.
+          GITLEAKS_ENABLE_SUMMARY: 'true'
+
+      - name: CI 스크립트 계약 시험
+        # `classify-changes.sh`의 분류 규칙과 `verify-merge-commit.sh`의 부모 검증이
+        # CI 판정 전체를 좌우한다(CI-PLAN §5). 임시 git fixture로 두 스크립트를 실제로
+        # 실행해 `docs-only` 값·`reason` enum·종료 코드·오류 메시지를 단정한다.
+        #
+        # 조건 없이 항상 실행한다. `.github/**` 변경에서만 돌게 하려면 변경 파일을
+        # 다시 분류해야 하는데, 그러면 분류기를 분류기로 게이트하게 된다. 이 시험은
+        # 러너에서 몇 초면 끝나므로 무조건 실행이 더 싸고 우회 경로가 없다.
+        # 분류 단계보다 앞에 두어 규칙이 깨진 채로 판정이 나가지 않게 한다.
+        run: bash .github/scripts/test-ci-scripts.sh
+
+      - name: 변경 분류
+        id: classify
+        env:
+          EVENT_BEFORE: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # 스크립트로 분리해 위 단계가 계약을 고정할 수 있게 한다.
+        # `GITHUB_OUTPUT`에 `docs-only`와 `reason`을 쓰고 `GITHUB_STEP_SUMMARY`에도 같은
+        # 값을 남긴다. 종료 코드는 항상 0이며 판정 불가는 `no-comparison-base`로 표현해
+        # 전체 검사를 켠다.
+        #
+        # PR 이벤트에서는 체크아웃된 head가 아니라 target base의 승인된 분류기를 실행한다
+        # (CI-PLAN §5: "PR이 수정한 classifier가 자기 검사를 축소할 수 없다"). head의
+        # 분류기를 그대로 쓰면 규칙에 한 줄을 더하는 것만으로 그 PR의 frontend 검사를
+        # 통째로 건너뛸 수 있다. base에 파일이 없으면(이 PR이 최초 도입) fail-closed로
+        # head 것을 쓰되 어떤 정의를 썼는지 로그에 남긴다.
+        # push·workflow_dispatch는 비교 대상 base가 없으므로 체크아웃된 정의를 쓴다.
+        run: |
+          set -euo pipefail
+          classifier='.github/scripts/classify-changes.sh'
+          if [ "${GITHUB_EVENT_NAME}" = 'pull_request' ]; then
+            approved="${RUNNER_TEMP}/classify-changes.base.sh"
+            if git show "${PR_BASE_SHA}:.github/scripts/classify-changes.sh" >"${approved}" 2>/dev/null \
+              && [ -s "${approved}" ]; then
+              classifier="${approved}"
+              echo "분류기 출처: target base ${PR_BASE_SHA}의 승인된 정의"
+            else
+              rm -f "${approved}"
+              echo "::warning::target base ${PR_BASE_SHA}에 classify-changes.sh가 없다. 체크아웃된 head의 정의로 분류한다."
+            fi
+          else
+            echo "분류기 출처: 체크아웃된 ${GITHUB_SHA}"
+          fi
+          bash "${classifier}"
+
+      - name: Node 준비
+        if: steps.classify.outputs.docs-only != 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # `frontend/.nvmrc`가 Node major의 정본이다. `.npmrc`의 engine-strict가
+          # 다른 major에서 설치를 즉시 실패시킨다.
+          node-version-file: frontend/.nvmrc
+          # npm 다운로드 캐시만 쓴다. `node_modules`와 Playwright 브라우저는 캐시하지 않는다.
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 의존 설치
+        if: steps.classify.outputs.docs-only != 'true'
+        run: npm --prefix frontend ci --prefer-offline --no-audit --fund=false
+
+      - name: 타입 검사
+        if: steps.classify.outputs.docs-only != 'true'
+        run: npm --prefix frontend run typecheck
+
+      - name: 프로덕션 빌드
+        if: steps.classify.outputs.docs-only != 'true'
+        run: npm --prefix frontend run build
+
+      - name: Vitest
+        if: steps.classify.outputs.docs-only != 'true'
+        timeout-minutes: 2
+        run: npm --prefix frontend run test
+
+      - name: Chromium headless shell 설치
+        if: steps.classify.outputs.docs-only != 'true'
+        # 어느 project도 `channel`을 지정하지 않으므로 Playwright는 headless Chromium을
+        # `chromium-headless-shell`로 해석한다. channel을 추가하거나 headed 실행을
+        # 필수 경로에 넣으면 `--only-shell` 설치와 어긋나므로 그때 전체 Chromium을 설치한다.
+        run: npm --prefix frontend exec -- playwright install chromium --with-deps --only-shell
+
+      - name: Chromium E2E
+        id: e2e
+        if: steps.classify.outputs.docs-only != 'true'
+        timeout-minutes: 4
+        env:
+          # GitHub 러너가 이미 CI=true를 설정하지만 명시해 로컬 재현 명령과 같게 둔다.
+          # playwright.config.ts가 이 값으로 forbidOnly와 workers=1을 켠다. retries는 항상 0이다.
+          CI: 'true'
+        # 앞 단계가 만든 `dist`를 preview로 제공한다. 여기서 다시 빌드하지 않는다.
+        run: npm --prefix frontend run test:e2e:run
+
+      - name: 실패 진단 artifact 업로드
+        # 실패·timeout·취소에서만 올린다. 성공한 PR의 산출물은 보관하지 않는다.
+        # 문서-only 경로에서는 E2E 단계가 `skipped`라 이 단계도 돌지 않는다.
+        # report·trace·screenshot만 담기며 backend·자격정보·사용자 데이터가 없다.
+        if: ${{ (failure() || cancelled()) && steps.e2e.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          retention-days: 7
+          # `ignore`면 report·trace 경로가 어긋나도 이 단계가 조용히 성공해 실패한 실행에
+          # 진단물이 없다는 사실을 아무도 모른다. `warn`은 job을 실패시키지 않으면서
+          # 경로 표류를 로그에 남긴다.
+          if-no-files-found: warn
