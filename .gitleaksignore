@@ -1,0 +1,8 @@
+# gitleaks 예외 목록. 한 줄에 fingerprint 하나. 규칙을 완화하지 않고 사람이 판단한 개별 탐지만 넘긴다.
+# 형식: <commit>:<path>:<rule-id>:<line>. 값은 `gitleaks detect` 출력의 Fingerprint 행에서 그대로 가져온다.
+# 추가할 때는 아래처럼 근거를 주석으로 남긴다. 근거 없는 항목은 리뷰에서 거절한다.
+
+# 2026-09-04 전수 기준선 스캔(workflow_dispatch, run 33881744463)의 유일한 탐지. BMAD 파일 매니페스트의
+# `hash` 열에 든 SHA-256 파일 해시다. 이웃 행과 같은 형태이며 파일명 `key-screens.md`의 "key" 때문에
+# `generic-api-key`에 걸렸다. 비밀이 아니다. 매니페스트의 다른 행은 예외로 두지 않는다.
+67d32e9f4469c78cc248dc4a146551caca3fd615:_bmad/_config/files-manifest.csv:generic-api-key:48
