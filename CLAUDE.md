@@ -26,7 +26,7 @@ npm --prefix frontend run test
 npm --prefix frontend run test:e2e
 ```
 
-`test:e2e`는 Playwright가 빌드와 `preview`를 자동으로 띄운다. 처음 한 번은 `npm --prefix frontend exec -- playwright install chromium`이 필요하다.
+`test:e2e`는 `vite build` 뒤 Playwright가 산출물을 `preview`로 띄운다. 빌드가 이미 끝난 CI에서는 빌드를 건너뛰는 `test:e2e:run`을 쓴다. 처음 한 번은 `npm --prefix frontend exec -- playwright install chromium`이 필요하다.
 
 디자인 토큰 정본은 `frontend/src/styles/tokens.css`이며 `DESIGN.md` frontmatter의 평면 이름을 그대로 옮긴 것이다. 색·크기 리터럴을 컴포넌트에 직접 쓰지 않는다. 화면 카피는 `frontend/src/content/`가 소유하고 화면과 시험이 같은 문자열을 참조한다. 외부 폰트·CDN·분석·광고 SDK와 브라우저 저장소 쓰기는 금지이며 시험이 이를 고정한다. 자세한 절차는 `DEVELOPMENT.md`의 `## 프런트엔드` 절에 있다.
 
@@ -62,7 +62,9 @@ Story 1.1(진입 화면)은 `spec-1-1-entry-screen.md`대로 구현했다. `fron
 
 ## 브랜치·커밋
 
-git flow를 따른다. `main`은 릴리스만 받고 직접 커밋하지 않는다. `develop`이 통합 브랜치이며 모든 토픽 브랜치는 `develop`에서 분기해 `--no-ff`로 병합한 뒤 삭제한다.
+git flow를 따른다. `main`은 릴리스만 받고 직접 커밋하지 않는다. `develop`이 통합 브랜치이며 모든 토픽 브랜치는 `develop`에서 분기한다.
+
+병합은 GitHub PR의 `Create a merge commit`으로만 한다. `develop`·`main`에 직접 push하지 않는다. 로컬에서 병합해 push하면 필수 검사 `ci-required`가 병합을 막을 기회를 잃고 사후 알림으로만 남는다. PR 머지 커밋은 `--no-ff`와 같은 2-부모 커밋이라 토픽 브랜치 경계가 이력에 남는다. `Squash and merge`·`Rebase and merge`는 그 경계를 지우므로 쓰지 않는다. 병합 후 토픽 브랜치는 삭제한다.
 
 - `feature/<에픽>-<스토리>-<slug>` — 스토리 구현. 예: `feature/1-1-entry-screen`
 - `chore/<slug>` — 도구·환경·저장소 정비
