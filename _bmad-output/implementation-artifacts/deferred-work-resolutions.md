@@ -2,7 +2,7 @@
 title: 'Deferred Work 해소 원장'
 status: living
 created: '2026-09-02'
-updated: '2026-09-02'
+updated: '2026-09-04'
 applies_to: '_bmad-output/implementation-artifacts/deferred-work.md'
 decision_baseline: 'ERD-1.0.0'
 ---
@@ -17,11 +17,11 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 7 |
+| 해소 | 9 |
 | 부분 해소 | 2 |
-| 미해소 | 1 |
+| 미해소 | 5 |
 
-미해소·부분 해소 3건 중 개발 스프린트를 막는 항목은 없다. 2건은 외부 승인 게이트(G-5, 출시 전 사용자 과업)에 묶여 있고 1건은 문서 링크 정리다.
+미해소·부분 해소 7건 중 개발 스프린트를 막는 항목은 없다. 부분 해소 2건은 외부 승인 게이트(G-5, 출시 전 사용자 과업)에 묶여 있고, 미해소 5건(12–16)은 각각 소유 스토리 또는 별도 정책 PR이 정해져 있다. 그중 12(린터·포매터)는 CI-PLAN §8에 따라 Story 1.2 완료 전에 끝나야 한다. 표는 항목별 판정을 다시 세어 2026-09-04에 맞췼다. 이전 표는 항목 2가 해소되기 전 값이었다.
 
 ## 항목별 판정
 
@@ -68,6 +68,30 @@ decision_baseline: 'ERD-1.0.0'
 ### 10. 계산 사고에서 `last_trusted_only` 표시를 허용할 조건
 
 **해소.** `ERD-1.0.0` §6.1이 `같은 canonical input/policy에서 다른 result hash`를 deterministic replay 1건으로 강한 신호로 판정하고, 해당 calculation policy의 **표시와 publication을 함께 정지**하며 범위가 불명하면 sync·계산을 전역 정지한다. 따라서 잘못된 계산 버전이 만든 과거 값이 마지막 신뢰값으로 계속 노출되는 경로가 차단된다.
+
+### 11. 프런트엔드 시험을 자동 실행하는 CI 워크플로
+
+**해소(2026-09-04).** `.github/workflows/ci.yml`의 단일 `ci-required` job이 `develop`·`main`의 PR과 push에서 install, typecheck, build, Vitest, Chromium E2E를 실행하고 `CI`를 설정한다(CI-PLAN §6, `spec-ci-foundation.md`). CI-PLAN §16이 요구한 "검사가 실제로 성공한 뒤" 조건은 GitHub-hosted Ubuntu 실행 6회 green(PR #2·#4, `develop` push 3회, `workflow_dispatch` 1회)으로 충족했다. Ruleset `protect-integration-branches`가 `develop`·`main`에서 `ci-required` 통과를 병합 조건으로 강제한다(CI-PLAN §13).
+
+### 12. 린터·포매터(ESLint·stylelint) 도입
+
+**미해소.** CI-PLAN §8이 Story 1.2 완료 전 별도 품질정책 PR에서 도구·규칙·예외를 합의하고 lint, stylelint, format check를 required gate로 승격하도록 정했다. 그 전까지 코드 리뷰가 표류를 확인하며 "검사가 없음"을 "검사 성공"으로 기록하지 않는다. 개발 스프린트를 막지 않지만 Story 1.2 완료의 선행 조건이다.
+
+### 13. Playwright 시험 대상에 WebKit 추가 여부
+
+**미해소.** CI-PLAN §7이 WebKit을 비필수 job으로 시작하고 §17이 10회 측정에서 안정성과 p95 예산을 충족할 때 `develop` required로 승격하도록 정했다. `main` PR의 WebKit 필수 검사는 Story 3.8의 `release-validation` 범위다(§5, §13). 결정 시점은 Story 3.8 전이며 지금은 막는 항목이 없다.
+
+### 14. CSP를 비롯한 보안 응답 헤더
+
+**미해소.** Story 1.2의 Nginx 구성이 소유한다. `epics.md` Story 1.2와 `ARCHITECTURE-SPINE.md`의 동일 출처 경계가 정의 지점이다. Story 1.2 착수 시 SPEC에서 결정한다.
+
+### 15. 진입 화면 `다음 단계` 카피를 소셜 로그인 버튼으로 교체
+
+**미해소.** `epics.md` Story 1.4(Google 가입·로그인)가 소유한다. `frontend/src/content/entry.ts`의 "로그인 수단 선택은 아직 준비 중입니다."는 로그인 수단이 생기는 즉시 거짓이 되므로 Story 1.4 SPEC의 필수 변경으로 넣는다.
+
+### 16. `bmad-contract` 검사 구현
+
+**미해소.** CI-PLAN §14가 `_bmad/**`·`.agents/skills/**`·`.claude/skills/**`·`.codex/**`·`scripts/check-bmad-env.sh`·`uv.toml` 변경에만 도는 별도 검사로 정했다. 러너에 `uv`와 관리 Python 다운로드가 필요해 frontend 필수 경로와 분리했다(`spec-ci-foundation.md`). 그때까지 이 경로만 바뀐 PR은 fail-closed 분류로 전체 frontend 검사를 돌고, BMAD 계약 자체는 어떤 게이트도 검증하지 않는다. 개발 스프린트를 막지 않는다.
 
 ## 갱신 규칙
 
