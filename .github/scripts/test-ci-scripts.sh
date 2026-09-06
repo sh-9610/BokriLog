@@ -1,18 +1,26 @@
 #!/usr/bin/env bash
 # CI 계약 시험.
 #
-# 왜 있는가: `classify-changes.sh`의 분류 규칙과 `verify-merge-commit.sh`의 부모 검증은
-# CI 판정 전체를 좌우하지만 workflow 안에서는 실행 결과를 봐야만 검증된다. CI-PLAN.md §5는
-# "분류 규칙과 허용 사유 enum은 workflow 구현 SPEC의 시험 대상이다"라고 요구한다.
-# 이 스크립트는 임시 git fixture를 만들어 두 스크립트를 실제로 실행하고
-# `docs-only` 값과 `reason` enum, 종료 코드, 오류 메시지를 함께 단정한다.
+# 왜 있는가: `classify-changes.sh`의 분류 규칙, `verify-merge-commit.sh`의 부모 검증,
+# `aggregate-results.sh`의 집계 판정은 CI 판정 전체를 좌우하지만 workflow 안에서는 실행 결과를
+# 봐야만 검증된다. CI-PLAN.md §5는 "분류 규칙과 허용 사유 enum은 workflow 구현 SPEC의 시험
+# 대상이다"라고 요구한다. 이 스크립트는 임시 git fixture를 만들어 세 스크립트를 실제로 실행하고
+# 값과 enum, 종료 코드, 오류 메시지를 함께 단정한다.
 #
-# 스크립트만으로는 부족하다. `ci.yml`의 job 이름·러너·게이트가 바뀌면 스크립트가 아무리
+# 스크립트만으로는 부족하다. `ci.yml`의 job 구조·러너·게이트가 바뀌면 스크립트가 아무리
 # 정확해도 필수 검사가 조용히 사라진다. branch protection은 `ci-required`라는 이름 하나만
 # 보므로 job 이름을 바꾸면 required check가 영구 대기로 남고, `docs-only` 게이트를 한 줄
 # 지우거나 더하면 검사 범위가 말없이 달라진다. 그래서 `ci.yml`의 계약도 여기서 단정한다.
 #
+# Story 1.2에서 단일 job이 `changes → frontend-quality·backend-quality →
+# same-origin-integration → ci-required`로 갈라졌다(CI-PLAN §1). 단일 job을 전제한 단정
+# (`runs-on` 정확히 1회, 액션 SHA 각 1회, 단계 게이트 10회)은 그 구조에서 스스로 실패하므로
+# job 구조 계약으로 다시 설계했다. 등장 횟수 대신 job 목록·`needs` 배선·action@SHA 집합을 본다.
+# 다만 지워진 단계 게이트 10회 루프는 그 단계들이 존재한다는 계약이기도 했다. 그 몫은
+# job별 단계 목록 단정이 대신한다. 없으면 `Vitest` 단계를 지워도 이 시험이 통과한다.
+#
 # 정본: _bmad-output/implementation-artifacts/spec-ci-foundation.md `## I/O & Edge-Case Matrix`
+#       _bmad-output/implementation-artifacts/spec-1-2-same-origin-shell.md `## Tasks & Acceptance`
 #
 # 실행: bash .github/scripts/test-ci-scripts.sh
 # 종료 코드
@@ -31,10 +39,17 @@
 
 set -uo pipefail
 
+# `pipefail` 아래에서 생산자의 출력을 `grep -q`로 받는 파이프를 if 조건에 쓰지 않는다. -q는 첫 매치에서 바로
+# 끝나고, 아직 쓰고 있던 생산자(awk)는 SIGPIPE(141)로 죽어 파이프라인 전체가 실패로 읽힌다.
+# 어느 쪽이 먼저 끝나는지는 스케줄링에 달려 있어 로컬에서는 통과하고 러너에서만 실패한다
+# (PR #9 첫 실행, `frontend-quality` 게이트 단정). 대신 `grep ... >/dev/null`을 쓴다. -q가
+# 없는 grep은 입력을 끝까지 읽으므로 생산자가 SIGPIPE를 받지 않는다. 아래 자기 단정이 재발을 막는다.
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "${script_dir}/../.." && pwd -P)"
 classify_script="${script_dir}/classify-changes.sh"
 verify_script="${script_dir}/verify-merge-commit.sh"
+aggregate_script="${script_dir}/aggregate-results.sh"
 workflow_file="${repo_root}/.github/workflows/ci.yml"
 
 # --------------------------------------------------------------------------
@@ -66,7 +81,7 @@ fail_setup() {
   exit 2
 }
 
-for required in "${classify_script}" "${verify_script}" "${workflow_file}"; do
+for required in "${classify_script}" "${verify_script}" "${aggregate_script}" "${workflow_file}"; do
   if [ ! -f "${required}" ]; then
     fail_setup "${required} 가 없다."
   fi
@@ -212,12 +227,16 @@ check_classify() {
   log_file="${work_root}/log-$((tests_run + 1)).txt"
   : >"${out_file}"
 
+  # 분류기도 `GITHUB_STEP_SUMMARY`가 있으면 거기에 판정을 덧붙인다. 러너에서 이 시험이
+  # 돌 때 실제 job summary를 물려받으면 시험 fixture의 분류 결과가 PR 화면에 실린다.
+  # 전용 sink로 돌린다. summary 기록 자체는 아래 전용 시험이 따로 단정한다.
   (
     cd "${dir}" || exit 97
     GITHUB_EVENT_NAME="${event}" \
     GITHUB_SHA="${sha}" \
     EVENT_BEFORE="${before}" \
     GITHUB_OUTPUT="${out_file}" \
+    GITHUB_STEP_SUMMARY="${work_root}/classify-sink.md" \
     bash "${classify_script}"
   ) >"${log_file}" 2>&1
   status=$?
@@ -276,28 +295,97 @@ check_verify() {
   record_pass "${label}"
 }
 
-# workflow_step_block <단계 이름>. 해당 step의 본문 줄만 stdout으로 낸다.
-workflow_step_block() {
-  awk -v want="      - name: $1" '
-    index($0, "      - name: ") == 1 { inblock = ($0 == want); next }
+# --- ci.yml 읽기 -----------------------------------------------------------
+# job이 여럿이 된 뒤로 "파일 전체에서 몇 번 나오는가"만으로는 계약을 고정할 수 없다.
+# 같은 단계 이름(`저장소 checkout`)이 여러 job에 있고, 같은 action이 여러 job에서 쓰인다.
+# 그래서 job 블록을 먼저 잘라 내고 그 안에서 단정한다.
+#
+# YAML 파서를 쓰지 않는 이유는 파일 머리말에 적었다. 대신 이 파일의 들여쓰기 규약에 기댄다.
+#   0칸 -- 최상위 키(`jobs:`)      2칸 -- job id      4칸 -- job 속성
+#   6칸 -- `- name:` 단계 머리      8칸 -- 단계 속성
+
+# workflow_job_block <job id>. 해당 job의 본문 줄만 stdout으로 낸다.
+workflow_job_block() {
+  awk -v want="  $1:" '
+    /^jobs:$/ { injobs = 1; next }
+    injobs == 0 { next }
+    # 최상위 키를 다시 만나면 jobs 블록이 끝난 것이다.
+    /^[^[:space:]]/ { injobs = 0; inblock = 0; next }
+    /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ { inblock = ($0 == want); next }
     inblock { print }
   ' "${workflow_file}"
 }
 
-# check_workflow_contains <라벨> <파일> <찾을 문자열>
-check_workflow_contains() {
-  local label="$1" file="$2" needle="$3"
-  if grep -qF -- "${needle}" "${file}"; then
-    record_pass "${label}"
+# workflow_job_ids. jobs 블록의 job id를 등장 순서대로 공백으로 이어 낸다.
+workflow_job_ids() {
+  awk '
+    /^jobs:$/ { injobs = 1; next }
+    injobs == 0 { next }
+    /^[^[:space:]]/ { injobs = 0; next }
+    /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ {
+      sub(/:[[:space:]]*$/, "")
+      sub(/^  /, "")
+      printf "%s ", $0
+    }
+  ' "${workflow_file}" | sed 's/ *$//'
+}
+
+# workflow_step_block <job id> <단계 이름>. 그 job 안 해당 step의 본문 줄만 낸다.
+workflow_step_block() {
+  workflow_job_block "$1" | awk -v want="      - name: $2" '
+    index($0, "      - name: ") == 1 { inblock = ($0 == want); next }
+    inblock { print }
+  '
+}
+
+# job_step_line <job id> <단계 이름>. job 블록 안에서의 줄 번호를 낸다. 없으면 빈 값.
+# 단계 이름은 정규식이 아니라 리터럴로 비교한다(`-F -x`). 실제 단계 이름에 이미
+# `Story 1.1 회귀 (Nginx origin)`처럼 정규식 메타문자가 들어 있어, 정규식으로 두면
+# 이름이 있는데도 조용히 안 맞는 단정이 만들어진다. 못 찾은 것과 구분되지 않으므로
+# 잘못된 통과가 아니라 잘못된 실패로도, 그 반대로도 나올 수 있다.
+job_step_line() {
+  workflow_job_block "$1" | grep -nxF -- "      - name: $2" | head -1 | cut -d: -f1
+}
+
+# assert_step_exists <job id> <단계 이름>
+# 단계가 있기만 해도 통과다. 순서·내용 단정은 각 절이 따로 한다. 이 단정이 없으면
+# 순서 단정에 쓰이지 않는 단계(`Vitest`, `의존 설치` 등)는 통째로 지워도 계약 시험이 통과한다.
+assert_step_exists() {
+  local job_id="$1" step_name="$2"
+  if [ -n "$(job_step_line "${job_id}" "${step_name}")" ]; then
+    record_pass "ci.yml · '${job_id}'에 '${step_name}' 단계가 있다"
   else
-    record_fail "${label}" "'${needle}'를 찾지 못했다."
+    record_fail "ci.yml · '${job_id}'에 '${step_name}' 단계가 있다" \
+      '단계가 없다. 지워졌거나 이름이 바뀌었다.'
   fi
 }
 
-# count_lines <정규식>. 파일에서 일치하는 줄 수를 stdout으로 낸다.
+# count_lines <정규식>. 파일 전체에서 일치하는 줄 수를 stdout으로 낸다.
 count_lines() {
   grep -cE -- "$1" "${workflow_file}" 2>/dev/null || true
 }
+
+# count_job_lines <job id> <정규식>. 그 job 블록 안에서 일치하는 줄 수를 낸다.
+count_job_lines() {
+  workflow_job_block "$1" | grep -cE -- "$2" 2>/dev/null || true
+}
+
+# workflow_uses. 쓰이는 `action@SHA`를 중복 없이 정렬해 공백으로 이어 낸다.
+# 등장 횟수가 아니라 집합을 단정하기 위한 값이다. 새 action이 들어오거나 SHA가 바뀌면 달라진다.
+workflow_uses() {
+  grep -E '^[[:space:]]*uses: ' "${workflow_file}" \
+    | sed 's/^[[:space:]]*uses: //; s/[[:space:]]*#.*$//; s/[[:space:]]*$//' \
+    | sort -u \
+    | tr '\n' ' ' \
+    | sed 's/ *$//'
+}
+
+# --------------------------------------------------------------------------
+# 이 파일 자체의 규약
+# --------------------------------------------------------------------------
+
+assert_equals 'test-ci-scripts.sh · pipefail 아래 조기 종료 grep -q 파이프가 없다' \
+  "$(grep -cE '\|[[:space:]]*grep -[[:alpha:]]*q' "${BASH_SOURCE[0]}" | tr -d '[:space:]')" '0'
 
 # --------------------------------------------------------------------------
 # 변경 시나리오
@@ -574,81 +662,386 @@ check_classify '검증된 merge commit의 비교 기준은 parent1' \
   "${verify_dir}" pull_request "${verify_merge}" '' false product-change
 
 # --------------------------------------------------------------------------
+# 집계 판정
+# --------------------------------------------------------------------------
+printf '\n필수 검사 집계\n'
+
+# 집계 스크립트는 `GITHUB_STEP_SUMMARY`가 있으면 거기에 판정 표를 덧붙인다. 아래 시험은
+# 러너의 `changes` job 안에서 도는데, 그 변수를 그대로 물려주면 열몇 번의 시험 호출이
+# 만들어 낸 가짜 판정 표가 실제 PR 화면의 job summary에 그대로 실린다. 시험 전용 sink로 돌린다.
+aggregate_sink="${work_root}/aggregate-sink.md"
+
+# check_aggregate <라벨> <docs_only> <changes> <frontend> <backend> <integration>
+#                 <기대 종료 코드> [기대 메시지 조각] [없어야 하는 메시지 조각]
+check_aggregate() {
+  local label="$1" docs="$2" changes="$3" frontend="$4" backend="$5" integration="$6"
+  local want_status="$7" want_message="${8:-}" unwanted_message="${9:-}"
+  local log_file status
+
+  log_file="${work_root}/aggregate-$((tests_run + 1)).txt"
+
+  (
+    DOCS_ONLY="${docs}" \
+    CHANGES_RESULT="${changes}" \
+    FRONTEND_RESULT="${frontend}" \
+    BACKEND_RESULT="${backend}" \
+    INTEGRATION_RESULT="${integration}" \
+    GITHUB_STEP_SUMMARY="${aggregate_sink}" \
+    bash "${aggregate_script}"
+  ) >"${log_file}" 2>&1
+  status=$?
+
+  if [ "${status}" -ne "${want_status}" ]; then
+    record_fail "${label}" "종료 코드 ${status} (기대 ${want_status}) — $(tr '\n' '|' <"${log_file}")"
+    return
+  fi
+
+  if [ -n "${want_message}" ] && ! grep -qF -- "${want_message}" "${log_file}"; then
+    record_fail "${label}" "메시지에 '${want_message}'가 없다 — $(tr '\n' '|' <"${log_file}")"
+    return
+  fi
+
+  if [ -n "${unwanted_message}" ] && grep -qF -- "${unwanted_message}" "${log_file}"; then
+    record_fail "${label}" "메시지에 '${unwanted_message}'가 있으면 안 된다 — $(tr '\n' '|' <"${log_file}")"
+    return
+  fi
+
+  record_pass "${label}"
+}
+
+check_aggregate '제품 변경 · 세 job 모두 success -> 종료 0' \
+  false success success success success 0 '모든 예상 결과가 일치한다.'
+
+check_aggregate '문서-only · 세 job 모두 skipped -> 종료 0' \
+  true success skipped skipped skipped 0 '모든 예상 결과가 일치한다.'
+
+# 실패는 어느 job에서 나든 병합을 막는다.
+check_aggregate '제품 변경 · frontend failure -> 종료 1' \
+  false success failure success success 1 '::error::frontend-quality job이 failure로 끝났다.'
+
+check_aggregate '제품 변경 · backend failure -> 종료 1' \
+  false success success failure success 1 '::error::backend-quality job이 failure로 끝났다.'
+
+check_aggregate '제품 변경 · integration cancelled -> 종료 1' \
+  false success success success cancelled 1 '::error::same-origin-integration job이 cancelled로 끝났다.'
+
+# 예상하지 않은 skip. `if` 조건을 잘못 고치면 검사가 조용히 사라진다.
+check_aggregate '제품 변경 · 예상 밖 skipped -> 종료 1' \
+  false success success skipped success 1 \
+  '::error::backend-quality job이 건너뛰어졌지만 이 변경은 제품 변경으로 분류됐다.'
+
+# 문서-only인데 제품 job이 돌았다. 분류와 게이트가 어긋난 상태다.
+check_aggregate '문서-only · 예상 밖 success -> 종료 1' \
+  true success success skipped skipped 1 \
+  '::error::frontend-quality job이 실행됐지만 이 변경은 문서-only로 분류됐다.'
+
+# 빈 값. `needs`에서 job을 빼면 결과가 빈 문자열로 온다. 통과로 읽으면 job 하나를
+# 지우는 것만으로 필수 검사가 사라진다.
+check_aggregate '제품 변경 · 빈 결과 -> 종료 1' \
+  false success success success '' 1 \
+  '::error::same-origin-integration job의 결과가 비었다.'
+
+check_aggregate 'changes job 실패 -> 종료 1' \
+  false failure skipped skipped skipped 1 '::error::changes job이 success가 아니다'
+
+check_aggregate 'changes job 결과 없음 -> 종료 1' \
+  false '' success success success 1 '::error::changes job이 success가 아니다'
+
+# 실제 `changes` 실패의 모습은 `DOCS_ONLY`까지 빈 값이다. 그 job이 분류 결과를 만들지 못했기
+# 때문이다. 이때 판정을 계속 진행하면 기대치가 `success`로 굳어, 정상적으로 건너뛰어진 세 job이
+# 각각 "건너뛰어졌지만 제품 변경으로 분류됐다"는 오류를 받고 `DOCS_ONLY` 오류까지 붙는다.
+# 진짜 원인 하나에 없는 문제 네 개가 얹히는 셈이라 로그를 읽는 사람을 잘못된 곳으로 보낸다.
+check_aggregate 'changes 실패 · 건너뛴 job을 분류·게이트 불일치로 오인하지 않는다' \
+  '' failure skipped skipped skipped 1 \
+  '::error::changes job이 success가 아니다' \
+  '건너뛰어졌지만 이 변경은 제품 변경으로 분류됐다'
+
+check_aggregate 'changes 실패 · DOCS_ONLY 오류를 덧붙이지 않는다' \
+  '' failure skipped skipped skipped 1 \
+  '이 실행의 원인은 changes job 하나다' \
+  '::error::DOCS_ONLY가 true·false가 아니다'
+
+# 줄 수까지 고정한다. 위 두 단정은 특정 문구만 보므로 다른 문구로 오해를 부르는 줄이
+# 다시 늘어나도 걸리지 않는다. 허용되는 `::error::`는 원인 1줄과 종료 1줄뿐이다.
+changes_fail_log="${work_root}/aggregate-changes-fail.txt"
+(
+  DOCS_ONLY='' \
+  CHANGES_RESULT=failure \
+  FRONTEND_RESULT=skipped \
+  BACKEND_RESULT=skipped \
+  INTEGRATION_RESULT=skipped \
+  GITHUB_STEP_SUMMARY="${aggregate_sink}" \
+  bash "${aggregate_script}"
+) >"${changes_fail_log}" 2>&1
+assert_equals 'changes 실패 · ::error::는 원인 1줄 + 종료 1줄뿐' \
+  "$(grep -c -- '::error::' "${changes_fail_log}")" '2'
+
+# 분류 결과 자체가 깨진 경우. fail-closed로 가장 엄격한 기대치를 적용한다.
+check_aggregate 'DOCS_ONLY가 빈 값 -> 종료 1' \
+  '' success success success success 1 '::error::DOCS_ONLY가 true·false가 아니다'
+
+check_aggregate 'DOCS_ONLY가 알 수 없는 값 -> 종료 1' \
+  maybe success success success success 1 '::error::DOCS_ONLY가 true·false가 아니다'
+
+# 집계 결과가 PR 화면에 남는지 고정한다. 어떤 job이 왜 막았는지 단계 로그를 펼치기 전에 보인다.
+aggregate_summary="${work_root}/aggregate-summary.md"
+: >"${aggregate_summary}"
+aggregate_summary_status=0
+(
+  DOCS_ONLY=false \
+  CHANGES_RESULT=success \
+  FRONTEND_RESULT=success \
+  BACKEND_RESULT=success \
+  INTEGRATION_RESULT=success \
+  GITHUB_STEP_SUMMARY="${aggregate_summary}" \
+  bash "${aggregate_script}"
+) >"${work_root}/aggregate-summary-log.txt" 2>&1 || aggregate_summary_status=$?
+
+if [ "${aggregate_summary_status}" -ne 0 ]; then
+  record_fail '집계가 GITHUB_STEP_SUMMARY에 판정 표를 남긴다' \
+    "종료 코드 ${aggregate_summary_status} (기대 0) — $(tr '\n' '|' <"${work_root}/aggregate-summary-log.txt")"
+elif grep -qF '### 필수 검사 집계' "${aggregate_summary}" \
+  && grep -qF '| `frontend-quality` |' "${aggregate_summary}" \
+  && grep -qF '| `backend-quality` |' "${aggregate_summary}" \
+  && grep -qF '| `same-origin-integration` |' "${aggregate_summary}"; then
+  record_pass '집계가 GITHUB_STEP_SUMMARY에 판정 표를 남긴다'
+else
+  record_fail '집계가 GITHUB_STEP_SUMMARY에 판정 표를 남긴다' \
+    "$(tr '\n' '|' <"${aggregate_summary}")"
+fi
+
+# --------------------------------------------------------------------------
 # workflow 계약
 # --------------------------------------------------------------------------
 printf '\nci.yml 계약\n'
 
-# branch protection이 참조하는 이름이다. job id나 `name`이 바뀌면 required check가
-# 영원히 대기 상태로 남고 병합은 아무 검사 없이 열린다.
-jobs_line="$(grep -n '^jobs:$' "${workflow_file}" | head -1 | cut -d: -f1)"
-if [ -z "${jobs_line}" ]; then
-  record_fail 'ci.yml · jobs 블록 존재' "'^jobs:' 줄이 없다."
-else
-  job_ids="$(tail -n +$((jobs_line + 1)) "${workflow_file}" \
-    | grep -E '^  [A-Za-z0-9_.-]+:[[:space:]]*$' \
-    | sed 's/^  //; s/:[[:space:]]*$//' \
-    | tr '\n' ' ' | sed 's/ *$//')"
-  assert_equals 'ci.yml · job은 ci-required 하나뿐' "${job_ids}" 'ci-required'
-fi
+# --- job 구조 --------------------------------------------------------------
+# Story 1.2에서 단일 job이 CI-PLAN §1의 병렬 구조로 갈라졌다. 그 구조 자체가 계약이다.
+# job 하나를 지우거나 `needs`를 한 줄 고치면 필수 검사가 조용히 사라지고, branch protection은
+# `ci-required`라는 이름 하나만 보므로 그 사실을 알지 못한다.
 
+# `changes → frontend-quality·backend-quality → same-origin-integration → ci-required`.
+# 순서까지 단정한다. 파일에서 읽는 순서가 곧 사람이 이해하는 실행 순서다.
+assert_equals 'ci.yml · job 목록과 순서' \
+  "$(workflow_job_ids)" \
+  'changes frontend-quality backend-quality same-origin-integration ci-required'
+
+# branch protection이 참조하는 이름이다. 바뀌면 required check가 영원히 대기 상태로 남고
+# 병합은 아무 검사 없이 열린다.
 assert_equals 'ci.yml · job name은 ci-required' \
   "$(count_lines '^    name: ci-required$')" '1'
 
-# `ubuntu-latest`는 러너 갱신이 CI 판정을 바꾼다.
-assert_equals 'ci.yml · runs-on은 ubuntu-24.04 고정' \
-  "$(count_lines '^    runs-on: ubuntu-24\.04$')" '1'
+# `ubuntu-latest`는 러너 갱신이 CI 판정을 바꾼다. 다섯 job 모두 고정한다.
+assert_equals 'ci.yml · 모든 job이 runs-on: ubuntu-24.04 고정' \
+  "$(count_lines '^    runs-on: ubuntu-24\.04$')" '5'
 
+for job_id in changes frontend-quality backend-quality same-origin-integration ci-required; do
+  assert_equals "ci.yml · '${job_id}' job이 ubuntu-24.04를 쓴다" \
+    "$(count_job_lines "${job_id}" '^    runs-on: ubuntu-24\.04$')" '1'
+done
+
+# --- needs 배선 ------------------------------------------------------------
+# 이 네 줄이 위 mermaid 그림 전체다. 하나만 어긋나도 검사가 병렬이 아니라 무관해진다.
+assert_equals 'ci.yml · frontend-quality는 changes를 기다린다' \
+  "$(count_job_lines frontend-quality '^    needs: changes$')" '1'
+assert_equals 'ci.yml · backend-quality는 changes를 기다린다' \
+  "$(count_job_lines backend-quality '^    needs: changes$')" '1'
+assert_equals 'ci.yml · same-origin-integration은 두 품질 job을 기다린다' \
+  "$(count_job_lines same-origin-integration '^    needs: \[changes, frontend-quality, backend-quality\]$')" '1'
+# 집계가 기다리지 않는 job의 결과는 빈 값으로 온다. 네 job이 모두 있어야 한다.
+assert_equals 'ci.yml · ci-required는 모든 선행 job을 기다린다' \
+  "$(count_job_lines ci-required '^    needs: \[changes, frontend-quality, backend-quality, same-origin-integration\]$')" '1'
+
+# 선행 job이 실패·취소·skip 어느 쪽이든 집계는 실행되어 판정을 남겨야 한다.
+# 이 줄이 없으면 실패한 실행에서 required check가 영원히 대기 상태로 남는다.
+assert_equals 'ci.yml · ci-required는 always()로 실행된다' \
+  "$(count_job_lines ci-required '^    if: \$\{\{ always\(\) \}\}$')" '1'
+
+# CI-PLAN §5: aggregator timeout은 1분이다.
+assert_equals 'ci.yml · ci-required timeout은 1분' \
+  "$(count_job_lines ci-required '^    timeout-minutes: 1$')" '1'
+
+# 집계는 스크립트가 소유한다. YAML 표현식은 저장소의 시험으로 고정할 수 없다.
+if workflow_step_block ci-required '필수 검사 집계' \
+  | grep -F 'bash .github/scripts/aggregate-results.sh' >/dev/null; then
+  record_pass 'ci.yml · ci-required는 aggregate-results.sh로 판정한다'
+else
+  record_fail 'ci.yml · ci-required는 aggregate-results.sh로 판정한다' \
+    '집계 단계에 aggregate-results.sh 호출이 없다.'
+fi
+
+# 집계 스크립트가 읽는 다섯 입력이 실제로 전달되는지. 하나라도 빠지면 그 job은
+# 빈 값으로 평가되고, 스크립트는 이를 실패로 읽어야 하므로 여기서 먼저 잡는다.
+for aggregate_input in \
+  'DOCS_ONLY: ${{ needs.changes.outputs.docs-only }}' \
+  'CHANGES_RESULT: ${{ needs.changes.result }}' \
+  'FRONTEND_RESULT: ${{ needs.frontend-quality.result }}' \
+  'BACKEND_RESULT: ${{ needs.backend-quality.result }}' \
+  'INTEGRATION_RESULT: ${{ needs.same-origin-integration.result }}'; do
+  if workflow_step_block ci-required '필수 검사 집계' | grep -F -- "${aggregate_input}" >/dev/null; then
+    record_pass "ci.yml · 집계 입력 '${aggregate_input%%:*}'을 전달한다"
+  else
+    record_fail "ci.yml · 집계 입력 '${aggregate_input%%:*}'을 전달한다" \
+      "'${aggregate_input}' 줄이 없다."
+  fi
+done
+
+# `changes`가 분류 결과를 밖으로 내보내지 않으면 아래 게이트가 전부 빈 값과 비교하게 된다.
+assert_equals 'ci.yml · changes job이 docs-only를 output으로 낸다' \
+  "$(count_job_lines changes '^      docs-only: \$\{\{ steps\.classify\.outputs\.docs-only \}\}$')" '1'
+
+# --- 각 job의 필수 단계 -----------------------------------------------------
+# 단일 job 시절에는 `docs-only` 게이트가 단계마다 붙어 있었고 그 개수(10회)를 세는 단정이
+# 곧 "이 단계들이 존재한다"는 계약이기도 했다. 게이트가 job 단위로 올라가면서 그 부수 효과가
+# 사라졌다. 순서·내용 단정이 걸린 단계는 일부뿐이라, 목록이 없으면 `Vitest`나 `의존 설치`처럼
+# 아무 단정도 참조하지 않는 단계를 통째로 지워도 이 시험이 통과한다.
+#
+# 그래서 각 job이 실제로 무엇을 하는지를 목록으로 고정한다. 단계를 의도적으로 없앨 때는
+# 여기서도 함께 지운다. 그 두 줄의 삭제가 리뷰가 봐야 할 지점이다.
+assert_job_steps() {
+  local job_id="$1" step
+  while IFS= read -r step; do
+    [ -n "${step}" ] || continue
+    assert_step_exists "${job_id}" "${step}"
+  done
+}
+
+assert_job_steps changes <<'STEPS'
+저장소 checkout
+PR merge commit 검증
+committed-secret 검사
+CI 스크립트 계약 시험
+변경 분류
+STEPS
+
+assert_job_steps frontend-quality <<'STEPS'
+저장소 checkout
+Node 준비
+의존 설치
+타입 검사
+ESLint
+stylelint
+Prettier 검사
+프로덕션 빌드
+Vitest
+Chromium headless shell 설치
+Chromium E2E
+통합 입력 업로드 (frontend dist)
+실패 진단 artifact 업로드
+STEPS
+
+assert_job_steps backend-quality <<'STEPS'
+저장소 checkout
+JDK 준비
+Gradle 빌드
+통합 입력 업로드 (backend jar)
+실패 진단 artifact 업로드
+STEPS
+
+assert_job_steps same-origin-integration <<'STEPS'
+저장소 checkout
+통합 입력 내려받기 (frontend dist)
+통합 입력 내려받기 (backend jar)
+동일 출처 검증
+Node 준비
+의존 설치
+Chromium headless shell 설치
+Story 1.1 회귀 (Nginx origin)
+compose 정리
+실패 진단 artifact 업로드
+STEPS
+
+assert_job_steps ci-required <<'STEPS'
+저장소 checkout
+필수 검사 집계
+STEPS
+
+# --- 문서-only 게이트 ------------------------------------------------------
+# 게이트는 이제 단계가 아니라 job에 붙는다. 개수까지 단정한다. 하나 더 달면 검사가 조용히
+# 줄고, 하나 지우면 문서-only PR이 전체 검사를 돈다. 둘 다 여기서 걸린다.
+# `ci-required`에는 붙지 않는다. 집계는 어떤 분류에서도 실행되어야 한다.
+docs_gate="if: needs.changes.outputs.docs-only != 'true'"
+assert_equals 'ci.yml · docs-only 게이트를 단 job은 3개' \
+  "$(grep -cF "    ${docs_gate}" "${workflow_file}")" '3'
+
+for gated_job in frontend-quality backend-quality same-origin-integration; do
+  if workflow_job_block "${gated_job}" | grep -F -- "${docs_gate}" >/dev/null; then
+    record_pass "ci.yml · '${gated_job}' job에 docs-only 게이트가 있다"
+  else
+    record_fail "ci.yml · '${gated_job}' job에 docs-only 게이트가 있다" \
+      'job을 찾지 못했거나 게이트가 없다.'
+  fi
+done
+
+if workflow_job_block ci-required | grep -F -- "${docs_gate}" >/dev/null; then
+  record_fail 'ci.yml · ci-required에는 docs-only 게이트가 없다' \
+    '집계가 문서-only PR에서 건너뛰어지면 required check가 영원히 대기한다.'
+else
+  record_pass 'ci.yml · ci-required에는 docs-only 게이트가 없다'
+fi
+
+# --- 이벤트와 필터 ---------------------------------------------------------
 # top-level `paths`·`paths-ignore`는 workflow 자체를 생략시켜 `ci-required` status가
 # 만들어지지 않는 분기를 연다(CI-PLAN §5).
 assert_equals 'ci.yml · top-level paths·paths-ignore 없음' \
   "$(count_lines '^ {0,4}paths(-ignore)?:')" '0'
 
-# 외부 action은 full commit SHA로 고정한다(CI-PLAN §11). 이 값이 바뀌면 리뷰 없이
-# 다른 코드가 필수 경로에서 실행된다.
-for pinned_sha in \
-  3d3c42e5aac5ba805825da76410c181273ba90b1 \
-  820762786026740c76f36085b0efc47a31fe5020 \
-  043fb46d1a93c77aae656e7c1c64a875d1fc6a0a \
-  e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e; do
-  assert_equals "ci.yml · action SHA ${pinned_sha} 고정" \
-    "$(count_lines "^[[:space:]]*uses: [^[:space:]]+@${pinned_sha}([[:space:]]|\$)")" '1'
-done
+# --- 외부 action 고정 ------------------------------------------------------
+# 외부 action은 full commit SHA로 고정한다(CI-PLAN §11). 값이 바뀌면 리뷰 없이 다른 코드가
+# 필수 경로에서 실행된다. checkout처럼 여러 job이 쓰는 action은 여러 번 나오므로 등장 횟수가
+# 아니라 "쓰이는 action@SHA 집합"을 단정한다. 새 action이 하나라도 들어오면 여기서 걸린다.
+assert_equals 'ci.yml · 모든 uses가 40자리 commit SHA로 고정됐다' \
+  "$(count_lines '^[[:space:]]*uses: [^[:space:]]+@[0-9a-f]{40}([[:space:]]|$)')" \
+  "$(count_lines '^[[:space:]]*uses: ')"
 
-# 문서-only 게이트. 개수까지 단정한다. 게이트를 하나 더 달면 검사가 조용히 줄고,
-# 하나 지우면 문서-only PR이 전체 검사를 돈다. 둘 다 여기서 걸린다.
-docs_gate="if: steps.classify.outputs.docs-only != 'true'"
-assert_equals 'ci.yml · docs-only 게이트를 단 단계는 10개' \
-  "$(grep -cF "        ${docs_gate}" "${workflow_file}")" '10'
+assert_equals 'ci.yml · 허용된 action@SHA 집합' \
+  "$(workflow_uses)" \
+  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e'
 
-for gated_step in \
-  'Node 준비' \
-  '의존 설치' \
-  '타입 검사' \
-  'ESLint' \
-  'stylelint' \
-  'Prettier 검사' \
-  '프로덕션 빌드' \
-  'Vitest' \
-  'Chromium headless shell 설치' \
-  'Chromium E2E'; do
-  if workflow_step_block "${gated_step}" | grep -qF -- "${docs_gate}"; then
-    record_pass "ci.yml · '${gated_step}' 단계에 docs-only 게이트가 있다"
-  else
-    record_fail "ci.yml · '${gated_step}' 단계에 docs-only 게이트가 있다" \
-      '단계를 찾지 못했거나 게이트가 없다.'
-  fi
-done
+# --- changes job -----------------------------------------------------------
+# 계약 시험이 분류보다 뒤로 가면 분류기를 분류기로 게이트하게 된다.
+test_step_line="$(job_step_line changes 'CI 스크립트 계약 시험')"
+classify_step_line="$(job_step_line changes '변경 분류')"
+if [ -n "${test_step_line}" ] && [ -n "${classify_step_line}" ] \
+  && [ "${test_step_line}" -lt "${classify_step_line}" ]; then
+  record_pass 'ci.yml · 계약 시험 단계가 분류 단계보다 앞에 있다'
+else
+  record_fail 'ci.yml · 계약 시험 단계가 분류 단계보다 앞에 있다' \
+    "계약 시험 줄 '${test_step_line}', 분류 줄 '${classify_step_line}'"
+fi
 
+assert_equals 'ci.yml · 분류 단계 id는 classify' \
+  "$(count_job_lines changes '^        id: classify$')" '1'
+
+# 계약 시험에는 조건이 붙지 않는다. 조건이 붙는 순간 우회 경로가 생긴다.
+if workflow_step_block changes 'CI 스크립트 계약 시험' | grep -E '^        if:' >/dev/null; then
+  record_fail 'ci.yml · 계약 시험 단계에 조건이 없다' \
+    '조건이 붙으면 그 조건을 만족하지 않는 PR에서 계약 시험이 사라진다.'
+else
+  record_pass 'ci.yml · 계약 시험 단계에 조건이 없다'
+fi
+
+# PR이 자기 분류기를 고쳐 검사를 축소할 수 없어야 한다(CI-PLAN §5).
+if workflow_step_block changes '변경 분류' \
+  | grep -F 'git show "${PR_BASE_SHA}:.github/scripts/classify-changes.sh"' >/dev/null; then
+  record_pass 'ci.yml · PR에서는 target base의 승인된 분류기를 꺼내 쓴다'
+else
+  record_fail 'ci.yml · PR에서는 target base의 승인된 분류기를 꺼내 쓴다' \
+    '분류 단계에 git show <base>:classify-changes.sh 호출이 없다.'
+fi
+
+# 후속 job은 움직이는 ref가 아니라 이벤트가 고정한 commit을 checkout한다(CI-PLAN §5).
+assert_equals 'ci.yml · 모든 job이 github.sha를 checkout한다' \
+  "$(count_lines '^          ref: \$\{\{ github\.sha \}\}$')" '5'
+
+# --- frontend-quality ------------------------------------------------------
 # lint·stylelint·format 검사는 타입 검사 뒤, 프로덕션 빌드 앞이다(spec-frontend-lint-policy.md,
 # CI-PLAN §6). 빌드 뒤로 밀리면 빠른 실패가 늦어지고, 타입 검사 앞으로 가면 타입 인지 lint가
 # 타입 오류를 lint 오류로 다시 보고한다.
-step_line() {
-  grep -n "^      - name: $1\$" "${workflow_file}" | head -1 | cut -d: -f1
-}
-typecheck_step_line="$(step_line '타입 검사')"
-build_step_line="$(step_line '프로덕션 빌드')"
+typecheck_step_line="$(job_step_line frontend-quality '타입 검사')"
+build_step_line="$(job_step_line frontend-quality '프로덕션 빌드')"
 for quality_step in 'ESLint' 'stylelint' 'Prettier 검사'; do
-  quality_step_line="$(step_line "${quality_step}")"
+  quality_step_line="$(job_step_line frontend-quality "${quality_step}")"
   if [ -n "${typecheck_step_line}" ] && [ -n "${build_step_line}" ] && [ -n "${quality_step_line}" ] \
     && [ "${typecheck_step_line}" -lt "${quality_step_line}" ] \
     && [ "${quality_step_line}" -lt "${build_step_line}" ]; then
@@ -668,36 +1061,127 @@ assert_equals 'ci.yml · stylelint 단계는 npm run lint:css를 그대로 쓴�
 assert_equals 'ci.yml · Prettier 단계는 npm run format:check를 그대로 쓴다' \
   "$(count_lines '^        run: npm --prefix frontend run format:check$')" '1'
 
-# 계약 시험이 분류보다 뒤로 가면 분류기를 분류기로 게이트하게 된다.
-test_step_line="$(grep -n '^      - name: CI 스크립트 계약 시험$' "${workflow_file}" | head -1 | cut -d: -f1)"
-classify_step_line="$(grep -n '^      - name: 변경 분류$' "${workflow_file}" | head -1 | cut -d: -f1)"
-if [ -n "${test_step_line}" ] && [ -n "${classify_step_line}" ] \
-  && [ "${test_step_line}" -lt "${classify_step_line}" ]; then
-  record_pass 'ci.yml · 계약 시험 단계가 분류 단계보다 앞에 있다'
-else
-  record_fail 'ci.yml · 계약 시험 단계가 분류 단계보다 앞에 있다' \
-    "계약 시험 줄 '${test_step_line}', 분류 줄 '${classify_step_line}'"
-fi
-
-assert_equals 'ci.yml · 분류 단계 id는 classify' \
-  "$(count_lines '^        id: classify$')" '1'
-
-# PR이 자기 분류기를 고쳐 검사를 축소할 수 없어야 한다(CI-PLAN §5).
-if workflow_step_block '변경 분류' \
-  | grep -qF 'git show "${PR_BASE_SHA}:.github/scripts/classify-changes.sh"'; then
-  record_pass 'ci.yml · PR에서는 target base의 승인된 분류기를 꺼내 쓴다'
-else
-  record_fail 'ci.yml · PR에서는 target base의 승인된 분류기를 꺼내 쓴다' \
-    '분류 단계에 git show <base>:classify-changes.sh 호출이 없다.'
-fi
-
-# `ignore`면 진단물 경로가 어긋나도 업로드 단계가 조용히 성공한다.
-assert_equals 'ci.yml · artifact 업로드는 if-no-files-found: warn' \
-  "$(count_lines '^          if-no-files-found: warn$')" '1'
-
 # 필수 실행이 `test:e2e:run`을 쓰는지. `test:e2e`는 같은 빌드를 두 번 한다.
-check_workflow_contains 'ci.yml · E2E는 build를 건너뛰는 test:e2e:run을 쓴다' \
-  "${workflow_file}" 'npm --prefix frontend run test:e2e:run'
+if workflow_step_block frontend-quality 'Chromium E2E' \
+  | grep -F 'npm --prefix frontend run test:e2e:run' >/dev/null; then
+  record_pass 'ci.yml · E2E는 build를 건너뛰는 test:e2e:run을 쓴다'
+else
+  record_fail 'ci.yml · E2E는 build를 건너뛰는 test:e2e:run을 쓴다' \
+    'Chromium E2E 단계가 test:e2e:run을 부르지 않는다.'
+fi
+
+# --- backend-quality -------------------------------------------------------
+# Java major가 `ARCHITECTURE-SPINE.md` Stack 표와 어긋나면 toolchain 해석이 실패하거나
+# 다른 bytecode가 나온다. wrapper가 아닌 임의 gradle을 부르면 버전 고정이 무의미해진다.
+if workflow_step_block backend-quality 'JDK 준비' | grep -F "java-version: '25'" >/dev/null; then
+  record_pass 'ci.yml · backend-quality는 JDK 25를 준비한다'
+else
+  record_fail 'ci.yml · backend-quality는 JDK 25를 준비한다' "java-version: '25' 줄이 없다."
+fi
+
+if workflow_step_block backend-quality 'Gradle 빌드' | grep -F 'backend/gradlew' >/dev/null; then
+  record_pass 'ci.yml · backend-quality는 wrapper로 빌드한다'
+else
+  record_fail 'ci.yml · backend-quality는 wrapper로 빌드한다' 'gradlew 호출이 없다.'
+fi
+
+# --- 통합 입력 artifact ----------------------------------------------------
+# 두 품질 job이 만든 산출물을 통합 job이 재빌드 없이 소비한다(CI-PLAN §8).
+# retention 1일은 그 계약의 일부다. 통합 입력을 장기 보존하지 않는다.
+assert_equals 'ci.yml · 통합 입력 artifact retention은 1일' \
+  "$(count_lines '^          retention-days: 1$')" '2'
+
+# 시험이 통과해도 산출물이 올라가지 않으면 통합 job이 검증할 대상이 없다.
+# `warn`이면 그 사실을 아무도 모른 채 job이 성공한다.
+assert_equals 'ci.yml · 통합 입력 업로드는 if-no-files-found: error' \
+  "$(count_lines '^          if-no-files-found: error$')" '2'
+
+# 부분 문자열 비교는 `retention-days: 14`·`retention-days: 10`에도 맞는다. 진단 artifact가
+# 7일이라 지금은 우연히 통과하지만, 그 값을 늘리는 순간 이 단정은 통합 입력이 사라져도
+# 통과한다. 파일의 다른 단정과 같게 줄 전체를 앵커로 잡고 job 안에서 센다.
+for producer in frontend-quality backend-quality; do
+  assert_equals "ci.yml · '${producer}'가 retention 1일 통합 입력을 만든다" \
+    "$(count_job_lines "${producer}" '^          retention-days: 1$')" '1'
+done
+
+# 진단 업로드는 세 job 모두 `warn`이다. `ignore`로 바꾸면 report·trace 경로가 어긋나도 이 단계가
+# 조용히 성공해, 실패한 실행에 진단물이 없다는 사실을 아무도 모른 채 영원히 "업로드 성공"이 된다.
+# `error`도 답이 아니다. 진단 수집이 job 판정을 뒤집으면 원인이 진단 경로로 바뀐다.
+assert_equals 'ci.yml · 진단 artifact 업로드는 if-no-files-found: warn' \
+  "$(count_lines '^          if-no-files-found: warn$')" '3'
+
+for diagnostics_job in frontend-quality backend-quality same-origin-integration; do
+  assert_equals "ci.yml · '${diagnostics_job}'의 진단 업로드가 warn이다" \
+    "$(count_job_lines "${diagnostics_job}" '^          if-no-files-found: warn$')" '1'
+done
+
+# 이름에 run ID와 attempt가 들어가야 취소되거나 대체된 실행의 artifact를 재사용하지 않는다.
+# 생산 2건(두 품질 job)과 소비 2건(통합 job)을 따로 센다. 같은 정규식이 양쪽에 걸린다는 것이
+# 곧 "소비자가 생산자와 같은 이름을 본다"는 뜻이다. 한쪽 이름만 바꾸면 여기서 걸린다.
+artifact_name_pattern='^          name: (frontend-dist|backend-jar)-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}$'
+assert_equals 'ci.yml · 두 품질 job이 run ID·attempt가 붙은 통합 입력을 만든다' \
+  "$(( $(count_job_lines frontend-quality "${artifact_name_pattern}") \
+     + $(count_job_lines backend-quality "${artifact_name_pattern}") ))" '2'
+assert_equals 'ci.yml · 통합 job이 같은 이름의 통합 입력을 소비한다' \
+  "$(count_job_lines same-origin-integration "${artifact_name_pattern}")" '2'
+
+# --- same-origin-integration ----------------------------------------------
+# 통합 job이 다시 빌드하면 검증 대상이 품질 job이 검증한 바이트와 달라진다.
+if workflow_job_block same-origin-integration | grep -E 'run: npm --prefix frontend run build$' >/dev/null; then
+  record_fail 'ci.yml · 통합 job은 프런트엔드를 다시 빌드하지 않는다' \
+    '통합 job에 build 단계가 있다. 품질 job의 산출물을 그대로 써야 한다.'
+else
+  record_pass 'ci.yml · 통합 job은 프런트엔드를 다시 빌드하지 않는다'
+fi
+
+if workflow_job_block same-origin-integration | grep -F 'gradlew' >/dev/null; then
+  record_fail 'ci.yml · 통합 job은 백엔드를 다시 빌드하지 않는다' \
+    '통합 job에 gradlew 호출이 있다. 품질 job의 jar를 그대로 써야 한다.'
+else
+  record_pass 'ci.yml · 통합 job은 백엔드를 다시 빌드하지 않는다'
+fi
+
+if workflow_step_block same-origin-integration '동일 출처 검증' \
+  | grep -F 'bash deploy/compose/verify-same-origin.sh' >/dev/null; then
+  record_pass 'ci.yml · 통합 job은 로컬과 같은 검증 스크립트를 쓴다'
+else
+  record_fail 'ci.yml · 통합 job은 로컬과 같은 검증 스크립트를 쓴다' \
+    'verify-same-origin.sh 호출이 없다.'
+fi
+
+# 검증 스크립트가 스택을 남기지 않으면 뒤의 Story 1.1 회귀는 죽은 origin에 요청한다. 반대로
+# 스택을 남기는데 job이 compose를 또 띄우면 같은 스택을 두 번 세우는 것이다. 둘 다 여기서 막는다.
+if workflow_step_block same-origin-integration '동일 출처 검증' \
+  | grep -F 'verify-same-origin.sh --keep-stack' >/dev/null; then
+  record_pass 'ci.yml · 동일 출처 검증은 --keep-stack으로 스택을 남긴다'
+else
+  record_fail 'ci.yml · 동일 출처 검증은 --keep-stack으로 스택을 남긴다' '--keep-stack이 없다.'
+fi
+
+if workflow_job_block same-origin-integration | grep -E 'docker compose .* up( |$)' >/dev/null; then
+  record_fail 'ci.yml · 통합 job은 compose를 직접 띄우지 않는다' \
+    '검증 스크립트가 스택을 소유한다. job에 별도 compose up이 있다.'
+else
+  record_pass 'ci.yml · 통합 job은 compose를 직접 띄우지 않는다'
+fi
+
+# 주입이 없으면 Playwright가 자기 preview 서버를 띄운다. 그러면 Nginx가 아니라 그 서버를
+# 검증하면서도 green이 난다. Story 1.1 회귀가 조용히 무의미해지는 유일한 경로다.
+if workflow_step_block same-origin-integration 'Story 1.1 회귀 (Nginx origin)' \
+  | grep -F 'PLAYWRIGHT_BASE_URL: http://127.0.0.1:18080' >/dev/null; then
+  record_pass 'ci.yml · Story 1.1 회귀는 Nginx origin을 주입받는다'
+else
+  record_fail 'ci.yml · Story 1.1 회귀는 Nginx origin을 주입받는다' \
+    'PLAYWRIGHT_BASE_URL 주입이 없다.'
+fi
+
+# compose 스택은 실패·취소에서도 정리해야 한다. 러너는 매번 새로 뜨지만 이 단계가 없으면
+# 로컬에서 같은 명령을 따라 한 사람의 기기에 스택이 남는다.
+if workflow_step_block same-origin-integration 'compose 정리' | grep -F 'if: always()' >/dev/null; then
+  record_pass 'ci.yml · compose 정리는 always()로 실행된다'
+else
+  record_fail 'ci.yml · compose 정리는 always()로 실행된다' 'if: always()가 없다.'
+fi
 
 # --------------------------------------------------------------------------
 printf '\n%s개 중 %s개 통과, %s개 실패\n' \

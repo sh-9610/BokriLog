@@ -1,6 +1,6 @@
 # BokriLog
 
-Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개인 프로젝트. BMAD 기획 산출물이 완료됐고, 제품 코드는 `frontend/`의 React/Vite 정적 SPA부터 시작했다.
+Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개인 프로젝트. BMAD 기획 산출물이 완료됐고, 제품 코드는 `frontend/`의 React/Vite 정적 SPA, `backend/`의 Spring Boot 최소 실행 기반, `deploy/`의 Nginx 동일 출처 구성으로 이뤄져 있다.
 
 ## 언어
 
@@ -29,9 +29,27 @@ npm --prefix frontend run test
 npm --prefix frontend run test:e2e
 ```
 
-`test:e2e`는 `vite build` 뒤 Playwright가 산출물을 `preview`로 띄운다. 빌드가 이미 끝난 CI에서는 빌드를 건너뛰는 `test:e2e:run`을 쓴다. 처음 한 번은 `npm --prefix frontend exec -- playwright install chromium`이 필요하다.
+`test:e2e`는 `vite build` 뒤 Playwright가 산출물을 `preview`로 띄운다. 빌드가 이미 끝난 CI에서는 빌드를 건너뛰는 `test:e2e:run`을 쓴다. 처음 한 번은 `npm --prefix frontend exec -- playwright install chromium`이 필요하다. `PLAYWRIGHT_BASE_URL`을 주면 자체 `preview` 서버를 띄우지 않고 그 origin을 검증한다. 동일 출처 통합에서 같은 시험 본문을 Nginx에 대고 재사용하는 지점이다.
 
-디자인 토큰 정본은 `frontend/src/styles/tokens.css`이며 `DESIGN.md` frontmatter의 평면 이름을 그대로 옮긴 것이다. 색·크기 리터럴을 컴포넌트에 직접 쓰지 않는다. stylelint가 색·타이포그래피·모서리·간격에서 이를 강제하고, ESLint(타입 인지)·Prettier와 함께 CI `ci-required`의 필수 단계다. 인라인 예외는 `-- 이유`가 붙은 disable 주석만 허용한다. 자동 정리는 `npm --prefix frontend run lint -- --fix`, `npm --prefix frontend run lint:css -- --fix`, `npm --prefix frontend run format`이다. 화면 카피는 `frontend/src/content/`가 소유하고 화면과 시험이 같은 문자열을 참조한다. 외부 폰트·CDN·분석·광고 SDK와 브라우저 저장소 쓰기는 금지이며 시험이 이를 고정한다. 자세한 절차는 `DEVELOPMENT.md`의 `## 프런트엔드` 절에 있다.
+디자인 토큰 정본은 `frontend/src/styles/tokens.css`이며 `DESIGN.md` frontmatter의 평면 이름을 그대로 옮긴 것이다. 색·크기 리터럴을 컴포넌트에 직접 쓰지 않는다. stylelint가 색·타이포그래피·모서리·간격에서 이를 강제하고, ESLint(타입 인지)·Prettier와 함께 CI `frontend-quality`의 필수 단계다. 인라인 예외는 `-- 이유`가 붙은 disable 주석만 허용한다. 자동 정리는 `npm --prefix frontend run lint -- --fix`, `npm --prefix frontend run lint:css -- --fix`, `npm --prefix frontend run format`이다. 화면 카피는 `frontend/src/content/`가 소유하고 화면과 시험이 같은 문자열을 참조한다. 외부 폰트·CDN·분석·광고 SDK와 브라우저 저장소 쓰기는 금지이며 시험이 이를 고정한다. 자세한 절차는 `DEVELOPMENT.md`의 `## 프런트엔드` 절에 있다.
+
+## 백엔드·동일 출처 실행
+
+`backend/`는 Java 25 + Spring Boot 4.1.1 + Gradle wrapper다. 데이터베이스·자격정보 없이 기동하며 엔드포인트는 `GET /api/status` 하나다. JDK 25가 필요하고 toolchain 자동 프로비저닝은 꺼져 있다. macOS는 `brew install openjdk@25` 뒤 사용자 홈에 최초 1회 심볼릭 링크를 걸면 `/usr/libexec/java_home -v 25`와 Gradle이 함께 찾는다(sudo 불필요). Windows는 `winget install EclipseAdoptium.Temurin.25.JDK`로 끝난다. PATH의 `java -version`이 17로 남아 있어도 정상이다. Gradle toolchain이 `languageVersion`으로 25를 고른다. `JAVA_HOME`을 셸에서 바꿔 두지 않는다.
+
+```bash
+mkdir -p ~/Library/Java/JavaVirtualMachines
+ln -sfn /opt/homebrew/opt/openjdk@25/libexec/openjdk.jdk ~/Library/Java/JavaVirtualMachines/openjdk-25.jdk
+backend/gradlew --project-dir backend build
+```
+
+`deploy/`는 Nginx가 `frontend/dist/`를 origin 루트에서 제공하고 `/api`만 백엔드로 프록시하는 개발·CI 공용 compose 구성이다. 두 산출물을 먼저 빌드한 뒤 검증 스크립트 하나로 I/O 계약 전체를 확인한다. 바깥에 열리는 포트는 Nginx 하나(`127.0.0.1:18080`)다.
+
+```bash
+deploy/compose/verify-same-origin.sh
+```
+
+오류 응답은 `{"code":…,"message":…,"correlationId":…}` 한 가지뿐이고 Spring과 Nginx가 같은 모양을 돌려준다. CSP를 비롯한 보안 응답 헤더는 `deploy/nginx/bokrilog.conf`가 유일한 정의이며 `<meta>` CSP를 쓰지 않는다. 내부 경로·스택·프레임워크 기본 오류 본문·환경 변수 이름은 응답과 로그 어디에도 남기지 않는다. Spring Modulith·Actuator·Spring Security·PostgreSQL 의존은 아직 없고 추가는 그것을 필요로 하는 스토리의 SPEC이 승인한다. 자세한 절차는 `DEVELOPMENT.md`의 `## 백엔드`·`## 동일 출처 실행` 절에 있다.
 
 ## Python 도구 실행
 
@@ -59,7 +77,13 @@ uv run --managed-python --no-cache _bmad/scripts/resolve_config.py --project-roo
 
 `sprint-status.yaml`은 2026-09-02에 생성됐다(5 에픽·45 스토리). 첫 스프린트는 Story 1.1~1.5(진입 화면 → 동일 출처 셸 → 소유권·삭제 상태 → Google 로그인 → 로그아웃)이며 1.6~1.7은 스트레치다.
 
-Story 1.1(진입 화면)은 `spec-1-1-entry-screen.md`대로 구현했다. `frontend/`에 React/Vite 정적 SPA, `DESIGN.md` 토큰 시스템, 로그인 없이 열리는 진입 화면, Vitest·Playwright 시험이 있다. 다음 단계는 Story 1.2(Spring Boot 최소 실행 기반·상태 확인 API·Nginx 동일 출처)다. 그 전까지 라우터, `/api` 호출, 동작하는 소셜 버튼은 이 저장소에 없다.
+Story 1.1(진입 화면)은 `spec-1-1-entry-screen.md`대로 구현했다. `frontend/`에 React/Vite 정적 SPA, `DESIGN.md` 토큰 시스템, 로그인 없이 열리는 진입 화면, Vitest·Playwright 시험이 있다.
+
+Story 1.2(동일 출처 셸)는 `spec-1-2-same-origin-shell.md`대로 구현했고 아직 **리뷰 중**이다(SPEC frontmatter `status: in-review`). `backend/`에 Spring Boot 최소 실행 기반과 `GET /api/status`, `deploy/`에 Nginx 동일 출처 구성과 검증 스크립트가 있고, CI는 `changes → frontend-quality·backend-quality → same-origin-integration → ci-required` 구조로 바뀌었다.
+
+다만 이 CI 구조는 GitHub에서 한 번도 실행된 적이 없다. 지금까지의 근거는 로컬 실행(`deploy/compose/verify-same-origin.sh`, `.github/scripts/test-ci-scripts.sh`, 프런트엔드 시험)뿐이다. 러너에서만 드러나는 것 — 이미지 빌드 시간, `playwright install --with-deps`의 apt 설치, job 사이 artifact 주고받기, job 시간 예산 — 은 이 스토리의 PR이 green이 되어야 확인된다. Story 1.3(`identity` 모듈·PostgreSQL 마이그레이션·소유권/삭제 상태 계약)은 그 뒤에 착수한다.
+
+프런트엔드 **애플리케이션 코드**에는 아직 라우터도 `/api` 호출도 동작하는 소셜 버튼도 없다. `/api/status`는 서버 경계를 확인하는 엔드포인트이며 화면이 부르지 않는다. 진입 화면의 "문서·번들 외 요청 0건" 시험이 이를 고정한다.
 
 제품 범위 충돌 시 우선순위는 PRD의 제품 범위, 아키텍처의 불변식, `ERD-1.0.0`의 하위 구현 계약 순이다. 결정을 바꿀 때는 기존 문서를 덮어쓰지 않고 새 버전으로 발행한다.
 

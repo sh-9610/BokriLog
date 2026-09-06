@@ -1,16 +1,27 @@
-# BokriLog 필수 CI. 정본은 CI-PLAN.md(§5 이벤트, §6 실행 순서, §11 보안, §13 보호 규칙)이고
-# 구현 계약은 _bmad-output/implementation-artifacts/spec-ci-foundation.md가 소유한다.
+# BokriLog 필수 CI. 정본은 CI-PLAN.md(§1 job 구조, §5 이벤트, §6 실행 순서, §8 확장,
+# §11 보안, §13 보호 규칙)이고 구현 계약은 Story SPEC이 소유한다.
 #
-# 이 저장소의 유일한 workflow이며 job은 하나뿐이다. 지금은 frontend만 존재하므로
-# 별도 classifier·aggregator job을 만들지 않는다. Story 1.2에서 backend가 생기면
-# CI-PLAN §1의 병렬 구조로 전환하되 branch protection이 참조하는 이름은 `ci-required`로 유지한다.
+# Story 1.2에서 backend와 deploy가 생기면서 단일 job을 CI-PLAN §1의 병렬 구조로 전환했다.
+#
+#   changes ──> frontend-quality ──┐
+#           └─> backend-quality ───┼─> same-origin-integration ─┐
+#                                  └────────────────────────────┴─> ci-required
+#
+# branch protection이 참조하는 이름은 전환 전후 모두 `ci-required`다. 이제 이 job은 검사를
+# 직접 실행하지 않고 선행 job의 결과만 집계한다(CI-PLAN §5 CI-D5).
+#
+# 두 품질 job은 `same-origin-integration`이 소비할 산출물을 만든다. 통합 job은 그 산출물을
+# 다시 빌드하지 않는다. 재빌드하면 통합 시험이 검증하는 바이트가 품질 job이 검증한 바이트와
+# 같다는 보장이 사라진다(CI-PLAN §8). 통합 입력 artifact의 retention은 1일이다.
 #
 # 판정 논리는 `.github/scripts/`의 셸 스크립트가 소유한다. YAML 안의 인라인 스크립트는
 # 저장소의 시험으로 고정할 수 없기 때문이다(CI-PLAN §5).
 #   verify-merge-commit.sh -- PR merge commit의 부모가 이벤트의 base·head와 같은지 검증
 #   classify-changes.sh    -- 문서-only 여부 판정. `docs-only`·`reason`을 GITHUB_OUTPUT과
 #                             GITHUB_STEP_SUMMARY에 기록
-#   test-ci-scripts.sh     -- 위 두 스크립트와 이 파일의 계약 시험. job 안에서 조건 없이 실행한다
+#   aggregate-results.sh   -- 선행 job 결과를 모아 병합 가능 여부 판정
+#   test-ci-scripts.sh     -- 위 세 스크립트와 이 파일의 계약 시험. changes job 안에서
+#                             조건 없이 실행한다
 #
 # 예외는 `변경 분류` 단계의 인라인 블록 하나다. "어느 분류기를 실행할지" 고르는 일은
 # 분류기 자신이 결정할 수 없으므로 스크립트 밖에 있어야 한다. 대신 그 선택을
@@ -27,7 +38,7 @@ on:
   workflow_dispatch:
 
 # top-level `paths` 필터를 두지 않는다. workflow가 생략돼 `ci-required` status가
-# 생성되지 않는 분기를 막는다. 문서-only 여부는 job 안에서 분류한다.
+# 생성되지 않는 분기를 막는다. 문서-only 여부는 changes job이 분류한다.
 
 permissions:
   contents: read
@@ -45,17 +56,20 @@ defaults:
     shell: bash
 
 jobs:
-  ci-required:
-    # 이 이름이 branch protection의 required status check 이름이다. 바꾸지 않는다.
-    name: ci-required
+  changes:
+    # 모든 PR의 secret 검사와 변경 분류를 먼저 처리한 뒤 품질 job을 연다(CI-PLAN §8).
+    name: changes
     # Playwright 지원 Ubuntu 고정 버전. `ubuntu-latest`는 러너 갱신이 CI 판정을 바꾼다.
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 5
     permissions:
       contents: read
       # gitleaks-action은 PR 이벤트에서 `GET /repos/{o}/{r}/pulls/{n}/commits`로
       # 스캔할 commit 범위를 정한다. 변경 분류가 아니라 이 호출 때문에 필요한 읽기 권한이다.
       pull-requests: read
+    outputs:
+      docs-only: ${{ steps.classify.outputs.docs-only }}
+      reason: ${{ steps.classify.outputs.reason }}
 
     steps:
       - name: 저장소 checkout
@@ -63,6 +77,7 @@ jobs:
         with:
           # 이벤트가 고정한 commit이다. PR에서는 그 시점의 merge commit이며,
           # 움직이는 `refs/pull/<n>/merge`를 다시 해석하지 않는다.
+          # 후속 job도 이 값을 그대로 checkout한다.
           ref: ${{ github.sha }}
           # 변경 분류(merge commit 부모 비교)와 gitleaks의 commit 범위 스캔이 전체 이력을 요구한다.
           # 이 방식은 토큰에 권한을 더하지 않고 PR·push 양쪽에서 같게 동작한다.
@@ -92,7 +107,7 @@ jobs:
           GITLEAKS_VERSION: '8.24.3'
           # PR 리뷰 코멘트 작성은 `pull-requests: write`를 요구한다. 이 job의 토큰은 읽기 전용이다.
           GITLEAKS_ENABLE_COMMENTS: 'false'
-          # 이 job이 보관하는 artifact는 Playwright 진단뿐이다(CI-PLAN §11).
+          # 이 실행이 보관하는 artifact는 통합 입력과 Playwright 진단뿐이다(CI-PLAN §11).
           # 결과는 job summary와 단계 로그로만 본다.
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
           # 탐지가 있을 때만 표를 그린다. 값은 `--redact`로 가려지지만 표에는 commit 작성자
@@ -101,9 +116,10 @@ jobs:
           GITLEAKS_ENABLE_SUMMARY: 'true'
 
       - name: CI 스크립트 계약 시험
-        # `classify-changes.sh`의 분류 규칙과 `verify-merge-commit.sh`의 부모 검증이
-        # CI 판정 전체를 좌우한다(CI-PLAN §5). 임시 git fixture로 두 스크립트를 실제로
-        # 실행해 `docs-only` 값·`reason` enum·종료 코드·오류 메시지를 단정한다.
+        # `classify-changes.sh`의 분류 규칙, `verify-merge-commit.sh`의 부모 검증,
+        # `aggregate-results.sh`의 집계 판정이 CI 판정 전체를 좌우한다(CI-PLAN §5).
+        # 임시 git fixture로 세 스크립트를 실제로 실행해 값·enum·종료 코드·오류 메시지를
+        # 단정하고, 이 파일의 job 구조 계약도 함께 단정한다.
         #
         # 조건 없이 항상 실행한다. `.github/**` 변경에서만 돌게 하려면 변경 파일을
         # 다시 분류해야 하는데, 그러면 분류기를 분류기로 게이트하게 된다. 이 시험은
@@ -123,7 +139,7 @@ jobs:
         #
         # PR 이벤트에서는 체크아웃된 head가 아니라 target base의 승인된 분류기를 실행한다
         # (CI-PLAN §5: "PR이 수정한 classifier가 자기 검사를 축소할 수 없다"). head의
-        # 분류기를 그대로 쓰면 규칙에 한 줄을 더하는 것만으로 그 PR의 frontend 검사를
+        # 분류기를 그대로 쓰면 규칙에 한 줄을 더하는 것만으로 그 PR의 제품 검사를
         # 통째로 건너뛸 수 있다. base에 파일이 없으면(이 PR이 최초 도입) fail-closed로
         # head 것을 쓰되 어떤 정의를 썼는지 로그에 남긴다.
         # push·workflow_dispatch는 비교 대상 base가 없으므로 체크아웃된 정의를 쓴다.
@@ -145,8 +161,24 @@ jobs:
           fi
           bash "${classifier}"
 
+  frontend-quality:
+    name: frontend-quality
+    needs: changes
+    if: needs.changes.outputs.docs-only != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+
+    steps:
+      - name: 저장소 checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # `changes` job이 검증한 그 commit이다. 움직이는 ref를 다시 해석하지 않는다.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
       - name: Node 준비
-        if: steps.classify.outputs.docs-only != 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           # `frontend/.nvmrc`가 Node major의 정본이다. `.npmrc`의 engine-strict가
@@ -157,11 +189,9 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: 의존 설치
-        if: steps.classify.outputs.docs-only != 'true'
         run: npm --prefix frontend ci --prefer-offline --no-audit --fund=false
 
       - name: 타입 검사
-        if: steps.classify.outputs.docs-only != 'true'
         run: npm --prefix frontend run typecheck
 
       # 아래 세 단계는 spec-frontend-lint-policy.md가 합의한 품질 정책이다(CI-PLAN §6·§8).
@@ -169,28 +199,22 @@ jobs:
       # 규칙과 예외는 frontend/eslint.config.ts·stylelint.config.js·.prettierrc.json이 소유하고,
       # 규칙이 실제로 위반을 잡는지는 frontend/lint-policy.test.ts가 Vitest 단계에서 고정한다.
       - name: ESLint
-        if: steps.classify.outputs.docs-only != 'true'
         run: npm --prefix frontend run lint
 
       - name: stylelint
-        if: steps.classify.outputs.docs-only != 'true'
         run: npm --prefix frontend run lint:css
 
       - name: Prettier 검사
-        if: steps.classify.outputs.docs-only != 'true'
         run: npm --prefix frontend run format:check
 
       - name: 프로덕션 빌드
-        if: steps.classify.outputs.docs-only != 'true'
         run: npm --prefix frontend run build
 
       - name: Vitest
-        if: steps.classify.outputs.docs-only != 'true'
         timeout-minutes: 2
         run: npm --prefix frontend run test
 
       - name: Chromium headless shell 설치
-        if: steps.classify.outputs.docs-only != 'true'
         # 어느 project도 `channel`을 지정하지 않으므로 Playwright는 headless Chromium을
         # `chromium-headless-shell`로 해석한다. channel을 추가하거나 headed 실행을
         # 필수 경로에 넣으면 `--only-shell` 설치와 어긋나므로 그때 전체 Chromium을 설치한다.
@@ -198,7 +222,6 @@ jobs:
 
       - name: Chromium E2E
         id: e2e
-        if: steps.classify.outputs.docs-only != 'true'
         timeout-minutes: 4
         env:
           # GitHub 러너가 이미 CI=true를 설정하지만 명시해 로컬 재현 명령과 같게 둔다.
@@ -207,9 +230,20 @@ jobs:
         # 앞 단계가 만든 `dist`를 preview로 제공한다. 여기서 다시 빌드하지 않는다.
         run: npm --prefix frontend run test:e2e:run
 
+      - name: 통합 입력 업로드 (frontend dist)
+        # 이 업로드가 producer 성공 조건의 일부다(CI-PLAN §8). 시험이 통과해도 산출물이
+        # 올라가지 않으면 통합 job이 검증할 대상이 없으므로 job을 실패시킨다.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frontend-dist-${{ github.run_id }}-${{ github.run_attempt }}
+          path: frontend/dist
+          # 통합 입력은 해당 run에서만 쓴다. 장기 보존하지 않는다(CI-PLAN §8·§10).
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: false
+
       - name: 실패 진단 artifact 업로드
         # 실패·timeout·취소에서만 올린다. 성공한 PR의 산출물은 보관하지 않는다.
-        # 문서-only 경로에서는 E2E 단계가 `skipped`라 이 단계도 돌지 않는다.
         # report·trace·screenshot만 담기며 backend·자격정보·사용자 데이터가 없다.
         if: ${{ (failure() || cancelled()) && steps.e2e.outcome != 'skipped' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -223,3 +257,182 @@ jobs:
           # 진단물이 없다는 사실을 아무도 모른다. `warn`은 job을 실패시키지 않으면서
           # 경로 표류를 로그에 남긴다.
           if-no-files-found: warn
+
+  backend-quality:
+    name: backend-quality
+    needs: changes
+    if: needs.changes.outputs.docs-only != 'true'
+    runs-on: ubuntu-24.04
+    # CI-PLAN §8의 backend job 예산이다. Testcontainers는 Story 1.3부터 들어온다.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: 저장소 checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: JDK 준비
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          # `ARCHITECTURE-SPINE.md` Stack 표의 Java 25 LTS다. Gradle의 toolchain
+          # 자동 프로비저닝은 backend/gradle.properties가 꺼 두었으므로 이 JDK가 실제로 쓰인다.
+          distribution: temurin
+          java-version: '25'
+          # Gradle 다운로드 캐시는 npm과 별도 namespace다(CI-PLAN §8).
+          # 키에 OS·toolchain·빌드 스크립트가 들어간다.
+          cache: gradle
+          cache-dependency-path: |
+            backend/*.gradle.kts
+            backend/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Gradle 빌드
+        # compile, unit test, 실행 가능한 jar를 한 번에 만든다. 데이터베이스·자격정보를
+        # 요구하지 않는다. Modulith 경계 검사는 첫 모듈이 생기는 Story 1.3이 더한다.
+        run: bash backend/gradlew --project-dir backend --no-daemon build
+
+      - name: 통합 입력 업로드 (backend jar)
+        # frontend와 같은 이유로 producer 성공 조건이다(CI-PLAN §8).
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-jar-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backend/build/libs/bokrilog-backend.jar
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: false
+
+      - name: 실패 진단 artifact 업로드
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gradle-test-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            backend/build/reports/
+            backend/build/test-results/
+          retention-days: 7
+          if-no-files-found: warn
+
+  same-origin-integration:
+    name: same-origin-integration
+    needs: [changes, frontend-quality, backend-quality]
+    if: needs.changes.outputs.docs-only != 'true'
+    runs-on: ubuntu-24.04
+    # CI-PLAN §8이 적은 5분은 이 job이 무엇을 하는지 정해지기 전의 *시작* 값이다. 실제 단계
+    # 예산의 합이 그 값을 넘는다. 아래는 단계별 상한이고, Story 1.1 회귀 하나가 이미 4분이라
+    # 5분으로는 정상적인 실행조차 러너가 죽인다. 필수 검사를 빼서 맞추지 않고 예산을 고친다
+    # (CI-PLAN §10 "필수 계약을 줄여 시간을 맞추지는 않는다").
+    #
+    #   checkout·통합 입력 2건 내려받기                                    1분
+    #   동일 출처 검증(docker build + `up --wait` 180s + I/O 표 단언)      5분
+    #   Node 준비 + `npm ci`                                               2분
+    #   Chromium headless shell 설치(`--with-deps` apt)                    2분
+    #   Story 1.1 회귀                                                     4분 (단계 timeout)
+    #   compose 정리 + 실패 진단 업로드                                    1분
+    #                                                                    ---------
+    #                                                                     15분
+    #
+    # `npm ci`와 Chromium 설치는 `frontend-quality`가 이미 한 일을 되풀이한다. 그 중복을 없애는
+    # 편이 예산을 늘리는 것보다 낫지만 이 스토리 범위 밖이라 `deferred-work.md`에 남겼다.
+    # CI-PLAN §10의 PR wall-clock p95 8분은 이 상한과 별개로 계속 측정한다. 이 값은 목표가
+    # 아니라 멈춘 job을 끊는 상한이다.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: 저장소 checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: 통합 입력 내려받기 (frontend dist)
+        # 두 품질 job이 검증한 그 산출물이다. 여기서 다시 빌드하지 않는다(CI-PLAN §8).
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: frontend-dist-${{ github.run_id }}-${{ github.run_attempt }}
+          path: frontend/dist
+
+      - name: 통합 입력 내려받기 (backend jar)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: backend-jar-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backend/build/libs
+
+      - name: 동일 출처 검증
+        # I/O 표 전 행, 백엔드 비가용 502/504, 로그 누출 검사를 한 번에 돈다. 로컬과 같은 명령이다.
+        # `--keep-stack`은 성공 시 백엔드를 다시 띄워 건강한 스택을 남긴다. 아래 Story 1.1 회귀가
+        # 그 스택을 그대로 쓰므로 compose를 두 번 세우지 않는다. 실패하면 스크립트가 스스로 정리한다.
+        run: bash deploy/compose/verify-same-origin.sh --keep-stack
+
+      - name: Node 준비
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 의존 설치
+        # Playwright 실행에 필요한 설치다. `dist`는 위에서 내려받은 것을 그대로 쓴다.
+        run: npm --prefix frontend ci --prefer-offline --no-audit --fund=false
+
+      - name: Chromium headless shell 설치
+        run: npm --prefix frontend exec -- playwright install chromium --with-deps --only-shell
+
+      - name: Story 1.1 회귀 (Nginx origin)
+        id: e2e
+        timeout-minutes: 4
+        env:
+          CI: 'true'
+          # 주입된 origin이 있으면 playwright.config.ts가 자체 preview 서버를 띄우지 않는다.
+          # 시험 본문은 한 줄도 바꾸지 않는다.
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:18080
+        run: npm --prefix frontend run test:e2e:run
+
+      - name: compose 정리
+        if: always()
+        run: docker compose --file deploy/compose/compose.yaml down --remove-orphans --volumes
+
+      - name: 실패 진단 artifact 업로드
+        if: ${{ (failure() || cancelled()) && steps.e2e.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: same-origin-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          retention-days: 7
+          if-no-files-found: warn
+
+  ci-required:
+    # 이 이름이 branch protection의 required status check 이름이다. 바꾸지 않는다.
+    name: ci-required
+    needs: [changes, frontend-quality, backend-quality, same-origin-integration]
+    # 선행 job이 실패·취소·skip 어느 쪽이든 이 job은 반드시 실행되어 판정을 남겨야 한다.
+    # 실행되지 않으면 required check가 영원히 대기 상태로 남는다.
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    # CI-PLAN §5: aggregator timeout은 1분이다.
+    timeout-minutes: 1
+    permissions:
+      contents: read
+
+    steps:
+      - name: 저장소 checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: 필수 검사 집계
+        env:
+          DOCS_ONLY: ${{ needs.changes.outputs.docs-only }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          FRONTEND_RESULT: ${{ needs.frontend-quality.result }}
+          BACKEND_RESULT: ${{ needs.backend-quality.result }}
+          INTEGRATION_RESULT: ${{ needs.same-origin-integration.result }}
+        # 판정은 스크립트가 소유한다. YAML 표현식은 저장소의 시험으로 고정할 수 없다.
+        run: bash .github/scripts/aggregate-results.sh

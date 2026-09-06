@@ -1,9 +1,9 @@
-import { defineConfig, devices } from '@playwright/test'
+import { defineConfig, devices, type PlaywrightTestConfig } from '@playwright/test'
 
 // `vite preview` 기본 포트(4173)를 피한다. 손으로 띄워 둔 preview와 포트가 겹치지 않게 한다.
 const PORT = 4183
 const HOST = '127.0.0.1'
-export const BASE_URL = `http://${HOST}:${String(PORT)}`
+const PREVIEW_URL = `http://${HOST}:${String(PORT)}`
 
 /** `CI=''`·`CI=0`·`CI=false`는 거짓으로 본다. */
 function isTruthyEnv(name: string): boolean {
@@ -16,6 +16,40 @@ function isTruthyEnv(name: string): boolean {
 }
 
 const isCi = isTruthyEnv('CI')
+
+/**
+ * 외부에서 주입한 origin. 값이 있으면 그 주소를 이미 누군가 띄워 둔 것으로 보고
+ * 자체 `preview` 서버를 띄우지 않는다.
+ *
+ * 쓰는 곳은 Story 1.2의 `same-origin-integration`이다. 같은 시험 본문을 `vite preview`가 아니라
+ * Nginx 진입점에 대고 다시 돌려, 정적 제공·응답 헤더·`/api` 경계가 붙은 실제 배포 형태에서도
+ * Story 1.1의 화면 계약이 유지되는지 확인한다. 시험 파일은 한 줄도 바꾸지 않는다.
+ *
+ * 값이 없으면 기존 동작 그대로다. `npm run test:e2e`는 여전히 빌드하고 preview를 띄운다.
+ */
+const injectedBaseUrl = process.env.PLAYWRIGHT_BASE_URL?.trim() ?? ''
+const usesInjectedOrigin = injectedBaseUrl !== ''
+
+/*
+ * 내보내지 않는다. 시험이 볼 주소는 Playwright의 `baseURL` fixture 하나뿐이고
+ * `e2e/**`는 그것만 쓴다. 여기서 export하면 "설정에서 직접 import한 상수"와 "fixture"라는
+ * 두 경로가 생겨, 주입된 origin에서 한쪽만 갱신되는 순간 시험이 서로 다른 주소를 본다.
+ */
+const BASE_URL = usesInjectedOrigin ? injectedBaseUrl : PREVIEW_URL
+
+/*
+ * 빌드는 `test:e2e` 스크립트가 먼저 실행한다. 여기서는 산출물을 제공하기만 한다.
+ * 빌드를 서버 기동과 묶으면 서버가 재사용될 때 빌드까지 건너뛰어 낡은 `dist/`를 검증하게 된다.
+ * 그래서 `reuseExistingServer`는 항상 false다. 백엔드·DB·제공자 자격정보는 요구하지 않는다.
+ */
+const previewServer: NonNullable<PlaywrightTestConfig['webServer']> = {
+  command: `npm run preview -- --host ${HOST} --port ${String(PORT)} --strictPort`,
+  url: PREVIEW_URL,
+  reuseExistingServer: false,
+  timeout: 120_000,
+  stdout: 'ignore',
+  stderr: 'pipe',
+}
 
 export default defineConfig({
   testDir: './e2e',
@@ -44,17 +78,7 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
-  /*
-   * 빌드는 `test:e2e` 스크립트가 먼저 실행한다. 여기서는 산출물을 제공하기만 한다.
-   * 빌드를 서버 기동과 묶으면 서버가 재사용될 때 빌드까지 건너뛰어 낡은 `dist/`를 검증하게 된다.
-   * 그래서 `reuseExistingServer`는 항상 false다. 백엔드·DB·제공자 자격정보는 요구하지 않는다.
-   */
-  webServer: {
-    command: `npm run preview -- --host ${HOST} --port ${String(PORT)} --strictPort`,
-    url: BASE_URL,
-    reuseExistingServer: false,
-    timeout: 120_000,
-    stdout: 'ignore',
-    stderr: 'pipe',
-  },
+  // 주입된 origin에서는 `webServer` 키 자체를 두지 않는다. `undefined`를 넣어도 Playwright는
+  // 같게 다루지만, 키가 없는 편이 "이 실행에는 관리할 서버가 없다"를 설정 자체로 드러낸다.
+  ...(usesInjectedOrigin ? {} : { webServer: previewServer }),
 })
