@@ -39,6 +39,12 @@
 
 set -uo pipefail
 
+# `pipefail` 아래에서 생산자의 출력을 `grep -q`로 받는 파이프를 if 조건에 쓰지 않는다. -q는 첫 매치에서 바로
+# 끝나고, 아직 쓰고 있던 생산자(awk)는 SIGPIPE(141)로 죽어 파이프라인 전체가 실패로 읽힌다.
+# 어느 쪽이 먼저 끝나는지는 스케줄링에 달려 있어 로컬에서는 통과하고 러너에서만 실패한다
+# (PR #9 첫 실행, `frontend-quality` 게이트 단정). 대신 `grep ... >/dev/null`을 쓴다. -q가
+# 없는 grep은 입력을 끝까지 읽으므로 생산자가 SIGPIPE를 받지 않는다. 아래 자기 단정이 재발을 막는다.
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "${script_dir}/../.." && pwd -P)"
 classify_script="${script_dir}/classify-changes.sh"
@@ -373,6 +379,13 @@ workflow_uses() {
     | tr '\n' ' ' \
     | sed 's/ *$//'
 }
+
+# --------------------------------------------------------------------------
+# 이 파일 자체의 규약
+# --------------------------------------------------------------------------
+
+assert_equals 'test-ci-scripts.sh · pipefail 아래 조기 종료 grep -q 파이프가 없다' \
+  "$(grep -cE '\|[[:space:]]*grep -[[:alpha:]]*q' "${BASH_SOURCE[0]}" | tr -d '[:space:]')" '0'
 
 # --------------------------------------------------------------------------
 # 변경 시나리오
@@ -850,7 +863,7 @@ assert_equals 'ci.yml · ci-required timeout은 1분' \
 
 # 집계는 스크립트가 소유한다. YAML 표현식은 저장소의 시험으로 고정할 수 없다.
 if workflow_step_block ci-required '필수 검사 집계' \
-  | grep -qF 'bash .github/scripts/aggregate-results.sh'; then
+  | grep -F 'bash .github/scripts/aggregate-results.sh' >/dev/null; then
   record_pass 'ci.yml · ci-required는 aggregate-results.sh로 판정한다'
 else
   record_fail 'ci.yml · ci-required는 aggregate-results.sh로 판정한다' \
@@ -865,7 +878,7 @@ for aggregate_input in \
   'FRONTEND_RESULT: ${{ needs.frontend-quality.result }}' \
   'BACKEND_RESULT: ${{ needs.backend-quality.result }}' \
   'INTEGRATION_RESULT: ${{ needs.same-origin-integration.result }}'; do
-  if workflow_step_block ci-required '필수 검사 집계' | grep -qF -- "${aggregate_input}"; then
+  if workflow_step_block ci-required '필수 검사 집계' | grep -F -- "${aggregate_input}" >/dev/null; then
     record_pass "ci.yml · 집계 입력 '${aggregate_input%%:*}'을 전달한다"
   else
     record_fail "ci.yml · 집계 입력 '${aggregate_input%%:*}'을 전달한다" \
@@ -952,7 +965,7 @@ assert_equals 'ci.yml · docs-only 게이트를 단 job은 3개' \
   "$(grep -cF "    ${docs_gate}" "${workflow_file}")" '3'
 
 for gated_job in frontend-quality backend-quality same-origin-integration; do
-  if workflow_job_block "${gated_job}" | grep -qF -- "${docs_gate}"; then
+  if workflow_job_block "${gated_job}" | grep -F -- "${docs_gate}" >/dev/null; then
     record_pass "ci.yml · '${gated_job}' job에 docs-only 게이트가 있다"
   else
     record_fail "ci.yml · '${gated_job}' job에 docs-only 게이트가 있다" \
@@ -960,7 +973,7 @@ for gated_job in frontend-quality backend-quality same-origin-integration; do
   fi
 done
 
-if workflow_job_block ci-required | grep -qF -- "${docs_gate}"; then
+if workflow_job_block ci-required | grep -F -- "${docs_gate}" >/dev/null; then
   record_fail 'ci.yml · ci-required에는 docs-only 게이트가 없다' \
     '집계가 문서-only PR에서 건너뛰어지면 required check가 영원히 대기한다.'
 else
@@ -1001,7 +1014,7 @@ assert_equals 'ci.yml · 분류 단계 id는 classify' \
   "$(count_job_lines changes '^        id: classify$')" '1'
 
 # 계약 시험에는 조건이 붙지 않는다. 조건이 붙는 순간 우회 경로가 생긴다.
-if workflow_step_block changes 'CI 스크립트 계약 시험' | grep -qE '^        if:'; then
+if workflow_step_block changes 'CI 스크립트 계약 시험' | grep -E '^        if:' >/dev/null; then
   record_fail 'ci.yml · 계약 시험 단계에 조건이 없다' \
     '조건이 붙으면 그 조건을 만족하지 않는 PR에서 계약 시험이 사라진다.'
 else
@@ -1010,7 +1023,7 @@ fi
 
 # PR이 자기 분류기를 고쳐 검사를 축소할 수 없어야 한다(CI-PLAN §5).
 if workflow_step_block changes '변경 분류' \
-  | grep -qF 'git show "${PR_BASE_SHA}:.github/scripts/classify-changes.sh"'; then
+  | grep -F 'git show "${PR_BASE_SHA}:.github/scripts/classify-changes.sh"' >/dev/null; then
   record_pass 'ci.yml · PR에서는 target base의 승인된 분류기를 꺼내 쓴다'
 else
   record_fail 'ci.yml · PR에서는 target base의 승인된 분류기를 꺼내 쓴다' \
@@ -1050,7 +1063,7 @@ assert_equals 'ci.yml · Prettier 단계는 npm run format:check를 그대로 �
 
 # 필수 실행이 `test:e2e:run`을 쓰는지. `test:e2e`는 같은 빌드를 두 번 한다.
 if workflow_step_block frontend-quality 'Chromium E2E' \
-  | grep -qF 'npm --prefix frontend run test:e2e:run'; then
+  | grep -F 'npm --prefix frontend run test:e2e:run' >/dev/null; then
   record_pass 'ci.yml · E2E는 build를 건너뛰는 test:e2e:run을 쓴다'
 else
   record_fail 'ci.yml · E2E는 build를 건너뛰는 test:e2e:run을 쓴다' \
@@ -1060,13 +1073,13 @@ fi
 # --- backend-quality -------------------------------------------------------
 # Java major가 `ARCHITECTURE-SPINE.md` Stack 표와 어긋나면 toolchain 해석이 실패하거나
 # 다른 bytecode가 나온다. wrapper가 아닌 임의 gradle을 부르면 버전 고정이 무의미해진다.
-if workflow_step_block backend-quality 'JDK 준비' | grep -qF "java-version: '25'"; then
+if workflow_step_block backend-quality 'JDK 준비' | grep -F "java-version: '25'" >/dev/null; then
   record_pass 'ci.yml · backend-quality는 JDK 25를 준비한다'
 else
   record_fail 'ci.yml · backend-quality는 JDK 25를 준비한다' "java-version: '25' 줄이 없다."
 fi
 
-if workflow_step_block backend-quality 'Gradle 빌드' | grep -qF 'backend/gradlew'; then
+if workflow_step_block backend-quality 'Gradle 빌드' | grep -F 'backend/gradlew' >/dev/null; then
   record_pass 'ci.yml · backend-quality는 wrapper로 빌드한다'
 else
   record_fail 'ci.yml · backend-quality는 wrapper로 빌드한다' 'gradlew 호출이 없다.'
@@ -1114,14 +1127,14 @@ assert_equals 'ci.yml · 통합 job이 같은 이름의 통합 입력을 소비�
 
 # --- same-origin-integration ----------------------------------------------
 # 통합 job이 다시 빌드하면 검증 대상이 품질 job이 검증한 바이트와 달라진다.
-if workflow_job_block same-origin-integration | grep -qE 'run: npm --prefix frontend run build$'; then
+if workflow_job_block same-origin-integration | grep -E 'run: npm --prefix frontend run build$' >/dev/null; then
   record_fail 'ci.yml · 통합 job은 프런트엔드를 다시 빌드하지 않는다' \
     '통합 job에 build 단계가 있다. 품질 job의 산출물을 그대로 써야 한다.'
 else
   record_pass 'ci.yml · 통합 job은 프런트엔드를 다시 빌드하지 않는다'
 fi
 
-if workflow_job_block same-origin-integration | grep -qF 'gradlew'; then
+if workflow_job_block same-origin-integration | grep -F 'gradlew' >/dev/null; then
   record_fail 'ci.yml · 통합 job은 백엔드를 다시 빌드하지 않는다' \
     '통합 job에 gradlew 호출이 있다. 품질 job의 jar를 그대로 써야 한다.'
 else
@@ -1129,7 +1142,7 @@ else
 fi
 
 if workflow_step_block same-origin-integration '동일 출처 검증' \
-  | grep -qF 'bash deploy/compose/verify-same-origin.sh'; then
+  | grep -F 'bash deploy/compose/verify-same-origin.sh' >/dev/null; then
   record_pass 'ci.yml · 통합 job은 로컬과 같은 검증 스크립트를 쓴다'
 else
   record_fail 'ci.yml · 통합 job은 로컬과 같은 검증 스크립트를 쓴다' \
@@ -1139,13 +1152,13 @@ fi
 # 검증 스크립트가 스택을 남기지 않으면 뒤의 Story 1.1 회귀는 죽은 origin에 요청한다. 반대로
 # 스택을 남기는데 job이 compose를 또 띄우면 같은 스택을 두 번 세우는 것이다. 둘 다 여기서 막는다.
 if workflow_step_block same-origin-integration '동일 출처 검증' \
-  | grep -qF 'verify-same-origin.sh --keep-stack'; then
+  | grep -F 'verify-same-origin.sh --keep-stack' >/dev/null; then
   record_pass 'ci.yml · 동일 출처 검증은 --keep-stack으로 스택을 남긴다'
 else
   record_fail 'ci.yml · 동일 출처 검증은 --keep-stack으로 스택을 남긴다' '--keep-stack이 없다.'
 fi
 
-if workflow_job_block same-origin-integration | grep -qE 'docker compose .* up( |$)'; then
+if workflow_job_block same-origin-integration | grep -E 'docker compose .* up( |$)' >/dev/null; then
   record_fail 'ci.yml · 통합 job은 compose를 직접 띄우지 않는다' \
     '검증 스크립트가 스택을 소유한다. job에 별도 compose up이 있다.'
 else
@@ -1155,7 +1168,7 @@ fi
 # 주입이 없으면 Playwright가 자기 preview 서버를 띄운다. 그러면 Nginx가 아니라 그 서버를
 # 검증하면서도 green이 난다. Story 1.1 회귀가 조용히 무의미해지는 유일한 경로다.
 if workflow_step_block same-origin-integration 'Story 1.1 회귀 (Nginx origin)' \
-  | grep -qF 'PLAYWRIGHT_BASE_URL: http://127.0.0.1:18080'; then
+  | grep -F 'PLAYWRIGHT_BASE_URL: http://127.0.0.1:18080' >/dev/null; then
   record_pass 'ci.yml · Story 1.1 회귀는 Nginx origin을 주입받는다'
 else
   record_fail 'ci.yml · Story 1.1 회귀는 Nginx origin을 주입받는다' \
@@ -1164,7 +1177,7 @@ fi
 
 # compose 스택은 실패·취소에서도 정리해야 한다. 러너는 매번 새로 뜨지만 이 단계가 없으면
 # 로컬에서 같은 명령을 따라 한 사람의 기기에 스택이 남는다.
-if workflow_step_block same-origin-integration 'compose 정리' | grep -qF 'if: always()'; then
+if workflow_step_block same-origin-integration 'compose 정리' | grep -F 'if: always()' >/dev/null; then
   record_pass 'ci.yml · compose 정리는 always()로 실행된다'
 else
   record_fail 'ci.yml · compose 정리는 always()로 실행된다' 'if: always()가 없다.'
