@@ -263,8 +263,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs-only != 'true'
     runs-on: ubuntu-24.04
-    # CI-PLAN §8의 backend job 예산이다. Testcontainers는 Story 1.3부터 들어온다.
-    timeout-minutes: 10
+    # Story 1.3이 Testcontainers를 들이면서 이 job은 실제 PostgreSQL 컨테이너를 띄운다. 콜드
+    # 실행에는 `postgres:18.6-alpine` 내려받기가 더해지고, 동시성 시험은 잠금 경합을 실제로
+    # 기다린다. 10분은 그 둘이 겹친 실행을 끊어 버릴 수 있는 값이라 올린다.
+    #
+    # CI-PLAN §4·§10의 backend 예산 8분은 이 상한과 별개로 계속 측정한다. 이 값은 목표가 아니라
+    # 멈춘 job을 끊는 상한이며, `same-origin-integration`이 15분을 쓰는 것과 같은 이유다.
+    # 실측이 몇 회 쌓이면 두 값을 CI-PLAN 새 버전이 함께 보정한다.
+    timeout-minutes: 15
     permissions:
       contents: read
 
@@ -290,8 +296,16 @@ jobs:
             backend/gradle/wrapper/gradle-wrapper.properties
 
       - name: Gradle 빌드
-        # compile, unit test, 실행 가능한 jar를 한 번에 만든다. 데이터베이스·자격정보를
-        # 요구하지 않는다. Modulith 경계 검사는 첫 모듈이 생기는 Story 1.3이 더한다.
+        # compile, 시험, 실행 가능한 jar를 한 번에 만든다.
+        #
+        # Story 1.3부터 이 한 단계가 Modulith 경계 검사와 실제 PostgreSQL 통합 시험까지 포함한다.
+        # Testcontainers가 러너의 docker 데몬으로 `postgres:18.6-alpine`을 직접 띄우므로 job에
+        # 서비스 컨테이너도, docker를 설치하는 action도 더하지 않는다. 아래 통합 job이 이미
+        # `docker compose`를 그대로 부르는 것이 그 데몬의 증거다.
+        #
+        # 단계를 쪼개지 않는 것도 선택이다. `.github/scripts/test-ci-scripts.sh`가 이 job의 단계
+        # 목록을 전문으로 고정하므로, 시험을 별도 단계로 빼면 그 계약부터 갱신해야 한다.
+        # 제공자 자격정보는 여전히 필요 없다.
         run: bash backend/gradlew --project-dir backend --no-daemon build
 
       - name: 통합 입력 업로드 (backend jar)

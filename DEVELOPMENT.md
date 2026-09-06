@@ -1,6 +1,6 @@
 # 개발 환경
 
-이 저장소의 BMAD 도구는 운영체제 기본 `python3`를 직접 사용하지 않는다. BMAD 스크립트가 요구하는 Python 3.11 이상을 `uv`가 선택하거나 내려받아 실행한다. 제품 애플리케이션의 기술 기준선은 `ARCHITECTURE-SPINE.md`에서 Java/Spring/PostgreSQL과 React/Vite로 확정되었으며, 이 Python 환경은 제품 런타임과 무관한 기획 도구 전용이다. Story 1.1에서 `frontend/`의 React/Vite SPA와 그 lockfile이 생겼고, Story 1.2에서 `backend/`의 Spring Boot 최소 실행 기반과 `deploy/`의 동일 출처 구성이 생겼다. 데이터베이스와 image digest는 아직 생성 전이다.
+이 저장소의 BMAD 도구는 운영체제 기본 `python3`를 직접 사용하지 않는다. BMAD 스크립트가 요구하는 Python 3.11 이상을 `uv`가 선택하거나 내려받아 실행한다. 제품 애플리케이션의 기술 기준선은 `ARCHITECTURE-SPINE.md`에서 Java/Spring/PostgreSQL과 React/Vite로 확정되었으며, 이 Python 환경은 제품 런타임과 무관한 기획 도구 전용이다. Story 1.1에서 `frontend/`의 React/Vite SPA와 그 lockfile이 생겼고, Story 1.2에서 `backend/`의 Spring Boot 최소 실행 기반과 `deploy/`의 동일 출처 구성이 생겼다. Story 1.3에서 PostgreSQL 18과 첫 Spring Modulith 모듈(`identity`)이 들어왔고, 그래서 **백엔드 시험은 이제 Docker를 전제한다**(Testcontainers가 실제 PostgreSQL을 띄운다). image digest 고정은 아직 생성 전이다.
 
 ## 최초 준비
 
@@ -135,11 +135,11 @@ Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패
 
 ## 백엔드 (`backend/`)
 
-Java 25 LTS + Spring Boot 4.1.1 + Gradle 정적 실행 기반이다. Story 1.2 시점에는 데이터베이스·사용자 테이블·소셜 제공자 자격정보 없이 기동한다. 허용 버전 계열은 `ARCHITECTURE-SPINE.md`의 Stack 표가, 실제 Gradle 버전은 `backend/gradle/wrapper/gradle-wrapper.properties`가 소유한다.
+Java 25 LTS + Spring Boot 4.1.1 + Gradle 실행 기반이다. Story 1.3부터 PostgreSQL 18을 쓰며, 소셜 제공자 자격정보는 여전히 필요 없다. 모듈 경계는 Spring Modulith 2.1.1이 검증하지만 그 의존은 시험 classpath에만 있다. 경계 확인은 `ModuleBoundaryTest` 하나의 관심사이고, 운영 코드가 Modulith 타입을 참조하지 않으므로 ArchUnit(4.5MB)과 `spring-modulith-apt`를 `bokrilog-backend.jar`에 실을 이유가 없다. 허용 버전 계열은 `ARCHITECTURE-SPINE.md`의 Stack 표가, 실제 Gradle 버전은 `backend/gradle/wrapper/gradle-wrapper.properties`가 소유한다.
 
 ### 준비
 
-JDK 25가 필요하다. Gradle의 toolchain 자동 프로비저닝은 `backend/gradle.properties`가 껐다. 켜 두면 JDK가 없는 기기에서 Gradle이 조용히 하나를 내려받아 "준비된 환경"과 "빌드가 만든 환경"을 구분할 수 없게 된다.
+JDK 25**와 Docker**가 필요하다. Docker가 새 전제다. 시험이 Testcontainers로 실제 `postgres:18.6-alpine`을 띄우므로, 데몬이 떠 있지 않으면 `build`가 컨테이너 시작 실패로 멈춘다. 인메모리 데이터베이스로 대체하지 않는 이유는 이 모듈이 고정하려는 것이 SQL 문법이 아니라 `SELECT … FOR UPDATE`의 직렬화와 유일 인덱스 위반 같은 실제 엔진의 동작이기 때문이다. Gradle의 toolchain 자동 프로비저닝은 `backend/gradle.properties`가 껐다. 켜 두면 JDK가 없는 기기에서 Gradle이 조용히 하나를 내려받아 "준비된 환경"과 "빌드가 만든 환경"을 구분할 수 없게 된다.
 
 **macOS.** Homebrew의 `openjdk@25`는 keg-only라 설치만으로는 `/usr/libexec/java_home`이 찾지 못한다. 사용자 홈의 JVM 디렉터리에 최초 1회 심볼릭 링크를 걸면 그때부터 `java_home`과 Gradle의 toolchain 탐색이 함께 찾는다. sudo가 필요 없고 시스템 디렉터리를 건드리지 않는다.
 
@@ -175,24 +175,54 @@ Gradle wrapper는 `backend/`에 있다. 저장소 루트에서 `--project-dir ba
 
 `build`가 만드는 산출물은 `backend/build/libs/bokrilog-backend.jar` 하나다. 이름을 고정한 것은 `backend/Dockerfile`·`deploy/compose/compose.yaml`·CI artifact가 모두 이 한 경로를 참조하기 때문이다. 라이브러리용 plain jar는 만들지 않는다.
 
+`build`와 `test`는 Docker 데몬을 요구한다. Testcontainers가 JVM 하나에 `postgres:18.6-alpine` 컨테이너 하나를 띄워 모든 시험이 공유한다(`PostgresTestcontainersConfig`). `bootRun`은 다르다. 데이터베이스를 스스로 띄우지 않으므로 아래 두 환경 변수를 직접 주어야 하고, 그렇지 않으면 datasource 생성에서 즉시 멈춘다. 이미 마이그레이션이 끝난 데이터베이스여야 한다 — 기본 프로필의 기동은 schema 검증만 하기 때문이다.
+
+```bash
+BOKRILOG_DB_URL=jdbc:postgresql://127.0.0.1:5432/bokrilog \
+BOKRILOG_DB_USERNAME=bokrilog \
+  backend/gradlew --project-dir backend bootRun
+```
+
+### 스키마와 마이그레이션
+
+스키마 변경은 expand 우선의 별도 migration 역할이 실행하고 API 기동은 검증만 한다(AD-12). 그 두 역할을 가르는 것이 `SchemaValidationConfig`다. 기본 프로필은 `FlywayMigrationStrategy`를 `Flyway::validate`로 대체하고, `migrate` 프로필만 `Flyway::migrate`를 쓴다. 적용되지 않은 마이그레이션이 있으면 API 기동이 실패하며 그것이 의도한 fail-closed다.
+
+마이그레이션은 `deploy/compose`의 `migrate` 서비스가 실행한다. 백엔드와 같은 이미지이고 차이는 `SPRING_PROFILES_ACTIVE=migrate` 하나다. 그 프로필은 웹 서버를 띄우지 않으므로 마이그레이션이 끝나면 프로세스가 종료하고, 종료 코드가 곧 성공 여부다. `verify-same-origin.sh`가 스택 기동 앞에서 한 번 부른다.
+
+```bash
+docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --build migrate
+```
+
+새 마이그레이션은 `backend/src/main/resources/db/migration/V<n>__<이름>.sql`로 더한다. 이미 적용된 파일은 고치지 않는다. Flyway가 체크섬으로 검증하므로 수정하면 다음 기동이 검증 실패로 멈춘다.
+
 ### 구조와 규칙
 
 | 경로 | 역할 |
 |---|---|
-| `backend/build.gradle.kts` | Java 25 toolchain, Spring Boot 4.1.1 BOM, `web`·`test` starter. 컴파일 경고는 `-Werror`로 실패다 |
+| `backend/build.gradle.kts` | Java 25 toolchain, Spring Boot 4.1.1 BOM, `web`·`jdbc`·Flyway 운영 의존과 Modulith 2.1.1 BOM·Modulith·Testcontainers 시험 의존. 컴파일 경고는 `-Werror`로 실패다 |
 | `backend/gradle.properties` | toolchain 자동 프로비저닝 끄기, 인코딩 고정 |
-| `backend/src/main/java/com/bokrilog/BokriLogApplication.java` | 진입점. 모듈 패키지를 만들지 않는다 |
+| `backend/src/main/java/com/bokrilog/BokriLogApplication.java` | 진입점이자 Modulith 루트. 모듈은 이 클래스 패키지의 직속 하위 패키지다 |
 | `backend/src/main/java/com/bokrilog/StatusController.java` | `GET /api/status`. 고정된 최소 필드 `{"status":"UP"}` |
 | `backend/src/main/java/com/bokrilog/ApiErrorHandler.java` | 공통 오류 계약과 프레임워크 오류 경로 대체 |
-| `backend/src/main/resources/application.yml` | 포트, 오류 노출 끄기, 로그 수준. 자격정보를 두지 않는다 |
+| `backend/src/main/java/com/bokrilog/identity/` | 첫 모듈. 계정 소유권·삭제 상태의 권위. 공개 API 세 개(`AccountLifecycleApi`·`AccountAccessApi`·`AccountDeletionApi`)와 `internal` 구현 |
+| `backend/src/main/resources/db/migration/` | Flyway 마이그레이션. `V1__identity_account.sql`이 guard·payload·매핑 세 테이블을 만든다 |
+| `backend/src/main/resources/application.yml` | 포트, 오류 노출 끄기, 로그 수준, datasource·flyway, `migrate` 프로필. 자격정보를 두지 않는다 |
+| `backend/src/test/java/com/bokrilog/PostgresTestcontainersConfig.java` | 시험 전체가 공유하는 실제 PostgreSQL 컨테이너 하나 |
+| `backend/src/test/java/com/bokrilog/ModuleBoundaryTest.java` | Modulith 경계 검증, `internal` 미노출, identity에 HTTP 표면 없음 |
 | `backend/src/test/java/com/bokrilog/StatusApiTest.java` | 실제 HTTP로 상태·404·405·누출 금지를 시험 |
+| `backend/src/test/java/com/bokrilog/identity/` | 소유권·삭제 상태 판정, 삭제 경로, 경합·실패 주입 시험 |
 | `backend/Dockerfile`, `backend/.dockerignore` | 미리 빌드한 jar만 올리는 런타임 전용 이미지 |
 
-- 상태 엔드포인트는 루트 패키지 `com.bokrilog`에 둔다. Spring Modulith는 루트 패키지를 모듈로 보지 않으므로 Story 1.3이 `identity`를 첫 모듈로 넣을 때 경계 검증이 깨끗하게 시작한다.
+- 상태 엔드포인트는 루트 패키지 `com.bokrilog`에 둔다. Spring Modulith는 루트 패키지를 모듈로 보지 않으므로 `identity`가 첫 모듈로 깨끗하게 인식된다.
+- `identity`는 계정 생명주기·삭제 상태의 유일한 권위다. 다른 패키지는 공개 application API로만 접근하고 `internal` 패키지나 소유 테이블에 직접 닿지 않는다. `ModuleBoundaryTest`가 강제한다.
+- `identity`에는 HTTP 표면이 없다. 컨트롤러도 엔드포인트도 Actuator도 없다. 계정 생성·상태 변경·삭제를 밖에서 부를 수 있는 경로가 존재하지 않는 것이 계약이며, 구조는 `ModuleBoundaryTest`가, 실행 중인 스택은 `verify-same-origin.sh`의 `identity 미노출` 절이 확인한다.
+- 접근 거부는 하나의 값(`AccessDecision.DENIED`)이다. 타 사용자 대상·미존재 대상·삭제된 대상이 호출자에게 구분되면 안 된다. 거부 사유를 반환하지도, 로그에 남기지도 않으며 `user_id`를 포함한 사용자 식별자도 로그·지표·오류 응답 어디에도 남기지 않는다(AD-14).
+- 계정 상태는 `ACTIVE → DELETION_IN_PROGRESS → DELETED` 단조 전진뿐이다. 상태 행 `SELECT … FOR UPDATE` 잠금과 술어가 붙은 UPDATE가 강제하며, 반복 요청·실패·재시도로 이전 상태가 되지 않는다.
+- JPA를 쓰지 않는다. `JdbcClient`면 SQL이 그대로 보이고, Hibernate의 dirty checking·flush 시점은 "커밋 직전 재검사"를 오히려 흐린다.
 - 오류 응답은 `{"code":…,"message":…,"correlationId":…}` 한 가지뿐이다. `code`는 `NOT_FOUND`·`METHOD_NOT_ALLOWED`·`UPSTREAM_UNAVAILABLE`·`INTERNAL_ERROR` 네 개로 시작하며 안정적인 machine code라 문자열을 바꾸지 않는다. Nginx가 만드는 오류(502, 정적 404)도 같은 모양을 돌려준다.
 - 내부 경로·스택·프레임워크 기본 오류 본문·환경 변수 이름은 응답과 로그 어디에도 남기지 않는다. 그래서 `spring.main.log-startup-info`가 꺼져 있고(기동 로그가 jar 경로와 실행 사용자를 남긴다), 처리하지 못한 예외의 스택은 기본 로그에 찍지 않는다. 스택이 필요한 조사에서는 `logging.level.com.bokrilog=debug`로 한 번만 열고 다시 닫는다.
 - 상태 응답에 시각·버전·호스트명·빌드 정보를 넣지 않는다. 인증 없이 공개되는 엔드포인트라 담는 모든 값이 곧 공개 정보다.
-- Spring Modulith·Actuator·Spring Security·PostgreSQL 의존은 아직 없다. 추가는 그것을 필요로 하는 스토리의 SPEC이 목적과 함께 승인한다.
+- Actuator·Spring Security·Spring Session JDBC·JPA 의존은 아직 없다. 추가는 그것을 필요로 하는 스토리의 SPEC이 목적과 함께 승인한다. Spring Modulith·PostgreSQL·Flyway·Testcontainers는 `spec-1-3-identity-ownership.md`가 승인해 들어왔다.
 
 ## 동일 출처 실행 (`deploy/`)
 
@@ -211,9 +241,14 @@ backend/gradlew --project-dir backend build
 
 | 명령 | 역할 |
 |---|---|
-| `deploy/compose/verify-same-origin.sh [--keep-stack]` | 기동 → I/O 표 전 행 확인 → 백엔드 정지 후 502/504 확인 → 로그 누출 검사 → 정리. `--keep-stack`이면 성공 시 백엔드를 다시 띄워 건강한 스택을 남긴다 |
+| `deploy/compose/verify-same-origin.sh [--keep-stack]` | 마이그레이션 1회 → 기동 → I/O 표 전 행 확인 → identity 미노출 확인 → 백엔드 정지 후 502/504 확인 → 로그 누출 검사 → 정리. `--keep-stack`이면 성공 시 백엔드를 다시 띄워 건강한 스택을 남긴다 |
+| `docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --build migrate` | 스키마 마이그레이션 1회. 기동 전에 실행한다 |
 | `docker compose --file deploy/compose/compose.yaml up --detach --build --wait --wait-timeout 180` | 스택 기동. `http://127.0.0.1:18080` |
 | `docker compose --file deploy/compose/compose.yaml down --remove-orphans --volumes` | 정리 |
+
+직접 다룰 때는 **마이그레이션을 먼저** 실행한다. 기본 프로필의 백엔드 기동은 schema 검증만 하므로(AD-12), 빈 데이터베이스에 `up`부터 하면 백엔드가 검증 실패로 healthy가 되지 못하고 `--wait`가 timeout까지 기다린다. `verify-same-origin.sh`는 그 순서를 이미 담고 있다.
+
+**postgres는 휘발성이다.** compose에 명명 볼륨이 없어 데이터베이스가 컨테이너 수명만큼만 산다. 개발·CI 스택이 매번 같은 빈 상태에서 시작하고, 어제 남은 행이 오늘 시험 결과를 바꾸지 않게 하려는 선택이다. 그래서 `down`(위 정리 명령) 뒤에는 스키마도 함께 사라진다. `--keep-stack`으로 남긴 스택을 내렸다가 다시 세울 때는 `up`이 아니라 **마이그레이션부터** 다시 실행한다. 마이그레이션 파일을 고친 뒤에도 마찬가지다 — 이미 뜬 데이터베이스에는 옛 체크섬이 기록돼 있어 백엔드 기동이 검증 실패로 끝나므로, 스택을 내리고 마이그레이션부터 다시 시작한다.
 
 명령은 `ci.yml`과 **같은 형태**로 적는다. `-f`/`--file`, `-d`/`--detach`, `-p`/`--project-dir`처럼 같은 뜻의 축약형을 문서마다 다르게 쓰면, 로컬에서 재현할 때 무엇이 CI와 다른지 눈으로 대조할 수 없다. `gradlew`도 `--project-dir backend` 한 형태만 쓴다. CI에만 `bash` 접두와 `--no-daemon`이 붙는데, 앞은 체크아웃에서 실행 비트가 유실돼도 동작하게 하려는 것이고 뒤는 러너에 daemon을 남기지 않으려는 것이다. 그 두 가지 외에는 로컬과 CI의 명령이 같다.
 
@@ -232,10 +267,11 @@ PLAYWRIGHT_BASE_URL=http://127.0.0.1:18080 npm --prefix frontend run test:e2e:ru
 | 경로 | 역할 |
 |---|---|
 | `deploy/nginx/bokrilog.conf` | 루트 정적 제공, `/api` 프록시, 공통 오류 JSON, 보안 응답 헤더 |
-| `deploy/compose/compose.yaml` | `nginx:1.30.4-alpine`과 백엔드 두 서비스. 산출물과 설정을 읽기 전용 마운트 |
+| `deploy/compose/compose.yaml` | 네 서비스. `postgres:18.6-alpine` → 백엔드 → `nginx:1.30.4-alpine`이 healthcheck로 이어지고, `migrate`는 `profiles`에 가려 명시 실행만 된다. 산출물과 설정을 읽기 전용 마운트 |
 | `deploy/compose/verify-same-origin.sh` | 로컬·CI 공용 검증 명령 |
 
-- 바깥에 열리는 포트는 Nginx 하나(`127.0.0.1:18080`)다. 백엔드 포트는 게시하지 않는다. 게시하는 순간 "동일 출처"는 구성이 아니라 관례가 된다. 호스트 포트는 `4183`으로 시작하지 않는 값을 쓴다. Playwright의 origin 비교가 포트 접두사에 취약했던 이력이 있고(`4183` 대 `41830`) preview 기본 포트와도 겹치지 않아야 한다.
+- 개발·CI compose에 비밀번호를 두지 않는다. `POSTGRES_HOST_AUTH_METHOD: trust`를 쓰고 포트를 게시하지 않는다. 가짜 비밀번호 리터럴을 커밋하면 gitleaks 규칙을 완화하고 싶어지고 그 완화가 남는다. production 자격정보는 Story 3.8이 소유한다.
+- 바깥에 열리는 포트는 Nginx 하나(`127.0.0.1:18080`)다. 백엔드와 데이터베이스 포트는 게시하지 않는다. 게시하는 순간 "동일 출처"는 구성이 아니라 관례가 된다. 호스트 포트는 `4183`으로 시작하지 않는 값을 쓴다. Playwright의 origin 비교가 포트 접두사에 취약했던 이력이 있고(`4183` 대 `41830`) preview 기본 포트와도 겹치지 않아야 한다.
 - `/api`만 프록시한다. 나머지 경로는 정적 파일이거나 404이며 어떤 경로도 외부 주소로 프록시하지 않는다.
 - SPA 폴백(`try_files … /index.html`)을 두지 않는다. 이 저장소에는 아직 라우터가 없고, 폴백이 있으면 존재하지 않는 경로가 200 + 진입 화면으로 응답해 "없음"을 숨긴다.
 - CSP는 Nginx 응답 헤더가 유일한 정의다. `<meta>` CSP를 쓰지 않는다. `index.html`의 noscript 폴백이 인라인 `style` 속성을 쓰므로 `style-src-attr 'unsafe-inline'`을 뺄 수 없다. 빼면 JS를 끈 사용자의 고지 화면이 스타일 없이 나온다.
@@ -259,11 +295,13 @@ changes ──> frontend-quality ──┐
 |---|---|---|
 | `changes` | secret 검사, CI 계약 시험, 변경 분류 | 5분 |
 | `frontend-quality` | 타입 검사 → ESLint → stylelint → Prettier → 빌드 → Vitest → Chromium E2E | 8분 |
-| `backend-quality` | JDK 25 준비 → Gradle `build`(컴파일·시험·jar) | 10분 |
+| `backend-quality` | JDK 25 준비 → Gradle `build`(컴파일·Modulith 경계 검사·PostgreSQL Testcontainers 시험·jar) | 15분 |
 | `same-origin-integration` | 두 품질 job의 산출물로 동일 출처 검증(`--keep-stack`) → 같은 스택에서 Story 1.1 회귀 | 15분 |
 | `ci-required` | 선행 job 결과 집계. 병합 가능 여부 판정 | 1분 |
 
-`same-origin-integration`의 15분은 `CI-PLAN.md` §8이 적은 시작값 5분과 다르다. 그 값은 이 job이 무엇을 하는지 정해지기 전의 추정이고, 지금은 Story 1.1 회귀 단계 하나가 이미 4분을 쓴다. 단계별 상한의 합(내려받기 1 + 동일 출처 검증 5 + `npm ci` 2 + Chromium 설치 2 + 회귀 4 + 정리·업로드 1)이 15분이라 그 값을 상한으로 삼았다. 검증 스크립트가 `--keep-stack`으로 남긴 스택을 회귀가 그대로 쓰므로 compose는 한 번만 뜬다. 필수 검사를 빼서 5분에 맞추지 않는다(CI-PLAN §10). 이 job이 `frontend-quality`의 `npm ci`와 Chromium 설치를 되풀이하는 중복은 `deferred-work.md`에 남겼다. 목표는 `CI-PLAN.md` §10의 PR wall-clock p95 8분이며 job timeout은 목표가 아니라 멈춘 job을 끊는 상한이다.
+`backend-quality`의 15분은 Story 1.3이 10분에서 올린 값이다. 이 job은 이제 Testcontainers로 실제 PostgreSQL을 띄우고, 콜드 실행에는 `postgres:18.6-alpine` 내려받기가, 동시성 시험에는 실제 잠금 경합 대기가 더해진다. 러너에 docker 데몬이 이미 있으므로 서비스 컨테이너도 새 action도 더하지 않았고, 시험은 기존 `Gradle 빌드` 단계 안에서 돈다. `CI-PLAN.md` §4·§10의 backend 예산 8분은 이 상한과 별개로 계속 측정한다.
+
+`same-origin-integration`의 15분은 `CI-PLAN.md` §8이 적은 시작값 5분과 다르다. 그 값은 이 job이 무엇을 하는지 정해지기 전의 추정이고, 지금은 Story 1.1 회귀 단계 하나가 이미 4분을 쓴다. 단계별 상한의 합(내려받기 1 + 동일 출처 검증 7 + `npm ci` 2 + Chromium 설치 2 + 회귀 4 + 정리·업로드 1)이 상한 17분이지만 15분을 유지한다. 검증 단계에 Story 1.3이 세 가지를 더했다 — `postgres:18.6-alpine` 이미지 내려받기, migrate 이미지 빌드, 마이그레이션 실행 — 그래서 그 단계의 예산을 5분에서 7분으로 본다. 실측(PR #9의 2분 2초)과 상한 사이에 아직 여유가 크므로 job 상한은 그대로 두고, 실측이 몇 회 더 쌓이면 두 값을 `CI-PLAN.md` 새 버전이 함께 보정한다. 검증 스크립트가 `--keep-stack`으로 남긴 스택을 회귀가 그대로 쓰므로 compose는 한 번만 뜬다. 필수 검사를 빼서 5분에 맞추지 않는다(CI-PLAN §10). 이 job이 `frontend-quality`의 `npm ci`와 Chromium 설치를 되풀이하는 중복은 `deferred-work.md`에 남겼다. 목표는 `CI-PLAN.md` §10의 PR wall-clock p95 8분이며 job timeout은 목표가 아니라 멈춘 job을 끊는 상한이다.
 
 이 job 구조는 Story 1.2의 PR #9에서 2026-09-06에 처음 GitHub에서 돌았다. 첫 실측 wall-clock은 4분 3초로 `CI-PLAN.md` §10의 PR p95 8분 안이다. job별로는 `changes` 16초, `frontend-quality` 1분 9초, `backend-quality` 1분 26초, `same-origin-integration` 2분 2초, `ci-required` 7초다. 같은 날 문서-only PR #10은 `changes` 10초 → `ci-required` 6초로 끝났다. 위 표의 timeout은 이 실측이 몇 회 더 쌓인 뒤 `CI-PLAN.md` 새 버전에서 보정한다.
 
@@ -351,4 +389,4 @@ npx bmad-method@6.11.0 install \
 - `.gitignore`: 로컬 캐시, 가상환경, Python 바이트코드, 두 운영체제의 메타데이터, IDE 로컬 상태와 빌드 산출물을 제외한다.
 - `scripts/check-bmad-env.sh`: 위 설정이 실제로 동작하는지 한 번에 검증한다.
 
-애플리케이션 기술 스택과 허용 버전은 아키텍처 문서를 권위 기준으로 삼고, 실제 설치 버전은 lockfile과 image digest가 소유한다. 프런트엔드는 `frontend/package-lock.json`이, 백엔드의 Gradle 버전은 `backend/gradle/wrapper/gradle-wrapper.properties`가 소유하며 그 파일은 배포본 SHA-256까지 고정한다. 백엔드 의존 버전은 현재 `build.gradle.kts`가 고정한 Spring Boot BOM이 결정하고, Gradle dependency lock과 운영 image digest는 아직 도입 전이다. 제품이 Python 애플리케이션이라는 전제에서 `.python-version`, `pyproject.toml`, 애플리케이션 `.venv`를 만들지 않는다.
+애플리케이션 기술 스택과 허용 버전은 아키텍처 문서를 권위 기준으로 삼고, 실제 설치 버전은 lockfile과 image digest가 소유한다. 프런트엔드는 `frontend/package-lock.json`이, 백엔드의 Gradle 버전은 `backend/gradle/wrapper/gradle-wrapper.properties`가 소유하며 그 파일은 배포본 SHA-256까지 고정한다. 백엔드 의존 버전은 `build.gradle.kts`가 인용한 BOM이 결정한다. BOM은 둘이다. Spring Boot BOM(플러그인이 노출하는 좌표를 그대로 인용하며 Flyway·PostgreSQL 드라이버·Testcontainers까지 관리한다)과 Spring Modulith BOM 2.1.1(Boot BOM이 관리하지 않아 버전을 여기서 고정하며 시험 classpath에만 적용한다)이다. 두 BOM이 겹치는 좌표는 없다. Gradle dependency lock과 운영 image digest는 아직 도입 전이다. 제품이 Python 애플리케이션이라는 전제에서 `.python-version`, `pyproject.toml`, 애플리케이션 `.venv`를 만들지 않는다.

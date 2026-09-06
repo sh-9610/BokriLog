@@ -47,8 +47,10 @@ Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개�
 
 세 디렉터리 공통 불변식이다. 근거는 `ARCHITECTURE-SPINE.md`의 AD-1~AD-15와 각 스토리 SPEC이다.
 
-- **스택 고정.** Java 25 LTS, Spring Boot 4.1.x(현재 4.1.1), React 19.2.x, Vite 8.2.x, Nginx 1.30.x, PostgreSQL 18.x(도입 예정). 허용 계열은 `ARCHITECTURE-SPINE.md` Stack 표가, 실제 버전은 lockfile·wrapper·이미지 태그가 소유한다. 버전이 해결되지 않으면 조용히 낮추지 말고 보고한다.
-- **의존 추가는 SPEC이 승인한다.** Spring Modulith·Actuator·Spring Security·PostgreSQL·Testcontainers는 아직 없다. 각각을 필요로 하는 스토리의 SPEC이 목적과 함께 승인할 때 추가한다. 프런트엔드 런타임 의존 추가도 같다(개발·시험 전용 devDependency는 예외).
+- **스택 고정.** Java 25 LTS, Spring Boot 4.1.x(현재 4.1.1), Spring Modulith 2.1.x(현재 2.1.1), React 19.2.x, Vite 8.2.x, Nginx 1.30.x, PostgreSQL 18.x(현재 18.6). 허용 계열은 `ARCHITECTURE-SPINE.md` Stack 표가, 실제 버전은 lockfile·wrapper·이미지 태그가 소유한다. 버전이 해결되지 않으면 조용히 낮추지 말고 보고한다.
+- **의존 추가는 SPEC이 승인한다.** Actuator·Spring Security·Spring Session JDBC·JPA는 아직 없다. 각각을 필요로 하는 스토리의 SPEC이 목적과 함께 승인할 때 추가한다. PostgreSQL·Flyway는 `spec-1-3-identity-ownership.md`가 승인해 운영 classpath에, Spring Modulith·Testcontainers는 같은 SPEC이 승인해 시험 classpath에 들어왔다. 경계 검증 라이브러리를 운영 jar에 싣지 않는다. 프런트엔드 런타임 의존 추가도 같다(개발·시험 전용 devDependency는 예외).
+- **`identity`가 계정 소유권·삭제 상태의 유일한 권위다.** 다른 패키지는 공개 application API(`AccountLifecycleApi`·`AccountAccessApi`·`AccountDeletionApi`)로만 접근하고 `identity.internal`이나 소유 테이블에 직접 닿지 않는다. `identity`에는 HTTP 표면이 없다. 접근 거부는 `AccessDecision.DENIED` 하나이며 타 사용자·미존재·삭제된 대상이 구분되면 안 된다. 상태는 `ACTIVE → DELETION_IN_PROGRESS → DELETED` 단조 전진뿐이다. `ModuleBoundaryTest`가 경계와 미노출을 강제한다.
+- **스키마는 별도 migration 역할이 바꾼다(AD-12).** API 기동은 `Flyway::validate`만 하고 `migrate` 프로필만 실제로 마이그레이션한다(`SchemaValidationConfig`). 새 마이그레이션은 `backend/src/main/resources/db/migration/V<n>__<이름>.sql`로 더하고 이미 적용된 파일은 고치지 않는다.
 - **동일 출처.** Nginx는 `/api`만 백엔드로 프록시한다. 나머지는 정적 파일이거나 404이며 어떤 경로도 외부 주소로 프록시하지 않는다. SPA 폴백(`try_files … /index.html`)은 라우터가 생기는 스토리가 넣는다.
 - **오류 응답 한 가지.** `{"code":…,"message":…,"correlationId":…}`. Spring과 Nginx가 같은 모양을 돌려주고 `code`는 안정적인 machine code다. 내부 경로·스택·프레임워크 기본 오류 본문·환경 변수 이름은 응답과 로그 어디에도 남기지 않는다.
 - **보안 헤더는 Nginx만.** CSP를 비롯한 보안 응답 헤더는 `deploy/nginx/bokrilog.conf`가 유일한 정의다. `<meta>` CSP를 쓰지 않는다.
@@ -80,7 +82,9 @@ npm --prefix frontend run test:e2e
 
 ## 백엔드·동일 출처 실행
 
-`backend/`는 Java 25 + Spring Boot 4.1.1 + Gradle wrapper다. 데이터베이스·자격정보 없이 기동하며 엔드포인트는 `GET /api/status` 하나다. 상태 컨트롤러는 루트 패키지 `com.bokrilog`에 있고 모듈 패키지는 아직 없다. 컴파일 경고는 `-Werror`로 실패다.
+`backend/`는 Java 25 + Spring Boot 4.1.1 + Gradle wrapper이고 모듈 경계는 Spring Modulith 2.1.1이 시험에서 검증한다(운영 classpath에는 없다). HTTP 엔드포인트는 여전히 `GET /api/status` 하나이고 제공자 자격정보도 필요 없지만, Story 1.3부터 PostgreSQL 18을 쓴다. 상태 컨트롤러는 루트 패키지 `com.bokrilog`에 있고 첫 모듈 패키지는 `com.bokrilog.identity`다. 컴파일 경고는 `-Werror`로 실패다.
+
+**백엔드 시험은 Docker를 전제한다.** Testcontainers가 실제 `postgres:18.6-alpine`을 JVM당 하나 띄운다. 데몬이 없으면 `build`가 컨테이너 시작 실패로 멈추며, 인메모리 데이터베이스로 대체하지 않는다.
 
 JDK 25가 필요하고 toolchain 자동 프로비저닝은 꺼져 있다. macOS는 `brew install openjdk@25` 뒤 사용자 홈에 최초 1회 심볼릭 링크를 걸면 `/usr/libexec/java_home -v 25`와 Gradle이 함께 찾는다(sudo 불필요). Windows는 `winget install EclipseAdoptium.Temurin.25.JDK`로 끝난다. PATH의 `java -version`이 17로 남아 있어도 정상이다. `JAVA_HOME`을 셸에서 바꿔 두지 않는다.
 
@@ -90,11 +94,19 @@ ln -sfn /opt/homebrew/opt/openjdk@25/libexec/openjdk.jdk ~/Library/Java/JavaVirt
 backend/gradlew --project-dir backend build
 ```
 
-`deploy/`는 Nginx가 `frontend/dist/`를 origin 루트에서 제공하고 `/api`만 백엔드로 프록시하는 개발·CI 공용 compose 구성이다. production 프로필이 아니다. 두 산출물을 먼저 빌드한 뒤 검증 스크립트 하나로 I/O 계약 전체를 확인한다. Docker Desktop이 떠 있어야 한다. 바깥에 열리는 포트는 Nginx 하나(`127.0.0.1:18080`)다.
+`deploy/`는 Nginx가 `frontend/dist/`를 origin 루트에서 제공하고 `/api`만 백엔드로 프록시하는 개발·CI 공용 compose 구성이다. production 프로필이 아니다. 서비스는 넷(`postgres`·`migrate`·`backend`·`nginx`)이고 `migrate`는 `profiles`에 가려 명시 실행만 된다. 두 산출물을 먼저 빌드한 뒤 검증 스크립트 하나로 I/O 계약 전체를 확인한다. Docker Desktop이 떠 있어야 한다. 바깥에 열리는 포트는 Nginx 하나(`127.0.0.1:18080`)이며 데이터베이스 포트도 게시하지 않는다.
 
 ```bash
 deploy/compose/verify-same-origin.sh
 ```
+
+스크립트가 `up` 앞에서 마이그레이션을 1회 실행한다. compose를 직접 다룰 때는 그 순서를 손으로 지켜야 한다. 기본 프로필의 백엔드 기동은 schema 검증만 하므로 빈 데이터베이스에 `up`부터 하면 백엔드가 healthy가 되지 못한다.
+
+```bash
+docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --build migrate
+```
+
+개발·CI compose에는 비밀번호가 없다. `POSTGRES_HOST_AUTH_METHOD: trust`를 쓰고 포트를 게시하지 않는다. production 자격정보는 Story 3.8이 소유한다.
 
 종료 코드는 0(통과), 1(단정 실패), 2(준비 실패: 산출물이나 docker 없음)다. `--keep-stack`으로 스택을 남기면 같은 origin에 Playwright 회귀를 돌릴 수 있다. 상세는 `DEVELOPMENT.md`의 `## 백엔드`·`## 동일 출처 실행`.
 
@@ -104,7 +116,8 @@ deploy/compose/verify-same-origin.sh
 
 - 첫 GitHub 실측(2026-09-06, PR #9): wall-clock 4분 3초. 문서-only 경로(`_bmad-output/**`, 최상위 `*.md`)는 `changes`와 `ci-required`만 돌아 1분 안에 끝난다.
 - artifact 이름에 `run_attempt`가 들어가 `Re-run failed jobs`는 쓸 수 없다. 재실행은 `Re-run all jobs`다.
-- 통합 job timeout 15분은 CI-PLAN §8의 시작값 5분과 다르다. 실측이 몇 회 더 쌓인 뒤 CI-PLAN 새 버전으로 보정하기로 했고 아직 발행 전이다.
+- 통합 job timeout 15분은 CI-PLAN §8의 시작값 5분과 다르다. `backend-quality`도 Story 1.3에서 10분 → 15분으로 올렸다(Testcontainers 콜드 실행). 두 값 모두 실측이 몇 회 더 쌓인 뒤 CI-PLAN 새 버전으로 보정하기로 했고 아직 발행 전이다.
+- Testcontainers는 러너의 docker 데몬을 그대로 쓴다. `backend-quality`에 서비스 컨테이너도, docker를 설치하는 action도 더하지 않았다. 시험은 기존 `Gradle 빌드` 단계 안에서 돈다.
 - 로컬에서 CI 계약을 미리 확인하는 명령은 `bash .github/scripts/test-ci-scripts.sh`다.
 
 ## Python 도구 실행
@@ -133,9 +146,12 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 |---|---|---|
 | 1.1 진입 화면 | done | `spec-1-1-entry-screen.md`, PR #3 |
 | 1.2 동일 출처 셸 | done | `spec-1-2-same-origin-shell.md`, PR #9 머지 커밋 `d9a1fc2`, PR #10 |
-| 1.3 소유권·삭제 상태 | backlog — **다음 착수** | `epics.md` Story 1.3, `epic-1-context.md` |
+| 1.3 소유권·삭제 상태 | in-progress — 구현 완료, PR 전 | `spec-1-3-identity-ownership.md`, `feature/1-3-identity-ownership` |
+| 1.4 Google 로그인 | backlog — **다음 착수** | `epics.md` Story 1.4, `epic-1-context.md` |
 
-Story 1.3은 `identity` 모듈, PostgreSQL 18 마이그레이션, 소유권·삭제 상태 판정 계약, 해당 데이터의 삭제 경로와 시험을 범위로 한다. 실제 소셜 로그인·세션·공개 삭제 API는 제외다. 이 스토리가 처음 도입하는 것: 첫 모듈 패키지와 Spring Modulith 경계 검사, PostgreSQL Testcontainers, 마이그레이션(expand 우선, startup은 schema 검증만), 두 사용자·동시성·실패 주입 시험. SPEC이 승인하기 전에는 그 의존을 넣지 않는다. 삭제 상태 계약의 요구는 `epic-1-context.md` `## Technical Decisions`의 "삭제 상태 계약"과 `ERD-1.0.0` §9다.
+Story 1.3이 `identity` 모듈, PostgreSQL 18 마이그레이션, 소유권·삭제 상태 판정 계약, 해당 데이터의 삭제 경로와 시험을 들였다. 실제 소셜 로그인·세션·공개 삭제 API는 제외다. 이 스토리가 처음 도입한 것: 첫 모듈 패키지와 Spring Modulith 경계 검사, PostgreSQL Testcontainers, 마이그레이션(expand 우선, startup은 schema 검증만), 두 사용자·동시성·실패 주입 시험. 삭제 상태 계약의 요구는 `epic-1-context.md` `## Technical Decisions`의 "삭제 상태 계약"과 `ERD-1.0.0` §9다.
+
+Story 1.4는 이 계약 위에서 Google OIDC와 세션을 올린다. `AccountLifecycleApi.linkSocialIdentity`와 `decideSessionCreation`이 그 접점이며, 새 소유권 판정을 따로 만들지 않는다. Spring Session JDBC·Spring Security는 그 스토리의 SPEC이 승인할 때 들어온다.
 
 프런트엔드 **애플리케이션 코드**에는 아직 라우터도 `/api` 호출도 동작하는 소셜 버튼도 없다. `/api/status`는 서버 경계를 확인하는 엔드포인트이며 화면이 부르지 않는다. 진입 화면의 `다음 단계` 카피("로그인 수단 선택은 아직 준비 중입니다.")는 Story 1.4가 소셜 로그인 버튼으로 교체한다.
 
