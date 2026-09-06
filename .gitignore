@@ -34,3 +34,17 @@ target/
 # Playwright 실행 산출물. 실패 추적·스크린샷·리포트는 기기별 결과라 공유하지 않는다.
 frontend/test-results/
 frontend/playwright-report/
+
+# compose 로컬 오버라이드. compose가 자동으로 읽는 파일 이름이라 실수로 커밋되면
+# 다른 기기와 CI의 실행 구성이 조용히 달라진다. 저장소가 소유하는 구성은
+# deploy/compose/compose.yaml 하나뿐이다.
+compose.override.yaml
+compose.override.yml
+docker-compose.override.yaml
+docker-compose.override.yml
+
+# 로컬 환경 변수 파일. compose와 여러 도구가 자동으로 읽으며 자격정보가 들어가기 쉽다.
+# 예시 값은 `.env.example`처럼 명시적으로 예시임을 밝힌 파일로만 공유한다.
+.env
+.env.*
+!.env.example
