@@ -265,7 +265,7 @@ changes ──> frontend-quality ──┐
 
 `same-origin-integration`의 15분은 `CI-PLAN.md` §8이 적은 시작값 5분과 다르다. 그 값은 이 job이 무엇을 하는지 정해지기 전의 추정이고, 지금은 Story 1.1 회귀 단계 하나가 이미 4분을 쓴다. 단계별 상한의 합(내려받기 1 + 동일 출처 검증 5 + `npm ci` 2 + Chromium 설치 2 + 회귀 4 + 정리·업로드 1)이 15분이라 그 값을 상한으로 삼았다. 검증 스크립트가 `--keep-stack`으로 남긴 스택을 회귀가 그대로 쓰므로 compose는 한 번만 뜬다. 필수 검사를 빼서 5분에 맞추지 않는다(CI-PLAN §10). 이 job이 `frontend-quality`의 `npm ci`와 Chromium 설치를 되풀이하는 중복은 `deferred-work.md`에 남겼다. 목표는 `CI-PLAN.md` §10의 PR wall-clock p95 8분이며 job timeout은 목표가 아니라 멈춘 job을 끊는 상한이다.
 
-이 job 구조는 아직 GitHub에서 실행된 적이 없다. Story 1.2의 PR이 처음 돌린다. 그때까지 러너에서만 드러나는 값(이미지 빌드 시간, `--with-deps` apt 설치, artifact 왕복)은 추정이다.
+이 job 구조는 Story 1.2의 PR #9에서 2026-09-06에 처음 GitHub에서 돌았다. 첫 실측 wall-clock은 4분 3초로 `CI-PLAN.md` §10의 PR p95 8분 안이다. job별로는 `changes` 16초, `frontend-quality` 1분 9초, `backend-quality` 1분 26초, `same-origin-integration` 2분 2초, `ci-required` 7초다. 같은 날 문서-only PR #10은 `changes` 10초 → `ci-required` 6초로 끝났다. 위 표의 timeout은 이 실측이 몇 회 더 쌓인 뒤 `CI-PLAN.md` 새 버전에서 보정한다.
 
 두 품질 job은 `same-origin-integration`이 소비할 산출물(`frontend/dist`, `backend/build/libs/bokrilog-backend.jar`)을 업로드한다. 통합 job은 그 산출물을 다시 빌드하지 않는다. 재빌드하면 통합 시험이 검증하는 바이트가 품질 job이 검증한 바이트와 같다는 보장이 사라진다. artifact 이름에는 run ID와 attempt가 들어가 취소되거나 대체된 실행의 것을 재사용하지 않고, retention은 1일이다. 이름에 attempt가 들어가는 대가로 GitHub의 `Re-run failed jobs`는 쓸 수 없다. 이미 성공한 품질 job은 다시 돌지 않아 새 attempt 번호의 artifact를 만들지 않고, 통합 job만 다시 돌면 없는 이름을 찾는다. 재실행이 필요하면 `Re-run all jobs`를 쓴다. 이 제약은 `deferred-work.md`에 남겼다.
 
