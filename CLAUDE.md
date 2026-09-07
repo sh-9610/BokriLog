@@ -153,7 +153,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 1.1 진입 화면 | done | `spec-1-1-entry-screen.md`, PR #3 |
 | 1.2 동일 출처 셸 | done | `spec-1-2-same-origin-shell.md`, PR #9 머지 커밋 `d9a1fc2`, PR #10 |
 | 1.3 소유권·삭제 상태 | done | `spec-1-3-identity-ownership.md`, PR #12 머지 커밋 `89b8948` |
-| 1.4 Google 로그인 | in-progress — 구현 완료, PR 전 | `spec-1-4-google-sign-in.md`, `feature/1-4-google-sign-in` |
+| 1.4 Google 로그인 | done | `spec-1-4-google-sign-in.md`, PR #14 머지 커밋 `2f300f6` |
 | 1.5 로그아웃·세션 만료 | backlog — **다음 착수** | `epics.md` Story 1.5, `epic-1-context.md` |
 
 Story 1.3이 `identity` 모듈, PostgreSQL 18 마이그레이션, 소유권·삭제 상태 판정 계약, 해당 데이터의 삭제 경로와 시험을 들였다. 이 스토리가 처음 도입한 것: 첫 모듈 패키지와 Spring Modulith 경계 검사, PostgreSQL Testcontainers, 마이그레이션(expand 우선, startup은 schema 검증만), 두 사용자·동시성·실패 주입 시험.
@@ -164,7 +164,7 @@ Story 1.4의 범위 밖: 로그아웃·세션 만료·의심 세션 차단(1.5),
 
 프런트엔드는 이제 `/api` 호출 하나(`GET /api/auth/session`)와 동작하는 Google 버튼을 갖는다. 라우터 의존은 여전히 없고 `App.tsx`의 닫힌 경로 맵이 그 역할을 한다. `/api/status`는 서버 경계를 확인하는 엔드포인트이며 화면이 부르지 않는다.
 
-미룬 결정(`deferred-work.md` 19~22, 해소 원장 참조): artifact `run_attempt`와 재실행 복구의 충돌, 통합 job의 `npm ci`·Chromium 설치 중복, 백엔드 포매터·정적 분석 게이트를 소유할 스토리, nginx 컨테이너 권한 강화. 어느 것도 Story 1.5 착수를 막지 않는다.
+미룬 결정(`deferred-work.md`, 해소 원장 참조): artifact `run_attempt`와 재실행 복구의 충돌, 통합 job의 `npm ci`·Chromium 설치 중복, 백엔드 포매터·정적 분석 게이트를 소유할 스토리, nginx 컨테이너 권한 강화, 그리고 Story 1.4가 더한 셋 — `identity`가 `spring_session`에 직접 닿는 결합, 로그인 상태 화면 두 개의 중복, 백엔드 import 정렬. 어느 것도 Story 1.5 착수를 막지 않는다.
 
 ## 브랜치·커밋
 
