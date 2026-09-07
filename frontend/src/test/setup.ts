@@ -6,30 +6,46 @@
  *    "외부 요청 0건"을 관측 가능하게 만든다. 요청이 발생하면 기록하고 즉시 실패시킨다.
  * 3. 브라우저 저장소(localStorage, sessionStorage, cookie, IndexedDB) 사용을 관측한다.
  *    금지 목록은 DEVELOPMENT.md의 `## 프런트엔드` 절과 같아야 한다.
- * 4. 세션 확인 요청 하나만 시험이 명시적으로 열 수 있는 탈출구를 둔다(`stubSessionRequest`).
- *    전역 거부는 그대로다. 아래 `SESSION_ENDPOINT` 절의 근거를 참고한다.
+ * 4. 시험이 (메서드, URL) 쌍 단위로 명시적으로 열 수 있는 탈출구를 둔다(`stubSessionRequest`,
+ *    `stubLogoutRequest`). 전역 거부는 그대로다. 아래 `responders` 절의 근거를 참고한다.
  */
 
 import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach } from 'vitest'
 
-import { SESSION_ENDPOINT } from '../content/auth'
+import { LOGOUT_ENDPOINT, SESSION_ENDPOINT } from '../content/auth'
 
 const observedRequests: string[] = []
 const observedIndexedDbNames: string[] = []
 const observedSessionRequests: string[] = []
+const observedAllowedRequests: string[] = []
 
 /**
- * 세션 확인 요청에 답할 함수. 시험이 설치하지 않으면 `null`이고, 그 경로도 다른 모든 요청과 함께
- * 거부된다.
+ * 열린 요청과 그것에 답할 함수. 키는 `"<메서드> <URL>"`이다.
  *
  * 범위를 좁힌 탈출구다. 전역 거부를 걷어내지 않는 이유는 그 훅이 이 저장소의 브라우저 경계
  * (외부 폰트·CDN·분석 금지, 진입 화면 요청 0건)를 관측 가능하게 만드는 유일한 장치이기 때문이다.
- * 여기서 여는 것은 URL 하나(`/api/auth/session`)이고, 그것도 시험이 이 함수를 부른 동안만이다.
- * `afterEach`가 매번 닫는다.
+ *
+ * 키가 URL 하나가 아니라 (메서드, URL) 쌍인 것이 Story 1.5의 변화다. URL만 보면 `/api/auth/session`
+ * 을 여는 것이 그 경로의 모든 메서드를 함께 여는 것이 되고, 그러면 시험이 `POST`를 실수로 통과시켜도
+ * 아무도 모른다. 쌍으로 좁히면 시험이 연 것만 통과한다. `afterEach`가 매번 전부 닫는다.
  */
-let sessionResponder: (() => Promise<Response>) | null = null
+const responders = new Map<string, RequestResponder>()
+
+/**
+ * 열린 요청에 답하는 함수.
+ *
+ * `init`을 받는다. 로그아웃이 세션 귀속 CSRF 토큰을 헤더로 실었는지, 쿠키를 동일 출처로 제한했는지가
+ * 그 인자에만 있고, 시험이 `globalThis.fetch`를 다시 감싸 그 값을 훔쳐보는 대신 여기서 넘긴다.
+ * 인자를 쓰지 않는 기존 응답 함수는 그대로 통과한다.
+ */
+export type RequestResponder = (init?: RequestInit) => Promise<Response>
+
+/** 열린 요청의 키. 메서드는 대문자로 정규화한다. */
+function requestKey(method: string, url: string): string {
+  return `${method.toUpperCase()} ${url}`
+}
 
 /**
  * 세션 확인 요청 하나를 이 시험 동안만 허용한다.
@@ -38,13 +54,33 @@ let sessionResponder: (() => Promise<Response>) | null = null
  * 단위 시험에서 다루려면 이 요청 하나가 성립해야 한다. 진입 화면은 이 함수를 부르지 않으며
  * 그 화면의 "요청 0건" 단정은 그대로 유지된다.
  */
-export function stubSessionRequest(responder: () => Promise<Response>): void {
-  sessionResponder = responder
+export function stubSessionRequest(responder: RequestResponder): void {
+  responders.set(requestKey('GET', SESSION_ENDPOINT), responder)
+}
+
+/**
+ * 로그아웃 요청 하나를 이 시험 동안만 허용한다.
+ *
+ * 로그아웃은 `POST`이고 위 세션 확인과 다른 경로다. 이 함수를 부르지 않은 시험에서 로그아웃이
+ * 나가면 전역 거부가 그것을 기록하고 실패시킨다 — 화면이 몰래 상태 변경 요청을 보내지 않는다는
+ * 단정이 그 기록이다.
+ */
+export function stubLogoutRequest(responder: RequestResponder): void {
+  responders.set(requestKey('POST', LOGOUT_ENDPOINT), responder)
 }
 
 /** 허용된 세션 확인 요청의 기록. 몇 번 불렸는지 단정하는 데 쓴다. */
 export function getObservedSessionRequests(): readonly string[] {
   return [...observedSessionRequests]
+}
+
+/**
+ * 허용된 요청 전부의 기록. `"<메서드> <URL>"` 형태이며 순서가 보존된다.
+ *
+ * 로그아웃이 정확히 한 번 나갔는지, 세션 확인 뒤에 나갔는지를 이 목록으로 본다.
+ */
+export function getObservedAllowedRequests(): readonly string[] {
+  return [...observedAllowedRequests]
 }
 
 /** 지금까지 관측된 네트워크 요청. 비어 있어야 한다. */
@@ -100,13 +136,29 @@ function toUrl(input: unknown): string {
   return String(input)
 }
 
-globalThis.fetch = (input: RequestInfo | URL): Promise<Response> => {
-  const url = toUrl(input)
-  if (sessionResponder !== null && url === SESSION_ENDPOINT) {
-    observedSessionRequests.push(url)
-    return sessionResponder()
+/** 요청의 메서드. `init`이 우선이고, `Request` 객체면 그것이 들고 있는 값이다. */
+function toMethod(input: unknown, init?: RequestInit): string {
+  if (typeof init?.method === 'string') {
+    return init.method
   }
-  return Promise.reject(refuse('fetch', url))
+  if (input instanceof Request) {
+    return input.method
+  }
+  return 'GET'
+}
+
+globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const url = toUrl(input)
+  const method = toMethod(input, init).toUpperCase()
+  const responder = responders.get(requestKey(method, url))
+  if (responder !== undefined) {
+    observedAllowedRequests.push(requestKey(method, url))
+    if (method === 'GET' && url === SESSION_ENDPOINT) {
+      observedSessionRequests.push(url)
+    }
+    return responder(init)
+  }
+  return Promise.reject(refuse(`fetch:${method}`, url))
 }
 
 XMLHttpRequest.prototype.open = function open(method: string, url: string | URL): void {
@@ -146,15 +198,17 @@ beforeEach(() => {
   observedRequests.length = 0
   observedIndexedDbNames.length = 0
   observedSessionRequests.length = 0
+  observedAllowedRequests.length = 0
 })
 
 afterEach(() => {
   cleanup()
   // 탈출구는 시험 하나의 범위다. 다음 시험은 다시 전역 거부에서 시작한다.
-  sessionResponder = null
+  responders.clear()
   observedRequests.length = 0
   observedIndexedDbNames.length = 0
   observedSessionRequests.length = 0
+  observedAllowedRequests.length = 0
   window.localStorage.clear()
   window.sessionStorage.clear()
   // 한 시험이 남긴 쿠키가 다음 시험의 저장소 단정을 엉뚱하게 실패시키지 않게 한다.

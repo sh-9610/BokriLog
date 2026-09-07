@@ -44,6 +44,21 @@ async function expectAuthScreenMounted(page: Page): Promise<void> {
   await expect(page.getByRole('link', { name: authContent.signIn.googleLabel })).toBeVisible()
 }
 
+/**
+ * 스텁 제공자를 지나 온보딩까지 로그인한다.
+ *
+ * 아래 `스텁 제공자 성공 왕복` 절의 시험들이 이 상태에서 시작한다. 왕복을 각 시험에 복사하면
+ * 단계 하나가 갈라져도 아무도 모른다. 스텁의 `subject`는 요청마다 새로 만들어지므로 이 호출은
+ * 늘 신규 가입이고 목적지는 온보딩이다(`DevOidcStub`).
+ */
+async function signInThroughStub(page: Page): Promise<void> {
+  await page.goto('/')
+  await expectAuthScreenMounted(page)
+  await page.getByRole('link', { name: authContent.signIn.googleLabel }).click()
+  await page.getByRole('link', { name: STUB_CONSENT.link }).click()
+  await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
+}
+
 test.describe('로그인 진입', () => {
   test('Google 버튼이 서버 인증 시작 경로로 가는 링크다', async ({ page }) => {
     await page.goto('/')
@@ -235,9 +250,102 @@ test.describe('로그인 상태 경로 · 미인증', () => {
     const dataRequests = requests.filter((request) =>
       ['xhr', 'fetch', 'websocket', 'eventsource'].includes(request.resourceType),
     )
+    /*
+     * 세션 확인 하나뿐이다. 로그아웃은 사용자가 버튼을 누를 때만 나가므로 이 목록에 없다 —
+     * 그 요청이 더해지는 것은 아래 `로그아웃 왕복`이며 그 절이 자기 목록을 따로 고정한다.
+     *
+     * 가시성 재확인도 이 목록을 늘리지 않는다. 그 재확인은 인증을 관측한 화면만 듣고(이 경로는
+     * 미인증으로 수렴한다) 가시성이 바뀔 때만 도는데, 문서를 처음 여는 것은 가시성 변화가 아니다.
+     */
     expect(dataRequests.map((request) => new URL(request.url).pathname)).toEqual([
       '/api/auth/session',
     ])
+  })
+
+  test('미인증 복귀 화면은 로그아웃 버튼을 그리지 않는다', async ({ page }) => {
+    await page.goto('/dashboard')
+    await expectAuthScreenMounted(page)
+
+    // 이 화면은 인증 화면이다. 끝낼 세션이 없으므로 로그아웃할 대상도 없다.
+    await expect(page.getByRole('button', { name: authContent.signOut.label })).toHaveCount(0)
+  })
+})
+
+test.describe('유일 제공자 접근 상실 안내', () => {
+  test('실패 표지에 Google 공식 복구 경로가 붙는다', async ({ page }) => {
+    await page.goto('/?auth=failed')
+    await expectAuthScreenMounted(page)
+
+    const link = page.getByRole('link', { name: authContent.recovery.linkLabel })
+
+    await expect(page.getByText(authContent.recovery.body)).toBeVisible()
+    await expect(link).toHaveAttribute('href', authContent.recovery.href)
+    // 기본으로 새 창을 열지 않고 `rel`로 참조 유출을 막는다.
+    await expect(link).not.toHaveAttribute('target', /.*/)
+    await expect(link).toHaveAttribute('rel', 'noreferrer')
+    // 이메일 확인·문의로 인증을 우회하는 경로를 만들지 않는다.
+    await expect(page.getByText(authContent.recovery.caveat)).toBeVisible()
+    await expect(page.getByRole('textbox')).toHaveCount(0)
+  })
+
+  test('취소 표지에는 복구 안내가 붙지 않는다', async ({ page }) => {
+    await page.goto('/?auth=cancelled')
+    await expectAuthScreenMounted(page)
+
+    // 취소는 재시도하면 되는 경우다. 접근을 잃었다고 단정하지 않는다.
+    await expect(page.getByText(authContent.recovery.body)).toHaveCount(0)
+  })
+
+  test('복구 안내 링크가 최소 44×44px이고 전역 포커스 링을 받는다', async ({ page }) => {
+    await page.setViewportSize(NARROW_VIEWPORT)
+    await page.goto('/?auth=failed')
+    await expectAuthScreenMounted(page)
+
+    const link = page.getByRole('link', { name: authContent.recovery.linkLabel })
+    const box = await link.boundingBox()
+
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
+
+    const focus = await link.evaluate((element) => {
+      element.focus()
+      const style = getComputedStyle(element)
+      return {
+        outlineStyle: style.outlineStyle,
+        outlineWidth: style.outlineWidth,
+        outlineOffset: style.outlineOffset,
+        outlineColor: style.outlineColor,
+      }
+    })
+
+    expect(focus.outlineStyle).toBe('solid')
+    expect(focus.outlineWidth).toBe('2px')
+    expect(focus.outlineOffset).toBe('2px')
+    expect(focus.outlineColor).toBe('rgb(29, 79, 145)')
+  })
+
+  test('표지와 함께 열린 화면은 포커스를 페이지 제목으로 보낸다', async ({ page }) => {
+    await page.goto('/?auth=loggedOut')
+    await expectAuthScreenMounted(page)
+
+    // 다른 화면에서의 전환 뒤다. 포커스가 문서 처음에 남아 있으면 무엇이 바뀌었는지 알 수 없다.
+    const focusedText = await page.evaluate(() => document.activeElement?.textContent.trim() ?? '')
+
+    expect(focusedText).toBe('복리 계획 비교')
+    await expect(page.getByRole('status')).toHaveText(authContent.notices.loggedOut)
+  })
+
+  test('로그아웃·만료 표지 화면도 WCAG 2.2 AA 위반이 0건이다', async ({ page }) => {
+    for (const path of ['/?auth=loggedOut', '/?auth=expired', '/?auth=failed']) {
+      await page.goto(path)
+      await expectAuthScreenMounted(page)
+
+      const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
+
+      expect(
+        results.violations.map((violation) => `${path} ${violation.id}: ${violation.help}`),
+      ).toEqual([])
+    }
   })
 })
 
@@ -300,11 +408,7 @@ test.describe('스텁 제공자 성공 왕복', () => {
      * 온보딩·로그인 상태 화면의 마크업을 한 번도 보지 않는다 — 두 화면의 본문·건너뛰기 링크·
      * live region이 검사 대상이 되는 것은 이 왕복 뒤다.
      */
-    await page.goto('/')
-    await expectAuthScreenMounted(page)
-    await page.getByRole('link', { name: authContent.signIn.googleLabel }).click()
-    await page.getByRole('link', { name: STUB_CONSENT.link }).click()
-    await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
+    await signInThroughStub(page)
 
     // 건너뛰기 링크가 문서의 첫 focusable 요소이고 본문 랜드마크를 가리킨다.
     const skipLink = page.getByRole('link', { name: '본문으로 건너뛰기' })
@@ -312,8 +416,173 @@ test.describe('스텁 제공자 성공 왕복', () => {
     await page.keyboard.press('Tab')
     await expect(skipLink).toBeFocused()
 
+    // 로그아웃은 그 다음이다. 반복되는 머리말을 지나치려는 사용자가 먼저 만나는 것은 건너뛰기다.
+    await page.keyboard.press('Tab')
+    await expect(page.getByRole('button', { name: authContent.signOut.label })).toBeFocused()
+
     const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
 
     expect(results.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([])
+  })
+
+  test('로그아웃 버튼이 최소 44×44px이고 좁은 폭에서도 유지된다', async ({ page }) => {
+    await page.setViewportSize(NARROW_VIEWPORT)
+    await signInThroughStub(page)
+
+    const box = await page.getByRole('button', { name: authContent.signOut.label }).boundingBox()
+
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
+
+    // 320px에서 가로 스크롤이 생기지 않는다. 머리말에 조작이 하나 늘어난 뒤에도 그렇다.
+    const metrics = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }))
+    expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth)
+  })
+
+  test('키보드만으로 로그아웃하면 세션 쿠키가 사라지고 표지가 나온다', async ({
+    page,
+    context,
+  }) => {
+    await signInThroughStub(page)
+
+    const requests: string[] = []
+    page.on('request', (request) => {
+      if (['xhr', 'fetch'].includes(request.resourceType())) {
+        requests.push(`${request.method()} ${new URL(request.url()).pathname}`)
+      }
+    })
+
+    // `Tab` 두 번이면 로그아웃에 닿고 `Enter`가 실행한다. jsdom이 구현하지 않는 활성화 동작이라
+    // 이 층이 그것을 확인하는 유일한 자리다.
+    await page.keyboard.press('Tab')
+    await page.keyboard.press('Tab')
+    await expect(page.getByRole('button', { name: authContent.signOut.label })).toBeFocused()
+    await page.keyboard.press('Enter')
+
+    // 표지를 달고 진입 화면으로 이동한다.
+    await expect(page.getByRole('status')).toHaveText(authContent.notices.loggedOut)
+    expect(new URL(page.url()).search).toBe('?auth=loggedOut')
+    await expectAuthScreenMounted(page)
+
+    // 브라우저에 남는 것이 없다. 세션 쿠키도 저장소 항목도 0건이다.
+    expect(
+      (await context.cookies()).filter((cookie) => cookie.name === 'BOKRILOG_SESSION'),
+    ).toEqual([])
+    const stored = await page.evaluate(async () => ({
+      localStorage: window.localStorage.length,
+      sessionStorage: window.sessionStorage.length,
+      cookie: document.cookie,
+      indexedDb: (await window.indexedDB.databases()).length,
+    }))
+    expect(stored).toEqual({ localStorage: 0, sessionStorage: 0, cookie: '', indexedDb: 0 })
+
+    // 데이터 요청은 로그아웃 하나뿐이다. 자동 재시도도, 다른 상태 변경도 없다.
+    expect(requests).toEqual(['POST /api/auth/logout'])
+
+    // 포커스가 새 문서의 페이지 제목으로 갔다. 실행 뒤 무엇이 바뀌었는지 알 수 있어야 한다.
+    const focusedText = await page.evaluate(() => document.activeElement?.textContent.trim() ?? '')
+    expect(focusedText).toBe('복리 계획 비교')
+
+    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
+    expect(results.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([])
+  })
+
+  test('로그아웃 뒤 뒤로 가기로 이전 인증 화면이 복원되지 않는다', async ({ page }) => {
+    await signInThroughStub(page)
+
+    await page.getByRole('button', { name: authContent.signOut.label }).click()
+    await expect(page.getByRole('status')).toHaveText(authContent.notices.loggedOut)
+
+    // 뒤로 가기. 문서가 캐시·bfcache에서 복원되지 않고 재요청된다(진입점의 `no-store`).
+    await page.goBack()
+    await expectAuthScreenMounted(page)
+
+    /*
+     * 표지는 냉시작(`signedOut`) 하나다.
+     *
+     * 진입 문서의 `Cache-Control: no-store`가 그 문서를 Chromium의 bfcache 대상에서 빼므로 뒤로
+     * 가기는 문서 재요청이 되고, 새로 마운트된 화면의 첫 확인은 미인증이다 — 인증을 관측한 적이
+     * 없으니 만료라고 말할 근거가 없다. 둘 중 하나로 받아 주면 bfcache가 어느 쪽으로 동작해도
+     * 통과해 이 층이 아무것도 고정하지 않는다. 만료 경로는 아래 가시성 시험이 따로 덮는다.
+     */
+    await expect(page.getByRole('status')).toHaveText(authContent.notices.signedOut)
+
+    await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: authContent.signOut.label })).toHaveCount(0)
+    const text = await page.locator('body').innerText()
+    for (const item of [...authContent.onboarding.items, ...authContent.dashboard.items]) {
+      expect(text).not.toContain(item)
+    }
+  })
+
+  test('탭이 다시 보이게 되면 만료를 감지해 표지를 달고 진입 화면으로 보낸다', async ({
+    page,
+    context,
+  }) => {
+    await signInThroughStub(page)
+
+    const requests: string[] = []
+    page.on('request', (request) => {
+      if (['xhr', 'fetch'].includes(request.resourceType())) {
+        requests.push(`${request.method()} ${new URL(request.url()).pathname}`)
+      }
+    })
+
+    /*
+     * 세션이 이 브라우저에서 끝난 상태를 만든다. 쿠키를 지우면 다음 세션 확인이 미인증으로
+     * 답하고, 그것이 다른 기기에서의 폐기·유휴 만료가 이 탭에 도착하는 모양과 같다.
+     */
+    await context.clearCookies()
+
+    /*
+     * 만료 감지의 실제 생산자다. 인증된 화면을 열어 둔 탭은 다시 마운트되지 않으므로 첫 확인의
+     * 답을 계속 주장하고, bfcache 재확인은 위 시험이 고정한 대로 `no-store` 때문에 오지 않는다.
+     * `visibilityState`는 이미 `visible`이므로 이벤트 하나가 그 순간을 재현한다.
+     */
+    await page.evaluate(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+
+    await expect(page.getByRole('status')).toHaveText(authContent.notices.expired)
+    expect(new URL(page.url()).search).toBe('?auth=expired')
+    await expectAuthScreenMounted(page)
+
+    // 이전 화면의 항목 문자열이 0건이다.
+    await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: authContent.signOut.label })).toHaveCount(0)
+
+    /*
+     * 재확인 하나뿐이다. 폴링이 아니고, 진입 화면으로 수렴한 뒤에는 그 화면이 세션을 묻지 않는다
+     * (진입 화면의 "문서·번들 외 요청 0건").
+     */
+    expect(requests).toEqual(['GET /api/auth/session'])
+
+    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
+    expect(results.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([])
+  })
+
+  test('진입 문서와 번들 자산의 캐시 지시가 갈린다', async ({ page }) => {
+    /*
+     * 진입점이 계산하는 두 갈래다(`bokrilog.conf`의 `$cache_control` map). 문서가 캐시되면
+     * 로그아웃 뒤 뒤로 가기가 이전 화면을 되살리고, 해시 자산이 캐시되지 않으면 매 방문이
+     * 번들을 다시 내려받는다. 보안 헤더는 두 응답 모두에 그대로 실려야 한다 — 캐시 지시를 하위
+     * location에서 내면 그 헤더들이 사라진다.
+     */
+    const documentResponse = await page.goto('/onboarding')
+    expect(documentResponse?.headers()['cache-control']).toContain('no-store')
+    expect(documentResponse?.headers()['content-security-policy']).toContain("default-src 'none'")
+
+    const assetPath = await page
+      .locator('script[src^="/assets/"]')
+      .first()
+      .evaluate((element: HTMLScriptElement) => element.src)
+    expect(assetPath).not.toBe('')
+
+    const asset = await page.request.get(assetPath)
+    expect(asset.headers()['cache-control']).toBe('public, max-age=31536000, immutable')
+    expect(asset.headers()['content-security-policy']).toContain("default-src 'none'")
   })
 })

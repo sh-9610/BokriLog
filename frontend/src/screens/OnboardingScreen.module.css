@@ -58,11 +58,20 @@
   inset-block-start: var(--space-2);
 }
 
+/*
+ * 브랜드와 로그아웃을 한 줄에 둔다. 320px에서도 두 요소가 겹치지 않아야 하므로 `wrap`을 허용한다
+ * (E2E가 320px·400% 확대에서 넘침 0건을 단정한다).
+ */
 .header {
   width: 100%;
   max-width: var(--component-app-shell-max-content-width);
   margin-inline: auto;
   padding-block-end: var(--space-5);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
 }
 
 .brand {

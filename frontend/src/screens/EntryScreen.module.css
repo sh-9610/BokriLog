@@ -190,6 +190,51 @@
   overflow: visible;
 }
 
+/*
+ * 복구 안내. 인증이 실패한 표지에서만 나타난다.
+ *
+ * service-notice가 아니라 일반 표면이다. 이 블록은 상태 통지가 아니라 다음 행동의 안내이고,
+ * 그 통지는 바로 위 live region이 이미 하고 있다.
+ */
+.recovery {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-surface-raised);
+  color: var(--color-ink-primary);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--color-border-default);
+}
+
+/*
+ * 외부로 나가는 유일한 링크. 문장 안의 인라인 링크가 아니라 독립 조작이므로 다른 모든 핵심
+ * 조작과 같은 최소 44×44px을 지킨다. 포커스 표시는 global.css의 전역 `:focus-visible`이 처리한다.
+ *
+ * 글자색과 테두리는 `--color-primary`다. `--color-focus-ring`은 포커스 표시의 색이라는 의미를
+ * 가진 토큰이고, 그 값을 평상시 테두리에 쓰면 전역 포커스 링(같은 색, 2px 바깥)이 같은 색
+ * 테두리 바로 밖에 앉아 포커스가 어디 있는지 보이지 않는다.
+ */
+.recoveryLink {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding-inline: var(--space-4);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface-raised);
+  color: var(--color-primary);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--color-primary);
+}
+
 /* DESIGN.md: 버튼 아래의 데이터 경계 안내. meta 타이포그래피와 ink-secondary다. */
 .signInBoundary {
   font-size: var(--type-meta-font-size);

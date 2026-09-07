@@ -1,11 +1,14 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { authContent, onboardingCopyStrings } from '../content/auth'
-import { replaceLocation } from '../session/navigation'
+import { entryContent } from '../content/entry'
+import { navigateTo, replaceLocation } from '../session/navigation'
 import {
+  getObservedAllowedRequests,
   getObservedSessionRequests,
   getObservedStorageEntries,
+  stubLogoutRequest,
   stubSessionRequest,
 } from '../test/setup'
 import { OnboardingScreen } from './OnboardingScreen'
@@ -13,10 +16,11 @@ import { OnboardingScreen } from './OnboardingScreen'
 /*
  * 최상위 내비게이션을 가로챈다.
  *
- * jsdom은 `location.replace`를 실제로 수행하지 않고 관측할 수도 없다. 서버가 고른 목적지로
- * 보내는지가 이 화면의 계약이므로, 그 전환을 소유한 모듈 하나를 대신 세운다.
+ * jsdom은 `location.replace`·`location.assign`을 실제로 수행하지 않고 관측할 수도 없다. 서버가
+ * 고른 목적지로 보내는지와 로그아웃 뒤 표지 경로로 가는지가 이 화면의 계약이므로, 그 전환을
+ * 소유한 모듈 하나를 대신 세운다.
  */
-vi.mock('../session/navigation', () => ({ replaceLocation: vi.fn() }))
+vi.mock('../session/navigation', () => ({ navigateTo: vi.fn(), replaceLocation: vi.fn() }))
 
 function jsonResponse(body: Record<string, unknown>, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -46,6 +50,7 @@ function pendingResponse(): Promise<Response> {
  */
 beforeEach(() => {
   vi.mocked(replaceLocation).mockClear()
+  vi.mocked(navigateTo).mockClear()
 })
 
 describe('OnboardingScreen', () => {
@@ -191,9 +196,166 @@ describe('OnboardingScreen', () => {
       window.dispatchEvent(pageShow(true))
     })
 
-    expect(await screen.findByText(authContent.notices.signedOut)).toBeInTheDocument()
+    /*
+     * 만료의 결과는 이동 하나다. Story 1.5가 그 구분을 들였다 — 인증을 한 번 관측한 뒤의 미인증은
+     * 만료이고, 첫 확인부터 미인증인 냉시작과 사용자가 알아야 할 사실이 다르다. 서버 응답은 두
+     * 경우에 같으므로 이 전이가 유일한 재료다.
+     *
+     * 만료 문장을 여기서 단정하지 않는다. 그 문장의 출처는 이동한 주소의 표지(`noticeKindOf`)
+     * 하나이며 `EntryScreen.test.tsx`가 그 자리를 덮는다. 제자리 렌더와 이동을 함께 내면 실제
+     * 브라우저에서 화면이 두 번 바뀌고 URL이 착지하기 전에 인증 화면 경로로 읽힌다.
+     */
+    await waitFor(() => {
+      expect(vi.mocked(replaceLocation)).toHaveBeenCalledWith('/?auth=expired')
+    })
+    // 이동이 착지하기 전에 아무 상태도 주장하지 않는다 — 만료 문장도, 이전 화면의 본문도 없다.
+    expect(screen.queryByText(authContent.notices.expired)).not.toBeInTheDocument()
+    expect(screen.queryByText(authContent.notices.signedOut)).not.toBeInTheDocument()
     expect(screen.queryByText(authContent.onboarding.heading)).not.toBeInTheDocument()
     expect(getObservedSessionRequests()).toHaveLength(2)
+  })
+
+  it('냉시작 미인증은 만료가 아니라 로그인 상태 아님으로 안내한다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(jsonResponse({ authenticated: false, destination: 'entry' })),
+    )
+
+    render(<OnboardingScreen />)
+
+    // 첫 확인부터 미인증이다. 인증을 관측한 적이 없으므로 만료라고 말할 근거가 없다.
+    expect(await screen.findByText(authContent.notices.signedOut)).toBeInTheDocument()
+    expect(screen.queryByText(authContent.notices.expired)).not.toBeInTheDocument()
+    // 그 자리에서 인증 화면을 렌더한다. 최상위 내비게이션을 부르지 않는다.
+    expect(vi.mocked(replaceLocation)).not.toHaveBeenCalled()
+  })
+
+  it('로그아웃 버튼이 세션이 확인된 뒤에만 나타난다', async () => {
+    stubSessionRequest(pendingResponse)
+
+    const { unmount } = render(<OnboardingScreen />)
+
+    // 확인 중에는 로그아웃할 대상이 아직 없다.
+    expect(
+      screen.queryByRole('button', { name: authContent.signOut.label }),
+    ).not.toBeInTheDocument()
+    unmount()
+
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: true, destination: 'onboarding', csrfToken: 'token-a' }),
+      ),
+    )
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.onboarding.heading })
+
+    // 온보딩에 버튼이 없으면 방금 가입한 사용자가 이 화면에서 나갈 방법이 없다.
+    expect(screen.getByRole('button', { name: authContent.signOut.label })).toBeInTheDocument()
+  })
+
+  it('로그아웃을 실행하면 표지를 달고 진입 화면으로 이동한다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: true, destination: 'onboarding', csrfToken: 'token-a' }),
+      ),
+    )
+    stubLogoutRequest(() => Promise.resolve(new Response(null, { status: 204 })))
+
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.onboarding.heading })
+
+    fireEvent.click(screen.getByRole('button', { name: authContent.signOut.label }))
+
+    await waitFor(() => {
+      expect(vi.mocked(navigateTo)).toHaveBeenCalledWith('/?auth=loggedOut')
+    })
+    // 세션 확인과 로그아웃 두 요청뿐이다. 이 화면은 그 밖의 요청을 보내지 않는다.
+    expect(getObservedAllowedRequests()).toEqual(['GET /api/auth/session', 'POST /api/auth/logout'])
+    expect(getObservedStorageEntries()).toEqual([])
+  })
+
+  it('접근성: 건너뛰기 링크가 로그아웃보다 먼저 도달한다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: true, destination: 'onboarding', csrfToken: 'token-a' }),
+      ),
+    )
+
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.onboarding.heading })
+
+    const skipLink = screen.getByRole('link', { name: entryContent.skipLink })
+    const signOut = screen.getByRole('button', { name: authContent.signOut.label })
+
+    // 반복되는 머리말을 지나치려는 사용자가 먼저 만나는 것은 건너뛰기 링크여야 한다.
+    expect(skipLink.compareDocumentPosition(signOut)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+  })
+
+  it('탭이 다시 보이게 되면 세션을 다시 확인하고 만료를 안내한다', async () => {
+    let signedIn = true
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse(
+          signedIn
+            ? { authenticated: true, destination: 'onboarding', csrfToken: 'token-a' }
+            : { authenticated: false, destination: 'entry' },
+        ),
+      ),
+    )
+
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.onboarding.heading })
+
+    /*
+     * 만료 감지의 실제 생산자다. 인증된 화면을 열어 둔 탭은 다시 마운트되지 않으므로 첫 확인의
+     * 답을 계속 주장하고, bfcache 재확인은 이 스토리가 진입 문서에 붙인 `no-store` 때문에
+     * Chromium에서 오지 않는다. 사용자가 다른 탭을 보다 돌아오는 순간이 그 사이에 세션이 끝났을
+     * 수 있는 유일한 관측 지점이다.
+     */
+    signedIn = false
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+
+    await waitFor(() => {
+      expect(vi.mocked(replaceLocation)).toHaveBeenCalledWith('/?auth=expired')
+    })
+    expect(getObservedSessionRequests()).toHaveLength(2)
+    // 이동만 남는다. 만료 문장은 이동한 주소의 표지가 만든다.
+    expect(screen.queryByText(authContent.notices.expired)).not.toBeInTheDocument()
+    // 폴링이 아니다. 가시성이 바뀔 때 한 번이고, 진입 화면으로 수렴한 뒤에는 다시 듣지 않는다.
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    expect(getObservedSessionRequests()).toHaveLength(2)
+  })
+
+  it('요청이 실패하면 세션이 만료됐다고 말하지 않는다', async () => {
+    let reachable = true
+    stubSessionRequest(() =>
+      reachable
+        ? Promise.resolve(
+            jsonResponse({ authenticated: true, destination: 'onboarding', csrfToken: 'token-a' }),
+          )
+        : Promise.reject(new Error('네트워크 단절')),
+    )
+
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.onboarding.heading })
+
+    /*
+     * 재확인이 실패한다. 세션의 사실이 아니라 이 브라우저의 사정이므로 만료로 판정하지 않는다 —
+     * 판정하면 일시적 오프라인 하나가 멀쩡한 세션의 사용자를 인증 화면으로 밀어내고 "만료됐다"고
+     * 말한다. 서버가 미인증이라고 답했을 때만 만료다.
+     */
+    reachable = false
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+
+    expect(await screen.findByText(authContent.notices.signedOut)).toBeInTheDocument()
+    expect(screen.queryByText(authContent.notices.expired)).not.toBeInTheDocument()
+    // 만료가 아니므로 최상위 내비게이션도 부르지 않는다. 그 화면 안에서 표시로 끝난다.
+    expect(vi.mocked(replaceLocation)).not.toHaveBeenCalled()
   })
 
   it('bfcache 복원이 아닌 `pageshow`는 세션을 다시 확인하지 않는다', async () => {

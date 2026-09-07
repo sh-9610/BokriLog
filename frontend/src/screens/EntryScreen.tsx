@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import { useEffect, useRef, type ReactElement } from 'react'
 
 import { authContent, authorizeHref, type AuthNoticeKind } from '../content/auth'
 import { entryContent, MAIN_LANDMARK_ID } from '../content/entry'
@@ -23,8 +23,21 @@ interface EntryScreenProps {
  * `form-action 'none'`)를 한 글자도 넓히지 않는다.
  *
  * 이 화면은 어떤 요청도 보내지 않는다. 세션 확인은 로그인 상태 경로에서만 한다.
+ *
+ * 표지를 달고 열리면 포커스를 페이지 제목으로 보낸다. 이 화면이 표지와 함께 나타나는 것은 언제나
+ * 다른 화면에서의 전환(로그아웃, 세션 만료, 실패한 인증 왕복) 뒤이고, 그때 포커스가 문서 처음에
+ * 남아 있으면 키보드·보조기술 사용자는 무엇이 바뀌었는지 알 수 없다. 표지가 없는 첫 방문에서는
+ * 포커스를 옮기지 않는다 — 옮길 이유가 없고, 그러면 건너뛰기 링크가 첫 `Tab`이라는 계약도 그대로다.
  */
 export function EntryScreen({ notice = null }: EntryScreenProps = {}): ReactElement {
+  const title = useRef<HTMLHeadingElement>(null)
+
+  useEffect(() => {
+    if (notice !== null) {
+      title.current?.focus()
+    }
+  }, [notice])
+
   return (
     <div className={styles.page}>
       <a className={styles.skipLink} href={`#${MAIN_LANDMARK_ID}`}>
@@ -37,7 +50,13 @@ export function EntryScreen({ notice = null }: EntryScreenProps = {}): ReactElem
 
       <main className={styles.main} id={MAIN_LANDMARK_ID} tabIndex={-1}>
         <div className={styles.intro}>
-          <h1 className={styles.title}>{entryContent.pageTitle}</h1>
+          {/*
+            `tabIndex={-1}`이다. 프로그래밍 방식 포커스만 받고 `Tab` 순서에는 들어가지 않는다 —
+            들어가면 읽기만 하는 제목이 조작 하나로 세어진다.
+          */}
+          <h1 className={styles.title} ref={title} tabIndex={-1}>
+            {entryContent.pageTitle}
+          </h1>
           <p className={styles.disclaimer}>{entryContent.disclaimer}</p>
           <p className={styles.lead}>{entryContent.lead}</p>
         </div>
@@ -51,6 +70,30 @@ export function EntryScreen({ notice = null }: EntryScreenProps = {}): ReactElem
             <p className={styles.noticeText}>{authContent.notices[notice]}</p>
           )}
         </div>
+
+        {/*
+          유일한 제공자에 접근을 잃은 경우의 복구 안내. 인증이 실패한 표지에서만 나타난다.
+
+          같은 창에서 열고 `rel="noreferrer"`로 참조 유출을 막는다. 진입점의
+          `Referrer-Policy: no-referrer`가 이미 같은 일을 하지만, 이 링크가 외부로 나가는 유일한
+          자리이므로 마크업에도 적어 둔다. 새 창을 열지 않는 것은 EXPERIENCE.md의 계약이다.
+
+          계정의 존재 여부를 드러내지 않는다. 조건문("접근할 수 없다면")이고 어떤 문장도 이
+          브라우저에 계정이 있었는지 말하지 않는다. 이메일 확인이나 문의로 인증을 우회하는 경로를
+          만들지 않으며 그 사실을 카피가 직접 말한다.
+        */}
+        {notice === 'failed' ? (
+          <section aria-labelledby={authContent.recovery.id} className={styles.recovery}>
+            <h2 className={styles.sectionHeading} id={authContent.recovery.id}>
+              {authContent.recovery.heading}
+            </h2>
+            <p>{authContent.recovery.body}</p>
+            <a className={styles.recoveryLink} href={authContent.recovery.href} rel="noreferrer">
+              {authContent.recovery.linkLabel}
+            </a>
+            <p className={styles.signInBoundary}>{authContent.recovery.caveat}</p>
+          </section>
+        ) : null}
 
         <section aria-labelledby={authContent.signIn.id} className={styles.signIn}>
           <h2 className={styles.sectionHeading} id={authContent.signIn.id}>

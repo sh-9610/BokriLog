@@ -28,7 +28,11 @@ import org.springframework.security.oauth2.client.web.OAuth2AuthorizedClientRepo
 import org.springframework.security.oauth2.core.oidc.OidcScopes;
 import org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequest;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.context.SecurityContextHolderFilter;
 import org.springframework.security.web.csrf.CsrfFilter;
+import org.springframework.security.web.csrf.CsrfToken;
+import org.springframework.security.web.csrf.CsrfTokenRepository;
+import org.springframework.security.web.csrf.HttpSessionCsrfTokenRepository;
 import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -61,7 +65,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
  */
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnWebApplication(type = Type.SERVLET)
-@EnableConfigurationProperties(AuthSecurityConfig.AuthProperties.class)
+@EnableConfigurationProperties({
+    AuthSecurityConfig.AuthProperties.class,
+    SessionGuard.SessionProperties.class
+})
 class AuthSecurityConfig {
 
     /** 인증 시작 경로의 접두사. 뒤에 제공자 등록 id가 붙는다({@code /api/auth/authorize/google}). */
@@ -75,6 +82,24 @@ class AuthSecurityConfig {
 
     /** 세션 확인 경로. 로그인 상태 화면이 서버 세션으로 상태를 확인하는 유일한 경로다. */
     static final String SESSION_PATH = "/api/auth/session";
+
+    /**
+     * 로그아웃 경로. 이 하나뿐이다.
+     *
+     * <p>{@code /api/auth/} 아래이므로 아래 {@link #PROTECTED_PATH_PREFIX}의 보호(세션 귀속 CSRF
+     * 토큰 + 동일 출처 {@code Origin})가 예외 없이 걸린다. 그것이 이 경로를 여기 둔 이유다.
+     */
+    static final String LOGOUT_PATH = "/api/auth/logout";
+
+    /**
+     * CSRF 토큰이 실리는 요청 헤더 이름.
+     *
+     * <p>Spring Security의 기본값과 같은 값을 명시한다. 이 문자열은 프런트엔드
+     * ({@code frontend/src/content/auth.ts})에도 리터럴로 있다 — 두 계층이 한 계약을 나눠 갖는
+     * 자리이며, 갈라지면 로그아웃이 403으로만 끝난다. 오류 code 문자열이 Nginx 구성과 중복되는
+     * 것과 같은 종류의 중복이고, 같은 방식으로 시험이 붙잡는다.
+     */
+    static final String CSRF_HEADER_NAME = "X-CSRF-TOKEN";
 
     /** 인증이 필요 없는 서버 경계 확인 경로. Story 1.2의 계약이며 이 스토리가 바꾸지 않는다. */
     static final String STATUS_PATH = "/api/status";
@@ -376,10 +401,33 @@ class AuthSecurityConfig {
                  */
                 .headers(headers -> headers.disable())
                 /*
-                 * 로그아웃은 Story 1.5의 범위다. 기본 배선은 `/logout` 필터를 등록해 이 스토리가
-                 * 만들지 않은 HTTP 표면을 하나 늘린다.
+                 * 로그아웃은 `POST /api/auth/logout` 하나다.
+                 *
+                 * 매처로 묶지 않고 그냥 켜면 기본 배선이 `/logout` HTTP 표면을 하나 새로 만든다.
+                 * 그 경로는 `/api/auth/` 밖이라 CSRF·Origin 보호도 받지 않고, Nginx의 정적
+                 * location이 받아 405를 돌려주므로 계약이 두 벌이 된다.
+                 *
+                 * 리다이렉트가 아니라 204다. 목적지는 서버가 정하지 않는다 — 로그아웃 뒤 화면은
+                 * 클라이언트가 표지와 함께 여는 진입 화면이고, 여기서 302를 돌려주면 `fetch`가
+                 * 그것을 따라가 본문 없는 HTML을 받는다.
+                 *
+                 * 세션 폐기 본체는 `AuthFlowHandlers`가 소유한다 — "행 삭제·컨텍스트 정리·쿠키
+                 * 만료" 셋을 함께 만족시키는 자리는 그 메서드 하나다. 다만 기본
+                 * `SecurityContextLogoutHandler`를 피한 것은 아니다: `LogoutConfigurer`는 등록된
+                 * 사용자 핸들러 뒤에 그 핸들러를 **항상** 덧붙이므로 매 로그아웃마다 함께 실행된다.
+                 * 우리 핸들러가 이미 세션을 무효화한 뒤이므로 그때 `getSession(false)`는 null이고,
+                 * 남는 일은 이미 비어 있는 `SecurityContext`를 한 번 더 정리하는 것뿐이다. 순서가
+                 * 뒤집히면(그 핸들러가 먼저 돌면) 우리 핸들러가 볼 세션이 사라져 행이 남으므로,
+                 * 이 배선에서 중요한 것은 "피했다"가 아니라 "앞에 있다"다.
                  */
-                .logout(logout -> logout.disable())
+                .logout(
+                        logout ->
+                                logout
+                                        .logoutRequestMatcher(logoutRequests())
+                                        .addLogoutHandler(handlers.logoutHandler())
+                                        .logoutSuccessHandler(
+                                                (request, response, authentication) ->
+                                                        response.setStatus(HttpStatus.NO_CONTENT.value())))
                 /*
                  * 저장된 요청으로 되돌리지 않는다. 복귀 목적지는 서버가 가진 닫힌 허용 목록이며
                  * (`AuthFlowHandlers`), 요청 캐시는 그 목록을 거치지 않는 두 번째 경로가 된다.
@@ -392,14 +440,19 @@ class AuthSecurityConfig {
                 .sessionManagement(
                         session -> session.sessionFixation(fixation -> fixation.changeSessionId()))
                 /*
-                 * CSRF 토큰은 세션에 귀속한다(기본 `HttpSessionCsrfTokenRepository`). 쿠키
-                 * 저장소를 쓰지 않는 것은 "브라우저에는 세션 쿠키 하나뿐"이라는 계약 때문이다.
+                 * CSRF 토큰은 세션에 귀속한다. 쿠키 저장소를 쓰지 않는 것은 "브라우저에는 세션
+                 * 쿠키 하나뿐"이라는 계약 때문이다. 클라이언트가 토큰을 얻는 경로는
+                 * `GET /api/auth/session`의 응답 본문 하나이며(`AuthSessionController`), 그래서
+                 * 토큰이 쿠키·`localStorage`·`sessionStorage`·URL에 놓일 자리가 없다.
                  *
                  * 보호 대상을 `/api/auth/` 아래의 상태 변경 요청으로 좁힌다. 전역으로 두면
                  * CsrfFilter가 서블릿보다 먼저 답해 `POST /api/status`가 405 대신 403이 되고
                  * Story 1.2·1.3이 고정한 탐침 응답이 함께 뒤집힌다.
                  */
-                .csrf(csrf -> csrf.requireCsrfProtectionMatcher(protectedRequests()))
+                .csrf(
+                        csrf ->
+                                csrf.csrfTokenRepository(new SessionBoundCsrfTokenRepository())
+                                        .requireCsrfProtectionMatcher(protectedRequests()))
                 /*
                  * 401·403을 공통 오류 계약으로 답한다. 기본 배선은 익명 요청의 접근 거부를
                  * 로그인 페이지 리다이렉트로 바꾸는데, 그러면 API 요청이 302 + HTML로 끝난다.
@@ -421,7 +474,19 @@ class AuthSecurityConfig {
                         CsrfFilter.class)
                 // 이미 인증된 세션의 로그인 시작 거절과 복귀 목적지 기록.
                 // authorization request를 만드는 필터보다 앞이어야 한다.
-                .addFilterBefore(handlers.authorizationStartFilter(), CsrfFilter.class);
+                .addFilterBefore(handlers.authorizationStartFilter(), CsrfFilter.class)
+                /*
+                 * 세션 수명·의심 세션 판정.
+                 *
+                 * `SecurityContextHolderFilter` **뒤**여야 한다. 그 필터가 세션에 저장된
+                 * `SecurityContext`를 thread-local에 얹으므로, 앞에 두면 여기서 비운 컨텍스트가
+                 * 곧바로 덮어써진다. 뒤에 두면 이 필터가 마지막 말을 하고, 그 정리는 thread-local
+                 * 에만 닿아 세션 행에 저장되지 않는다(재인증 요구가 행을 남긴다는 계약).
+                 *
+                 * `CsrfFilter`·`LogoutFilter`보다는 앞이다. 수명이 끝난 세션이 상태 변경 요청을
+                 * 통과하는 창을 남기지 않는다.
+                 */
+                .addFilterAfter(handlers.sessionGuardFilter(), SecurityContextHolderFilter.class);
 
         if (registrations.isConfigured()) {
             http.oauth2Login(
@@ -452,11 +517,84 @@ class AuthSecurityConfig {
         return AuthSecurityConfig::isProtectedRequest;
     }
 
-    private static boolean isProtectedRequest(HttpServletRequest request) {
+    /**
+     * 로그아웃으로 인정하는 요청. {@code POST /api/auth/logout} 정확히 하나다.
+     *
+     * <p>람다로 쓴다. 경로 매처 구현을 인용하면 그 타입의 폐기 예고가 곧 {@code -Werror} 아래의
+     * 빌드 실패가 되고, 여기서 하는 판정은 위 {@link #isProtectedRequest}와 같은 모양의 문자열
+     * 비교 하나다. 접두사 비교가 아니라 동등 비교여서 {@code /api/auth/logout/x}는 받지 않는다.
+     */
+    private static RequestMatcher logoutRequests() {
+        return AuthSecurityConfig::isLogoutRequest;
+    }
+
+    /**
+     * 로그아웃 요청인가.
+     *
+     * <p>package-private이다. {@code AuthFlowHandlers}의 세션 guard가 재인증을 요구받은 세션의
+     * 상태 변경을 막으면서 <b>로그아웃만은 통과시켜야</b> 하고(로그아웃은 상태를 없애기만 하므로
+     * 표시된 세션도 스스로를 끝낼 수 있어야 한다), 그 판정이 두 곳에 있으면 한쪽만 고쳐지는 날이
+     * 온다. {@link #isProtectedRequest}와 같은 이유의 같은 배치다.
+     */
+    static boolean isLogoutRequest(HttpServletRequest request) {
+        return "POST".equals(request.getMethod()) && LOGOUT_PATH.equals(request.getRequestURI());
+    }
+
+    /**
+     * 세션 귀속 CSRF 토큰과 동일 출처 {@code Origin}을 요구하는 요청인가.
+     *
+     * <p>package-private이다. {@code AuthFlowHandlers}의 세션 guard가 재인증을 요구받은 세션의
+     * 상태 변경을 같은 경계에서 막으므로, 이 판정이 두 곳에 있으면 한쪽만 고쳐지는 날이 온다.
+     */
+    static boolean isProtectedRequest(HttpServletRequest request) {
         // 컨텍스트 경로가 비어 있는 배치다(`server.servlet.context-path`를 두지 않는다).
         // 그래서 요청 URI가 그대로 애플리케이션 경로다.
         return !SAFE_METHODS.contains(request.getMethod())
                 && request.getRequestURI().startsWith(PROTECTED_PATH_PREFIX);
+    }
+
+    /**
+     * 세션 귀속 CSRF 토큰 저장소.
+     *
+     * <p>{@link HttpSessionCsrfTokenRepository}에 한 가지만 더한다 — <b>토큰을 저장하려고 세션을
+     * 만들지 않는다.</b>
+     *
+     * <p>기본 구현의 {@code saveToken}은 {@code request.getSession()}을 부르고, 그 호출이 세션
+     * 행을 하나 만든다. 그래서 세션이 없는 상태 변경 요청 하나마다(로그아웃한 브라우저의 재요청,
+     * 익명 호출자의 탐침) 거절과 함께 행이 늘어난다. "실패는 어떤 상태도 바꾸지 않는다"와
+     * "반복 로그아웃은 새 세션 행을 만들지 않는다"가 그 지점에서 깨진다.
+     *
+     * <p>저장을 건너뛰어도 검사는 그대로 성립한다. 저장되지 않은 새 토큰과 요청이 들고 온 값은
+     * 어차피 다르므로 결과는 무변경 403 하나다. 이 배치에서 토큰이 만들어지는 정당한 순간은
+     * 인증된 세션이 {@code GET /api/auth/session}을 부르는 때뿐이고, 그때는 세션이 이미 있다.
+     */
+    private static final class SessionBoundCsrfTokenRepository implements CsrfTokenRepository {
+
+        private final HttpSessionCsrfTokenRepository delegate = new HttpSessionCsrfTokenRepository();
+
+        private SessionBoundCsrfTokenRepository() {
+            // 헤더 이름을 명시한다. 기본값과 같은 값이지만 프런트엔드가 같은 리터럴을 들고 있다.
+            this.delegate.setHeaderName(CSRF_HEADER_NAME);
+        }
+
+        @Override
+        public CsrfToken generateToken(HttpServletRequest request) {
+            return this.delegate.generateToken(request);
+        }
+
+        @Override
+        public void saveToken(
+                @Nullable CsrfToken token, HttpServletRequest request, HttpServletResponse response) {
+            if (token != null && request.getSession(false) == null) {
+                return;
+            }
+            this.delegate.saveToken(token, request, response);
+        }
+
+        @Override
+        public @Nullable CsrfToken loadToken(HttpServletRequest request) {
+            return this.delegate.loadToken(request);
+        }
     }
 
     /**
