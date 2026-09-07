@@ -98,3 +98,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-4-google-sign-in.md`
   summary: 백엔드 import 정렬 관용을 정하고 그것을 강제할 게이트를 미룬 항목 21(백엔드 포매터·정적 분석)과 함께 결정한다.
   evidence: 이 스토리가 더한 파일들의 import 순서가 기존 관용과 어긋난다. `AuthSecurityConfig.java`는 `org.springframework.security.core.Authentication`이 `org.springframework.security.config...`보다 앞에 있어 알파벳 순서가 아니고, `DevOidcStubTest.java`는 `org.jspecify`가 `org.junit`보다 앞이라 정렬 기준이 파일마다 다르다. 프런트엔드는 `perfectionist/sort-imports`가 이것을 기계로 강제하고 `--fix`가 고치는데, 백엔드의 필수 게이트는 `gradle build` 하나이고 `-Werror`는 컴파일 경고만 본다. 사람 리뷰가 매 PR에서 import 순서를 세는 것은 지속되지 않으므로, 관용(알파벳 단일 블록인지 그룹 분리인지)과 그것을 강제할 도구(Spotless의 `importOrder`·Checkstyle의 `CustomImportOrder`)를 미룬 항목 21의 결정에 포함한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-lint-policy-path-separator.md`
+  summary: `lint-policy.test.ts`의 `lint:css` 범위 단정을 포함 검사에서 집합 동등 비교로 바꿀지 정한다.
+  evidence: 단정이 `expect.arrayContaining`으로 세 파일만 확인하는데 그 glob이 실제로 고르는 CSS는 다섯 개다(Story 1.4가 `OnboardingScreen.module.css`·`SignedInScreen.module.css`를 더했고 둘은 아무 단정도 받지 않는다). `spec-frontend-lint-policy.md`가 이 시험의 목적을 "glob·ignore가 바뀌어 검사 대상이 조용히 줄어드는 것을 막는다"로 적었는데, 지금 형태는 새 CSS 모듈이 glob에서 빠져도 통과한다. 디스크에서 `src/**/*.css`를 독립적으로 수집해 집합으로 비교해야 그 의도가 지켜지며, 그때 `spec-frontend-lint-policy.md`가 못박은 시험 개수와의 정합도 함께 처리해야 한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-lint-policy-path-separator.md`
+  summary: `lint-policy.test.ts`에 남은 경로 조립의 플랫폼 가정과 범위 단정의 부정 방향 공백을 정리한다.
+  evidence: `prettierConforms`·`prettierIgnores`와 형제 시험이 여전히 `` `${cwd}/${filePath}` `` 문자열 결합으로 입력을 만들어 Windows에서 `C:\…\frontend/src/…` 혼합 구분자가 된다. 지금 통과하는 것은 ESLint·Prettier의 내부 정규화 덕이고 이 브랜치가 없앤 가정과 같은 종류다. 또 `명령 층의 선택 범위` describe가 포함만 보고 "`lint:css`가 `src/` 밖이나 CSS 아닌 파일을 고르지 않는다", "`eslint .`이 `globalIgnores`를 실제로 무시한다", "두 명령의 `--max-warnings 0`이 남아 있다"를 단정하지 않는다. glob 추출 정규식 `/"([^"]+)"/`도 "첫 인용 토큰이 glob"이라는 가정에 의존한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-lint-policy-path-separator.md`
+  summary: Windows 전용 결함을 CI가 볼 수 있게 할지, 그렇다면 어느 스토리가 그 비용을 소유할지 정한다.
+  evidence: `ci.yml`의 다섯 job이 모두 `ubuntu-24.04`라 이번 결함처럼 Windows에서만 드러나는 실패를 CI가 구조적으로 감지하지 못한다. 이 저장소는 `DEVELOPMENT.md` `## 두 기기 개발`이 명시하듯 Windows와 macOS 양쪽에서 개발하므로 그 공백이 실제 비용으로 돌아온다. matrix leg 추가는 job 수·`runs-on` 개수·artifact 이름을 고정한 `test-ci-scripts.sh`의 단정 다섯 곳을 함께 바꿔야 하고 CI 시간도 늘어난다. 전체 matrix가 아니라 프런트엔드 단위 시험만 Windows에서 한 번 더 돌리는 축소안도 선택지다.
