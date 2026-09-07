@@ -20,6 +20,11 @@
 #     소비하는 것과 같은 모양을 로컬에서도 유지한다(CI-PLAN §8).
 #   - docker와 compose v2를 쓸 수 있다.
 #
+# 실행 순서
+#   스키마 마이그레이션(1회) → 스택 기동 → I/O 표 → identity 미노출 → 백엔드 비가용 → 로그 누출.
+#   마이그레이션이 먼저인 것은 계약이다. 기본 프로필의 백엔드 기동은 schema 검증만 하므로
+#   (AD-12) 빈 데이터베이스에 `up`부터 하면 백엔드가 healthy가 되지 못한다.
+#
 # 종료 코드
 #   0 -- 모든 단정 통과
 #   1 -- 단정 실패 (`  실패` 줄과 `::error::동일 출처 검증이 실패했다.`)
@@ -68,6 +73,53 @@ fail_setup() {
     printf '%s\n' "$2" >&2
   fi
   exit 2
+}
+
+# --------------------------------------------------------------------------
+# 누출 조각
+# --------------------------------------------------------------------------
+
+# 응답과 로그 어디에도 남으면 안 되는 조각들.
+#   내부 경로 -- 컨테이너 안의 파일 시스템 경로
+#   스택      -- 예외 스택 프레임
+#   환경 변수 -- 이름만 나와도 어떤 값을 찾아야 하는지 알려 준다
+#
+# 클라이언트가 보낸 요청 경로(`/api/nope`)와 upstream 주소는 여기 포함하지 않는다. 둘 다 내부
+# 정보가 아니라 그 요청 자체의 사실이며, 오류 로그의 존재 이유다.
+forbidden_fragments=(
+  '/app/app.jar'
+  '/usr/share/nginx'
+  '/etc/nginx'
+  '/docker-entrypoint'
+  'at org.springframework'
+  'at java.'
+  'at jakarta.'
+  'Whitelabel'
+  'JAVA_HOME'
+  'JAVA_TOOL_OPTIONS'
+  'SERVER_PORT'
+  'BOKRILOG_DB_URL'
+  'BOKRILOG_DB_USERNAME'
+  'NGINX_ENTRYPOINT_QUIET_LOGS'
+)
+
+# assert_no_forbidden_fragments <대상 이름> <파일>
+#
+# 목록을 한 곳에 두고 두 대상(마이그레이션 로그, 스택 로그)이 같은 목록을 쓴다. 조각이 한쪽에만
+# 늘어나 다른 쪽이 조용히 통과하는 일을 만들지 않는다.
+assert_no_forbidden_fragments() {
+  local label="$1" file="$2"
+  local fragment
+  local leak_found=false
+  for fragment in "${forbidden_fragments[@]}"; do
+    if grep -qF -- "${fragment}" "${file}"; then
+      record_fail "${label}에 '${fragment}'가 없다" "$(grep -nF -- "${fragment}" "${file}" | head -3)"
+      leak_found=true
+    fi
+  done
+  if [ "${leak_found}" = false ]; then
+    record_pass "${label}에 내부 경로·스택·환경 변수 이름이 없다"
+  fi
 }
 
 # --------------------------------------------------------------------------
@@ -134,11 +186,51 @@ trap 'cleanup 130; exit 130' INT
 trap 'cleanup 143; exit 143' TERM
 
 printf '동일 출처 검증\n\n'
+
+# 스키마 마이그레이션을 `up` 앞에서 한 번만 실행한다(AD-12).
+#
+# `run --rm migrate`가 `postgres`를 healthy까지 띄운 뒤 migrate 컨테이너를 한 번 돌리고 지운다.
+# 이 실행이 스키마를 바꾸는 유일한 경로다. 뒤이어 뜨는 백엔드는 기동 시점에 그 스키마를
+# 검증만 하고(`SchemaValidationConfig`), 검증이 실패하면 healthy가 되지 못해 아래 `--wait`가
+# 그 사실을 먼저 잡는다.
+#
+# `up --wait`에 맡기지 않는 이유는 정상 종료가 healthcheck 모델과 맞지 않기 때문이다. 종료
+# 코드가 곧 판정인 일회성 역할은 명시적으로 부르고 그 코드를 그대로 읽는다.
+#
+# 이 실행이 postgres를 띄우므로 `stack_up`을 여기서 올린다. 아래로 내리면 마이그레이션이
+# 실패했을 때 postgres 컨테이너가 정리되지 않고 남는다.
+stack_up=true
+printf 'schema 마이그레이션\n'
+
+# 이미지 빌드와 마이그레이션 실행을 두 로그로 나눈다.
+#
+# 한 로그에 섞으면 아래 조각 검사가 보는 대상이 흐려진다. docker의 빌드 진행 출력에는 Dockerfile의
+# `COPY … /app/app.jar` 줄이 그대로 실리는데, 그것은 저장소가 커밋한 파일의 내용이지 마이그레이션
+# 프로세스가 흘린 정보가 아니다. 검사해야 하는 것은 실행 중인 프로세스가 밖으로 내보내는 바이트다.
+#
+# 아래 `run`에 `--build`를 붙이지 않는 것으로 그 분리가 성립한다. 이미지는 바로 앞에서 만들었으므로
+# `run`은 다시 빌드하지 않고 빌드 진행 출력도 남기지 않는다. (`run`에는 `--no-build`가 없다.)
+if ! compose --profile migrate build migrate >"${work_dir}/migrate-build.log" 2>&1; then
+  fail_setup 'migrate 이미지 빌드에 실패했다.' "$(tail -40 "${work_dir}/migrate-build.log" 2>/dev/null)"
+fi
+if ! compose --profile migrate run --rm migrate >"${work_dir}/migrate.log" 2>&1; then
+  fail_setup '스키마 마이그레이션에 실패했다.' "$(tail -40 "${work_dir}/migrate.log" 2>/dev/null)"
+fi
+printf '  마이그레이션 완료\n'
+
+# 성공한 마이그레이션 로그도 검사한다.
+#
+# 이 로그는 실패했을 때만 인쇄되므로, 검사하지 않으면 성공한 실행의 출력은 아무도 보지 않는다.
+# 그런데 이 프로세스는 스택에서 스키마를 바꾸는 유일한 프로세스이고 백엔드와 같은 이미지·같은
+# 코드로 돈다. 여기서 내부 경로나 환경 변수 이름이 새면 배포 시점의 migration 역할에서도 샌다.
+assert_no_forbidden_fragments 'migrate 로그' "${work_dir}/migrate.log"
+printf '\n'
+
 printf 'compose 기동 (%s)\n' "${base_url}"
 
-# `--wait`는 두 서비스의 healthcheck가 healthy가 될 때까지 기다린다.
-# 기동을 기다리는 sleep을 스크립트에 넣지 않는다.
-stack_up=true
+# `--wait`는 기본 프로필 세 서비스의 healthcheck가 healthy가 될 때까지 기다린다.
+# 기동을 기다리는 sleep을 스크립트에 넣지 않는다. `migrate`는 `profiles`에 가려 여기 들어오지
+# 않으므로, 정상 종료한 일회성 컨테이너를 `--wait`가 영원히 기다리는 일도 없다.
 if ! compose up --detach --build --wait --wait-timeout 180 >"${work_dir}/up.log" 2>&1; then
   fail_setup 'compose 기동에 실패했다.' "$(tail -40 "${work_dir}/up.log" 2>/dev/null)"
 fi
@@ -192,6 +284,18 @@ header_value() {
           sub(/^[ \t]+/, "", value)
           print value
         }'
+}
+
+# psql_value <SQL>. 스택 안의 postgres에 한 값짜리 질의를 던져 stdout으로 낸다.
+#
+# HTTP 응답만으로는 "그 경로가 없다"까지만 알 수 있고 "그 요청이 아무것도 만들지 않았다"는
+# 알 수 없다. identity에는 HTTP 표면이 없어서 상태를 밖에서 되읽을 방법도 없으므로, 저장소를
+# 직접 본다. 실패하면 빈 문자열을 내고 이유는 `psql-err.txt`에 남는다.
+psql_value() {
+  compose exec -T postgres psql \
+    --username=bokrilog --dbname=bokrilog --no-password \
+    --tuples-only --no-align --command="$1" 2>"${work_dir}/psql-err.txt" \
+    | tr -d '[:space:]'
 }
 
 # --------------------------------------------------------------------------
@@ -415,6 +519,73 @@ assert_body_contains '`GET /api` 안정 code' '"code":"NOT_FOUND"'
 fetch POST /api
 assert_equals '`POST /api` 상태 404(백엔드가 받는다)' "${last_status}" '404'
 
+printf '\nidentity 미노출\n'
+
+# identity는 HTTP 표면을 갖지 않는다. 계정 생성·상태 변경·삭제에 밖에서 닿는 경로가 존재하지
+# 않는 것이 이 모듈의 계약이다. `ModuleBoundaryTest`가 컴파일된 구조에서 그것을 막고, 여기서는
+# 실제로 뜬 스택에 요청을 던져 확인한다. 구조 검사만 있으면 나중에 다른 모듈이 identity를
+# 감싸는 컨트롤러를 만들어도 이 스크립트는 모른다.
+#
+# 탐침 경로는 "이 기능이 HTTP로 열린다면 아마 이 이름이었을 것"들이다. 목록을 늘리는 것으로
+# 부재를 증명할 수는 없으므로, 아래 저장소 질의가 실제 증거다.
+while read -r probe_method probe_path; do
+  [ -n "${probe_method}" ] || continue
+  fetch "${probe_method}" "${probe_path}"
+  # 404(매핑 없음)와 405(정적 location이 먼저 받음) 둘 다 "그 경로가 없다"의 답이다.
+  assert_status_in "\`${probe_method} ${probe_path}\` 상태 404 또는 405" "${last_status}" '404' '405'
+  # 성공했거나 무언가를 만들었다면 그 흔적이 본문에 남는다. 계정 식별자가 응답에 실리는 경로는
+  # 어디에도 없어야 한다(AD-14).
+  assert_body_lacks "\`${probe_method} ${probe_path}\` 응답에 계정 식별자가 없다" 'user_id'
+done <<'PROBES'
+GET /api/accounts
+POST /api/accounts
+DELETE /api/accounts
+GET /api/accounts/00000000-0000-0000-0000-000000000000
+DELETE /api/accounts/00000000-0000-0000-0000-000000000000
+POST /api/accounts/00000000-0000-0000-0000-000000000000/deletion
+GET /api/identity
+POST /api/identity/accounts
+GET /api/users/me
+DELETE /api/users/me
+POST /api/sessions
+PROBES
+
+# 마이그레이션이 실제로 적용됐다는 증거. 백엔드가 healthy라는 것은 Flyway 검증이 통과했다는
+# 뜻이지만, 그 검증이 보는 것은 적용 이력이지 테이블의 존재가 아니다. 세 테이블을 직접 센다.
+identity_tables="$(psql_value "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('identity_account_lifecycle', 'identity_account', 'identity_social_link')")"
+if [ "${identity_tables}" = '3' ]; then
+  record_pass '마이그레이션이 identity 세 테이블을 만들었다'
+else
+  record_fail '마이그레이션이 identity 세 테이블을 만들었다' \
+    "실제 '${identity_tables}' (기대 '3') — $(head -c 300 "${work_dir}/psql-err.txt" 2>/dev/null)"
+fi
+
+# 위 탐침이 하나도 통하지 않았다는 것을 저장소에서 확인한다. 상태 코드는 "경로가 없다"까지만
+# 말해 주고, 부수 효과가 없었다는 것은 이 질의만이 말할 수 있다.
+lifecycle_rows="$(psql_value 'SELECT count(*) FROM identity_account_lifecycle')"
+if [ "${lifecycle_rows}" = '0' ]; then
+  record_pass 'HTTP 요청으로 계정이 하나도 만들어지지 않았다'
+else
+  record_fail 'HTTP 요청으로 계정이 하나도 만들어지지 않았다' \
+    "identity_account_lifecycle 행 수가 '${lifecycle_rows}'다 — $(head -c 300 "${work_dir}/psql-err.txt" 2>/dev/null)"
+fi
+
+# 바깥에 열리는 포트는 nginx 하나다. 데이터베이스가 생긴 뒤에도 그대로여야 한다.
+#
+# 렌더링된 구성에서 센다. `compose port`는 게시되지 않은 포트에도 종료 코드 0과 `invalid IP:0`을
+# 돌려주어 판정에 쓸 수 없고, 실행 중인 컨테이너만 볼 수 있어 `profiles`에 가린 `migrate`는
+# 아예 보이지 않는다. `--profile migrate`를 붙인 `config`는 네 서비스를 모두 펼치므로 이 한
+# 단정이 스택 전체를 덮는다.
+published_ports="$(compose --profile migrate config 2>/dev/null \
+  | sed -n 's/^[[:space:]]*published:[[:space:]]*"\{0,1\}\([0-9][0-9]*\)"\{0,1\}[[:space:]]*$/\1/p' \
+  | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+if [ "${published_ports}" = '18080' ]; then
+  record_pass '호스트에 게시된 포트는 nginx 하나뿐이다'
+else
+  record_fail '호스트에 게시된 포트는 nginx 하나뿐이다' \
+    "실제 '${published_ports}' (기대 '18080'). postgres·backend·migrate는 어떤 포트도 게시하지 않는다."
+fi
+
 printf '\n한도를 넘는 요청\n'
 
 # `client_max_body_size 64k`로 바로 도달하는 413이다. nginx에 이 상태의 `error_page`가 없으면
@@ -505,15 +676,39 @@ assert_security_headers '백엔드 정지 후 `GET /api/status`'
 
 printf '\n로그 누출 검사\n'
 
+raw_log_file="${work_dir}/compose-raw.log"
 log_file="${work_dir}/compose.log"
-if ! compose logs --no-color --no-log-prefix >"${log_file}" 2>&1; then
-  record_fail 'compose 로그를 읽는다' "$(tail -20 "${log_file}" 2>/dev/null)"
-elif [ ! -s "${log_file}" ]; then
+
+# 검사 대상은 스택의 모든 서비스다. 서비스를 골라 좁히면 고르지 않은 서비스가 무엇을 찍는지
+# 아무도 보지 않게 되고, 그 사각지대는 서비스가 늘어날 때마다 커진다.
+#
+# 예외는 한 줄뿐이다. postgres 공식 이미지의 entrypoint가 초기화 때
+# `/usr/local/bin/docker-entrypoint.sh: ignoring /docker-entrypoint-initdb.d/*`를 찍고 그 줄이
+# 조각 목록의 `/docker-entrypoint`에 걸린다. BokriLog가 만든 출력이 아니고 nginx의
+# `NGINX_ENTRYPOINT_QUIET_LOGS` 같은 스위치도 없다. 그렇다고 조각을 뺄 수는 없다. 그 조각은
+# nginx가 컨테이너 내부 경로를 다시 찍기 시작하면 걸리는 유일한 단정이다.
+#
+# 그래서 조각이 아니라 그 한 줄만 좁은 패턴으로 걸러 낸다. 잃는 것은 postgres entrypoint의
+# 그 한 줄뿐이고, 나머지 모든 서비스의 모든 줄이 검사 대상으로 남는다.
+log_ready=false
+if ! compose logs --no-color --no-log-prefix >"${raw_log_file}" 2>&1; then
+  record_fail 'compose 로그를 읽는다' "$(tail -20 "${raw_log_file}" 2>/dev/null)"
+elif [ ! -s "${raw_log_file}" ]; then
   # 빈 로그에서는 어떤 grep도 0건이다. "검사했다"와 "볼 것이 없었다"를 구분한다.
   record_fail 'compose 로그를 읽는다' '로그가 비었다. 검사가 아무것도 보지 않았다.'
 else
-  record_pass 'compose 로그를 읽는다'
+  # 걸러 낸 뒤 남는 줄이 없으면 grep의 종료 코드가 1이다. 그 자체는 실패가 아니므로 삼키고,
+  # "볼 것이 없었다"는 바로 아래에서 파일 크기로 판정한다.
+  grep -vF -- 'ignoring /docker-entrypoint-initdb.d/' "${raw_log_file}" >"${log_file}" || true
+  if [ ! -s "${log_file}" ]; then
+    record_fail 'compose 로그를 읽는다' '걸러 내고 나니 검사할 줄이 남지 않았다.'
+  else
+    record_pass 'compose 로그를 읽는다'
+    log_ready=true
+  fi
+fi
 
+if [ "${log_ready}" = true ]; then
   # 두 계층의 로그를 한 ID로 잇는다는 주장을 실제로 확인한다. 클라이언트가 헤더로 받은 그 값이
   # 진입점 로그에도 남아 있어야 사용자가 신고한 ID로 요청을 찾을 수 있다.
   # `log_format`에서 `$request_id`를 빼면 여기서 걸린다.
@@ -526,35 +721,7 @@ else
       "access log에서 '${tracked_request_id}'를 찾지 못했다."
   fi
 
-  # 응답과 로그 어디에도 남으면 안 되는 조각들.
-  #   내부 경로 -- 컨테이너 안의 파일 시스템 경로
-  #   스택      -- 예외 스택 프레임
-  #   환경 변수 -- 이름만 나와도 어떤 값을 찾아야 하는지 알려 준다
-  #
-  # 클라이언트가 보낸 요청 경로(`/api/nope`)와 upstream 주소는 여기 포함하지 않는다.
-  # 둘 다 내부 정보가 아니라 그 요청 자체의 사실이며, 오류 로그의 존재 이유다.
-  leak_found=false
-  for fragment in \
-    '/app/app.jar' \
-    '/usr/share/nginx' \
-    '/etc/nginx' \
-    '/docker-entrypoint' \
-    'at org.springframework' \
-    'at java.' \
-    'at jakarta.' \
-    'Whitelabel' \
-    'JAVA_HOME' \
-    'JAVA_TOOL_OPTIONS' \
-    'SERVER_PORT' \
-    'NGINX_ENTRYPOINT_QUIET_LOGS'; do
-    if grep -qF -- "${fragment}" "${log_file}"; then
-      record_fail "로그에 '${fragment}'가 없다" "$(grep -nF -- "${fragment}" "${log_file}" | head -3)"
-      leak_found=true
-    fi
-  done
-  if [ "${leak_found}" = false ]; then
-    record_pass '로그에 내부 경로·스택·환경 변수 이름이 없다'
-  fi
+  assert_no_forbidden_fragments '스택 로그' "${log_file}"
 fi
 
 # --------------------------------------------------------------------------

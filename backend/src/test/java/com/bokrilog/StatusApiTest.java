@@ -18,6 +18,7 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -32,12 +33,16 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p>클라이언트는 JDK 내장 {@link HttpClient}다. 시험 전용 HTTP 클라이언트를 하나 더 들이지 않는다.
  *
- * <p>데이터베이스·제공자 자격정보를 요구하지 않는다. 이 시험이 통과하는 것 자체가 그 계약의 증거다.
+ * <p>Story 1.3이 DataSource를 들이면서 이 시험도 실제 PostgreSQL을 요구하게 됐다. 단정은 하나도
+ * 바뀌지 않았고 {@link PostgresTestcontainersConfig} import 한 줄만 붙었다. 상태 확인 API와 오류
+ * 계약이 데이터베이스가 생긴 뒤에도 그대로라는 것이 이 시험이 계속 통과해야 하는 이유다.
+ * 제공자 자격정보는 여전히 필요 없다.
  *
  * <p>{@link OutputCaptureExtension}은 로그 누출 시험에만 쓴다. 오류 계약은 응답 본문만이 아니라
  * 로그에도 걸리며, 로그는 응답보다 오래 남고 더 많은 곳으로 복제된다.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Import(PostgresTestcontainersConfig.class)
 @ExtendWith(OutputCaptureExtension.class)
 class StatusApiTest {
 

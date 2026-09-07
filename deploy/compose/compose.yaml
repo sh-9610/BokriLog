@@ -5,14 +5,18 @@
 # 소유한다. 여기서 하는 일은 하나다.
 # "빌드된 프런트엔드 산출물과 백엔드 jar를 하나의 origin 뒤에 세워 실제 배포 형태를 재현한다."
 #
-# 그래서 두 서비스의 권한 모양이 다르다. 백엔드는 자기 이미지가 비-root 사용자를 만들어 쓰지만
-# nginx 서비스에는 `user`·`read_only`·`cap_drop`·자원 제한이 없다. 공식 이미지의 entrypoint가
-# root로 시작해 워커를 내리는 구조를 이 프로필에서 되짚을 이유가 없기 때문이며, 개발·CI 전용
-# 스택이라 감수하는 선택이다. 실수로 빠진 것이 아니라 위 목록이 소유한다는 뜻이다.
+# 그래서 서비스마다 권한 모양이 다르다. 백엔드는 자기 이미지가 비-root 사용자를 만들어 쓰지만
+# nginx·postgres 서비스에는 `user`·`read_only`·`cap_drop`·자원 제한이 없다. 두 공식 이미지의
+# entrypoint가 root로 시작해 권한을 내리는 구조를 이 프로필에서 되짚을 이유가 없기 때문이며,
+# 개발·CI 전용 스택이라 감수하는 선택이다. 실수로 빠진 것이 아니라 위 목록이 소유한다는 뜻이다.
 #
 # 실행 전제: `frontend/dist`와 `backend/build/libs/bokrilog-backend.jar`가 이미 존재한다.
 # 이 구성은 어느 쪽도 빌드하지 않는다. CI가 두 품질 job의 산출물을 재빌드 없이 소비하는 것과
 # 로컬 실행을 같은 모양으로 맞춘다(CI-PLAN §8).
+#
+# 서비스는 넷이고 기본 `up`에 뜨는 것은 셋이다. `postgres` → `backend` → `nginx`가 healthcheck로
+# 이어져 있고, `migrate`는 `profiles`에 가려 있다가 `verify-same-origin.sh`가 `up` 앞에서 한 번만
+# 실행한다(AD-12). 스키마를 바꾸는 것은 그 실행 하나뿐이며 API 기동은 검증만 한다.
 #
 # 명령은 `deploy/compose/verify-same-origin.sh`가 소유한다. 직접 다룰 때는
 # `docker compose --file deploy/compose/compose.yaml ...`로 저장소 루트에서 실행한다.
@@ -20,11 +24,78 @@
 name: bokrilog
 
 services:
+  postgres:
+    # `ARCHITECTURE-SPINE.md` Stack 표의 PostgreSQL 18.x다. 백엔드 시험의
+    # `PostgresTestcontainersConfig`도 같은 태그를 쓴다. 두 곳이 갈라지면 시험이 통과한 엔진과
+    # 스택이 띄우는 엔진이 달라진다.
+    image: postgres:18.6-alpine
+    # 백엔드와 같은 이유로 포트를 게시하지 않는다. 호스트에서 데이터베이스에 직접 닿는 경로를
+    # 만들면 "바깥에 열리는 포트는 Nginx 하나"라는 이 구성의 계약이 깨진다.
+    expose:
+      - '5432'
+    environment:
+      # 자격정보가 아니다. 비밀번호가 없기 때문이다.
+      #
+      # 개발·CI 전용 스택이고 포트를 게시하지 않으므로 이 데이터베이스에 닿을 수 있는 것은 같은
+      # compose 네트워크 안의 서비스뿐이다. 여기에 가짜 비밀번호를 넣으면 그 리터럴 때문에
+      # gitleaks 규칙을 완화하고 싶어지고, 그 완화는 남는다. production 자격정보는 Story 3.8이
+      # 소유한다.
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_DB: bokrilog
+      POSTGRES_USER: bokrilog
+    healthcheck:
+      # 이 healthcheck는 선택이 아니다. `backend`와 `migrate`가 모두 `service_healthy`를
+      # 기다리므로, 없으면 두 곳이 "언제 준비됐는가"를 알 수 없어 대기가 끝나지 않는다.
+      #
+      # `pg_isready` 하나로는 부족하다. postgres 이미지는 초기화 중 로컬 전용 임시 서버를 한 번
+      # 띄웠다 내리는데 그 창에서도 `pg_isready`가 통과한다. 실제 질의를 한 번 던져야 "지금
+      # 연결해 작업할 수 있다"가 된다.
+      test:
+        - CMD-SHELL
+        - pg_isready --username=bokrilog --dbname=bokrilog --quiet && psql --username=bokrilog --dbname=bokrilog --no-password --quiet --command='SELECT 1' >/dev/null
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    restart: 'no'
+
+  # 일회성 schema migration 역할(AD-12).
+  #
+  # `profiles`가 붙어 있어 기본 `up`에 들어오지 않는다. 정상 종료하는 일회성 서비스를 compose의
+  # `--wait`가 잘 다루지 못하기도 하고, "스키마 변경은 API 기동과 분리된 별도 단일 실행"이라는
+  # AD-12의 모양과도 맞지 않기 때문이다. `verify-same-origin.sh`가 `up` 앞에서 한 번 실행한다.
+  #
+  # 백엔드와 같은 이미지를 쓴다. 스키마를 바꾸는 코드가 API가 실행하는 코드와 다르면, 검증이
+  # 통과한 스키마와 기동이 기대하는 스키마가 갈라질 자리가 생긴다. 차이는
+  # `SPRING_PROFILES_ACTIVE` 하나뿐이고, 그 프로필에서만 Flyway가 실제로 마이그레이션한다
+  # (`SchemaValidationConfig`).
+  migrate:
+    profiles:
+      - migrate
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # 이 프로필은 웹 서버를 띄우지 않는다. 마이그레이션이 끝나면 프로세스가 그대로 종료하고
+      # 그 종료 코드가 곧 마이그레이션의 성공 여부다.
+      SPRING_PROFILES_ACTIVE: migrate
+      BOKRILOG_DB_URL: jdbc:postgresql://postgres:5432/bokrilog
+      BOKRILOG_DB_USERNAME: bokrilog
+    restart: 'no'
+
   backend:
     build:
       # 컨텍스트는 `backend/`다. `.dockerignore`가 미리 빌드한 jar 하나만 남긴다.
       context: ../../backend
       dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        # 기본 프로필의 기동은 Flyway schema 검증을 포함한다(AD-12). 데이터베이스가 아직 받을
+        # 준비가 되지 않았으면 그 검증이 연결 실패로 끝나고 컨테이너가 그대로 죽는다.
+        condition: service_healthy
     # 포트를 게시하지 않는다. 바깥에서 백엔드에 직접 닿는 경로를 만들면 그 순간
     # "동일 출처"는 구성이 아니라 관례가 된다.
     expose:
@@ -32,6 +103,10 @@ services:
     environment:
       # 자격정보가 아니다. 컨테이너 안 포트를 Dockerfile·nginx 설정과 한 값으로 묶는다.
       SERVER_PORT: '8080'
+      # 연결 정보는 환경이 준다(`application.yml`이 두 이름만 정하고 값은 적지 않는다).
+      # 비밀번호 항목이 없는 것은 누락이 아니라 위 `POSTGRES_HOST_AUTH_METHOD: trust`와 한 쌍이다.
+      BOKRILOG_DB_URL: jdbc:postgresql://postgres:5432/bokrilog
+      BOKRILOG_DB_USERNAME: bokrilog
     healthcheck:
       # alpine 베이스의 busybox wget이다. 이미지에 도구를 더 넣지 않는다.
       test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1:8080/api/status']
