@@ -1,7 +1,12 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
-import { authContent, AUTHORIZE_PATH, signInCopyStrings } from '../content/auth'
+import {
+  authContent,
+  AUTHORIZE_PATH,
+  recoveryCopyStrings,
+  signInCopyStrings,
+} from '../content/auth'
 import { entryContent, entryCopyStrings } from '../content/entry'
 import { getObservedRequests, getObservedStorageEntries } from '../test/setup'
 import { EntryScreen } from './EntryScreen'
@@ -199,5 +204,142 @@ describe('EntryScreen', () => {
 
     expect(getObservedRequests()).toEqual([])
     expect(getObservedStorageEntries()).toEqual([])
+  })
+
+  /*
+   * 아래는 Story 1.5가 더한 표지 둘과 복구 안내다. 위 단정은 한 글자도 바뀌지 않았다.
+   */
+
+  it('안내: 로그아웃·만료·로그아웃 실패 표지가 서로 다른 문장이다', () => {
+    for (const notice of ['loggedOut', 'expired', 'logoutFailed'] as const) {
+      const { unmount } = render(<EntryScreen notice={notice} />)
+
+      expect(screen.getByRole('status').textContent).toBe(authContent.notices[notice])
+      // 계정의 존재 여부를 드러내지 않는다.
+      expect(screen.getByRole('status').textContent).not.toContain('계정')
+
+      unmount()
+    }
+
+    /*
+     * 네 문장이 실제로 다르다. 같으면 만료와 로그아웃을 구분한 훅의 일이 화면에서 사라진다.
+     * `signedOut`과도 달라야 한다 — 네 경우 모두 "지금 로그인 상태가 아니다"이지만 사용자가
+     * 알아야 하는 사실이 다르다. 특히 로그아웃 실패는 세션이 남아 있을 수 있음을 말한다.
+     */
+    const sentences = new Set([
+      authContent.notices.loggedOut,
+      authContent.notices.expired,
+      authContent.notices.logoutFailed,
+      authContent.notices.signedOut,
+    ])
+    expect(sentences.size).toBe(4)
+    expect(authContent.notices.logoutFailed).toContain('남아 있을 수 있습니다')
+  })
+
+  it('복구 안내: 실패 표지에서만 Google 공식 복구 경로를 안내한다', () => {
+    /*
+     * `failed`가 아닌 모든 경우에 이 블록이 없다. `cancelled`만 확인하면 정상적으로 로그아웃한
+     * 사용자에게 계정 복구 패널을 보여 주는 상태가 통과한다 — 그 사람은 접근을 잃지 않았고, 그
+     * 안내는 "로그인 수단에 다시 접근할 수 없다면"으로 시작한다.
+     */
+    for (const notice of [
+      'cancelled',
+      'loggedOut',
+      'expired',
+      'logoutFailed',
+      'signedOut',
+    ] as const) {
+      const { unmount } = render(<EntryScreen notice={notice} />)
+
+      expect(screen.queryByText(authContent.recovery.body)).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('link', { name: authContent.recovery.linkLabel }),
+      ).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('heading', { name: authContent.recovery.heading }),
+      ).not.toBeInTheDocument()
+      expect(document.body.textContent).not.toContain(authContent.recovery.caveat)
+
+      unmount()
+    }
+
+    // 표지 없는 첫 방문도 마찬가지다.
+    const { unmount } = render(<EntryScreen />)
+    expect(screen.queryByText(authContent.recovery.body)).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('link', { name: authContent.recovery.linkLabel }),
+    ).not.toBeInTheDocument()
+    unmount()
+
+    render(<EntryScreen notice="failed" />)
+
+    const rendered = document.body.textContent
+    for (const copy of recoveryCopyStrings) {
+      expect(rendered).toContain(copy)
+    }
+  })
+
+  it('복구 안내: 새 창을 열지 않고 `rel`로 참조 유출을 막는다', () => {
+    render(<EntryScreen notice="failed" />)
+
+    const link = screen.getByRole('link', { name: authContent.recovery.linkLabel })
+
+    expect(link).toHaveAttribute('href', 'https://accounts.google.com/signin/recovery')
+    // 기본으로 새 창을 열지 않는다(EXPERIENCE.md).
+    expect(link).not.toHaveAttribute('target')
+    expect(link).toHaveAttribute('rel', 'noreferrer')
+  })
+
+  it('복구 안내: 계정 존재 여부를 노출하지 않고 우회 경로를 만들지 않는다', () => {
+    render(<EntryScreen notice="failed" />)
+
+    const rendered = document.body.textContent
+
+    // 조건문이다. 이 브라우저에 계정이 있었는지 말하지 않는다.
+    expect(rendered).toContain('로그인 수단에 다시 접근할 수 없다면')
+    expect(rendered).not.toContain('등록된 계정')
+    expect(rendered).not.toContain('가입한 이메일')
+    // 이메일 확인·문의로 인증을 우회하는 경로를 만들지 않으며 그 사실을 카피가 직접 말한다.
+    expect(rendered).toContain(authContent.recovery.caveat)
+    // 복구 안내에 입력 필드를 두지 않는다. 이메일을 받는 자리 자체가 없다.
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  })
+
+  it('접근성: 표지와 함께 열리면 포커스가 페이지 제목으로 이동한다', () => {
+    render(<EntryScreen notice="loggedOut" />)
+
+    const title = screen.getByRole('heading', { level: 1 })
+
+    /*
+     * 이 화면이 표지와 함께 나타나는 것은 언제나 다른 화면에서의 전환 뒤다. 포커스가 문서 처음에
+     * 남아 있으면 키보드·보조기술 사용자는 무엇이 바뀌었는지 알 수 없다(EXPERIENCE.md: 라우트
+     * 전환 후 제목 포커스).
+     */
+    expect(title).toHaveFocus()
+    // `Tab` 순서에는 들어가지 않는다. 읽기만 하는 제목이 조작 하나로 세어지지 않는다.
+    expect(title).toHaveAttribute('tabindex', '-1')
+  })
+
+  it('접근성: 표지가 없으면 포커스를 옮기지 않는다', () => {
+    render(<EntryScreen />)
+
+    // 첫 방문이다. 옮길 이유가 없고, 옮기면 건너뛰기 링크가 첫 `Tab`이라는 계약이 깨진다.
+    expect(screen.getByRole('heading', { level: 1 })).not.toHaveFocus()
+    expect(document.body).toHaveFocus()
+  })
+
+  it('복구 안내를 더해도 제목 구조가 유지된다', () => {
+    render(<EntryScreen notice="failed" />)
+
+    const levels = headingLevels()
+
+    expect(levels.filter((level) => level === 1)).toHaveLength(1)
+    expect(levels[0]).toBe(1)
+
+    let previous = levels[0] ?? 0
+    for (const level of levels.slice(1)) {
+      expect(level - previous).toBeLessThanOrEqual(1)
+      previous = level
+    }
   })
 })

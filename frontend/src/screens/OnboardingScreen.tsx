@@ -1,8 +1,10 @@
 import type { ReactElement } from 'react'
 
+import { SignOutButton } from '../components/SignOutButton'
 import { authContent } from '../content/auth'
 import { entryContent } from '../content/entry'
-import { useSessionGate } from '../session/useSessionState'
+import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
+import { useSignOut } from '../session/useSignOut'
 import { EntryScreen } from './EntryScreen'
 import styles from './OnboardingScreen.module.css'
 
@@ -19,13 +21,23 @@ const MAIN_ID = 'onboarding-main'
  * 열면 서버는 `dashboard`를 답하고, 그때 화면은 사용자 데이터를 그리는 대신 그 목적지로 문서를
  * 다시 요청한다(`useSessionGate`).
  *
+ * 나가는 길이 이 화면에도 있다. 온보딩에 로그아웃이 없으면 방금 가입한 사용자가 이 화면에서
+ * 나갈 방법이 없다. 진행 중임을 말하는 것은 버튼이 아니라 아래 live region이다(화면당 하나).
+ * 버튼의 이름은 언제나 동작으로 남는다.
+ *
  * 이 화면에는 아직 계좌·계획·금융 데이터가 없다. Bybit 연결과 복리 계획은 Epic 2의 범위다.
  */
 export function OnboardingScreen(): ReactElement {
-  const gate = useSessionGate('onboarding')
+  const { csrfToken, gate } = useSessionGate('onboarding')
+  const signOut = useSignOut(csrfToken)
 
   if (gate === 'unauthenticated') {
-    // 세션 확인 없이 로그인 상태를 주장하지 않는다. 뒤로 가기 복원도 이 경로를 지난다.
+    /*
+     * 세션 확인 없이 로그인 상태를 주장하지 않는다. 냉시작 미인증이 이 경로를 지난다.
+     *
+     * 만료는 여기 오지 않는다 — 게이트가 `redirecting`으로 답하고 `/?auth=expired`로 보내므로
+     * 만료 문장의 출처는 주소의 표지 하나다. 두 결과를 함께 내면 제자리 렌더와 이동이 경합한다.
+     */
     return <EntryScreen notice="signedOut" />
   }
 
@@ -40,6 +52,10 @@ export function OnboardingScreen(): ReactElement {
 
       <header className={styles.header}>
         <p className={styles.brand}>{entryContent.brand}</p>
+        {/* 세션이 확인된 뒤에만 둔다. 확인 전에는 로그아웃할 대상이 아직 없다. */}
+        {ready ? (
+          <SignOutButton onSignOut={signOut.requestSignOut} pending={signOut.pending} />
+        ) : null}
       </header>
 
       <main className={styles.main} id={MAIN_ID} tabIndex={-1}>
@@ -49,14 +65,21 @@ export function OnboardingScreen(): ReactElement {
           <p className={styles.disclaimer}>{authContent.disclaimer}</p>
         </div>
 
-        {/* 화면당 polite live region 하나. 갱신 중임을 aria-busy로 알린다. */}
-        <div aria-busy={!ready} aria-live="polite" className={styles.notice} role="status">
-          {ready ? null : (
-            <p className={styles.noticeText}>
-              {gate === 'redirecting'
-                ? authContent.session.redirecting
-                : authContent.session.checking}
-            </p>
+        {/*
+          화면당 polite live region 하나. 갱신 중임을 aria-busy로 알린다.
+
+          로그아웃 진행도 여기서 말한다. 버튼 안의 문구 변화는 live region이 아니어서 보조기술에
+          전달되지 않고, 그 문구가 버튼의 접근 가능한 이름이 되면 컨트롤의 이름이 동작 아닌
+          상태가 된다.
+        */}
+        <div
+          aria-busy={!ready || signOut.pending}
+          aria-live="polite"
+          className={styles.notice}
+          role="status"
+        >
+          {ready && !signOut.pending ? null : (
+            <p className={styles.noticeText}>{liveRegionMessage(gate, signOut.pending)}</p>
           )}
         </div>
 

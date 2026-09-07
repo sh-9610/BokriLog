@@ -107,3 +107,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-lint-policy-path-separator.md`
   summary: Windows 전용 결함을 CI가 볼 수 있게 할지, 그렇다면 어느 스토리가 그 비용을 소유할지 정한다.
   evidence: `ci.yml`의 다섯 job이 모두 `ubuntu-24.04`라 이번 결함처럼 Windows에서만 드러나는 실패를 CI가 구조적으로 감지하지 못한다. 이 저장소는 `DEVELOPMENT.md` `## 두 기기 개발`이 명시하듯 Windows와 macOS 양쪽에서 개발하므로 그 공백이 실제 비용으로 돌아온다. matrix leg 추가는 job 수·`runs-on` 개수·artifact 이름을 고정한 `test-ci-scripts.sh`의 단정 다섯 곳을 함께 바꿔야 하고 CI 시간도 늘어난다. 전체 matrix가 아니라 프런트엔드 단위 시험만 Windows에서 한 번 더 돌리는 축소안도 선택지다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-5-logout-session-expiry.md`
+  summary: 계층을 넘나드는 계약 리터럴(`X-CSRF-TOKEN` 헤더 이름, 자산 `Cache-Control` 값)의 삼중 중복을 Docker 없이도 도는 검사로 묶을지 정한다.
+  evidence: 이 라운드가 두 값을 각각 세 곳에 적었다. `X-CSRF-TOKEN`은 `AuthSecurityConfig.CSRF_HEADER_NAME`·`frontend/src/content/auth.ts`의 `CSRF_HEADER`·`verify-same-origin.sh`의 리터럴에 있고, `public, max-age=31536000, immutable`은 `bokrilog.conf`·`verify-same-origin.sh`의 `expected_asset_cache_control`·`frontend/e2e/auth-entry.spec.ts`에 있다. 세 벌이 어긋나면 로그아웃이 조용히 403이 되거나 캐시 계약이 갈리는데, 그것을 잡는 유일한 검사가 Docker를 요구하는 compose 스크립트다. 같은 문제가 오류 code 문자열에도 이미 있고 `ApiErrorHandler.java:43-45`가 그 중복을 주석으로 경고한다. 프런트엔드의 `lint-policy.test.ts`처럼 저장소 파일을 읽어 세 벌의 동등성을 단정하는 Docker 없는 시험을 둘지, 아니면 계약 값을 생성 산출물로 만들지 정한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-5-logout-session-expiry.md`
+  summary: 두 인증 화면의 공통 레이아웃 CSS가 또 갈라져 복사됐다 — 셸 추출 결정을 더 미룰지 재확인한다.
+  evidence: 이 라운드가 동일한 5속성 flex `.header` 규칙과 그 주석을 `OnboardingScreen.module.css`와 `SignedInScreen.module.css` 양쪽에 같은 내용으로 더했다. 로그아웃 버튼을 두 화면이 공유하는 컴포넌트로 뽑아 중복을 늘리지 않으려 했는데, 그 버튼을 앉힐 헤더 레이아웃은 결국 두 벌이 됐다. Story 1.4가 남긴 같은 취지의 항목(세션 게이트 셸 통합)이 아직 열려 있고, 이번 라운드가 그 비용을 한 번 더 실측했다는 사실을 근거로 그 결정의 우선순위를 다시 본다.

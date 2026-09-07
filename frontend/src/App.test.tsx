@@ -119,6 +119,34 @@ describe('App 경로 맵', () => {
     )
   })
 
+  it('로그아웃·만료·로그아웃 실패 표지를 인증 화면 안내로 옮긴다', () => {
+    /*
+     * 두 표지는 서버가 아니라 클라이언트가 만든다(`signOut`·`useSessionGate`). `noticeKindOf`의
+     * 닫힌 집합에 없으면 그 값이 조용히 무시되고, 로그아웃한 사용자는 아무 안내도 없는 진입
+     * 화면을 본다.
+     */
+    for (const kind of ['loggedOut', 'expired', 'logoutFailed'] as const) {
+      navigate('/', `?auth=${kind}`)
+
+      const { unmount } = render(<App />)
+
+      expect(screen.getByRole('status').textContent).toBe(authContent.notices[kind])
+      unmount()
+    }
+  })
+
+  it('`signedOut`은 URL 표지로 만들 수 없다', () => {
+    /*
+     * 그 표지는 세션 확인 결과로 정해진다. 주소창에 적어 화면 문장을 만드는 경로를 열지 않는다 —
+     * 열면 링크 하나로 "로그인 상태가 아닙니다"를 임의의 화면에 띄울 수 있다.
+     */
+    navigate('/', '?auth=signedOut')
+
+    render(<App />)
+
+    expect(screen.getByRole('status').textContent).toBe('')
+  })
+
   it('맵에 없는 경로는 인증 화면으로 떨어진다', () => {
     // Nginx 허용 목록이 이 경로에 문서를 주지 않으므로 실제로는 도달하지 않는다.
     // 그래도 화면이 로그인 상태를 주장하지 않는 편이 안전한 기본값이다.

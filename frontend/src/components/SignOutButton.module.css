@@ -1,0 +1,48 @@
+/*
+ * 로그아웃 버튼.
+ *
+ * `DESIGN.md`가 소유하는 범주(색·타이포그래피·모서리·간격)는 반드시 tokens.css의 변수를 참조한다.
+ * 새 토큰을 만들지 않는다 — `operator-control`이 이미 표면·전경·경계·파괴적 색을 들고 있고,
+ * 목표 크기와 포커스 값은 `space` 범주에 있다.
+ *
+ * 파괴적 조작이지만 경고색만으로 의미를 만들지 않는다. 문구가 무엇을 하는지 말하고 색은 그것을
+ * 거들 뿐이다(EXPERIENCE.md: 색상만으로 구분하지 않는다).
+ *
+ * 근거: DESIGN.md Colors / Shapes / components.operator-control,
+ *      EXPERIENCE.md Accessibility Floor(최소 44×44px).
+ */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  /* 최소 44×44px. 모든 핵심 조작의 바닥선이며 `social-sign-in`만의 규칙이 아니다. */
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding-inline: var(--space-4);
+  border-radius: var(--radius-md);
+  background-color: var(--component-operator-control-background);
+  color: var(--component-operator-control-destructive);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--component-operator-control-destructive);
+}
+
+/*
+ * 진행 중.
+ *
+ * `:disabled`가 아니라 `[aria-disabled='true']`다. 그 속성은 포커스를 남기므로 방금 이 버튼을
+ * 실행한 키보드 사용자가 컨트롤을 잃지 않는다.
+ *
+ * 색만으로 상태를 만들지 않는다. 무엇이 일어나는지 말하는 것은 본문 live region의 문장이고 여기
+ * 색은 그것을 거들 뿐이다. 포인터 커서를 두지 않는다 — 이 저장소는 어떤 조작에도 커서를 바꾸지
+ * 않는다.
+ */
+.button[aria-disabled='true'] {
+  color: var(--component-operator-control-foreground);
+  border-color: var(--component-operator-control-border);
+}

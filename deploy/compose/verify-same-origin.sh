@@ -454,11 +454,42 @@ normalized_error_body() {
 # 값을 바꿀 때는 `deploy/nginx/bokrilog.conf`와 이 상수를 함께 바꾼다.
 expected_csp="default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
+# 해시가 박힌 정적 자산의 캐시 지시. 파일 이름이 곧 내용이므로 영구 캐시가 안전하다.
+expected_asset_cache_control='public, max-age=31536000, immutable'
+
+# 그 밖의 모든 응답. 인증된 문서가 캐시·bfcache에서 복원되지 않게 한다.
+expected_document_cache_control='no-store'
+
+# assert_cache_control <라벨> <기대 값>
+#
+# 같은 이름의 헤더가 두 번 나갈 수 있다. `/api/auth/session`은 백엔드가 자기 응답에 `no-store`를
+# 붙이고 진입점도 같은 지시를 낸다. HTTP는 같은 이름의 헤더를 쉼표로 이은 것과 같이 다루므로
+# 값이 같으면 의미는 하나다. 확인해야 하는 것은 "서로 다른 지시가 함께 나가지 않는가"이고,
+# 그래서 값의 집합을 보아 기대한 하나만 남는지 단정한다.
+#
+# 헤더가 아예 없으면 빈 문자열이 되어 기대 값과 다르므로 실패한다. `add_header` 한 줄이 사라지는
+# 회귀가 여기서 걸린다.
+assert_cache_control() {
+  local label="$1" want="$2" values
+  values="$(header_value 'Cache-Control' | sort -u | tr '\n' '|' | sed 's/|$//')"
+  if [ "${values}" = "${want}" ]; then
+    record_pass "${label}"
+  else
+    record_fail "${label}" "실제 '${values}' (기대 '${want}' 하나만)"
+  fi
+}
+
 # 응답 헤더 계약. 모든 응답에서 확인한다. 오류 응답에서 특히 중요하다.
+#
+# 두 번째 인자는 기대하는 `Cache-Control` 값이다. 생략하면 문서·API 응답의 기본값(`no-store`)이며
+# 해시 자산을 확인하는 호출만 값을 넘긴다. 캐시 단정을 이 함수에 두어 모든 응답 그룹에 한 번에
+# 전파시킨다 — 그룹마다 따로 적으면 새 그룹이 조용히 빠진다.
 assert_security_headers() {
   local context="$1" value
+  local want_cache="${2:-${expected_document_cache_control}}"
 
   assert_equals "${context} · CSP" "$(header_value 'Content-Security-Policy')" "${expected_csp}"
+  assert_cache_control "${context} · Cache-Control" "${want_cache}"
   assert_equals "${context} · X-Content-Type-Options" "$(header_value 'X-Content-Type-Options')" 'nosniff'
   assert_equals "${context} · Referrer-Policy" "$(header_value 'Referrer-Policy')" 'no-referrer'
   assert_equals "${context} · X-Frame-Options" "$(header_value 'X-Frame-Options')" 'DENY'
@@ -502,7 +533,25 @@ else
   record_pass '진입 문서가 `/assets/*.js` 번들을 참조한다'
   fetch GET "${asset_path}"
   assert_equals "\`GET ${asset_path}\` 상태 200" "${last_status}" '200'
+  # 해시 자산만 영구 캐시다. 보안 헤더 다섯 개는 그대로 실려야 한다 — 캐시 지시를 하위
+  # location에서 내면 그 다섯 개가 이 응답에서 전부 사라진다.
+  assert_security_headers "\`GET ${asset_path}\`" "${expected_asset_cache_control}"
+
+  # 성공한 자산 응답만 영구 캐시다. 같은 경로의 non-GET은 파일을 찾기 전에 405로 되돌아가며
+  # 그 응답은 저장 대상이 아니다. 경로만 보는 map은 이 응답에도 `immutable`을 실어 보낸다.
+  fetch POST "${asset_path}"
+  assert_equals "\`POST ${asset_path}\` 상태 405" "${last_status}" '405'
+  assert_body_contains "\`POST ${asset_path}\` 안정 code" '"code":"METHOD_NOT_ALLOWED"'
+  assert_security_headers "\`POST ${asset_path}\`"
 fi
+
+# 존재하지 않는 자산. 404를 1년간 `immutable`로 고정하면 그 파일을 실제로 추가하는 배포 뒤에도
+# 브라우저와 공유 캐시에 깨진 상태가 남는다(`immutable`은 재검증까지 막는다).
+fetch GET /assets/does-not-exist-verify-probe.js
+assert_equals '`GET /assets/<없는 파일>` 상태 404' "${last_status}" '404'
+assert_body_contains '`GET /assets/<없는 파일>` 안정 code' '"code":"NOT_FOUND"'
+assert_correlation_id '`GET /assets/<없는 파일>` correlation ID'
+assert_security_headers '`GET /assets/<없는 파일>`'
 
 printf '\n상태 확인\n'
 
@@ -688,6 +737,9 @@ assert_equals '`GET /api/auth/session` Content-Type' "$(header_value 'Content-Ty
 assert_equals '`GET /api/auth/session` 본문은 상태와 목적지 종류뿐' \
   "$(cat "${last_body}")" '{"authenticated":false,"destination":"entry"}'
 assert_body_lacks '`GET /api/auth/session` 응답에 계정 식별자가 없다' 'user_id'
+# 미인증 응답에는 CSRF 토큰이 실리지 않는다. 세션에 귀속되지 않은 토큰은 어떤 상태 변경도
+# 통과시키지 못하고, 실으려면 그 필드를 채우려고 세션을 만드는 경로가 열린다.
+assert_body_lacks '미인증 세션 확인에 CSRF 토큰이 없다' 'csrfToken'
 assert_security_headers '`GET /api/auth/session`'
 
 # 세션 확인만으로 세션이 만들어지지 않는다. 쿠키를 주면 그 자체가 상태 변경이다.
@@ -844,14 +896,29 @@ else
     '콜백이 새 세션 쿠키를 주지 않았다. 세션 고정 방어가 성립하지 않는다.'
 fi
 
-# 4) 세션 확인. 화면이 상태를 확인하는 유일한 경로이며 인증 여부와 목적지 종류만 담는다.
+# 4) 세션 확인. 화면이 상태를 확인하는 유일한 경로이며 인증 여부·목적지 종류·세션 귀속 CSRF
+#    토큰만 담는다. 토큰이 여기 실리는 것이 브라우저에 쿠키를 하나로 유지하는 배치다.
 fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${session_cookie}"
 assert_equals '로그인 뒤 `GET /api/auth/session` 상태 200' "${last_status}" '200'
-assert_equals '로그인 뒤 세션 확인 본문은 상태와 목적지 종류뿐' \
-  "$(cat "${last_body}")" '{"authenticated":true,"destination":"onboarding"}'
+# 토큰 값만 가리고 전문을 비교한다. 값은 실행마다 달라 고정할 수 없지만 고정하려는 것은 값이
+# 아니라 무엇이 나가는가이며, 조각 포함 검사만 남기면 응답에 필드가 하나 늘어도 통과한다.
+assert_equals '로그인 뒤 세션 확인 본문은 상태·목적지·토큰뿐' \
+  "$(sed 's/"csrfToken":"[^"]*"/"csrfToken":"<가림>"/' "${last_body}")" \
+  '{"authenticated":true,"destination":"onboarding","csrfToken":"<가림>"}'
 assert_body_lacks '로그인 뒤 세션 확인에 계정 식별자가 없다' 'user_id'
-assert_value_contains '로그인 뒤 세션 확인은 저장하지 않는다' \
-  "$(header_value 'Cache-Control')" 'no-store'
+assert_body_lacks '로그인 뒤 세션 확인에 제공자 토큰이 없다' 'id_token'
+# 세션 식별자가 응답 본문에 실리지 않는다. 실리면 그 자체가 세션 유출이다.
+assert_body_lacks '로그인 뒤 세션 확인에 세션 쿠키 값이 없다' "${session_cookie}"
+assert_cache_control '로그인 뒤 세션 확인은 저장하지 않는다' "${expected_document_cache_control}"
+
+# 상태 변경 요청에 실을 토큰. 쿠키 저장소를 쓰지 않으므로 이 본문이 유일한 통로다.
+csrf_token="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
+if [ -n "${csrf_token}" ]; then
+  record_pass '로그인 뒤 세션 확인이 세션 귀속 CSRF 토큰을 준다'
+else
+  record_fail '로그인 뒤 세션 확인이 세션 귀속 CSRF 토큰을 준다' \
+    "본문에 csrfToken이 없다 — $(head -c 200 "${last_body}")"
+fi
 
 # 저장소. 계정 1개·매핑 1행·세션 1행이며 그 이상은 없다.
 assert_rows '왕복이 계정 하나만 만들었다' 'SELECT count(*) FROM identity_account_lifecycle' '1'
@@ -860,6 +927,144 @@ assert_rows '왕복이 세션 하나만 남겼다' 'SELECT count(*) FROM spring_
 # 세션 본문도 PostgreSQL에 있다. 쿠키는 불투명 식별자뿐이고 상태는 서버가 들고 있다.
 assert_rows '세션 속성이 PostgreSQL에 산다' \
   'SELECT (count(*) > 0)::int FROM spring_session_attributes' '1'
+
+printf '\n로그아웃 왕복\n'
+
+# 위 왕복이 만든 세션을 실제로 끝낸다. 여기까지가 Story 1.5의 성공 경로 전부다.
+#
+# 두 번째 사용자를 먼저 만든다. 스텁의 `subject`는 요청마다 새로 만들어지므로(`DevOidcStub`)
+# 아래 왕복은 다른 사용자이고, 그래야 "한 사용자의 로그아웃이 다른 사용자의 세션을 건드리지
+# 않는다"를 이 계층에서 확인할 수 있다. 위 왕복의 단정을 되풀이하지 않는다 — 필요한 것은 쿠키와
+# 토큰 두 값이며, 그 값을 얻지 못하면 아래 단정이 무엇을 보는지 알 수 없으므로 그때 실패로 남긴다.
+fetch GET /api/auth/authorize/google
+second_authorize="$(header_value 'Location')"
+second_flow_cookie="$(session_cookie_value)"
+fetch GET "${second_authorize#"${base_url}"}"
+second_consent="$(sed -n 's/.*<a href="\([^"]*\)".*/\1/p' "${last_body}" | head -1 | sed 's/&amp;/\&/g')"
+fetch GET "${second_consent#"${base_url}"}" -H "Cookie: BOKRILOG_SESSION=${second_flow_cookie}"
+second_session_cookie="$(session_cookie_value)"
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${second_session_cookie}"
+second_csrf_token="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
+
+if [ -n "${second_session_cookie}" ] && [ -n "${second_csrf_token}" ] \
+  && [ "${second_session_cookie}" != "${session_cookie}" ]; then
+  record_pass '두 번째 왕복이 다른 세션을 만든다'
+else
+  record_fail '두 번째 왕복이 다른 세션을 만든다' \
+    '두 번째 사용자의 쿠키나 토큰을 얻지 못했다. 아래 보존 단정이 아무것도 보지 않는다.'
+fi
+assert_rows '이제 계정이 둘이다' 'SELECT count(*) FROM identity_account_lifecycle' '2'
+assert_rows '이제 세션이 둘이다' 'SELECT count(*) FROM spring_session' '2'
+
+# 1) 정상 로그아웃. 204이고 본문이 없다.
+fetch POST /api/auth/logout \
+  -H "Cookie: BOKRILOG_SESSION=${session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${csrf_token}"
+assert_equals '로그아웃 상태 204' "${last_status}" '204'
+if [ ! -s "${last_body}" ]; then
+  record_pass '로그아웃 응답에 본문이 없다'
+else
+  record_fail '로그아웃 응답에 본문이 없다' "$(head -c 200 "${last_body}")"
+fi
+
+# 쿠키를 지우는 그 하나의 응답이다. 보안 헤더 다섯 개와 캐시 지시를 여기서도 확인한다 —
+# `Set-Cookie`를 실어 나르는 응답이 헤더 미검증으로 남으면 안 된다. 204에도 `always`가 붙은
+# add_header 블록이 그대로 걸려야 한다.
+assert_security_headers '로그아웃 204'
+
+# 쿠키 만료 지시. 값이 비고 즉시 만료가 실린다. 회전이 아니라 폐기다.
+logout_set_cookie="$(header_value 'Set-Cookie')"
+assert_value_contains '로그아웃이 세션 쿠키를 빈 값으로 만든다' \
+  "${logout_set_cookie}" 'BOKRILOG_SESSION=;'
+assert_value_contains '로그아웃이 쿠키 즉시 만료를 지시한다' "${logout_set_cookie}" 'Max-Age=0'
+assert_value_contains '만료 지시도 Path를 유지한다' "${logout_set_cookie}" 'Path=/'
+# 만료 쿠키도 속성 세 개를 그대로 들고 있어야 한다. 브라우저는 속성이 어긋난 `Set-Cookie`를
+# 원래 쿠키와 다른 것으로 보아 삭제에 실패할 수 있고, 그러면 쿠키가 살아남는다.
+assert_value_contains '만료 지시도 HttpOnly를 유지한다' "${logout_set_cookie}" 'HttpOnly'
+assert_value_contains '만료 지시도 Secure를 유지한다' "${logout_set_cookie}" 'Secure'
+assert_value_contains '만료 지시도 SameSite를 유지한다' "${logout_set_cookie}" 'SameSite=Lax'
+if [ -z "$(session_cookie_value)" ]; then
+  record_pass '로그아웃이 새 세션 값을 주지 않는다'
+else
+  record_fail '로그아웃이 새 세션 값을 주지 않는다' "새 쿠키 값이 실렸다 — $(session_cookie_value)"
+fi
+
+# 세션 행이 하나만 사라졌다. 계정과 매핑은 그대로다 — 로그아웃은 계정 상태를 바꾸지 않는다.
+assert_rows '로그아웃이 그 세션 행만 지운다' 'SELECT count(*) FROM spring_session' '1'
+assert_rows '로그아웃이 계정을 지우지 않는다' 'SELECT count(*) FROM identity_account_lifecycle' '2'
+assert_rows '로그아웃이 인증 매핑을 지우지 않는다' 'SELECT count(*) FROM identity_social_link' '2'
+
+# 그 쿠키로 이어지는 세션 확인이 더 이상 인증 상태가 아니다.
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${session_cookie}"
+assert_equals '로그아웃한 쿠키의 세션 확인은 미인증이다' \
+  "$(cat "${last_body}")" '{"authenticated":false,"destination":"entry"}'
+
+# 2) 다른 사용자 보존. 두 번째 세션의 인증 상태와 목적지가 그대로다.
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${second_session_cookie}"
+assert_equals '다른 사용자의 세션 확인 상태 200' "${last_status}" '200'
+assert_body_contains '다른 사용자는 여전히 인증 상태다' '"authenticated":true'
+assert_body_contains '다른 사용자의 목적지도 그대로다' '"destination":"onboarding"'
+
+# 3) 반복 로그아웃. 토큰이 세션과 함께 사라졌으므로 CSRF 단계에서 403으로 수렴한다.
+#    "안전하게 처리"는 멱등한 상태 코드가 아니라 무변경이며 403이 그것을 정확히 만족한다.
+fetch POST /api/auth/logout \
+  -H "Cookie: BOKRILOG_SESSION=${session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${csrf_token}"
+assert_equals '반복 로그아웃 상태 403' "${last_status}" '403'
+assert_body_contains '반복 로그아웃 안정 code' '"code":"FORBIDDEN"'
+assert_correlation_id '반복 로그아웃 correlation ID'
+assert_body_lacks '반복 로그아웃이 토큰을 되비추지 않는다' "${csrf_token}"
+# 새 세션 행이 생기지 않는다. 기본 CSRF 저장소는 토큰을 저장하려고 세션을 만든다.
+assert_rows '반복 로그아웃이 새 세션 행을 만들지 않는다' 'SELECT count(*) FROM spring_session' '1'
+assert_security_headers '반복 로그아웃'
+
+# 4) 교차 출처 로그아웃. 토큰이 맞아도 `SameOriginFilter`가 먼저 막는다.
+fetch POST /api/auth/logout \
+  -H "Cookie: BOKRILOG_SESSION=${second_session_cookie}" \
+  -H 'Origin: https://evil.example' \
+  -H "X-CSRF-TOKEN: ${second_csrf_token}"
+assert_equals '교차 출처 로그아웃 상태 403' "${last_status}" '403'
+assert_body_contains '교차 출처 로그아웃 안정 code' '"code":"FORBIDDEN"'
+assert_rows '교차 출처 로그아웃은 무변경이다' 'SELECT count(*) FROM spring_session' '1'
+
+# 5) CSRF 토큰 없는 로그아웃. 세션이 살아 있어야 한다.
+fetch POST /api/auth/logout \
+  -H "Cookie: BOKRILOG_SESSION=${second_session_cookie}" \
+  -H "Origin: ${base_url}"
+assert_equals '토큰 없는 로그아웃 상태 403' "${last_status}" '403'
+assert_body_contains '토큰 없는 로그아웃 안정 code' '"code":"FORBIDDEN"'
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${second_session_cookie}"
+assert_body_contains '거절된 로그아웃 뒤에도 세션이 살아 있다' '"authenticated":true'
+
+# 6) 미인증 로그아웃. 인증 여부를 응답으로 구분하지 않는다.
+fetch POST /api/auth/logout -H "Origin: ${base_url}" -H 'X-CSRF-TOKEN: verifyanonymousmarker'
+assert_equals '미인증 로그아웃 상태 403' "${last_status}" '403'
+assert_body_contains '미인증 로그아웃 안정 code' '"code":"FORBIDDEN"'
+assert_rows '미인증 로그아웃이 세션을 만들지 않는다' 'SELECT count(*) FROM spring_session' '1'
+
+# 7) 로그아웃 표면은 `/api/auth/logout` 하나다. `logout()`을 매처 없이 켜면 `/logout`이 생긴다.
+fetch POST /logout -H "Origin: ${base_url}"
+assert_equals '`POST /logout` 상태 405(진입점의 정적 location이 받는다)' "${last_status}" '405'
+assert_body_contains '`POST /logout` 안정 code' '"code":"METHOD_NOT_ALLOWED"'
+fetch GET /api/auth/logout
+assert_equals '`GET /api/auth/logout` 상태 404(안전한 메서드로는 로그아웃이 없다)' \
+  "${last_status}" '404'
+assert_rows '로그아웃 표면 탐침이 세션을 지우지 않는다' 'SELECT count(*) FROM spring_session' '1'
+
+# 8) 두 번째 세션도 정상 로그아웃으로 끝낸다. 두 사용자 모두 나갈 수 있어야 한다.
+fetch POST /api/auth/logout \
+  -H "Cookie: BOKRILOG_SESSION=${second_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${second_csrf_token}"
+assert_equals '두 번째 로그아웃 상태 204' "${last_status}" '204'
+assert_rows '두 로그아웃 뒤 세션 행이 0개다' 'SELECT count(*) FROM spring_session' '0'
+# 속성 행도 함께 사라진다(`ON DELETE CASCADE`). 세션 비밀이 남는 경로가 없다.
+assert_rows '두 로그아웃 뒤 세션 속성 행도 0개다' \
+  'SELECT count(*) FROM spring_session_attributes' '0'
+
+printf '\n스텁 제공자 성공 왕복 정리\n'
 
 # 스택을 원래 상태로 되돌린다. 뒤 단계와 Playwright 회귀가 빈 저장소를 전제한다.
 psql_exec '왕복이 만든 세션을 지운다' 'TRUNCATE TABLE spring_session, spring_session_attributes'
@@ -1116,6 +1321,38 @@ if [ "${log_ready}" = true ]; then
       record_pass "스택 로그에 업스트림 오류 콜백의 ${leaked_label}가 없다"
     fi
   done
+
+  # 로그아웃 왕복이 흘린 값을 찾는다.
+  #
+  # 조각 목록으로는 잡을 수 없다. 세션 쿠키 값과 CSRF 토큰은 실행마다 달라지고, 그것이 이 값들의
+  # 성질이다. 위 왕복이 실제로 쓴 값을 그대로 찾는 것만이 "세션 ID·CSRF 토큰이 로그에 남지
+  # 않는다"를 확인하는 방법이다. 로그아웃은 쿼리 문자열이 없으므로 access log에는 경로만 남고,
+  # 이 검사는 헤더가 어딘가에 찍히기 시작하는 회귀를 잡는다.
+  for leaked_label in '첫 세션 쿠키' '첫 CSRF 토큰' '둘째 세션 쿠키' '둘째 CSRF 토큰'; do
+    case "${leaked_label}" in
+      '첫 세션 쿠키') leaked_value="${session_cookie}" ;;
+      '첫 CSRF 토큰') leaked_value="${csrf_token}" ;;
+      '둘째 세션 쿠키') leaked_value="${second_session_cookie}" ;;
+      *) leaked_value="${second_csrf_token}" ;;
+    esac
+    if [ -z "${leaked_value}" ]; then
+      record_fail "스택 로그에 ${leaked_label} 값이 없다" \
+        "왕복에서 그 값을 읽지 못해 검사가 아무것도 보지 않았다."
+    elif grep -qF -- "${leaked_value}" "${log_file}"; then
+      record_fail "스택 로그에 ${leaked_label} 값이 없다" \
+        "$(grep -nF -- "${leaked_value}" "${log_file}" | head -2)"
+    else
+      record_pass "스택 로그에 ${leaked_label} 값이 없다"
+    fi
+  done
+
+  # 로그아웃 경로 자체는 access log에 남아야 한다. 상태 변경 요청의 존재를 감추지 않는다.
+  if grep -F -- '"POST /api/auth/logout HTTP' "${log_file}" >/dev/null; then
+    record_pass 'access log이 로그아웃 요청을 경로로 남긴다'
+  else
+    record_fail 'access log이 로그아웃 요청을 경로로 남긴다' \
+      "access log에서 '\"POST /api/auth/logout HTTP'를 찾지 못했다."
+  fi
 fi
 
 # --------------------------------------------------------------------------

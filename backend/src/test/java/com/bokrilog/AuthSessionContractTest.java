@@ -6,6 +6,7 @@ import com.bokrilog.DevOidcStub.TokenPlan;
 import com.bokrilog.identity.AccessDecision;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -220,7 +221,7 @@ class AuthSessionContractTest extends AuthFlowTestBase {
     }
 
     @Test
-    void 인증된_세션_확인은_상태와_목적지_종류만_돌려준다() throws Exception {
+    void 인증된_세션_확인은_상태와_목적지_종류와_CSRF_토큰만_돌려준다() throws Exception {
         String subject = "session-state-" + UUID.randomUUID();
         HttpResponse<String> login = signIn(subject);
         String cookie = sessionCookieOf(login).orElseThrow();
@@ -229,14 +230,78 @@ class AuthSessionContractTest extends AuthFlowTestBase {
         HttpResponse<String> response = sessionState(cookie);
 
         assertThat(response.statusCode()).isEqualTo(200);
-        assertThat(response.body())
-                .isEqualTo("{\"authenticated\":true,\"destination\":\"onboarding\"}");
-        // user_id·subject·토큰이 응답에 없다(AD-14).
+        /*
+         * 필드 세 개다. Story 1.5가 CSRF 토큰을 더했다 — 쿠키 저장소를 쓰지 않는 구성에서
+         * 클라이언트가 토큰을 얻는 유일한 경로이며, 그래서 브라우저가 갖는 쿠키가 하나로 남는다.
+         *
+         * 토큰 값은 실행마다 다르므로 본문 전문을 비교할 수 없다. 대신 필드 집합을 정규화해
+         * 비교한다 — 이 스토리가 열지 않은 필드가 하나라도 늘면 여기서 걸린다.
+         */
+        assertThat(fieldNamesOf(response.body()))
+                .containsExactly("authenticated", "destination", "csrfToken");
+        assertThat(response.body()).contains("\"authenticated\":true");
+        assertThat(response.body()).contains("\"destination\":\"onboarding\"");
+        String token = csrfTokenIn(response.body());
+        assertThat(token).isNotNull().isNotEmpty();
+
+        // user_id·subject·제공자 토큰이 응답에 없다(AD-14). 실린 토큰은 CSRF 토큰 하나다.
         assertThat(response.body()).doesNotContain(userId.toString());
         assertThat(response.body()).doesNotContain(subject);
-        assertThat(response.body()).doesNotContain("token");
-        // 뒤로 가기나 공유 캐시가 인증된 상태를 되살리지 못한다.
+        assertThat(response.body()).doesNotContain("id_token");
+        assertThat(response.body()).doesNotContain("access_token");
+        // 세션 식별자도 실리지 않는다. 토큰이 쿠키 값과 같으면 그것이 곧 세션 유출이다.
+        assertThat(token).isNotEqualTo(cookie);
+        assertThat(token).isNotEqualTo(sessionIdOf(cookie));
+        assertThat(response.body()).doesNotContain(cookie);
+
+        // 뒤로 가기나 공유 캐시가 인증된 상태를 되살리지 못한다. 이제 토큰도 함께 실리므로
+        // 이 지시가 한 겹 더 필요하다.
         assertThat(response.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+    }
+
+    @Test
+    void CSRF_토큰은_세션에_귀속하고_다른_세션에서는_통하지_않는다() throws Exception {
+        HttpResponse<String> firstLogin = signIn("csrf-binding-first-" + UUID.randomUUID());
+        String firstCookie = sessionCookieOf(firstLogin).orElseThrow();
+        String firstToken = csrfTokenOf(firstCookie);
+
+        HttpResponse<String> secondLogin = signIn("csrf-binding-second-" + UUID.randomUUID());
+        String secondCookie = sessionCookieOf(secondLogin).orElseThrow();
+        String secondToken = csrfTokenOf(secondCookie);
+
+        assertThat(firstToken).isNotNull();
+        assertThat(secondToken).isNotNull();
+        assertThat(firstToken).isNotEqualTo(secondToken);
+
+        /*
+         * 교차 세션 시도가 먼저다. 두 세션이 모두 살아 있는 동안이어야 이 403이 "토큰이 다른
+         * 세션 것이다"로 설명된다 — 첫 토큰으로 먼저 로그아웃해 버리면 그 토큰은 세션과 함께
+         * 사라지고, 뒤이은 403은 "그 토큰이 이제 존재하지 않는다"와 구분되지 않는다.
+         */
+        assertThat(logout(secondCookie, firstToken).statusCode()).isEqualTo(403);
+        // 거절된 상태 변경은 어느 세션도 건드리지 않는다.
+        assertThat(sessionState(secondCookie).body()).contains("\"authenticated\":true");
+        assertThat(sessionState(firstCookie).body()).contains("\"authenticated\":true");
+
+        // 자기 세션에서는 통한다. 이 단정이 없으면 위 거절이 "토큰은 원래 통하지 않는다"와
+        // 구분되지 않는다.
+        assertThat(logout(firstCookie, firstToken).statusCode()).isEqualTo(204);
+        // 두 번째 토큰도 자기 세션에서 통한다. 첫 로그아웃이 남의 토큰을 무효화하지 않았다.
+        assertThat(logout(secondCookie, secondToken).statusCode()).isEqualTo(204);
+    }
+
+    @Test
+    void 미인증_세션_확인은_CSRF_토큰을_싣지_않는다() throws Exception {
+        HttpResponse<String> response = sessionState(null);
+
+        /*
+         * 미인증 응답에 토큰 필드가 없다. 세션에 귀속되지 않은 토큰은 어떤 상태 변경도 통과시키지
+         * 못하고, 실으면 그 필드를 채우려고 세션을 만드는 경로가 열린다. 아래 단정이 그 부작용의
+         * 부재까지 함께 본다.
+         */
+        assertThat(fieldNamesOf(response.body())).containsExactly("authenticated", "destination");
+        assertThat(csrfTokenIn(response.body())).isNull();
+        assertThat(sessionCount()).isZero();
     }
 
     @Test
@@ -329,6 +394,21 @@ class AuthSessionContractTest extends AuthFlowTestBase {
             joined.append(new String(row, StandardCharsets.ISO_8859_1)).append(' ');
         }
         return joined.toString();
+    }
+
+    /**
+     * JSON 객체의 최상위 필드 이름을 나온 순서대로.
+     *
+     * <p>본문 전문 비교를 대체한다. 토큰 값이 실행마다 달라 전문을 고정할 수 없게 됐지만, 고정하려던
+     * 것은 값이 아니라 <b>무엇이 나가는가</b>였다. 필드 이름 목록이 그 계약이며, 열지 않은 필드가
+     * 하나라도 늘면 이 목록이 달라진다.
+     *
+     * <p>{@code AuthFlowTestBase}가 본문을 파싱한다. 정규식으로 {@code "이름":}을 찾던 초안은 본문
+     * 어디에 있는 이름이든 잡았고, 그러면 값이 중첩 객체 안으로 옮겨지는 변경이 이 목록을 그대로
+     * 두어 "필드가 하나라도 늘면 걸린다"는 계약이 조용히 약해진다.
+     */
+    private static List<String> fieldNamesOf(String json) {
+        return new ArrayList<>(topLevelFieldsOf(json).keySet());
     }
 
     /** 세션 행의 유휴 수명(초). 이 시험들은 행이 하나뿐인 상태에서만 읽는다. */
