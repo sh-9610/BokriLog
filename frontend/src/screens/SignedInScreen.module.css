@@ -1,0 +1,180 @@
+/*
+ * 로그인 상태 화면 레이아웃.
+ *
+ * `DESIGN.md`가 소유하는 범주(색·타이포그래피·모서리·간격)는 반드시 tokens.css의 변수를 참조한다.
+ * `DESIGN.md`에 토큰이 없는 범주(구조적 1px 테두리 두께)만 예외로 리터럴을 쓴다.
+ *
+ * 근거: DESIGN.md Layout & Spacing / Shapes, EXPERIENCE.md Responsive & Platform,
+ *      Accessibility Floor.
+ */
+
+.page {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding-block: var(--space-5) var(--space-7);
+
+  /* env()에 폴백이 없으면 미지원 브라우저에서 선언 전체가 무효가 되어 좌우 여백이 0으로 떨어진다. */
+  padding-inline: max(var(--space-page-mobile), env(safe-area-inset-left, 0px))
+    max(var(--space-page-mobile), env(safe-area-inset-right, 0px));
+}
+
+/*
+ * 건너뛰기 링크. 진입 화면과 같은 관용이다(`EntryScreen.module.css`).
+ *
+ * 화면 밖에 두되 포커스를 받으면 드러난다. 문서의 첫 focusable 요소다.
+ */
+.skipLink {
+  position: absolute;
+  inset-block-start: calc(-1 * var(--space-7) - var(--space-6));
+  inset-inline-start: var(--space-page-mobile);
+
+  /* 레이어링은 DESIGN.md가 토큰으로 소유하지 않는 범주다. */
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding-inline: var(--space-4);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface-raised);
+  border: var(--space-focus-width) solid var(--color-focus-ring);
+  color: var(--color-ink-primary);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  text-decoration: none;
+
+  /* 모션 duration/easing 토큰은 DESIGN.md에 없다. prefers-reduced-motion에서 0s로 제거된다. */
+  transition: inset-block-start 120ms ease-out;
+}
+
+/*
+ * `:focus-visible`만 쓰면 프로그래밍 방식 `.focus()`나 포인터 포커스에서 매치되지 않아
+ * 링크가 화면 밖에 남는다. `:focus`도 함께 받아 어떤 경로로 포커스를 얻어도 드러나게 한다.
+ */
+.skipLink:focus,
+.skipLink:focus-visible {
+  inset-block-start: var(--space-2);
+}
+
+.header {
+  width: 100%;
+  max-width: var(--component-app-shell-max-content-width);
+  margin-inline: auto;
+  padding-block-end: var(--space-5);
+}
+
+.brand {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  color: var(--color-primary);
+}
+
+.main {
+  width: 100%;
+  max-width: var(--component-app-shell-max-content-width);
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.title {
+  font-family: var(--type-page-title-font-family);
+  font-size: var(--type-page-title-font-size);
+  font-weight: var(--type-page-title-font-weight);
+  line-height: var(--type-page-title-line-height);
+  letter-spacing: var(--type-page-title-letter-spacing);
+  color: var(--color-ink-primary);
+}
+
+/* UX-DR23: 제목 바로 아래에 인접 배치한다. */
+.disclaimer {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  color: var(--color-ink-secondary);
+}
+
+/* 화면당 하나뿐인 polite live region의 자리. 값이 없으면 자식이 없어 높이가 0이다. */
+.notice {
+  display: grid;
+}
+
+.noticeText {
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background-color: var(--component-service-notice-background);
+  color: var(--component-service-notice-foreground);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--component-service-notice-border);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-border-default);
+}
+
+.sectionHeading {
+  font-family: var(--type-section-title-font-family);
+  font-size: var(--type-section-title-font-size);
+  font-weight: var(--type-section-title-font-weight);
+  line-height: var(--type-section-title-line-height);
+  letter-spacing: var(--type-section-title-letter-spacing);
+  color: var(--color-ink-primary);
+}
+
+.itemList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.item {
+  display: grid;
+  grid-template-columns: var(--space-1) 1fr;
+  gap: var(--space-3);
+  align-items: start;
+  color: var(--color-ink-primary);
+}
+
+/* 첫 줄 중앙에 맞춘 중립 표지. 색만으로 의미를 만들지 않는다. */
+.item::before {
+  content: '';
+  display: block;
+  inline-size: var(--space-1);
+  block-size: var(--space-1);
+  margin-block-start: calc(
+    (var(--type-body-font-size) * var(--type-body-line-height) - var(--space-1)) / 2
+  );
+  border-radius: var(--radius-full);
+  background-color: var(--color-border-strong);
+}
+
+@media (min-width: 768px) {
+  .page {
+    padding-inline: max(var(--space-page-tablet), env(safe-area-inset-left, 0px))
+      max(var(--space-page-tablet), env(safe-area-inset-right, 0px));
+  }
+}
+
+@media (min-width: 1024px) {
+  .page {
+    padding-inline: max(var(--space-page-desktop), env(safe-area-inset-left, 0px))
+      max(var(--space-page-desktop), env(safe-area-inset-right, 0px));
+  }
+}

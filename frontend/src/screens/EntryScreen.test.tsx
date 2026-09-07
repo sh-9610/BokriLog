@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
+import { authContent, AUTHORIZE_PATH, signInCopyStrings } from '../content/auth'
 import { entryContent, entryCopyStrings } from '../content/entry'
 import { getObservedRequests, getObservedStorageEntries } from '../test/setup'
 import { EntryScreen } from './EntryScreen'
@@ -103,6 +104,100 @@ describe('EntryScreen', () => {
   it('렌더만으로 브라우저 저장소 항목이 생기지 않는다', () => {
     render(<EntryScreen />)
 
+    expect(getObservedStorageEntries()).toEqual([])
+  })
+
+  /*
+   * 아래는 Story 1.4가 더한 로그인 진입이다. 위 아홉 개 단정은 한 글자도 바뀌지 않았다.
+   */
+
+  it('로그인: Google 버튼이 서버 인증 시작 경로로 가는 링크다', () => {
+    render(<EntryScreen />)
+
+    const button = screen.getByRole('link', { name: authContent.signIn.googleLabel })
+
+    // `<a href>` 최상위 내비게이션이다. 버튼·form·스크립트가 아니어야 Nginx CSP를 넓히지 않는다.
+    expect(button).toHaveAttribute('href', AUTHORIZE_PATH)
+    expect(button.tagName.toLowerCase()).toBe('a')
+    // 접근 가능한 이름은 제공자명 + "계속하기"다(EXPERIENCE.md).
+    expect(authContent.signIn.googleLabel).toBe('Google로 계속하기')
+  })
+
+  it('로그인: 데이터 경계 안내를 버튼 아래에 둔다', () => {
+    render(<EntryScreen />)
+
+    const button = screen.getByRole('link', { name: authContent.signIn.googleLabel })
+    const boundary = screen.getByText(authContent.signIn.boundary)
+
+    // "버튼 아래"는 문서 순서의 계약이다.
+    expect(button.compareDocumentPosition(boundary)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(boundary.textContent).toContain('본인 확인에만')
+    expect(boundary.textContent).toContain('공유하지 않습니다')
+  })
+
+  it('로그인: 아직 없는 제공자를 준비 중이라고 밝힌다', () => {
+    render(<EntryScreen />)
+
+    // 추천 표지도, 마지막 사용 제공자 강조도 없다. 실제 버튼은 Google 하나뿐이다.
+    expect(screen.getByText(authContent.signIn.pending)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /네이버/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /카카오/ })).not.toBeInTheDocument()
+  })
+
+  it('로그인: 카피 정본의 모든 문자열이 렌더된다', () => {
+    render(<EntryScreen />)
+
+    const rendered = document.body.textContent
+
+    for (const copy of signInCopyStrings) {
+      expect(rendered).toContain(copy)
+    }
+  })
+
+  it('안내: 표지가 없으면 안내 문장을 띄우지 않는다', () => {
+    render(<EntryScreen />)
+
+    const status = screen.getByRole('status')
+
+    expect(status.textContent).toBe('')
+    for (const notice of Object.values(authContent.notices)) {
+      expect(screen.queryByText(notice)).not.toBeInTheDocument()
+    }
+  })
+
+  it('안내: 취소 표지는 재시도 경로를 알려 준다', () => {
+    render(<EntryScreen notice="cancelled" />)
+
+    const status = screen.getByRole('status')
+
+    expect(status.textContent).toBe(authContent.notices.cancelled)
+    expect(status.textContent).toContain('다시 시도')
+    // 계정의 존재 여부를 드러내지 않는다.
+    expect(status.textContent).not.toContain('계정')
+  })
+
+  it('안내: 실패·로그아웃 표지도 계정 존재를 드러내지 않는다', () => {
+    for (const notice of ['failed', 'signedOut'] as const) {
+      const { unmount } = render(<EntryScreen notice={notice} />)
+
+      expect(screen.getByRole('status').textContent).toBe(authContent.notices[notice])
+      expect(screen.getByRole('status').textContent).not.toContain('계정')
+
+      unmount()
+    }
+  })
+
+  it('접근성: polite live region이 화면당 하나다', () => {
+    render(<EntryScreen notice="failed" />)
+
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite')
+  })
+
+  it('로그인 블록을 더해도 렌더만으로 네트워크 요청이 발생하지 않는다', () => {
+    render(<EntryScreen notice="failed" />)
+
+    expect(getObservedRequests()).toEqual([])
     expect(getObservedStorageEntries()).toEqual([])
   })
 })

@@ -38,6 +38,12 @@ import org.springframework.web.bind.annotation.RestController;
  * 계약이 데이터베이스가 생긴 뒤에도 그대로라는 것이 이 시험이 계속 통과해야 하는 이유다.
  * 제공자 자격정보는 여전히 필요 없다.
  *
+ * <p>Story 1.4가 Spring Security 필터 체인을 들였다. 배선은 한 줄도 더하지 않았다 — 이 컨텍스트에는
+ * 제공자 자격정보가 없어 인증 필터가 배선되지 않고, 인증으로 막는 경로도 없기 때문이다. 그 상태에서
+ * 404·405·406·500 오류 계약과 {@code /api/status}가 그대로인지가 이 시험이 지키는 회귀다. 아래
+ * 마지막 시험 하나만 새로 더했다. 보안 응답 헤더의 유일한 정의가 Nginx라는 계약은 백엔드가 그 헤더를
+ * 만들지 않을 때만 성립하는데, Spring Security의 기본 헤더 writer는 그것을 조용히 깬다.
+ *
  * <p>{@link OutputCaptureExtension}은 로그 누출 시험에만 쓴다. 오류 계약은 응답 본문만이 아니라
  * 로그에도 걸리며, 로그는 응답보다 오래 남고 더 많은 곳으로 복제된다.
  */
@@ -253,6 +259,55 @@ class StatusApiTest {
         assertThat(response.body()).contains("\"code\":\"INTERNAL_ERROR\"");
         assertThat(correlationIdOf(response.body())).isNotEmpty();
         assertNoLeak(response.body());
+    }
+
+    @Test
+    void 백엔드는_보안_응답_헤더를_만들지_않는다() throws Exception {
+        /*
+         * CSP를 비롯한 보안 응답 헤더는 `deploy/nginx/bokrilog.conf`가 유일한 정의다. Spring
+         * Security의 기본 헤더 writer를 켜 두면 진입점과 애플리케이션이 같은 헤더를 각각 실어
+         * 값이 두 번 나가고, 헤더 값을 전문 비교하는 `verify-same-origin.sh`가 먼저 깨진다.
+         *
+         * `Cache-Control`도 함께 본다. 기본 writer는 인증 표면과 무관한 응답에까지
+         * `no-cache, no-store, ...`를 붙여 Story 1.2가 관측한 응답을 바꾼다. 캐시 지시가 필요한
+         * 응답은 그 응답이 직접 정한다(`AuthSessionController`).
+         */
+        HttpResponse<String> response = send("GET", "/api/status");
+
+        assertThat(response.headers().firstValue("Content-Security-Policy")).isEmpty();
+        assertThat(response.headers().firstValue("X-Content-Type-Options")).isEmpty();
+        assertThat(response.headers().firstValue("X-Frame-Options")).isEmpty();
+        assertThat(response.headers().firstValue("Strict-Transport-Security")).isEmpty();
+        assertThat(response.headers().firstValue("Cache-Control")).isEmpty();
+    }
+
+    @Test
+    void 자격정보가_없으면_인증_시작이_공통_오류_계약으로_fail_closed다() throws Exception {
+        /*
+         * I/O 매트릭스의 "자격정보 없는 개발·CI 스택" 행이다. 이 컨텍스트에는 제공자 자격정보가
+         * 없어 Google 등록이 만들어지지 않고 인증 필터도 배선되지 않는다. 그 상태의 인증 시작은
+         * 성공이나 빈 데이터로 위장하지 않고 요청을 처리할 수 없다고 답해야 한다.
+         *
+         * 이 두 응답에 단정이 없으면 fail-closed가 200이나 302로 바뀌어도, 인증 시작이 프레임워크
+         * 예외로 끝나 스택이 본문에 실려도 아무 시험이 실패하지 않는다.
+         */
+        HttpResponse<String> configured = send("GET", "/api/auth/authorize/google");
+
+        assertThat(configured.statusCode()).isEqualTo(500);
+        assertThat(configured.headers().firstValue("Content-Type").orElse(""))
+                .startsWith("application/json");
+        assertThat(configured.body()).contains("\"code\":\"INTERNAL_ERROR\"");
+        assertThat(correlationIdOf(configured.body())).isNotEmpty();
+        // 어떤 값이 비어 있는지 알려 주지 않는다. 환경 변수 이름도 응답에 남기지 않는다.
+        assertThat(configured.body()).doesNotContain("BOKRILOG_");
+        assertNoLeak(configured.body());
+
+        // 모르는 제공자의 경로는 존재하지 않는다. 네이버·카카오는 Story 1.6·1.7이 더한다.
+        HttpResponse<String> unknown = send("GET", "/api/auth/authorize/naver");
+
+        assertThat(unknown.statusCode()).isEqualTo(404);
+        assertThat(unknown.body()).contains("\"code\":\"NOT_FOUND\"");
+        assertNoLeak(unknown.body());
     }
 
     /**

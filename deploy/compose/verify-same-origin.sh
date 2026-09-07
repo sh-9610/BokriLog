@@ -100,6 +100,11 @@ forbidden_fragments=(
   'SERVER_PORT'
   'BOKRILOG_DB_URL'
   'BOKRILOG_DB_USERNAME'
+  'BOKRILOG_PUBLIC_BASE_URL'
+  'BOKRILOG_GOOGLE_CLIENT_ID'
+  'BOKRILOG_GOOGLE_CLIENT_SECRET'
+  'BOKRILOG_DEV_OIDC_INTERNAL_BASE_URL'
+  'SPRING_PROFILES_ACTIVE'
   'NGINX_ENTRYPOINT_QUIET_LOGS'
 )
 
@@ -298,6 +303,32 @@ psql_value() {
     | tr -d '[:space:]'
 }
 
+# psql_exec <라벨> <SQL>. 값을 읽지 않는 문장을 실행한다.
+#
+# 성공 왕복이 만든 행을 지워 스택을 원래 상태로 되돌리는 데 쓴다. 실패를 삼키지 않는다 —
+# 되돌리지 못한 채 뒤 단계로 넘어가면 그 단계가 무엇을 세는지 알 수 없게 된다.
+psql_exec() {
+  local label="$1" sql="$2"
+  if compose exec -T postgres psql \
+    --username=bokrilog --dbname=bokrilog --no-password --quiet \
+    --set=ON_ERROR_STOP=1 --command="${sql}" >"${work_dir}/psql-exec.log" 2>&1; then
+    record_pass "${label}"
+  else
+    record_fail "${label}" "$(tail -5 "${work_dir}/psql-exec.log" 2>/dev/null)"
+  fi
+}
+
+# 응답이 새로 준 세션 쿠키의 값.
+#
+# curl의 쿠키 엔진을 쓰지 않고 우리가 직접 실어 보낸다. 세션 쿠키에는 `Secure`가 붙어 있어
+# 클라이언트마다 평문 루프백에서의 회신 규칙이 다르고, 이 검증이 고정하려는 것은 그 규칙이
+# 아니라 서버가 내보낸 바이트다.
+session_cookie_value() {
+  tr -d '\r' <"${last_headers}" \
+    | sed -n 's/^[Ss]et-[Cc]ookie:[[:space:]]*BOKRILOG_SESSION=\([^;]*\).*/\1/p' \
+    | head -1
+}
+
 # --------------------------------------------------------------------------
 # 단정
 # --------------------------------------------------------------------------
@@ -340,6 +371,58 @@ assert_body_lacks() {
     record_fail "${label}" "본문에 '${needle}'가 있다 — $(head -c 400 "${last_body}")"
   else
     record_pass "${label}"
+  fi
+}
+
+# assert_prefix <라벨> <실제> <기대 접두사>
+assert_prefix() {
+  local label="$1" got="$2" want="$3"
+  case "${got}" in
+    "${want}"*) record_pass "${label}" ;;
+    *) record_fail "${label}" "실제 '${got}' (기대 '${want}…')" ;;
+  esac
+}
+
+# resolve_location <Location 값>
+#
+# 상대 경로면 이 origin을 붙이고 절대 URI면 그대로 둔다. 이 정규화 없이 접미사만 비교하면
+# 포트를 잃은 절대 URI(`http://127.0.0.1/onboarding`)가 통과한다. Nginx가 `Host $host`로 포트를
+# 잃은 값을 넘기므로 리다이렉트가 절대 URI로 나가는 순간 실제로 그 값이 나가고, 브라우저는
+# 80번 포트로 가서 끊긴다. 그래서 목적지 단정은 해석된 절대 URI의 동등성이어야 한다.
+resolve_location() {
+  case "$1" in
+    /*) printf '%s%s' "${base_url}" "$1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# assert_value_contains <라벨> <실제> <기대 조각>
+assert_value_contains() {
+  local label="$1" got="$2" want="$3"
+  case "${got}" in
+    *"${want}"*) record_pass "${label}" ;;
+    *) record_fail "${label}" "실제 '${got}' (기대 '${want}' 포함)" ;;
+  esac
+}
+
+# assert_value_lacks <라벨> <실제> <없어야 하는 조각>
+assert_value_lacks() {
+  local label="$1" got="$2" needle="$3"
+  case "${got}" in
+    *"${needle}"*) record_fail "${label}" "실제 '${got}'에 '${needle}'가 있다" ;;
+    *) record_pass "${label}" ;;
+  esac
+}
+
+# assert_rows <라벨> <SQL> <기대 값>
+assert_rows() {
+  local label="$1" sql="$2" want="$3" got
+  got="$(psql_value "${sql}")"
+  if [ "${got}" = "${want}" ]; then
+    record_pass "${label}"
+  else
+    record_fail "${label}" \
+      "실제 '${got}' (기대 '${want}') — $(head -c 300 "${work_dir}/psql-err.txt" 2>/dev/null)"
   fi
 }
 
@@ -586,6 +669,242 @@ else
     "실제 '${published_ports}' (기대 '18080'). postgres·backend·migrate는 어떤 포트도 게시하지 않는다."
 fi
 
+printf '\n인증 표면\n'
+
+# 이 스택에는 실제 Google 자격정보가 없다. 대신 `dev-oidc` 프로필의 local OIDC 스텁이 제공자
+# 자리에 있어(`DevOidcStubConfig`) 아래 `스텁 제공자 성공 왕복`이 인가 시작부터 세션 개설까지를
+# 실제로 지난다. 브라우저와 백엔드가 같은 origin에서 스텁에 닿을 수 있어야 그 왕복이 성립하며,
+# 그것이 스텁을 시험 소스가 아니라 `/api/dev-oidc/**`에 둔 이유다.
+#
+# "자격정보가 없으면 등록이 만들어지지 않는다"는 fail-closed 계약은 이제 compose가 아니라
+# `DevOidcStubProfileTest`가 지킨다. 그 시험은 기본 프로필에서 스텁 빈이 하나도 없고
+# `/api/dev-oidc/**`가 노출되지 않으며, 스텁 프로필이 실제 제공자 등록과 함께 활성이면 기동이
+# 거부되는 것을 단정한다.
+
+# 세션 확인. 인증 여부와 목적지 종류만 담는다. `user_id`·`subject`·토큰이 응답에 없다(AD-14).
+fetch GET /api/auth/session
+assert_equals '`GET /api/auth/session` 상태 200' "${last_status}" '200'
+assert_equals '`GET /api/auth/session` Content-Type' "$(header_value 'Content-Type')" 'application/json'
+assert_equals '`GET /api/auth/session` 본문은 상태와 목적지 종류뿐' \
+  "$(cat "${last_body}")" '{"authenticated":false,"destination":"entry"}'
+assert_body_lacks '`GET /api/auth/session` 응답에 계정 식별자가 없다' 'user_id'
+assert_security_headers '`GET /api/auth/session`'
+
+# 세션 확인만으로 세션이 만들어지지 않는다. 쿠키를 주면 그 자체가 상태 변경이다.
+if [ -z "$(header_value 'Set-Cookie')" ]; then
+  record_pass '`GET /api/auth/session`이 세션 쿠키를 만들지 않는다'
+else
+  record_fail '`GET /api/auth/session`이 세션 쿠키를 만들지 않는다' \
+    "Set-Cookie가 있다 — $(header_value 'Set-Cookie')"
+fi
+
+# 모르는 제공자. 그 경로는 존재하지 않는다. 등록되지 않은 제공자로는 흐름이 시작되지 않는다.
+fetch GET /api/auth/authorize/naver
+assert_equals '`GET /api/auth/authorize/naver` 상태 404' "${last_status}" '404'
+assert_body_contains '모르는 제공자 안정 code' '"code":"NOT_FOUND"'
+
+# 세션에 귀속되지 않은 콜백. 시작한 흐름이 없으므로 인증 화면으로 수렴한다.
+# 표지는 닫힌 값 하나이며 code·state를 되돌려주지 않는다.
+fetch GET '/api/auth/callback/google?code=probe-code&state=probe-state'
+assert_equals '흐름 없는 콜백 상태 302' "${last_status}" '302'
+assert_equals '흐름 없는 콜백은 인증 화면으로 수렴한다' \
+  "$(resolve_location "$(header_value 'Location')")" "${base_url}/?auth=failed"
+assert_value_lacks '콜백 목적지가 code를 되돌려주지 않는다' "$(header_value 'Location')" 'probe-code'
+assert_value_lacks '콜백 목적지가 state를 되돌려주지 않는다' "$(header_value 'Location')" 'probe-state'
+assert_body_lacks '콜백 응답이 code를 되돌려주지 않는다' 'probe-code'
+assert_body_lacks '콜백 응답에 계정 식별자가 없다' 'user_id'
+assert_security_headers '`GET /api/auth/callback/google` (흐름 없음)'
+
+# 상태 변경 요청은 동일 출처 `Origin`과 세션 귀속 CSRF 토큰을 함께 요구한다.
+fetch POST /api/auth/session
+assert_equals '`POST /api/auth/session` 상태 403' "${last_status}" '403'
+assert_body_contains '`POST /api/auth/session` 안정 code' '"code":"FORBIDDEN"'
+assert_correlation_id '`POST /api/auth/session` correlation ID'
+
+fetch POST /api/auth/session -H 'Origin: https://evil.example'
+assert_equals '다른 출처의 `Origin`도 403' "${last_status}" '403'
+assert_body_contains '다른 출처 거절의 안정 code' '"code":"FORBIDDEN"'
+
+# CSRF 검사가 인증 경로 밖으로 새지 않는다. Story 1.2가 고정한 405가 403으로 뒤집히면 여기서 걸린다.
+fetch POST /api/status
+assert_equals 'CSRF 검사가 `POST /api/status`의 405를 바꾸지 않는다' "${last_status}" '405'
+
+# 세션 테이블이 실제로 만들어졌다. V2 마이그레이션이 적용됐다는 증거다.
+session_tables="$(psql_value "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('spring_session', 'spring_session_attributes')")"
+if [ "${session_tables}" = '2' ]; then
+  record_pass '마이그레이션이 세션 두 테이블을 만들었다'
+else
+  record_fail '마이그레이션이 세션 두 테이블을 만들었다' \
+    "실제 '${session_tables}' (기대 '2') — $(head -c 300 "${work_dir}/psql-err.txt" 2>/dev/null)"
+fi
+
+# 위 요청 중 어느 것도 세션을 만들지 않았다. 상태 코드는 "그 요청이 실패했다"까지만 말해 준다.
+session_rows="$(psql_value 'SELECT count(*) FROM spring_session')"
+if [ "${session_rows}" = '0' ]; then
+  record_pass '인증 표면 요청으로 세션이 하나도 만들어지지 않았다'
+else
+  record_fail '인증 표면 요청으로 세션이 하나도 만들어지지 않았다' \
+    "spring_session 행 수가 '${session_rows}'다 — $(head -c 300 "${work_dir}/psql-err.txt" 2>/dev/null)"
+fi
+
+# 계정도 늘지 않았다. 앞의 identity 탐침과 같은 질의이며, 아래 성공 왕복 앞에서 한 번 더 센다.
+# 이 단정이 왕복보다 앞에 있어야 "계정이 그 왕복에서만 늘었다"가 말이 된다.
+lifecycle_rows="$(psql_value 'SELECT count(*) FROM identity_account_lifecycle')"
+if [ "${lifecycle_rows}" = '0' ]; then
+  record_pass '인증 표면 요청으로 계정이 하나도 만들어지지 않았다'
+else
+  record_fail '인증 표면 요청으로 계정이 하나도 만들어지지 않았다' \
+    "identity_account_lifecycle 행 수가 '${lifecycle_rows}'다"
+fi
+
+printf '\n스텁 제공자 성공 왕복\n'
+
+# 인가 시작 → 동의 → 콜백 → 세션 쿠키 → 목적지. 여기까지가 Story 1.4의 성공 경로 전부다.
+# 앞의 두 저장소 단정이 0을 확인했으므로, 아래에서 늘어난 행은 이 왕복이 만든 것뿐이다.
+# 끝에서 그 행들을 지워 스택을 원래 상태로 되돌린다 — 이 스크립트 뒤에 오는 Playwright 회귀가
+# 자기 왕복으로 무엇을 만들었는지 세려면 저장소가 비어 있어야 한다.
+
+# 스텁의 discovery 문서. 이 애플리케이션은 discovery 왕복을 하지 않지만, 문서를 두고 검증하지
+# 않으면 그 경로가 아무도 보지 않는 표면이 된다.
+fetch GET /api/dev-oidc/.well-known/openid-configuration
+assert_equals '스텁 discovery 상태 200' "${last_status}" '200'
+assert_equals '스텁 discovery Content-Type' "$(header_value 'Content-Type')" 'application/json'
+assert_body_contains '스텁 discovery의 issuer가 공개 origin이다' \
+  "\"issuer\":\"${base_url}/api/dev-oidc\""
+assert_body_contains '스텁 discovery가 S256만 알린다' '"code_challenge_methods_supported":["S256"]'
+
+# 스텁 JWKS. 공개 키만 나간다.
+fetch GET /api/dev-oidc/jwks
+assert_equals '스텁 JWKS 상태 200' "${last_status}" '200'
+assert_body_contains '스텁 JWKS에 RSA 공개 키가 있다' '"kty":"RSA"'
+assert_body_lacks '스텁 JWKS에 개인 키 성분이 없다' '"d":'
+
+# 1) 인가 시작. 제공자(=스텁)의 인가 엔드포인트로 302다.
+fetch GET /api/auth/authorize/google
+assert_equals '`GET /api/auth/authorize/google` 상태 302' "${last_status}" '302'
+authorize_location="$(header_value 'Location')"
+assert_prefix '인가 시작이 스텁의 인가 엔드포인트로 보낸다' \
+  "${authorize_location}" "${base_url}/api/dev-oidc/authorize"
+assert_value_contains '인가 요청이 PKCE S256을 쓴다' "${authorize_location}" 'code_challenge_method=S256'
+# 파라미터를 정확히 비교한다. 부분 문자열로 보면 `scope=openid%20profile`·`scope=openid+email`이
+# 그대로 통과해 "기본 동의 범위는 openid뿐이다"가 확인되지 않는다.
+authorize_scope="$(printf '%s' "${authorize_location}" | sed -n 's/.*[?&]scope=\([^&]*\).*/\1/p')"
+assert_equals '인가 요청의 동의 범위는 openid뿐이다' "${authorize_scope}" 'openid'
+assert_value_contains '인가 요청에 nonce가 있다' "${authorize_location}" 'nonce='
+assert_value_contains '인가 요청에 redirect URI가 있다' "${authorize_location}" 'redirect_uri='
+# verifier는 서버가 세션에만 들고 있다. 제공자에게 가는 것은 challenge뿐이다.
+assert_value_lacks '인가 요청에 PKCE verifier가 실리지 않는다' "${authorize_location}" 'code_verifier'
+flow_cookie="$(session_cookie_value)"
+if [ -n "${flow_cookie}" ]; then
+  record_pass '인가 시작이 흐름 세션을 만든다'
+else
+  record_fail '인가 시작이 흐름 세션을 만든다' 'Set-Cookie에 세션 쿠키가 없다'
+fi
+
+# 2) 동의 화면. 실제 제공자의 동의 화면 자리이며 조작은 링크 하나뿐이다.
+#    폼도 인라인 스크립트도 쓰지 않으므로 `form-action 'none'` 아래에서 그대로 동작한다.
+fetch GET "${authorize_location#"${base_url}"}"
+assert_equals '스텁 동의 화면 상태 200' "${last_status}" '200'
+assert_prefix '스텁 동의 화면 Content-Type' "$(header_value 'Content-Type')" 'text/html'
+assert_body_contains '스텁 동의 화면이 실제 제공자가 아님을 밝힌다' '실제 제공자가 아닙니다'
+assert_body_contains '스텁 동의 화면에 동의 링크가 있다' '동의하고 계속하기'
+assert_security_headers '스텁 동의 화면'
+
+# 동의 링크의 목적지. HTML escape를 되돌려 그대로 따라간다.
+consent_href="$(sed -n 's/.*<a href="\([^"]*\)".*/\1/p' "${last_body}" | head -1 | sed 's/&amp;/\&/g')"
+assert_prefix '동의 링크가 공개 origin의 콜백으로 되돌린다' \
+  "${consent_href}" "${base_url}/api/auth/callback/google"
+
+# 이 왕복의 authorization code와 `state`. 아래 로그 누출 검사가 이 두 값을 찾는다.
+# 조각 목록에 넣을 수 없는 값이라 여기서 잡아 둔다 — 실행마다 달라지는 것이 그 성질이다.
+round_trip_code="$(printf '%s' "${consent_href}" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')"
+round_trip_state="$(printf '%s' "${consent_href}" | sed -n 's/.*[?&]state=\([^&]*\).*/\1/p')"
+
+# 3) 콜백. 검증을 통과하면 계정·매핑·세션이 한 번에 생기고 신규 사용자는 온보딩으로 간다.
+fetch GET "${consent_href#"${base_url}"}" -H "Cookie: BOKRILOG_SESSION=${flow_cookie}"
+assert_equals '검증된 콜백 상태 302' "${last_status}" '302'
+callback_location="$(header_value 'Location')"
+assert_equals '신규 사용자는 온보딩으로 간다' \
+  "$(resolve_location "${callback_location}")" "${base_url}/onboarding"
+assert_value_lacks '콜백 목적지에 code가 없다' "${callback_location}" 'code='
+assert_value_lacks '콜백 목적지에 state가 없다' "${callback_location}" 'state='
+assert_body_lacks '콜백 응답에 계정 식별자가 없다' 'user_id'
+
+# 세션 쿠키. 브라우저에 남는 유일한 값이며 속성 세 가지가 계약이다.
+session_cookie="$(session_cookie_value)"
+set_cookie_header="$(header_value 'Set-Cookie')"
+assert_value_contains '세션 쿠키 Path' "${set_cookie_header}" 'Path=/'
+assert_value_contains '세션 쿠키 HttpOnly' "${set_cookie_header}" 'HttpOnly'
+assert_value_contains '세션 쿠키 Secure' "${set_cookie_header}" 'Secure'
+assert_value_contains '세션 쿠키 SameSite=Lax' "${set_cookie_header}" 'SameSite=Lax'
+if [ -n "${session_cookie}" ] && [ "${session_cookie}" != "${flow_cookie}" ]; then
+  record_pass '로그인 시점에 세션 ID가 회전한다'
+else
+  record_fail '로그인 시점에 세션 ID가 회전한다' \
+    '콜백이 새 세션 쿠키를 주지 않았다. 세션 고정 방어가 성립하지 않는다.'
+fi
+
+# 4) 세션 확인. 화면이 상태를 확인하는 유일한 경로이며 인증 여부와 목적지 종류만 담는다.
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${session_cookie}"
+assert_equals '로그인 뒤 `GET /api/auth/session` 상태 200' "${last_status}" '200'
+assert_equals '로그인 뒤 세션 확인 본문은 상태와 목적지 종류뿐' \
+  "$(cat "${last_body}")" '{"authenticated":true,"destination":"onboarding"}'
+assert_body_lacks '로그인 뒤 세션 확인에 계정 식별자가 없다' 'user_id'
+assert_value_contains '로그인 뒤 세션 확인은 저장하지 않는다' \
+  "$(header_value 'Cache-Control')" 'no-store'
+
+# 저장소. 계정 1개·매핑 1행·세션 1행이며 그 이상은 없다.
+assert_rows '왕복이 계정 하나만 만들었다' 'SELECT count(*) FROM identity_account_lifecycle' '1'
+assert_rows '왕복이 인증 매핑 하나만 만들었다' 'SELECT count(*) FROM identity_social_link' '1'
+assert_rows '왕복이 세션 하나만 남겼다' 'SELECT count(*) FROM spring_session' '1'
+# 세션 본문도 PostgreSQL에 있다. 쿠키는 불투명 식별자뿐이고 상태는 서버가 들고 있다.
+assert_rows '세션 속성이 PostgreSQL에 산다' \
+  'SELECT (count(*) > 0)::int FROM spring_session_attributes' '1'
+
+# 스택을 원래 상태로 되돌린다. 뒤 단계와 Playwright 회귀가 빈 저장소를 전제한다.
+psql_exec '왕복이 만든 세션을 지운다' 'TRUNCATE TABLE spring_session, spring_session_attributes'
+psql_exec '왕복이 만든 계정과 매핑을 지운다' \
+  'TRUNCATE TABLE identity_social_link, identity_account, identity_account_lifecycle CASCADE'
+assert_rows '되돌린 뒤 계정 행이 0개다' 'SELECT count(*) FROM identity_account_lifecycle' '0'
+assert_rows '되돌린 뒤 세션 행이 0개다' 'SELECT count(*) FROM spring_session' '0'
+
+printf '\n알려진 내부 경로 허용 목록\n'
+
+# 폴백이 아니라 허용 목록이다. 이름을 적은 두 경로만 진입 문서를 받는다.
+while read -r allowed_path; do
+  [ -n "${allowed_path}" ] || continue
+  fetch GET "${allowed_path}"
+  assert_equals "\`GET ${allowed_path}\` 상태 200" "${last_status}" '200'
+  assert_equals "\`GET ${allowed_path}\` Content-Type" "$(header_value 'Content-Type')" 'text/html'
+  assert_body_contains "\`GET ${allowed_path}\`가 진입 문서다" '<div id="root">'
+  assert_security_headers "\`GET ${allowed_path}\`"
+  # 문서는 200이지만 그 안에 사용자 데이터가 없다. 로그인 상태는 화면이 세션을 확인한 뒤에 정한다.
+  assert_body_lacks "\`GET ${allowed_path}\` 문서에 계정 식별자가 없다" 'user_id'
+done <<'ALLOWED_PATHS'
+/onboarding
+/dashboard
+ALLOWED_PATHS
+
+# 정적 경로의 잘못된 메서드. 허용 목록 location도 파일을 찾기 전에 되돌린다.
+fetch POST /onboarding
+assert_equals '`POST /onboarding` 상태 405' "${last_status}" '405'
+assert_equals '`POST /onboarding` Content-Type' "$(header_value 'Content-Type')" 'application/json'
+assert_body_lacks '`POST /onboarding`가 index.html을 돌려주지 않는다' '<div id="root">'
+
+# 목록 밖의 경로는 계속 404다. 접두사가 겹치는 값도 받지 않는다.
+while read -r rejected_path; do
+  [ -n "${rejected_path}" ] || continue
+  fetch GET "${rejected_path}"
+  assert_equals "\`GET ${rejected_path}\` 상태 404" "${last_status}" '404'
+  assert_body_contains "\`GET ${rejected_path}\` 안정 code" '"code":"NOT_FOUND"'
+  assert_body_lacks "\`GET ${rejected_path}\`가 index.html로 대체되지 않는다" '<div id="root">'
+done <<'REJECTED_PATHS'
+/onboarding/x
+/onboarding-x
+/dashboards
+/dashboard/
+REJECTED_PATHS
+
 printf '\n한도를 넘는 요청\n'
 
 # `client_max_body_size 64k`로 바로 도달하는 413이다. nginx에 이 상태의 `error_page`가 없으면
@@ -674,6 +993,22 @@ assert_body_lacks '백엔드 정지 후 upstream 주소가 없다' 'backend:8080
 assert_body_lacks '백엔드 정지 후 nginx 버전이 없다' 'nginx/'
 assert_security_headers '백엔드 정지 후 `GET /api/status`'
 
+# 업스트림 오류가 콜백의 쿼리 문자열을 로그에 남기지 않는지 확인할 재료를 만든다.
+#
+# `error_log`는 `access_log`와 달리 형식을 바꿀 수 없고 항목마다 원본 요청 줄을 그대로 적는다.
+# 그래서 위쪽 `map`이 잘라낸 쿼리가 오류 항목에는 그대로 남는다. 막는 것은 `bokrilog.conf`의
+# `^~ /api/auth/callback/` 블록이며 그 경로의 오류 수준만 올린다. 블록이 사라지면 아래 로그
+# 검사에서 걸린다.
+#
+# 백엔드가 멈춘 지금이 유일한 기회다. 살아 있으면 콜백은 302로 끝나 업스트림 오류가 생기지 않는다.
+# 표지는 우리가 고른 고정 문자열이라 왕복 값과 달리 "검사가 아무것도 보지 않는" 상태가 없다.
+upstream_error_code='verifyupstreamerrorcodemarker'
+upstream_error_state='verifyupstreamerrorstatemarker'
+fetch GET \
+  "/api/auth/callback/google?code=${upstream_error_code}&state=${upstream_error_state}" \
+  --max-time 30
+assert_status_in '백엔드 정지 후 콜백 상태' "${last_status}" '502' '504'
+
 printf '\n로그 누출 검사\n'
 
 raw_log_file="${work_dir}/compose-raw.log"
@@ -722,6 +1057,65 @@ if [ "${log_ready}" = true ]; then
   fi
 
   assert_no_forbidden_fragments '스택 로그' "${log_file}"
+
+  # access log이 요청된 경로를 계속 남긴다.
+  #
+  # `log_format`의 `$request_path`를 `$uri`로 바꾸면 허용 목록 location의 내부 redirect 때문에
+  # `/onboarding` 요청이 `/index.html`로 기록된다. 쿼리 문자열을 지우는 것과 어느 경로가
+  # 요청됐는지를 잃는 것은 다른 일이고, 뒤의 것은 access log의 이유를 없앤다. 위 `알려진 내부
+  # 경로 허용 목록` 절이 그 경로를 실제로 요청했으므로 여기서 확인할 수 있다.
+  #
+  # `grep`의 출력을 버리되 입력은 끝까지 읽는다. 조건에 `| grep -q`를 쓰면 첫 매치에서 끝나
+  # 생산자가 SIGPIPE를 받는다(PR #9).
+  if grep -F -- '"GET /onboarding HTTP' "${log_file}" >/dev/null; then
+    record_pass 'access log이 허용 목록 경로를 요청된 이름으로 남긴다'
+  else
+    record_fail 'access log이 허용 목록 경로를 요청된 이름으로 남긴다' \
+      "access log에서 '\"GET /onboarding HTTP'를 찾지 못했다. 경로가 내부 redirect 뒤의 값으로 기록됐을 수 있다."
+  fi
+
+  if grep -F -- '"GET /index.html HTTP' "${log_file}" >/dev/null; then
+    record_fail 'access log이 내부 redirect 뒤의 경로로 바꿔 적지 않는다' \
+      "$(grep -nF -- '"GET /index.html HTTP' "${log_file}" | head -2)"
+  else
+    record_pass 'access log이 내부 redirect 뒤의 경로로 바꿔 적지 않는다'
+  fi
+
+  # 성공 왕복이 흘린 값을 찾는다.
+  #
+  # 조각 목록으로는 잡을 수 없다. authorization code와 `state`는 실행마다 달라지고, 그것이 바로
+  # 이 값들의 성질이다. 위 왕복이 실제로 쓴 값을 그대로 찾는 것만이 "로그에 남지 않는다"를
+  # 확인하는 방법이다. 진입점의 `log_format`이 쿼리 문자열을 남기기 시작하면 여기서 걸린다.
+  for leaked_label in code state; do
+    case "${leaked_label}" in
+      code) leaked_value="${round_trip_code}" ;;
+      *) leaked_value="${round_trip_state}" ;;
+    esac
+    if [ -z "${leaked_value}" ]; then
+      record_fail "스택 로그에 왕복의 ${leaked_label}가 없다" \
+        "왕복에서 ${leaked_label} 값을 읽지 못해 검사가 아무것도 보지 않았다."
+    elif grep -qF -- "${leaked_value}" "${log_file}"; then
+      record_fail "스택 로그에 왕복의 ${leaked_label}가 없다" \
+        "$(grep -nF -- "${leaked_value}" "${log_file}" | head -2)"
+    else
+      record_pass "스택 로그에 왕복의 ${leaked_label}가 없다"
+    fi
+  done
+
+  # 업스트림 오류 경로가 남긴 것도 같이 본다. access log는 위 `map`이 막지만 error_log는 그
+  # 수단이 없어 별도 location이 막는다. 두 방어가 각각 자기 단정을 갖는다.
+  for leaked_label in code state; do
+    case "${leaked_label}" in
+      code) leaked_value="${upstream_error_code}" ;;
+      *) leaked_value="${upstream_error_state}" ;;
+    esac
+    if grep -qF -- "${leaked_value}" "${log_file}"; then
+      record_fail "스택 로그에 업스트림 오류 콜백의 ${leaked_label}가 없다" \
+        "$(grep -nF -- "${leaked_value}" "${log_file}" | head -2)"
+    else
+      record_pass "스택 로그에 업스트림 오류 콜백의 ${leaked_label}가 없다"
+    fi
+  done
 fi
 
 # --------------------------------------------------------------------------

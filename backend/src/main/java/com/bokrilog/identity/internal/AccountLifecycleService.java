@@ -3,6 +3,7 @@ package com.bokrilog.identity.internal;
 import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountLifecycleApi;
 import java.nio.charset.StandardCharsets;
+import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
@@ -114,6 +115,20 @@ class AccountLifecycleService implements AccountLifecycleApi {
         return repository.findLifecycle(userId).orElse(null) == AccountState.ACTIVE
                 ? AccessDecision.ALLOWED
                 : AccessDecision.DENIED;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<UUID> findUserIdBySocialIdentity(
+            @Nullable String issuer, @Nullable String subject) {
+        // 거부 계약과 같은 모양이다. 받아들일 수 없는 입력은 예외가 아니라 빈 값으로 접힌다.
+        // 여기서 예외를 던지면 호출자가 "그 값은 아예 저장될 수 없는 모양이었다"를 알게 되고,
+        // 그것은 매핑 존재 여부와 다른 축의 정보 누출이 된다.
+        if (!isAcceptable(issuer, MAX_IDENTIFIER_BYTES) || !isAcceptable(subject, MAX_IDENTIFIER_BYTES)) {
+            return Optional.empty();
+        }
+        // 상태 술어는 질의 안에 있다. 삭제가 시작된 계정과 존재하지 않는 계정이 같은 빈 값이다.
+        return repository.findActiveUserIdBySocialIdentity(issuer, subject);
     }
 
     /**

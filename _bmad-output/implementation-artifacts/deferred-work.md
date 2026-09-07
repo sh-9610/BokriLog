@@ -89,3 +89,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-3-identity-ownership.md`
   summary: `verify-same-origin.sh`의 마이그레이션 호출에 이식 가능한 시간 상한을 넣는다.
   evidence: 스크립트의 다른 대기는 모두 `--wait-timeout 180`·`--max-time 15`로 묶여 있는데 `compose --profile migrate build|run`만 상한이 없다. 이 경로에서 실제로 hang을 겪었고, 그때 CI라면 job timeout 15분을 통째로 태운 뒤 원인 없는 실패로 끝난다. macOS의 bash 3.2에는 GNU `timeout`이 없어 `timeout 300 …`을 그대로 쓸 수 없으므로, 백그라운드 실행 + 감시 루프처럼 이식 가능한 구현을 별도로 설계해야 한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-4-google-sign-in.md`
+  summary: `identity`가 `spring_session`에 직접 SQL을 던지는 결합을 푸는 방법을 정한다.
+  evidence: `IdentityAccountRepository.deleteSessionsOf`가 `DELETE FROM spring_session WHERE principal_name = :principalName`을 실행한다. 그 테이블은 `identity`가 소유하지 않고 Spring Session JDBC가 만들고 갱신하며, 술어가 성립하는 근거는 "`principal_name`이 내부 `user_id` 문자열이다"라는 루트 패키지의 결정(`AuthFlowHandlers`가 인증 주체를 그 값 하나로 바꿔 저장한다)뿐이다. 즉 모듈이 남의 테이블과 남의 규약에 동시에 결합돼 있고, 어느 한쪽이 바뀌면 이 DELETE는 예외 없이 0행이 되어 삭제가 조용히 세션을 남긴다. 지금 그 한 쌍을 붙잡는 것은 `AuthDeletionPathTest` 하나이며 경계 검사는 이 결합을 보지 못한다(`ModuleBoundaryTest`는 패키지 의존만 본다). 세션 폐기를 `identity` 공개 API가 요구하고 루트 패키지가 수행하는 이벤트·포트로 뒤집을지, `principal_name` 규약을 두 곳이 공유하는 상수로 승격할지, 아니면 세션 소유를 통째로 루트 패키지로 옮길지를 Story 1.5(로그아웃·세션 만료·의심 세션 차단)가 세션 수명을 손댈 때 함께 정한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-4-google-sign-in.md`
+  summary: `OnboardingScreen`과 `SignedInScreen`의 중복을 세션 게이트 셸 하나로 합칠지 정한다.
+  evidence: 두 화면은 약 280줄 중 카피 참조(`authContent.onboarding` 대 `authContent.dashboard`)와 본문 랜드마크 id만 다르고 구조가 같다. `.module.css`는 141줄 중 첫 주석 한 줄만 다르다(`diff`가 그 한 줄만 낸다). 세션 게이트·건너뛰기 링크·live region·고지 인접 배치·목적지 불일치 처리가 두 곳에 각각 있어, 이 라운드에서 넷을 고칠 때 같은 수정을 두 번 했다. Epic 2가 대시보드에 지표를 넣으면 두 화면은 실제로 갈라지므로 지금 합치는 것이 이르다고 볼 수도 있다. 공통 셸(제목·고지·live region·게이트)과 화면별 본문 슬롯으로 나눌지, CSS만 공유 모듈로 뽑을지, 아니면 갈라질 때까지 중복을 유지할지를 결정한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-4-google-sign-in.md`
+  summary: 백엔드 import 정렬 관용을 정하고 그것을 강제할 게이트를 미룬 항목 21(백엔드 포매터·정적 분석)과 함께 결정한다.
+  evidence: 이 스토리가 더한 파일들의 import 순서가 기존 관용과 어긋난다. `AuthSecurityConfig.java`는 `org.springframework.security.core.Authentication`이 `org.springframework.security.config...`보다 앞에 있어 알파벳 순서가 아니고, `DevOidcStubTest.java`는 `org.jspecify`가 `org.junit`보다 앞이라 정렬 기준이 파일마다 다르다. 프런트엔드는 `perfectionist/sort-imports`가 이것을 기계로 강제하고 `--fix`가 고치는데, 백엔드의 필수 게이트는 `gradle build` 하나이고 `-Werror`는 컴파일 경고만 본다. 사람 리뷰가 매 PR에서 import 순서를 세는 것은 지속되지 않으므로, 관용(알파벳 단일 블록인지 그룹 분리인지)과 그것을 강제할 도구(Spotless의 `importOrder`·Checkstyle의 `CustomImportOrder`)를 미룬 항목 21의 결정에 포함한다.
