@@ -107,6 +107,31 @@ services:
       # 비밀번호 항목이 없는 것은 누락이 아니라 위 `POSTGRES_HOST_AUTH_METHOD: trust`와 한 쌍이다.
       BOKRILOG_DB_URL: jdbc:postgresql://postgres:5432/bokrilog
       BOKRILOG_DB_USERNAME: bokrilog
+      # 개발용 OIDC 스텁 프로필(Story 1.4).
+      #
+      # 이 프로필에서만 `/api/dev-oidc/**`에 local OIDC 제공자가 존재하고 제공자 등록이 그
+      # 스텁을 가리킨다(`DevOidcStubConfig`). 그래서 이 스택은 자격정보 없이도 인가 시작 →
+      # 동의 → 콜백 → 세션까지의 성공 왕복이 완성되며, 브라우저 층이 그 경로를 실제로 지난다.
+      # Authorization Code 흐름의 인가 요청은 브라우저가, code 교환은 백엔드가 보내므로 스텁을
+      # 브라우저 안에서 흉내낼 수는 없다.
+      #
+      # `:-`가 아니라 `-`다. 실제 Google 자격정보를 쓰려는 실행은 이 변수를 빈 값으로 두어
+      # 기본 프로필로 뜬다. 스텁과 실제 제공자가 함께 구성되면 백엔드가 기동을 거부한다.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE-dev-oidc}
+      # 브라우저가 보는 origin이다. redirect URI와 스텁의 인가 주소를 여기서 조립한다.
+      # 요청 Host에서 유도하지 않으므로 nginx가 포트를 잃는 것과 무관하다.
+      BOKRILOG_PUBLIC_BASE_URL: ${BOKRILOG_PUBLIC_BASE_URL:-http://127.0.0.1:18080}
+      # 백엔드가 자기 스텁에 닿는 주소. 위 공개 origin은 compose 네트워크 안에서 해석되지
+      # 않으므로 code 교환과 JWKS 조회는 이 주소로 나간다. 위 `SERVER_PORT`와 한 쌍이다.
+      BOKRILOG_DEV_OIDC_INTERNAL_BASE_URL: ${BOKRILOG_DEV_OIDC_INTERNAL_BASE_URL:-http://127.0.0.1:8080}
+      # 실제 Google 등록. 이름만 여기 있고 값은 이 파일에 없다. 위 스텁 프로필과 함께 값이
+      # 주어지면 백엔드가 기동을 거부하며, 둘 다 비면 등록이 만들어지지 않아 인증 시작이
+      # 공통 오류 계약으로 fail-closed다(`AuthSecurityConfig`).
+      #
+      # 가짜 값을 채우지 않는다. client secret 모양의 리터럴을 커밋하면 gitleaks 규칙을
+      # 완화하고 싶어지고 그 완화가 남는다. production 자격정보는 Story 3.8이 소유한다.
+      BOKRILOG_GOOGLE_CLIENT_ID: ${BOKRILOG_GOOGLE_CLIENT_ID:-}
+      BOKRILOG_GOOGLE_CLIENT_SECRET: ${BOKRILOG_GOOGLE_CLIENT_SECRET:-}
     healthcheck:
       # alpine 베이스의 busybox wget이다. 이미지에 도구를 더 넣지 않는다.
       test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1:8080/api/status']

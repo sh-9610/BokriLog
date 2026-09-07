@@ -115,6 +115,23 @@ components:
     gap: '{spacing.3}'
     provider-treatment: 'official brand guideline'
     focus: '{colors.focus-ring}'
+    # `provider-treatment`가 채움색·글자색·테두리·모서리·내부 여백과 로고를 각 제공자의 공식 버튼
+    # 가이드에 넘긴다. 아래 리프 키는 그 값이 사는 자리다. BokriLog 색 팔레트에 참조가 없는 것이
+    # 정상이며, 값의 소유자는 Google이고 이 문서는 기록만 한다. 임의로 바꾸지 않는다.
+    # 근거: Google 공식 "Sign in with Google" 버튼 가이드(light theme).
+    # 글꼴은 이 목록에 없다. `provider-treatment`가 넘기는 범주에 글꼴이 없으므로 타이포그래피는
+    # 그대로 BokriLog의 시스템 폰트 스택을 쓴다(외부 폰트를 불러오지 않는다).
+    google-background: '#FFFFFF'
+    google-foreground: '#1F1F1F'
+    google-border: '#747775'
+    google-radius: '4px'
+    google-padding-inline: '12px'
+    google-logo-size: '18px'
+    google-logo-gap: '10px'
+    google-logo-blue: '#4285F4'
+    google-logo-green: '#34A853'
+    google-logo-yellow: '#FBBC05'
+    google-logo-red: '#EA4335'
   secure-input-form:
     background: '{colors.surface-raised}'
     foreground: '{colors.ink-primary}'

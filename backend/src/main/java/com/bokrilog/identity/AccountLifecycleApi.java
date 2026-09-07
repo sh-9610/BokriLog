@@ -1,5 +1,6 @@
 package com.bokrilog.identity;
 
+import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 
@@ -62,4 +63,25 @@ public interface AccountLifecycleApi {
      * @return 허용 또는 거부
      */
     AccessDecision decideSessionCreation(@Nullable UUID userId);
+
+    /**
+     * 이 인증 매핑에 연결된 계정을 찾는다.
+     *
+     * <p>재로그인 경로의 유일한 진입이다. 인증 표면은 검증을 통과한 {@code (issuer, subject)} 하나로
+     * 여기에 묻고, 계정을 찾는 다른 경로를 새로 만들지 않는다.
+     *
+     * <p>빈 값은 하나의 답이다. 매핑이 없는 계정(신규 가입), 삭제가 시작된 계정, 삭제가 끝난 계정,
+     * 그리고 비어 있거나 지나치게 긴 입력이 모두 빈 값으로 접힌다. 호출자는 이 값에서 "그
+     * 식별자로 만들어진 계정이 있었는가"를 복원할 수 없다. 그것이 {@link AccessDecision#DENIED}가
+     * 사유를 노출하지 않는 것과 같은 계약이다.
+     *
+     * <p>이메일·표시명을 받지 않는다. 이메일이 같아도 {@code subject}가 다르면 다른 식별자이며,
+     * 이 조회는 빈 값을 돌려주어 호출자가 신규 가입으로만 처리하게 만든다. 병합·전환 경로가
+     * 시그니처에 없다.
+     *
+     * @param issuer 제공자 namespace
+     * @param subject 제공자가 준 외부 식별자
+     * @return 연결된 활성 계정의 내부 {@code user_id}, 없으면 빈 값
+     */
+    Optional<UUID> findUserIdBySocialIdentity(@Nullable String issuer, @Nullable String subject);
 }

@@ -113,7 +113,8 @@ Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패
 | `frontend/src/styles/global.css` | reset, 기본 타이포그래피, 전역 `focus-visible`, 모션 감소 규칙 |
 | `frontend/src/content/` | 화면 카피 정본. 화면과 시험이 같은 문자열을 참조해 문구 표류를 막는다 |
 | `frontend/src/screens/` | 화면 컴포넌트와 CSS Module |
-| `frontend/src/test/setup.ts` | Testing Library 등록과 `fetch`·`XMLHttpRequest`·`sendBeacon` 감시 훅 |
+| `frontend/src/session/` | 서버 세션 확인 훅. 로그인 상태 경로의 화면만 쓴다 |
+| `frontend/src/test/setup.ts` | Testing Library 등록과 `fetch`·`XMLHttpRequest`·`sendBeacon` 감시 훅. `stubSessionRequest`로 `/api/auth/session` 하나만 시험 단위로 여는 탈출구가 있고 기본 거부는 그대로다 |
 | `frontend/e2e/` | Playwright 명세 |
 | `frontend/playwright.config.test.ts` | `playwright.config.ts`의 실행 정책(`retries: 0`, trace·screenshot, `globalTimeout`, `CI` 해석) 고정. 대상이 `src/` 밖이라 시험도 그 옆에 두고 `vite.config.ts`의 `test.include`가 이 파일을 더 받는다 |
 | `frontend/eslint.config.ts` | ESLint flat config. typescript-eslint strict·stylistic(타입 인지), React hooks·refresh, perfectionist import 정렬, 파일군별 Vitest·Testing Library·Playwright 플러그인, disable 주석 감사. `eslint-config-prettier`가 서식 규칙을 끈다 |
@@ -129,7 +130,9 @@ Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패
 - 인라인 예외는 이유가 있는 disable 주석만 허용한다. stylelint는 `/* stylelint-disable-next-line <규칙> -- 이유 */`, ESLint는 `// eslint-disable-next-line <규칙> -- 이유` 형태다. 이유가 없는 disable, 위반이 없는 곳의 disable, 범위가 틀린 disable은 양쪽 모두 오류다. 규칙 대상 속성에서 리터럴이 정말 필요하면 disable 대신 `DESIGN.md`에 토큰을 추가하는 쪽을 먼저 검토한다.
 - 서식은 Prettier가 소유한다. 세미콜론 없음, 단일 인용부호, 후행 쉼표, 2칸 들여쓰기, LF, `printWidth` 100. ESLint의 서식 규칙은 `eslint-config-prettier`가 끄므로 두 도구가 충돌하지 않는다.
 - 외부 폰트·CDN·분석·광고 SDK를 넣지 않는다. 진입 화면은 문서와 번들 외 네트워크 요청이 0건이어야 하고 시험이 이를 고정한다.
-- `localStorage`·`sessionStorage`·쿠키·IndexedDB에 쓰지 않는다. 인증 토큰과 금융 원본은 브라우저 영속 저장소에 두지 않는다.
+- `localStorage`·`sessionStorage`·쿠키·IndexedDB에 쓰지 않는다. 인증 토큰과 금융 원본은 브라우저 영속 저장소에 두지 않는다. 브라우저에 남는 유일한 값은 서버가 심는 `HttpOnly`·`Secure`·`SameSite=Lax` 세션 쿠키이며 애플리케이션 코드가 그것을 읽지도 쓰지도 않는다.
+- 외부 요청은 전역 거부가 기본이다. 단위 시험에서 여는 예외는 `stubSessionRequest`가 허용하는 `GET /api/auth/session` 하나뿐이고, 그 허용도 시험 하나의 범위다(`afterEach`가 닫는다). 진입 화면(`/`)은 이 탈출구를 쓰지 않으며 "문서·번들 외 요청 0건"이 그대로 유지된다.
+- 경로는 라우터 없이 `App.tsx`의 닫힌 맵이 화면에 대응한다(`/`·`/onboarding`·`/dashboard`). 그 세 값은 `deploy/nginx/bokrilog.conf`의 허용 목록과 같은 집합이어야 한다. 라우트를 더할 때는 두 곳을 함께 고친다. 로그인 상태 경로는 `GET /api/auth/session`으로 서버 세션을 확인한 뒤에만 내용을 그리고, 미인증·오류는 인증 화면으로 되돌린다.
 - 라이트 모드만 제공한다. 다크 모드는 별도 대비 검증 뒤 후속 범위다.
 - 확대 검증은 브라우저 zoom 설정 대신 **뷰포트 폭 = 1280px ÷ 배율**로 재현한다(WCAG 1.4.10 표준 해석). 400%는 320×512, 200%는 640×512다.
 
@@ -199,15 +202,25 @@ docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --b
 
 | 경로 | 역할 |
 |---|---|
-| `backend/build.gradle.kts` | Java 25 toolchain, Spring Boot 4.1.1 BOM, `web`·`jdbc`·Flyway 운영 의존과 Modulith 2.1.1 BOM·Modulith·Testcontainers 시험 의존. 컴파일 경고는 `-Werror`로 실패다 |
+| `backend/build.gradle.kts` | Java 25 toolchain, Spring Boot 4.1.1 BOM, `web`·`jdbc`·Flyway·Spring Security OAuth2 Client·Spring Session JDBC 운영 의존과 Modulith 2.1.1 BOM·Modulith·Testcontainers 시험 의존. 컴파일 경고는 `-Werror`로 실패다 |
 | `backend/gradle.properties` | toolchain 자동 프로비저닝 끄기, 인코딩 고정 |
 | `backend/src/main/java/com/bokrilog/BokriLogApplication.java` | 진입점이자 Modulith 루트. 모듈은 이 클래스 패키지의 직속 하위 패키지다 |
 | `backend/src/main/java/com/bokrilog/StatusController.java` | `GET /api/status`. 고정된 최소 필드 `{"status":"UP"}` |
 | `backend/src/main/java/com/bokrilog/ApiErrorHandler.java` | 공통 오류 계약과 프레임워크 오류 경로 대체 |
+| `backend/src/main/java/com/bokrilog/AuthSecurityConfig.java` | 인증 표면과 세션 정책. Google 등록, PKCE 강제, 세션 고정 방어, CSRF·`Origin` 검증, 401·403 응답 |
+| `backend/src/main/java/com/bokrilog/AuthSessionService.java` | 검증된 `(issuer, subject)`를 `identity` 공개 API로 계정·세션에 옮긴다. 경합 재시도와 롤백 경계 |
+| `backend/src/main/java/com/bokrilog/AuthFlowHandlers.java` | 인증 시작 전처리, 성공 시 목적지 허용 목록과 인증 주체 교체, 실패 표지 수렴 |
+| `backend/src/main/java/com/bokrilog/AuthSessionController.java` | `GET /api/auth/session`(인증 여부·목적지 종류)과 인증 시작 fail-closed 응답 |
+| `backend/src/main/java/com/bokrilog/DevOidcStub.java` | 결정적 local OIDC 제공자의 논리. 자기 RSA 키로 JWKS를 제공하고 ID Token을 서명한다. HTTP도 Spring도 없고 자격정보 리터럴도 없다 |
+| `backend/src/main/java/com/bokrilog/DevOidcStubConfig.java` | 그 스텁의 HTTP 표면(`/api/dev-oidc/**`)과 제공자 등록. `dev-oidc` 프로필에만 존재하고 실제 Google 등록과 함께 활성이면 기동을 거부한다 |
 | `backend/src/main/java/com/bokrilog/identity/` | 첫 모듈. 계정 소유권·삭제 상태의 권위. 공개 API 세 개(`AccountLifecycleApi`·`AccountAccessApi`·`AccountDeletionApi`)와 `internal` 구현 |
-| `backend/src/main/resources/db/migration/` | Flyway 마이그레이션. `V1__identity_account.sql`이 guard·payload·매핑 세 테이블을 만든다 |
-| `backend/src/main/resources/application.yml` | 포트, 오류 노출 끄기, 로그 수준, datasource·flyway, `migrate` 프로필. 자격정보를 두지 않는다 |
+| `backend/src/main/resources/db/migration/` | Flyway 마이그레이션. `V1__identity_account.sql`이 guard·payload·매핑 세 테이블을, `V2__spring_session.sql`이 Spring Session JDBC의 세션 두 테이블을 만든다 |
+| `backend/src/main/resources/application.yml` | 포트, 상대 리다이렉트, 세션 쿠키 속성, 오류 노출 끄기, 로그 수준, datasource·flyway·session, `bokrilog.auth` 이름, `dev-oidc`·`migrate` 프로필. 자격정보를 두지 않는다 |
 | `backend/src/test/java/com/bokrilog/PostgresTestcontainersConfig.java` | 시험 전체가 공유하는 실제 PostgreSQL 컨테이너 하나 |
+| `backend/src/test/java/com/bokrilog/OidcStubConfiguration.java` | 위 `DevOidcStub`을 루프백 HTTP 서버에 올리는 시험 표면. 스텁 논리를 다시 만들지 않는다 |
+| `backend/src/test/java/com/bokrilog/AuthFlowTestBase.java` | 인증 시험 다섯 개의 공통 배선. 같은 컨텍스트를 공유하려면 `@DynamicPropertySource`가 한 곳에 있어야 한다 |
+| `backend/src/test/java/com/bokrilog/Auth*Test.java` | 토큰·`state` 검증, 계정·매핑, 세션·쿠키·CSRF, 복귀 목적지·redaction, 삭제 경로 |
+| `backend/src/test/java/com/bokrilog/DevOidcStubProfileTest.java` | 기본 프로필의 스텁 빈 부재·경로 미노출·fail-closed 등록과 프로필 오용 시 기동 거부 |
 | `backend/src/test/java/com/bokrilog/ModuleBoundaryTest.java` | Modulith 경계 검증, `internal` 미노출, identity에 HTTP 표면 없음 |
 | `backend/src/test/java/com/bokrilog/StatusApiTest.java` | 실제 HTTP로 상태·404·405·누출 금지를 시험 |
 | `backend/src/test/java/com/bokrilog/identity/` | 소유권·삭제 상태 판정, 삭제 경로, 경합·실패 주입 시험 |
@@ -219,10 +232,16 @@ docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --b
 - 접근 거부는 하나의 값(`AccessDecision.DENIED`)이다. 타 사용자 대상·미존재 대상·삭제된 대상이 호출자에게 구분되면 안 된다. 거부 사유를 반환하지도, 로그에 남기지도 않으며 `user_id`를 포함한 사용자 식별자도 로그·지표·오류 응답 어디에도 남기지 않는다(AD-14).
 - 계정 상태는 `ACTIVE → DELETION_IN_PROGRESS → DELETED` 단조 전진뿐이다. 상태 행 `SELECT … FOR UPDATE` 잠금과 술어가 붙은 UPDATE가 강제하며, 반복 요청·실패·재시도로 이전 상태가 되지 않는다.
 - JPA를 쓰지 않는다. `JdbcClient`면 SQL이 그대로 보이고, Hibernate의 dirty checking·flush 시점은 "커밋 직전 재검사"를 오히려 흐린다.
-- 오류 응답은 `{"code":…,"message":…,"correlationId":…}` 한 가지뿐이다. `code`는 `NOT_FOUND`·`METHOD_NOT_ALLOWED`·`UPSTREAM_UNAVAILABLE`·`INTERNAL_ERROR` 네 개로 시작하며 안정적인 machine code라 문자열을 바꾸지 않는다. Nginx가 만드는 오류(502, 정적 404)도 같은 모양을 돌려준다.
+- 오류 응답은 `{"code":…,"message":…,"correlationId":…}` 한 가지뿐이다. `code`는 `BAD_REQUEST`·`NOT_FOUND`·`METHOD_NOT_ALLOWED`·`UNAUTHENTICATED`·`FORBIDDEN`·`UPSTREAM_UNAVAILABLE`·`INTERNAL_ERROR`이며 안정적인 machine code라 문자열을 바꾸지 않는다. Nginx가 만드는 오류(502, 정적 404)도 같은 모양을 돌려준다. `UNAUTHENTICATED`(401)·`FORBIDDEN`(403)은 Story 1.4의 인증 표면이 그 두 상태를 실제로 내면서 들어왔다. Nginx는 이 구성에서 그 두 상태를 스스로 만들 수 없어 진입점의 `error_page` 목록에 대응 항목이 없고, 두 계층이 그 code를 나눠 갖지도 않는다.
 - 내부 경로·스택·프레임워크 기본 오류 본문·환경 변수 이름은 응답과 로그 어디에도 남기지 않는다. 그래서 `spring.main.log-startup-info`가 꺼져 있고(기동 로그가 jar 경로와 실행 사용자를 남긴다), 처리하지 못한 예외의 스택은 기본 로그에 찍지 않는다. 스택이 필요한 조사에서는 `logging.level.com.bokrilog=debug`로 한 번만 열고 다시 닫는다.
 - 상태 응답에 시각·버전·호스트명·빌드 정보를 넣지 않는다. 인증 없이 공개되는 엔드포인트라 담는 모든 값이 곧 공개 정보다.
-- Actuator·Spring Security·Spring Session JDBC·JPA 의존은 아직 없다. 추가는 그것을 필요로 하는 스토리의 SPEC이 목적과 함께 승인한다. Spring Modulith·PostgreSQL·Flyway·Testcontainers는 `spec-1-3-identity-ownership.md`가 승인해 들어왔다.
+- Actuator·JPA·`spring-security-test` 의존은 아직 없다. 추가는 그것을 필요로 하는 스토리의 SPEC이 목적과 함께 승인한다. Spring Modulith·PostgreSQL·Flyway·Testcontainers는 `spec-1-3-identity-ownership.md`가, Spring Security OAuth2 Client·Spring Session JDBC는 `spec-1-4-google-sign-in.md`가 승인해 들어왔다.
+- 검증을 손으로 만들지 않는다. Authorization Code + PKCE(S256), 일회성 `state`·`nonce`, ID Token의 JWS 서명·허용 알고리즘(RS256)·JWKS와 `iss`·`aud`·`azp`·`exp`·`nonce` 검증, 세션 고정 방어는 Spring Security OAuth2 Client의 계약이다. `AuthSecurityConfig`가 하는 일은 그 계약을 이 저장소의 경계에 맞추는 배선뿐이다.
+- 백엔드는 보안 응답 헤더를 만들지 않는다. Spring Security의 기본 헤더 writer를 끈 이유가 이것이다. 켜 두면 진입점과 애플리케이션이 같은 헤더를 각각 실어 값이 두 번 나가고, 헤더를 전문 비교하는 `verify-same-origin.sh`가 먼저 깨진다. 캐시 지시가 필요한 응답은 그 응답이 직접 정한다(`GET /api/auth/session`의 `no-store`).
+- CSRF와 동일 출처 `Origin` 검증은 `/api/auth/` 아래의 상태 변경 요청에만 걸린다. 전역으로 두면 `CsrfFilter`가 서블릿보다 먼저 답해 `POST /api/status`의 405와 identity 탐침의 404가 전부 403으로 뒤집힌다. CSRF 토큰은 세션에 귀속하며 쿠키 저장소를 쓰지 않는다.
+- 세션은 Spring Session JDBC로 PostgreSQL에 산다. 브라우저에는 `HttpOnly`·`Secure`·`SameSite=Lax` 불투명 쿠키만 두고 로그인 성공 시 세션 ID를 회전한다. 세션이 담는 값은 내부 `user_id` 하나이며 ID Token·액세스·리프레시 토큰은 검증 직후 버린다. `AuthFlowHandlers`가 인증 주체를 내부 식별자 하나로 바꿔 다시 저장하고, 제공자 토큰 저장소는 아무것도 쓰지 않는다.
+- 제공자 엔드포인트를 discovery로 찾지 않는다. `spring.security.oauth2.client.provider.<id>.issuer-uri`는 기동 시점에 네트워크 왕복을 하므로 쓰지 않고, `CommonOAuth2Provider.GOOGLE`이 정적으로 들고 있는 Google 정본 주소(`issuer` 포함)를 쓴다. 재정의가 필요한 환경만 `bokrilog.auth.google.*`로 네 값을 준다.
+- 인증 표면은 servlet 웹 애플리케이션에서만 배선한다(`@ConditionalOnWebApplication(type = SERVLET)`). 같은 이미지의 일회성 migration 역할은 웹 서버 없이 뜨므로 `HttpSecurity`가 없고, 조건이 없으면 마이그레이션이 컨텍스트 생성 실패로 끝난다.
 
 ## 동일 출처 실행 (`deploy/`)
 
@@ -241,7 +260,7 @@ backend/gradlew --project-dir backend build
 
 | 명령 | 역할 |
 |---|---|
-| `deploy/compose/verify-same-origin.sh [--keep-stack]` | 마이그레이션 1회 → 기동 → I/O 표 전 행 확인 → identity 미노출 확인 → 백엔드 정지 후 502/504 확인 → 로그 누출 검사 → 정리. `--keep-stack`이면 성공 시 백엔드를 다시 띄워 건강한 스택을 남긴다 |
+| `deploy/compose/verify-same-origin.sh [--keep-stack]` | 마이그레이션 1회 → 기동 → I/O 표 전 행 확인 → identity 미노출 확인 → 인증 표면 확인 → 스텁 제공자 성공 왕복(끝에서 만든 행을 지워 원래 상태로 되돌린다) → 허용 목록 경로 확인 → 백엔드 정지 후 502/504 확인 → 로그 누출 검사(왕복의 `code`·`state` 포함) → 정리. `--keep-stack`이면 성공 시 백엔드를 다시 띄워 건강한 스택을 남긴다 |
 | `docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --build migrate` | 스키마 마이그레이션 1회. 기동 전에 실행한다 |
 | `docker compose --file deploy/compose/compose.yaml up --detach --build --wait --wait-timeout 180` | 스택 기동. `http://127.0.0.1:18080` |
 | `docker compose --file deploy/compose/compose.yaml down --remove-orphans --volumes` | 정리 |
@@ -260,20 +279,25 @@ backend/gradlew --project-dir backend build
 PLAYWRIGHT_BASE_URL=http://127.0.0.1:18080 npm --prefix frontend run test:e2e:run
 ```
 
-`PLAYWRIGHT_BASE_URL`이 있으면 `playwright.config.ts`가 자체 `preview` 서버를 띄우지 않는다. 이 분기가 없으면 통합 실행이 Nginx가 아니라 자기가 띄운 preview를 검증하면서도 green이 난다. 두 경우는 `frontend/playwright.config.test.ts`가 고정한다.
+`PLAYWRIGHT_BASE_URL`이 있으면 `playwright.config.ts`가 자체 `preview` 서버를 띄우지 않는다. 이 분기가 없으면 통합 실행이 Nginx가 아니라 자기가 띄운 preview를 검증하면서도 green이 난다. 두 경우는 `frontend/playwright.config.test.ts`가 고정한다. 주입된 origin에서만 도는 시험이 둘 있다 — `same-origin-csp.spec.ts`(진입점 CSP)와 `auth-entry.spec.ts`의 `스텁 제공자 성공 왕복`(버튼 → 스텁 동의 → 온보딩 → 세션 쿠키)이다. preview에는 `/api`도 스텁도 없어 검증할 대상 자체가 없다.
 
 ### 구조와 규칙
 
 | 경로 | 역할 |
 |---|---|
-| `deploy/nginx/bokrilog.conf` | 루트 정적 제공, `/api` 프록시, 공통 오류 JSON, 보안 응답 헤더 |
+| `deploy/nginx/bokrilog.conf` | 루트 정적 제공, `/api` 프록시, 알려진 내부 경로 허용 목록, 공통 오류 JSON, 보안 응답 헤더, 쿼리 없는 access log |
 | `deploy/compose/compose.yaml` | 네 서비스. `postgres:18.6-alpine` → 백엔드 → `nginx:1.30.4-alpine`이 healthcheck로 이어지고, `migrate`는 `profiles`에 가려 명시 실행만 된다. 산출물과 설정을 읽기 전용 마운트 |
 | `deploy/compose/verify-same-origin.sh` | 로컬·CI 공용 검증 명령 |
 
 - 개발·CI compose에 비밀번호를 두지 않는다. `POSTGRES_HOST_AUTH_METHOD: trust`를 쓰고 포트를 게시하지 않는다. 가짜 비밀번호 리터럴을 커밋하면 gitleaks 규칙을 완화하고 싶어지고 그 완화가 남는다. production 자격정보는 Story 3.8이 소유한다.
+- Google 자격정보도 두지 않는다. compose는 `BOKRILOG_GOOGLE_CLIENT_ID`·`BOKRILOG_GOOGLE_CLIENT_SECRET`를 참조로만 넘기고 값을 적지 않는다. 대신 백엔드가 `SPRING_PROFILES_ACTIVE: dev-oidc`로 떠서 `/api/dev-oidc/**`의 local OIDC 스텁을 제공자 자리에 세우고, `verify-same-origin.sh`가 인가 시작부터 세션 개설까지의 성공 왕복을 실제로 지난다. 스텁의 client id·secret은 기동 시점에 만들어지므로 설정 파일에도 compose에도 리터럴이 없다. 두 제공자가 함께 구성되면 백엔드가 기동을 거부하며, 자격정보가 없는 기본 프로필의 fail-closed는 `DevOidcStubProfileTest`가 지킨다.
+- 스텁이 시험 소스가 아니라 `main`에 있는 이유는 브라우저다. Authorization Code 흐름의 인가 요청은 브라우저가 보내고 code 교환·JWKS 조회는 백엔드가 보내므로, 성공 경로를 브라우저 층에서 검증하려면 한 스텁이 양쪽에서 도달 가능해야 한다. `/api` 아래에 두면 기존 프록시 블록이 그대로 받아 새 서비스·새 게시 포트·CSP 확장이 하나도 필요 없다. 브라우저가 보는 주소(`BOKRILOG_PUBLIC_BASE_URL`)와 백엔드가 자기 스텁에 닿는 주소(`BOKRILOG_DEV_OIDC_INTERNAL_BASE_URL`)는 다른 값이다 — 공개 origin은 compose 네트워크 안에서 해석되지 않는다.
+- 리다이렉트의 `Location`은 origin-상대 경로다(`server.tomcat.use-relative-redirects: true`). 기본값에서는 Tomcat이 요청의 `Host`로 절대 URI를 만들고, `proxy_set_header Host $host`가 포트를 잃은 값을 넘기므로 로그인 성공 뒤의 이동이 `http://127.0.0.1/onboarding`(80번 포트)으로 끊긴다. `$http_host`나 `X-Forwarded-*`로 바꾸는 길은 클라이언트가 제어하는 헤더를 목적지 계산에 넣는다.
+- access log에 쿼리 문자열을 남기지 않는다. `log_format`이 `$request` 대신 `$request_method $request_path $server_protocol`을 쓰고 `map`이 `?` 앞부분만 잘라 낸다. `$request`를 그대로 쓰면 OIDC 콜백의 `?code=…&state=…`가 로그에 실린다. `$uri`로 대신하지 않는 이유는 그 변수가 내부 redirect 뒤의 값이라 `/onboarding` 요청이 `/index.html`로 기록되기 때문이다.
 - 바깥에 열리는 포트는 Nginx 하나(`127.0.0.1:18080`)다. 백엔드와 데이터베이스 포트는 게시하지 않는다. 게시하는 순간 "동일 출처"는 구성이 아니라 관례가 된다. 호스트 포트는 `4183`으로 시작하지 않는 값을 쓴다. Playwright의 origin 비교가 포트 접두사에 취약했던 이력이 있고(`4183` 대 `41830`) preview 기본 포트와도 겹치지 않아야 한다.
 - `/api`만 프록시한다. 나머지 경로는 정적 파일이거나 404이며 어떤 경로도 외부 주소로 프록시하지 않는다.
-- SPA 폴백(`try_files … /index.html`)을 두지 않는다. 이 저장소에는 아직 라우터가 없고, 폴백이 있으면 존재하지 않는 경로가 200 + 진입 화면으로 응답해 "없음"을 숨긴다.
+- 와일드카드 SPA 폴백(`try_files … /index.html`)을 두지 않는다. 폴백이 있으면 존재하지 않는 경로가 200 + 진입 화면으로 응답해 "없음"을 숨긴다. 대신 알려진 내부 경로만 여는 허용 목록 location(`^/(onboarding|dashboard)$`)이 있고, 그 집합은 프런트엔드 `App.tsx`의 경로 맵과 같아야 한다. 라우트를 더할 때는 두 곳을 함께 고친다.
+- 인증 엔드포인트는 `/api/auth/` 아래에 있어 기존 `/api` 프록시 블록이 그대로 받는다. redirect URI는 요청 헤더에서 유도하지 않고 `BOKRILOG_PUBLIC_BASE_URL`로 받는다. `proxy_set_header Host $host`가 포트를 잃기 때문이며, `$http_host`나 `X-Forwarded-*`로 바꾸는 길은 둘 다 클라이언트가 제어하는 헤더를 redirect URI 계산에 넣는다.
 - CSP는 Nginx 응답 헤더가 유일한 정의다. `<meta>` CSP를 쓰지 않는다. `index.html`의 noscript 폴백이 인라인 `style` 속성을 쓰므로 `style-src-attr 'unsafe-inline'`을 뺄 수 없다. 빼면 JS를 끈 사용자의 고지 화면이 스타일 없이 나온다.
 - `add_header`는 하위 블록에 하나라도 있으면 상위 블록의 것이 전부 사라진다. 그래서 보안 헤더는 server 블록 한 곳에만 두고 named location에는 두지 않는다. `always`가 붙어야 4xx·5xx 응답에도 실린다.
 - `frontend/dist`와 Nginx 설정은 읽기 전용으로 마운트한다. 컨테이너가 저장소 파일을 고칠 경로를 만들지 않는다.

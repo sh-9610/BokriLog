@@ -62,6 +62,17 @@ class AccountDeletionService implements AccountDeletionApi {
             case DELETION_IN_PROGRESS, DELETED -> {
                 // 0행은 실패가 아니다. 이미 payload가 없는 계정에 다시 불러도 같은 결과다.
                 repository.deleteSocialLinks(userId);
+                /*
+                 * 인증 세션도 이 경로가 지운다.
+                 *
+                 * Epic 1은 "identity가 도입한 사용자·소셜 식별자·세션의 삭제 경로를 모듈 수준에서
+                 * 시험한다"를 요구한다. 매핑만 지우고 세션을 남기면 로그인 수단이 사라진 계정의
+                 * 세션이 그대로 살아 있고, 그 세션은 여전히 내부 `user_id`를 결정한다. 그것은
+                 * "삭제가 시작된 순간부터 새 세션·쓰기가 막힌다"의 반대편 절반이다.
+                 *
+                 * 같은 트랜잭션이다. 매핑은 지웠는데 세션이 남는 부분 상태를 만들지 않는다.
+                 */
+                repository.deleteSessionsOf(userId);
                 repository.deleteAccountPayload(userId);
                 // 술어가 DELETION_IN_PROGRESS를 요구한다. 이미 DELETED면 0행이고 그것이 멱등이다.
                 repository.markDeleted(userId);

@@ -50,6 +50,21 @@ public class ApiErrorHandler extends ResponseEntityExceptionHandler {
 
     static final String CODE_METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED";
 
+    /**
+     * 인증되지 않은 요청. Story 1.4가 더했다.
+     *
+     * <p>{@code FORBIDDEN}과 갈라 두는 이유는 클라이언트가 할 일이 다르기 때문이다. 이 code는
+     * "로그인하면 된다"이고 아래 {@code FORBIDDEN}은 "로그인해도 이 요청은 안 된다"다. 둘을
+     * {@code BAD_REQUEST}로 뭉치면 화면이 로그인 안내와 거부 안내를 구분할 근거를 잃는다.
+     *
+     * <p>어느 쪽도 대상의 존재 여부를 드러내지 않는다. 타 사용자 대상과 미존재 대상은
+     * {@code identity}의 판정에서 이미 같은 값이 되어 여기까지 같은 code로 온다.
+     */
+    static final String CODE_UNAUTHENTICATED = "UNAUTHENTICATED";
+
+    /** 인증됐지만 허용되지 않은 요청. CSRF 토큰·동일 출처 {@code Origin} 검증 실패도 이 code다. */
+    static final String CODE_FORBIDDEN = "FORBIDDEN";
+
     static final String CODE_INTERNAL_ERROR = "INTERNAL_ERROR";
 
     /** 사용자에게 보이는 메시지. 원인을 특정하지 않고 다음 행동만 알려 준다. */
@@ -58,6 +73,11 @@ public class ApiErrorHandler extends ResponseEntityExceptionHandler {
     static final String MESSAGE_NOT_FOUND = "요청한 경로를 찾을 수 없습니다.";
 
     static final String MESSAGE_METHOD_NOT_ALLOWED = "요청한 방식으로는 처리할 수 없습니다.";
+
+    /** 원인을 특정하지 않는다. 세션이 없는 것과 만료된 것을 구분해 알려 주지 않는다. */
+    static final String MESSAGE_UNAUTHENTICATED = "로그인이 필요합니다. 다시 로그인해 주세요.";
+
+    static final String MESSAGE_FORBIDDEN = "요청을 처리할 권한이 없습니다.";
 
     static final String MESSAGE_INTERNAL_ERROR = "요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.";
 
@@ -119,6 +139,11 @@ public class ApiErrorHandler extends ResponseEntityExceptionHandler {
      * 그 경로로 들어오면 "요청이 잘못됐다"는 사실이 "서버가 고장났다"로 뒤집혀 클라이언트가 재시도
      * 여부를 판단할 근거를 잃는다. 404·405 밖의 클라이언트 오류는 {@code BAD_REQUEST}로 모은다.
      * 원인을 더 잘게 나누는 code는 그것을 낼 엔드포인트가 생길 때 SPEC이 함께 추가한다.
+     *
+     * <p>Story 1.4가 401·403을 그 규약대로 갈랐다. 인증 표면이 생기면서 두 상태를 실제로 내는
+     * 경로가 만들어졌다({@code AuthSecurityConfig}의 entry point와 access denied handler).
+     * 401·403은 Nginx가 이 구성에서 스스로 만들 수 없는 상태라 진입점의 {@code error_page} 목록에
+     * 대응 항목이 없고, 두 계층이 같은 code를 나눠 갖지도 않는다.
      */
     private static ApiError errorFor(HttpStatusCode status, String correlationId) {
         if (status.value() == HttpStatus.NOT_FOUND.value()) {
@@ -126,6 +151,12 @@ public class ApiErrorHandler extends ResponseEntityExceptionHandler {
         }
         if (status.value() == HttpStatus.METHOD_NOT_ALLOWED.value()) {
             return new ApiError(CODE_METHOD_NOT_ALLOWED, MESSAGE_METHOD_NOT_ALLOWED, correlationId);
+        }
+        if (status.value() == HttpStatus.UNAUTHORIZED.value()) {
+            return new ApiError(CODE_UNAUTHENTICATED, MESSAGE_UNAUTHENTICATED, correlationId);
+        }
+        if (status.value() == HttpStatus.FORBIDDEN.value()) {
+            return new ApiError(CODE_FORBIDDEN, MESSAGE_FORBIDDEN, correlationId);
         }
         if (status.is4xxClientError()) {
             return new ApiError(CODE_BAD_REQUEST, MESSAGE_BAD_REQUEST, correlationId);

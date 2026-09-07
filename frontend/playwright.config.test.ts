@@ -22,6 +22,17 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+/*
+ * 첫 시험 하나가 `@playwright/test`를 처음 로드한다. 그 모듈 그래프는 크고, worker pool이
+ * 다른 시험 파일과 CPU를 나눠 쓰는 실행에서는 기본 timeout(5초)을 넘긴다. Story 1.4가 화면
+ * 시험 파일 세 개를 더하면서 이 저장소에서 실제로 그 지점을 지났다.
+ *
+ * 이 시험이 고정하는 것은 설정 값이지 로드 시간이 아니다. 그래서 timeout을 늘리는 것이
+ * 단정을 하나도 무르지 않는다. `lint-policy.test.ts`가 타입 인지 lint의 첫 실행 때문에 같은
+ * 조치를 한 선례가 있다.
+ */
+vi.setConfig({ testTimeout: 30_000 })
+
 const originalCi = process.env.CI
 const originalBaseUrl = process.env.PLAYWRIGHT_BASE_URL
 

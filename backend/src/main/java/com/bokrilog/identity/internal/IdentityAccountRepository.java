@@ -107,6 +107,31 @@ public class IdentityAccountRepository {
     }
 
     /**
+     * 활성 계정에 연결된 인증 매핑을 찾는다.
+     *
+     * <p>상태 술어가 질의 안에 있다. 삭제가 시작된 계정은 매핑 행이 아직 남아 있어도 여기서
+     * 0행이 되고, 삭제가 끝난 계정은 매핑 자체가 없어 역시 0행이다. 두 경우와 "그 식별자로
+     * 만들어진 계정이 없다"가 호출자에게 같은 빈 값으로 보이는 것이 이 계약이다.
+     *
+     * <p>잠그지 않는다. 아무것도 바꾸지 않는 조회 경로이고, 뒤이어 세션을 만드는 쪽이 자기
+     * 트랜잭션에서 다시 판정한다.
+     *
+     * @return 행이 없으면 빈 값
+     */
+    public Optional<UUID> findActiveUserIdBySocialIdentity(String issuer, String subject) {
+        return jdbc.sql(
+                        "SELECT link.user_id FROM identity_social_link AS link "
+                                + "JOIN identity_account_lifecycle AS lifecycle "
+                                + "ON lifecycle.user_id = link.user_id "
+                                + "WHERE link.issuer = :issuer AND link.subject = :subject "
+                                + "AND lifecycle.state = 'ACTIVE'")
+                .param("issuer", issuer)
+                .param("subject", subject)
+                .query(UUID.class)
+                .optional();
+    }
+
+    /**
      * 삭제 진행 상태로 전진시킨다.
      *
      * <p>술어 {@code AND state = 'ACTIVE'}가 단조 전진을 강제한다. 0행이면 전이가 일어나지 않은
@@ -146,6 +171,30 @@ public class IdentityAccountRepository {
     public int deleteSocialLinks(UUID userId) {
         return jdbc.sql("DELETE FROM identity_social_link WHERE user_id = :userId")
                 .param("userId", userId)
+                .update();
+    }
+
+    /**
+     * 계정의 인증 세션을 모두 지운다.
+     *
+     * <p>세션 저장소는 Spring Session JDBC의 {@code spring_session}이다. 그 테이블에 행을 만들고
+     * 갱신하는 것은 Spring Session뿐이고, 이 메서드는 삭제 경로만 담당한다. 두 역할이 갈려 있어
+     * 세션의 수명 관리를 이 모듈이 가져오지 않는다.
+     *
+     * <p>{@code principal_name}이 내부 {@code user_id} 문자열이라는 것은 인증 표면의 결정이다
+     * ({@code AuthFlowHandlers}가 인증 주체를 그 값 하나로 바꿔 저장한다). 두 곳이 갈라지면 이
+     * DELETE가 조용히 0행이 되므로, 실제 로그인이 만든 세션을 지우는지 {@code AuthDeletionPathTest}가
+     * 확인한다. 그 시험이 이 한 쌍을 붙잡는 유일한 장치다.
+     *
+     * <p>속성 행은 {@code ON DELETE CASCADE}로 함께 사라진다({@code V2__spring_session.sql}).
+     *
+     * <p>지운 행 수를 돌려주지 않는다. 0행은 실패가 아니고(로그인하지 않은 계정에는 세션이 없다)
+     * 호출자가 그 수로 판단할 것도 없으므로, 값을 돌려주면 아무도 읽지 않는 반환값이 하나 생긴다.
+     * 이 DELETE가 실제로 로그인 세션에 맞는지는 {@code AuthDeletionPathTest}가 확인한다.
+     */
+    public void deleteSessionsOf(UUID userId) {
+        jdbc.sql("DELETE FROM spring_session WHERE principal_name = :principalName")
+                .param("principalName", userId.toString())
                 .update();
     }
 
