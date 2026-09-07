@@ -21,10 +21,14 @@
  * 환경: 공용 `src/test/setup.ts`가 jsdom 전역을 요구하므로 이 시험도 jsdom 환경에서 돈다. ESLint·stylelint는
  * Node API만 쓰고 jsdom 전역과 충돌하지 않는다. 타입 인지 lint는 첫 실행에서 TypeScript 프로그램을
  * 만들기 때문에 기본 timeout(5초)보다 길게 둔다.
+ *
+ * 경로 비교: 정본 경로는 언제나 POSIX 형태(`src/styles/global.css`)로 적고, 도구가 돌려준 절대경로는
+ * `toPosixRelative`로 옮겨 비교한다. 두 기기 개발이라 시험이 플랫폼 구분자를 가정하면 한쪽에서만
+ * 실패한다.
  */
 import { ESLint } from 'eslint'
 import { readFileSync } from 'node:fs'
-import { dirname, relative } from 'node:path'
+import { dirname, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as prettier from 'prettier'
 import stylelint from 'stylelint'
@@ -34,6 +38,23 @@ vi.setConfig({ testTimeout: 60_000 })
 
 // jsdom 환경의 전역 `URL`은 Node의 `fileURLToPath`가 받지 않으므로 문자열 그대로 넘긴다.
 const cwd = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * 절대경로를 `cwd` 기준 POSIX 상대경로로.
+ *
+ * `relative`는 플랫폼 구분자를 쓴다. Windows에서는 `src\styles\global.css`가 나와 시험이 적어 둔
+ * 정본 경로(`src/styles/global.css`)와 어긋나고, 그래서 이 파일의 경로 단정이 그 플랫폼에서만
+ * 실패한다. 검사 대상은 "명령이 어떤 파일을 골랐는가"이고 구분자는 그 사실이 아니다.
+ *
+ * 기대값을 `join(cwd, …)`로 절대경로로 만들어 비교하는 대안도 있다. 정본을 사람이 읽는 상대경로로
+ * 두는 편이 시험 본문에서 더 잘 읽히므로 정규화를 골랐다.
+ *
+ * `sep`으로만 자른다. POSIX에서 `\`는 합법적인 파일명 문자라 무조건 치환하면 이름의 일부를 구분자로
+ * 잘못 바꿀 수 있다.
+ */
+function toPosixRelative(absolutePath: string): string {
+  return relative(cwd, absolutePath).split(sep).join('/')
+}
 
 // --------------------------------------------------------------------------
 // ESLint
@@ -646,7 +667,14 @@ describe('명령 층의 선택 범위', () => {
     }
 
     const { results } = await stylelint.lint({ cwd, files: globPattern })
-    const sources = results.map((result) => relative(cwd, result.source ?? ''))
+    const sources = results.map((result) => {
+      // `?? ''`로 접으면 `relative(cwd, '')`가 `..` 형태의 값을 내고, 아래 `arrayContaining`이
+      // 그 이상값을 조용히 통과시킨다. source 없는 결과는 경로 단정이 성립하지 않는 상태다.
+      if (result.source === undefined) {
+        throw new Error('stylelint 결과에 source가 없다. 경로 단정이 성립하지 않는다.')
+      }
+      return toPosixRelative(result.source)
+    })
 
     expect(sources).toEqual(
       expect.arrayContaining([
@@ -655,6 +683,10 @@ describe('명령 층의 선택 범위', () => {
         'src/screens/EntryScreen.module.css',
       ]),
     )
+    // 비교하는 값이 POSIX 형태라는 계약을 코드로 못박는다. Linux에서는 `relative`가 이미 `/`를
+    // 내므로 이 단정이 정규화 부재를 잡지는 못한다 — 그것을 잡을 수 있는 플랫폼은 Windows뿐이고,
+    // CI가 Linux만 돌므로 그 공백은 `deferred-work.md`에 남겼다.
+    expect(sources.filter((source) => source.includes('\\'))).toEqual([])
   })
 
   it('eslint .이 앱·E2E·설정 파일을 무시하지 않는다', async () => {

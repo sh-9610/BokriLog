@@ -40,6 +40,8 @@
 git rm --cached -r . && git reset --hard
 ```
 
+시험은 경로 구분자를 가정하지 않는다. `path.relative`·`path.join`은 플랫폼 구분자를 돌려주므로 그 결과를 정본 경로 문자열과 직접 비교하면 한쪽 기기에서만 실패한다. 정본은 언제나 POSIX 형태로 적고 도구가 돌려준 경로를 `split(sep).join('/')`로 옮겨 비교한다(`frontend/lint-policy.test.ts`의 `toPosixRelative`가 그 형태다). CI는 `ubuntu-24.04`만 돌아 이 종류의 결함을 구조적으로 보지 못하므로, Windows에서만 빨간 시험을 그 기기의 문제로 넘기지 않는다.
+
 저장소를 두는 경로에는 비ASCII 문자를 피한다. Git 자체에는 영향이 없지만 Java·Gradle 도구가 일부 환경에서 경로 인코딩 문제를 일으킬 수 있다.
 
 ## 브랜치 전략
