@@ -171,7 +171,7 @@ Story 1.5의 범위 밖: 재인증·세션 회전 UX와 5분 action grant(1.8·1
 
 프런트엔드는 이제 `/api` 호출 둘(`GET /api/auth/session`, `POST /api/auth/logout`)과 동작하는 Google 버튼·로그아웃 버튼을 갖는다. 라우터 의존은 여전히 없고 `App.tsx`의 닫힌 경로 맵이 그 역할을 한다. `/api/status`는 서버 경계를 확인하는 엔드포인트이며 화면이 부르지 않는다.
 
-미룬 결정(`deferred-work.md`, 해소 원장 참조): artifact `run_attempt`와 재실행 복구의 충돌, 통합 job의 `npm ci`·Chromium 설치 중복, 백엔드 포매터·정적 분석 게이트를 소유할 스토리, nginx 컨테이너 권한 강화, Story 1.4가 더한 셋(`identity`가 `spring_session`에 직접 닿는 결합, 로그인 상태 화면 두 개의 중복, 백엔드 import 정렬), 그리고 Story 1.5가 더한 둘 — 계층을 넘나드는 계약 리터럴(`X-CSRF-TOKEN`·자산 `Cache-Control`)의 삼중 중복을 Docker 없는 검사로 묶는 문제, 두 인증 화면의 공통 레이아웃 CSS가 또 갈라져 복사된 사실. 어느 것도 Story 1.6 착수를 막지 않는다.
+미룬 결정은 37건이고 항목과 판정은 `deferred-work.md`와 해소 원장이 소유한다(2026-09-08 기준 해소 13·부분 해소 3·미해소 21). 아래는 지금 코드에 닿는 미해소만 고른 선택적 열거다: artifact `run_attempt`와 재실행 복구의 충돌, 통합 job의 `npm ci`·Chromium 설치 중복, 백엔드 포매터·정적 분석 게이트를 소유할 스토리와 그 게이트가 함께 정할 import 정렬, nginx 컨테이너 권한 강화, `identity` 행 잠금 대기 상한, Testcontainers 컨테이너 수명과 컨텍스트 캐시 분리, `verify-same-origin.sh` 마이그레이션 호출의 시간 상한, `identity`가 `spring_session`에 직접 닿는 결합, 두 인증 화면의 중복과 그 레이아웃 CSS 복제, `lint:css` 범위 단정이 새 CSS 모듈을 놓치는 것과 같은 파일의 경로 조립 가정, Windows 전용 결함을 CI가 보지 못하는 공백, 계층을 넘나드는 계약 리터럴의 중복을 Docker 없는 검사로 묶는 문제(수치는 원장 항목 33이 소유한다). 어느 것도 Story 1.6 착수를 막지 않는다. 다만 행 잠금 대기 상한과 `spring_session` 결합은 소유 스토리(각각 1.4·1.5)가 처리하지 않고 `done`이 되어 지금 주인이 없고, Story 1.6이 같은 콜백·세션 개설 경로를 다시 지나므로 그 SPEC이 두 항목을 함께 볼 첫 기회다.
 
 ## 브랜치·커밋
 

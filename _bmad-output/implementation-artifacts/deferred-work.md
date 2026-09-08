@@ -113,3 +113,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-5-logout-session-expiry.md`
   summary: 두 인증 화면의 공통 레이아웃 CSS가 또 갈라져 복사됐다 — 셸 추출 결정을 더 미룰지 재확인한다.
   evidence: 이 라운드가 동일한 5속성 flex `.header` 규칙과 그 주석을 `OnboardingScreen.module.css`와 `SignedInScreen.module.css` 양쪽에 같은 내용으로 더했다. 로그아웃 버튼을 두 화면이 공유하는 컴포넌트로 뽑아 중복을 늘리지 않으려 했는데, 그 버튼을 앉힐 헤더 레이아웃은 결국 두 벌이 됐다. Story 1.4가 남긴 같은 취지의 항목(세션 게이트 셸 통합)이 아직 열려 있고, 이번 라운드가 그 비용을 한 번 더 실측했다는 사실을 근거로 그 결정의 우선순위를 다시 본다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-deferred-work-ledger-sync.md`
+  summary: 미룬 항목의 판정을 원장에 쓰는 단계를 스킬이나 표준 흐름에 넣을지 정한다.
+  evidence: 이번 라운드가 12건의 판정 누락을 고쳤지만 그 누락을 만든 구조는 그대로다. `bmad-build` step-04는 `defer`마다 `deferred-work.md`에 항목을 추가하도록 강제하는 반면 그 항목의 판정을 `deferred-work-resolutions.md`에 쓰는 단계는 어느 스킬에도 없어서, 원장은 사람이 따로 챙길 때만 갱신되고 네 라운드 연속으로 챙기지 못했다. 처방으로 넣은 것은 원장 자신의 `## 갱신 규칙` 한 줄뿐이며 `bmad-build`도 `CLAUDE.md`의 표준 흐름 5(present)·7(done 전환)도 바뀌지 않았다. 즉 강제 수단이 없는 규칙이다. `CLAUDE.md`가 스킬 파일 손수정을 금지하고 동작 변경은 `_bmad/custom/` 또는 `bmad-customize`가 소유한다고 못박았으므로, 그 경로로 present 단계에 판정 확인을 넣을지 아니면 표준 흐름 문서에만 적을지를 소유자와 함께 정해야 한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-deferred-work-ledger-sync.md`
+  summary: 해소 원장의 `파일:줄번호`·커밋 인용이 실제로 해석되는지 확인하는 Docker 없는 검사를 둘지 정한다.
+  evidence: 원장은 판정마다 검증 가능한 근거를 지목하는 것을 규율로 삼지만 그 근거를 보는 검사가 없다. 이번 라운드의 SPEC `## Verification` 다섯 명령은 전부 개수·형태만 보고, 실제로 첫 구현이 항목 15에서 Story 1.4가 건드리지 않은 줄(`entry.ts:50`)을 "바뀌었다"고 적었는데 그 명령 전부를 통과했다. 리뷰 서브에이전트가 32개 인용을 훑어 잡아냈을 뿐이며 저장소 쪽 장치는 없다. 문서-only 경로는 `changes → ci-required`만 돌지만 `changes` job을 지나므로 붙일 자리는 있다. 기계로 닫히는 축은 셋이다 — 인용 경로의 존재와 줄 범위, 인용 커밋·run id의 해석(`git cat-file -e`), 원장 `### <숫자>.` 절 집합과 `deferred-work.md` `- source_spec:` 개수·순서의 동등. 인용이 그 사실을 실제로 뒷받침하는지는 기계로 닫히지 않으므로 사람 확인으로 남는다. 항목 33이 요구하는 계약 리터럴 계수 검사와 같은 성격이라 함께 설계하는 편이 싸다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-deferred-work-ledger-sync.md`
+  summary: 해소 원장에 항목별 소유자·마지막 확인일을 담는 표를 둘지 정한다.
+  evidence: 판정이 두 스프린트 밀린 직접 원인은 주인 없는 항목이 보이지 않는 것이었는데, 이번 라운드는 그 가시성을 산문 한 문단으로만 고쳤다. `## 상태 요약` 표는 여전히 상태·건수 3행이라 미해소 18건 중 열이 주인이 없다는 사실을 보려면 그 문단을 읽어야 하고, 그 문단 자체가 손으로 유지되는 열거라 다음 라운드에 다시 낡는다. frontmatter에도 `updated:` 하나뿐이어서 항목별 `last_checked`도 다음 확인 시점(에픽 회고·스프린트 계획)도 없다. 번호·제목·판정·결정 지점·마지막 확인일 열을 가진 표를 두면 34개 절을 읽지 않고 주인 없는 항목과 오래 확인되지 않은 항목을 볼 수 있지만, 표와 절이 어긋날 새 드리프트 축이 생긴다. 그 교환을 정한다.
