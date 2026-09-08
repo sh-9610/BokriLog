@@ -320,7 +320,7 @@ class AuthSessionExpiryTest extends AuthFlowTestBase {
 
         String subject = "expiry-reauth-success-" + UUID.randomUUID();
         String code = issueCode(start, TokenPlan.valid(start.nonce()).subject(subject));
-        HttpResponse<String> callback = callback(flowCookie, code, start.state());
+        HttpResponse<String> callback = callback(start, flowCookie, code, start.state());
 
         assertThat(callback.statusCode()).isEqualTo(302);
         assertThat(locationOf(callback)).endsWith(AuthFlowHandlers.ONBOARDING_PATH);

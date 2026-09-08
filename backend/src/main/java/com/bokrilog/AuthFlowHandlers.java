@@ -22,6 +22,7 @@ import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.OAuth2ErrorCodes;
 import org.springframework.security.oauth2.core.oidc.user.OidcUser;
@@ -399,18 +400,34 @@ class AuthFlowHandlers {
         this.redirects.sendRedirect(request, response, destination);
     }
 
+    /**
+     * 검증된 인증 결과를 계정·세션으로 옮긴다.
+     *
+     * <p>제공자 이름을 짐작하지 않는다. {@code OAuth2AuthenticationToken}은 이 흐름을 실제로 처리한
+     * 등록 id를 들고 있고({@code getAuthorizedClientRegistrationId()}), 그 값이 그대로
+     * {@code identity_social_link.provider}에 저장된다. 여기서 상수를 쓰면 어느 제공자로
+     * 로그인해도 같은 이름이 남는다 — 그것이 Story 1.6 전의 결함이었다.
+     *
+     * <p>토큰이 그 타입이 아니면 세션을 만들지 않는다. 이 배선에서 성공 핸들러를 부르는 것은
+     * {@code OAuth2LoginAuthenticationFilter} 하나이므로 다른 타입이 여기 올 경로가 없고, 왔다면
+     * 제공자를 알 수 없다는 뜻이라 저장할 값이 없다.
+     */
     private Optional<AuthSessionService.AuthSession> establish(Authentication authentication) {
+        if (!(authentication instanceof OAuth2AuthenticationToken token)) {
+            return Optional.empty();
+        }
         if (!(authentication.getPrincipal() instanceof OidcUser user)) {
             // OIDC 흐름이 아니면 세션을 만들지 않는다. 이 배선에는 다른 인증 경로가 없다.
             return Optional.empty();
         }
+        String provider = token.getAuthorizedClientRegistrationId();
         URL issuer = user.getIssuer();
         String subject = user.getSubject();
-        if (issuer == null || subject == null) {
-            // 검증이 두 값을 필수로 요구하므로 여기 오지 않는다. 그래도 접는다.
+        if (provider == null || provider.isBlank() || issuer == null || subject == null) {
+            // 검증이 세 값을 필수로 요구하므로 여기 오지 않는다. 그래도 접는다.
             return Optional.empty();
         }
-        return this.authSessionService.establish(issuer.toExternalForm(), subject);
+        return this.authSessionService.establish(provider, issuer.toExternalForm(), subject);
     }
 
     private void onFailure(

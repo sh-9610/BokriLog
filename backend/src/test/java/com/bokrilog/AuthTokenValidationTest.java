@@ -55,7 +55,7 @@ class AuthTokenValidationTest extends AuthFlowTestBase {
         Authorization authorization = startAuthorization();
         String code = issueCode(authorization, TokenPlan.valid(authorization.nonce()));
 
-        HttpResponse<String> response = callback(authorization.sessionCookie(), code, authorization.state());
+        HttpResponse<String> response = callback(authorization, code);
 
         assertThat(response.statusCode()).isEqualTo(302);
         assertThat(locationOf(response)).endsWith(AuthFlowHandlers.ONBOARDING_PATH);
@@ -132,7 +132,7 @@ class AuthTokenValidationTest extends AuthFlowTestBase {
 
         // 이 code는 정상 토큰을 낸다. 교환이 시작됐다면 로그인이 성공했을 것이다.
         HttpResponse<String> response =
-                callback(authorization.sessionCookie(), code, "not-the-issued-state");
+                callback(authorization, authorization.sessionCookie(), code, "not-the-issued-state");
 
         assertConvergedWithoutAccount(response);
         // 이 흐름의 세션은 실패 핸들러가 무효화했다. 남은 세션 행이 없다.
@@ -145,7 +145,7 @@ class AuthTokenValidationTest extends AuthFlowTestBase {
         String code = issueCode(authorization, TokenPlan.valid(authorization.nonce()));
 
         // state는 맞지만 그 state를 발급한 세션이 아니다. 쿠키 없이 오는 콜백이 그 모양이다.
-        HttpResponse<String> response = callback(null, code, authorization.state());
+        HttpResponse<String> response = callback(authorization, null, code, authorization.state());
 
         assertConvergedWithoutAccount(response);
         // 인증되지 않은 흐름의 세션이 남아 있어도 그 세션은 주체를 결정하지 않는다.
@@ -160,7 +160,7 @@ class AuthTokenValidationTest extends AuthFlowTestBase {
         String code = issueCode(first, TokenPlan.valid(first.nonce()));
 
         // 첫 흐름의 세션에 두 번째 흐름의 state를 들고 온다. 두 값이 한 쌍이 아니면 거부다.
-        HttpResponse<String> response = callback(first.sessionCookie(), code, second.state());
+        HttpResponse<String> response = callback(first, first.sessionCookie(), code, second.state());
 
         assertConvergedWithoutAccount(response);
         // 바꿔치기의 대상이 된 두 번째 흐름도 인증되지 않는다.
@@ -172,13 +172,14 @@ class AuthTokenValidationTest extends AuthFlowTestBase {
         Authorization authorization = startAuthorization();
         TokenPlan plan = TokenPlan.valid(authorization.nonce());
         String code = issueCode(authorization, plan);
-        HttpResponse<String> first = callback(authorization.sessionCookie(), code, authorization.state());
+        HttpResponse<String> first = callback(authorization, code);
         assertThat(first.statusCode()).isEqualTo(302);
         String establishedCookie = sessionCookieOf(first).orElse(authorization.sessionCookie());
 
         // 같은 state를 다시 들고 온다. 서버가 세션에서 이미 지웠으므로 두 번째는 성립하지 않는다.
         String replayCode = issueCode(authorization, TokenPlan.valid(authorization.nonce()));
-        HttpResponse<String> replay = callback(establishedCookie, replayCode, authorization.state());
+        HttpResponse<String> replay =
+                callback(authorization, establishedCookie, replayCode, authorization.state());
 
         assertThat(replay.statusCode()).isEqualTo(302);
         assertThat(locationOf(replay)).endsWith(failureLocation(AuthFlowHandlers.FAILURE_MARKER_FAILED));
@@ -200,7 +201,7 @@ class AuthTokenValidationTest extends AuthFlowTestBase {
     void 이미_교환된_code는_새_흐름에서도_다시_쓰이지_않는다() throws Exception {
         Authorization first = startAuthorization();
         String code = issueCode(first, TokenPlan.valid(first.nonce()));
-        assertThat(callback(first.sessionCookie(), code, first.state()).statusCode()).isEqualTo(302);
+        assertThat(callback(first, code).statusCode()).isEqualTo(302);
         assertThat(accountCount()).isEqualTo(1);
 
         /*
@@ -209,7 +210,7 @@ class AuthTokenValidationTest extends AuthFlowTestBase {
          * 두 번째 로그인을 만든다.
          */
         Authorization second = startAuthorization();
-        HttpResponse<String> replay = callback(second.sessionCookie(), code, second.state());
+        HttpResponse<String> replay = callback(second, code);
 
         assertThat(replay.statusCode()).isEqualTo(302);
         assertThat(locationOf(replay)).endsWith(failureLocation(AuthFlowHandlers.FAILURE_MARKER_FAILED));
@@ -232,7 +233,12 @@ class AuthTokenValidationTest extends AuthFlowTestBase {
          * 만들 수 있다. 이 요청으로 세션이 사라지면 그것이 크로스 사이트 강제 로그아웃이고
          * "실패는 어떤 상태도 바꾸지 않는다"의 반대다.
          */
-        HttpResponse<String> forced = callback(established, "forced-code", "forced-state");
+        HttpResponse<String> forced =
+                callback(
+                        AuthSecurityConfig.GOOGLE_REGISTRATION_ID,
+                        established,
+                        "forced-code",
+                        "forced-state");
 
         assertThat(forced.statusCode()).isEqualTo(302);
         assertThat(locationOf(forced)).endsWith(failureLocation(AuthFlowHandlers.FAILURE_MARKER_FAILED));
@@ -250,7 +256,7 @@ class AuthTokenValidationTest extends AuthFlowTestBase {
         TokenPlan plan = TokenPlan.valid(authorization.nonce()).issuer("https://accounts.example.invalid");
         String code = issueCode(authorization, plan);
 
-        HttpResponse<String> response = callback(authorization.sessionCookie(), code, authorization.state());
+        HttpResponse<String> response = callback(authorization, code);
 
         String location = locationOf(response);
         // 표지는 닫힌 값 하나뿐이다. 검증 실패의 종류가 URL에 실리지 않는다.
@@ -276,7 +282,7 @@ class AuthTokenValidationTest extends AuthFlowTestBase {
         TokenPlan plan = mutation.apply(TokenPlan.valid(authorization.nonce()));
         String code = issueCode(authorization, plan);
 
-        HttpResponse<String> response = callback(authorization.sessionCookie(), code, authorization.state());
+        HttpResponse<String> response = callback(authorization, code);
 
         assertThat(response.statusCode()).isEqualTo(302);
         assertThat(locationOf(response)).endsWith(failureLocation(AuthFlowHandlers.FAILURE_MARKER_FAILED));

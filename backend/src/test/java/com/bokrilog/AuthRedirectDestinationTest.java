@@ -30,7 +30,7 @@ class AuthRedirectDestinationTest extends AuthFlowTestBase {
                 startAuthorization(AuthFlowHandlers.DASHBOARD_PATH, null);
         String code = issueCode(authorization, TokenPlan.valid(authorization.nonce()));
 
-        HttpResponse<String> response = callback(authorization.sessionCookie(), code, authorization.state());
+        HttpResponse<String> response = callback(authorization, code);
 
         // 온보딩을 건너뛰게 하지 않는다. 신규 사용자에게는 그 화면이 첫 목적지다.
         assertThat(locationOf(response)).endsWith(AuthFlowHandlers.ONBOARDING_PATH);
@@ -95,7 +95,7 @@ class AuthRedirectDestinationTest extends AuthFlowTestBase {
         Authorization authorization = startAuthorization();
 
         HttpResponse<String> response =
-                callbackWithError(authorization.sessionCookie(), "access_denied", authorization.state());
+                callbackWithError(authorization, "access_denied");
 
         assertThat(response.statusCode()).isEqualTo(302);
         assertThat(locationOf(response))
@@ -111,18 +111,18 @@ class AuthRedirectDestinationTest extends AuthFlowTestBase {
     void 실패_표지는_닫힌_두_값뿐이다() throws Exception {
         Authorization cancelled = startAuthorization();
         HttpResponse<String> cancelledResponse =
-                callbackWithError(cancelled.sessionCookie(), "access_denied", cancelled.state());
+                callbackWithError(cancelled, "access_denied");
 
         Authorization providerError = startAuthorization();
         HttpResponse<String> providerErrorResponse =
-                callbackWithError(providerError.sessionCookie(), "server_error", providerError.state());
+                callbackWithError(providerError, "server_error");
 
         Authorization tokenFailure = startAuthorization();
         String code =
                 issueCode(
                         tokenFailure, TokenPlan.valid(tokenFailure.nonce()).tokenEndpointFailure());
         HttpResponse<String> tokenFailureResponse =
-                callback(tokenFailure.sessionCookie(), code, tokenFailure.state());
+                callback(tokenFailure, code);
 
         List<String> markers =
                 List.of(
@@ -146,7 +146,7 @@ class AuthRedirectDestinationTest extends AuthFlowTestBase {
         String code =
                 issueCode(authorization, TokenPlan.valid(authorization.nonce()).subject(subject));
 
-        HttpResponse<String> response = callback(authorization.sessionCookie(), code, authorization.state());
+        HttpResponse<String> response = callback(authorization, code);
         UUID userId = userIdOf(OidcStubConfiguration.issuer(), subject).orElseThrow();
         String cookie = sessionCookieOf(response).orElseThrow();
         HttpResponse<String> sessionState = sessionState(cookie);
@@ -169,7 +169,7 @@ class AuthRedirectDestinationTest extends AuthFlowTestBase {
         Authorization authorization = startAuthorization(next, null);
         String code =
                 issueCode(authorization, TokenPlan.valid(authorization.nonce()).subject(subject));
-        return callback(authorization.sessionCookie(), code, authorization.state());
+        return callback(authorization, code);
     }
 
     private static String markerOf(HttpResponse<String> response) {

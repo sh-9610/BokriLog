@@ -1,7 +1,12 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page } from '@playwright/test'
 
-import { authContent, AUTHORIZE_PATH } from '../src/content/auth'
+import {
+  authContent,
+  authorizePath,
+  SIGN_IN_PROVIDERS,
+  type SignInProvider,
+} from '../src/content/auth'
 
 /**
  * 로그인 진입과 로그인 상태 경로의 실제 Chromium 검증.
@@ -38,10 +43,18 @@ const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']
 
 const NARROW_VIEWPORT = { width: 320, height: 640 } as const
 
-/** 화면이 살아 있는지 확인하는 canary. body가 비면 대부분의 단정이 조용히 통과한다. */
+/**
+ * 화면이 살아 있는지 확인하는 canary. body가 비면 대부분의 단정이 조용히 통과한다.
+ *
+ * 두 버튼을 함께 본다. 하나만 보면 나머지 제공자의 버튼이 사라져도 이 층의 모든 시험이 통과한다.
+ */
 async function expectAuthScreenMounted(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { level: 1, name: '복리 계획 비교' })).toBeVisible()
-  await expect(page.getByRole('link', { name: authContent.signIn.googleLabel })).toBeVisible()
+  for (const provider of SIGN_IN_PROVIDERS) {
+    await expect(
+      page.getByRole('link', { name: authContent.signIn.labels[provider] }),
+    ).toBeVisible()
+  }
 }
 
 /**
@@ -51,40 +64,165 @@ async function expectAuthScreenMounted(page: Page): Promise<void> {
  * 단계 하나가 갈라져도 아무도 모른다. 스텁의 `subject`는 요청마다 새로 만들어지므로 이 호출은
  * 늘 신규 가입이고 목적지는 온보딩이다(`DevOidcStub`).
  */
-async function signInThroughStub(page: Page): Promise<void> {
+async function signInThroughStub(page: Page, provider: SignInProvider = 'google'): Promise<void> {
   await page.goto('/')
   await expectAuthScreenMounted(page)
-  await page.getByRole('link', { name: authContent.signIn.googleLabel }).click()
+  await page.getByRole('link', { name: authContent.signIn.labels[provider] }).click()
   await page.getByRole('link', { name: STUB_CONSENT.link }).click()
   await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
 }
 
 test.describe('로그인 진입', () => {
-  test('Google 버튼이 서버 인증 시작 경로로 가는 링크다', async ({ page }) => {
+  test('두 제공자 버튼이 각자의 서버 인증 시작 경로로 가는 링크다', async ({ page }) => {
     await page.goto('/')
     await expectAuthScreenMounted(page)
 
-    const button = page.getByRole('link', { name: authContent.signIn.googleLabel })
+    for (const provider of SIGN_IN_PROVIDERS) {
+      const button = page.getByRole('link', { name: authContent.signIn.labels[provider] })
 
-    // 최상위 내비게이션이다. 새 창을 열지 않고 CSP를 넓히지 않는다.
-    await expect(button).toHaveAttribute('href', AUTHORIZE_PATH)
-    await expect(button).not.toHaveAttribute('target', /.*/)
-    await expect(button).not.toHaveAttribute('rel', /.*/)
+      // 최상위 내비게이션이다. 새 창을 열지 않고 CSP를 넓히지 않는다.
+      await expect(button).toHaveAttribute('href', authorizePath(provider))
+      await expect(button).not.toHaveAttribute('target', /.*/)
+      await expect(button).not.toHaveAttribute('rel', /.*/)
+    }
   })
 
-  test('Google 버튼이 최소 44×44px이고 좁은 폭에서도 유지된다', async ({ page }) => {
+  test('제공자 순서가 Google → 네이버로 고정된다', async ({ page }) => {
+    await page.goto('/')
+    await expectAuthScreenMounted(page)
+
+    // 문서 순서가 곧 고정 순서다(DESIGN.md). 추천 표지도 마지막 사용 강조도 없다.
+    const labels = await page
+      .locator('a[href^="/api/auth/authorize/"]')
+      .evaluateAll((elements) => elements.map((element) => element.textContent.trim()))
+
+    expect(labels).toEqual(SIGN_IN_PROVIDERS.map((provider) => authContent.signIn.labels[provider]))
+  })
+
+  test('두 버튼이 최소 44×44px이고 좁은 폭에서도 유지된다', async ({ page }) => {
     await page.setViewportSize(NARROW_VIEWPORT)
     await page.goto('/')
     await expectAuthScreenMounted(page)
 
-    const box = await page.getByRole('link', { name: authContent.signIn.googleLabel }).boundingBox()
+    const boxes: { width: number; height: number }[] = []
+    for (const provider of SIGN_IN_PROVIDERS) {
+      const box = await page
+        .getByRole('link', { name: authContent.signIn.labels[provider] })
+        .boundingBox()
 
-    expect(box).not.toBeNull()
-    expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
-    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
+      expect(box).not.toBeNull()
+      expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
+      boxes.push({ width: box?.width ?? 0, height: box?.height ?? 0 })
+    }
+
+    /*
+     * 동등한 시각 면적이다(DESIGN.md). 전체 폭 세로 목록이므로 두 버튼의 폭이 같아야 하고,
+     * 높이가 크게 갈리면 한 제공자가 시각적으로 추천처럼 보인다.
+     */
+    expect(boxes[0]?.width).toBe(boxes[1]?.width)
+    expect(boxes[0]?.height).toBe(boxes[1]?.height)
   })
 
-  test('Google 버튼이 전역 포커스 링을 받고 Tab 순서가 문서 순서와 같다', async ({ page }) => {
+  test('네이버 버튼은 공표된 색을 그대로 쓰고 레이블 크기로 대비 하한을 만족한다', async ({
+    page,
+  }) => {
+    /*
+     * 이 화면의 대비 결과는 위·아래 axe 시험들이 이미 본다. 그런데 axe 위반은 "왜 그 값이어야
+     * 하는가"를 말해 주지 않으므로, 그 통과를 지탱하는 사실 셋을 여기서 이름으로 고정한다.
+     *
+     * 네이버가 공표한 조합(#03A94D 배경 + 흰 레이블)의 대비는 3.095:1이다. 일반 텍스트 하한
+     * 4.5:1에는 못 미치고 큰 텍스트 하한 3:1은 넘으므로, 색을 바꿀 수 없는 이 버튼이 통과하는
+     * 유일한 길은 레이블을 큰 텍스트로 만드는 것이다. 큰 텍스트 판정은 24px 이상이거나
+     * 18.67px 이상이면서 굵기 700 이상이고 굵기 600은 세지 않는다(axe `color-contrast`의
+     * `boldValue: 700`·`boldTextPt: 14`·`largeTextPt: 18`).
+     *
+     * 그래서 색을 바꾸는 회귀와 크기·굵기를 되돌리는 회귀가 둘 다 여기서 먼저 걸린다.
+     *
+     * 로고 높이는 `<svg>` **요소 박스**가 아니라 **렌더된 잉크**를 잰다. 요소 박스는 CSS 크기
+     * 하나로 정해지므로 경로가 박스의 절반만 채워도 24px로 읽히고, 그때 "텍스트는 로고 높이보다
+     * 작은 크기"는 렌더 결과가 아니라 CSS 선언만 확인한 것이 된다. 실제로 손으로 그린 첫 경로가
+     * 그 상태였다 — `viewBox="0 0 20 20"` 안에서 잉크가 10×9만 차지해 실측 잉크 높이는 10.8px,
+     * 레이블 20px보다 **작았다**. 공식 애셋에서 추출한 경로는 bbox가 정사각형이라 잉크가 박스를
+     * 가득 채운다. `getBBox()`와 `viewBox` 스케일이 그 사실을 재는 유일한 길이다.
+     *
+     * 로고 `fill`과 두 간격도 함께 본다. 이 셋 중 어느 것도 단정이 없으면 토큰 이름 오타 하나로
+     * 로고가 검정으로 그려지거나 두 버튼이 맞붙어도 전 층이 green이다.
+     */
+    await page.setViewportSize(NARROW_VIEWPORT)
+    await page.goto('/')
+    await expectAuthScreenMounted(page)
+
+    const measured = await page
+      .getByRole('link', { name: authContent.signIn.labels.naver })
+      .evaluate((element) => {
+        const label = element.querySelector('span')
+        const logo = element.querySelector('svg')
+        const ink = logo?.querySelector('path') ?? null
+        const list = element.parentElement
+        if (label === null || logo === null || ink === null || list === null) {
+          return null
+        }
+        const labelStyle = getComputedStyle(label)
+        const range = document.createRange()
+        range.selectNodeContents(label)
+
+        /*
+         * 렌더된 잉크 높이. `preserveAspectRatio`의 기본값(`xMidYMid meet`)에서 스케일은 두 축
+         * 비율의 최솟값이며, 여기서는 정사각 viewBox와 정사각 CSS 크기라 두 값이 같다.
+         */
+        const viewBox = logo.viewBox.baseVal
+        const logoBox = logo.getBoundingClientRect()
+        const scale = Math.min(logoBox.width / viewBox.width, logoBox.height / viewBox.height)
+
+        return {
+          background: getComputedStyle(element).backgroundColor,
+          labelColor: labelStyle.color,
+          fontSize: parseFloat(labelStyle.fontSize),
+          fontWeight: parseFloat(labelStyle.fontWeight),
+          logoFill: getComputedStyle(ink).fill,
+          logoBoxHeight: logoBox.height,
+          inkHeight: ink.getBBox().height * scale,
+          logoLabelGap: getComputedStyle(element).columnGap,
+          providerListRowGap: getComputedStyle(list).rowGap,
+          lineBoxes: range.getClientRects().length,
+        }
+      })
+
+    // eslint-disable-next-line playwright/no-conditional-in-test -- 타입 좁히기 가드. 구조가 다르면 단정이 아니라 예외로 즉시 종료한다.
+    if (measured === null) {
+      throw new Error('네이버 버튼에서 레이블·로고·제공자 목록을 찾지 못했습니다.')
+    }
+
+    // 지정 컬러는 변경할 수 없다(네이버 공식 가이드). #03A94D · #FFFFFF · 로고 #FFFFFF.
+    expect(measured.background).toBe('rgb(3, 169, 77)')
+    expect(measured.labelColor).toBe('rgb(255, 255, 255)')
+    expect(measured.logoFill).toBe('rgb(255, 255, 255)')
+
+    // 큰 텍스트 판정. 24px 이상이거나, 18.67px 이상이면서 굵기 700 이상.
+    expect(
+      measured.fontSize >= 24 || (measured.fontSize >= 18.67 && measured.fontWeight >= 700),
+    ).toBe(true)
+
+    /*
+     * "텍스트는 로고 높이보다 작은 크기를 사용해야 해요"(같은 가이드).
+     *
+     * 잉크 높이로 잰다. 공식 애셋의 bbox가 정사각형이라 잉크는 요소 박스를 가득 채우며, 부동
+     * 소수 반올림 여유만 두고 두 값이 같은지도 함께 본다 — 어느 날 경로가 다시 박스보다 작게
+     * 줄어들면 그 사실이 이 단정에서 먼저 붉게 나온다.
+     */
+    expect(measured.fontSize).toBeLessThan(measured.inkHeight)
+    expect(measured.inkHeight).toBeCloseTo(measured.logoBoxHeight, 1)
+
+    // 가운데 정렬 시 로고-레이블 간격 8px(공표값), 제공자 버튼 사이 간격 12px(BokriLog 토큰).
+    expect(measured.logoLabelGap).toBe('8px')
+    expect(measured.providerListRowGap).toBe('12px')
+
+    // 320px에서도 한 줄이다. 두 줄로 접히면 로고보다 커진 레이블이 버튼 모양을 바꾼다.
+    expect(measured.lineBoxes).toBe(1)
+  })
+
+  test('두 버튼이 전역 포커스 링을 받고 Tab 순서가 문서 순서와 같다', async ({ page }) => {
     await page.goto('/')
     await expectAuthScreenMounted(page)
 
@@ -96,8 +234,10 @@ test.describe('로그인 진입', () => {
       FOCUSABLE_SELECTOR,
     )
 
-    // 건너뛰기 링크 하나였던 목록에 로그인 버튼이 더해졌다.
-    expect(documentOrder).toContain(authContent.signIn.googleLabel)
+    // 건너뛰기 링크 하나였던 목록에 로그인 버튼 둘이 더해졌다.
+    for (const provider of SIGN_IN_PROVIDERS) {
+      expect(documentOrder).toContain(authContent.signIn.labels[provider])
+    }
 
     const reached: string[] = []
     while (reached.length < documentOrder.length) {
@@ -107,28 +247,31 @@ test.describe('로그인 진입', () => {
     expect(reached).toEqual(documentOrder)
 
     // 버튼 자신의 포커스 표시. DESIGN.md Components 마지막 문단의 focus-ring 값이다.
-    const focus = await page.evaluate((label) => {
-      const button = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href]')).find(
-        (element) => element.textContent.trim() === label,
-      )
-      if (button === undefined) {
-        return null
-      }
-      button.focus()
-      const style = getComputedStyle(button)
-      return {
-        outlineStyle: style.outlineStyle,
-        outlineWidth: style.outlineWidth,
-        outlineOffset: style.outlineOffset,
-        outlineColor: style.outlineColor,
-      }
-    }, authContent.signIn.googleLabel)
+    // 두 버튼 모두 전역 `:focus-visible`을 쓰고 자기 포커스 규칙을 선언하지 않는다.
+    for (const provider of SIGN_IN_PROVIDERS) {
+      const focus = await page.evaluate((label) => {
+        const button = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href]')).find(
+          (element) => element.textContent.trim() === label,
+        )
+        if (button === undefined) {
+          return null
+        }
+        button.focus()
+        const style = getComputedStyle(button)
+        return {
+          outlineStyle: style.outlineStyle,
+          outlineWidth: style.outlineWidth,
+          outlineOffset: style.outlineOffset,
+          outlineColor: style.outlineColor,
+        }
+      }, authContent.signIn.labels[provider])
 
-    expect(focus).not.toBeNull()
-    expect(focus?.outlineStyle).toBe('solid')
-    expect(focus?.outlineWidth).toBe('2px')
-    expect(focus?.outlineOffset).toBe('2px')
-    expect(focus?.outlineColor).toBe('rgb(29, 79, 145)')
+      expect(focus).not.toBeNull()
+      expect(focus?.outlineStyle).toBe('solid')
+      expect(focus?.outlineWidth).toBe('2px')
+      expect(focus?.outlineOffset).toBe('2px')
+      expect(focus?.outlineColor).toBe('rgb(29, 79, 145)')
+    }
   })
 
   test('로그인 진입을 더해도 `/`가 브라우저 저장소에 아무것도 남기지 않는다', async ({ page }) => {
@@ -272,17 +415,26 @@ test.describe('로그인 상태 경로 · 미인증', () => {
 })
 
 test.describe('유일 제공자 접근 상실 안내', () => {
-  test('실패 표지에 Google 공식 복구 경로가 붙는다', async ({ page }) => {
+  test('실패 표지에 두 제공자의 공식 복구 경로가 붙는다', async ({ page }) => {
     await page.goto('/?auth=failed')
     await expectAuthScreenMounted(page)
 
-    const link = page.getByRole('link', { name: authContent.recovery.linkLabel })
-
     await expect(page.getByText(authContent.recovery.body)).toBeVisible()
-    await expect(link).toHaveAttribute('href', authContent.recovery.href)
-    // 기본으로 새 창을 열지 않고 `rel`로 참조 유출을 막는다.
-    await expect(link).not.toHaveAttribute('target', /.*/)
-    await expect(link).toHaveAttribute('rel', 'noreferrer')
+
+    /*
+     * 둘을 언제나 함께 보여 준다. 이 화면은 사용자가 어느 제공자로 가입했는지 알 수 없고
+     * 알아서도 안 되므로 하나만 고를 수 없다.
+     */
+    for (const entry of authContent.recovery.links) {
+      const link = page.getByRole('link', { name: entry.label })
+
+      await expect(link).toBeVisible()
+      await expect(link).toHaveAttribute('href', entry.href)
+      // 기본으로 새 창을 열지 않고 `rel`로 참조 유출을 막는다.
+      await expect(link).not.toHaveAttribute('target', /.*/)
+      await expect(link).toHaveAttribute('rel', 'noreferrer')
+    }
+
     // 이메일 확인·문의로 인증을 우회하는 경로를 만들지 않는다.
     await expect(page.getByText(authContent.recovery.caveat)).toBeVisible()
     await expect(page.getByRole('textbox')).toHaveCount(0)
@@ -301,27 +453,29 @@ test.describe('유일 제공자 접근 상실 안내', () => {
     await page.goto('/?auth=failed')
     await expectAuthScreenMounted(page)
 
-    const link = page.getByRole('link', { name: authContent.recovery.linkLabel })
-    const box = await link.boundingBox()
+    for (const entry of authContent.recovery.links) {
+      const link = page.getByRole('link', { name: entry.label })
+      const box = await link.boundingBox()
 
-    expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
-    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
+      expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
 
-    const focus = await link.evaluate((element) => {
-      element.focus()
-      const style = getComputedStyle(element)
-      return {
-        outlineStyle: style.outlineStyle,
-        outlineWidth: style.outlineWidth,
-        outlineOffset: style.outlineOffset,
-        outlineColor: style.outlineColor,
-      }
-    })
+      const focus = await link.evaluate((element) => {
+        element.focus()
+        const style = getComputedStyle(element)
+        return {
+          outlineStyle: style.outlineStyle,
+          outlineWidth: style.outlineWidth,
+          outlineOffset: style.outlineOffset,
+          outlineColor: style.outlineColor,
+        }
+      })
 
-    expect(focus.outlineStyle).toBe('solid')
-    expect(focus.outlineWidth).toBe('2px')
-    expect(focus.outlineOffset).toBe('2px')
-    expect(focus.outlineColor).toBe('rgb(29, 79, 145)')
+      expect(focus.outlineStyle).toBe('solid')
+      expect(focus.outlineWidth).toBe('2px')
+      expect(focus.outlineOffset).toBe('2px')
+      expect(focus.outlineColor).toBe('rgb(29, 79, 145)')
+    }
   })
 
   test('표지와 함께 열린 화면은 포커스를 페이지 제목으로 보낸다', async ({ page }) => {
@@ -365,41 +519,84 @@ test.describe('스텁 제공자 성공 왕복', () => {
     'PLAYWRIGHT_BASE_URL로 Nginx origin과 dev-oidc 스텁을 주입한 실행에서만 의미가 있다.',
   )
 
-  test('버튼 → 동의 → 온보딩까지 도달하고 세션 쿠키만 남는다', async ({ page, context }) => {
-    await page.goto('/')
-    await expectAuthScreenMounted(page)
+  for (const provider of SIGN_IN_PROVIDERS) {
+    test(`${provider} 버튼 → 동의 → 온보딩까지 도달하고 세션 쿠키만 남는다`, async ({
+      page,
+      context,
+    }) => {
+      /*
+       * 두 제공자를 각각 지난다. 왕복 하나만 보면 두 번째 제공자의 등록·콜백·세션 개설이 실제로
+       * 성립하는지 아무 층도 확인하지 않는다.
+       */
+      await page.goto('/')
+      await expectAuthScreenMounted(page)
 
-    // 최상위 내비게이션이다. 새 창도 iframe도 form POST도 없다.
-    await page.getByRole('link', { name: authContent.signIn.googleLabel }).click()
+      // 최상위 내비게이션이다. 새 창도 iframe도 form POST도 없다.
+      await page.getByRole('link', { name: authContent.signIn.labels[provider] }).click()
 
-    // 제공자의 동의 화면 자리. 사용자가 실제로 이 단계를 지나야 성공 경로를 검증한 것이 된다.
-    await expect(page.getByRole('heading', { level: 1, name: STUB_CONSENT.heading })).toBeVisible()
-    await page.getByRole('link', { name: STUB_CONSENT.link }).click()
+      // 제공자의 동의 화면 자리. 사용자가 실제로 이 단계를 지나야 성공 경로를 검증한 것이 된다.
+      await expect(
+        page.getByRole('heading', { level: 1, name: STUB_CONSENT.heading }),
+      ).toBeVisible()
+      // 그 제공자의 스텁이 응답했다. 경로 세그먼트가 곧 어느 스텁인지의 답이다.
+      expect(new URL(page.url()).pathname).toBe(`/api/dev-oidc/${provider}/authorize`)
+      await page.getByRole('link', { name: STUB_CONSENT.link }).click()
 
-    // 미연결 식별자는 신규 가입이므로 목적지는 온보딩이다.
-    await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
-    expect(new URL(page.url()).pathname).toBe('/onboarding')
-    // 인증 화면으로 되돌리지 않았다. 세션 확인이 인증됐다고 답했다는 뜻이다.
-    await expect(page.getByRole('status')).not.toHaveText(authContent.notices.signedOut)
+      // 미연결 식별자는 신규 가입이므로 목적지는 온보딩이다.
+      await expect(
+        page.getByRole('heading', { name: authContent.onboarding.heading }),
+      ).toBeVisible()
+      expect(new URL(page.url()).pathname).toBe('/onboarding')
+      // 인증 화면으로 되돌리지 않았다. 세션 확인이 인증됐다고 답했다는 뜻이다.
+      await expect(page.getByRole('status')).not.toHaveText(authContent.notices.signedOut)
 
-    const session = (await context.cookies()).find((cookie) => cookie.name === 'BOKRILOG_SESSION')
+      const session = (await context.cookies()).find((cookie) => cookie.name === 'BOKRILOG_SESSION')
 
-    // 브라우저에 남는 것은 이 불투명 쿠키 하나뿐이고 속성 세 가지가 계약이다.
-    expect(session).toBeDefined()
-    expect(session?.httpOnly).toBe(true)
-    expect(session?.secure).toBe(true)
-    expect(session?.sameSite).toBe('Lax')
-    expect(session?.path).toBe('/')
+      // 브라우저에 남는 것은 이 불투명 쿠키 하나뿐이고 속성 세 가지가 계약이다.
+      expect(session).toBeDefined()
+      expect(session?.httpOnly).toBe(true)
+      expect(session?.secure).toBe(true)
+      expect(session?.sameSite).toBe('Lax')
+      expect(session?.path).toBe('/')
 
-    const stored = await page.evaluate(async () => ({
-      localStorage: window.localStorage.length,
-      sessionStorage: window.sessionStorage.length,
-      // HttpOnly 쿠키는 여기 보이지 않는다. 스크립트가 세션을 들고 나가는 경로가 없다.
-      cookie: document.cookie,
-      indexedDb: (await window.indexedDB.databases()).length,
-    }))
+      const stored = await page.evaluate(async () => ({
+        localStorage: window.localStorage.length,
+        sessionStorage: window.sessionStorage.length,
+        // HttpOnly 쿠키는 여기 보이지 않는다. 스크립트가 세션을 들고 나가는 경로가 없다.
+        cookie: document.cookie,
+        indexedDb: (await window.indexedDB.databases()).length,
+      }))
 
-    expect(stored).toEqual({ localStorage: 0, sessionStorage: 0, cookie: '', indexedDb: 0 })
+      expect(stored).toEqual({ localStorage: 0, sessionStorage: 0, cookie: '', indexedDb: 0 })
+    })
+  }
+
+  test('네이버 왕복도 외부 origin으로 나가지 않는다', async ({ page, baseURL }) => {
+    /*
+     * 실제 네이버 주소로 나가는 요청이 0건이다. 개발·CI 스택의 등록은 스텁을 가리키므로 그
+     * 왕복 전체가 동일 출처여야 하고, 등록의 엔드포인트가 실수로 정본 주소로 되돌아가면 여기서
+     * 드러난다(그 경로는 CI에서 판정으로 삼을 수 없는 실연동이다).
+     */
+    const requests: string[] = []
+    page.on('request', (request) => {
+      requests.push(request.url())
+    })
+
+    await signInThroughStub(page, 'naver')
+
+    const origin = new URL(baseURL ?? page.url()).origin
+    const external = requests.filter((url) => {
+      if (url.startsWith('data:') || url.startsWith('blob:')) {
+        return false
+      }
+      try {
+        return new URL(url).origin !== origin
+      } catch {
+        return true
+      }
+    })
+
+    expect(external).toEqual([])
   })
 
   test('로그인된 온보딩 화면도 건너뛰기 링크와 WCAG 2.2 AA를 지킨다', async ({ page }) => {

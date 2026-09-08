@@ -131,14 +131,19 @@ class AuthSessionController {
      * 만드는 본문과도 글자까지 같다. 성공이나 빈 데이터로 위장하지 않으며, 어떤 값이 비어 있는지도
      * 알려 주지 않는다.
      *
-     * <p>제공자 등록을 여기서 조회하지 않는다. 등록이 있으면 이 메서드에 도달하지 않으므로
-     * 조회 결과는 언제나 "없음"이고, 그 값을 보는 분기는 아무도 지나지 않는다. 남는 판정은
-     * "아는 제공자 이름인가" 하나다.
+     * <p>구성된 등록을 여기서 조회하지 않는다. 등록이 있으면 이 메서드에 도달하지 않으므로
+     * {@code findByRegistrationId}의 답은 언제나 "없음"이고, 그것을 술어로 쓰면 두 경우가 모두 404가
+     * 되어 fail-closed의 500이 사라진다. 남는 판정은 "아는 제공자 <b>이름</b>인가" 하나이며 그
+     * 닫힌 집합은 {@code AuthSecurityConfig.ProviderClientRegistrations}가 소유한다.
+     *
+     * <p>아는 제공자 목록도 개수도 응답에 실리지 않는다. 두 답은 공통 오류 계약의 본문 두 개이며
+     * {@code provider} 값을 되비추지 않는다 — 그러지 않으면 이 경로가 곧 "이 서비스가 어떤 제공자를
+     * 아는가"를 열거하는 표면이 된다.
      */
     @GetMapping(AuthSecurityConfig.AUTHORIZATION_BASE_URI + "/{provider}")
     void authorizationUnavailable(
             @PathVariable String provider, HttpServletResponse response) throws IOException {
-        if (!AuthSecurityConfig.GOOGLE_REGISTRATION_ID.equals(provider)) {
+        if (!AuthSecurityConfig.ProviderClientRegistrations.isSupportedProvider(provider)) {
             response.sendError(HttpStatus.NOT_FOUND.value());
             return;
         }

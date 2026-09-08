@@ -117,10 +117,32 @@ components:
     focus: '{colors.focus-ring}'
     # `provider-treatment`가 채움색·글자색·테두리·모서리·내부 여백과 로고를 각 제공자의 공식 버튼
     # 가이드에 넘긴다. 아래 리프 키는 그 값이 사는 자리다. BokriLog 색 팔레트에 참조가 없는 것이
-    # 정상이며, 값의 소유자는 Google이고 이 문서는 기록만 한다. 임의로 바꾸지 않는다.
-    # 근거: Google 공식 "Sign in with Google" 버튼 가이드(light theme).
+    # 정상이며, 값의 소유자는 각 제공자이고 이 문서는 기록만 한다. 임의로 바꾸지 않는다.
+    # 근거: Google 공식 "Sign in with Google" 버튼 가이드(light theme),
+    #      네이버 공식 로그인 버튼 가이드(`developers.naver.com/docs/login/bi/bi.md`).
     # 글꼴은 이 목록에 없다. `provider-treatment`가 넘기는 범주에 글꼴이 없으므로 타이포그래피는
     # 그대로 BokriLog의 시스템 폰트 스택을 쓴다(외부 폰트를 불러오지 않는다).
+    #
+    # 그 축이 BokriLog 소유라는 사실이 네이버 버튼의 대비 충돌을 닫는다. 가이드가 공표한 조합
+    # (배경 #03A94D + 흰 레이블)의 대비는 3.095:1이고 위 Color & Contrast의 하한은 일반 텍스트
+    # 4.5:1·큰 텍스트 3:1이다. 색을 바꾸는 것은 가이드가 금지하므로("지정 컬러는 변경할 수 없으며")
+    # 남는 축은 크기 하나다 — 레이블을 WCAG 큰 텍스트 문턱(24px 이상, 또는 18.67px 이상이면서
+    # 굵기 700 이상) 위로 올리면 요구 대비가 3:1이 되어 공표된 색을 한 픽셀도 바꾸지 않고 통과한다.
+    # 그래서 아래 `naver-label-*` 두 값이 있고, 그것은 가이드의 공표값이 아니라 **BokriLog가
+    # 접근성 하한을 지키려고 고른 값**이다. 굵기 600으로는 성립하지 않는다(굵기 기준이 700이다).
+    #
+    # `naver-logo-size`도 같은 이유로 공표값이 아니라 BokriLog가 고른 값이다. 가이드가 주는 것은
+    # 하한("완성형 로고 16px 이상")과 관계("텍스트는 로고 높이보다 작은 크기") 둘이고, 레이블 20px
+    # 과 그 두 문장을 함께 만족하는 가장 작은 4px 배수가 24px이다. Google 버튼은 그대로 14px/600
+    # 이다 — 그 조합은 16.48:1이라 일반 텍스트 하한을 이미 넘어 키울 이유가 없다.
+    #
+    # 제공자가 공표하지 않은 축은 여기 없다. 네이버 가이드 본문이 수치로 주는 것은 색 둘, 완성형
+    # 로고 최소 크기(16px), 로고-레이블 간격(8px)이며 **모서리 반경은 본문에 없다** — 권위 있는
+    # 값은 내려받는 애셋(Figma/AI/PNG)에 있고 이 문서는 그것을 열지 않았다. 제공자가 공표하지
+    # 않은 축은 사실상 비어 있는 것이므로 추측한 브랜드 값으로 채우지 않는다. 네이버 버튼의
+    # 모서리는 BokriLog의 `{rounded.*}`가 소유하며, 나중에 애셋에서 값을 읽으면 그 토큰 하나가
+    # `naver-radius`로 옮겨 갈 뿐이다. 가이드가 실제로 금지한 것(지정 컬러 변경, 로고 변형·조합·
+    # 그라데이션, 타사 컬러 버튼과 함께 쓸 때의 흰 배경·크기 축소)은 하나도 건드리지 않는다.
     google-background: '#FFFFFF'
     google-foreground: '#1F1F1F'
     google-border: '#747775'
@@ -132,6 +154,13 @@ components:
     google-logo-green: '#34A853'
     google-logo-yellow: '#FBBC05'
     google-logo-red: '#EA4335'
+    naver-background: '#03A94D'
+    naver-foreground: '#FFFFFF'
+    naver-logo: '#FFFFFF'
+    naver-logo-size: '24px'
+    naver-logo-gap: '8px'
+    naver-label-font-size: '20px'
+    naver-label-font-weight: '700'
   secure-input-form:
     background: '{colors.surface-raised}'
     foreground: '{colors.ink-primary}'

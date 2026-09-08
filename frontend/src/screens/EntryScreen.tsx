@@ -1,8 +1,37 @@
 import { useEffect, useRef, type ReactElement } from 'react'
 
-import { authContent, authorizeHref, type AuthNoticeKind } from '../content/auth'
+import {
+  authContent,
+  authorizeHref,
+  SIGN_IN_PROVIDERS,
+  type AuthNoticeKind,
+  type SignInProvider,
+} from '../content/auth'
 import { entryContent, MAIN_LANDMARK_ID } from '../content/entry'
 import styles from './EntryScreen.module.css'
+
+/**
+ * 제공자별 버튼 규칙.
+ *
+ * 닫힌 맵이다. 2항 삼항식(`provider === 'google' ? … : …`)으로 두면 else가 곧 "나머지 제공자
+ * 전부"가 되어, `SIGN_IN_PROVIDERS`에 카카오를 더하는 순간 카카오 버튼이 **네이버의 색과 N
+ * 로고로** 렌더되고 타입 검사도 시험도 그것을 막지 못한다. `Record<SignInProvider, …>`는 제공자가
+ * 늘 때 누락된 항목을 타입 검사가 잡는다 — `content/auth.ts`의 `signIn.labels`·`NOTICES`가 이미
+ * 쓰는 형태다.
+ *
+ * 값 타입에 `undefined`가 붙는 것은 CSS 모듈의 타입 때문이다. `noUncheckedIndexedAccess`가
+ * 켜져 있어 클래스 이름 조회가 `string | undefined`이고, `className`이 그 값을 그대로 받는다.
+ */
+const PROVIDER_BUTTON_CLASS: Readonly<Record<SignInProvider, string | undefined>> = {
+  google: styles.googleButton,
+  naver: styles.naverButton,
+}
+
+/** 제공자별 로고. 같은 이유로 닫힌 맵이다. */
+const PROVIDER_MARK: Readonly<Record<SignInProvider, () => ReactElement>> = {
+  google: GoogleMark,
+  naver: NaverMark,
+}
 
 interface EntryScreenProps {
   /**
@@ -16,7 +45,8 @@ interface EntryScreenProps {
  * 로그인 없이 열리는 인증 화면.
  *
  * 이용 범위(Story 1.1 AC-1), 인증 경계(AC-2), 비추천 고지(UX-DR23)를 semantic 마크업으로 렌더하고,
- * Story 1.4가 그 위에 Google 로그인 진입을 더했다.
+ * Story 1.4가 그 위에 Google 로그인 진입을, Story 1.6이 네이버를 더했다. 제공자 목록의 순서는
+ * `SIGN_IN_PROVIDERS` 하나가 나른다 — 화면이 순서를 다시 적으면 두 곳이 갈라진다.
  *
  * 로그인은 `<a href>` 최상위 내비게이션이다. 서버가 302로 제공자에 보내는 흐름이라 외부 스크립트도
  * iframe도 form POST도 필요 없고, 그래서 Nginx의 CSP(`default-src 'none'`, `connect-src 'self'`,
@@ -72,10 +102,10 @@ export function EntryScreen({ notice = null }: EntryScreenProps = {}): ReactElem
         </div>
 
         {/*
-          유일한 제공자에 접근을 잃은 경우의 복구 안내. 인증이 실패한 표지에서만 나타난다.
+          로그인 수단에 접근을 잃은 경우의 복구 안내. 인증이 실패한 표지에서만 나타난다.
 
           같은 창에서 열고 `rel="noreferrer"`로 참조 유출을 막는다. 진입점의
-          `Referrer-Policy: no-referrer`가 이미 같은 일을 하지만, 이 링크가 외부로 나가는 유일한
+          `Referrer-Policy: no-referrer`가 이미 같은 일을 하지만, 이 링크들이 외부로 나가는 유일한
           자리이므로 마크업에도 적어 둔다. 새 창을 열지 않는 것은 EXPERIENCE.md의 계약이다.
 
           계정의 존재 여부를 드러내지 않는다. 조건문("접근할 수 없다면")이고 어떤 문장도 이
@@ -88,9 +118,21 @@ export function EntryScreen({ notice = null }: EntryScreenProps = {}): ReactElem
               {authContent.recovery.heading}
             </h2>
             <p>{authContent.recovery.body}</p>
-            <a className={styles.recoveryLink} href={authContent.recovery.href} rel="noreferrer">
-              {authContent.recovery.linkLabel}
-            </a>
+            {/*
+              두 제공자를 언제나 함께 보여 준다. 이 화면은 사용자가 어느 제공자로 가입했는지 알 수
+              없고 알아서도 안 되므로("당신이 쓴 제공자"를 화면에 도달시키는 경로가 곧 계정 존재
+              신호다) 하나만 고를 수 없다. 순서는 버튼 목록과 같다.
+            */}
+            {authContent.recovery.links.map((link) => (
+              <a
+                className={styles.recoveryLink}
+                href={link.href}
+                key={link.provider}
+                rel="noreferrer"
+              >
+                {link.label}
+              </a>
+            ))}
             <p className={styles.signInBoundary}>{authContent.recovery.caveat}</p>
           </section>
         ) : null}
@@ -102,17 +144,32 @@ export function EntryScreen({ notice = null }: EntryScreenProps = {}): ReactElem
 
           {/*
             제공자 목록은 전체 폭 세로 스택이고 순서는 Google → 네이버 → 카카오로 고정이다
-            (DESIGN.md). 지금 실제 버튼은 Google 하나이며 추천 표지도, 마지막 사용 제공자 강조도 없다.
-          */}
-          {/*
+            (DESIGN.md). 지금 실제 버튼은 앞의 둘이며 추천 표지도, 마지막 사용 제공자 강조도,
+            로고만 있는 버튼도 없다. 순서는 `SIGN_IN_PROVIDERS` 하나가 나른다.
+
+            목록 전용 래퍼를 둔다. `.signIn`의 gap은 제목·버튼·안내문 전부에 걸리므로 버튼 사이
+            간격(`--component-social-sign-in-gap`)이 안내문까지 밀어낸다. 그 값의 소유자는
+            "제공자 목록의 바깥 간격"이지 섹션 전체가 아니다.
+
             지금 경로가 서버 허용 목록에 있으면 그 값을 `next`로 실어 보낸다. 로그인 상태 경로에
             미인증으로 들어와 이 화면으로 되돌려진 사용자가 로그인 뒤 원래 보려던 화면으로
             돌아가는 경로가 그 한 파라미터다. 진입 화면(`/`)에서는 붙지 않는다.
           */}
-          <a className={styles.googleButton} href={authorizeHref(window.location.pathname)}>
-            <GoogleMark />
-            <span>{authContent.signIn.googleLabel}</span>
-          </a>
+          <div className={styles.providerList}>
+            {SIGN_IN_PROVIDERS.map((provider) => {
+              const Mark = PROVIDER_MARK[provider]
+              return (
+                <a
+                  className={PROVIDER_BUTTON_CLASS[provider]}
+                  href={authorizeHref(provider, window.location.pathname)}
+                  key={provider}
+                >
+                  <Mark />
+                  <span>{authContent.signIn.labels[provider]}</span>
+                </a>
+              )
+            })}
+          </div>
 
           {/* DESIGN.md가 버튼 아래에 두라고 정한 안내. */}
           <p className={styles.signInBoundary}>{authContent.signIn.boundary}</p>
@@ -183,6 +240,51 @@ function GoogleMark(): ReactElement {
       <path
         d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
         fill="var(--component-social-sign-in-google-logo-green)"
+      />
+    </svg>
+  )
+}
+
+/**
+ * 네이버 공식 "N" 로고.
+ *
+ * `GoogleMark`와 같은 방식의 인라인 SVG다. 외부 파일이면 브라우저가 매 로드마다 요청을 하나 만들고,
+ * 외부 CDN·외부 이미지는 브라우저 경계를 통째로 넘는다. 색은 네이버 가이드가 소유하는 값이며
+ * `tokens.css`가 그 값을 기록한다.
+ *
+ * **경로는 공식 애셋에서 추출한 값이다.** 손으로 그린 근사가 아니다. 출처는 공식 버튼 가이드
+ * (`developers.naver.com/docs/login/bi/bi.md`)가 링크하는 한글 버튼 애셋
+ * `https://developers.naver.com/inc/devcenter/downloads/bi/NAVER_login_KR.ai`(PDF 1.5, 2026-09-09
+ * 내려받음, 애셋 내 버튼 파일 날짜 2025-12-04)이며, 그 안의 N 마크는 곡선 없는 10점 직선 경로다.
+ * 아래 좌표는 그 애셋의 16×16 인스턴스를 SVG 좌표계로 변환한 것이다(y축 뒤집음).
+ *
+ * **bbox가 정확한 정사각형이라 24px 박스에서 잉크가 박스를 가득 채운다.** 경로의 bounding box는
+ * x 0~16 · y 0~16이고 애셋의 16×16·18×18·20×20 인스턴스가 모두 같은 성질을 갖는다. 이것이
+ * 손으로 그린 이전 경로와의 실질적 차이다 — 그 경로는 `viewBox="0 0 20 20"` 안에서 잉크가
+ * 10×9만 차지해 24px 박스에서 실제 잉크 높이가 10.8px이었고, 그러면 가이드의 "텍스트는 로고
+ * 높이보다 작은 크기"가 렌더 결과에서 깨진다(레이블 20px). 게다가 가이드가 금지하는 첫 항목이
+ * 로고 변형이다.
+ *
+ * 로고를 변형·조합하지 않는다. 완성형(로고 + 레이블)의 공표된 하한은 16px이고 실제 크기는
+ * `--component-social-sign-in-naver-logo-size`(24px)다 — "텍스트는 로고 높이보다 작은 크기"라는
+ * 가이드 요구와 레이블의 WCAG 큰 텍스트 문턱이 함께 그 값을 정한다(근거는 tokens.css의 그 토큰
+ * 주석). 잉크 높이를 실제로 재는 단정은 `e2e/auth-entry.spec.ts`가 갖는다.
+ *
+ * `aria-hidden`이다. 접근 가능한 이름은 옆의 텍스트("네이버로 계속하기")가 제공하므로 로고를 다시
+ * 읽어 주면 이름이 두 번 들린다. 로고만 있는 버튼은 DESIGN.md가 금지한다.
+ */
+function NaverMark(): ReactElement {
+  return (
+    <svg
+      aria-hidden="true"
+      className={styles.naverMark}
+      focusable="false"
+      viewBox="0 0 16 16"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M10.848 8.565 L4.916 0 L0 0 L0 16 L5.151 16 L5.151 7.438 L11.083 16 L16 16 L16 0 L10.848 0 Z"
+        fill="var(--component-social-sign-in-naver-logo)"
       />
     </svg>
   )

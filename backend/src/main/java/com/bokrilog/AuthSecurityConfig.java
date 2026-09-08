@@ -7,6 +7,9 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -25,6 +28,9 @@ import org.springframework.security.oauth2.client.registration.ClientRegistratio
 import org.springframework.security.oauth2.client.web.DefaultOAuth2AuthorizationRequestResolver;
 import org.springframework.security.oauth2.client.web.OAuth2AuthorizationRequestResolver;
 import org.springframework.security.oauth2.client.web.OAuth2AuthorizedClientRepository;
+import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
+import org.springframework.security.oauth2.core.oidc.IdTokenClaimNames;
 import org.springframework.security.oauth2.core.oidc.OidcScopes;
 import org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequest;
 import org.springframework.security.web.SecurityFilterChain;
@@ -77,8 +83,11 @@ class AuthSecurityConfig {
     /** 콜백 경로. {@code /api}만 프록시하는 Nginx 블록이 그대로 받는다. */
     static final String CALLBACK_BASE_URI = "/api/auth/callback";
 
-    /** 이 스토리가 지원하는 유일한 제공자. 네이버·카카오는 Story 1.6·1.7이 더한다. */
+    /** Google 제공자의 등록 id. */
     static final String GOOGLE_REGISTRATION_ID = "google";
+
+    /** 네이버 제공자의 등록 id. 카카오는 Story 1.7이 더한다. */
+    static final String NAVER_REGISTRATION_ID = "naver";
 
     /** 세션 확인 경로. 로그인 상태 화면이 서버 세션으로 상태를 확인하는 유일한 경로다. */
     static final String SESSION_PATH = "/api/auth/session";
@@ -113,129 +122,282 @@ class AuthSecurityConfig {
     /** CSRF·{@code Origin} 검증이 걸리는 경로 접두사. */
     private static final String PROTECTED_PATH_PREFIX = "/api/auth/";
 
+    /*
+     * 네이버 OIDC 엔드포인트.
+     *
+     * 공식 discovery 문서(`https://nid.naver.com/.well-known/openid-configuration`, 2026-09-08 실측)가
+     * 광고하는 값을 그대로 옮긴 정적 상수다. 기동 시점에 discovery 왕복을 하지 않는다는 계약 때문에
+     * 값이 코드에 있고, `CommonOAuth2Provider`에 NAVER가 없으므로 이것을 들고 있는 자리가 여기다.
+     *
+     * OIDC 경로는 `/oauth2/*`이고 레거시 OAuth 2.0 API의 `/oauth2.0/*`과 다르다(공식 개발 가이드
+     * §3.5). 두 계열을 섞으면 ID Token이 오지 않는다.
+     *
+     * 자격정보가 아니다. 공개된 제공자 주소이므로 이 리터럴은 gitleaks의 대상이 아니다.
+     */
+    private static final String NAVER_ISSUER_URI = "https://nid.naver.com";
+
+    private static final String NAVER_AUTHORIZATION_URI = NAVER_ISSUER_URI + "/oauth2/authorize";
+
+    private static final String NAVER_TOKEN_URI = NAVER_ISSUER_URI + "/oauth2/token";
+
+    private static final String NAVER_JWK_SET_URI = NAVER_ISSUER_URI + "/oauth2/jwks";
+
     /**
      * 인증 설정. 값은 환경이 주고 이 record는 이름만 정한다.
      *
      * <p>{@code publicBaseUrl}은 브라우저가 보는 origin이다. redirect URI를 요청 헤더에서 유도하지
      * 않기 위해 절대 URI를 환경에서 받는다({@code application.yml}의 근거 참조).
      *
-     * <p>{@code Google}의 엔드포인트 네 값은 비어 있는 것이 정상이다. 비면 Spring Security의
-     * {@code CommonOAuth2Provider.GOOGLE}이 정한 Google 정본 주소를 쓰고 기동 시점에 discovery
-     * 왕복을 하지 않는다. 값을 주는 것은 재정의가 필요한 환경뿐이다 — 시험의 local OIDC 스텁과,
-     * issuer 별칭을 쓰는 이후 제공자.
+     * <p>제공자별 값이 하나씩이다. 두 제공자의 자격정보는 서로를 보지 않으며, 한쪽이 비어도 다른
+     * 쪽의 등록과 로그인 경로는 그대로 살아 있다({@link ProviderClientRegistrations#from}).
+     *
+     * <p>엔드포인트 네 값은 제공자에 따라 의미가 다르다. Google은 비어 있는 것이 정상이며 그때
+     * Spring Security의 {@code CommonOAuth2Provider.GOOGLE}이 정한 정본 주소를 쓴다. 네이버는
+     * {@code CommonOAuth2Provider}에 없으므로 이 클래스가 공식 discovery 문서의 정적 주소를 기본값으로
+     * 들고 있고, 네 값은 그것을 덮는 재정의다. 어느 제공자에서도 기동 시점에 discovery 왕복을 하지
+     * 않는다 — 값을 주는 것은 재정의가 필요한 환경(개발·CI의 local OIDC 스텁)뿐이다.
      */
     @ConfigurationProperties("bokrilog.auth")
-    record AuthProperties(@Nullable String publicBaseUrl, Google google) {
+    record AuthProperties(@Nullable String publicBaseUrl, Provider google, Provider naver) {
 
         AuthProperties {
             /*
-             * `bokrilog.auth.google`이 통째로 없는 구성에서도 배선이 성립해야 한다. 값이 없으면
-             * 빈 값 여섯 개짜리 record로 바꾸고, 아래 `GoogleClientRegistrations`가 "구성되지 않음"
-             * 으로 접는다.
+             * `bokrilog.auth.google`·`bokrilog.auth.naver`가 통째로 없는 구성에서도 배선이 성립해야
+             * 한다. 값이 없으면 빈 값 여섯 개짜리 record로 바꾸고, 아래
+             * `ProviderClientRegistrations`가 그 제공자만 "구성되지 않음"으로 접는다.
              *
-             * 정규화가 여기 하나뿐인 것이 요점이다. 그래서 `google()`은 null을 돌려주지 않고,
-             * 소비하는 쪽에 null 검사가 남지 않는다 — 남으면 그 분기는 아무도 지나지 않는
-             * 죽은 코드가 된다.
+             * 정규화가 여기 하나뿐인 것이 요점이다. 제공자가 둘로 늘어도 그 성질은 유지된다 —
+             * 그래서 `google()`·`naver()`는 null을 돌려주지 않고, 소비하는 쪽에 null 검사가 남지
+             * 않는다. 남으면 그 분기는 아무도 지나지 않는 죽은 코드가 된다.
              */
             if (google == null) {
-                google = new Google(null, null, null, null, null, null);
+                google = Provider.empty();
+            }
+            if (naver == null) {
+                naver = Provider.empty();
             }
         }
 
-        record Google(
+        /** 제공자 하나의 자격정보와 엔드포인트 재정의. 제공자 이름은 이 record에 없다. */
+        record Provider(
                 @Nullable String clientId,
                 @Nullable String clientSecret,
                 @Nullable String issuerUri,
                 @Nullable String authorizationUri,
                 @Nullable String tokenUri,
-                @Nullable String jwkSetUri) {}
+                @Nullable String jwkSetUri) {
+
+            static Provider empty() {
+                return new Provider(null, null, null, null, null, null);
+            }
+        }
     }
 
     /**
      * 이 애플리케이션이 아는 제공자 등록.
      *
-     * <p>{@link ClientRegistrationRepository}를 직접 만드는 이유는 세 가지다.
+     * <p>등록 id → {@link ClientRegistration} 맵이다. 단일 제공자를 필드로 들고 있던 모양을 맵으로
+     * 넓힌 것이 Story 1.6의 핵심 변경이며, URL 표면은 이미 제공자 복수형이었다 —
+     * {@code DefaultOAuth2AuthorizationRequestResolver}가 base URI 뒤에서 {@code {registrationId}}를
+     * 뽑고 콜백은 {@code CALLBACK_BASE_URI + "/*"} 와일드카드다. 그래서 제공자를 늘리는 데 새 경로
+     * 배선이 없다.
+     *
+     * <p>{@link ClientRegistrationRepository}를 직접 만드는 이유는 셋이다.
      *
      * <ul>
      *   <li>자격정보가 없는 구성에서 기동이 실패하지 않아야 한다. Boot의 property 매핑은
      *       {@code client-id}가 비면 {@code ClientRegistration.build()}에서 예외를 던지고, 그 예외는
      *       컨텍스트 생성 실패라 개발·CI 스택의 백엔드가 healthy가 되지 못한다. 여기서는 값이
-     *       비면 등록을 만들지 않고 "구성되지 않음" 상태로 남는다.
+     *       비면 그 제공자의 등록을 만들지 않고 "구성되지 않음" 상태로 남는다.
      *   <li>{@code issuer-uri}를 discovery 없이 실어야 한다. Boot의 {@code provider.<id>.issuer-uri}는
-     *       기동 시점에 discovery 왕복을 하고, 그 왕복은 Google에 대한 네트워크 의존을 기동
-     *       경로에 만든다. {@code CommonOAuth2Provider.GOOGLE}은 {@code issuerUri}까지 정적으로
-     *       들고 있어 {@code iss} 검증이 네트워크 없이 성립한다.
+     *       기동 시점에 discovery 왕복을 하고, 그 왕복은 제공자에 대한 네트워크 의존을 기동 경로에
+     *       만든다. Google은 {@code CommonOAuth2Provider.GOOGLE}이, 네이버는 아래
+     *       {@link #NAVER_ISSUER_URI} 이하 네 상수가 그 값을 정적으로 들고 있어 {@code iss} 검증이
+     *       네트워크 없이 성립한다.
      *   <li>PKCE를 명시한다. Spring Security 7의 기본값이 이미 {@code requireProofKey = true}지만,
      *       기본값이 바뀌면 조용히 꺼지는 자리라 계약으로 적는다.
      * </ul>
+     *
+     * <p><b>fail-closed가 제공자 단위로 독립한다.</b> 판정을 한 번에 접으면 네이버 자격정보가 없는
+     * 환경에서 Google 로그인까지 죽는다. 그래서 아래 {@link #from}은 제공자마다 따로 판정하고 맵에
+     * 넣거나 넣지 않는다. {@code publicBaseUrl}만 두 제공자가 공유하는 값이다 — 그것이 비면
+     * redirect URI를 조립할 수 없으므로 어느 제공자도 만들어지지 않는 것이 맞다.
      */
-    static final class GoogleClientRegistrations implements ClientRegistrationRepository {
+    static final class ProviderClientRegistrations implements ClientRegistrationRepository {
 
-        private final @Nullable ClientRegistration google;
+        /**
+         * 이 애플리케이션이 이름을 아는 제공자.
+         *
+         * <p>구성 여부와 무관한 닫힌 집합이다. {@code AuthSessionController}가 "모르는 제공자"(404)와
+         * "아는 제공자인데 구성되지 않았다"(500)를 가르는 데 쓰며, 그 판정은 아래 맵으로 할 수 없다 —
+         * 구성된 제공자의 인증 시작은 필터가 302로 끝내므로 컨트롤러에 도달하는 것은 언제나 맵에
+         * 없는 이름이고, 맵을 술어로 쓰면 모든 요청이 404가 되어 fail-closed의 500이 사라진다.
+         */
+        private static final Set<String> SUPPORTED_REGISTRATION_IDS =
+                Set.of(GOOGLE_REGISTRATION_ID, NAVER_REGISTRATION_ID);
 
-        private GoogleClientRegistrations(@Nullable ClientRegistration google) {
-            this.google = google;
+        private final Map<String, ClientRegistration> registrations;
+
+        private ProviderClientRegistrations(Map<String, ClientRegistration> registrations) {
+            this.registrations = Map.copyOf(registrations);
         }
 
-        static GoogleClientRegistrations from(AuthProperties properties) {
-            AuthProperties.Google google = properties.google();
+        static ProviderClientRegistrations from(AuthProperties properties) {
             String baseUrl = normalizedBaseUrl(properties.publicBaseUrl());
-            if (!hasText(google.clientId()) || !hasText(google.clientSecret()) || baseUrl == null) {
-                // fail-closed. 인증 시작은 아래 `AuthSessionController`가 공통 오류 계약으로 답한다.
-                return new GoogleClientRegistrations(null);
+            Map<String, ClientRegistration> registrations = new LinkedHashMap<>();
+            put(registrations, GOOGLE_REGISTRATION_ID, googleBuilder(), properties.google(), baseUrl);
+            put(registrations, NAVER_REGISTRATION_ID, naverBuilder(), properties.naver(), baseUrl);
+            rejectSharedIssuer(registrations);
+            return new ProviderClientRegistrations(registrations);
+        }
+
+        /**
+         * 두 등록이 같은 issuer를 가리키는 구성을 기동에서 거부한다.
+         *
+         * <p>계정 조회의 키가 {@code (issuer, subject)}이고 그 조합이 전역 유일이기 때문이다
+         * ({@code AccountLifecycleApi#findUserIdBySocialIdentity}, {@code V1__identity_account.sql}).
+         * 그래서 {@code bokrilog.auth.naver.issuer-uri}에 Google의 issuer가 잘못 들어오면 네이버로
+         * 로그인한 사용자의 {@code sub}이 Google 쪽 매핑과 같은 namespace에서 조회되고, 그 매핑이
+         * 있으면 <b>그 계정의 세션이 개설된다</b>. 두 제공자 식별자의 병합·전환은 이 스토리가 Never로
+         * 금지한 것이며 그것이 구성 오류 하나로 열리는 경로가 여기다.
+         *
+         * <p>조회 키에 제공자를 더하는 방향을 택하지 않는다. 그것은 {@code identity} 공개 API의
+         * 변경이고 이 스토리의 Ask First다. 이 검사는 잘못 구성된 프로세스가 아예 뜨지 못하게
+         * 하는 것이라 어느 계약도 넓히지 않는다.
+         *
+         * <p>메시지에 자격정보도 {@code BOKRILOG_} 환경 변수 이름도 어느 제공자인지도 적지 않는다
+         * ({@code DevOidcStubConfig}의 기동 guard와 같은 규율이다). 기동 실패 로그도 로그이며 답은
+         * 어느 쪽이든 "제공자마다 다른 issuer를 구성한다" 하나다.
+         */
+        private static void rejectSharedIssuer(Map<String, ClientRegistration> registrations) {
+            Set<String> seen = new HashSet<>();
+            for (ClientRegistration registration : registrations.values()) {
+                String issuer = registration.getProviderDetails().getIssuerUri();
+                if (issuer == null) {
+                    // 이 배선은 issuer 없는 등록을 만들지 않는다. 그래도 조용히 지나간다 —
+                    // 비교할 값이 없는 것은 겹침이 아니다.
+                    continue;
+                }
+                if (!seen.add(issuer)) {
+                    throw new IllegalStateException(
+                            "두 제공자 등록이 같은 issuer를 가리킨다. 제공자마다 다른 issuer를 구성한다.");
+                }
+            }
+        }
+
+        /**
+         * 제공자 하나를 판정해 맵에 넣는다.
+         *
+         * <p>거부는 그 제공자만 빠지는 것이다. 인증 시작은 {@code AuthSessionController}가 공통 오류
+         * 계약으로 답하고, 다른 제공자의 등록은 아무 영향을 받지 않는다.
+         */
+        private static void put(
+                Map<String, ClientRegistration> registrations,
+                String registrationId,
+                ClientRegistration.Builder builder,
+                AuthProperties.Provider provider,
+                @Nullable String baseUrl) {
+            if (!hasText(provider.clientId())
+                    || !hasText(provider.clientSecret())
+                    || baseUrl == null) {
+                // fail-closed.
+                return;
             }
 
-            ClientRegistration.Builder builder =
-                    CommonOAuth2Provider.GOOGLE
-                            .getBuilder(GOOGLE_REGISTRATION_ID)
-                            .clientId(google.clientId())
-                            .clientSecret(google.clientSecret())
-                            // 절대 URI다. 요청 Host에서 조립하지 않으므로 Nginx가 포트를 잃는 것과
-                            // 무관하고, "사전 등록된 정확한 redirect URI"와 같은 모양이다.
-                            .redirectUri(baseUrl + CALLBACK_BASE_URI + "/" + GOOGLE_REGISTRATION_ID)
-                            // 기본 동의 범위는 openid뿐이다. `CommonOAuth2Provider.GOOGLE`이 넣는
-                            // profile·email을 이 한 줄이 대체한다(`scope`는 더하지 않고 바꾼다).
-                            .scope(OidcScopes.OPENID)
-                            // UserInfo를 부르지 않는다. Spring Security 7의 `shouldRetrieveUserInfo`는
-                            // scope가 아니라 이 URI의 존재로 판단하므로, 비우지 않으면 openid만
-                            // 요청했는데도 제공자의 UserInfo 왕복이 일어난다. 우리가 필요한 값은
-                            // ID Token의 `iss`·`sub` 둘뿐이다.
-                            .userInfoUri(null)
-                            .clientSettings(
-                                    ClientRegistration.ClientSettings.builder()
-                                            .requireProofKey(true)
-                                            .build());
+            builder
+                    .clientId(provider.clientId())
+                    .clientSecret(provider.clientSecret())
+                    // 절대 URI다. 요청 Host에서 조립하지 않으므로 Nginx가 포트를 잃는 것과
+                    // 무관하고, "사전 등록된 정확한 redirect URI"와 같은 모양이다.
+                    .redirectUri(baseUrl + CALLBACK_BASE_URI + "/" + registrationId)
+                    /*
+                     * 기본 동의 범위는 openid뿐이다. `CommonOAuth2Provider.GOOGLE`이 넣는
+                     * profile·email을 이 한 줄이 대체한다(`scope`는 더하지 않고 바꾼다). 네이버
+                     * discovery는 `openid`·`profile`을 광고하지만 `profile`을 요청하지 않는다 —
+                     * 필요한 값은 ID Token의 `iss`·`sub` 둘뿐이다.
+                     */
+                    .scope(OidcScopes.OPENID)
+                    // UserInfo를 부르지 않는다. Spring Security 7의 `shouldRetrieveUserInfo`는
+                    // scope가 아니라 이 URI의 존재로 판단하므로, 비우지 않으면 openid만
+                    // 요청했는데도 제공자의 UserInfo 왕복이 일어난다.
+                    .userInfoUri(null)
+                    .clientSettings(
+                            ClientRegistration.ClientSettings.builder()
+                                    .requireProofKey(true)
+                                    .build());
 
-            // 엔드포인트 재정의. 값이 없으면 Google 정본 주소가 그대로 남는다.
-            if (hasText(google.issuerUri())) {
-                builder.issuerUri(google.issuerUri());
+            // 엔드포인트 재정의. 값이 없으면 위 builder가 들고 온 제공자 정본 주소가 남는다.
+            if (hasText(provider.issuerUri())) {
+                builder.issuerUri(provider.issuerUri());
             }
-            if (hasText(google.authorizationUri())) {
-                builder.authorizationUri(google.authorizationUri());
+            if (hasText(provider.authorizationUri())) {
+                builder.authorizationUri(provider.authorizationUri());
             }
-            if (hasText(google.tokenUri())) {
-                builder.tokenUri(google.tokenUri());
+            if (hasText(provider.tokenUri())) {
+                builder.tokenUri(provider.tokenUri());
             }
-            if (hasText(google.jwkSetUri())) {
-                builder.jwkSetUri(google.jwkSetUri());
+            if (hasText(provider.jwkSetUri())) {
+                builder.jwkSetUri(provider.jwkSetUri());
             }
-            return new GoogleClientRegistrations(builder.build());
+            registrations.put(registrationId, builder.build());
+        }
+
+        private static ClientRegistration.Builder googleBuilder() {
+            return CommonOAuth2Provider.GOOGLE.getBuilder(GOOGLE_REGISTRATION_ID);
+        }
+
+        /**
+         * 네이버 등록의 뼈대.
+         *
+         * <p>{@code CommonOAuth2Provider}에 NAVER가 없다(상수는 {@code GOOGLE}·{@code GITHUB}·
+         * {@code FACEBOOK}·{@code OKTA} 넷뿐이다). 그래서 Google과 달리 엔드포인트 네 개와
+         * {@code userNameAttributeName}·{@code authorizationGrantType}·
+         * {@code clientAuthenticationMethod}가 모두 필수 입력이고, 이 메서드가 그 값을 든다.
+         *
+         * <p>{@code client_secret_post}인 것은 네이버가 그렇게 광고하기 때문이다. discovery의
+         * {@code token_endpoint_auth_methods_supported}가 {@code [client_secret_post, none]}이라
+         * Spring Security의 기본값({@code client_secret_basic})으로는 토큰 교환이 성립하지 않는다.
+         */
+        private static ClientRegistration.Builder naverBuilder() {
+            return ClientRegistration.withRegistrationId(NAVER_REGISTRATION_ID)
+                    .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
+                    .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_POST)
+                    .issuerUri(NAVER_ISSUER_URI)
+                    .authorizationUri(NAVER_AUTHORIZATION_URI)
+                    .tokenUri(NAVER_TOKEN_URI)
+                    .jwkSetUri(NAVER_JWK_SET_URI)
+                    // ID Token의 주체 claim. `CommonOAuth2Provider`가 없으므로 기본값도 없다.
+                    .userNameAttributeName(IdTokenClaimNames.SUB);
         }
 
         @Override
         public @Nullable ClientRegistration findByRegistrationId(String registrationId) {
-            return GOOGLE_REGISTRATION_ID.equals(registrationId) ? this.google : null;
+            return this.registrations.get(registrationId);
         }
 
         /**
-         * 쓸 수 있는 제공자 등록이 있는가.
+         * 쓸 수 있는 제공자 등록이 하나라도 있는가.
          *
          * <p>없으면 인증 필터를 배선하지 않는다. 필터를 두고 등록만 비우면 인증 시작이 필터 안의
          * 예외로 끝나고, 그 예외는 스택과 함께 로그에 실린다. 그것은 "내부 경로·스택을 로그에도
          * 남기지 않는다"와 정면으로 부딪힌다.
+         *
+         * <p>"하나 이상"이다. 제공자 하나만 구성된 환경에서 그 하나로 로그인할 수 있어야 하고,
+         * 전부를 요구하면 개발 환경의 부분 구성이 인증 표면을 통째로 죽인다.
          */
         boolean isConfigured() {
-            return this.google != null;
+            return !this.registrations.isEmpty();
+        }
+
+        /**
+         * 이 애플리케이션이 이름을 아는 제공자인가.
+         *
+         * <p>구성 여부를 보지 않는다. 이름조차 모르는 제공자는 그 경로가 존재하지 않는 것이고(404),
+         * 아는 이름인데 구성되지 않은 것은 요청을 처리할 수 없는 것이다(500). 두 답이 갈리는 자리는
+         * {@code AuthSessionController} 하나이며 판정은 여기 있다.
+         */
+        static boolean isSupportedProvider(String registrationId) {
+            return SUPPORTED_REGISTRATION_IDS.contains(registrationId);
         }
 
         /**
@@ -292,8 +454,8 @@ class AuthSecurityConfig {
     }
 
     @Bean
-    GoogleClientRegistrations googleClientRegistrations(AuthProperties properties) {
-        return GoogleClientRegistrations.from(properties);
+    ProviderClientRegistrations providerClientRegistrations(AuthProperties properties) {
+        return ProviderClientRegistrations.from(properties);
     }
 
     /**
@@ -307,7 +469,7 @@ class AuthSecurityConfig {
      */
     @Bean
     OAuth2AuthorizationRequestResolver authorizationRequestResolver(
-            GoogleClientRegistrations registrations) {
+            ProviderClientRegistrations registrations) {
         DefaultOAuth2AuthorizationRequestResolver delegate =
                 new DefaultOAuth2AuthorizationRequestResolver(registrations, AUTHORIZATION_BASE_URI);
         return new OAuth2AuthorizationRequestResolver() {
@@ -377,7 +539,7 @@ class AuthSecurityConfig {
     @Bean
     SecurityFilterChain authSecurityFilterChain(
             HttpSecurity http,
-            GoogleClientRegistrations registrations,
+            ProviderClientRegistrations registrations,
             AuthProperties properties,
             AuthFlowHandlers handlers)
             throws Exception {
@@ -470,7 +632,8 @@ class AuthSecurityConfig {
                 // 동일 출처 `Origin` 검증. CSRF 토큰 검사보다 앞에 둔다.
                 .addFilterBefore(
                         new SameOriginFilter(
-                                GoogleClientRegistrations.normalizedBaseUrl(properties.publicBaseUrl())),
+                                ProviderClientRegistrations.normalizedBaseUrl(
+                                        properties.publicBaseUrl())),
                         CsrfFilter.class)
                 // 이미 인증된 세션의 로그인 시작 거절과 복귀 목적지 기록.
                 // authorization request를 만드는 필터보다 앞이어야 한다.

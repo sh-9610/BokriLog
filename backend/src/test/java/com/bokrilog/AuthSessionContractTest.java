@@ -51,7 +51,8 @@ class AuthSessionContractTest extends AuthFlowTestBase {
         assertThat(beforeLogin).isNotNull();
 
         String code = issueCode(authorization, TokenPlan.valid(authorization.nonce()));
-        HttpResponse<String> response = callback(beforeLogin, code, authorization.state());
+        HttpResponse<String> response =
+                callback(authorization, beforeLogin, code, authorization.state());
 
         String afterLogin = sessionCookieOf(response).orElseThrow();
         // 세션 고정 공격은 로그인 전에 심어 둔 식별자가 로그인 후에도 유효할 때 성립한다.
@@ -109,7 +110,7 @@ class AuthSessionContractTest extends AuthFlowTestBase {
 
         String code = issueCode(authorization, TokenPlan.valid(authorization.nonce()));
         HttpResponse<String> response =
-                callback(authorization.sessionCookie(), code, authorization.state());
+                callback(authorization, code);
 
         assertThat(response.statusCode()).isEqualTo(302);
         // 로그인한 세션은 구성된 수명을 갖는다. 흐름의 짧은 수명이 그대로 남으면 로그인한
@@ -175,7 +176,7 @@ class AuthSessionContractTest extends AuthFlowTestBase {
         // 그 사이에 삭제 전환이 커밋된다. 콜백은 이 전환 뒤에 도착한다.
         accountDeletion().beginDeletion(userId);
 
-        HttpResponse<String> response = callback(authorization.sessionCookie(), code, authorization.state());
+        HttpResponse<String> response = callback(authorization, code);
 
         assertThat(response.statusCode()).isEqualTo(302);
         assertThat(locationOf(response))

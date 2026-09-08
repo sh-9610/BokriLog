@@ -63,11 +63,17 @@ class AuthSessionService {
      * <p>연결된 계정이 있으면 그 계정의 세션이고, 없으면 신규 가입이다. 이메일이 같은지는 묻지도
      * 않는다 — 이 시그니처에 이메일이 없다.
      *
+     * @param provider 인증에 <b>실제로 쓰인</b> 제공자 등록 id. 흐름이 알려 준 값이며
+     *     ({@code OAuth2AuthenticationToken#getAuthorizedClientRegistrationId()}) 이 클래스가 짐작하지
+     *     않는다. 이 값이 그대로 {@code identity_social_link.provider}에 들어간다 — 리터럴로 두면
+     *     어느 제공자로 로그인해도 같은 이름이 저장되고, 그 컬럼을 술어로 쓰는 이후 스토리
+     *     (로그인 수단 연결·해제)가 거짓을 읽는다
      * @return 세션을 개설해도 되면 그 주체, 아니면 빈 값
      */
-    Optional<AuthSession> establish(String issuer, String subject) {
+    Optional<AuthSession> establish(String provider, String issuer, String subject) {
         for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-            Attempt result = this.transactions.execute(status -> attempt(status, issuer, subject));
+            Attempt result =
+                    this.transactions.execute(status -> attempt(status, provider, issuer, subject));
             if (result == null) {
                 // TransactionTemplate은 콜백이 null을 돌려줄 때만 null이다. 아래 콜백은 언제나
                 // 값을 돌려주므로 여기 오는 것은 계약이 깨진 상태이고, 안전한 답은 거부다.
@@ -89,7 +95,8 @@ class AuthSessionService {
      */
     private record Attempt(@Nullable AuthSession session, boolean contended) {}
 
-    private Attempt attempt(TransactionStatus status, String issuer, String subject) {
+    private Attempt attempt(
+            TransactionStatus status, String provider, String issuer, String subject) {
         Optional<UUID> existing = this.accountLifecycle.findUserIdBySocialIdentity(issuer, subject);
         if (existing.isPresent()) {
             UUID userId = existing.get();
@@ -102,8 +109,7 @@ class AuthSessionService {
 
         // 미연결 식별자는 신규 가입으로만 처리한다. 이메일 일치로 기존 계정에 붙이는 경로가 없다.
         UUID userId = this.accountLifecycle.createAccount();
-        if (this.accountLifecycle.linkSocialIdentity(
-                        userId, AuthSecurityConfig.GOOGLE_REGISTRATION_ID, issuer, subject)
+        if (this.accountLifecycle.linkSocialIdentity(userId, provider, issuer, subject)
                 != AccessDecision.ALLOWED) {
             /*
              * 거부다. 이 흐름이 방금 만든 계정은 아무 매핑도 갖지 못했으므로 남겨 두면 아무도
