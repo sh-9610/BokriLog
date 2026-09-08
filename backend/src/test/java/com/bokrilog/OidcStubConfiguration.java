@@ -8,6 +8,8 @@ import java.io.UncheckedIOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.springframework.test.context.DynamicPropertyRegistry;
 
@@ -25,13 +27,18 @@ import org.springframework.test.context.DynamicPropertyRegistry;
  * 시험({@code e2e/auth-entry.spec.ts})이 검증한다.
  *
  * <p>Spring 빈을 등록하지 않는다. 시험이 필요한 것은 배선이 아니라 구성 값이므로
- * {@link #registerProperties(DynamicPropertyRegistry)}가 {@code bokrilog.auth.*} 일곱 개를 채운다.
- * 그래서 운영 코드의 {@code ClientRegistrationRepository} 빈이 하나로 유지되고, 시험이 검증하는
- * 배선이 곧 운영이 쓰는 배선이다.
+ * {@link #registerProperties(DynamicPropertyRegistry)}가 {@code bokrilog.auth.*}를 제공자마다
+ * 여섯 개씩 채운다. 그래서 운영 코드의 {@code ClientRegistrationRepository} 빈이 하나로 유지되고,
+ * 시험이 검증하는 배선이 곧 운영이 쓰는 배선이다.
+ *
+ * <p>제공자마다 스텁 인스턴스가 하나다. issuer·client·서명 키가 인스턴스 단위이므로
+ * {@link DevOidcStub}을 두 번 만드는 것으로 두 제공자가 성립하고, 한쪽 스텁이 서명한 ID Token은
+ * 다른 쪽의 JWKS로 검증되지 않는다 — 그것이 "두 제공자의 식별자를 병합·전환하지 않는다"를 시험에서
+ * 실제로 재현할 수 있게 하는 조건이다. 루프백 서버는 하나이며 컨텍스트 경로가 제공자로 갈린다.
  *
  * <p>{@code /authorize}를 올리지 않는다. 시험은 인가 요청의 쿼리를 직접 읽고
- * {@link DevOidcStub#issueCode(TokenPlan)}로 계획을 등록하므로 그 왕복을 브라우저처럼 지나지 않는다.
- * 동의 화면은 브라우저가 지나는 경로이며 위 두 검증이 담당한다.
+ * {@link #issueCode(String, TokenPlan, Map)}로 계획을 등록하므로 그 왕복을 브라우저처럼 지나지
+ * 않는다. 동의 화면은 브라우저가 지나는 경로이며 위 두 검증이 담당한다.
  */
 final class OidcStubConfiguration {
 
@@ -47,47 +54,94 @@ final class OidcStubConfiguration {
 
     private static final Front FRONT = Front.start();
 
-    /** 스텁이 실행 시점에 만든 client id. 소스에 자격정보 모양 리터럴을 두지 않는다. */
-    static final String CLIENT_ID = FRONT.stub.clientId();
+    /** 스텁이 실행 시점에 만든 Google client id. 소스에 자격정보 모양 리터럴을 두지 않는다. */
+    static final String CLIENT_ID = clientId(AuthSecurityConfig.GOOGLE_REGISTRATION_ID);
 
-    static final String CLIENT_SECRET = FRONT.stub.clientSecret();
+    static final String CLIENT_SECRET = clientSecret(AuthSecurityConfig.GOOGLE_REGISTRATION_ID);
 
     private OidcStubConfiguration() {}
 
-    /** 스텁을 가리키는 인증 구성. {@code AuthFlowTestBase}의 {@code @DynamicPropertySource}가 부른다. */
+    /**
+     * 스텁을 가리키는 인증 구성. {@code AuthFlowTestBase}의 {@code @DynamicPropertySource}가 부른다.
+     *
+     * <p>두 제공자를 함께 채운다. 하나만 채우면 나머지 제공자의 등록이 없는 컨텍스트가 되고,
+     * 그것을 쓰는 시험은 새 {@code @DynamicPropertySource}를 요구해 컨텍스트가 갈라진다 — 그 비용은
+     * {@code backend-quality}의 wall-clock이다. 제공자 하나만 구성된 상태의 계약은 컨텍스트가 아니라
+     * {@code ProviderClientRegistrations.from()}을 직접 부르는 단정이 확인한다.
+     */
     static void registerProperties(DynamicPropertyRegistry registry) {
         registry.add("bokrilog.auth.public-base-url", () -> PUBLIC_BASE_URL);
-        registry.add("bokrilog.auth.google.client-id", () -> CLIENT_ID);
-        registry.add("bokrilog.auth.google.client-secret", () -> CLIENT_SECRET);
-        registry.add("bokrilog.auth.google.issuer-uri", OidcStubConfiguration::issuer);
-        registry.add("bokrilog.auth.google.authorization-uri", () -> issuer() + "/authorize");
-        registry.add("bokrilog.auth.google.token-uri", () -> issuer() + "/token");
-        registry.add("bokrilog.auth.google.jwk-set-uri", () -> issuer() + "/jwks");
+        for (String provider :
+                List.of(
+                        AuthSecurityConfig.GOOGLE_REGISTRATION_ID,
+                        AuthSecurityConfig.NAVER_REGISTRATION_ID)) {
+            registry.add("bokrilog.auth." + provider + ".client-id", () -> clientId(provider));
+            registry.add(
+                    "bokrilog.auth." + provider + ".client-secret", () -> clientSecret(provider));
+            registry.add("bokrilog.auth." + provider + ".issuer-uri", () -> issuer(provider));
+            registry.add(
+                    "bokrilog.auth." + provider + ".authorization-uri",
+                    () -> issuer(provider) + "/authorize");
+            registry.add(
+                    "bokrilog.auth." + provider + ".token-uri", () -> issuer(provider) + "/token");
+            registry.add(
+                    "bokrilog.auth." + provider + ".jwk-set-uri", () -> issuer(provider) + "/jwks");
+        }
     }
 
-    /** 이 스텁이 주장하는 {@code iss}. 정상 흐름의 ID Token이 담는 값이다. */
+    /** Google 스텁이 주장하는 {@code iss}. Story 1.4의 시험들이 인자 없이 이 값을 쓴다. */
     static String issuer() {
-        return FRONT.stub.issuer();
+        return issuer(AuthSecurityConfig.GOOGLE_REGISTRATION_ID);
+    }
+
+    /**
+     * 그 제공자 스텁이 주장하는 {@code iss}. 정상 흐름의 ID Token이 담는 값이다.
+     *
+     * <p>두 값이 서로 다르다는 것이 계약이다. {@code (issuer, subject)}가 전역 유일이므로 같은
+     * {@code subject} 문자열이 두 제공자에서 와도 별개 계정이 되고, 그 사실을 단정하는 시험은 이
+     * 메서드가 제공자별로 다른 값을 돌려주는 데 의존한다.
+     */
+    static String issuer(String provider) {
+        return FRONT.stub(provider).issuer();
+    }
+
+    static String clientId(String provider) {
+        return FRONT.stub(provider).clientId();
+    }
+
+    static String clientSecret(String provider) {
+        return FRONT.stub(provider).clientSecret();
     }
 
     /**
      * 계획대로 응답할 authorization code를 만들고 그 인가 요청에 귀속시킨다.
      *
+     * @param provider 그 인가 요청을 만든 제공자 등록 id. 스텁 인스턴스를 고르는 값이며, 틀리면
+     *     client id·challenge 검사가 어긋나 토큰 교환이 {@code invalid_grant}로 끝난다
      * @param authorizationRequest 서버가 만든 인가 요청의 쿼리 파라미터. 스텁이 여기서
      *     {@code code_challenge}·{@code redirect_uri}·{@code client_id}를 붙들어 두고 토큰 교환에서
      *     다시 확인한다. 귀속 없이 code를 발급할 수 있게 두면 PKCE 결합이 깨져도 시험이 통과한다
      */
-    static String issueCode(TokenPlan plan, Map<String, String> authorizationRequest) {
-        return FRONT.stub.issueCode(plan, authorizationRequest);
+    static String issueCode(
+            String provider, TokenPlan plan, Map<String, String> authorizationRequest) {
+        return FRONT.stub(provider).issueCode(plan, authorizationRequest);
     }
 
     /** JDK 내장 HTTP 서버로 도는 표면. 시험 JVM에 하나만 뜬다. */
     private static final class Front {
 
-        private final DevOidcStub stub;
+        private final Map<String, DevOidcStub> stubs;
 
-        private Front(DevOidcStub stub) {
-            this.stub = stub;
+        private Front(Map<String, DevOidcStub> stubs) {
+            this.stubs = stubs;
+        }
+
+        DevOidcStub stub(String provider) {
+            DevOidcStub stub = this.stubs.get(provider);
+            if (stub == null) {
+                throw new IllegalArgumentException("스텁이 없는 제공자다: " + provider);
+            }
+            return stub;
         }
 
         static Front start() {
@@ -98,11 +152,26 @@ final class OidcStubConfiguration {
                         HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
                 // `create`가 이미 포트를 바인딩했으므로 `start` 앞에서도 실제 포트를 알 수 있다.
                 // 스텁의 `iss`는 그 주소여야 제공자 등록의 `issuer-uri`와 한 쌍이 된다.
-                DevOidcStub stub =
-                        new DevOidcStub("http://127.0.0.1:" + server.getAddress().getPort());
-                Front front = new Front(stub);
-                server.createContext("/jwks", front::handleJwks);
-                server.createContext("/token", front::handleToken);
+                String origin = "http://127.0.0.1:" + server.getAddress().getPort();
+                Map<String, DevOidcStub> stubs = new LinkedHashMap<>();
+                for (String provider :
+                        List.of(
+                                AuthSecurityConfig.GOOGLE_REGISTRATION_ID,
+                                AuthSecurityConfig.NAVER_REGISTRATION_ID)) {
+                    // issuer가 제공자마다 다르다. 경로 세그먼트 하나가 그 차이를 만들고, 아래
+                    // 컨텍스트가 같은 세그먼트로 갈린다.
+                    stubs.put(provider, new DevOidcStub(origin + "/" + provider));
+                }
+                Front front = new Front(Map.copyOf(stubs));
+                for (Map.Entry<String, DevOidcStub> entry : stubs.entrySet()) {
+                    DevOidcStub stub = entry.getValue();
+                    server.createContext(
+                            "/" + entry.getKey() + "/jwks",
+                            exchange -> respond(exchange, stub.jwks()));
+                    server.createContext(
+                            "/" + entry.getKey() + "/token",
+                            exchange -> handleToken(stub, exchange));
+                }
                 server.setExecutor(null);
                 server.start();
                 return front;
@@ -111,18 +180,18 @@ final class OidcStubConfiguration {
             }
         }
 
-        private void handleJwks(HttpExchange exchange) throws IOException {
-            respond(exchange, this.stub.jwks());
-        }
-
-        private void handleToken(HttpExchange exchange) throws IOException {
+        private static void handleToken(DevOidcStub stub, HttpExchange exchange) throws IOException {
             String body =
                     new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             respond(
                     exchange,
-                    this.stub.token(
+                    stub.token(
                             DevOidcStub.parseForm(body),
-                            // client 자격정보는 `client_secret_basic`으로 온다.
+                            /*
+                             * client 자격정보는 등록의 인증 방법에 따라 이 헤더
+                             * (`client_secret_basic`)로 오거나 본문(`client_secret_post`)으로 온다.
+                             * 스텁이 둘 다 받으므로 제공자마다 분기하지 않는다.
+                             */
                             exchange.getRequestHeaders().getFirst("Authorization")));
         }
 

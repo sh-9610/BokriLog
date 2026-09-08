@@ -137,15 +137,31 @@
  * BokriLog가 소유하는 것은 순서·동등한 시각 면적·간격·최소 44×44px 목표 크기·포커스 링뿐이다.
  * 표면을 `surface-subtle`로 두는 이유는 Google 가이드의 흰 버튼이 흰 카드 위에서 경계만으로
  * 구분되기 때문이다. 버튼의 채움색을 바꾸는 대신 배경을 낮춘다.
+ *
+ * 섹션의 간격은 `--space-3`이 아니라 제목·목록·안내문 사이의 일반 간격이다.
+ * `--component-social-sign-in-gap`은 제공자 목록 안쪽이 소유하므로 아래 `.providerList`가 쓴다 —
+ * 여기 두면 그 값이 안내문까지 밀어내고, 값의 뜻("제공자 버튼 사이의 바깥 간격")과 어긋난다.
  */
 .signIn {
   display: flex;
   flex-direction: column;
-  gap: var(--component-social-sign-in-gap);
+  gap: var(--space-4);
   padding: var(--space-5);
   border-radius: var(--radius-lg);
   background-color: var(--color-surface-subtle);
   border: 1px solid var(--color-border-default);
+}
+
+/*
+ * 제공자 목록. 전체 폭 세로 스택이고 순서는 문서 순서가 정한다(DESIGN.md).
+ *
+ * 간격만 소유한다. 두 버튼의 시각 면적은 각자의 규칙이 같은 최소 목표 크기와 전체 폭을 쓰므로
+ * 동등하고, 여기서 크기를 다시 정하지 않는다.
+ */
+.providerList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--component-social-sign-in-gap);
 }
 
 /*
@@ -186,6 +202,62 @@
    * `overflow: visible`은 UA 기본값(`hidden`)을 되돌려 놓는다. 잘라내지 않는 요소여야
    * "텍스트가 잘리지 않는다"를 관측하는 E2E가 이 요소를 후보로 삼지 않는다.
    */
+  flex: none;
+  overflow: visible;
+}
+
+/*
+ * 네이버 버튼.
+ *
+ * 채움색·글자색·로고색·로고 간격은 네이버 공식 버튼 가이드가 소유하고 값은 tokens.css의 `-naver-`
+ * 토큰이 기록한다("지정 컬러는 변경할 수 없으며"). 녹색 완성형을 쓰는 것은 가이드가 "타사 버튼이
+ * 컬러일 경우 흰색 배경 버튼 지양"과 "타사 로그인 버튼과 같이 사용될 때 크기를 줄이는 것을 지양"을
+ * 적었기 때문이다 — 흰 Google 버튼 옆에서 그 두 문장을 함께 지키는 선택이 이것이다.
+ *
+ * 모서리 반경과 내부 여백은 BokriLog가 소유한다. 가이드 본문이 그 두 축의 수치를 주지 않으므로
+ * (권위 있는 값은 내려받는 애셋에 있다) 없는 브랜드 값을 지어내는 대신 기존 `--radius-*`·`--space-*`
+ * 를 쓴다. 테두리도 두지 않는다 — 채움색 버튼이라 가이드가 테두리를 정의하지 않는다.
+ *
+ * 글꼴 계열은 Google 버튼과 같은 이유로 BokriLog의 시스템 폰트 스택이다. 크기와 굵기만 이 버튼
+ * 전용 토큰을 쓰고 `--type-label-*`을 쓰지 않는다 — 공표된 배경·레이블 조합의 대비가 3.095:1이라
+ * 일반 텍스트 하한 4.5:1은 넘지 못하고 큰 텍스트 하한 3:1은 넘으므로, 색을 바꿀 수 없는 이 버튼이
+ * 접근성 하한을 지키는 축은 크기 하나다. label의 굵기 600은 큰 텍스트 판정에서 bold로 세지 않는다
+ * (기준은 700이다). 근거는 tokens.css의 `-naver-label-` 주석이 소유한다.
+ *
+ * 가이드의 "텍스트는 로고 높이보다 작은 크기"도 함께 지킨다 — 레이블 20px < 로고 24px이다.
+ *
+ * 내부 여백이 Google 버튼보다 좁은 `--space-3`인 것은 그 크기의 대가다. 320 CSS px에서 버튼 폭은
+ * 238px이고 로고 24px + 간격 8px + 레이블 한 줄이 그 안에 들어가야 한다. 실측 레이블 폭은
+ * 142.8px이라 `--space-4`로도 들어가지만, 그 값은 이 기기의 한글 자간에 기댄 값이다 — 한글
+ * 글자당 1em을 쓰는 대체 폰트(러너 환경이 그럴 수 있다)에서는 약 165px이 되어 `--space-4`의
+ * 여유가 한 자릿수 px로 떨어지고 레이블이 두 줄로 접힌다. 좁은 여백이 그 경우를 흡수한다.
+ *
+ * 포커스 표시는 global.css의 전역 `:focus-visible`이 처리한다. 여기서 다시 선언하면 특이도가
+ * 올라가 forced-colors 탈출구를 이겨 버린다.
+ */
+.naverButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--component-social-sign-in-naver-logo-gap);
+  inline-size: 100%;
+  min-block-size: var(--component-social-sign-in-min-target-size);
+  min-inline-size: var(--component-social-sign-in-min-target-size);
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--component-social-sign-in-naver-background);
+  color: var(--component-social-sign-in-naver-foreground);
+  font-size: var(--component-social-sign-in-naver-label-font-size);
+  font-weight: var(--component-social-sign-in-naver-label-font-weight);
+  line-height: var(--type-label-line-height);
+  text-decoration: none;
+}
+
+.naverMark {
+  inline-size: var(--component-social-sign-in-naver-logo-size);
+  block-size: var(--component-social-sign-in-naver-logo-size);
+
+  /* 근거는 위 `.googleMark`와 같다. */
   flex: none;
   overflow: visible;
 }

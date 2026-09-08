@@ -284,29 +284,46 @@ class StatusApiTest {
     @Test
     void 자격정보가_없으면_인증_시작이_공통_오류_계약으로_fail_closed다() throws Exception {
         /*
-         * I/O 매트릭스의 "자격정보 없는 개발·CI 스택" 행이다. 이 컨텍스트에는 제공자 자격정보가
-         * 없어 Google 등록이 만들어지지 않고 인증 필터도 배선되지 않는다. 그 상태의 인증 시작은
-         * 성공이나 빈 데이터로 위장하지 않고 요청을 처리할 수 없다고 답해야 한다.
+         * I/O 매트릭스의 "자격정보 없는 개발·CI 스택" 행이다. 이 컨텍스트에는 어느 제공자의
+         * 자격정보도 없어 등록이 하나도 만들어지지 않고 인증 필터도 배선되지 않는다. 그 상태의
+         * 인증 시작은 성공이나 빈 데이터로 위장하지 않고 요청을 처리할 수 없다고 답해야 한다.
          *
-         * 이 두 응답에 단정이 없으면 fail-closed가 200이나 302로 바뀌어도, 인증 시작이 프레임워크
+         * 이 응답들에 단정이 없으면 fail-closed가 200이나 302로 바뀌어도, 인증 시작이 프레임워크
          * 예외로 끝나 스택이 본문에 실려도 아무 시험이 실패하지 않는다.
+         *
+         * 아는 제공자 둘의 답이 같다. Story 1.6이 네이버를 더했으므로 그 경로도 여기서 500이며,
+         * 두 응답이 갈리면 그 차이가 곧 "어느 제공자가 구성됐는가"를 알려 주는 신호가 된다.
          */
-        HttpResponse<String> configured = send("GET", "/api/auth/authorize/google");
+        for (String provider :
+                new String[] {
+                    AuthSecurityConfig.GOOGLE_REGISTRATION_ID,
+                    AuthSecurityConfig.NAVER_REGISTRATION_ID
+                }) {
+            HttpResponse<String> configured = send("GET", "/api/auth/authorize/" + provider);
 
-        assertThat(configured.statusCode()).isEqualTo(500);
-        assertThat(configured.headers().firstValue("Content-Type").orElse(""))
-                .startsWith("application/json");
-        assertThat(configured.body()).contains("\"code\":\"INTERNAL_ERROR\"");
-        assertThat(correlationIdOf(configured.body())).isNotEmpty();
-        // 어떤 값이 비어 있는지 알려 주지 않는다. 환경 변수 이름도 응답에 남기지 않는다.
-        assertThat(configured.body()).doesNotContain("BOKRILOG_");
-        assertNoLeak(configured.body());
+            assertThat(configured.statusCode()).isEqualTo(500);
+            assertThat(configured.headers().firstValue("Content-Type").orElse(""))
+                    .startsWith("application/json");
+            assertThat(configured.body()).contains("\"code\":\"INTERNAL_ERROR\"");
+            assertThat(correlationIdOf(configured.body())).isNotEmpty();
+            // 어떤 값이 비어 있는지 알려 주지 않는다. 환경 변수 이름도 응답에 남기지 않는다.
+            assertThat(configured.body()).doesNotContain("BOKRILOG_");
+            assertNoLeak(configured.body());
+        }
 
-        // 모르는 제공자의 경로는 존재하지 않는다. 네이버·카카오는 Story 1.6·1.7이 더한다.
-        HttpResponse<String> unknown = send("GET", "/api/auth/authorize/naver");
+        /*
+         * 모르는 제공자의 경로는 존재하지 않는다. 카카오는 Story 1.7이 더한다.
+         *
+         * 응답이 아는 제공자 이름을 되비추지 않는다. 되비추면 이 경로가 곧 "이 서비스가 어떤
+         * 제공자를 아는가"를 알아내는 표면이 된다.
+         */
+        HttpResponse<String> unknown = send("GET", "/api/auth/authorize/kakao");
 
         assertThat(unknown.statusCode()).isEqualTo(404);
         assertThat(unknown.body()).contains("\"code\":\"NOT_FOUND\"");
+        assertThat(unknown.body()).doesNotContain("kakao");
+        assertThat(unknown.body()).doesNotContain(AuthSecurityConfig.GOOGLE_REGISTRATION_ID);
+        assertThat(unknown.body()).doesNotContain(AuthSecurityConfig.NAVER_REGISTRATION_ID);
         assertNoLeak(unknown.body());
     }
 

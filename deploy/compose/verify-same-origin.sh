@@ -103,6 +103,8 @@ forbidden_fragments=(
   'BOKRILOG_PUBLIC_BASE_URL'
   'BOKRILOG_GOOGLE_CLIENT_ID'
   'BOKRILOG_GOOGLE_CLIENT_SECRET'
+  'BOKRILOG_NAVER_CLIENT_ID'
+  'BOKRILOG_NAVER_CLIENT_SECRET'
   'BOKRILOG_DEV_OIDC_INTERNAL_BASE_URL'
   'SPRING_PROFILES_ACTIVE'
   'NGINX_ENTRYPOINT_QUIET_LOGS'
@@ -296,10 +298,16 @@ header_value() {
 # HTTP 응답만으로는 "그 경로가 없다"까지만 알 수 있고 "그 요청이 아무것도 만들지 않았다"는
 # 알 수 없다. identity에는 HTTP 표면이 없어서 상태를 밖에서 되읽을 방법도 없으므로, 저장소를
 # 직접 본다. 실패하면 빈 문자열을 내고 이유는 `psql-err.txt`에 남는다.
+#
+# stdin을 `/dev/null`로 닫는다. `docker compose exec`는 `-T`로도 stdin을 컨테이너로 넘기므로,
+# 이 함수를 `while read` 루프 안에서 부르면 루프에 남은 입력을 psql이 통째로 먹어 루프가 첫
+# 반복에서 끝난다. 실제로 그것이 제공자 왕복 루프가 네이버 iteration을 건너뛴 원인이었다 —
+# 단정이 하나도 실패하지 않고 조용히 사라지는 형태라 로그만 보면 통과처럼 읽힌다.
 psql_value() {
   compose exec -T postgres psql \
     --username=bokrilog --dbname=bokrilog --no-password \
-    --tuples-only --no-align --command="$1" 2>"${work_dir}/psql-err.txt" \
+    --tuples-only --no-align --command="$1" \
+    </dev/null 2>"${work_dir}/psql-err.txt" \
     | tr -d '[:space:]'
 }
 
@@ -307,11 +315,14 @@ psql_value() {
 #
 # 성공 왕복이 만든 행을 지워 스택을 원래 상태로 되돌리는 데 쓴다. 실패를 삼키지 않는다 —
 # 되돌리지 못한 채 뒤 단계로 넘어가면 그 단계가 무엇을 세는지 알 수 없게 된다.
+#
+# stdin은 `psql_value`와 같은 이유로 닫는다.
 psql_exec() {
   local label="$1" sql="$2"
   if compose exec -T postgres psql \
     --username=bokrilog --dbname=bokrilog --no-password --quiet \
-    --set=ON_ERROR_STOP=1 --command="${sql}" >"${work_dir}/psql-exec.log" 2>&1; then
+    --set=ON_ERROR_STOP=1 --command="${sql}" \
+    </dev/null >"${work_dir}/psql-exec.log" 2>&1; then
     record_pass "${label}"
   else
     record_fail "${label}" "$(tail -5 "${work_dir}/psql-exec.log" 2>/dev/null)"
@@ -751,21 +762,38 @@ else
 fi
 
 # 모르는 제공자. 그 경로는 존재하지 않는다. 등록되지 않은 제공자로는 흐름이 시작되지 않는다.
-fetch GET /api/auth/authorize/naver
-assert_equals '`GET /api/auth/authorize/naver` 상태 404' "${last_status}" '404'
+#
+# 카카오는 Story 1.7이 더한다. Story 1.6이 네이버를 아는 제공자로 만들었으므로 이 탐침의 대상이
+# 카카오로 옮겼다 — 아는 이름과 모르는 이름의 답이 갈리는 것이 이 단정의 요점이다.
+fetch GET /api/auth/authorize/kakao
+assert_equals '`GET /api/auth/authorize/kakao` 상태 404' "${last_status}" '404'
 assert_body_contains '모르는 제공자 안정 code' '"code":"NOT_FOUND"'
+# 아는 제공자 이름이 응답에 새지 않는다. 되비추면 이 경로가 곧 제공자 목록을 열거하는 표면이 된다.
+assert_body_lacks '모르는 제공자 응답에 아는 제공자 이름이 없다' 'google'
+assert_body_lacks '모르는 제공자 응답에 네이버 이름이 없다' 'naver'
 
 # 세션에 귀속되지 않은 콜백. 시작한 흐름이 없으므로 인증 화면으로 수렴한다.
-# 표지는 닫힌 값 하나이며 code·state를 되돌려주지 않는다.
-fetch GET '/api/auth/callback/google?code=probe-code&state=probe-state'
-assert_equals '흐름 없는 콜백 상태 302' "${last_status}" '302'
-assert_equals '흐름 없는 콜백은 인증 화면으로 수렴한다' \
-  "$(resolve_location "$(header_value 'Location')")" "${base_url}/?auth=failed"
-assert_value_lacks '콜백 목적지가 code를 되돌려주지 않는다' "$(header_value 'Location')" 'probe-code'
-assert_value_lacks '콜백 목적지가 state를 되돌려주지 않는다' "$(header_value 'Location')" 'probe-state'
-assert_body_lacks '콜백 응답이 code를 되돌려주지 않는다' 'probe-code'
-assert_body_lacks '콜백 응답에 계정 식별자가 없다' 'user_id'
-assert_security_headers '`GET /api/auth/callback/google` (흐름 없음)'
+# 표지는 닫힌 값 하나이며 code·state를 되돌려주지 않는다. 두 제공자의 답이 같아야 한다 —
+# 갈리면 그 차이가 곧 "어느 제공자로 흐름이 있었는가"를 알려 주는 신호가 된다.
+while read -r probe_provider; do
+  [ -n "${probe_provider}" ] || continue
+  fetch GET "/api/auth/callback/${probe_provider}?code=probe-code&state=probe-state"
+  assert_equals "흐름 없는 ${probe_provider} 콜백 상태 302" "${last_status}" '302'
+  assert_equals "흐름 없는 ${probe_provider} 콜백은 인증 화면으로 수렴한다" \
+    "$(resolve_location "$(header_value 'Location')")" "${base_url}/?auth=failed"
+  assert_value_lacks "${probe_provider} 콜백 목적지가 code를 되돌려주지 않는다" \
+    "$(header_value 'Location')" 'probe-code'
+  assert_value_lacks "${probe_provider} 콜백 목적지가 state를 되돌려주지 않는다" \
+    "$(header_value 'Location')" 'probe-state'
+  assert_value_lacks "${probe_provider} 콜백 목적지에 제공자 이름이 없다" \
+    "$(header_value 'Location')" "${probe_provider}"
+  assert_body_lacks "${probe_provider} 콜백 응답이 code를 되돌려주지 않는다" 'probe-code'
+  assert_body_lacks "${probe_provider} 콜백 응답에 계정 식별자가 없다" 'user_id'
+  assert_security_headers "\`GET /api/auth/callback/${probe_provider}\` (흐름 없음)"
+done <<'CALLBACK_PROVIDERS'
+google
+naver
+CALLBACK_PROVIDERS
 
 # 상태 변경 요청은 동일 출처 `Origin`과 세션 귀속 CSRF 토큰을 함께 요구한다.
 fetch POST /api/auth/session
@@ -811,150 +839,282 @@ fi
 
 printf '\n스텁 제공자 성공 왕복\n'
 
-# 인가 시작 → 동의 → 콜백 → 세션 쿠키 → 목적지. 여기까지가 Story 1.4의 성공 경로 전부다.
-# 앞의 두 저장소 단정이 0을 확인했으므로, 아래에서 늘어난 행은 이 왕복이 만든 것뿐이다.
-# 끝에서 그 행들을 지워 스택을 원래 상태로 되돌린다 — 이 스크립트 뒤에 오는 Playwright 회귀가
-# 자기 왕복으로 무엇을 만들었는지 세려면 저장소가 비어 있어야 한다.
+# 인가 시작 → 동의 → 콜백 → 세션 쿠키 → 목적지. 여기까지가 Story 1.4의 성공 경로이고 Story 1.6이
+# 그것을 제공자마다 한 번씩 돌린다. 앞의 두 저장소 단정이 0을 확인했으므로, 아래에서 늘어난 행은
+# 이 왕복들이 만든 것뿐이다. 끝에서 그 행들을 지워 스택을 원래 상태로 되돌린다 — 이 스크립트 뒤에
+# 오는 Playwright 회귀가 자기 왕복으로 무엇을 만들었는지 세려면 저장소가 비어 있어야 한다.
+#
+# 두 왕복이 서로 다른 계정을 만든다. 제공자마다 스텁 인스턴스가 하나이고 issuer가 갈리므로
+# (`DevOidcStubConfig`) 같은 `subject`가 와도 `(issuer, subject)`가 달라 별개 계정이며, 아래 행 수가
+# 왕복마다 하나씩 늘어나는 것이 그 사실이다.
 
-# 스텁의 discovery 문서. 이 애플리케이션은 discovery 왕복을 하지 않지만, 문서를 두고 검증하지
-# 않으면 그 경로가 아무도 보지 않는 표면이 된다.
-fetch GET /api/dev-oidc/.well-known/openid-configuration
-assert_equals '스텁 discovery 상태 200' "${last_status}" '200'
-assert_equals '스텁 discovery Content-Type' "$(header_value 'Content-Type')" 'application/json'
-assert_body_contains '스텁 discovery의 issuer가 공개 origin이다' \
-  "\"issuer\":\"${base_url}/api/dev-oidc\""
-assert_body_contains '스텁 discovery가 S256만 알린다' '"code_challenge_methods_supported":["S256"]'
+# round_trip <제공자>
+#
+# 한 제공자의 왕복을 지나고 그 결과를 전역에 남긴다. 왕복 논리를 제공자마다 복사하면 단계 하나가
+# 갈라져도 아무도 모르므로, 단정까지 이 함수 안에 둔다.
+#
+# 남기는 값: rt_flow_cookie · rt_session_cookie · rt_csrf_token · rt_code · rt_state
+round_trip() {
+  local provider="$1"
+  local stub_base="/api/dev-oidc/${provider}"
 
-# 스텁 JWKS. 공개 키만 나간다.
-fetch GET /api/dev-oidc/jwks
-assert_equals '스텁 JWKS 상태 200' "${last_status}" '200'
-assert_body_contains '스텁 JWKS에 RSA 공개 키가 있다' '"kty":"RSA"'
-assert_body_lacks '스텁 JWKS에 개인 키 성분이 없다' '"d":'
+  # 결과 전역을 진입에서 되돌린다.
+  #
+  # 이 다섯 값은 `local`이 아니다. 그럴 수 없다 — bash의 `local`은 함수가 끝나면 값을 되돌리므로,
+  # 루프의 `case`가 이 이름들을 `google_*`·`naver_*`로 옮기는 경로가 `set -u` 아래에서 통째로
+  # 죽는다(그 `case`는 함수가 반환한 **뒤에** 돈다). 그래서 전역으로 남기고 대신 진입에서 비운다.
+  #
+  # 비우지 않으면 leg 하나가 중간에 사라질 때 다음 leg이 앞 leg의 값을 물려받는다. 이 스토리가
+  # 방금 고친 결함이 정확히 그 형태였고(루프 안의 psql이 heredoc을 먹어 네이버 iteration이 시작조차
+  # 하지 않았다), 그때 남는 상태가 이 전역들이다 — 그러면 `case`가 google의 쿠키·code·state를
+  # `naver_*`로 옮기고, "두 왕복이 서로 다른 세션을 만들었다" 같은 단정이 같은 값을 두 번 보며
+  # 통과한다. 빈 값이면 그 자리에서 guard가 이름을 말하고 실패한다.
+  rt_flow_cookie=''
+  rt_session_cookie=''
+  rt_csrf_token=''
+  rt_code=''
+  rt_state=''
 
-# 1) 인가 시작. 제공자(=스텁)의 인가 엔드포인트로 302다.
-fetch GET /api/auth/authorize/google
-assert_equals '`GET /api/auth/authorize/google` 상태 302' "${last_status}" '302'
-authorize_location="$(header_value 'Location')"
-assert_prefix '인가 시작이 스텁의 인가 엔드포인트로 보낸다' \
-  "${authorize_location}" "${base_url}/api/dev-oidc/authorize"
-assert_value_contains '인가 요청이 PKCE S256을 쓴다' "${authorize_location}" 'code_challenge_method=S256'
-# 파라미터를 정확히 비교한다. 부분 문자열로 보면 `scope=openid%20profile`·`scope=openid+email`이
-# 그대로 통과해 "기본 동의 범위는 openid뿐이다"가 확인되지 않는다.
-authorize_scope="$(printf '%s' "${authorize_location}" | sed -n 's/.*[?&]scope=\([^&]*\).*/\1/p')"
-assert_equals '인가 요청의 동의 범위는 openid뿐이다' "${authorize_scope}" 'openid'
-assert_value_contains '인가 요청에 nonce가 있다' "${authorize_location}" 'nonce='
-assert_value_contains '인가 요청에 redirect URI가 있다' "${authorize_location}" 'redirect_uri='
-# verifier는 서버가 세션에만 들고 있다. 제공자에게 가는 것은 challenge뿐이다.
-assert_value_lacks '인가 요청에 PKCE verifier가 실리지 않는다' "${authorize_location}" 'code_verifier'
-flow_cookie="$(session_cookie_value)"
-if [ -n "${flow_cookie}" ]; then
-  record_pass '인가 시작이 흐름 세션을 만든다'
+  # 스텁의 discovery 문서. 이 애플리케이션은 discovery 왕복을 하지 않지만, 문서를 두고 검증하지
+  # 않으면 그 경로가 아무도 보지 않는 표면이 된다.
+  fetch GET "${stub_base}/.well-known/openid-configuration"
+  assert_equals "${provider} 스텁 discovery 상태 200" "${last_status}" '200'
+  assert_equals "${provider} 스텁 discovery Content-Type" \
+    "$(header_value 'Content-Type')" 'application/json'
+  # issuer가 제공자별 경로 세그먼트를 포함한다. 두 스텁의 issuer가 같으면 한쪽이 서명한
+  # ID Token을 다른 쪽의 JWKS로 검증하게 되고, 그때 두 제공자의 식별자가 한 namespace에 섞인다.
+  assert_body_contains "${provider} 스텁 discovery의 issuer가 제공자별 공개 origin이다" \
+    "\"issuer\":\"${base_url}${stub_base}\""
+  assert_body_contains "${provider} 스텁 discovery가 S256만 알린다" \
+    '"code_challenge_methods_supported":["S256"]'
+
+  # 스텁 JWKS. 공개 키만 나간다.
+  fetch GET "${stub_base}/jwks"
+  assert_equals "${provider} 스텁 JWKS 상태 200" "${last_status}" '200'
+  assert_body_contains "${provider} 스텁 JWKS에 RSA 공개 키가 있다" '"kty":"RSA"'
+  assert_body_lacks "${provider} 스텁 JWKS에 개인 키 성분이 없다" '"d":'
+
+  # 1) 인가 시작. 제공자(=스텁)의 인가 엔드포인트로 302다.
+  fetch GET "/api/auth/authorize/${provider}"
+  assert_equals "\`GET /api/auth/authorize/${provider}\` 상태 302" "${last_status}" '302'
+  local authorize_location
+  authorize_location="$(header_value 'Location')"
+  assert_prefix "${provider} 인가 시작이 그 제공자 스텁의 인가 엔드포인트로 보낸다" \
+    "${authorize_location}" "${base_url}${stub_base}/authorize"
+  assert_value_contains "${provider} 인가 요청이 PKCE S256을 쓴다" \
+    "${authorize_location}" 'code_challenge_method=S256'
+  # 파라미터를 정확히 비교한다. 부분 문자열로 보면 `scope=openid%20profile`·`scope=openid+email`이
+  # 그대로 통과해 "기본 동의 범위는 openid뿐이다"가 확인되지 않는다. 네이버 discovery는
+  # `profile`도 광고하므로 이 단정이 네이버에서 특히 중요하다.
+  local authorize_scope
+  authorize_scope="$(printf '%s' "${authorize_location}" | sed -n 's/.*[?&]scope=\([^&]*\).*/\1/p')"
+  assert_equals "${provider} 인가 요청의 동의 범위는 openid뿐이다" "${authorize_scope}" 'openid'
+  assert_value_contains "${provider} 인가 요청에 nonce가 있다" "${authorize_location}" 'nonce='
+  assert_value_contains "${provider} 인가 요청에 redirect URI가 있다" \
+    "${authorize_location}" 'redirect_uri='
+  # verifier는 서버가 세션에만 들고 있다. 제공자에게 가는 것은 challenge뿐이다.
+  assert_value_lacks "${provider} 인가 요청에 PKCE verifier가 실리지 않는다" \
+    "${authorize_location}" 'code_verifier'
+  rt_flow_cookie="$(session_cookie_value)"
+  if [ -n "${rt_flow_cookie}" ]; then
+    record_pass "${provider} 인가 시작이 흐름 세션을 만든다"
+  else
+    record_fail "${provider} 인가 시작이 흐름 세션을 만든다" 'Set-Cookie에 세션 쿠키가 없다'
+  fi
+
+  # 2) 동의 화면. 실제 제공자의 동의 화면 자리이며 조작은 링크 하나뿐이다.
+  #    폼도 인라인 스크립트도 쓰지 않으므로 `form-action 'none'` 아래에서 그대로 동작한다.
+  fetch GET "${authorize_location#"${base_url}"}"
+  assert_equals "${provider} 스텁 동의 화면 상태 200" "${last_status}" '200'
+  assert_prefix "${provider} 스텁 동의 화면 Content-Type" \
+    "$(header_value 'Content-Type')" 'text/html'
+  assert_body_contains "${provider} 스텁 동의 화면이 실제 제공자가 아님을 밝힌다" \
+    '실제 제공자가 아닙니다'
+  assert_body_contains "${provider} 스텁 동의 화면에 동의 링크가 있다" '동의하고 계속하기'
+  assert_security_headers "${provider} 스텁 동의 화면"
+
+  # 동의 링크의 목적지. HTML escape를 되돌려 그대로 따라간다.
+  local consent_href
+  consent_href="$(sed -n 's/.*<a href="\([^"]*\)".*/\1/p' "${last_body}" | head -1 | sed 's/&amp;/\&/g')"
+  assert_prefix "${provider} 동의 링크가 공개 origin의 그 제공자 콜백으로 되돌린다" \
+    "${consent_href}" "${base_url}/api/auth/callback/${provider}"
+
+  # 이 왕복의 authorization code와 `state`. 아래 로그 누출 검사가 이 값들을 찾는다.
+  # 조각 목록에 넣을 수 없는 값이라 여기서 잡아 둔다 — 실행마다 달라지는 것이 그 성질이다.
+  rt_code="$(printf '%s' "${consent_href}" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')"
+  rt_state="$(printf '%s' "${consent_href}" | sed -n 's/.*[?&]state=\([^&]*\).*/\1/p')"
+
+  # 3) 콜백. 검증을 통과하면 계정·매핑·세션이 한 번에 생기고 신규 사용자는 온보딩으로 간다.
+  fetch GET "${consent_href#"${base_url}"}" -H "Cookie: BOKRILOG_SESSION=${rt_flow_cookie}"
+  assert_equals "${provider} 검증된 콜백 상태 302" "${last_status}" '302'
+  local callback_location
+  callback_location="$(header_value 'Location')"
+  assert_equals "${provider} 신규 사용자는 온보딩으로 간다" \
+    "$(resolve_location "${callback_location}")" "${base_url}/onboarding"
+  assert_value_lacks "${provider} 콜백 목적지에 code가 없다" "${callback_location}" 'code='
+  assert_value_lacks "${provider} 콜백 목적지에 state가 없다" "${callback_location}" 'state='
+  assert_body_lacks "${provider} 콜백 응답에 계정 식별자가 없다" 'user_id'
+
+  # 세션 쿠키. 브라우저에 남는 유일한 값이며 속성 세 가지가 계약이다.
+  rt_session_cookie="$(session_cookie_value)"
+  local set_cookie_header
+  set_cookie_header="$(header_value 'Set-Cookie')"
+  assert_value_contains "${provider} 세션 쿠키 Path" "${set_cookie_header}" 'Path=/'
+  assert_value_contains "${provider} 세션 쿠키 HttpOnly" "${set_cookie_header}" 'HttpOnly'
+  assert_value_contains "${provider} 세션 쿠키 Secure" "${set_cookie_header}" 'Secure'
+  assert_value_contains "${provider} 세션 쿠키 SameSite=Lax" "${set_cookie_header}" 'SameSite=Lax'
+  if [ -n "${rt_session_cookie}" ] && [ "${rt_session_cookie}" != "${rt_flow_cookie}" ]; then
+    record_pass "${provider} 로그인 시점에 세션 ID가 회전한다"
+  else
+    record_fail "${provider} 로그인 시점에 세션 ID가 회전한다" \
+      '콜백이 새 세션 쿠키를 주지 않았다. 세션 고정 방어가 성립하지 않는다.'
+  fi
+
+  # 4) 세션 확인. 화면이 상태를 확인하는 유일한 경로이며 인증 여부·목적지 종류·세션 귀속 CSRF
+  #    토큰만 담는다. 토큰이 여기 실리는 것이 브라우저에 쿠키를 하나로 유지하는 배치다.
+  fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${rt_session_cookie}"
+  assert_equals "${provider} 로그인 뒤 \`GET /api/auth/session\` 상태 200" "${last_status}" '200'
+  # 토큰 값만 가리고 전문을 비교한다. 값은 실행마다 달라 고정할 수 없지만 고정하려는 것은 값이
+  # 아니라 무엇이 나가는가이며, 조각 포함 검사만 남기면 응답에 필드가 하나 늘어도 통과한다.
+  #
+  # 두 제공자의 본문이 글자까지 같다. 갈리면 그 차이가 곧 "어느 제공자로 로그인했는가"를 알려
+  # 주는 신호이고, 화면은 그것을 알 이유가 없다.
+  assert_equals "${provider} 로그인 뒤 세션 확인 본문은 상태·목적지·토큰뿐" \
+    "$(sed 's/"csrfToken":"[^"]*"/"csrfToken":"<가림>"/' "${last_body}")" \
+    '{"authenticated":true,"destination":"onboarding","csrfToken":"<가림>"}'
+  assert_body_lacks "${provider} 로그인 뒤 세션 확인에 계정 식별자가 없다" 'user_id'
+  assert_body_lacks "${provider} 로그인 뒤 세션 확인에 제공자 토큰이 없다" 'id_token'
+  # 제공자 이름도 응답에 없다. 위 전문 비교가 이미 그것을 막지만 의도를 이름으로 남긴다.
+  assert_body_lacks "${provider} 로그인 뒤 세션 확인에 제공자 이름이 없다" "${provider}"
+  # 세션 식별자가 응답 본문에 실리지 않는다. 실리면 그 자체가 세션 유출이다.
+  assert_body_lacks "${provider} 로그인 뒤 세션 확인에 세션 쿠키 값이 없다" "${rt_session_cookie}"
+  assert_cache_control "${provider} 로그인 뒤 세션 확인은 저장하지 않는다" \
+    "${expected_document_cache_control}"
+
+  # 상태 변경 요청에 실을 토큰. 쿠키 저장소를 쓰지 않으므로 이 본문이 유일한 통로다.
+  rt_csrf_token="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
+  if [ -n "${rt_csrf_token}" ]; then
+    record_pass "${provider} 로그인 뒤 세션 확인이 세션 귀속 CSRF 토큰을 준다"
+  else
+    record_fail "${provider} 로그인 뒤 세션 확인이 세션 귀속 CSRF 토큰을 준다" \
+      "본문에 csrfToken이 없다 — $(head -c 200 "${last_body}")"
+  fi
+
+  # 5) 저장된 `provider` 값. 인증에 실제로 쓰인 registration id가 들어가야 한다.
+  #    이 컬럼에 리터럴이 들어가면 어느 제공자로 로그인해도 같은 이름이 남고, 그 컬럼을 술어로
+  #    쓰는 이후 스토리(로그인 수단 연결·해제)가 거짓을 읽는다.
+  assert_rows "${provider} 매핑의 provider 컬럼이 인증에 쓰인 이름이다" \
+    "SELECT count(*) FROM identity_social_link WHERE provider = '${provider}'" '1'
+}
+
+# 왕복을 제공자마다 한 번씩 돈다. 행 수가 왕복마다 하나씩 늘어나는 것이 "두 왕복이 서로 다른
+# 계정을 만든다"의 증거다.
+#
+# 왕복 결과 변수를 루프 앞에서 빈 값으로 선언한다. `set -u` 아래에서 어느 leg이 돌지 않으면
+# 그 이름을 처음 읽는 줄에서 스크립트가 즉시 죽고, 그 뒤의 단정 수백 개가 전부 사라진다 —
+# 무엇이 빠졌는지 말해 주는 아래 두 guard도 그 안에 있어서 함께 사라진다. 빈 값으로 두면
+# guard가 실제로 돌아 "어느 제공자의 쿠키·토큰을 얻지 못했다"를 단정 실패로 보고한다.
+google_session_cookie=''
+google_csrf_token=''
+google_round_trip_code=''
+google_round_trip_state=''
+naver_session_cookie=''
+naver_csrf_token=''
+naver_round_trip_code=''
+naver_round_trip_state=''
+
+round_trip_count=0
+while read -r rt_provider; do
+  [ -n "${rt_provider}" ] || continue
+  round_trip "${rt_provider}"
+  round_trip_count=$((round_trip_count + 1))
+
+  assert_rows "왕복 ${round_trip_count}회 뒤 계정이 ${round_trip_count}개다" \
+    'SELECT count(*) FROM identity_account_lifecycle' "${round_trip_count}"
+  assert_rows "왕복 ${round_trip_count}회 뒤 인증 매핑이 ${round_trip_count}행이다" \
+    'SELECT count(*) FROM identity_social_link' "${round_trip_count}"
+  assert_rows "왕복 ${round_trip_count}회 뒤 세션이 ${round_trip_count}행이다" \
+    'SELECT count(*) FROM spring_session' "${round_trip_count}"
+  # 세션 본문도 PostgreSQL에 있다. 쿠키는 불투명 식별자뿐이고 상태는 서버가 들고 있다.
+  assert_rows '세션 속성이 PostgreSQL에 산다' \
+    'SELECT (count(*) > 0)::int FROM spring_session_attributes' '1'
+
+  # 왕복별 값을 이름 있는 변수로 옮긴다. 아래 로그아웃 절과 로그 누출 검사가 두 왕복의 값을
+  # 함께 본다. bash 3.2에는 연관 배열이 없으므로 제공자가 둘인 지금은 이 분기가 가장 단순하다.
+  case "${rt_provider}" in
+    google)
+      google_session_cookie="${rt_session_cookie}"
+      google_csrf_token="${rt_csrf_token}"
+      google_round_trip_code="${rt_code}"
+      google_round_trip_state="${rt_state}"
+      ;;
+    naver)
+      naver_session_cookie="${rt_session_cookie}"
+      naver_csrf_token="${rt_csrf_token}"
+      naver_round_trip_code="${rt_code}"
+      naver_round_trip_state="${rt_state}"
+      ;;
+    *)
+      record_fail '왕복 결과를 아는 제공자로 옮긴다' "모르는 제공자다 — ${rt_provider}"
+      ;;
+  esac
+done <<'ROUND_TRIP_PROVIDERS'
+google
+naver
+ROUND_TRIP_PROVIDERS
+
+# 루프가 제공자 수만큼 돌았다. 이 단정이 없으면 leg 하나가 조용히 사라져도 로그에는 실패가
+# 아니라 **없음**으로 남고, 없는 단정은 아무도 세지 않는다. 실제로 그 상태가 한 번 있었다 —
+# 루프 안의 psql이 heredoc에 남은 제공자 이름을 먹어 네이버 왕복이 시작조차 하지 않았고,
+# 통과 수만 줄어들 뿐 아무것도 붉게 나오지 않았다. 원인은 `psql_value`에서 닫았고 이 단정은
+# 같은 형태의 다음 사고를 잡는 자리다.
+assert_equals '왕복 루프가 제공자 수만큼 돌았다' "${round_trip_count}" '2'
+
+# 두 왕복이 서로 다른 계정을 만들었다. 같은 계정이면 두 제공자의 식별자가 병합된 것이다.
+assert_rows '두 왕복이 서로 다른 계정을 만들었다' \
+  'SELECT count(DISTINCT user_id) FROM identity_social_link' '2'
+# 한 계정이 두 매핑을 갖지 않는다. 로그인 수단 연결은 Story 1.10이며 이 스토리에는 그 경로가 없다.
+assert_rows '한 계정이 두 제공자 매핑을 갖지 않는다' \
+  'SELECT count(*) FROM (SELECT user_id FROM identity_social_link GROUP BY user_id HAVING count(*) > 1) multi' \
+  '0'
+# 저장된 제공자 이름이 정확히 둘이다. 어느 행도 다른 제공자의 이름을 갖지 않는다.
+assert_rows '저장된 제공자 이름이 정확히 둘이다' \
+  'SELECT count(DISTINCT provider) FROM identity_social_link' '2'
+
+# 두 세션이 서로 다르다. 같으면 두 번째 왕복이 첫 세션을 갈아탄 것이다.
+if [ -n "${google_session_cookie}" ] && [ -n "${naver_session_cookie}" ] \
+  && [ "${google_session_cookie}" != "${naver_session_cookie}" ]; then
+  record_pass '두 왕복이 서로 다른 세션을 만든다'
 else
-  record_fail '인가 시작이 흐름 세션을 만든다' 'Set-Cookie에 세션 쿠키가 없다'
+  record_fail '두 왕복이 서로 다른 세션을 만든다' \
+    '두 왕복의 세션 쿠키를 얻지 못했거나 같은 값이다. 아래 보존 단정이 아무것도 보지 않는다.'
 fi
-
-# 2) 동의 화면. 실제 제공자의 동의 화면 자리이며 조작은 링크 하나뿐이다.
-#    폼도 인라인 스크립트도 쓰지 않으므로 `form-action 'none'` 아래에서 그대로 동작한다.
-fetch GET "${authorize_location#"${base_url}"}"
-assert_equals '스텁 동의 화면 상태 200' "${last_status}" '200'
-assert_prefix '스텁 동의 화면 Content-Type' "$(header_value 'Content-Type')" 'text/html'
-assert_body_contains '스텁 동의 화면이 실제 제공자가 아님을 밝힌다' '실제 제공자가 아닙니다'
-assert_body_contains '스텁 동의 화면에 동의 링크가 있다' '동의하고 계속하기'
-assert_security_headers '스텁 동의 화면'
-
-# 동의 링크의 목적지. HTML escape를 되돌려 그대로 따라간다.
-consent_href="$(sed -n 's/.*<a href="\([^"]*\)".*/\1/p' "${last_body}" | head -1 | sed 's/&amp;/\&/g')"
-assert_prefix '동의 링크가 공개 origin의 콜백으로 되돌린다' \
-  "${consent_href}" "${base_url}/api/auth/callback/google"
-
-# 이 왕복의 authorization code와 `state`. 아래 로그 누출 검사가 이 두 값을 찾는다.
-# 조각 목록에 넣을 수 없는 값이라 여기서 잡아 둔다 — 실행마다 달라지는 것이 그 성질이다.
-round_trip_code="$(printf '%s' "${consent_href}" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')"
-round_trip_state="$(printf '%s' "${consent_href}" | sed -n 's/.*[?&]state=\([^&]*\).*/\1/p')"
-
-# 3) 콜백. 검증을 통과하면 계정·매핑·세션이 한 번에 생기고 신규 사용자는 온보딩으로 간다.
-fetch GET "${consent_href#"${base_url}"}" -H "Cookie: BOKRILOG_SESSION=${flow_cookie}"
-assert_equals '검증된 콜백 상태 302' "${last_status}" '302'
-callback_location="$(header_value 'Location')"
-assert_equals '신규 사용자는 온보딩으로 간다' \
-  "$(resolve_location "${callback_location}")" "${base_url}/onboarding"
-assert_value_lacks '콜백 목적지에 code가 없다' "${callback_location}" 'code='
-assert_value_lacks '콜백 목적지에 state가 없다' "${callback_location}" 'state='
-assert_body_lacks '콜백 응답에 계정 식별자가 없다' 'user_id'
-
-# 세션 쿠키. 브라우저에 남는 유일한 값이며 속성 세 가지가 계약이다.
-session_cookie="$(session_cookie_value)"
-set_cookie_header="$(header_value 'Set-Cookie')"
-assert_value_contains '세션 쿠키 Path' "${set_cookie_header}" 'Path=/'
-assert_value_contains '세션 쿠키 HttpOnly' "${set_cookie_header}" 'HttpOnly'
-assert_value_contains '세션 쿠키 Secure' "${set_cookie_header}" 'Secure'
-assert_value_contains '세션 쿠키 SameSite=Lax' "${set_cookie_header}" 'SameSite=Lax'
-if [ -n "${session_cookie}" ] && [ "${session_cookie}" != "${flow_cookie}" ]; then
-  record_pass '로그인 시점에 세션 ID가 회전한다'
-else
-  record_fail '로그인 시점에 세션 ID가 회전한다' \
-    '콜백이 새 세션 쿠키를 주지 않았다. 세션 고정 방어가 성립하지 않는다.'
-fi
-
-# 4) 세션 확인. 화면이 상태를 확인하는 유일한 경로이며 인증 여부·목적지 종류·세션 귀속 CSRF
-#    토큰만 담는다. 토큰이 여기 실리는 것이 브라우저에 쿠키를 하나로 유지하는 배치다.
-fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${session_cookie}"
-assert_equals '로그인 뒤 `GET /api/auth/session` 상태 200' "${last_status}" '200'
-# 토큰 값만 가리고 전문을 비교한다. 값은 실행마다 달라 고정할 수 없지만 고정하려는 것은 값이
-# 아니라 무엇이 나가는가이며, 조각 포함 검사만 남기면 응답에 필드가 하나 늘어도 통과한다.
-assert_equals '로그인 뒤 세션 확인 본문은 상태·목적지·토큰뿐' \
-  "$(sed 's/"csrfToken":"[^"]*"/"csrfToken":"<가림>"/' "${last_body}")" \
-  '{"authenticated":true,"destination":"onboarding","csrfToken":"<가림>"}'
-assert_body_lacks '로그인 뒤 세션 확인에 계정 식별자가 없다' 'user_id'
-assert_body_lacks '로그인 뒤 세션 확인에 제공자 토큰이 없다' 'id_token'
-# 세션 식별자가 응답 본문에 실리지 않는다. 실리면 그 자체가 세션 유출이다.
-assert_body_lacks '로그인 뒤 세션 확인에 세션 쿠키 값이 없다' "${session_cookie}"
-assert_cache_control '로그인 뒤 세션 확인은 저장하지 않는다' "${expected_document_cache_control}"
-
-# 상태 변경 요청에 실을 토큰. 쿠키 저장소를 쓰지 않으므로 이 본문이 유일한 통로다.
-csrf_token="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
-if [ -n "${csrf_token}" ]; then
-  record_pass '로그인 뒤 세션 확인이 세션 귀속 CSRF 토큰을 준다'
-else
-  record_fail '로그인 뒤 세션 확인이 세션 귀속 CSRF 토큰을 준다' \
-    "본문에 csrfToken이 없다 — $(head -c 200 "${last_body}")"
-fi
-
-# 저장소. 계정 1개·매핑 1행·세션 1행이며 그 이상은 없다.
-assert_rows '왕복이 계정 하나만 만들었다' 'SELECT count(*) FROM identity_account_lifecycle' '1'
-assert_rows '왕복이 인증 매핑 하나만 만들었다' 'SELECT count(*) FROM identity_social_link' '1'
-assert_rows '왕복이 세션 하나만 남겼다' 'SELECT count(*) FROM spring_session' '1'
-# 세션 본문도 PostgreSQL에 있다. 쿠키는 불투명 식별자뿐이고 상태는 서버가 들고 있다.
-assert_rows '세션 속성이 PostgreSQL에 산다' \
-  'SELECT (count(*) > 0)::int FROM spring_session_attributes' '1'
 
 printf '\n로그아웃 왕복\n'
 
-# 위 왕복이 만든 세션을 실제로 끝낸다. 여기까지가 Story 1.5의 성공 경로 전부다.
+# 위 왕복들이 만든 세션을 실제로 끝낸다. 여기까지가 Story 1.5의 성공 경로 전부다.
 #
-# 두 번째 사용자를 먼저 만든다. 스텁의 `subject`는 요청마다 새로 만들어지므로(`DevOidcStub`)
-# 아래 왕복은 다른 사용자이고, 그래야 "한 사용자의 로그아웃이 다른 사용자의 세션을 건드리지
-# 않는다"를 이 계층에서 확인할 수 있다. 위 왕복의 단정을 되풀이하지 않는다 — 필요한 것은 쿠키와
-# 토큰 두 값이며, 그 값을 얻지 못하면 아래 단정이 무엇을 보는지 알 수 없으므로 그때 실패로 남긴다.
-fetch GET /api/auth/authorize/google
-second_authorize="$(header_value 'Location')"
-second_flow_cookie="$(session_cookie_value)"
-fetch GET "${second_authorize#"${base_url}"}"
-second_consent="$(sed -n 's/.*<a href="\([^"]*\)".*/\1/p' "${last_body}" | head -1 | sed 's/&amp;/\&/g')"
-fetch GET "${second_consent#"${base_url}"}" -H "Cookie: BOKRILOG_SESSION=${second_flow_cookie}"
-second_session_cookie="$(session_cookie_value)"
-fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${second_session_cookie}"
-second_csrf_token="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
-
-if [ -n "${second_session_cookie}" ] && [ -n "${second_csrf_token}" ] \
-  && [ "${second_session_cookie}" != "${session_cookie}" ]; then
-  record_pass '두 번째 왕복이 다른 세션을 만든다'
-else
-  record_fail '두 번째 왕복이 다른 세션을 만든다' \
-    '두 번째 사용자의 쿠키나 토큰을 얻지 못했다. 아래 보존 단정이 아무것도 보지 않는다.'
-fi
+# 두 사용자는 위 절이 이미 만들었다. Story 1.6이 왕복을 제공자마다 돌리므로 별도의 두 번째
+# 왕복이 필요하지 않고, 그래서 Google 세션의 로그아웃이 **네이버로 로그인한 다른 사용자**의
+# 세션을 건드리지 않는지를 이 계층에서 확인할 수 있다 — 제공자가 다른 두 사용자라는 점에서
+# 이전보다 강한 형태다.
+#
+# 아래 이름은 그 왕복의 결과다. 첫 로그아웃 대상이 Google 세션이고 보존 대상이 네이버 세션이다.
 assert_rows '이제 계정이 둘이다' 'SELECT count(*) FROM identity_account_lifecycle' '2'
 assert_rows '이제 세션이 둘이다' 'SELECT count(*) FROM spring_session' '2'
+
+session_cookie="${google_session_cookie}"
+csrf_token="${google_csrf_token}"
+second_session_cookie="${naver_session_cookie}"
+second_csrf_token="${naver_csrf_token}"
+
+if [ -n "${session_cookie}" ] && [ -n "${csrf_token}" ] \
+  && [ -n "${second_session_cookie}" ] && [ -n "${second_csrf_token}" ]; then
+  record_pass '두 왕복의 쿠키와 토큰을 모두 얻었다'
+else
+  record_fail '두 왕복의 쿠키와 토큰을 모두 얻었다' \
+    '두 사용자의 쿠키나 토큰을 얻지 못했다. 아래 보존 단정이 아무것도 보지 않는다.'
+fi
 
 # 1) 정상 로그아웃. 204이고 본문이 없다.
 fetch POST /api/auth/logout \
@@ -1207,12 +1367,21 @@ assert_security_headers '백엔드 정지 후 `GET /api/status`'
 #
 # 백엔드가 멈춘 지금이 유일한 기회다. 살아 있으면 콜백은 302로 끝나 업스트림 오류가 생기지 않는다.
 # 표지는 우리가 고른 고정 문자열이라 왕복 값과 달리 "검사가 아무것도 보지 않는" 상태가 없다.
+#
+# 두 제공자를 모두 부른다. 그 블록은 `^~` 접두사 매칭이라 제공자 경로 전부를 받지만, 한 경로만
+# 탐침하면 접두사가 `/api/auth/callback/google`로 좁아지는 변경이 통과한다.
 upstream_error_code='verifyupstreamerrorcodemarker'
 upstream_error_state='verifyupstreamerrorstatemarker'
-fetch GET \
-  "/api/auth/callback/google?code=${upstream_error_code}&state=${upstream_error_state}" \
-  --max-time 30
-assert_status_in '백엔드 정지 후 콜백 상태' "${last_status}" '502' '504'
+while read -r upstream_provider; do
+  [ -n "${upstream_provider}" ] || continue
+  fetch GET \
+    "/api/auth/callback/${upstream_provider}?code=${upstream_error_code}-${upstream_provider}&state=${upstream_error_state}-${upstream_provider}" \
+    --max-time 30
+  assert_status_in "백엔드 정지 후 ${upstream_provider} 콜백 상태" "${last_status}" '502' '504'
+done <<'UPSTREAM_ERROR_PROVIDERS'
+google
+naver
+UPSTREAM_ERROR_PROVIDERS
 
 printf '\n로그 누출 검사\n'
 
@@ -1286,15 +1455,20 @@ if [ "${log_ready}" = true ]; then
     record_pass 'access log이 내부 redirect 뒤의 경로로 바꿔 적지 않는다'
   fi
 
-  # 성공 왕복이 흘린 값을 찾는다.
+  # 성공 왕복들이 흘린 값을 찾는다.
   #
   # 조각 목록으로는 잡을 수 없다. authorization code와 `state`는 실행마다 달라지고, 그것이 바로
   # 이 값들의 성질이다. 위 왕복이 실제로 쓴 값을 그대로 찾는 것만이 "로그에 남지 않는다"를
   # 확인하는 방법이다. 진입점의 `log_format`이 쿼리 문자열을 남기기 시작하면 여기서 걸린다.
-  for leaked_label in code state; do
+  #
+  # 두 왕복의 값을 모두 본다. 제공자가 늘어도 access log의 `map`은 하나지만, 한 왕복의 값만
+  # 검사하면 두 번째 제공자의 콜백이 다른 location으로 흘러 쿼리를 남기기 시작해도 통과한다.
+  for leaked_label in 'google code' 'google state' 'naver code' 'naver state'; do
     case "${leaked_label}" in
-      code) leaked_value="${round_trip_code}" ;;
-      *) leaked_value="${round_trip_state}" ;;
+      'google code') leaked_value="${google_round_trip_code}" ;;
+      'google state') leaked_value="${google_round_trip_state}" ;;
+      'naver code') leaked_value="${naver_round_trip_code}" ;;
+      *) leaked_value="${naver_round_trip_state}" ;;
     esac
     if [ -z "${leaked_value}" ]; then
       record_fail "스택 로그에 왕복의 ${leaked_label}가 없다" \
@@ -1328,12 +1502,12 @@ if [ "${log_ready}" = true ]; then
   # 성질이다. 위 왕복이 실제로 쓴 값을 그대로 찾는 것만이 "세션 ID·CSRF 토큰이 로그에 남지
   # 않는다"를 확인하는 방법이다. 로그아웃은 쿼리 문자열이 없으므로 access log에는 경로만 남고,
   # 이 검사는 헤더가 어딘가에 찍히기 시작하는 회귀를 잡는다.
-  for leaked_label in '첫 세션 쿠키' '첫 CSRF 토큰' '둘째 세션 쿠키' '둘째 CSRF 토큰'; do
+  for leaked_label in 'google 세션 쿠키' 'google CSRF 토큰' 'naver 세션 쿠키' 'naver CSRF 토큰'; do
     case "${leaked_label}" in
-      '첫 세션 쿠키') leaked_value="${session_cookie}" ;;
-      '첫 CSRF 토큰') leaked_value="${csrf_token}" ;;
-      '둘째 세션 쿠키') leaked_value="${second_session_cookie}" ;;
-      *) leaked_value="${second_csrf_token}" ;;
+      'google 세션 쿠키') leaked_value="${google_session_cookie}" ;;
+      'google CSRF 토큰') leaked_value="${google_csrf_token}" ;;
+      'naver 세션 쿠키') leaked_value="${naver_session_cookie}" ;;
+      *) leaked_value="${naver_csrf_token}" ;;
     esac
     if [ -z "${leaked_value}" ]; then
       record_fail "스택 로그에 ${leaked_label} 값이 없다" \

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { authContent, CSRF_HEADER, dashboardCopyStrings } from '../content/auth'
+import { authContent, CSRF_HEADER, dashboardCopyStrings, SIGN_IN_PROVIDERS } from '../content/auth'
 import { navigateTo, replaceLocation } from '../session/navigation'
 import {
   getObservedAllowedRequests,
@@ -112,7 +112,13 @@ describe('SignedInScreen', () => {
     render(<SignedInScreen />)
 
     expect(await screen.findByText(authContent.notices.signedOut)).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: authContent.signIn.googleLabel })).toBeInTheDocument()
+    // 두 버튼을 함께 본다. 하나만 보면 나머지 제공자의 버튼이 사라져도 이 시험이 통과한다
+    // (`expectAuthScreenMounted`·`App.test.tsx`·`EntryScreen.test.tsx`가 쓰는 것과 같은 형태다).
+    for (const provider of SIGN_IN_PROVIDERS) {
+      expect(
+        screen.getByRole('link', { name: authContent.signIn.labels[provider] }),
+      ).toBeInTheDocument()
+    }
     expect(screen.queryByText(authContent.dashboard.heading)).not.toBeInTheDocument()
   })
 

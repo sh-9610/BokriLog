@@ -96,13 +96,13 @@ class AuthAccountMappingTest extends AuthFlowTestBase {
                     executor.submit(
                             () -> {
                                 start.await(10, TimeUnit.SECONDS);
-                                return callback(first.sessionCookie(), firstCode, first.state());
+                                return callback(first, firstCode);
                             });
             Future<HttpResponse<String>> secondCall =
                     executor.submit(
                             () -> {
                                 start.await(10, TimeUnit.SECONDS);
-                                return callback(second.sessionCookie(), secondCode, second.state());
+                                return callback(second, secondCode);
                             });
             start.countDown();
             responses.add(firstCall.get(30, TimeUnit.SECONDS));

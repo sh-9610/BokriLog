@@ -122,3 +122,24 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-deferred-work-ledger-sync.md`
   summary: 해소 원장에 항목별 소유자·마지막 확인일을 담는 표를 둘지 정한다.
   evidence: 판정이 두 스프린트 밀린 직접 원인은 주인 없는 항목이 보이지 않는 것이었는데, 이번 라운드는 그 가시성을 산문 한 문단으로만 고쳤다. `## 상태 요약` 표는 여전히 상태·건수 3행이라 미해소 18건 중 열이 주인이 없다는 사실을 보려면 그 문단을 읽어야 하고, 그 문단 자체가 손으로 유지되는 열거라 다음 라운드에 다시 낡는다. frontmatter에도 `updated:` 하나뿐이어서 항목별 `last_checked`도 다음 확인 시점(에픽 회고·스프린트 계획)도 없다. 번호·제목·판정·결정 지점·마지막 확인일 열을 가진 표를 두면 34개 절을 읽지 않고 주인 없는 항목과 오래 확인되지 않은 항목을 볼 수 있지만, 표와 절이 어긋날 새 드리프트 축이 생긴다. 그 교환을 정한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-6-naver-sign-in.md`
+  summary: 제공자 이름 목록이 계층·언어를 넘나들며 열 곳 넘게 복제됐고 그 목록들이 서로 같은지 보는 검사가 없다.
+  evidence: 이 라운드가 같은 집합을 `AuthSecurityConfig.SUPPORTED_REGISTRATION_IDS`, `DevOidcStubConfig.PROVIDERS`, `OidcStubConfiguration`의 인라인 목록 둘, `DevOidcStubProfileTest.PROVIDERS`, `StatusApiTest`의 인라인 배열, `verify-same-origin.sh`의 heredoc 셋과 `case` 분기와 하드코딩된 기대값 `'2'` 셋, `frontend/src/content/auth.ts`의 `SIGN_IN_PROVIDERS`에 나눠 놓았다. Java 안의 다섯 곳은 상수 하나로 접을 수 있지만 bash·TypeScript 쪽은 언어가 달라 접히지 않으므로 처방은 통합이 아니라 계층 간 동등성 검사다. 이미 열려 있는 항목 33(계층을 넘나드는 계약 리터럴의 중복을 Docker 없는 검사로 묶는 문제)과 같은 성격이며 Story 1.7(카카오)이 그 전부를 손으로 고쳐야 한다. 이 스토리가 실제로 겪은 결함이 "목록에서 빠진 leg이 붉게 나오지 않고 사라진다"는 형태였다는 사실이 그 검사의 값을 실측한 것이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-6-naver-sign-in.md`
+  summary: 두 스텁의 서명 키·issuer 격리(한쪽 토큰이 다른 쪽 등록의 콜백에서 거절되는지)를 지나는 단정이 한 층도 없다.
+  evidence: `DevOidcStubConfig`·`OidcStubConfiguration`·`verify-same-origin.sh`의 주석이 모두 "한쪽 스텁이 서명한 ID Token은 다른 쪽의 JWKS로 검증되지 않는다"를 계약으로 적지만 그 부정 경로를 실제로 지나는 시험이 없고, issuer 문자열이 다르다는 비교로 대체돼 있다. 게다가 `AuthFlowTestBase.issueCode`가 흐름의 제공자로만 code를 발급하도록 구조로 막아 두어 현재 시험 층에서는 그 케이스를 만들 수조차 없다. 확인하려면 `DevOidcStub`을 직접 불러 다른 스텁의 서명 토큰을 다른 등록의 콜백에 제시하는 낮은 층 단정 하나가 필요하다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-6-naver-sign-in.md`
+  summary: 한 제공자만 구성된 스택을 HTTP·화면 층에서 지나는 검사가 없고, 그 구성에서 사용자가 SPA가 아니라 원본 오류 JSON을 볼 수 있다.
+  evidence: 제공자별 fail-closed 판정을 보는 시험 둘(`AuthNaverSignInTest`·`DevOidcStubProfileTest`)은 `ProviderClientRegistrations.from()`을 직접 불러 맵 내용만 본다. `StatusApiTest`는 **어느 제공자도 구성되지 않아** `oauth2Login` DSL 자체가 배선되지 않은 다른 상태를 보고, compose·Playwright는 `dev-oidc`의 `@Primary` 등록이 언제나 두 제공자를 함께 만들므로 부분 구성 스택이 존재하지 않는다. 그래서 "필터는 배선됐고 그 등록만 없다"는 상태가 어느 층에도 없다. 그 상태에서 화면은 제공자 버튼을 조건 없이 그리고(`SIGN_IN_PROVIDERS`), 세션 확인 응답에는 어떤 제공자가 구성됐는지 알 방법이 없고(필드 셋뿐), 인증 시작은 최상위 내비게이션이라 사용자는 `{"code":"INTERNAL_ERROR",…}` 본문을 브라우저에서 그대로 본다. 지금은 개발·CI가 두 제공자를 모두 스텁으로 구성하고 production 배포가 없어(Story 3.8) 도달하지 않지만, 실제 제공자 등록이 하나씩 들어오는 시점에 그 창이 열린다. 구성 여부를 응답에 싣는 것은 Story 1.4가 "소비자 없는 필드를 만들지 않는다"로 거부한 방향이라 처방이 자명하지 않다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-6-naver-sign-in.md`
+  summary: 두 제공자 버튼의 레이블·로고 크기 차이가 "동등한 시각 면적·추천 표지 없음"으로 읽히는지 판단하는 층이 없다.
+  evidence: 대비 하한을 만족시키려 네이버 레이블을 20px/700, 로고를 24px로 둔 결과 Google 버튼(14px/600, 로고 18px)과 콘텐츠 크기가 갈렸다. 유일한 guard는 `auth-entry.spec.ts`의 두 버튼 폭·높이 동일 단정이고, 그 등식은 두 버튼의 콘텐츠 높이가 **둘 다** `--component-social-sign-in-min-target-size` 아래에 머무는 동안만 성립한다. 어느 한쪽이 그 값을 넘으면 "시각 면적" 회귀가 아니라 무관해 보이는 픽셀 불일치로 나타난다. 네이버 가이드의 "타사 버튼과 함께 쓸 때 크기를 줄이지 말라"는 만족하지만, 반대 방향(한 제공자가 강조되어 보이는 것)을 DESIGN.md가 금지하고 그것을 보는 검사가 없다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-6-naver-sign-in.md`
+  summary: `verify-same-origin.sh`의 나머지 두 제공자 루프(콜백 탐침·업스트림 오류)에는 완주 수 가드가 없다.
+  evidence: 이 라운드가 왕복 루프에만 `왕복 루프가 제공자 수만큼 돌았다`를 넣었다. 콜백 탐침(`CALLBACK_PROVIDERS`)과 업스트림 오류(`UPSTREAM_ERROR_PROVIDERS`) 루프는 `docker compose exec`를 부르지 않아 이번 stdin 결함에는 걸리지 않았지만, 한 목록에서 이름이 빠지면 그 제공자를 조용히 건너뛴다는 형태는 같다. "없는 단정은 붉게 나오지 않는다"가 이 스크립트에서 두 번 더 성립할 수 있다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-6-naver-sign-in.md`
+  summary: `compose()` 함수 자체에 stdin 차단을 두어 `docker compose exec`의 stdin 삼킴을 원천 차단할지 정한다.
+  evidence: 이 라운드는 원인을 `psql_value`·`psql_exec` 두 함수에서 닫았다. 그것이 실제 결함 경로를 없애지만, 앞으로 누가 루프 안에서 다른 `compose exec`를 부르면 같은 결함이 다시 난다. `compose()` 한 곳에 `</dev/null`을 두면 클래스가 원천 차단되는데 그 함수는 `up`·`run --rm migrate`·`logs`도 태우므로 그 호출들이 stdin을 쓰지 않는다는 확인이 함께 필요하다. 검증이 통과하는 상태에서 넓히는 변경이라 이 스토리에서 하지 않았다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-6-naver-sign-in.md`
+  summary: `application.yml`이 제공자 엔드포인트 재정의 네 이름을 선언하지 않는다(Google·네이버 둘 다).
+  evidence: 이 저장소의 규약은 "이름은 `application.yml`이 정하고 값은 환경이 준다"인데 `issuer-uri`·`authorization-uri`·`token-uri`·`jwk-set-uri` 네 이름은 어느 제공자에도 선언돼 있지 않다. 시험(`OidcStubConfiguration`)이 `DynamicPropertyRegistry`로 실제로 그 이름을 주므로 이름은 존재하고 Boot의 relaxed binding으로 동작하지만, 개발·CI가 무엇을 덮는지가 코드에서만 발견된다. 이 스토리의 SPEC Execution 항목은 네이버에 그 넷을 더하라고 적었으나 Google이 선언하지 않은 상태에서 한쪽만 더하면 비대칭이 생겨 두 제공자를 함께 정하는 것으로 미뤘다.

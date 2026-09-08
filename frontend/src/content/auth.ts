@@ -16,12 +16,30 @@
 import { entryContent } from './entry'
 
 /**
- * 인증 시작 경로. 최상위 내비게이션 링크의 `href`다.
+ * 화면이 여는 제공자. 고정 순서다.
+ *
+ * DESIGN.md가 Google → 네이버 → 카카오 순서를 정했고 지금 실제 버튼은 앞의 둘이다. 배열의 순서가
+ * 곧 문서 순서이므로 이 목록 하나가 그 계약을 나른다 — 화면이 순서를 다시 적으면 두 곳이 갈라진다.
+ *
+ * 서버가 아는 이름과 같은 값이다(`AuthSecurityConfig`의 registration id). 갈라지면 인증 시작이
+ * 404로 끝난다.
+ */
+export const SIGN_IN_PROVIDERS = ['google', 'naver'] as const
+
+export type SignInProvider = (typeof SIGN_IN_PROVIDERS)[number]
+
+/**
+ * 인증 시작 경로의 접두사. 뒤에 제공자 등록 id가 붙는다.
  *
  * `fetch`가 아니라 링크인 것이 설계다. 서버가 302로 제공자에 보내는 흐름이므로 CSP의
  * `connect-src 'self'`·`form-action 'none'`을 넓히지 않아도 되고, 외부 스크립트도 iframe도 필요 없다.
  */
-export const AUTHORIZE_PATH = '/api/auth/authorize/google'
+export const AUTHORIZE_BASE_PATH = '/api/auth/authorize'
+
+/** 그 제공자의 인증 시작 경로. 경로를 조립하는 유일한 자리다. */
+export function authorizePath(provider: SignInProvider): string {
+  return `${AUTHORIZE_BASE_PATH}/${provider}`
+}
 
 /** 세션 확인 경로. 로그인 상태 경로에서만 부른다. 진입 화면은 이 요청을 보내지 않는다. */
 export const SESSION_ENDPOINT = '/api/auth/session'
@@ -66,22 +84,26 @@ export const RETURN_DESTINATION_PARAMETER = 'next'
 const RETURN_DESTINATIONS: readonly string[] = [ONBOARDING_PATH, DASHBOARD_PATH]
 
 /**
- * 지금 경로에서 시작하는 인증 시작 링크의 `href`.
+ * 지금 경로에서 시작하는 그 제공자의 인증 시작 링크 `href`.
  *
  * 로그인 상태 경로에 미인증으로 들어와 인증 화면으로 되돌려진 사용자는 로그인 뒤 원래 보려던
  * 화면으로 돌아가야 한다("기존 사용자는 유효한 원래 목적지"). 그 목적지를 서버에 알려 주는 것이
  * `next` 하나이고, 이 함수가 저장소에서 그 값을 만드는 유일한 생산자다. 생산자가 없으면 서버의
  * 허용 목록 판정과 "원래 목적지" 분기가 제품 코드로는 도달할 수 없는 경로로 남는다.
  *
+ * 제공자가 늘어도 `next`의 생산자는 계속 이 함수 하나다. 제공자마다 링크 조립을 따로 두면 그
+ * 파라미터의 규칙이 갈라진다.
+ *
  * 목록에 없는 경로에서는 `next`를 붙이지 않는다. 진입 화면(`/`)이 그 경우이며, 그때 목적지는
  * 서버가 신규·기존으로 갈라 정한다.
  */
-export function authorizeHref(pathname: string): string {
+export function authorizeHref(provider: SignInProvider, pathname: string): string {
+  const path = authorizePath(provider)
   if (!RETURN_DESTINATIONS.includes(pathname)) {
-    return AUTHORIZE_PATH
+    return path
   }
   const query = new URLSearchParams({ [RETURN_DESTINATION_PARAMETER]: pathname })
-  return `${AUTHORIZE_PATH}?${query.toString()}`
+  return `${path}?${query.toString()}`
 }
 
 /**
@@ -168,13 +190,24 @@ export const authContent = {
   signIn: {
     id: 'auth-sign-in',
     heading: '로그인 수단 선택',
-    /** 접근 가능한 이름은 제공자명 + "계속하기"다(EXPERIENCE.md). */
-    googleLabel: 'Google로 계속하기',
+    /**
+     * 제공자별 버튼 라벨. 접근 가능한 이름은 제공자명 + "계속하기"다(EXPERIENCE.md).
+     *
+     * 두 문구가 서로 달라야 한다. 브라우저 시험이 `Tab` 도달 순서를 요소의 텍스트로 비교하므로
+     * 같은 문구를 두면 어느 버튼에 닿았는지 그 층이 구분하지 못한다.
+     *
+     * 네이버 공식 버튼 가이드는 문구 변경을 허용한다. 그래서 "네이버로 계속하기"가 가이드와
+     * 충돌하지 않으며, 세 제공자의 라벨 형태가 하나로 유지된다.
+     */
+    labels: {
+      google: 'Google로 계속하기',
+      naver: '네이버로 계속하기',
+    },
     /** DESIGN.md가 버튼 아래에 두라고 정한 안내. */
     boundary:
       '소셜 계정은 본인 확인에만 사용하며 Bybit 자격정보·금융 데이터·계획은 공유하지 않습니다.',
-    /** 네이버·카카오는 Story 1.6·1.7이 더한다. 준비 중임을 숨기지 않는다. */
-    pending: '네이버·카카오 로그인은 아직 준비 중입니다.',
+    /** 카카오는 Story 1.7이 더한다. 준비 중임을 숨기지 않는다. */
+    pending: '카카오 로그인은 아직 준비 중입니다.',
   },
   notices: NOTICES,
   session: {
@@ -201,19 +234,44 @@ export const authContent = {
     pending: '로그아웃하는 중입니다.',
   },
   /**
-   * 유일한 제공자에 접근을 잃은 사용자의 복구 경로.
+   * 로그인 수단에 접근을 잃은 사용자의 복구 경로.
    *
-   * 지금 연결할 수 있는 수단이 Google 하나뿐이므로 다른 방법을 제시할 수 없고, 그때 안내는 그
-   * 제공자의 공식 복구 절차 하나다. 이메일 확인이나 지원 담당자 확인으로 인증을 우회하는 경로를
-   * 만들지 않으며, 그 사실을 카피가 직접 말한다. 어떤 문장도 계정의 존재 여부를 드러내지 않는다.
+   * **두 제공자를 언제나 함께 보여 준다.** 진입 화면은 사용자가 어느 제공자로 가입했는지 알 수
+   * 없고 알아서도 안 된다 — 그 정보를 화면에 도달시키는 경로가 곧 계정 존재·소속 신호다(서버가
+   * 실패 표지를 닫힌 두 값으로 둔 것과 같은 이유). 그래서 "당신이 쓴 제공자의 복구 절차"는 만들
+   * 수 없고, 남는 배치는 둘을 무조건 함께 보여 주는 것 하나다. 이 배치는 아무것도 누출하지
+   * 않는다.
+   *
+   * 이메일 확인이나 지원 담당자 확인으로 인증을 우회하는 경로를 만들지 않으며, 그 사실을 카피가
+   * 직접 말한다. 어떤 문장도 계정의 존재 여부를 드러내지 않는다.
    */
   recovery: {
     id: 'auth-recovery',
     heading: '로그인 수단에 접근할 수 없다면',
-    body: '로그인 수단에 다시 접근할 수 없다면 Google 공식 복구 절차를 이용해 주세요.',
-    linkLabel: 'Google 공식 계정 복구 안내 열기',
-    /** Google이 소유하는 주소다. 같은 창에서 열고 `rel`로 참조 유출을 막는다. */
-    href: 'https://accounts.google.com/signin/recovery',
+    body: '로그인 수단에 다시 접근할 수 없다면 해당 제공자의 공식 복구 절차를 이용해 주세요.',
+    /**
+     * 제공자별 공식 복구 안내. 주소는 각 제공자가 소유한다.
+     *
+     * 같은 창에서 열고 `rel`로 참조 유출을 막는다. 순서는 위 `SIGN_IN_PROVIDERS`와 같다 —
+     * 버튼과 안내가 다른 순서로 나오면 사용자가 두 목록을 대응시킬 수 없다.
+     *
+     * 두 주소는 실측한 값이다. 네이버 계정 찾기(`https://nid.naver.com/user2/help/idInquiry`)는
+     * 2026-09-09에 **HTTP 200**으로 해석된다(SPEC의 "검증된 외부 사실"에 같은 사실을 적었다).
+     * 이 링크는 화면이 외부로 내보내는 유일한 자리이므로 주소를 추측으로 적지 않는다 — 죽은
+     * 주소는 "복구 절차를 이용해 주세요"라는 문장을 지키지 못하는 약속으로 만든다.
+     */
+    links: [
+      {
+        provider: 'google',
+        label: 'Google 공식 계정 복구 안내 열기',
+        href: 'https://accounts.google.com/signin/recovery',
+      },
+      {
+        provider: 'naver',
+        label: '네이버 공식 계정 찾기 안내 열기',
+        href: 'https://nid.naver.com/user2/help/idInquiry',
+      },
+    ],
     caveat: '이메일 확인이나 문의만으로는 로그인할 수 없습니다.',
   },
   onboarding: {
@@ -237,7 +295,7 @@ export const authContent = {
 /** 진입 화면의 로그인 블록에 렌더되어야 하는 카피. 시험이 문구 표류를 감지하는 데 쓴다. */
 export const signInCopyStrings: readonly string[] = [
   authContent.signIn.heading,
-  authContent.signIn.googleLabel,
+  ...SIGN_IN_PROVIDERS.map((provider) => authContent.signIn.labels[provider]),
   authContent.signIn.boundary,
   authContent.signIn.pending,
 ]
@@ -252,7 +310,7 @@ export const signInCopyStrings: readonly string[] = [
 export const recoveryCopyStrings: readonly string[] = [
   authContent.recovery.heading,
   authContent.recovery.body,
-  authContent.recovery.linkLabel,
+  ...authContent.recovery.links.map((link) => link.label),
   authContent.recovery.caveat,
 ]
 

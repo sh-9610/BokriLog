@@ -3,8 +3,9 @@ import { describe, expect, it } from 'vitest'
 
 import {
   authContent,
-  AUTHORIZE_PATH,
+  authorizePath,
   recoveryCopyStrings,
+  SIGN_IN_PROVIDERS,
   signInCopyStrings,
 } from '../content/auth'
 import { entryContent, entryCopyStrings } from '../content/entry'
@@ -116,26 +117,62 @@ describe('EntryScreen', () => {
    * 아래는 Story 1.4가 더한 로그인 진입이다. 위 아홉 개 단정은 한 글자도 바뀌지 않았다.
    */
 
-  it('로그인: Google 버튼이 서버 인증 시작 경로로 가는 링크다', () => {
+  it('로그인: 두 제공자 버튼이 각자의 서버 인증 시작 경로로 가는 링크다', () => {
     render(<EntryScreen />)
 
-    const button = screen.getByRole('link', { name: authContent.signIn.googleLabel })
+    for (const provider of SIGN_IN_PROVIDERS) {
+      const button = screen.getByRole('link', { name: authContent.signIn.labels[provider] })
 
-    // `<a href>` 최상위 내비게이션이다. 버튼·form·스크립트가 아니어야 Nginx CSP를 넓히지 않는다.
-    expect(button).toHaveAttribute('href', AUTHORIZE_PATH)
-    expect(button.tagName.toLowerCase()).toBe('a')
+      // `<a href>` 최상위 내비게이션이다. 버튼·form·스크립트가 아니어야 Nginx CSP를 넓히지 않는다.
+      expect(button).toHaveAttribute('href', authorizePath(provider))
+      expect(button.tagName.toLowerCase()).toBe('a')
+    }
+
     // 접근 가능한 이름은 제공자명 + "계속하기"다(EXPERIENCE.md).
-    expect(authContent.signIn.googleLabel).toBe('Google로 계속하기')
+    expect(authContent.signIn.labels.google).toBe('Google로 계속하기')
+    expect(authContent.signIn.labels.naver).toBe('네이버로 계속하기')
+  })
+
+  it('로그인: 제공자 순서가 Google → 네이버로 고정된다', () => {
+    render(<EntryScreen />)
+
+    const google = screen.getByRole('link', { name: authContent.signIn.labels.google })
+    const naver = screen.getByRole('link', { name: authContent.signIn.labels.naver })
+
+    /*
+     * DESIGN.md가 정한 고정 순서다. 문서 순서가 곧 `Tab` 순서이므로 이 단정이 그 계약을
+     * 함께 나른다. 추천 표지도, 마지막 사용 제공자 강조도, 로고만 있는 버튼도 없다.
+     */
+    expect(google.compareDocumentPosition(naver)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(SIGN_IN_PROVIDERS).toEqual(['google', 'naver'])
+  })
+
+  it('로그인: 두 버튼의 접근 가능한 이름이 텍스트 하나에서만 온다', () => {
+    render(<EntryScreen />)
+
+    for (const provider of SIGN_IN_PROVIDERS) {
+      const button = screen.getByRole('link', { name: authContent.signIn.labels[provider] })
+      // eslint-disable-next-line testing-library/no-node-access -- 로고 SVG가 이름에 기여하지 않는지는 그 요소의 속성으로만 확인할 수 있다. 역할 조회로는 `aria-hidden` 요소가 보이지 않는다.
+      const mark = button.querySelector('svg')
+
+      expect(mark).not.toBeNull()
+      expect(mark).toHaveAttribute('aria-hidden', 'true')
+      expect(mark).toHaveAttribute('focusable', 'false')
+      // 이름은 옆의 `<span>` 텍스트 하나다. 로고를 함께 읽으면 이름이 두 번 들린다.
+      expect(button.textContent).toBe(authContent.signIn.labels[provider])
+    }
   })
 
   it('로그인: 데이터 경계 안내를 버튼 아래에 둔다', () => {
     render(<EntryScreen />)
 
-    const button = screen.getByRole('link', { name: authContent.signIn.googleLabel })
     const boundary = screen.getByText(authContent.signIn.boundary)
 
-    // "버튼 아래"는 문서 순서의 계약이다.
-    expect(button.compareDocumentPosition(boundary)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    // "버튼 아래"는 문서 순서의 계약이다. 두 버튼 모두의 아래여야 한다.
+    for (const provider of SIGN_IN_PROVIDERS) {
+      const button = screen.getByRole('link', { name: authContent.signIn.labels[provider] })
+      expect(button.compareDocumentPosition(boundary)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    }
     expect(boundary.textContent).toContain('본인 확인에만')
     expect(boundary.textContent).toContain('공유하지 않습니다')
   })
@@ -143,9 +180,8 @@ describe('EntryScreen', () => {
   it('로그인: 아직 없는 제공자를 준비 중이라고 밝힌다', () => {
     render(<EntryScreen />)
 
-    // 추천 표지도, 마지막 사용 제공자 강조도 없다. 실제 버튼은 Google 하나뿐이다.
+    // 카카오는 Story 1.7이 더한다. 그때까지 그 버튼은 없다.
     expect(screen.getByText(authContent.signIn.pending)).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: /네이버/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /카카오/ })).not.toBeInTheDocument()
   })
 
@@ -236,7 +272,7 @@ describe('EntryScreen', () => {
     expect(authContent.notices.logoutFailed).toContain('남아 있을 수 있습니다')
   })
 
-  it('복구 안내: 실패 표지에서만 Google 공식 복구 경로를 안내한다', () => {
+  it('복구 안내: 실패 표지에서만 두 제공자의 공식 복구 경로를 안내한다', () => {
     /*
      * `failed`가 아닌 모든 경우에 이 블록이 없다. `cancelled`만 확인하면 정상적으로 로그아웃한
      * 사용자에게 계정 복구 패널을 보여 주는 상태가 통과한다 — 그 사람은 접근을 잃지 않았고, 그
@@ -252,9 +288,9 @@ describe('EntryScreen', () => {
       const { unmount } = render(<EntryScreen notice={notice} />)
 
       expect(screen.queryByText(authContent.recovery.body)).not.toBeInTheDocument()
-      expect(
-        screen.queryByRole('link', { name: authContent.recovery.linkLabel }),
-      ).not.toBeInTheDocument()
+      for (const link of authContent.recovery.links) {
+        expect(screen.queryByRole('link', { name: link.label })).not.toBeInTheDocument()
+      }
       expect(
         screen.queryByRole('heading', { name: authContent.recovery.heading }),
       ).not.toBeInTheDocument()
@@ -266,9 +302,9 @@ describe('EntryScreen', () => {
     // 표지 없는 첫 방문도 마찬가지다.
     const { unmount } = render(<EntryScreen />)
     expect(screen.queryByText(authContent.recovery.body)).not.toBeInTheDocument()
-    expect(
-      screen.queryByRole('link', { name: authContent.recovery.linkLabel }),
-    ).not.toBeInTheDocument()
+    for (const link of authContent.recovery.links) {
+      expect(screen.queryByRole('link', { name: link.label })).not.toBeInTheDocument()
+    }
     unmount()
 
     render(<EntryScreen notice="failed" />)
@@ -279,15 +315,42 @@ describe('EntryScreen', () => {
     }
   })
 
+  it('복구 안내: 두 제공자를 언제나 함께 보여 준다', () => {
+    /*
+     * 이 화면은 사용자가 어느 제공자로 가입했는지 알 수 없고 알아서도 안 된다 — 그 정보를 화면에
+     * 도달시키는 경로가 곧 계정 존재·소속 신호다. 그래서 "당신이 쓴 제공자의 복구 절차"는 만들 수
+     * 없고, 남는 배치는 둘을 무조건 함께 보여 주는 것 하나다.
+     */
+    render(<EntryScreen notice="failed" />)
+
+    const links = authContent.recovery.links.map((link) =>
+      screen.getByRole('link', { name: link.label }),
+    )
+
+    expect(links).toHaveLength(2)
+    expect(authContent.recovery.links.map((link) => link.provider)).toEqual([...SIGN_IN_PROVIDERS])
+    // 안내 순서가 버튼 순서와 같다. 다르면 사용자가 두 목록을 대응시킬 수 없다.
+    expect(links[0]?.compareDocumentPosition(links[1] as Node)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    )
+  })
+
   it('복구 안내: 새 창을 열지 않고 `rel`로 참조 유출을 막는다', () => {
     render(<EntryScreen notice="failed" />)
 
-    const link = screen.getByRole('link', { name: authContent.recovery.linkLabel })
+    for (const entry of authContent.recovery.links) {
+      const link = screen.getByRole('link', { name: entry.label })
 
-    expect(link).toHaveAttribute('href', 'https://accounts.google.com/signin/recovery')
-    // 기본으로 새 창을 열지 않는다(EXPERIENCE.md).
-    expect(link).not.toHaveAttribute('target')
-    expect(link).toHaveAttribute('rel', 'noreferrer')
+      // 주소는 각 제공자가 소유한다. 값이 바뀌면 여기서 드러난다.
+      expect(link).toHaveAttribute('href', entry.href)
+      expect(entry.href.startsWith('https://')).toBe(true)
+      // 기본으로 새 창을 열지 않는다(EXPERIENCE.md).
+      expect(link).not.toHaveAttribute('target')
+      expect(link).toHaveAttribute('rel', 'noreferrer')
+    }
+
+    expect(authContent.recovery.links[0].href).toBe('https://accounts.google.com/signin/recovery')
+    expect(authContent.recovery.links[1].href).toBe('https://nid.naver.com/user2/help/idInquiry')
   })
 
   it('복구 안내: 계정 존재 여부를 노출하지 않고 우회 경로를 만들지 않는다', () => {

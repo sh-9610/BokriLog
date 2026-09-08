@@ -102,8 +102,15 @@ abstract class AuthFlowTestBase {
     // 흐름
     // ----------------------------------------------------------------------
 
-    /** 인증 시작이 만든 authorization request. 콜백을 흉내내는 데 필요한 값만 담는다. */
+    /**
+     * 인증 시작이 만든 authorization request. 콜백을 흉내내는 데 필요한 값만 담는다.
+     *
+     * @param provider 이 흐름을 시작한 제공자 등록 id. {@link #issueCode(Authorization, TokenPlan)}가
+     *     이 값으로 스텁 인스턴스를 고르므로 호출부가 제공자를 다시 적지 않는다 — 흐름과 code 발급이
+     *     같은 제공자를 쓴다는 것이 여기서 구조로 성립한다
+     */
     record Authorization(
+            String provider,
             int status,
             String location,
             @Nullable String sessionCookie,
@@ -124,16 +131,30 @@ abstract class AuthFlowTestBase {
         return startAuthorization(null, null);
     }
 
+    /**
+     * Google 흐름의 인증 시작.
+     *
+     * <p>제공자를 받지 않는 형태를 남겨 둔다. Story 1.4·1.5의 시험 호출부가 전부 이 모양이고, 그
+     * 시험들이 고정하는 것은 OIDC 코어 검증처럼 제공자에 종속되지 않는 계약이다. 축을 제공자로
+     * 곱하면 같은 것을 두 번 보는 시험이 늘어난다.
+     */
     Authorization startAuthorization(@Nullable String next, @Nullable String sessionCookie)
+            throws IOException, InterruptedException {
+        return startAuthorization(AuthSecurityConfig.GOOGLE_REGISTRATION_ID, next, sessionCookie);
+    }
+
+    Authorization startAuthorization(
+            String provider, @Nullable String next, @Nullable String sessionCookie)
             throws IOException, InterruptedException {
         String path =
                 AuthSecurityConfig.AUTHORIZATION_BASE_URI
                         + "/"
-                        + AuthSecurityConfig.GOOGLE_REGISTRATION_ID
+                        + provider
                         + (next == null ? "" : "?next=" + next);
         HttpResponse<String> response = get(path, sessionCookie);
         String location = response.headers().firstValue("Location").orElse("");
         return new Authorization(
+                provider,
                 response.statusCode(),
                 location,
                 sessionCookieOf(response).orElse(sessionCookie),
@@ -146,30 +167,79 @@ abstract class AuthFlowTestBase {
      * <p>스텁이 {@code code_challenge}·{@code redirect_uri}·{@code client_id}를 code와 함께 붙들어
      * 두고 토큰 교환에서 다시 확인한다({@code DevOidcStub}). 귀속 없이 code를 발급할 수 있게 두면
      * PKCE 결합이 깨져도 이 시험들이 전부 통과하므로, 발급 경로를 이 한 곳으로 좁힌다.
+     *
+     * <p>제공자는 인가 요청이 들고 온다. 인자로 다시 받으면 흐름과 다른 제공자의 스텁에 code를
+     * 발급하는 호출이 가능해지고, 그것은 시험이 계약을 어긋나게 쓰는 자리가 된다.
      */
     static String issueCode(Authorization authorization, TokenPlan plan) {
-        return OidcStubConfiguration.issueCode(plan, authorization.parameters());
+        return OidcStubConfiguration.issueCode(
+                authorization.provider(), plan, authorization.parameters());
     }
 
-    /** 검증된 콜백. 실제 제공자가 브라우저를 되돌려 보내는 것과 같은 요청이다. */
-    HttpResponse<String> callback(@Nullable String sessionCookie, String code, String state)
+    /**
+     * 검증된 콜백. 실제 제공자가 브라우저를 되돌려 보내는 것과 같은 요청이다.
+     *
+     * <p>제공자를 인가 요청에서 가져온다. 인자 없이 google로 접는 형태를 두면 네이버 흐름 뒤에
+     * 그것을 부르는 호출이 <b>google 콜백 경로</b>로 가고, 그 요청은 흐름의 {@code state}·PKCE와
+     * 어긋나므로 시험이 엉뚱한 이유로 통과한다. 실패를 단정하는 시험에서 특히 조용하다 — 기대한
+     * 실패 축이 아니라 경로 불일치가 그 실패를 만든다. {@link #issueCode(Authorization, TokenPlan)}가
+     * 같은 이유로 제공자를 인자로 받지 않는다.
+     */
+    HttpResponse<String> callback(Authorization authorization, String code)
             throws IOException, InterruptedException {
-        return get(callbackPath() + "?code=" + code + "&state=" + state, sessionCookie);
+        return callback(authorization, authorization.sessionCookie(), code, authorization.state());
     }
 
-    /** 사용자가 취소했거나 제공자가 오류로 되돌린 콜백. */
+    /**
+     * 쿠키나 {@code state}를 흐름과 다르게 주는 콜백. 세션 귀속과 재생 방어를 보는 시험이 쓴다.
+     *
+     * <p>제공자만은 흐름이 정한다. 그 축까지 호출부가 정하면 위 결함이 다시 열린다.
+     */
+    HttpResponse<String> callback(
+            Authorization authorization, @Nullable String sessionCookie, String code, String state)
+            throws IOException, InterruptedException {
+        return callback(authorization.provider(), sessionCookie, code, state);
+    }
+
+    /**
+     * 제공자를 이름으로 지정하는 콜백.
+     *
+     * <p>인가 요청 없이 만드는 요청에만 쓴다 — 외부 사이트가 콜백 URL을 그냥 여는 모양이 그렇다.
+     * 흐름이 있으면 위 두 형태를 쓴다.
+     */
+    HttpResponse<String> callback(
+            String provider, @Nullable String sessionCookie, String code, String state)
+            throws IOException, InterruptedException {
+        return get(callbackPath(provider) + "?code=" + code + "&state=" + state, sessionCookie);
+    }
+
+    /** 사용자가 취소했거나 제공자가 오류로 되돌린 콜백. 제공자는 흐름이 들고 온다. */
+    HttpResponse<String> callbackWithError(Authorization authorization, String error)
+            throws IOException, InterruptedException {
+        return callbackWithError(
+                authorization.provider(),
+                authorization.sessionCookie(),
+                error,
+                authorization.state());
+    }
+
     HttpResponse<String> callbackWithError(
-            @Nullable String sessionCookie, String error, String state)
+            String provider, @Nullable String sessionCookie, String error, String state)
             throws IOException, InterruptedException {
-        return get(callbackPath() + "?error=" + error + "&state=" + state, sessionCookie);
+        return get(callbackPath(provider) + "?error=" + error + "&state=" + state, sessionCookie);
     }
 
     /** 인증 시작 → 검증된 콜백까지 한 번에. 정상 로그인 하나가 필요한 시험이 쓴다. */
     HttpResponse<String> signIn(String subject) throws IOException, InterruptedException {
-        Authorization authorization = startAuthorization();
+        return signIn(AuthSecurityConfig.GOOGLE_REGISTRATION_ID, subject);
+    }
+
+    HttpResponse<String> signIn(String provider, String subject)
+            throws IOException, InterruptedException {
+        Authorization authorization = startAuthorization(provider, null, null);
         String code =
                 issueCode(authorization, TokenPlan.valid(authorization.nonce()).subject(subject));
-        return callback(authorization.sessionCookie(), code, authorization.state());
+        return callback(authorization, code);
     }
 
     HttpResponse<String> sessionState(@Nullable String sessionCookie)
@@ -280,7 +350,36 @@ abstract class AuthFlowTestBase {
     }
 
     static String callbackPath() {
-        return AuthSecurityConfig.CALLBACK_BASE_URI + "/" + AuthSecurityConfig.GOOGLE_REGISTRATION_ID;
+        return callbackPath(AuthSecurityConfig.GOOGLE_REGISTRATION_ID);
+    }
+
+    /**
+     * 그 제공자의 콜백 경로.
+     *
+     * <p>URL 표면은 이미 제공자 복수형이다 — 콜백 필터가 {@code CALLBACK_BASE_URI + "/*"}
+     * 와일드카드로 받고 마지막 세그먼트가 등록 id다. 그래서 이 경로를 만드는 데 새 배선이 없다.
+     */
+    static String callbackPath(String provider) {
+        return AuthSecurityConfig.CALLBACK_BASE_URI + "/" + provider;
+    }
+
+    /**
+     * 그 인증 매핑의 {@code provider} 컬럼 값.
+     *
+     * <p>인증에 실제로 쓰인 제공자가 저장됐는지 보는 유일한 창이다. {@code (issuer, subject)}가
+     * 전역 유일이므로 이 술어로 행 하나가 정해진다.
+     *
+     * @return 저장된 값, 그 매핑이 없으면 빈 값
+     */
+    Optional<String> linkedProviderOf(String issuer, String subject) {
+        return this.jdbc
+                .sql(
+                        "SELECT provider FROM identity_social_link "
+                                + "WHERE issuer = :issuer AND subject = :subject")
+                .param("issuer", issuer)
+                .param("subject", subject)
+                .query(String.class)
+                .optional();
     }
 
     // ----------------------------------------------------------------------

@@ -126,7 +126,7 @@
   /*
    * 제공자 공식 버튼 가이드가 소유하는 값. DESIGN.md components.social-sign-in의
    * `provider-treatment`가 채움색·글자색·테두리·모서리·내부 여백과 로고를 여기로 넘긴다.
-   * BokriLog 색 팔레트를 참조하지 않는 것이 정상이며, 값의 소유자는 Google이다.
+   * BokriLog 색 팔레트를 참조하지 않는 것이 정상이며, 값의 소유자는 각 제공자다.
    * BokriLog가 소유하는 것은 위 세 값(순서·간격·최소 목표 크기·포커스)뿐이다.
    */
   --component-social-sign-in-google-background: #ffffff;
@@ -140,6 +140,38 @@
   --component-social-sign-in-google-logo-green: #34a853;
   --component-social-sign-in-google-logo-yellow: #fbbc05;
   --component-social-sign-in-google-logo-red: #ea4335;
+
+  /*
+   * 네이버 로그인 버튼(Story 1.6).
+   *
+   * 색 셋과 간격 하나는 네이버 공식 가이드가 **본문으로 공표한 값**이다. 권장 조합은 배경
+   * #03A94D · 로고 #FFFFFF · 레이블 #FFFFFF이고 "지정 컬러는 변경할 수 없으며", 가운데 정렬 시
+   * 로고-레이블 간격은 8px이다.
+   *
+   * 크기 두 값은 공표값이 아니라 BokriLog가 고른 값이다. 가이드는 크기를 공표하지 않고 하한
+   * ("완성형 로고 16px 이상")과 관계("텍스트는 로고 높이보다 작은 크기")만 요구한다. 레이블
+   * 20px·700은 WCAG 큰 텍스트 문턱(24px 이상, 또는 18.67px 이상이면서 굵기 700 이상)을 넘기려는
+   * 값이다 — 공표된 배경·레이블 조합의 대비가 3.095:1이라 일반 텍스트 4.5:1은 넘지 못하고 큰
+   * 텍스트 3:1은 넘으므로, 색을 한 픽셀도 바꾸지 않고 접근성 하한을 지키는 축이 크기 하나뿐이다.
+   * 굵기 600은 큰 텍스트로 세지 않는다(기준이 700이다). 로고 24px은 레이블 20px보다 크고 하한
+   * 16px보다 큰 가장 작은 4px 배수다. Google 버튼은 14px/600 그대로다 — 그 조합은 16.48:1이라
+   * 일반 텍스트 하한을 이미 넘는다.
+   *
+   * 모서리 반경과 내부 여백 토큰이 여기 없다. 가이드 본문에 그 수치가 없고 권위 있는 값은
+   * 내려받는 애셋에 있으므로, 없는 브랜드 값을 지어내는 대신 그 두 축을 BokriLog의
+   * `--radius-*`·`--space-*`가 소유한다(DESIGN.md frontmatter의 같은 근거). 나중에 애셋에서
+   * 값을 읽으면 토큰 하나가 여기로 옮겨 올 뿐이다.
+   *
+   * 별도 테두리 토큰도 없다. 녹색 채움 버튼이라 가이드가 테두리를 주지 않으며, 흰 배경 버튼은
+   * "타사 버튼이 컬러일 경우" 가이드가 지양하라고 적은 조합이다.
+   */
+  --component-social-sign-in-naver-background: #03a94d;
+  --component-social-sign-in-naver-foreground: #ffffff;
+  --component-social-sign-in-naver-logo: #ffffff;
+  --component-social-sign-in-naver-logo-size: 24px;
+  --component-social-sign-in-naver-logo-gap: 8px;
+  --component-social-sign-in-naver-label-font-size: 20px;
+  --component-social-sign-in-naver-label-font-weight: 700;
 
   --component-secure-input-form-background: var(--color-surface-raised);
   --component-secure-input-form-foreground: var(--color-ink-primary);
