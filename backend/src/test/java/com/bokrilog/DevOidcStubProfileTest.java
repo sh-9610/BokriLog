@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.bokrilog.AuthSecurityConfig.AuthProperties;
 import com.bokrilog.AuthSecurityConfig.ProviderClientRegistrations;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -33,10 +34,10 @@ import org.springframework.web.servlet.function.ServerRequest;
  * <b>하나</b>에 실려 있으므로 그 빈의 부재가 곧 경로의 부재다. 컨트롤러 애노테이션으로 흩어 두면
  * "노출되지 않는다"를 확인하려면 서블릿 컨테이너를 띄워야 한다.
  *
- * <p>Story 1.6이 제공자를 둘로 늘렸다. 그래서 이 파일은 두 가지를 더 본다 — 스텁 빈이 제공자 수만큼
- * 있고 라우터 빈은 여전히 하나이며, fail-closed 판정이 <b>제공자 단위로 독립</b>한다는 것이다. 뒤의
- * 것이 이 스토리의 미묘한 자리다: 판정을 한 번에 접으면 네이버 자격정보가 없는 환경에서 Google
- * 로그인까지 죽는다.
+ * <p>Story 1.6이 제공자를 둘로, Story 1.7이 셋으로 늘렸다. 그래서 이 파일은 두 가지를 더 본다 —
+ * 스텁 빈이 제공자 수만큼 있고 라우터 빈은 여전히 하나이며, fail-closed 판정이 <b>제공자 단위로
+ * 독립</b>한다는 것이다. 뒤의 것이 미묘한 자리다: 판정을 한 번에 접으면 한 제공자의 자격정보가
+ * 없는 환경에서 나머지 제공자의 로그인까지 죽는다.
  */
 class DevOidcStubProfileTest {
 
@@ -44,7 +45,17 @@ class DevOidcStubProfileTest {
     private static final List<String> PROVIDERS =
             List.of(
                     AuthSecurityConfig.GOOGLE_REGISTRATION_ID,
-                    AuthSecurityConfig.NAVER_REGISTRATION_ID);
+                    AuthSecurityConfig.NAVER_REGISTRATION_ID,
+                    AuthSecurityConfig.KAKAO_REGISTRATION_ID);
+
+    /**
+     * 어느 제공자로도 등록되지 않은 이름.
+     *
+     * <p>실제 제공자 이름을 쓰지 않는다. Story 1.6이 이 탐침을 {@code kakao}로 두었고 Story 1.7이
+     * 카카오를 아는 제공자로 만들면서 그 단정은 통과하되 <b>뜻을 잃는</b> 상태가 됐다. 브랜드가 아닌
+     * 값이면 다음 제공자가 들어와도 같은 일이 반복되지 않는다.
+     */
+    private static final String UNREGISTERED_PROVIDER = "unregistered-provider";
 
     private final ApplicationContextRunner runner =
             new ApplicationContextRunner().withUserConfiguration(DevOidcStubConfig.class);
@@ -70,14 +81,16 @@ class DevOidcStubProfileTest {
          * 인증 필터가 배선되지 않고 인증 시작은 공통 오류 계약으로 fail-closed다
          * (`AuthSessionController`).
          */
-        assertThat(ProviderClientRegistrations.from(new AuthProperties(null, null, null)).isConfigured())
+        assertThat(
+                        ProviderClientRegistrations.from(new AuthProperties(null, null, null, null))
+                                .isConfigured())
                 .isFalse();
+        AuthProperties.Provider blank =
+                new AuthProperties.Provider("", "", null, null, null, null);
         assertThat(
                         ProviderClientRegistrations.from(
                                         new AuthProperties(
-                                                "https://bokrilog.test",
-                                                new AuthProperties.Provider("", "", null, null, null, null),
-                                                new AuthProperties.Provider("", "", null, null, null, null)))
+                                                "https://bokrilog.test", blank, blank, blank))
                                 .isConfigured())
                 .isFalse();
     }
@@ -86,10 +99,10 @@ class DevOidcStubProfileTest {
     void 한_제공자만_구성되면_그_제공자만_살아_있다() {
         /*
          * fail-closed가 제공자 단위로 독립한다. Story 1.6 전의 `from()`은 세 값을 한 번에 AND로
-         * 접었고, 그 모양을 제공자 둘에 그대로 두면 한쪽 자격정보의 부재가 다른 쪽 로그인까지
-         * 죽인다 — 네이버를 등록하지 않은 개발 환경에서 Google 로그인이 사라지는 상태다.
+         * 접었고, 그 모양을 제공자 여럿에 그대로 두면 한 자격정보의 부재가 나머지 로그인까지
+         * 죽인다 — 카카오를 등록하지 않은 개발 환경에서 Google 로그인이 사라지는 상태다.
          *
-         * 두 방향을 모두 본다. 한 방향만 단정하면 판정이 어느 한쪽으로 치우친 구현이 통과한다.
+         * 모든 방향을 본다. 한 방향만 단정하면 판정이 어느 한쪽으로 치우친 구현이 통과한다.
          */
         for (String configured : PROVIDERS) {
             ProviderClientRegistrations registrations =
@@ -115,8 +128,8 @@ class DevOidcStubProfileTest {
         for (String provider : PROVIDERS) {
             assertThat(ProviderClientRegistrations.isSupportedProvider(provider)).isTrue();
         }
-        // 카카오는 Story 1.7이 더한다. 그때까지 그 경로는 존재하지 않는다.
-        assertThat(ProviderClientRegistrations.isSupportedProvider("kakao")).isFalse();
+        // 등록되지 않은 이름의 경로는 존재하지 않는다.
+        assertThat(ProviderClientRegistrations.isSupportedProvider(UNREGISTERED_PROVIDER)).isFalse();
         assertThat(ProviderClientRegistrations.isSupportedProvider("")).isFalse();
         assertThat(ProviderClientRegistrations.isSupportedProvider("GOOGLE")).isFalse();
     }
@@ -156,7 +169,7 @@ class DevOidcStubProfileTest {
     @Test
     void 경로가_붙은_공개_base_URL로는_어느_제공자_등록도_만들어지지_않는다() {
         /*
-         * `publicBaseUrl`만 두 제공자가 공유하는 값이다. 그것이 비거나 origin이 아니면 redirect URI를
+         * `publicBaseUrl`만 세 제공자가 공유하는 값이다. 그것이 비거나 origin이 아니면 redirect URI를
          * 조립할 수 없으므로 어느 제공자도 만들어지지 않는 것이 맞다 — 그 하나가 제공자별 독립의
          * 예외다.
          */
@@ -164,6 +177,7 @@ class DevOidcStubProfileTest {
                 ProviderClientRegistrations.from(
                         new AuthProperties(
                                 "https://bokrilog.test/app",
+                                credentials(),
                                 credentials(),
                                 credentials()));
 
@@ -183,7 +197,7 @@ class DevOidcStubProfileTest {
                             assertThat(context).hasNotFailed();
                             /*
                              * 스텁은 제공자 수만큼이다. issuer·client·서명 키가 인스턴스 단위이므로
-                             * 인스턴스가 하나면 두 제공자가 같은 키로 서명한 토큰을 서로 검증한다.
+                             * 인스턴스가 하나면 제공자들이 같은 키로 서명한 토큰을 서로 검증한다.
                              */
                             assertThat(context.getBeansOfType(DevOidcStub.class))
                                     .hasSize(PROVIDERS.size());
@@ -202,7 +216,7 @@ class DevOidcStubProfileTest {
         /*
          * 라우터가 하나라는 사실만 단정하면 그 하나가 어느 제공자의 경로를 들고 있는지는 아무도
          * 보지 않는다. 스텁 표면은 둘이고(개발·CI 스택의 이 라우터, 백엔드 시험의 루프백 서버)
-         * 시험이 지나는 것은 뒤의 하나뿐이었다 — 그래서 이 라우터의 네이버 절반이 비어 있어도
+         * 시험이 지나는 것은 뒤의 하나뿐이었다 — 그래서 이 라우터의 네이버 경로가 비어 있어도
          * `build`가 통과했고, 결함은 compose 검증까지 가서야 드러났다. 실제로 그 검증마저
          * 조용히 건너뛴 적이 있어 여기까지 왔다.
          *
@@ -235,8 +249,13 @@ class DevOidcStubProfileTest {
                                         .isFalse();
                             }
 
-                            // 이름을 모르는 제공자의 경로는 없다. 카카오는 Story 1.7이 더한다.
-                            assertThat(routes(routes, "GET", DevOidcStubConfig.jwksPath("kakao"))).isFalse();
+                            // 이름을 모르는 제공자의 경로는 없다.
+                            assertThat(
+                                            routes(
+                                                    routes,
+                                                    "GET",
+                                                    DevOidcStubConfig.jwksPath(UNREGISTERED_PROVIDER)))
+                                    .isFalse();
                             assertThat(routes(routes, "GET", DevOidcStubConfig.BASE_PATH + "/jwks"))
                                     .isFalse();
                         });
@@ -312,14 +331,15 @@ class DevOidcStubProfileTest {
     }
 
     @Test
-    void 네이버_등록은_client_secret_post와_sub를_쓴다() {
+    void 손으로_조립한_등록은_client_secret_post와_sub를_쓴다() {
         /*
-         * 네이버 discovery의 `token_endpoint_auth_methods_supported`는 `[client_secret_post, none]`
-         * 이라 Spring Security의 기본값(`client_secret_basic`)으로는 토큰 교환이 성립하지 않는다.
-         * 그리고 `CommonOAuth2Provider`에 NAVER가 없어 `userNameAttributeName`의 기본값도 없다 —
-         * 비면 `OidcUser`의 주체가 정해지지 않는다.
+         * 네이버 discovery의 `token_endpoint_auth_methods_supported`는 `[client_secret_post, none]`,
+         * 카카오는 `[client_secret_post]` 하나뿐이다. 그래서 Spring Security의
+         * 기본값(`client_secret_basic`)으로는 두 제공자 어느 쪽도 토큰 교환이 성립하지 않는다.
+         * 그리고 `CommonOAuth2Provider`에 NAVER·KAKAO가 없어 `userNameAttributeName`의 기본값도
+         * 없다 — 비면 `OidcUser`의 주체가 정해지지 않는다.
          *
-         * Google과 대조해 둔다. 두 값이 같아지는 회귀는 어느 한쪽만 보면 드러나지 않는다.
+         * Google과 대조해 둔다. 값이 같아지는 회귀는 한쪽만 보면 드러나지 않는다.
          */
         runner.withPropertyValues(
                         "spring.profiles.active=" + DevOidcStubConfig.PROFILE,
@@ -329,15 +349,24 @@ class DevOidcStubProfileTest {
                             ProviderClientRegistrations registrations =
                                     context.getBean(ProviderClientRegistrations.class);
 
-                            ClientRegistration naver =
-                                    registrations.findByRegistrationId(
-                                            AuthSecurityConfig.NAVER_REGISTRATION_ID);
-                            assertThat(naver).isNotNull();
-                            assertThat(naver.getClientAuthenticationMethod())
-                                    .isEqualTo(ClientAuthenticationMethod.CLIENT_SECRET_POST);
-                            assertThat(naver.getProviderDetails().getUserInfoEndpoint()
-                                            .getUserNameAttributeName())
-                                    .isEqualTo("sub");
+                            for (String provider :
+                                    List.of(
+                                            AuthSecurityConfig.NAVER_REGISTRATION_ID,
+                                            AuthSecurityConfig.KAKAO_REGISTRATION_ID)) {
+                                ClientRegistration assembled =
+                                        registrations.findByRegistrationId(provider);
+                                assertThat(assembled).as("%s 등록", provider).isNotNull();
+                                assertThat(assembled.getClientAuthenticationMethod())
+                                        .as("%s client 인증", provider)
+                                        .isEqualTo(ClientAuthenticationMethod.CLIENT_SECRET_POST);
+                                assertThat(
+                                                assembled
+                                                        .getProviderDetails()
+                                                        .getUserInfoEndpoint()
+                                                        .getUserNameAttributeName())
+                                        .as("%s 주체 claim", provider)
+                                        .isEqualTo("sub");
+                            }
 
                             ClientRegistration google =
                                     registrations.findByRegistrationId(
@@ -357,7 +386,7 @@ class DevOidcStubProfileTest {
          */
         ClientRegistration naver =
                 ProviderClientRegistrations.from(
-                                new AuthProperties("https://bokrilog.test", null, credentials()))
+                                propertiesFor(AuthSecurityConfig.NAVER_REGISTRATION_ID))
                         .findByRegistrationId(AuthSecurityConfig.NAVER_REGISTRATION_ID);
 
         assertThat(naver).isNotNull();
@@ -371,6 +400,59 @@ class DevOidcStubProfileTest {
         // 동의 범위는 `openid` 하나다. discovery가 `profile`도 광고하지만 요청하지 않는다.
         assertThat(naver.getScopes()).containsExactly("openid");
         assertThat(naver.getProviderDetails().getUserInfoEndpoint().getUri()).isNull();
+    }
+
+    @Test
+    void 카카오_기본_엔드포인트는_공식_discovery의_정적_주소다() {
+        /*
+         * 네이버와 같은 이유로 이 네 값이 코드에 있다. 다만 JWKS 경로의 모양이 서로 다르다 —
+         * 카카오는 issuer 바로 아래의 `/.well-known/jwks.json`이고 네이버는 `/oauth2/jwks`다.
+         * 한 제공자의 모양을 다른 제공자에 옮겨 적으면 서명 검증이 통째로 실패하므로, 두 시험이
+         * 각자 자기 주소를 전문으로 고정한다.
+         */
+        ClientRegistration kakao =
+                ProviderClientRegistrations.from(
+                                propertiesFor(AuthSecurityConfig.KAKAO_REGISTRATION_ID))
+                        .findByRegistrationId(AuthSecurityConfig.KAKAO_REGISTRATION_ID);
+
+        assertThat(kakao).isNotNull();
+        assertThat(kakao.getProviderDetails().getIssuerUri()).isEqualTo("https://kauth.kakao.com");
+        assertThat(kakao.getProviderDetails().getAuthorizationUri())
+                .isEqualTo("https://kauth.kakao.com/oauth/authorize");
+        assertThat(kakao.getProviderDetails().getTokenUri())
+                .isEqualTo("https://kauth.kakao.com/oauth/token");
+        assertThat(kakao.getProviderDetails().getJwkSetUri())
+                .isEqualTo("https://kauth.kakao.com/.well-known/jwks.json");
+        // 동의 범위는 `openid` 하나다. 이메일·프로필 동의를 요청하지 않는다.
+        assertThat(kakao.getScopes()).containsExactly("openid");
+        assertThat(kakao.getProviderDetails().getUserInfoEndpoint().getUri()).isNull();
+        // PKCE도 운영과 같다. 카카오 discovery가 광고하는 방법은 S256 하나다.
+        assertThat(kakao.getClientSettings().isRequireProofKey()).isTrue();
+    }
+
+    @Test
+    void 세_제공자의_기본_issuer가_서로_다르다() {
+        /*
+         * 조회 키가 `(issuer, subject)`라 issuer가 겹치면 제공자 병합이 열린다. 기본값끼리 겹치는
+         * 상태는 `rejectSharedIssuer`가 기동에서 거부하지만, 그 거부가 도는 것과 "기본값이 애초에
+         * 서로 다르다"는 것은 다른 사실이다.
+         */
+        ProviderClientRegistrations registrations =
+                ProviderClientRegistrations.from(
+                        new AuthProperties(
+                                "https://bokrilog.test",
+                                credentials(),
+                                credentials(),
+                                credentials()));
+
+        assertThat(
+                        PROVIDERS.stream()
+                                .map(registrations::findByRegistrationId)
+                                .map(Objects::requireNonNull)
+                                .map(registration -> registration.getProviderDetails().getIssuerUri())
+                                .distinct()
+                                .count())
+                .isEqualTo(PROVIDERS.size());
     }
 
     @Test
@@ -439,13 +521,18 @@ class DevOidcStubProfileTest {
         }
     }
 
-    /** 그 제공자만 자격정보를 가진 구성. 나머지는 빈 값이다. */
+    /**
+     * 그 제공자만 자격정보를 가진 구성. 나머지는 빈 값이다.
+     *
+     * <p>제공자마다 성분을 골라 넣는다. 이분 분기({@code google ? … : …})로 두면 제공자가 셋이 되는
+     * 순간 "google이 아닌 전부"가 한 자리로 접혀 셋째 제공자의 속성이 조용히 틀린 자리에 주입된다.
+     */
     private static AuthProperties propertiesFor(String provider) {
-        boolean google = AuthSecurityConfig.GOOGLE_REGISTRATION_ID.equals(provider);
         return new AuthProperties(
                 "https://bokrilog.test",
-                google ? credentials() : null,
-                google ? null : credentials());
+                AuthSecurityConfig.GOOGLE_REGISTRATION_ID.equals(provider) ? credentials() : null,
+                AuthSecurityConfig.NAVER_REGISTRATION_ID.equals(provider) ? credentials() : null,
+                AuthSecurityConfig.KAKAO_REGISTRATION_ID.equals(provider) ? credentials() : null);
     }
 
     /** 값은 실행 시점에 만든다. 자격정보 모양 리터럴을 시험 fixture에도 두지 않는다. */

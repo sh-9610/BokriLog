@@ -32,6 +32,8 @@ class AuthNaverSignInTest extends AuthFlowTestBase {
 
     private static final String GOOGLE = AuthSecurityConfig.GOOGLE_REGISTRATION_ID;
 
+    private static final String KAKAO = AuthSecurityConfig.KAKAO_REGISTRATION_ID;
+
     @Test
     void 네이버_인가_시작은_공통_불변식을_그대로_지킨다() throws Exception {
         Authorization authorization = startAuthorization(NAVER, null, null);
@@ -175,26 +177,13 @@ class AuthNaverSignInTest extends AuthFlowTestBase {
         assertThat(sessionCount()).isEqualTo(1);
     }
 
-    @Test
-    void 두_제공자가_함께_구성된_스택에서_둘_다_인가를_시작한다() throws Exception {
-        /*
-         * 이 컨텍스트의 등록은 둘이다. 한 제공자를 더하면서 다른 제공자의 인가 시작이 죽는 회귀는
-         * 여기서 드러난다 — 등록 저장소가 맵이 아니라 여전히 하나를 들고 있으면 둘 중 하나가
-         * 공통 오류 계약으로 떨어진다.
-         */
-        Authorization google = startAuthorization(GOOGLE, null, null);
-        Authorization naver = startAuthorization(NAVER, null, null);
-
-        assertThat(google.status()).isEqualTo(302);
-        assertThat(naver.status()).isEqualTo(302);
-        assertThat(google.location()).startsWith(OidcStubConfiguration.issuer(GOOGLE) + "/authorize");
-        assertThat(naver.location()).startsWith(OidcStubConfiguration.issuer(NAVER) + "/authorize");
-        // 두 흐름의 issuer·client가 서로 다르다. 같으면 한쪽 스텁이 다른 쪽 토큰을 검증한다.
-        assertThat(OidcStubConfiguration.issuer(NAVER))
-                .isNotEqualTo(OidcStubConfiguration.issuer(GOOGLE));
-        assertThat(naver.parameters().get("client_id"))
-                .isNotEqualTo(google.parameters().get("client_id"));
-    }
+    /*
+     * "함께 구성된 스택에서 모든 제공자가 인가를 시작한다"는 축이 여기 없다. Story 1.6에는
+     * `두_제공자가_함께_구성된_스택에서_둘_다_인가를_시작한다`가 있었지만, Story 1.7이
+     * `AuthKakaoSignInTest.세_제공자가_함께_구성된_스택에서_셋_다_인가를_시작한다`를 들이면서 그것의
+     * 진부분집합이 됐다 — 같은 컨텍스트에서 같은 것을 더 좁게 보는 시험이라 남겨 두면 회귀를 하나도
+     * 더 잡지 못하면서 다음 제공자마다 고쳐야 하는 자리만 늘어난다.
+     */
 
     @Test
     void 한_제공자가_구성되지_않아도_다른_제공자의_등록은_살아_있다() {
@@ -218,7 +207,8 @@ class AuthNaverSignInTest extends AuthFlowTestBase {
 
         ProviderClientRegistrations googleOnly =
                 ProviderClientRegistrations.from(
-                        new AuthProperties(OidcStubConfiguration.PUBLIC_BASE_URL, credentials, null));
+                        new AuthProperties(
+                                OidcStubConfiguration.PUBLIC_BASE_URL, credentials, null, null));
 
         assertThat(googleOnly.isConfigured()).isTrue();
         assertThat(googleOnly.findByRegistrationId(GOOGLE)).isNotNull();
@@ -226,7 +216,8 @@ class AuthNaverSignInTest extends AuthFlowTestBase {
 
         ProviderClientRegistrations naverOnly =
                 ProviderClientRegistrations.from(
-                        new AuthProperties(OidcStubConfiguration.PUBLIC_BASE_URL, null, credentials));
+                        new AuthProperties(
+                                OidcStubConfiguration.PUBLIC_BASE_URL, null, credentials, null));
 
         assertThat(naverOnly.isConfigured()).isTrue();
         assertThat(naverOnly.findByRegistrationId(NAVER)).isNotNull();
@@ -234,7 +225,7 @@ class AuthNaverSignInTest extends AuthFlowTestBase {
     }
 
     @Test
-    void 두_등록이_같은_issuer를_가리키면_기동을_거부한다() {
+    void 어느_두_등록이_같은_issuer를_가리켜도_기동을_거부한다() {
         /*
          * 구성 오류 하나로 제공자 병합이 열리는 경로다.
          *
@@ -247,52 +238,103 @@ class AuthNaverSignInTest extends AuthFlowTestBase {
          * 조회 키에 제공자를 더하는 방향은 택하지 않았다. `identity` 공개 API 변경이고 이 스토리의
          * Ask First다. 대신 잘못 구성된 프로세스가 뜨지 못하게 한다.
          *
+         * 조합을 셋 본다. 한 쌍만 보면 판정이 "앞 두 등록만" 비교하는 모양이어도 통과하고, 그때
+         * 셋째 등록의 issuer 충돌은 조용히 기동에 성공한다 — 제공자가 늘어날수록 커지는 사각지대라
+         * 세 번째가 들어오는 지금 닫는다. 마지막 조합은 Google 없이 세운다. 겹침 판정이 첫 등록과의
+         * 비교로 좁혀지면 그 조합만 붉게 나온다.
+         *
          * Google issuer를 리터럴로 적지 않는다. 그 값의 소유자는 `CommonOAuth2Provider.GOOGLE`이고,
          * 여기서 다시 적으면 두 곳이 갈라질 자리가 생긴다.
          */
-        AuthProperties.Provider google =
-                new AuthProperties.Provider(
-                        "client-" + UUID.randomUUID(),
-                        UUID.randomUUID().toString(),
-                        null,
-                        null,
-                        null,
-                        null);
+        AuthProperties.Provider google = credentials();
         ClientRegistration googleRegistration =
                 Objects.requireNonNull(
                         ProviderClientRegistrations.from(
                                         new AuthProperties(
-                                                OidcStubConfiguration.PUBLIC_BASE_URL, google, null))
+                                                OidcStubConfiguration.PUBLIC_BASE_URL,
+                                                google,
+                                                null,
+                                                null))
                                 .findByRegistrationId(GOOGLE));
         String googleIssuer =
                 Objects.requireNonNull(googleRegistration.getProviderDetails().getIssuerUri());
 
+        // 1) 네이버가 Google issuer를 가리킨다.
         String naverClientId = "client-" + UUID.randomUUID();
         String naverClientSecret = UUID.randomUUID().toString();
-        AuthProperties collided =
+        assertRefusesSharedIssuer(
                 new AuthProperties(
                         OidcStubConfiguration.PUBLIC_BASE_URL,
                         google,
-                        new AuthProperties.Provider(
-                                naverClientId, naverClientSecret, googleIssuer, null, null, null));
+                        collidingWith(naverClientId, naverClientSecret, googleIssuer),
+                        null),
+                googleIssuer,
+                naverClientId,
+                naverClientSecret);
 
+        // 2) 카카오가 Google issuer를 가리킨다. 셋째 등록도 같은 검사를 받는다.
+        String kakaoClientId = "client-" + UUID.randomUUID();
+        String kakaoClientSecret = UUID.randomUUID().toString();
+        assertRefusesSharedIssuer(
+                new AuthProperties(
+                        OidcStubConfiguration.PUBLIC_BASE_URL,
+                        google,
+                        null,
+                        collidingWith(kakaoClientId, kakaoClientSecret, googleIssuer)),
+                googleIssuer,
+                kakaoClientId,
+                kakaoClientSecret);
+
+        // 3) 손으로 조립한 두 등록끼리 겹친다. Google이 아예 없는 구성이다.
+        String sharedIssuer = "https://shared-issuer.test";
+        String pairClientId = "client-" + UUID.randomUUID();
+        String pairClientSecret = UUID.randomUUID().toString();
+        assertRefusesSharedIssuer(
+                new AuthProperties(
+                        OidcStubConfiguration.PUBLIC_BASE_URL,
+                        null,
+                        collidingWith(pairClientId, pairClientSecret, sharedIssuer),
+                        collidingWith(pairClientId, pairClientSecret, sharedIssuer)),
+                sharedIssuer,
+                pairClientId,
+                pairClientSecret);
+    }
+
+    /**
+     * 그 구성이 기동에서 거부되고, 거부 메시지가 아무것도 흘리지 않는다.
+     *
+     * <p>메시지가 무엇을 말하지 <b>않는지</b>도 계약이다. 자격정보·환경 변수 이름·어느 제공자인지가
+     * 기동 실패 로그에도 남지 않는다({@code DevOidcStubProfileTest}가 스텁 guard에 세운 것과 같은
+     * 규율이다). 제공자 이름은 셋을 모두 본다 — 둘만 보면 셋째 이름이 메시지에 실리기 시작해도
+     * 통과한다.
+     */
+    private static void assertRefusesSharedIssuer(
+            AuthProperties collided, String issuer, String clientId, String clientSecret) {
         assertThatThrownBy(() -> ProviderClientRegistrations.from(collided))
                 .isInstanceOf(IllegalStateException.class)
                 .satisfies(
                         thrown -> {
-                            /*
-                             * 거부 메시지가 무엇을 말하지 않는지도 계약이다. 자격정보·환경 변수
-                             * 이름·어느 제공자인지가 기동 실패 로그에도 남지 않는다
-                             * (`DevOidcStubProfileTest`가 스텁 guard에 세운 것과 같은 규율이다).
-                             */
                             String message = String.valueOf(thrown.getMessage());
                             assertThat(message).doesNotContain("BOKRILOG_");
                             assertThat(message).doesNotContain("client-id");
-                            assertThat(message).doesNotContain(naverClientId);
-                            assertThat(message).doesNotContain(naverClientSecret);
-                            assertThat(message).doesNotContain(googleIssuer);
+                            assertThat(message).doesNotContain(clientId);
+                            assertThat(message).doesNotContain(clientSecret);
+                            assertThat(message).doesNotContain(issuer);
                             assertThat(message).doesNotContain(GOOGLE);
                             assertThat(message).doesNotContain(NAVER);
+                            assertThat(message).doesNotContain(KAKAO);
                         });
+    }
+
+    /** 그 issuer를 가리키도록 재정의된 제공자 구성. */
+    private static AuthProperties.Provider collidingWith(
+            String clientId, String clientSecret, String issuerUri) {
+        return new AuthProperties.Provider(clientId, clientSecret, issuerUri, null, null, null);
+    }
+
+    /** 값은 실행 시점에 만든다. 자격정보 모양 리터럴을 시험 fixture에도 두지 않는다. */
+    private static AuthProperties.Provider credentials() {
+        return new AuthProperties.Provider(
+                "client-" + UUID.randomUUID(), UUID.randomUUID().toString(), null, null, null, null);
     }
 }

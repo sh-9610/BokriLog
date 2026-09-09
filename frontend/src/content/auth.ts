@@ -18,13 +18,13 @@ import { entryContent } from './entry'
 /**
  * 화면이 여는 제공자. 고정 순서다.
  *
- * DESIGN.md가 Google → 네이버 → 카카오 순서를 정했고 지금 실제 버튼은 앞의 둘이다. 배열의 순서가
+ * DESIGN.md가 Google → 네이버 → 카카오 순서를 정했고 Story 1.7이 세 번째를 채웠다. 배열의 순서가
  * 곧 문서 순서이므로 이 목록 하나가 그 계약을 나른다 — 화면이 순서를 다시 적으면 두 곳이 갈라진다.
  *
  * 서버가 아는 이름과 같은 값이다(`AuthSecurityConfig`의 registration id). 갈라지면 인증 시작이
  * 404로 끝난다.
  */
-export const SIGN_IN_PROVIDERS = ['google', 'naver'] as const
+export const SIGN_IN_PROVIDERS = ['google', 'naver', 'kakao'] as const
 
 export type SignInProvider = (typeof SIGN_IN_PROVIDERS)[number]
 
@@ -198,16 +198,21 @@ export const authContent = {
      *
      * 네이버 공식 버튼 가이드는 문구 변경을 허용한다. 그래서 "네이버로 계속하기"가 가이드와
      * 충돌하지 않으며, 세 제공자의 라벨 형태가 하나로 유지된다.
+     *
+     * 카카오 가이드는 `카카오 로그인`·`로그인`을 **권장 문구**로 공표하지만 문구 변경을 금지
+     * 목록에 넣지 않았다(금지는 심볼의 형태·비율·색 변경, CI 대체, 기능 아이콘 사용, 심볼 제거,
+     * 지정 팔레트 밖 색이다). `epics.md` AC-1과 DESIGN.md의 접근 가능한 이름 규칙이 제공자명 +
+     * "계속하기" 형태를 요구하므로 "카카오로 계속하기"를 쓴다(2026-09-09 사람의 결정). 심볼과
+     * 색은 공표값을 그대로 지킨다.
      */
     labels: {
       google: 'Google로 계속하기',
       naver: '네이버로 계속하기',
+      kakao: '카카오로 계속하기',
     },
     /** DESIGN.md가 버튼 아래에 두라고 정한 안내. */
     boundary:
       '소셜 계정은 본인 확인에만 사용하며 Bybit 자격정보·금융 데이터·계획은 공유하지 않습니다.',
-    /** 카카오는 Story 1.7이 더한다. 준비 중임을 숨기지 않는다. */
-    pending: '카카오 로그인은 아직 준비 중입니다.',
   },
   notices: NOTICES,
   session: {
@@ -236,10 +241,10 @@ export const authContent = {
   /**
    * 로그인 수단에 접근을 잃은 사용자의 복구 경로.
    *
-   * **두 제공자를 언제나 함께 보여 준다.** 진입 화면은 사용자가 어느 제공자로 가입했는지 알 수
+   * **세 제공자를 언제나 함께 보여 준다.** 진입 화면은 사용자가 어느 제공자로 가입했는지 알 수
    * 없고 알아서도 안 된다 — 그 정보를 화면에 도달시키는 경로가 곧 계정 존재·소속 신호다(서버가
    * 실패 표지를 닫힌 두 값으로 둔 것과 같은 이유). 그래서 "당신이 쓴 제공자의 복구 절차"는 만들
-   * 수 없고, 남는 배치는 둘을 무조건 함께 보여 주는 것 하나다. 이 배치는 아무것도 누출하지
+   * 수 없고, 남는 배치는 전부를 무조건 함께 보여 주는 것 하나다. 이 배치는 아무것도 누출하지
    * 않는다.
    *
    * 이메일 확인이나 지원 담당자 확인으로 인증을 우회하는 경로를 만들지 않으며, 그 사실을 카피가
@@ -255,10 +260,11 @@ export const authContent = {
      * 같은 창에서 열고 `rel`로 참조 유출을 막는다. 순서는 위 `SIGN_IN_PROVIDERS`와 같다 —
      * 버튼과 안내가 다른 순서로 나오면 사용자가 두 목록을 대응시킬 수 없다.
      *
-     * 두 주소는 실측한 값이다. 네이버 계정 찾기(`https://nid.naver.com/user2/help/idInquiry`)는
-     * 2026-09-09에 **HTTP 200**으로 해석된다(SPEC의 "검증된 외부 사실"에 같은 사실을 적었다).
-     * 이 링크는 화면이 외부로 내보내는 유일한 자리이므로 주소를 추측으로 적지 않는다 — 죽은
-     * 주소는 "복구 절차를 이용해 주세요"라는 문장을 지키지 못하는 약속으로 만든다.
+     * 세 주소는 실측한 값이다. 네이버 계정 찾기(`https://nid.naver.com/user2/help/idInquiry`)와
+     * 카카오 계정 찾기(`https://accounts.kakao.com/weblogin/find_account`)는 2026-09-09에
+     * **HTTP 200**으로 해석된다(각 SPEC의 "검증된 외부 사실"에 같은 사실을 적었다). 이 링크는
+     * 화면이 외부로 내보내는 유일한 자리이므로 주소를 추측으로 적지 않는다 — 죽은 주소는 "복구
+     * 절차를 이용해 주세요"라는 문장을 지키지 못하는 약속으로 만든다.
      */
     links: [
       {
@@ -270,6 +276,11 @@ export const authContent = {
         provider: 'naver',
         label: '네이버 공식 계정 찾기 안내 열기',
         href: 'https://nid.naver.com/user2/help/idInquiry',
+      },
+      {
+        provider: 'kakao',
+        label: '카카오 공식 계정 찾기 안내 열기',
+        href: 'https://accounts.kakao.com/weblogin/find_account',
       },
     ],
     caveat: '이메일 확인이나 문의만으로는 로그인할 수 없습니다.',
@@ -297,7 +308,6 @@ export const signInCopyStrings: readonly string[] = [
   authContent.signIn.heading,
   ...SIGN_IN_PROVIDERS.map((provider) => authContent.signIn.labels[provider]),
   authContent.signIn.boundary,
-  authContent.signIn.pending,
 ]
 
 /**

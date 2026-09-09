@@ -119,7 +119,8 @@ components:
     # 가이드에 넘긴다. 아래 리프 키는 그 값이 사는 자리다. BokriLog 색 팔레트에 참조가 없는 것이
     # 정상이며, 값의 소유자는 각 제공자이고 이 문서는 기록만 한다. 임의로 바꾸지 않는다.
     # 근거: Google 공식 "Sign in with Google" 버튼 가이드(light theme),
-    #      네이버 공식 로그인 버튼 가이드(`developers.naver.com/docs/login/bi/bi.md`).
+    #      네이버 공식 로그인 버튼 가이드(`developers.naver.com/docs/login/bi/bi.md`),
+    #      카카오 공식 로그인 버튼 디자인 가이드(`developers.kakao.com/docs/ko/kakaologin/design-guide`).
     # 글꼴은 이 목록에 없다. `provider-treatment`가 넘기는 범주에 글꼴이 없으므로 타이포그래피는
     # 그대로 BokriLog의 시스템 폰트 스택을 쓴다(외부 폰트를 불러오지 않는다).
     #
@@ -143,6 +144,31 @@ components:
     # 모서리는 BokriLog의 `{rounded.*}`가 소유하며, 나중에 애셋에서 값을 읽으면 그 토큰 하나가
     # `naver-radius`로 옮겨 갈 뿐이다. 가이드가 실제로 금지한 것(지정 컬러 변경, 로고 변형·조합·
     # 그라데이션, 타사 컬러 버튼과 함께 쓸 때의 흰 배경·크기 축소)은 하나도 건드리지 않는다.
+    #
+    # 카카오는 같은 규칙의 반대 사례다. 가이드 본문이 수치로 주는 것은 색 셋(컨테이너 #FEE500,
+    # 심볼 #000000, 레이블 #000000 85% 불투명도)과 **모서리 반경 12px**이며, 반경을 공표했다는
+    # 점이 네이버와 다르다. 그래서 아래 `kakao-radius`가 있고 그 값은 BokriLog의 `{rounded.*}`가
+    # 아니라 카카오가 소유한다 — Google이 이미 `google-radius: 4px`를 갖는 것과 같은 규칙이며,
+    # 세 버튼의 반경이 4·10·12px로 갈리는 것은 "각 제공자의 공식 가이드가 BokriLog 토큰보다
+    # 우선한다"는 결정이 실제로 작동한 모습이다.
+    #
+    # 반대로 카카오는 **레이블 크기와 심볼 크기·간격을 공표하지 않는다**(본문 값은 내려받는
+    # 애셋에 있고 이 문서는 그것을 열지 않았다). 그래서 `kakao-label-font-*`가 여기 없다. 레이블
+    # 크기를 만들 이유도 없다 — 공표된 조합의 대비가 심볼 16.42:1 · 레이블 12.52:1이라 일반
+    # 텍스트 하한 4.5:1을 이미 넘으므로, 네이버가 대비 때문에 치른 확대(20px·700)를 카카오에
+    # 되풀면 공표되지 않은 값을 지어내는 것이 된다. 카카오 버튼의 타이포그래피는 BokriLog의
+    # label 스타일(14px·600)이고 심볼 크기·내부 여백·간격은 `{spacing.*}`가 소유한다.
+    # 아래 `kakao-logo-size`·`kakao-logo-gap`이 있되 값이 `{spacing.*}` 참조인 것이 그 뜻이다 —
+    # 리프 이름을 다른 제공자와 같은 모양으로 두어야 "제공자마다의 레이블 색과 마크 크기를
+    # 비교한다"가 한 번의 조회로 끝나고, 값의 소유자가 BokriLog라는 사실은 참조가 그대로 말한다.
+    # 내부 여백은 리프가 없다 — 네이버와 같은 자리를 구현이 직접 쓴다.
+    #
+    # 같은 이유로 카카오의 색 리프 이름도 Google·네이버가 세운 `-foreground`(레이블 색)·`-logo`
+    # (마크 색)를 따른다. 카카오 가이드는 그 둘을 "레이블"·"심볼"이라 부르지만, 이름을 제공자마다
+    # 갈라 두면 같은 축을 가리키는 리프가 제공자마다 다른 이름이 되어 비교가 끊긴다. 이름은 이
+    # 문서의 축이고 값의 소유자는 여전히 각 제공자다.
+    # 가이드가 실제로 금지한 것(심볼의 형태·비율·색 변경, CI 대체, 기능 아이콘 사용, 심볼 제거,
+    # 지정 팔레트 밖 색)은 하나도 건드리지 않는다.
     google-background: '#FFFFFF'
     google-foreground: '#1F1F1F'
     google-border: '#747775'
@@ -161,6 +187,12 @@ components:
     naver-logo-gap: '8px'
     naver-label-font-size: '20px'
     naver-label-font-weight: '700'
+    kakao-background: '#FEE500'
+    kakao-foreground: 'rgb(0 0 0 / 85%)'
+    kakao-radius: '12px'
+    kakao-logo: '#000000'
+    kakao-logo-size: '{spacing.4}'
+    kakao-logo-gap: '{spacing.2}'
   secure-input-form:
     background: '{colors.surface-raised}'
     foreground: '{colors.ink-primary}'
