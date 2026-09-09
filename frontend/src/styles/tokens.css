@@ -173,6 +173,43 @@
   --component-social-sign-in-naver-label-font-size: 20px;
   --component-social-sign-in-naver-label-font-weight: 700;
 
+  /*
+   * 카카오 로그인 버튼(Story 1.7).
+   *
+   * 네 값 모두 카카오 공식 가이드가 **본문으로 공표한 값**이다(2026-09-09 실측). 컨테이너
+   * #FEE500 · 심볼 #000000 · 레이블 #000000 85% 불투명도 · 컨테이너 모서리 반경 12px.
+   *
+   * 모서리가 여기 있는 것이 네이버와 다른 점이고, 그것은 예외가 아니라 같은 규칙의 결과다 —
+   * 제공자가 공표한 축은 제공자가 소유하고 침묵한 축은 BokriLog가 소유한다. 네이버는 반경을
+   * 공표하지 않아 `--radius-md`를 쓰고, Google은 4px을 공표해 자체 토큰을 가지며, 카카오는
+   * 12px을 공표해 이 토큰을 갖는다.
+   *
+   * 레이블 크기·굵기 토큰이 없다. 만들지 않는 것이 결정이다 — 공표 조합의 대비는 심볼
+   * 16.42:1, 레이블(85% 합성 #262200) 12.52:1이라 일반 텍스트 하한 4.5:1을 이미 넘는다. 네이버가
+   * 3.095:1 때문에 치른 확대(20px·700)는 그 대비를 넘기려는 값이었고, 필요 없는 확대를 여기서
+   * 되풀면 카카오가 공표하지 않은 값을 지어내는 것이 된다. 그래서 카카오 레이블은 BokriLog의
+   * `--type-label-*`(14px·600)을 그대로 쓴다.
+   *
+   * 이름은 Google·네이버가 세운 모양을 그대로 따른다 — 레이블 색이 `-foreground`, 심볼 색이
+   * `-logo`, 심볼 크기가 `-logo-size`, 심볼-레이블 간격이 `-logo-gap`이다. 카카오 가이드가 그
+   * 색들을 "심볼"·"레이블"이라 부르지만 이름을 제공자별로 갈라 두면 "제공자마다의 레이블 색과
+   * 마크 크기를 비교한다"가 grep 하나로 끝나지 않는다. 이름은 이 파일의 축이고 값의 소유자는
+   * 여전히 각 제공자다.
+   *
+   * 뒤의 두 값은 공표값이 아니다. 가이드 본문이 심볼 크기·간격·내부 여백의 수치를 주지 않으므로
+   * (권위 있는 값은 내려받는 애셋에 있다) 그 축은 BokriLog의 `--space-*`가 소유하고, 여기서는
+   * 그 사실이 보이도록 리터럴 대신 `--space-*`를 그대로 참조한다. 심볼 16px의 근거는 공식 버튼
+   * 애셋의 비율이다 — 180×90 버튼의 심볼이 36×34이므로 심볼 높이가 버튼 높이의 0.378배이고,
+   * 최소 목표 크기 44px에 그 비율을 적용한 16.6px에 가장 가까운 기존 토큰이 `--space-4`다.
+   * 내부 여백은 토큰이 아니라 네이버 버튼과 같은 자리(`--space-3`)를 CSS가 직접 쓴다.
+   */
+  --component-social-sign-in-kakao-background: #fee500;
+  --component-social-sign-in-kakao-foreground: rgb(0 0 0 / 85%);
+  --component-social-sign-in-kakao-radius: 12px;
+  --component-social-sign-in-kakao-logo: #000000;
+  --component-social-sign-in-kakao-logo-size: var(--space-4);
+  --component-social-sign-in-kakao-logo-gap: var(--space-2);
+
   --component-secure-input-form-background: var(--color-surface-raised);
   --component-secure-input-form-foreground: var(--color-ink-primary);
   --component-secure-input-form-border: var(--color-border-strong);

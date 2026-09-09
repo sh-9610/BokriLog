@@ -117,7 +117,7 @@ describe('EntryScreen', () => {
    * 아래는 Story 1.4가 더한 로그인 진입이다. 위 아홉 개 단정은 한 글자도 바뀌지 않았다.
    */
 
-  it('로그인: 두 제공자 버튼이 각자의 서버 인증 시작 경로로 가는 링크다', () => {
+  it('로그인: 세 제공자 버튼이 각자의 서버 인증 시작 경로로 가는 링크다', () => {
     render(<EntryScreen />)
 
     for (const provider of SIGN_IN_PROVIDERS) {
@@ -131,23 +131,29 @@ describe('EntryScreen', () => {
     // 접근 가능한 이름은 제공자명 + "계속하기"다(EXPERIENCE.md).
     expect(authContent.signIn.labels.google).toBe('Google로 계속하기')
     expect(authContent.signIn.labels.naver).toBe('네이버로 계속하기')
+    expect(authContent.signIn.labels.kakao).toBe('카카오로 계속하기')
   })
 
-  it('로그인: 제공자 순서가 Google → 네이버로 고정된다', () => {
+  it('로그인: 제공자 순서가 Google → 네이버 → 카카오로 고정된다', () => {
     render(<EntryScreen />)
 
-    const google = screen.getByRole('link', { name: authContent.signIn.labels.google })
-    const naver = screen.getByRole('link', { name: authContent.signIn.labels.naver })
+    const buttons = SIGN_IN_PROVIDERS.map((provider) =>
+      screen.getByRole('link', { name: authContent.signIn.labels[provider] }),
+    )
 
     /*
      * DESIGN.md가 정한 고정 순서다. 문서 순서가 곧 `Tab` 순서이므로 이 단정이 그 계약을
      * 함께 나른다. 추천 표지도, 마지막 사용 제공자 강조도, 로고만 있는 버튼도 없다.
      */
-    expect(google.compareDocumentPosition(naver)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
-    expect(SIGN_IN_PROVIDERS).toEqual(['google', 'naver'])
+    for (let index = 1; index < buttons.length; index += 1) {
+      expect(buttons[index - 1]?.compareDocumentPosition(buttons[index] as Node)).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      )
+    }
+    expect(SIGN_IN_PROVIDERS).toEqual(['google', 'naver', 'kakao'])
   })
 
-  it('로그인: 두 버튼의 접근 가능한 이름이 텍스트 하나에서만 온다', () => {
+  it('로그인: 세 버튼의 접근 가능한 이름이 텍스트 하나에서만 온다', () => {
     render(<EntryScreen />)
 
     for (const provider of SIGN_IN_PROVIDERS) {
@@ -168,7 +174,7 @@ describe('EntryScreen', () => {
 
     const boundary = screen.getByText(authContent.signIn.boundary)
 
-    // "버튼 아래"는 문서 순서의 계약이다. 두 버튼 모두의 아래여야 한다.
+    // "버튼 아래"는 문서 순서의 계약이다. 세 버튼 모두의 아래여야 한다.
     for (const provider of SIGN_IN_PROVIDERS) {
       const button = screen.getByRole('link', { name: authContent.signIn.labels[provider] })
       expect(button.compareDocumentPosition(boundary)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
@@ -177,12 +183,25 @@ describe('EntryScreen', () => {
     expect(boundary.textContent).toContain('공유하지 않습니다')
   })
 
-  it('로그인: 아직 없는 제공자를 준비 중이라고 밝힌다', () => {
+  it('로그인: 카카오가 준비 중이라고 안내되지 않는다', () => {
     render(<EntryScreen />)
 
-    // 카카오는 Story 1.7이 더한다. 그때까지 그 버튼은 없다.
-    expect(screen.getByText(authContent.signIn.pending)).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: /카카오/ })).not.toBeInTheDocument()
+    /*
+     * Story 1.7이 세 번째 제공자를 채웠다. 세 버튼이 모두 살아 있으므로 "준비 중" 문장은 거짓이
+     * 되고, 그래서 그 카피를 지웠다. 이 단정이 그 사실을 고정한다 — 문장이 되살아나면 화면이
+     * 동작하는 버튼 옆에서 그 버튼이 준비 중이라고 말하게 된다.
+     *
+     * 범위는 그 버튼이 사는 로그인 블록이다. `document.body` 전체에서 "준비 중"을 금지하면 지키려는
+     * 계약보다 넓은 것을 막는다 — 같은 카피 정본의 `authContent.onboarding.items`가 "읽기 전용 Bybit
+     * 연결과 복리 계획 만들기는 아직 준비 중입니다"를 정당하게 말하고 있고, 그 문장이 진입 화면에
+     * 렌더되지 않는다는 우연 하나로 지금 통과할 뿐이다.
+     */
+    const kakaoButton = screen.getByRole('link', { name: authContent.signIn.labels.kakao })
+    // eslint-disable-next-line testing-library/no-node-access -- "그 버튼이 사는 블록"은 역할 조회로 좁힐 수 없다. 확인하려는 것은 로그인 블록의 문장이지 화면 전체의 문장이 아니다.
+    const signInSection = kakaoButton.closest('section')
+
+    expect(signInSection).not.toBeNull()
+    expect(signInSection?.textContent).not.toContain('준비 중')
   })
 
   it('로그인: 카피 정본의 모든 문자열이 렌더된다', () => {
@@ -272,7 +291,7 @@ describe('EntryScreen', () => {
     expect(authContent.notices.logoutFailed).toContain('남아 있을 수 있습니다')
   })
 
-  it('복구 안내: 실패 표지에서만 두 제공자의 공식 복구 경로를 안내한다', () => {
+  it('복구 안내: 실패 표지에서만 세 제공자의 공식 복구 경로를 안내한다', () => {
     /*
      * `failed`가 아닌 모든 경우에 이 블록이 없다. `cancelled`만 확인하면 정상적으로 로그아웃한
      * 사용자에게 계정 복구 패널을 보여 주는 상태가 통과한다 — 그 사람은 접근을 잃지 않았고, 그
@@ -315,11 +334,11 @@ describe('EntryScreen', () => {
     }
   })
 
-  it('복구 안내: 두 제공자를 언제나 함께 보여 준다', () => {
+  it('복구 안내: 세 제공자를 언제나 함께 보여 준다', () => {
     /*
      * 이 화면은 사용자가 어느 제공자로 가입했는지 알 수 없고 알아서도 안 된다 — 그 정보를 화면에
      * 도달시키는 경로가 곧 계정 존재·소속 신호다. 그래서 "당신이 쓴 제공자의 복구 절차"는 만들 수
-     * 없고, 남는 배치는 둘을 무조건 함께 보여 주는 것 하나다.
+     * 없고, 남는 배치는 전부를 무조건 함께 보여 주는 것 하나다.
      */
     render(<EntryScreen notice="failed" />)
 
@@ -327,12 +346,14 @@ describe('EntryScreen', () => {
       screen.getByRole('link', { name: link.label }),
     )
 
-    expect(links).toHaveLength(2)
+    expect(links).toHaveLength(SIGN_IN_PROVIDERS.length)
     expect(authContent.recovery.links.map((link) => link.provider)).toEqual([...SIGN_IN_PROVIDERS])
     // 안내 순서가 버튼 순서와 같다. 다르면 사용자가 두 목록을 대응시킬 수 없다.
-    expect(links[0]?.compareDocumentPosition(links[1] as Node)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING,
-    )
+    for (let index = 1; index < links.length; index += 1) {
+      expect(links[index - 1]?.compareDocumentPosition(links[index] as Node)).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      )
+    }
   })
 
   it('복구 안내: 새 창을 열지 않고 `rel`로 참조 유출을 막는다', () => {
@@ -351,6 +372,9 @@ describe('EntryScreen', () => {
 
     expect(authContent.recovery.links[0].href).toBe('https://accounts.google.com/signin/recovery')
     expect(authContent.recovery.links[1].href).toBe('https://nid.naver.com/user2/help/idInquiry')
+    expect(authContent.recovery.links[2].href).toBe(
+      'https://accounts.kakao.com/weblogin/find_account',
+    )
   })
 
   it('복구 안내: 계정 존재 여부를 노출하지 않고 우회 경로를 만들지 않는다', () => {

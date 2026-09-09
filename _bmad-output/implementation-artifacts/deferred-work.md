@@ -143,3 +143,21 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-6-naver-sign-in.md`
   summary: `application.yml`이 제공자 엔드포인트 재정의 네 이름을 선언하지 않는다(Google·네이버 둘 다).
   evidence: 이 저장소의 규약은 "이름은 `application.yml`이 정하고 값은 환경이 준다"인데 `issuer-uri`·`authorization-uri`·`token-uri`·`jwk-set-uri` 네 이름은 어느 제공자에도 선언돼 있지 않다. 시험(`OidcStubConfiguration`)이 `DynamicPropertyRegistry`로 실제로 그 이름을 주므로 이름은 존재하고 Boot의 relaxed binding으로 동작하지만, 개발·CI가 무엇을 덮는지가 코드에서만 발견된다. 이 스토리의 SPEC Execution 항목은 네이버에 그 넷을 더하라고 적었으나 Google이 선언하지 않은 상태에서 한쪽만 더하면 비대칭이 생겨 두 제공자를 함께 정하는 것으로 미뤘다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-kakao-sign-in.md`
+  summary: 제공자별 왕복 시험이 제공자 비종속 축을 통째로 복제하는 형태가 셋째 사본까지 왔다.
+  evidence: `AuthKakaoSignInTest`가 인가 시작 불변식·신규·기존·취소·제공자 오류·토큰 장애·이미 인증된 세션을 `AuthNaverSignInTest`에서 그대로 되풀이한다. 이 축들은 제공자로 파라미터화된 코드(`AuthFlowHandlers`·`AuthSessionService`)를 지나므로, 같은 SPEC이 `AuthTokenValidationTest`의 검증 실패 18축을 "제공자 비종속이라 복제하지 않는다"로 거절한 것과 같은 성질이다. 1.6이 세운 형태를 1.7이 따랐을 뿐이지만 넷째 제공자는 넷째 사본을 만든다. 파라미터화한 공통 시험 하나와 제공자 고유 구성만 보는 작은 시험으로 가르는 것이 대안이고, 그 판단은 제공자를 더 늘리는 스토리가 아니라 시험 구조를 소유하는 라운드가 해야 한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-kakao-sign-in.md`
+  summary: `credentials()` fixture와 그 근거 주석이 시험 세 파일에 동일하게 복제됐다.
+  evidence: `AuthNaverSignInTest`·`DevOidcStubProfileTest`·`AuthKakaoSignInTest`가 같은 본문과 같은 "자격정보 모양 리터럴을 시험 fixture에도 두지 않는다" 주석을 각자 들고 있다. `AuthFlowTestBase`나 작은 시험 헬퍼로 올리면 하나가 되지만, 그 파일은 이 스토리가 무변경으로 둔 곳이라 여기서 옮기지 않았다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-kakao-sign-in.md`
+  summary: `DevOidcStubConfig`의 스텁 기동 guard가 제공자마다 손으로 쓴 OR 사슬이라 하나를 빠뜨리면 열린 채로 통과한다.
+  evidence: guard는 `hasCredentials(google) || hasCredentials(naver) || hasCredentials(kakao)`이고 `PROVIDERS`와도 `AuthProperties`의 성분과도 컴파일 시점 연결이 없다. 이것이 스텁과 실제 제공자가 함께 뜨는 것을 막는 두 층 중 하나이므로, 넷째 성분을 record에 더하고 이 줄을 잊으면 실제 자격정보가 스텁 옆에서 살아 있게 된다. `AuthProperties`에 `providers()` 접근자를 두어 `from()`과 이 guard가 함께 순회하면 그 실패 모양이 사라지지만, 그 변경은 `from()`의 구조를 바꾸므로 검증이 통과한 상태에서 넓히지 않았다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-kakao-sign-in.md`
+  summary: 같은 Java 패키지 안에서도 제공자 목록 사본이 넷이고, `SUPPORTED_REGISTRATION_IDS`와 `from()`이 실제로 만들 수 있는 id 집합이 같은지 보는 단정이 없다.
+  evidence: `DevOidcStubProfileTest.PROVIDERS`·`OidcStubConfiguration.PROVIDERS`·`AuthProviderIndependenceTest.PROVIDERS`·`StatusApiTest`의 인라인 배열이 모두 같은 패키지의 `DevOidcStubConfig.PROVIDERS`를 참조할 수 있다. 이것은 SPEC이 Never로 잘라낸 **계층 간** 등가성 검사가 아니라 계층 안 중복이라 성질이 다르다. 특히 `SUPPORTED_REGISTRATION_IDS`(404와 500을 가르는 집합)와 `from()`이 채우는 맵의 키 집합이 어긋나면 아는 제공자가 조용히 404가 되는데, `containsExactlyInAnyOrderElementsOf` 한 줄이 그 둘을 묶는다. 미해소 항목 33·38과 같은 뿌리이며 그쪽이 열려 있는 동안 이 값싼 절반만 먼저 닫을지가 판단할 지점이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-kakao-sign-in.md`
+  summary: 카카오 심볼이 공식 래스터에서 추출한 경로인데 그 추출을 재현할 산출물이 저장소에 없다.
+  evidence: 카카오는 네이버와 달리 버튼 벡터 애셋을 공표하지 않고 가이드와 리소스 도구가 PNG·PSD만 낸다. 그래서 이 라운드는 공식 래스터에서 심볼을 추출해 타원과 직선 꼬리로 복원했고 근거(RMS 0.11px·최대 0.42px, 52.9px 기준)를 주석에 적었지만, 추출 스크립트도 원본 해시도 적합도 데이터도 커밋되지 않았다. 자동 검사는 종횡비와 fill 두 가지뿐이다. 가이드의 첫 금지가 "심볼의 형태·비율 변경"이므로 가이드가 갱신될 때 그 주장을 다시 검증할 방법이 필요하다 — 추출 산출물을 저장소에 두거나 실연동 게이트의 항목으로 올리는 두 길이 있다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-7-kakao-sign-in.md`
+  summary: `OnboardingScreen.test.tsx`의 목적지 이동 단정이 머신 부하 아래에서 간헐적으로 깨진다.
+  evidence: 이 라운드의 검증 중 백엔드 Gradle 빌드와 프런트엔드 Vitest를 동시에 돌렸을 때 `OnboardingScreen.test.tsx:162`의 `replaceLocation('/dashboard')`가 호출 0건으로 실패했고, 부하가 없는 재실행에서는 157/157이 통과했다. 이 파일은 Story 1.7이 한 줄도 바꾸지 않았으므로 `develop`에 이미 있던 취약성이며, CI 러너가 붐빌 때 같은 방식으로 붉게 나올 수 있다. 비결정적 실패는 재실행으로 덮이면서 신뢰를 갉아먹으므로 대기 조건을 명시적으로 바꾸는 편이 낫다.

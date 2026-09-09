@@ -108,7 +108,7 @@ describe('App 경로 맵', () => {
 
       const { unmount } = render(<App />)
 
-      // 두 제공자 모두 같은 `next`를 싣는다. 생산자는 `authorizeHref` 하나다.
+      // 세 제공자 모두 같은 `next`를 싣는다. 생산자는 `authorizeHref` 하나다.
       await screen.findByRole('link', { name: authContent.signIn.labels.google })
       for (const provider of SIGN_IN_PROVIDERS) {
         expect(
@@ -133,6 +133,7 @@ describe('App 경로 맵', () => {
     // 경로 리터럴을 한 번 고정한다. 서버의 registration id와 갈라지면 인증 시작이 404가 된다.
     expect(authorizePath('google')).toBe('/api/auth/authorize/google')
     expect(authorizePath('naver')).toBe('/api/auth/authorize/naver')
+    expect(authorizePath('kakao')).toBe('/api/auth/authorize/kakao')
   })
 
   it('로그아웃·만료·로그아웃 실패 표지를 인증 화면 안내로 옮긴다', () => {

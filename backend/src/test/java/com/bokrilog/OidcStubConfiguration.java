@@ -32,9 +32,10 @@ import org.springframework.test.context.DynamicPropertyRegistry;
  * 시험이 검증하는 배선이 곧 운영이 쓰는 배선이다.
  *
  * <p>제공자마다 스텁 인스턴스가 하나다. issuer·client·서명 키가 인스턴스 단위이므로
- * {@link DevOidcStub}을 두 번 만드는 것으로 두 제공자가 성립하고, 한쪽 스텁이 서명한 ID Token은
- * 다른 쪽의 JWKS로 검증되지 않는다 — 그것이 "두 제공자의 식별자를 병합·전환하지 않는다"를 시험에서
- * 실제로 재현할 수 있게 하는 조건이다. 루프백 서버는 하나이며 컨텍스트 경로가 제공자로 갈린다.
+ * {@link DevOidcStub}을 제공자 수만큼 만드는 것으로 여러 제공자가 성립하고, 한 스텁이 서명한
+ * ID Token은 다른 스텁의 JWKS로 검증되지 않는다 — 그것이 "제공자들의 식별자를 병합·전환하지
+ * 않는다"를 시험에서 실제로 재현할 수 있게 하는 조건이다. 루프백 서버는 하나이며 컨텍스트 경로가
+ * 제공자로 갈린다.
  *
  * <p>{@code /authorize}를 올리지 않는다. 시험은 인가 요청의 쿼리를 직접 읽고
  * {@link #issueCode(String, TokenPlan, Map)}로 계획을 등록하므로 그 왕복을 브라우저처럼 지나지
@@ -52,6 +53,18 @@ final class OidcStubConfiguration {
      */
     static final String PUBLIC_BASE_URL = "https://bokrilog.test";
 
+    /**
+     * 스텁이 서는 제공자.
+     *
+     * <p>목록이 하나다. 프로퍼티 주입과 루프백 컨텍스트가 같은 목록을 돌므로 제공자를 더할 때
+     * 한쪽만 늘어나 그 제공자의 등록이 도달하지 못하는 스텁을 가리키는 상태가 생기지 않는다.
+     */
+    private static final List<String> PROVIDERS =
+            List.of(
+                    AuthSecurityConfig.GOOGLE_REGISTRATION_ID,
+                    AuthSecurityConfig.NAVER_REGISTRATION_ID,
+                    AuthSecurityConfig.KAKAO_REGISTRATION_ID);
+
     private static final Front FRONT = Front.start();
 
     /** 스텁이 실행 시점에 만든 Google client id. 소스에 자격정보 모양 리터럴을 두지 않는다. */
@@ -64,17 +77,14 @@ final class OidcStubConfiguration {
     /**
      * 스텁을 가리키는 인증 구성. {@code AuthFlowTestBase}의 {@code @DynamicPropertySource}가 부른다.
      *
-     * <p>두 제공자를 함께 채운다. 하나만 채우면 나머지 제공자의 등록이 없는 컨텍스트가 되고,
+     * <p>모든 제공자를 함께 채운다. 하나만 채우면 나머지 제공자의 등록이 없는 컨텍스트가 되고,
      * 그것을 쓰는 시험은 새 {@code @DynamicPropertySource}를 요구해 컨텍스트가 갈라진다 — 그 비용은
      * {@code backend-quality}의 wall-clock이다. 제공자 하나만 구성된 상태의 계약은 컨텍스트가 아니라
      * {@code ProviderClientRegistrations.from()}을 직접 부르는 단정이 확인한다.
      */
     static void registerProperties(DynamicPropertyRegistry registry) {
         registry.add("bokrilog.auth.public-base-url", () -> PUBLIC_BASE_URL);
-        for (String provider :
-                List.of(
-                        AuthSecurityConfig.GOOGLE_REGISTRATION_ID,
-                        AuthSecurityConfig.NAVER_REGISTRATION_ID)) {
+        for (String provider : PROVIDERS) {
             registry.add("bokrilog.auth." + provider + ".client-id", () -> clientId(provider));
             registry.add(
                     "bokrilog.auth." + provider + ".client-secret", () -> clientSecret(provider));
@@ -97,9 +107,9 @@ final class OidcStubConfiguration {
     /**
      * 그 제공자 스텁이 주장하는 {@code iss}. 정상 흐름의 ID Token이 담는 값이다.
      *
-     * <p>두 값이 서로 다르다는 것이 계약이다. {@code (issuer, subject)}가 전역 유일이므로 같은
-     * {@code subject} 문자열이 두 제공자에서 와도 별개 계정이 되고, 그 사실을 단정하는 시험은 이
-     * 메서드가 제공자별로 다른 값을 돌려주는 데 의존한다.
+     * <p>제공자마다 값이 서로 다르다는 것이 계약이다. {@code (issuer, subject)}가 전역 유일이므로
+     * 같은 {@code subject} 문자열이 여러 제공자에서 와도 별개 계정이 되고, 그 사실을 단정하는 시험은
+     * 이 메서드가 제공자별로 다른 값을 돌려주는 데 의존한다.
      */
     static String issuer(String provider) {
         return FRONT.stub(provider).issuer();
@@ -154,10 +164,7 @@ final class OidcStubConfiguration {
                 // 스텁의 `iss`는 그 주소여야 제공자 등록의 `issuer-uri`와 한 쌍이 된다.
                 String origin = "http://127.0.0.1:" + server.getAddress().getPort();
                 Map<String, DevOidcStub> stubs = new LinkedHashMap<>();
-                for (String provider :
-                        List.of(
-                                AuthSecurityConfig.GOOGLE_REGISTRATION_ID,
-                                AuthSecurityConfig.NAVER_REGISTRATION_ID)) {
+                for (String provider : PROVIDERS) {
                     // issuer가 제공자마다 다르다. 경로 세그먼트 하나가 그 차이를 만들고, 아래
                     // 컨텍스트가 같은 세그먼트로 갈린다.
                     stubs.put(provider, new DevOidcStub(origin + "/" + provider));

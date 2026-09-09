@@ -86,8 +86,11 @@ class AuthSecurityConfig {
     /** Google 제공자의 등록 id. */
     static final String GOOGLE_REGISTRATION_ID = "google";
 
-    /** 네이버 제공자의 등록 id. 카카오는 Story 1.7이 더한다. */
+    /** 네이버 제공자의 등록 id. */
     static final String NAVER_REGISTRATION_ID = "naver";
+
+    /** 카카오 제공자의 등록 id. */
+    static final String KAKAO_REGISTRATION_ID = "kakao";
 
     /** 세션 확인 경로. 로그인 상태 화면이 서버 세션으로 상태를 확인하는 유일한 경로다. */
     static final String SESSION_PATH = "/api/auth/session";
@@ -142,39 +145,64 @@ class AuthSecurityConfig {
 
     private static final String NAVER_JWK_SET_URI = NAVER_ISSUER_URI + "/oauth2/jwks";
 
+    /*
+     * 카카오 OIDC 엔드포인트.
+     *
+     * 공식 discovery 문서(`https://kauth.kakao.com/.well-known/openid-configuration`, 2026-09-09 실측)가
+     * 광고하는 값을 그대로 옮긴 정적 상수다. 네이버와 같은 이유로 값이 코드에 있다 — 기동 시점에
+     * discovery 왕복을 하지 않고 `CommonOAuth2Provider`에 KAKAO가 없다.
+     *
+     * JWKS 경로의 모양이 네이버와 다르다. 카카오는 issuer 바로 아래의 `/.well-known/jwks.json`이고
+     * 네이버는 `/oauth2/jwks`다. 한 제공자의 모양을 다른 제공자에 옮겨 적으면 서명 검증이 통째로
+     * 실패한다.
+     *
+     * 자격정보가 아니다. 공개된 제공자 주소이므로 이 리터럴은 gitleaks의 대상이 아니다.
+     */
+    private static final String KAKAO_ISSUER_URI = "https://kauth.kakao.com";
+
+    private static final String KAKAO_AUTHORIZATION_URI = KAKAO_ISSUER_URI + "/oauth/authorize";
+
+    private static final String KAKAO_TOKEN_URI = KAKAO_ISSUER_URI + "/oauth/token";
+
+    private static final String KAKAO_JWK_SET_URI = KAKAO_ISSUER_URI + "/.well-known/jwks.json";
+
     /**
      * 인증 설정. 값은 환경이 주고 이 record는 이름만 정한다.
      *
      * <p>{@code publicBaseUrl}은 브라우저가 보는 origin이다. redirect URI를 요청 헤더에서 유도하지
      * 않기 위해 절대 URI를 환경에서 받는다({@code application.yml}의 근거 참조).
      *
-     * <p>제공자별 값이 하나씩이다. 두 제공자의 자격정보는 서로를 보지 않으며, 한쪽이 비어도 다른
-     * 쪽의 등록과 로그인 경로는 그대로 살아 있다({@link ProviderClientRegistrations#from}).
+     * <p>제공자별 값이 하나씩이다. 세 제공자의 자격정보는 서로를 보지 않으며, 하나가 비어도 다른
+     * 제공자의 등록과 로그인 경로는 그대로 살아 있다({@link ProviderClientRegistrations#from}).
      *
      * <p>엔드포인트 네 값은 제공자에 따라 의미가 다르다. Google은 비어 있는 것이 정상이며 그때
-     * Spring Security의 {@code CommonOAuth2Provider.GOOGLE}이 정한 정본 주소를 쓴다. 네이버는
+     * Spring Security의 {@code CommonOAuth2Provider.GOOGLE}이 정한 정본 주소를 쓴다. 네이버와 카카오는
      * {@code CommonOAuth2Provider}에 없으므로 이 클래스가 공식 discovery 문서의 정적 주소를 기본값으로
      * 들고 있고, 네 값은 그것을 덮는 재정의다. 어느 제공자에서도 기동 시점에 discovery 왕복을 하지
      * 않는다 — 값을 주는 것은 재정의가 필요한 환경(개발·CI의 local OIDC 스텁)뿐이다.
      */
     @ConfigurationProperties("bokrilog.auth")
-    record AuthProperties(@Nullable String publicBaseUrl, Provider google, Provider naver) {
+    record AuthProperties(
+            @Nullable String publicBaseUrl, Provider google, Provider naver, Provider kakao) {
 
         AuthProperties {
             /*
-             * `bokrilog.auth.google`·`bokrilog.auth.naver`가 통째로 없는 구성에서도 배선이 성립해야
-             * 한다. 값이 없으면 빈 값 여섯 개짜리 record로 바꾸고, 아래
-             * `ProviderClientRegistrations`가 그 제공자만 "구성되지 않음"으로 접는다.
+             * `bokrilog.auth.<제공자>`가 통째로 없는 구성에서도 배선이 성립해야 한다. 값이 없으면
+             * 빈 값 여섯 개짜리 record로 바꾸고, 아래 `ProviderClientRegistrations`가 그 제공자만
+             * "구성되지 않음"으로 접는다.
              *
-             * 정규화가 여기 하나뿐인 것이 요점이다. 제공자가 둘로 늘어도 그 성질은 유지된다 —
-             * 그래서 `google()`·`naver()`는 null을 돌려주지 않고, 소비하는 쪽에 null 검사가 남지
-             * 않는다. 남으면 그 분기는 아무도 지나지 않는 죽은 코드가 된다.
+             * 정규화가 여기 하나뿐인 것이 요점이다. 제공자가 셋으로 늘어도 그 성질은 유지된다 —
+             * 그래서 `google()`·`naver()`·`kakao()`는 null을 돌려주지 않고, 소비하는 쪽에 null 검사가
+             * 남지 않는다. 남으면 그 분기는 아무도 지나지 않는 죽은 코드가 된다.
              */
             if (google == null) {
                 google = Provider.empty();
             }
             if (naver == null) {
                 naver = Provider.empty();
+            }
+            if (kakao == null) {
+                kakao = Provider.empty();
             }
         }
 
@@ -211,16 +239,16 @@ class AuthSecurityConfig {
      *       비면 그 제공자의 등록을 만들지 않고 "구성되지 않음" 상태로 남는다.
      *   <li>{@code issuer-uri}를 discovery 없이 실어야 한다. Boot의 {@code provider.<id>.issuer-uri}는
      *       기동 시점에 discovery 왕복을 하고, 그 왕복은 제공자에 대한 네트워크 의존을 기동 경로에
-     *       만든다. Google은 {@code CommonOAuth2Provider.GOOGLE}이, 네이버는 아래
-     *       {@link #NAVER_ISSUER_URI} 이하 네 상수가 그 값을 정적으로 들고 있어 {@code iss} 검증이
-     *       네트워크 없이 성립한다.
+     *       만든다. Google은 {@code CommonOAuth2Provider.GOOGLE}이, 네이버·카카오는 위
+     *       {@code NAVER_ISSUER_URI}·{@code KAKAO_ISSUER_URI} 이하 네 상수씩이 그 값을 정적으로
+     *       들고 있어 {@code iss} 검증이 네트워크 없이 성립한다.
      *   <li>PKCE를 명시한다. Spring Security 7의 기본값이 이미 {@code requireProofKey = true}지만,
      *       기본값이 바뀌면 조용히 꺼지는 자리라 계약으로 적는다.
      * </ul>
      *
      * <p><b>fail-closed가 제공자 단위로 독립한다.</b> 판정을 한 번에 접으면 네이버 자격정보가 없는
      * 환경에서 Google 로그인까지 죽는다. 그래서 아래 {@link #from}은 제공자마다 따로 판정하고 맵에
-     * 넣거나 넣지 않는다. {@code publicBaseUrl}만 두 제공자가 공유하는 값이다 — 그것이 비면
+     * 넣거나 넣지 않는다. {@code publicBaseUrl}만 모든 제공자가 공유하는 값이다 — 그것이 비면
      * redirect URI를 조립할 수 없으므로 어느 제공자도 만들어지지 않는 것이 맞다.
      */
     static final class ProviderClientRegistrations implements ClientRegistrationRepository {
@@ -234,7 +262,7 @@ class AuthSecurityConfig {
          * 없는 이름이고, 맵을 술어로 쓰면 모든 요청이 404가 되어 fail-closed의 500이 사라진다.
          */
         private static final Set<String> SUPPORTED_REGISTRATION_IDS =
-                Set.of(GOOGLE_REGISTRATION_ID, NAVER_REGISTRATION_ID);
+                Set.of(GOOGLE_REGISTRATION_ID, NAVER_REGISTRATION_ID, KAKAO_REGISTRATION_ID);
 
         private final Map<String, ClientRegistration> registrations;
 
@@ -247,12 +275,13 @@ class AuthSecurityConfig {
             Map<String, ClientRegistration> registrations = new LinkedHashMap<>();
             put(registrations, GOOGLE_REGISTRATION_ID, googleBuilder(), properties.google(), baseUrl);
             put(registrations, NAVER_REGISTRATION_ID, naverBuilder(), properties.naver(), baseUrl);
+            put(registrations, KAKAO_REGISTRATION_ID, kakaoBuilder(), properties.kakao(), baseUrl);
             rejectSharedIssuer(registrations);
             return new ProviderClientRegistrations(registrations);
         }
 
         /**
-         * 두 등록이 같은 issuer를 가리키는 구성을 기동에서 거부한다.
+         * 서로 다른 두 등록이 같은 issuer를 가리키는 구성을 기동에서 거부한다.
          *
          * <p>계정 조회의 키가 {@code (issuer, subject)}이고 그 조합이 전역 유일이기 때문이다
          * ({@code AccountLifecycleApi#findUserIdBySocialIdentity}, {@code V1__identity_account.sql}).
@@ -279,8 +308,11 @@ class AuthSecurityConfig {
                     continue;
                 }
                 if (!seen.add(issuer)) {
+                    // 문구가 제공자 수에 중립이다. "두 제공자"라고 적으면 셋째 등록이 충돌하는
+                    // 날 이 메시지가 거짓말을 한다.
                     throw new IllegalStateException(
-                            "두 제공자 등록이 같은 issuer를 가리킨다. 제공자마다 다른 issuer를 구성한다.");
+                            "서로 다른 제공자 등록이 같은 issuer를 가리킨다. "
+                                    + "제공자마다 다른 issuer를 구성한다.");
                 }
             }
         }
@@ -367,6 +399,42 @@ class AuthSecurityConfig {
                     .tokenUri(NAVER_TOKEN_URI)
                     .jwkSetUri(NAVER_JWK_SET_URI)
                     // ID Token의 주체 claim. `CommonOAuth2Provider`가 없으므로 기본값도 없다.
+                    .userNameAttributeName(IdTokenClaimNames.SUB);
+        }
+
+        /**
+         * 카카오 등록의 뼈대.
+         *
+         * <p>{@link #naverBuilder()}와 같은 형태다. {@code CommonOAuth2Provider}에 KAKAO도 없으므로
+         * 엔드포인트 네 개와 {@code userNameAttributeName}·{@code authorizationGrantType}·
+         * {@code clientAuthenticationMethod}가 모두 필수 입력이다.
+         *
+         * <p>{@code client_secret_post}인 것은 카카오가 그것 <b>하나만</b> 광고하기 때문이다.
+         * discovery의 {@code token_endpoint_auth_methods_supported}가 {@code [client_secret_post]}라
+         * Spring Security의 기본값({@code client_secret_basic})으로는 토큰 교환이 성립하지 않는다.
+         * 네이버는 {@code none}도 함께 광고하지만 카카오에는 그 선택지조차 없다.
+         *
+         * <p>Client Secret 필수 게이트를 무르지 않는다. 카카오 콘솔에서 Client Secret은 선택 기능이라
+         * 운영자가 켜야 위 {@link #put}의 fail-closed를 통과한다. 게이트를 제공자마다 다르게 두면
+         * "자격정보 셋이 다 있어야 등록이 생긴다"는 모양이 갈라지고, 그 차이가 구성 실수를 조용한
+         * 성공으로 바꾼다.
+         *
+         * <p><b>카카오의 {@code sub}은 pairwise다.</b> discovery의 {@code subject_types_supported}가
+         * {@code [pairwise]}이므로 그 값은 사용자만이 아니라 <b>client 등록에도</b> 묶인다. 조회 키가
+         * {@code (issuer, subject)} 하나인 이 시스템에서 그것은 제공자별 단서가 된다 — 카카오 앱을 다시
+         * 만들거나 REST API 키를 교체하면 기존 {@code (kauth.kakao.com, sub)} 매핑 전부가 고아가 되고,
+         * 돌아온 사용자마다 <b>조용히 새 계정</b>이 생긴다. 오류도 경고도 없이 신규 가입 경로를 지나므로
+         * 그 사건은 응답으로 관측되지 않는다. Google·네이버에는 없는 운영 제약이며, 키 교체는 계정
+         * 마이그레이션을 동반해야 하는 작업이다({@code DEVELOPMENT.md}가 같은 사실을 적는다).
+         */
+        private static ClientRegistration.Builder kakaoBuilder() {
+            return ClientRegistration.withRegistrationId(KAKAO_REGISTRATION_ID)
+                    .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
+                    .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_POST)
+                    .issuerUri(KAKAO_ISSUER_URI)
+                    .authorizationUri(KAKAO_AUTHORIZATION_URI)
+                    .tokenUri(KAKAO_TOKEN_URI)
+                    .jwkSetUri(KAKAO_JWK_SET_URI)
                     .userNameAttributeName(IdTokenClaimNames.SUB);
         }
 

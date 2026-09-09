@@ -25,12 +25,14 @@ import styles from './EntryScreen.module.css'
 const PROVIDER_BUTTON_CLASS: Readonly<Record<SignInProvider, string | undefined>> = {
   google: styles.googleButton,
   naver: styles.naverButton,
+  kakao: styles.kakaoButton,
 }
 
 /** 제공자별 로고. 같은 이유로 닫힌 맵이다. */
 const PROVIDER_MARK: Readonly<Record<SignInProvider, () => ReactElement>> = {
   google: GoogleMark,
   naver: NaverMark,
+  kakao: KakaoMark,
 }
 
 interface EntryScreenProps {
@@ -45,8 +47,9 @@ interface EntryScreenProps {
  * 로그인 없이 열리는 인증 화면.
  *
  * 이용 범위(Story 1.1 AC-1), 인증 경계(AC-2), 비추천 고지(UX-DR23)를 semantic 마크업으로 렌더하고,
- * Story 1.4가 그 위에 Google 로그인 진입을, Story 1.6이 네이버를 더했다. 제공자 목록의 순서는
- * `SIGN_IN_PROVIDERS` 하나가 나른다 — 화면이 순서를 다시 적으면 두 곳이 갈라진다.
+ * Story 1.4가 그 위에 Google 로그인 진입을, Story 1.6이 네이버를, Story 1.7이 카카오를 더했다.
+ * 제공자 목록의 순서는 `SIGN_IN_PROVIDERS` 하나가 나른다 — 화면이 순서를 다시 적으면 두 곳이
+ * 갈라진다.
  *
  * 로그인은 `<a href>` 최상위 내비게이션이다. 서버가 302로 제공자에 보내는 흐름이라 외부 스크립트도
  * iframe도 form POST도 필요 없고, 그래서 Nginx의 CSP(`default-src 'none'`, `connect-src 'self'`,
@@ -119,7 +122,7 @@ export function EntryScreen({ notice = null }: EntryScreenProps = {}): ReactElem
             </h2>
             <p>{authContent.recovery.body}</p>
             {/*
-              두 제공자를 언제나 함께 보여 준다. 이 화면은 사용자가 어느 제공자로 가입했는지 알 수
+              세 제공자를 언제나 함께 보여 준다. 이 화면은 사용자가 어느 제공자로 가입했는지 알 수
               없고 알아서도 안 되므로("당신이 쓴 제공자"를 화면에 도달시키는 경로가 곧 계정 존재
               신호다) 하나만 고를 수 없다. 순서는 버튼 목록과 같다.
             */}
@@ -144,8 +147,8 @@ export function EntryScreen({ notice = null }: EntryScreenProps = {}): ReactElem
 
           {/*
             제공자 목록은 전체 폭 세로 스택이고 순서는 Google → 네이버 → 카카오로 고정이다
-            (DESIGN.md). 지금 실제 버튼은 앞의 둘이며 추천 표지도, 마지막 사용 제공자 강조도,
-            로고만 있는 버튼도 없다. 순서는 `SIGN_IN_PROVIDERS` 하나가 나른다.
+            (DESIGN.md). 추천 표지도, 마지막 사용 제공자 강조도, 로고만 있는 버튼도 없다.
+            순서는 `SIGN_IN_PROVIDERS` 하나가 나른다.
 
             목록 전용 래퍼를 둔다. `.signIn`의 gap은 제목·버튼·안내문 전부에 걸리므로 버튼 사이
             간격(`--component-social-sign-in-gap`)이 안내문까지 밀어낸다. 그 값의 소유자는
@@ -173,7 +176,6 @@ export function EntryScreen({ notice = null }: EntryScreenProps = {}): ReactElem
 
           {/* DESIGN.md가 버튼 아래에 두라고 정한 안내. */}
           <p className={styles.signInBoundary}>{authContent.signIn.boundary}</p>
-          <p className={styles.signInBoundary}>{authContent.signIn.pending}</p>
         </section>
 
         <div className={styles.sections}>
@@ -285,6 +287,50 @@ function NaverMark(): ReactElement {
       <path
         d="M10.848 8.565 L4.916 0 L0 0 L0 16 L5.151 16 L5.151 7.438 L11.083 16 L16 16 L16 0 L10.848 0 Z"
         fill="var(--component-social-sign-in-naver-logo)"
+      />
+    </svg>
+  )
+}
+
+/**
+ * 카카오 공식 로그인 심볼(말풍선).
+ *
+ * `GoogleMark`·`NaverMark`와 같은 방식의 인라인 SVG다. 외부 파일이면 브라우저가 매 로드마다 요청을
+ * 하나 만들고, 외부 CDN·외부 이미지는 브라우저 경계를 통째로 넘는다. 색은 카카오 가이드가 소유하는
+ * 값이며 `tokens.css`가 그 값을 기록한다.
+ *
+ * **경로는 공식 애셋에서 추출한 값이다.** 손으로 그린 근사가 아니다. 카카오는 네이버와 달리 버튼
+ * 애셋을 벡터로 배포하지 않는다 — 공식 디자인 가이드
+ * (`developers.kakao.com/docs/ko/kakaologin/design-guide`)와 리소스 도구
+ * (`developers.kakao.com/tool/resource/login`)가 내보내는 것은 PNG·PSD뿐이다. 그래서 그 가이드가
+ * 싣는 원본 래스터(`developers.kakao.com/docs/img/login_button_component_ko.png`, 2026-09-09
+ * 내려받음)의 심볼 영역을 부화소 정밀도로 추적해 기하로 복원했다.
+ *
+ * 복원된 기하는 셋이다. 몸통은 축 정렬 타원(반지름 12.695 × 9.912), 꼬리는 그 타원에서 좌하로
+ * 내려가는 직선 두 개, 꼬리 끝은 반지름 0.454의 둥근 모서리다. 추적한 윤곽점 222개에 대해 이
+ * 기하의 최대 편차는 **0.42px**, RMS는 **0.11px**이다(원본 심볼 높이 52.9px 기준 0.8% · 0.2%).
+ * 렌더 크기 16px에서는 최대 0.13px에 해당한다.
+ *
+ * 심볼의 형태·비율·색을 바꾸지 않는다 — 그 셋이 가이드가 금지하는 첫 항목들이다. `viewBox`의 비율
+ * 25.39 : 24는 원본 잉크의 가로세로비(1.0579)를 그대로 옮긴 값이고, 아래 CSS는 높이만 정하고 폭을
+ * `auto`로 두어 그 비율이 렌더에서도 유지된다.
+ *
+ * `aria-hidden`이다. 접근 가능한 이름은 옆의 텍스트("카카오로 계속하기")가 제공하므로 심볼을 다시
+ * 읽어 주면 이름이 두 번 들린다. 심볼만 있는 버튼은 DESIGN.md가 금지하고 가이드도 "심볼 제거"와
+ * 함께 그런 형태를 다루지 않는다.
+ */
+function KakaoMark(): ReactElement {
+  return (
+    <svg
+      aria-hidden="true"
+      className={styles.kakaoMark}
+      focusable="false"
+      viewBox="0 0 25.39 24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M11.097 19.746L4.834 23.924A0.454 0.454 0 0 1 4.144 23.430L5.557 18.110A12.695 9.912 0 1 1 11.097 19.746Z"
+        fill="var(--component-social-sign-in-kakao-logo)"
       />
     </svg>
   )

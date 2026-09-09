@@ -135,6 +135,8 @@ services:
       BOKRILOG_GOOGLE_CLIENT_SECRET: ${BOKRILOG_GOOGLE_CLIENT_SECRET:-}
       BOKRILOG_NAVER_CLIENT_ID: ${BOKRILOG_NAVER_CLIENT_ID:-}
       BOKRILOG_NAVER_CLIENT_SECRET: ${BOKRILOG_NAVER_CLIENT_SECRET:-}
+      BOKRILOG_KAKAO_CLIENT_ID: ${BOKRILOG_KAKAO_CLIENT_ID:-}
+      BOKRILOG_KAKAO_CLIENT_SECRET: ${BOKRILOG_KAKAO_CLIENT_SECRET:-}
     healthcheck:
       # alpine 베이스의 busybox wget이다. 이미지에 도구를 더 넣지 않는다.
       test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1:8080/api/status']

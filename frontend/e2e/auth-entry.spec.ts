@@ -44,9 +44,20 @@ const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']
 const NARROW_VIEWPORT = { width: 320, height: 640 } as const
 
 /**
+ * 엔드포인트를 손으로 적은 제공자.
+ *
+ * Google을 뺀 나머지다. 그 제공자의 정본 주소는 `CommonOAuth2Provider`가 들고 오고 이 스토리들이
+ * 적은 상수가 아니므로, "등록의 엔드포인트가 실수로 정본 주소로 되돌아간다"는 위험을 갖지 않는다.
+ *
+ * 목록을 다시 적지 않고 `SIGN_IN_PROVIDERS`에서 걸러 낸다. 손으로 적으면 다음 제공자가 들어오는
+ * 날 이 배열만 옛 값으로 남고, 그때 그 제공자의 왕복은 붉게 나오지 않고 **없어진다**.
+ */
+const HAND_ASSEMBLED_PROVIDERS = SIGN_IN_PROVIDERS.filter((provider) => provider !== 'google')
+
+/**
  * 화면이 살아 있는지 확인하는 canary. body가 비면 대부분의 단정이 조용히 통과한다.
  *
- * 두 버튼을 함께 본다. 하나만 보면 나머지 제공자의 버튼이 사라져도 이 층의 모든 시험이 통과한다.
+ * 세 버튼을 함께 본다. 하나만 보면 나머지 제공자의 버튼이 사라져도 이 층의 모든 시험이 통과한다.
  */
 async function expectAuthScreenMounted(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { level: 1, name: '복리 계획 비교' })).toBeVisible()
@@ -73,7 +84,7 @@ async function signInThroughStub(page: Page, provider: SignInProvider = 'google'
 }
 
 test.describe('로그인 진입', () => {
-  test('두 제공자 버튼이 각자의 서버 인증 시작 경로로 가는 링크다', async ({ page }) => {
+  test('세 제공자 버튼이 각자의 서버 인증 시작 경로로 가는 링크다', async ({ page }) => {
     await page.goto('/')
     await expectAuthScreenMounted(page)
 
@@ -87,7 +98,7 @@ test.describe('로그인 진입', () => {
     }
   })
 
-  test('제공자 순서가 Google → 네이버로 고정된다', async ({ page }) => {
+  test('제공자 순서가 Google → 네이버 → 카카오로 고정된다', async ({ page }) => {
     await page.goto('/')
     await expectAuthScreenMounted(page)
 
@@ -99,7 +110,7 @@ test.describe('로그인 진입', () => {
     expect(labels).toEqual(SIGN_IN_PROVIDERS.map((provider) => authContent.signIn.labels[provider]))
   })
 
-  test('두 버튼이 최소 44×44px이고 좁은 폭에서도 유지된다', async ({ page }) => {
+  test('세 버튼이 최소 44×44px이고 바깥 크기가 서로 같다', async ({ page }) => {
     await page.setViewportSize(NARROW_VIEWPORT)
     await page.goto('/')
     await expectAuthScreenMounted(page)
@@ -117,11 +128,154 @@ test.describe('로그인 진입', () => {
     }
 
     /*
-     * 동등한 시각 면적이다(DESIGN.md). 전체 폭 세로 목록이므로 두 버튼의 폭이 같아야 하고,
-     * 높이가 크게 갈리면 한 제공자가 시각적으로 추천처럼 보인다.
+     * 동등한 위계는 **바깥 크기**로 성립한다(DESIGN.md AC-3). 전체 폭 세로 목록이므로 세 버튼의
+     * 폭이 같아야 하고, 높이가 갈리면 한 제공자가 시각적으로 추천처럼 보인다.
+     *
+     * 타이포그래피의 동일성은 그 계약이 아니다. 네이버 레이블만 20px·700인 것은 브랜드 취향이
+     * 아니라 공표 색 조합의 대비가 3.095:1이라 큰 텍스트 문턱을 넘어야 하기 때문이고, 카카오는
+     * 12.52:1이라 그 확대가 필요 없다. 그래서 셋 중 네이버만 레이블이 크되 바깥 크기는 같다 —
+     * 이 단정이 그 사실을 고정하므로 다음 사람이 "네이버만 커 보인다"를 회귀로 착각하지 않는다.
      */
-    expect(boxes[0]?.width).toBe(boxes[1]?.width)
-    expect(boxes[0]?.height).toBe(boxes[1]?.height)
+    for (const box of boxes.slice(1)) {
+      expect(box.width).toBe(boxes[0]?.width)
+      expect(box.height).toBe(boxes[0]?.height)
+    }
+
+    /*
+     * 추천 표지가 없다. 어느 버튼도 나머지와 다른 표식을 달지 않는다.
+     *
+     * 마크업의 **모양**을 잰다. 약속된 속성 이름(`data-recommended` 같은 것)을 찾는 단정은 이
+     * 화면에 그런 속성이 애초에 없으므로 언제나 통과하고, 실제 추천 표지가 들어오는 모양 — 배지
+     * 형제 요소, 강조 클래스를 단 세 번째 자식, 목록 안의 구분선 — 은 하나도 걸리지 않는다.
+     * 목록의 자식 수와 버튼 안쪽의 자식 구성은 그 셋 모두에서 달라진다.
+     */
+    const shape = await page.locator('a[href^="/api/auth/authorize/"]').evaluateAll((elements) => ({
+      // 목록에는 버튼만 있다. 배지·안내 문구·구분선이 하나라도 끼면 이 수가 달라진다.
+      listChildren: elements[0]?.parentElement?.children.length ?? 0,
+      // 버튼 안쪽도 마크 하나와 레이블 하나뿐이다. 강조 표지는 대개 세 번째 자식으로 들어온다.
+      childTags: elements.map((element) =>
+        Array.from(element.children).map((child) => child.tagName.toLowerCase()),
+      ),
+    }))
+
+    expect(shape.listChildren).toBe(SIGN_IN_PROVIDERS.length)
+    expect(shape.childTags).toEqual(SIGN_IN_PROVIDERS.map(() => ['svg', 'span']))
+  })
+
+  test('카카오 버튼은 공표된 색 둘과 모서리 12px을 그대로 쓴다', async ({ page }) => {
+    /*
+     * 카카오 가이드가 본문으로 공표한 값은 넷이다 — 컨테이너 #FEE500, 심볼 #000000, 레이블
+     * #000000 85% 불투명도, 컨테이너 모서리 반경 12px. 그중 색 둘과 반경을 여기서 이름으로
+     * 고정한다(레이블 색은 합성값이라 아래에서 따로 본다).
+     *
+     * 반경이 이 단정에 있는 이유는 그것이 카카오와 네이버를 가르는 축이기 때문이다. 네이버는
+     * 반경을 공표하지 않아 BokriLog의 `--radius-md`(10px)를 쓰고 카카오는 공표해 12px을 쓴다.
+     * 두 값이 같아지는 회귀는 "토큰을 하나로 합쳤다"는 좋은 의도로 일어나며 axe도 크기 단정도
+     * 그것을 보지 않는다.
+     *
+     * 심볼의 비율도 함께 본다. 가이드가 금지하는 첫 항목이 심볼의 형태·비율 변경이고, 공식
+     * 애셋에서 추출한 잉크의 가로세로비는 25.39 : 24다. CSS가 두 축을 같은 값으로 묶으면 렌더된
+     * 잉크가 그 비율을 잃거나(늘어남) 선언한 크기보다 작아진다(여백).
+     */
+    await page.setViewportSize(NARROW_VIEWPORT)
+    await page.goto('/')
+    await expectAuthScreenMounted(page)
+
+    const measured = await page
+      .getByRole('link', { name: authContent.signIn.labels.kakao })
+      .evaluate((element) => {
+        const label = element.querySelector('span')
+        const symbol = element.querySelector('svg')
+        const ink = symbol?.querySelector('path') ?? null
+        if (label === null || symbol === null || ink === null) {
+          return null
+        }
+        const buttonStyle = getComputedStyle(element)
+        const labelStyle = getComputedStyle(label)
+        const range = document.createRange()
+        range.selectNodeContents(label)
+        const box = symbol.getBoundingClientRect()
+        const viewBox = symbol.viewBox.baseVal
+        const scale = Math.min(box.width / viewBox.width, box.height / viewBox.height)
+        const bbox = ink.getBBox()
+
+        /*
+         * 심볼 토큰의 값을 **색으로** 읽는다.
+         *
+         * 문자열 그대로 비교할 수 없다. 산출물에서는 minifier가 `#000000`을 `#000`으로 줄이므로
+         * 개발 소스와 빌드 결과가 다른 문자열을 주고, 이 시험은 두 환경에서 같은 본문이 돌아야
+         * 한다. 그래서 표기가 아니라 CSS 엔진이 해석한 색을 본다.
+         *
+         * 토큰이 사라지면 `color`가 빈 값이 되어 버튼의 레이블 색(85% 검정)을 물려받으므로 그
+         * 경우도 여기서 갈린다 — 그것이 `fill` 계산값으로는 볼 수 없는 축이다.
+         */
+        const probe = document.createElement('span')
+        probe.style.color = buttonStyle.getPropertyValue('--component-social-sign-in-kakao-logo')
+        element.append(probe)
+        const symbolToken = getComputedStyle(probe).color
+        probe.remove()
+
+        return {
+          background: buttonStyle.backgroundColor,
+          labelColor: labelStyle.color,
+          fontSize: parseFloat(labelStyle.fontSize),
+          fontWeight: parseFloat(labelStyle.fontWeight),
+          labelTokenFontSize: buttonStyle.getPropertyValue('--type-label-font-size').trim(),
+          labelTokenFontWeight: buttonStyle.getPropertyValue('--type-label-font-weight').trim(),
+          radius: buttonStyle.borderTopLeftRadius,
+          symbolFill: getComputedStyle(ink).fill,
+          symbolFillReference: ink.getAttribute('fill') ?? '',
+          symbolToken,
+          inkWidth: bbox.width * scale,
+          inkHeight: bbox.height * scale,
+          boxWidth: box.width,
+          boxHeight: box.height,
+          lineBoxes: range.getClientRects().length,
+        }
+      })
+
+    // eslint-disable-next-line playwright/no-conditional-in-test -- 타입 좁히기 가드. 구조가 다르면 단정이 아니라 예외로 즉시 종료한다.
+    if (measured === null) {
+      throw new Error('카카오 버튼에서 레이블·심볼을 찾지 못했습니다.')
+    }
+
+    // 지정 팔레트 밖의 색을 쓰지 않는다(카카오 공식 가이드). #FEE500 · 심볼 #000000.
+    expect(measured.background).toBe('rgb(254, 229, 0)')
+    /*
+     * 심볼 색은 사슬 전체를 본다 — 경로가 토큰을 참조하고, 그 토큰이 공표값을 들고 있고, 렌더가
+     * 그 값으로 해석된다.
+     *
+     * 계산된 `fill`만 보면 이 단정은 실패할 수 없다. SVG의 `fill` 기본값이 검정이라 토큰 이름이
+     * 바뀌거나 지워지거나 `var()` 참조에 오타가 나도 심볼은 그대로 검정으로 그려지고 값이 같다.
+     * 네이버 쪽 같은 단정이 뜻을 갖는 것은 `#FFFFFF`가 기본값이 아니어서다.
+     */
+    expect(measured.symbolFillReference).toBe('var(--component-social-sign-in-kakao-logo)')
+    expect(measured.symbolToken).toBe('rgb(0, 0, 0)')
+    expect(measured.symbolFill).toBe('rgb(0, 0, 0)')
+    // 레이블은 #000000 85% 불투명도다. 합성값이 아니라 알파를 그대로 들고 있어야 한다.
+    expect(measured.labelColor).toBe('rgba(0, 0, 0, 0.85)')
+    // 컨테이너 모서리 반경 12px(공표값). 네이버의 10px과 다른 값이어야 한다.
+    expect(measured.radius).toBe('12px')
+
+    /*
+     * 레이블은 base type 그대로다. 대비가 12.52:1이라 일반 텍스트 하한 4.5:1을 넘으므로 네이버가
+     * 치른 확대를 되풀 이유가 없고, 하면 공표되지 않은 값을 지어내는 것이 된다.
+     *
+     * 값을 리터럴로 적지 않고 토큰과 비교한다. 14px·600은 카카오가 공표한 값이 아니라 BokriLog의
+     * `--type-label-*`이고, 그 토큰은 언제든 바뀔 수 있다 — 리터럴로 고정하면 전역 타이포그래피
+     * 조정이 **카카오 브랜드 시험**을 엉뚱한 이유로 붉게 만든다. 여기서 지키려는 것은 "이 버튼이
+     * 자기 크기를 지어내지 않고 base type을 그대로 쓴다"이고, 그것은 토큰과의 동일성이다.
+     */
+    expect(`${String(measured.fontSize)}px`).toBe(measured.labelTokenFontSize)
+    expect(String(measured.fontWeight)).toBe(measured.labelTokenFontWeight)
+
+    // 심볼의 비율. 잉크가 요소 박스를 두 축 모두 채우고 그 비율이 공식 애셋과 같다.
+    expect(measured.inkWidth).toBeCloseTo(measured.boxWidth, 1)
+    expect(measured.inkHeight).toBeCloseTo(measured.boxHeight, 1)
+    expect(measured.inkWidth / measured.inkHeight).toBeCloseTo(25.39 / 24, 2)
+
+    // 320px에서도 한 줄이다.
+    expect(measured.lineBoxes).toBe(1)
   })
 
   test('네이버 버튼은 공표된 색을 그대로 쓰고 레이블 크기로 대비 하한을 만족한다', async ({
@@ -147,7 +301,7 @@ test.describe('로그인 진입', () => {
      * 가득 채운다. `getBBox()`와 `viewBox` 스케일이 그 사실을 재는 유일한 길이다.
      *
      * 로고 `fill`과 두 간격도 함께 본다. 이 셋 중 어느 것도 단정이 없으면 토큰 이름 오타 하나로
-     * 로고가 검정으로 그려지거나 두 버튼이 맞붙어도 전 층이 green이다.
+     * 로고가 검정으로 그려지거나 제공자 버튼들이 맞붙어도 전 층이 green이다.
      */
     await page.setViewportSize(NARROW_VIEWPORT)
     await page.goto('/')
@@ -222,7 +376,7 @@ test.describe('로그인 진입', () => {
     expect(measured.lineBoxes).toBe(1)
   })
 
-  test('두 버튼이 전역 포커스 링을 받고 Tab 순서가 문서 순서와 같다', async ({ page }) => {
+  test('세 버튼이 전역 포커스 링을 받고 Tab 순서가 문서 순서와 같다', async ({ page }) => {
     await page.goto('/')
     await expectAuthScreenMounted(page)
 
@@ -234,7 +388,7 @@ test.describe('로그인 진입', () => {
       FOCUSABLE_SELECTOR,
     )
 
-    // 건너뛰기 링크 하나였던 목록에 로그인 버튼 둘이 더해졌다.
+    // 건너뛰기 링크 하나였던 목록에 로그인 버튼 셋이 더해졌다.
     for (const provider of SIGN_IN_PROVIDERS) {
       expect(documentOrder).toContain(authContent.signIn.labels[provider])
     }
@@ -247,7 +401,7 @@ test.describe('로그인 진입', () => {
     expect(reached).toEqual(documentOrder)
 
     // 버튼 자신의 포커스 표시. DESIGN.md Components 마지막 문단의 focus-ring 값이다.
-    // 두 버튼 모두 전역 `:focus-visible`을 쓰고 자기 포커스 규칙을 선언하지 않는다.
+    // 세 버튼 모두 전역 `:focus-visible`을 쓰고 자기 포커스 규칙을 선언하지 않는다.
     for (const provider of SIGN_IN_PROVIDERS) {
       const focus = await page.evaluate((label) => {
         const button = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href]')).find(
@@ -415,14 +569,14 @@ test.describe('로그인 상태 경로 · 미인증', () => {
 })
 
 test.describe('유일 제공자 접근 상실 안내', () => {
-  test('실패 표지에 두 제공자의 공식 복구 경로가 붙는다', async ({ page }) => {
+  test('실패 표지에 세 제공자의 공식 복구 경로가 붙는다', async ({ page }) => {
     await page.goto('/?auth=failed')
     await expectAuthScreenMounted(page)
 
     await expect(page.getByText(authContent.recovery.body)).toBeVisible()
 
     /*
-     * 둘을 언제나 함께 보여 준다. 이 화면은 사용자가 어느 제공자로 가입했는지 알 수 없고
+     * 전부를 언제나 함께 보여 준다. 이 화면은 사용자가 어느 제공자로 가입했는지 알 수 없고
      * 알아서도 안 되므로 하나만 고를 수 없다.
      */
     for (const entry of authContent.recovery.links) {
@@ -525,7 +679,7 @@ test.describe('스텁 제공자 성공 왕복', () => {
       context,
     }) => {
       /*
-       * 두 제공자를 각각 지난다. 왕복 하나만 보면 두 번째 제공자의 등록·콜백·세션 개설이 실제로
+       * 세 제공자를 각각 지난다. 왕복 하나만 보면 나머지 제공자의 등록·콜백·세션 개설이 실제로
        * 성립하는지 아무 층도 확인하지 않는다.
        */
       await page.goto('/')
@@ -571,33 +725,39 @@ test.describe('스텁 제공자 성공 왕복', () => {
     })
   }
 
-  test('네이버 왕복도 외부 origin으로 나가지 않는다', async ({ page, baseURL }) => {
-    /*
-     * 실제 네이버 주소로 나가는 요청이 0건이다. 개발·CI 스택의 등록은 스텁을 가리키므로 그
-     * 왕복 전체가 동일 출처여야 하고, 등록의 엔드포인트가 실수로 정본 주소로 되돌아가면 여기서
-     * 드러난다(그 경로는 CI에서 판정으로 삼을 수 없는 실연동이다).
-     */
-    const requests: string[] = []
-    page.on('request', (request) => {
-      requests.push(request.url())
+  for (const provider of HAND_ASSEMBLED_PROVIDERS) {
+    test(`${provider} 왕복도 외부 origin으로 나가지 않는다`, async ({ page, baseURL }) => {
+      /*
+       * 실제 제공자 주소로 나가는 요청이 0건이다. 개발·CI 스택의 등록은 스텁을 가리키므로 그
+       * 왕복 전체가 동일 출처여야 하고, 등록의 엔드포인트가 실수로 정본 주소로 되돌아가면 여기서
+       * 드러난다(그 경로는 CI에서 판정으로 삼을 수 없는 실연동이다).
+       *
+       * Google을 빼는 것은 그 제공자의 정본 주소가 `CommonOAuth2Provider`에서 오고 이 스토리들이
+       * 손으로 적은 상수가 아니기 때문이다. 손으로 적은 엔드포인트를 가진 나머지가 이 위험을
+       * 갖는다(`HAND_ASSEMBLED_PROVIDERS`).
+       */
+      const requests: string[] = []
+      page.on('request', (request) => {
+        requests.push(request.url())
+      })
+
+      await signInThroughStub(page, provider)
+
+      const origin = new URL(baseURL ?? page.url()).origin
+      const external = requests.filter((url) => {
+        if (url.startsWith('data:') || url.startsWith('blob:')) {
+          return false
+        }
+        try {
+          return new URL(url).origin !== origin
+        } catch {
+          return true
+        }
+      })
+
+      expect(external).toEqual([])
     })
-
-    await signInThroughStub(page, 'naver')
-
-    const origin = new URL(baseURL ?? page.url()).origin
-    const external = requests.filter((url) => {
-      if (url.startsWith('data:') || url.startsWith('blob:')) {
-        return false
-      }
-      try {
-        return new URL(url).origin !== origin
-      } catch {
-        return true
-      }
-    })
-
-    expect(external).toEqual([])
-  })
+  }
 
   test('로그인된 온보딩 화면도 건너뛰기 링크와 WCAG 2.2 AA를 지킨다', async ({ page }) => {
     /*

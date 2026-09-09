@@ -291,13 +291,15 @@ class StatusApiTest {
          * 이 응답들에 단정이 없으면 fail-closed가 200이나 302로 바뀌어도, 인증 시작이 프레임워크
          * 예외로 끝나 스택이 본문에 실려도 아무 시험이 실패하지 않는다.
          *
-         * 아는 제공자 둘의 답이 같다. Story 1.6이 네이버를 더했으므로 그 경로도 여기서 500이며,
-         * 두 응답이 갈리면 그 차이가 곧 "어느 제공자가 구성됐는가"를 알려 주는 신호가 된다.
+         * 아는 제공자 셋의 답이 같다. Story 1.6이 네이버를, 1.7이 카카오를 더했으므로 그 경로들도
+         * 여기서 500이며, 응답이 갈리면 그 차이가 곧 "어느 제공자가 구성됐는가"를 알려 주는 신호가
+         * 된다.
          */
         for (String provider :
                 new String[] {
                     AuthSecurityConfig.GOOGLE_REGISTRATION_ID,
-                    AuthSecurityConfig.NAVER_REGISTRATION_ID
+                    AuthSecurityConfig.NAVER_REGISTRATION_ID,
+                    AuthSecurityConfig.KAKAO_REGISTRATION_ID
                 }) {
             HttpResponse<String> configured = send("GET", "/api/auth/authorize/" + provider);
 
@@ -312,18 +314,24 @@ class StatusApiTest {
         }
 
         /*
-         * 모르는 제공자의 경로는 존재하지 않는다. 카카오는 Story 1.7이 더한다.
+         * 모르는 제공자의 경로는 존재하지 않는다.
+         *
+         * 탐침의 이름이 브랜드가 아니다. Story 1.6까지 이 자리가 `kakao`였고, Story 1.7이 카카오를
+         * 아는 제공자로 만들면서 그 단정은 통과하되 뜻을 잃었다 — 404를 고정하던 자리가 실제 등록을
+         * 만나면 다른 이유로 통과한다. 등록될 수 없는 이름이면 다음 제공자가 들어와도 그 일이
+         * 되풀이되지 않는다.
          *
          * 응답이 아는 제공자 이름을 되비추지 않는다. 되비추면 이 경로가 곧 "이 서비스가 어떤
          * 제공자를 아는가"를 알아내는 표면이 된다.
          */
-        HttpResponse<String> unknown = send("GET", "/api/auth/authorize/kakao");
+        HttpResponse<String> unknown = send("GET", "/api/auth/authorize/unregistered-provider");
 
         assertThat(unknown.statusCode()).isEqualTo(404);
         assertThat(unknown.body()).contains("\"code\":\"NOT_FOUND\"");
-        assertThat(unknown.body()).doesNotContain("kakao");
+        assertThat(unknown.body()).doesNotContain("unregistered-provider");
         assertThat(unknown.body()).doesNotContain(AuthSecurityConfig.GOOGLE_REGISTRATION_ID);
         assertThat(unknown.body()).doesNotContain(AuthSecurityConfig.NAVER_REGISTRATION_ID);
+        assertThat(unknown.body()).doesNotContain(AuthSecurityConfig.KAKAO_REGISTRATION_ID);
         assertNoLeak(unknown.body());
     }
 

@@ -155,7 +155,7 @@
 /*
  * 제공자 목록. 전체 폭 세로 스택이고 순서는 문서 순서가 정한다(DESIGN.md).
  *
- * 간격만 소유한다. 두 버튼의 시각 면적은 각자의 규칙이 같은 최소 목표 크기와 전체 폭을 쓰므로
+ * 간격만 소유한다. 세 버튼의 시각 면적은 각자의 규칙이 같은 최소 목표 크기와 전체 폭을 쓰므로
  * 동등하고, 여기서 크기를 다시 정하지 않는다.
  */
 .providerList {
@@ -256,6 +256,64 @@
 .naverMark {
   inline-size: var(--component-social-sign-in-naver-logo-size);
   block-size: var(--component-social-sign-in-naver-logo-size);
+
+  /* 근거는 위 `.googleMark`와 같다. */
+  flex: none;
+  overflow: visible;
+}
+
+/*
+ * 카카오 버튼.
+ *
+ * 채움색·글자색·심볼색·모서리 반경은 카카오 공식 가이드가 소유하고 값은 tokens.css의 `-kakao-`
+ * 토큰이 기록한다. 반경 토큰이 있는 것이 네이버와 다른 점이고 그것은 예외가 아니라 같은 규칙의
+ * 결과다 — 카카오는 12px을 본문으로 공표했고 네이버는 반경을 공표하지 않았다.
+ *
+ * 타이포그래피는 Google 버튼과 같은 형태로 BokriLog의 label 스타일(14px·600)이다. 네이버가 쓴
+ * 확대(20px·700)를 되풀지 않는 이유는 대비다 — 공표 조합의 대비가 레이블 12.52:1 · 심볼 16.42:1
+ * 이라 일반 텍스트 하한 4.5:1을 이미 넘으므로 확대할 이유가 없고, 하면 카카오가 공표하지 않은
+ * 값을 지어내는 것이 된다.
+ *
+ * 심볼 크기·내부 여백·간격은 BokriLog가 소유한다. 가이드 본문이 그 수치를 주지 않으므로
+ * (권위 있는 값은 내려받는 애셋에 있다) 없는 브랜드 값을 지어내는 대신 기존 `--space-*`를 쓴다.
+ * 심볼 크기와 간격은 그 사실을 담은 채로 `-kakao-logo-size`·`-kakao-logo-gap`을 지난다 — 값의
+ * 소유자는 tokens.css에서 `--space-*` 참조가 말하고, 이름은 Google·네이버와 같은 모양으로 남아
+ * "제공자마다의 마크 크기·간격을 비교한다"가 끊기지 않는다. 심볼 16px은 공식 버튼 애셋의
+ * 비율에서 왔다 — 180×90 버튼의 심볼이 36×34이므로 심볼 높이가 버튼 높이의 0.378배이고, 최소
+ * 목표 크기 44px에 그 비율을 적용하면 16.6px이다. 그 값에 가장 가까운 기존 토큰이
+ * `--space-4`(16px)다. 내부 여백만 전용 토큰 없이 네이버와 같은 `--space-3`을 직접 쓴다.
+ *
+ * 테두리를 두지 않는다. 노란 채움 버튼이라 가이드가 테두리를 정의하지 않는다.
+ *
+ * 포커스 표시는 global.css의 전역 `:focus-visible`이 처리한다. 여기서 다시 선언하면 특이도가
+ * 올라가 forced-colors 탈출구를 이겨 버린다.
+ */
+.kakaoButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--component-social-sign-in-kakao-logo-gap);
+  inline-size: 100%;
+  min-block-size: var(--component-social-sign-in-min-target-size);
+  min-inline-size: var(--component-social-sign-in-min-target-size);
+  padding-inline: var(--space-3);
+  border-radius: var(--component-social-sign-in-kakao-radius);
+  background-color: var(--component-social-sign-in-kakao-background);
+  color: var(--component-social-sign-in-kakao-foreground);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  text-decoration: none;
+}
+
+/*
+ * 심볼은 정사각형이 아니다. 공식 애셋의 잉크 비율이 25.39 : 24(가로가 5.8% 넓다)이므로 높이만
+ * 정하고 폭을 `auto`로 두어 `viewBox`의 비율이 렌더에서 그대로 산다. 두 축을 같은 값으로 묶으면
+ * 브라우저가 `preserveAspectRatio`로 여백을 만들어 잉크가 선언한 크기보다 작아진다.
+ */
+.kakaoMark {
+  inline-size: auto;
+  block-size: var(--component-social-sign-in-kakao-logo-size);
 
   /* 근거는 위 `.googleMark`와 같다. */
   flex: none;
