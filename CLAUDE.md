@@ -86,7 +86,7 @@ npm --prefix frontend run test:e2e
 
 `backend/`는 Java 25 + Spring Boot 4.1.1 + Gradle wrapper이고 모듈 경계는 Spring Modulith 2.1.1이 시험에서 검증한다(운영 classpath에는 없다). Story 1.3부터 PostgreSQL 18을 쓰고 Story 1.4부터 Spring Security OAuth2 Client·Spring Session JDBC가 있다. HTTP 엔드포인트는 `GET /api/status`, `GET /api/auth/session`, `POST /api/auth/logout`, 그리고 Spring Security 필터가 받는 `/api/auth/authorize/<provider>`·`/api/auth/callback/<provider>`다. 상태·인증 컨트롤러는 루트 패키지 `com.bokrilog`에 있고 첫 모듈 패키지는 `com.bokrilog.identity`다. 컴파일 경고는 `-Werror`로 실패다.
 
-제공자 자격정보는 여전히 필요 없다. 판정은 **제공자마다 독립**이다 — `BOKRILOG_PUBLIC_BASE_URL`과 그 제공자의 `BOKRILOG_<제공자>_CLIENT_ID`·`_CLIENT_SECRET` 중 하나라도 비면 그 등록만 만들어지지 않고 그 제공자의 인증 시작이 공통 오류 계약으로 fail-closed이며, 다른 제공자의 로그인은 살아 있다. 어느 제공자도 구성되지 않으면 `oauth2Login` DSL 자체를 배선하지 않는다. 두 등록이 같은 issuer로 해석되면 기동을 거부한다 — 조회 키가 `(issuer, subject)`라서 override 하나로 계정 병합이 열리기 때문이다(`DevOidcStubProfileTest`·`AuthNaverSignInTest`가 이 계약을 지킨다). 정상 흐름의 결정성은 `dev-oidc` 프로필에서만 사는 local OIDC 스텁이 만든다. 스텁 논리는 `DevOidcStub`이 소유하고 표면은 두 곳이다 — 개발·CI 스택은 `DevOidcStubConfig`가 `/api/dev-oidc/<제공자>/**`에 제공자마다 인스턴스 하나로 올리고(라우터 빈은 하나다)(브라우저와 백엔드가 같은 origin에서 도달해야 성공 경로를 브라우저 층에서 검증할 수 있다), 백엔드 시험은 `OidcStubConfiguration`이 루프백 HTTP 서버에 올린다. 스텁을 두 번 만들지 않는다. 그 프로필이 실제 Google 등록과 함께 활성이면 기동을 거부하고, 실제 Google 왕복은 Epic 1의 **실연동 미검증** 게이트가 소유한다. 백엔드가 자기 스텁에 닿는 주소는 `BOKRILOG_DEV_OIDC_INTERNAL_BASE_URL`이며 브라우저가 보는 origin과 다른 값이다.
+제공자 자격정보는 여전히 필요 없다. 판정은 **제공자마다 독립**이다 — `BOKRILOG_PUBLIC_BASE_URL`과 그 제공자의 `BOKRILOG_<제공자>_CLIENT_ID`·`_CLIENT_SECRET` 중 하나라도 비면 그 등록만 만들어지지 않고 그 제공자의 인증 시작이 공통 오류 계약으로 fail-closed이며, 다른 제공자의 로그인은 살아 있다. 어느 제공자도 구성되지 않으면 `oauth2Login` DSL 자체를 배선하지 않는다. 서로 다른 두 등록이 같은 issuer로 해석되면 기동을 거부한다 — 조회 키가 `(issuer, subject)`라서 override 하나로 계정 병합이 열리기 때문이다(`DevOidcStubProfileTest`·`AuthNaverSignInTest`가 이 계약을 지킨다). 정상 흐름의 결정성은 `dev-oidc` 프로필에서만 사는 local OIDC 스텁이 만든다. 스텁 논리는 `DevOidcStub`이 소유하고 표면은 두 곳이다 — 개발·CI 스택은 `DevOidcStubConfig`가 `/api/dev-oidc/<제공자>/**`에 제공자마다 인스턴스 하나로 올리고(라우터 빈은 하나다)(브라우저와 백엔드가 같은 origin에서 도달해야 성공 경로를 브라우저 층에서 검증할 수 있다), 백엔드 시험은 `OidcStubConfiguration`이 루프백 HTTP 서버에 올린다. 스텁을 두 번 만들지 않는다. 그 프로필이 어느 제공자든 실제 등록과 함께 활성이면 기동을 거부하고, 실제 제공자 왕복은 Epic 1의 **실연동 미검증** 게이트가 소유한다. 백엔드가 자기 스텁에 닿는 주소는 `BOKRILOG_DEV_OIDC_INTERNAL_BASE_URL`이며 브라우저가 보는 origin과 다른 값이다.
 
 리다이렉트의 `Location`은 origin-상대 경로다(`server.tomcat.use-relative-redirects: true`). 기본값에서는 Tomcat이 요청 `Host`로 절대 URI를 만들고 Nginx가 포트를 잃은 값을 넘기므로 로그인 뒤의 이동이 80번 포트로 끊긴다.
 
@@ -146,7 +146,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 ## 현재 진행 지점
 
-기획은 완료됐다. `epics.md`는 `implementationReadinessStatus: ready-for-sprint-planning`이고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. `sprint-status.yaml`은 2026-09-02에 생성됐고 첫 스프린트 Story 1.1~1.5(진입 화면 → 동일 출처 셸 → 소유권·삭제 상태 → Google 로그인 → 로그아웃)와 스트레치였던 1.6(네이버 로그인)이 머지됐다. 남은 스트레치 1.7(카카오)이 다음이다.
+기획은 완료됐다. `epics.md`는 `implementationReadinessStatus: ready-for-sprint-planning`이고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. `sprint-status.yaml`은 2026-09-02에 생성됐고 첫 스프린트 Story 1.1~1.5(진입 화면 → 동일 출처 셸 → 소유권·삭제 상태 → Google 로그인 → 로그아웃)와 스트레치였던 1.6·1.7(네이버·카카오 로그인)이 모두 머지됐다. 첫 스프린트가 끝났고 Epic 1이 확정한 세 제공자 집합이 완성됐다. 다음은 1.8(재인증·세션 회전)이다.
 
 | 스토리 | 상태 | 근거 |
 |---|---|---|
@@ -156,7 +156,8 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 1.4 Google 로그인 | done | `spec-1-4-google-sign-in.md`, PR #14 머지 커밋 `2f300f6` |
 | 1.5 로그아웃·세션 만료 | done | `spec-1-5-logout-session-expiry.md`, PR #17 머지 커밋 `5b6ae01` |
 | 1.6 네이버 로그인 | done | `spec-1-6-naver-sign-in.md`, PR #20 머지 커밋 `7f0f816` |
-| 1.7 카카오 로그인 | backlog — **다음 착수** | `epics.md` Story 1.7, `epic-1-context.md` |
+| 1.7 카카오 로그인 | done | `spec-1-7-kakao-sign-in.md`, PR #22 머지 커밋 `c60729f` |
+| 1.8 재인증·세션 회전 | backlog — **다음 착수** | `epics.md` Story 1.8, `epic-1-context.md` |
 
 Story 1.3이 `identity` 모듈, PostgreSQL 18 마이그레이션, 소유권·삭제 상태 판정 계약, 해당 데이터의 삭제 경로와 시험을 들였다. 이 스토리가 처음 도입한 것: 첫 모듈 패키지와 Spring Modulith 경계 검사, PostgreSQL Testcontainers, 마이그레이션(expand 우선, startup은 schema 검증만), 두 사용자·동시성·실패 주입 시험.
 
@@ -170,9 +171,13 @@ Story 1.5가 고정한 계약 넷은 이후 스토리가 되풀어야 한다. �
 
 Story 1.5의 범위 밖: 재인증·세션 회전 UX와 5분 action grant(1.8·1.9), 네이버·카카오(1.6·1.7), 제공자 측 로그아웃, Epic 5의 삭제 화면. `authorizeHttpRequests`는 여전히 전부 `permitAll`이다. 표시된 세션은 화면에서 로그아웃 버튼을 볼 수 없다(게이트가 미인증이라 토큰이 UI에 도달하지 않는다) — 1.8이 재인증 UI와 함께 그 경로를 소유한다.
 
-프런트엔드는 이제 `/api` 호출 둘(`GET /api/auth/session`, `POST /api/auth/logout`)과 고정 순서(Google → 네이버)의 제공자 버튼 둘, 로그아웃 버튼을 갖는다. 라우터 의존은 여전히 없고 `App.tsx`의 닫힌 경로 맵이 그 역할을 한다. `/api/status`는 서버 경계를 확인하는 엔드포인트이며 화면이 부르지 않는다.
+Story 1.6·1.7이 그 위에 네이버와 카카오를 얹어 Epic 1이 확정한 세 제공자 집합을 완성했다. 1.6이 단일 제공자 전제를 없앤 자리가 셋이고(등록 맵, 스텁 인스턴스 목록, 화면의 닫힌 제공자 맵) 1.7은 거기에 세 번째 값을 더했을 뿐이다 — 새 인증 계약도 새 의존도 없고 `identity`·마이그레이션·Nginx는 두 스토리 모두 무변경이다. 제공자마다 다른 것은 등록 조립 하나다: Google은 `CommonOAuth2Provider`가 한 줄로 주고, 네이버·카카오는 그 enum에 없어 공식 discovery의 정적 주소 넷과 `client_secret_post`·`sub`을 손으로 준다(카카오의 JWKS는 issuer 바로 아래 `/.well-known/jwks.json`이라 네이버의 `/oauth2/jwks`와 모양이 다르다). 브랜드 값은 제공자가 **공표한 수치만** 토큰이 된다 — 그래서 모서리는 Google 4px·카카오 12px이 각자 소유하고 네이버는 공표값이 없어 BokriLog의 `--radius-md`를 쓴다. 세 버튼의 "동등한 위계"는 바깥 크기·간격·순서·추천 표지 부재로 성립하며 타이포그래피의 동일성이 아니다 — 네이버 레이블만 20px·700인 것은 공표 색 조합의 대비가 3.095:1이라 큰 텍스트 문턱으로만 닫히기 때문이고(카카오는 12.52:1) 그 사실을 e2e 단정이 고정한다.
 
-미룬 결정은 44건이고 항목과 판정은 `deferred-work.md`와 해소 원장이 소유한다(2026-09-09 기준 해소 13·부분 해소 3·미해소 28). 아래는 지금 코드에 닿는 미해소만 고른 선택적 열거다: artifact `run_attempt`와 재실행 복구의 충돌, 통합 job의 `npm ci`·Chromium 설치 중복, 백엔드 포매터·정적 분석 게이트를 소유할 스토리와 그 게이트가 함께 정할 import 정렬, nginx 컨테이너 권한 강화, `identity` 행 잠금 대기 상한, Testcontainers 컨테이너 수명과 컨텍스트 캐시 분리, `verify-same-origin.sh` 마이그레이션 호출의 시간 상한, `identity`가 `spring_session`에 직접 닿는 결합, 두 인증 화면의 중복과 그 레이아웃 CSS 복제, `lint:css` 범위 단정이 새 CSS 모듈을 놓치는 것, Windows 전용 결함을 CI가 보지 못하는 공백, 계층을 넘나드는 계약 리터럴의 중복을 Docker 없는 검사로 묶는 문제, 그리고 Story 1.6이 더한 일곱 — 그중 무게 있는 둘은 **제공자 이름 목록이 열 곳 넘게 복제됐고 그 목록들이 서로 같은지 보는 검사가 없다는 것**과 **한 제공자만 구성된 스택이 HTTP·화면 층에서 검증되지 않아 실제 제공자 등록이 하나씩 들어오는 시점에 사용자가 원본 오류 JSON을 보는 창이 열린다는 것**이다. 어느 것도 Story 1.7 착수를 막지 않는다. 행 잠금 대기 상한과 `spring_session` 결합은 Story 1.6이 같은 경로를 지나며 보고 **재차 미뤘다**(근거는 해소 원장 항목 23·27).
+카카오에는 다른 둘에 없는 제약이 둘 있다. `sub`이 **pairwise**라 client 등록에도 묶이므로 앱을 다시 만들거나 REST API 키를 교체하면 기존 `(kauth.kakao.com, sub)` 매핑이 전부 고아가 되고 돌아온 사용자마다 조용히 새 계정이 생긴다. 그리고 Client Secret이 콘솔의 선택 기능인데 fail-closed 게이트를 무르지 않았으므로 운영자가 그것을 켜야 등록이 만들어진다. 콘솔에서 켜야 하는 것과 사전 등록할 Redirect URI는 `DEVELOPMENT.md`가 소유한다.
+
+프런트엔드는 이제 `/api` 호출 둘(`GET /api/auth/session`, `POST /api/auth/logout`)과 고정 순서(Google → 네이버 → 카카오)의 제공자 버튼 셋, 로그아웃 버튼을 갖는다. 라우터 의존은 여전히 없고 `App.tsx`의 닫힌 경로 맵이 그 역할을 한다. `/api/status`는 서버 경계를 확인하는 엔드포인트이며 화면이 부르지 않는다.
+
+미룬 결정은 50건이고 항목과 판정은 `deferred-work.md`와 해소 원장이 소유한다(2026-09-09 기준 해소 14·부분 해소 4·미해소 32). 아래는 지금 코드에 닿는 미해소만 고른 선택적 열거다: artifact `run_attempt`와 재실행 복구의 충돌, 통합 job의 `npm ci`·Chromium 설치 중복, 백엔드 포매터·정적 분석 게이트를 소유할 스토리와 그 게이트가 함께 정할 import 정렬, nginx 컨테이너 권한 강화, `identity` 행 잠금 대기 상한, Testcontainers 컨테이너 수명과 컨텍스트 캐시 분리, `verify-same-origin.sh` 마이그레이션 호출의 시간 상한, `identity`가 `spring_session`에 직접 닿는 결합, 두 인증 화면의 중복과 그 레이아웃 CSS 복제, `lint:css` 범위 단정이 새 CSS 모듈을 놓치는 것, Windows 전용 결함을 CI가 보지 못하는 공백, 계층을 넘나드는 계약 리터럴의 중복을 Docker 없는 검사로 묶는 문제, 그리고 Story 1.6이 더한 일곱 — 그중 무게 있는 둘은 **제공자 이름 목록이 열 곳 넘게 복제됐고 그 목록들이 서로 같은지 보는 검사가 없다는 것**과 **한 제공자만 구성된 스택이 HTTP·화면 층에서 검증되지 않아 실제 제공자 등록이 하나씩 들어오는 시점에 사용자가 원본 오류 JSON을 보는 창이 열린다는 것**이다. 어느 것도 Story 1.8 착수를 막지 않는다. 행 잠금 대기 상한과 `spring_session` 결합은 Story 1.6이 같은 경로를 지나며 보고 **재차 미뤘다**(근거는 해소 원장 항목 23·27). Story 1.7이 여섯을 더했다 — 제공자별 왕복 시험 축의 3차 복제, `credentials()` fixture 3중 복제, 스텁 기동 guard의 손으로 쓴 OR 사슬, 계층 **안** 목록 중복과 `SUPPORTED_REGISTRATION_IDS` 등가 단정 부재, 카카오 심볼 추출 산출물 부재, 그리고 `OnboardingScreen.test.tsx`가 부하 아래 간헐 실패하는 것이다.
 
 ## 브랜치·커밋
 
