@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.bokrilog.DevOidcStub.TokenPlan;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -171,6 +172,86 @@ class DevOidcStubTest {
 
         assertThat(response.status()).isEqualTo(503);
         assertThat(response.body()).doesNotContain("id_token");
+    }
+
+    // ----------------------------------------------------------------------
+    // 최근 인증 증거
+    // ----------------------------------------------------------------------
+
+    @Test
+    void 기본_계획의_ID_Token은_방금_인증했다고_말한다() {
+        String code = STUB.issueCode(TokenPlan.valid("nonce-hash"), authorizationRequest());
+
+        String payload = idTokenPayload(exchange(code, VERIFIER));
+
+        /*
+         * 정상 흐름은 "방금 인증했다"이고 그것이 기본값이다. 이 claim이 없으면 재인증의 성공
+         * 경로를 어떤 시험도 지날 수 없다 — 판정이 부재를 실패로 다루기 때문이다.
+         *
+         * 초 단위 정수다. OIDC Core의 NumberDate이며 실제 제공자가 보내는 모양이다.
+         */
+        assertThat(payload).containsPattern("\"auth_time\"\\s*:\\s*\\d{10}");
+    }
+
+    @Test
+    void 계획이_주입한_auth_time이_그대로_실린다() {
+        long past = 1_600_000_000L;
+        String code =
+                STUB.issueCode(
+                        TokenPlan.valid("nonce-hash").authTime(Instant.ofEpochSecond(past)),
+                        authorizationRequest());
+
+        String payload = idTokenPayload(exchange(code, VERIFIER));
+
+        // 오래됨·미래 축이 이 주입 하나로 만들어진다. 값이 바뀌어 실리면 그 축이 아무것도 보지 않는다.
+        assertThat(payload).contains("\"auth_time\":" + past);
+    }
+
+    @Test
+    void claim_생략_계획은_auth_time을_싣지_않는다() {
+        String code =
+                STUB.issueCode(TokenPlan.valid("nonce-hash").omitAuthTime(), authorizationRequest());
+
+        String payload = idTokenPayload(exchange(code, VERIFIER));
+
+        // 증거 부재다. `auth_time`을 공표하지 않은 제공자가 실연동에서 만들 수 있는 응답이며,
+        // 이 축이 없으면 "증거가 없으면 완화하지 않는다"를 아무도 보지 않는다.
+        assertThat(payload).doesNotContain("auth_time");
+    }
+
+    @Test
+    void 받은_재인증_파라미터를_기록만_하고_행동을_바꾸지_않는다() {
+        Map<String, String> reauthentication = authorizationRequest();
+        reauthentication.put("max_age", "300");
+        reauthentication.put("prompt", "login");
+        reauthentication.put("claims", "{\"id_token\":{\"auth_time\":{\"essential\":true}}}");
+
+        String redirect = STUB.consentRedirect(reauthentication);
+
+        // 행동은 같다. 결정성이 이 스텁의 존재 이유이며 `prompt`에 반응하면 그것이 사라진다.
+        assertThat(redirect).isNotNull();
+        assertThat(STUB.lastReauthenticationParameters())
+                .containsEntry("max_age", "300")
+                .containsEntry("prompt", "login")
+                .containsEntry("claims", "{\"id_token\":{\"auth_time\":{\"essential\":true}}}");
+
+        /*
+         * 다음 인가 요청이 앞의 값을 물려받지 않는다. 물려받으면 재인증 왕복 뒤의 일반 로그인이
+         * 앞 왕복의 값을 그대로 보여 주고, "일반 로그인에는 얹지 않는다"를 보려는 시험이 통과할
+         * 수 없다.
+         */
+        assertThat(STUB.consentRedirect(authorizationRequest())).isNotNull();
+        assertThat(STUB.lastReauthenticationParameters()).isEmpty();
+    }
+
+    /** ID Token의 payload를 그대로. JWS의 두 번째 조각이며 base64url이다. */
+    private static String idTokenPayload(DevOidcStub.Response response) {
+        assertThat(response.status()).isEqualTo(200);
+        String idToken =
+                response.body().replaceFirst("(?s).*\"id_token\":\"([^\"]+)\".*", "$1");
+        String[] parts = idToken.split("\\.");
+        assertThat(parts).hasSize(3);
+        return new String(Base64.getUrlDecoder().decode(parts[1]), StandardCharsets.UTF_8);
     }
 
     // ----------------------------------------------------------------------

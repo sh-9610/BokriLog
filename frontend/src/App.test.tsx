@@ -152,6 +152,23 @@ describe('App 경로 맵', () => {
     }
   })
 
+  it('재인증 표지 둘도 닫힌 집합에 든다', () => {
+    /*
+     * 이 둘은 서버가 만들고 붙들어 둔 목적지로 보낸다(`AuthFlowHandlers`). 그 화면이 두 인증
+     * 화면 중 하나이므로 정상 경로에서는 진입 화면이 이 값을 보지 않지만, `noticeKindOf`의 닫힌
+     * 집합은 한 목록이다 — 여기 없으면 그 값이 조용히 무시되고 재인증 실패가 아무 설명 없는
+     * 화면으로 끝난다.
+     */
+    for (const kind of ['reauthCancelled', 'reauthFailed'] as const) {
+      navigate('/', `?auth=${kind}`)
+
+      const { unmount } = render(<App />)
+
+      expect(screen.getByRole('status').textContent).toBe(authContent.notices[kind])
+      unmount()
+    }
+  })
+
   it('`signedOut`은 URL 표지로 만들 수 없다', () => {
     /*
      * 그 표지는 세션 확인 결과로 정해진다. 주소창에 적어 화면 문장을 만드는 경로를 열지 않는다 —

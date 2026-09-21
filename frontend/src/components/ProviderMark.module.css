@@ -1,0 +1,48 @@
+/*
+ * 제공자 공식 마크의 크기 규칙.
+ *
+ * 값은 전부 tokens.css의 제공자별 토큰이다. 크기는 각 제공자의 공식 가이드가 소유하고 이 파일은
+ * 그 토큰을 참조하기만 한다.
+ *
+ * 마크가 두 자리에서 쓰이므로(진입 화면의 로그인 버튼, 재인증 패널의 확인 버튼) 규칙도 한 곳에
+ * 둔다. 화면마다 복사하면 한쪽에서만 크기가 바뀌는 날이 오고, 그것은 가이드가 금지하는 로고
+ * 변형이다.
+ *
+ * 근거: DESIGN.md components.social-sign-in.provider-treatment.
+ */
+
+.googleMark {
+  inline-size: var(--component-social-sign-in-google-logo-size);
+  block-size: var(--component-social-sign-in-google-logo-size);
+
+  /*
+   * 줄어들지 않는다. flex 항목의 기본 축소가 걸리면 좁은 폭에서 로고가 찌그러진다.
+   * `overflow: visible`은 UA 기본값(`hidden`)을 되돌려 놓는다. 잘라내지 않는 요소여야
+   * "텍스트가 잘리지 않는다"를 관측하는 E2E가 이 요소를 후보로 삼지 않는다.
+   */
+  flex: none;
+  overflow: visible;
+}
+
+.naverMark {
+  inline-size: var(--component-social-sign-in-naver-logo-size);
+  block-size: var(--component-social-sign-in-naver-logo-size);
+
+  /* 근거는 위 `.googleMark`와 같다. */
+  flex: none;
+  overflow: visible;
+}
+
+/*
+ * 심볼은 정사각형이 아니다. 공식 애셋의 잉크 비율이 25.39 : 24(가로가 5.8% 넓다)이므로 높이만
+ * 정하고 폭을 `auto`로 두어 `viewBox`의 비율이 렌더에서 그대로 산다. 두 축을 같은 값으로 묶으면
+ * 브라우저가 `preserveAspectRatio`로 여백을 만들어 잉크가 선언한 크기보다 작아진다.
+ */
+.kakaoMark {
+  inline-size: auto;
+  block-size: var(--component-social-sign-in-kakao-logo-size);
+
+  /* 근거는 위 `.googleMark`와 같다. */
+  flex: none;
+  overflow: visible;
+}

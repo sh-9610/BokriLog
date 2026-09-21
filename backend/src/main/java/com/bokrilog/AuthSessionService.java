@@ -1,6 +1,8 @@
 package com.bokrilog;
 
 import com.bokrilog.identity.AccessDecision;
+import com.bokrilog.identity.AccountAccessApi;
+import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.identity.AccountLifecycleApi;
 import java.util.Optional;
 import java.util.UUID;
@@ -42,10 +44,23 @@ class AuthSessionService {
 
     private final AccountLifecycleApi accountLifecycle;
 
+    /**
+     * 민감 접근 판정.
+     *
+     * <p>재인증이 쓴다. 조회({@link AccountLifecycleApi#findUserIdBySocialIdentity})만으로는
+     * 부족하다 — 그 조회는 활성 계정만 돌려주지만 조회와 판정 사이에 삭제 전환이 커밋될 수 있고,
+     * 재인증은 그 뒤에 오는 민감 command의 전제이므로 삭제가 시작된 계정에서 성립하면 안 된다.
+     */
+    private final AccountAccessApi accountAccess;
+
     private final TransactionTemplate transactions;
 
-    AuthSessionService(AccountLifecycleApi accountLifecycle, PlatformTransactionManager transactionManager) {
+    AuthSessionService(
+            AccountLifecycleApi accountLifecycle,
+            AccountAccessApi accountAccess,
+            PlatformTransactionManager transactionManager) {
         this.accountLifecycle = accountLifecycle;
+        this.accountAccess = accountAccess;
         this.transactions = new TransactionTemplate(transactionManager);
     }
 
@@ -85,6 +100,34 @@ class AuthSessionService {
         }
         // 경합에서 계속 진 흐름은 상태를 남기지 않고 실패로 수렴한다. 계정도 매핑도 늘지 않는다.
         return Optional.empty();
+    }
+
+    /**
+     * 검증된 인증 매핑이 <b>지금 이 세션의 사용자</b>의 것인지 확인한다.
+     *
+     * <p>재인증의 계정 쪽 판정 하나다. 계정을 만들지 않고, 매핑을 만들지 않고, 세션의 사용자를
+     * 바꾸지 않는다 — 이 메서드가 하는 일은 조회 하나와 판정 하나를 읽는 것뿐이고 어떤 쓰기도
+     * 없다. 그래서 {@link #establish}와 달리 트랜잭션 경계도 재시도도 없다.
+     *
+     * <p>{@code identity} 공개 API를 부르는 자리가 이 클래스 하나라는 계약을 지킨다. 두 호출을
+     * 함께 두는 이유는 각각이 다른 것을 막기 때문이다 — 조회는 "다른 사용자의 식별자"와 "어느
+     * 계정에도 없는 식별자"를 걸러 내고, {@link AccountAccessKind#SENSITIVE} 판정은 삭제가 시작된
+     * 계정을 걸러 낸다. 두 거부는 호출자에게 같은 {@code false} 하나이며 그 값에서 대상 계정의
+     * 존재 여부를 복원할 수 없다.
+     *
+     * @param currentUserId 무장 시각에 붙들어 둔 이 세션의 사용자
+     * @param issuer 검증을 통과한 제공자 namespace
+     * @param subject 검증을 통과한 외부 식별자
+     * @return 그 식별자가 이 사용자의 것이고 민감 접근이 허용될 때만 참
+     */
+    boolean confirmReauthentication(UUID currentUserId, String issuer, String subject) {
+        Optional<UUID> linked = this.accountLifecycle.findUserIdBySocialIdentity(issuer, subject);
+        if (linked.isEmpty() || !linked.get().equals(currentUserId)) {
+            // 타 사용자의 식별자와 어느 계정에도 없는 식별자가 같은 답으로 접힌다.
+            return false;
+        }
+        return this.accountAccess.decide(currentUserId, currentUserId, AccountAccessKind.SENSITIVE)
+                == AccessDecision.ALLOWED;
     }
 
     /**

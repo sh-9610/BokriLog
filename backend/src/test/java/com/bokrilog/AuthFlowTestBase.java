@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.UnaryOperator;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +27,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.session.Session;
+import org.springframework.session.SessionRepository;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import tools.jackson.core.type.TypeReference;
@@ -77,6 +80,16 @@ abstract class AuthFlowTestBase {
 
     @Autowired
     private SessionGuard sessionGuard;
+
+    /**
+     * 세션 저장소.
+     *
+     * <p>세션 속성을 애플리케이션과 같은 경로로 읽기 위해 필요하다. 새
+     * {@code @DynamicPropertySource}를 만들지 않는 것과 같은 이유로 주입이다 — 시험이 자기 저장소
+     * 인스턴스를 만들면 컨텍스트가 갈라지고 {@code backend-quality}의 wall-clock이 늘어난다.
+     */
+    @Autowired
+    private SessionRepository<? extends Session> sessions;
 
     private final HttpClient client =
             HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
@@ -327,6 +340,73 @@ abstract class AuthFlowTestBase {
         return logout(sessionCookie, csrfToken, OidcStubConfiguration.PUBLIC_BASE_URL);
     }
 
+    /**
+     * 재인증 시작 요청.
+     *
+     * <p>로그아웃과 같은 {@code /api/auth/} 상태 변경 계약을 지난다 — 세션 귀속 CSRF 토큰과 동일
+     * 출처 {@code Origin}이다. 둘 중 하나를 비우거나 틀린 값으로 주는 것이 이 스토리의 거절
+     * 시험이므로 인자로 받는다.
+     *
+     * @param csrfToken 헤더에 실을 값. {@code null}이면 헤더를 붙이지 않는다
+     * @param origin {@code Origin} 헤더 값. {@code null}이면 헤더를 붙이지 않는다
+     */
+    HttpResponse<String> startReauthentication(
+            String provider,
+            @Nullable String sessionCookie,
+            @Nullable String csrfToken,
+            @Nullable String origin)
+            throws IOException, InterruptedException {
+        List<String> headers = new ArrayList<>();
+        if (origin != null) {
+            headers.add("Origin");
+            headers.add(origin);
+        }
+        if (csrfToken != null) {
+            headers.add(AuthSecurityConfig.CSRF_HEADER_NAME);
+            headers.add(csrfToken);
+        }
+        return send(
+                "POST",
+                AuthSecurityConfig.REAUTHENTICATION_BASE_URI + "/" + provider,
+                sessionCookie,
+                headers.toArray(new String[0]));
+    }
+
+    /** 계약을 모두 만족시키는 재인증 시작. 정상 경로가 필요한 시험이 쓴다. */
+    HttpResponse<String> startReauthentication(
+            String provider, @Nullable String sessionCookie, @Nullable String csrfToken)
+            throws IOException, InterruptedException {
+        return startReauthentication(
+                provider, sessionCookie, csrfToken, OidcStubConfiguration.PUBLIC_BASE_URL);
+    }
+
+    /**
+     * 재인증 왕복 하나. 무장 → 인가 시작 → 검증된 콜백까지 간다.
+     *
+     * <p>무장이 204가 아니면 그 자리에서 멈춘다. 조용히 이어 가면 뒤따르는 단정이 "재인증이
+     * 실패했다"를 보면서 통과하는데, 실제 원인은 흐름이 시작조차 하지 않은 것이다.
+     *
+     * <p>토큰 계획을 시험이 정한다. 정상 계획에서 어긋나게 하려는 축 하나만 바꾸는 것이
+     * {@code TokenPlan}의 관용이며, 재인증에서 그 축은 {@code subject}와 {@code auth_time}이다.
+     *
+     * @param plan 정상 계획을 받아 이 시험이 필요한 모양으로 바꾼다
+     */
+    HttpResponse<String> reauthenticate(
+            String provider,
+            String sessionCookie,
+            @Nullable String csrfToken,
+            UnaryOperator<TokenPlan> plan)
+            throws IOException, InterruptedException {
+        HttpResponse<String> armed = startReauthentication(provider, sessionCookie, csrfToken);
+        if (armed.statusCode() != 204) {
+            throw new IllegalStateException(
+                    "재인증 무장이 204가 아니다: " + armed.statusCode() + " " + armed.body());
+        }
+        Authorization authorization = startAuthorization(provider, null, sessionCookie);
+        String code = issueCode(authorization, plan.apply(TokenPlan.valid(authorization.nonce())));
+        return callback(authorization, sessionCookie, code, authorization.state());
+    }
+
     HttpResponse<String> get(String path, @Nullable String sessionCookie)
             throws IOException, InterruptedException {
         return send("GET", path, sessionCookie);
@@ -549,6 +629,65 @@ abstract class AuthFlowTestBase {
     /** 세션 상태 전환의 내부 표면. 개발·CI는 HTTP가 아니라 이 bean으로 상태를 만든다. */
     SessionGuard sessionGuard() {
         return this.sessionGuard;
+    }
+
+    /**
+     * 세션 하나가 들고 있는 속성.
+     *
+     * <p>주입된 {@link SessionRepository}를 지난다. {@code ATTRIBUTE_BYTES}는 Java 직렬화라 SQL로
+     * 읽을 수 없고, 저장소를 지나면 애플리케이션이 쓰는 것과 같은 변환을 그대로 쓴다. 그래서 이
+     * 헬퍼가 보는 값은 제품 코드가 보는 값과 같다.
+     *
+     * @param sessionId {@link #sessionIdOf}로 되돌린 세션 id
+     * @return 그 속성, 세션이나 속성이 없으면 {@code null}
+     */
+    @Nullable Object sessionAttribute(String sessionId, String name) {
+        Session session = this.sessions.findById(sessionId);
+        return session == null ? null : session.getAttribute(name);
+    }
+
+    /**
+     * 무장된 재인증 흐름의 무장 시각을 과거로 옮긴다.
+     *
+     * <p>시험이 5분을 기다릴 수는 없고, 수명을 줄이는 설정을 따로 두면 그 설정이 검증하는 값과
+     * 제품이 쓰는 값이 갈린다({@link #ageLastAccess}와 같은 근거). 그래서 시계 대신 저장소의 값을
+     * 옮긴다 — 무장은 세션 속성 하나이므로 그 record를 같은 값에 더 이른 시각으로 다시 쓴다.
+     *
+     * <p>무장이 없으면 소리 내어 실패한다. 조용히 지나가면 뒤따르는 단정이 "만료된 무장"이 아니라
+     * "무장이 아예 없는" 세션을 보며 통과한다 — 두 상태의 결과가 다르다는 것이 이 시험의 요점이다.
+     *
+     * @param sessionId {@link #sessionIdOf}로 되돌린 세션 id
+     */
+    void ageReauthenticationFlow(String sessionId, Duration elapsed) {
+        ageReauthenticationFlow(this.sessions, sessionId, elapsed);
+    }
+
+    /**
+     * 와일드카드로 받은 저장소의 타입 매개변수를 한 번만 붙들어 둔다.
+     *
+     * <p>{@link SessionRepository#save}는 저장소가 만든 세션 타입을 요구한다. 주입 지점에서 그
+     * 타입을 알 수 없어 {@code ? extends Session}으로 받으면 조회는 되지만 저장이 컴파일되지
+     * 않는다. 여기서 capture 변환을 한 번 거치면 unchecked 캐스트가 남지 않는다
+     * ({@code SessionGuard.SessionStore}와 같은 관용).
+     */
+    private static <S extends Session> void ageReauthenticationFlow(
+            SessionRepository<S> repository, String sessionId, Duration elapsed) {
+        S session = repository.findById(sessionId);
+        if (session == null) {
+            throw new IllegalStateException("세션이 없다: " + sessionId);
+        }
+        Object stored = session.getAttribute(ReauthenticationFlow.FLOW_ATTRIBUTE);
+        if (!(stored instanceof ReauthenticationFlow.Armed armed)) {
+            throw new IllegalStateException("무장되지 않은 세션이다: " + sessionId);
+        }
+        session.setAttribute(
+                ReauthenticationFlow.FLOW_ATTRIBUTE,
+                new ReauthenticationFlow.Armed(
+                        armed.provider(),
+                        armed.userId(),
+                        armed.returnPath(),
+                        armed.armedAt().minus(elapsed)));
+        repository.save(session);
     }
 
     /** 특정 인증 매핑에 연결된 계정. 재로그인이 같은 계정을 쓰는지 본다. */

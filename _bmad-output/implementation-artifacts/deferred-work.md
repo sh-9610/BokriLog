@@ -161,3 +161,18 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-7-kakao-sign-in.md`
   summary: `OnboardingScreen.test.tsx`의 목적지 이동 단정이 머신 부하 아래에서 간헐적으로 깨진다.
   evidence: 이 라운드의 검증 중 백엔드 Gradle 빌드와 프런트엔드 Vitest를 동시에 돌렸을 때 `OnboardingScreen.test.tsx:162`의 `replaceLocation('/dashboard')`가 호출 0건으로 실패했고, 부하가 없는 재실행에서는 157/157이 통과했다. 이 파일은 Story 1.7이 한 줄도 바꾸지 않았으므로 `develop`에 이미 있던 취약성이며, CI 러너가 붐빌 때 같은 방식으로 붉게 나올 수 있다. 비결정적 실패는 재실행으로 덮이면서 신뢰를 갉아먹으므로 대기 조건을 명시적으로 바꾸는 편이 낫다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-reauthentication-session-rotation.md`
+  summary: `dev_subject` 파라미터 이름이 Java 상수와 셸 스크립트에 각각 리터럴로 있고 둘이 같은지 보는 검사가 없다.
+  evidence: `DevOidcStub.SUBJECT_OVERRIDE_PARAMETER`가 이름을 정의하고 `verify-same-origin.sh`가 두 자리에서 `&dev_subject=`를 손으로 조립한다. Java 상수를 고치면 브라우저 층 왕복이 조용히 "요청마다 새 subject"로 되돌아가고, 그 결과는 재인증 절이 "미연결 식별자"로 실패하는 모양이라 원인이 즉시 읽히지 않는다(이 스토리의 첫 실행이 정확히 그 자리에서 멈췄다). 계층 간 계약 리터럴 중복이라는 이미 열려 있는 항목(33·38)과 같은 뿌리이고, 등가성 검사를 세우는 일은 별도로 배포 가능한 목표다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-reauthentication-session-rotation.md`
+  summary: `ReauthPanel.module.css`가 `EntryScreen.module.css`의 제공자 버튼 규칙 셋을 그대로 복제한다.
+  evidence: 두 화면이 같은 세 버튼을 같은 토큰으로 그리는데 규칙 집합이 두 벌이다. 이 스토리는 마크를 `ProviderMark`로 올려 공식 애셋 경로 데이터의 복제는 없앴지만 버튼 규칙은 남겼다. 한쪽만 고치면 "세 버튼의 바깥 크기가 서로 같다"를 단정하는 e2e가 진입 화면에서만 통과한다. 두 인증 화면의 레이아웃 CSS 중복(이미 열려 있는 항목)과 함께 CSS 소유 구조를 정하는 라운드가 다룰 일이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-reauthentication-session-rotation.md`
+  summary: 아는 이름이지만 구성되지 않은 제공자로 무장하면 최상위 내비게이션이 원본 오류 JSON에 도달한다.
+  evidence: 재인증 시작은 이름만 보고 204를 돌려주고(등록 조회는 인가 시작이 소유한다는 결정), 이어지는 `GET /api/auth/authorize/<제공자>`가 fail-closed 500을 공통 오류 계약으로 낸다. 그 요청은 `fetch`가 아니라 최상위 이동이므로 사용자가 JSON 본문을 보게 된다. 일반 로그인에도 같은 창이 있고 미해소 항목 40이 그것을 소유한다 — 이 스토리는 두 번째 진입점을 더했을 뿐이며, 화면 층에서 부분 구성 스택을 다루는 일은 그 항목의 범위다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-reauthentication-session-rotation.md`
+  summary: 절대 수명 12시간의 끝에 성공한 재인증이 몇 분 뒤 만료로 끝난다.
+  evidence: 세션 회전은 `CREATION_TIME`을 바꾸지 않고(그래야 재인증 반복으로 절대 수명을 무한히 늘릴 수 없다), 그래서 11시간 59분 된 세션이 본인 확인을 마친 직후 `SessionGuard`의 `EXPIRED` 판정을 만난다. 사용자는 방금 신원을 증명하고 만료 안내를 본다. 대안은 남은 수명이 무장 수명보다 짧으면 시작을 거절하는 것이지만, 그 판정은 1.5가 소유한 수명 계약의 경계를 건드리므로 그 계약을 다시 여는 라운드가 정할 일이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-8-reauthentication-session-rotation.md`
+  summary: `useSignOut`·`useReauthentication`의 중복 제출 가드가 React 상태를 읽어 같은 tick의 두 번째 호출을 막지 못한다.
+  evidence: 두 훅 모두 `if (pending) return` 뒤에 `setPending(true)`를 하는데 그 값은 재렌더까지 갱신되지 않는다. 브라우저는 클릭을 별도 task로 보내고 React는 discrete event마다 flush하므로 실제 브라우저에서 이 창은 사실상 닫혀 있지만, 프로그래밍 방식 연속 dispatch에서는 열린다. 재인증 쪽 결과가 더 무겁다 — 두 번째 무장이 첫 번째를 덮어 사용자가 고른 제공자와 실제로 열리는 제공자가 달라진다. `useRef` 래치 하나가 두 훅을 함께 닫으므로 훅 하나만 고쳐 관용을 갈라 놓지 않는다.

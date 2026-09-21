@@ -28,9 +28,34 @@ import org.springframework.context.ApplicationContext;
  */
 class AuthSessionExpiryTest extends AuthFlowTestBase {
 
-    /** 미인증 세션 확인의 유일한 모양. 네 경우가 모두 이 문자열로 수렴한다. */
+    /** 미인증 세션 확인의 유일한 모양. 폐기·유휴 만료·절대 수명 초과·쿠키 없음이 여기로 수렴한다. */
     private static final String UNAUTHENTICATED_BODY =
             "{\"authenticated\":false,\"destination\":\"entry\"}";
+
+    /**
+     * 재인증을 요구받은 세션 확인의 유일한 모양.
+     *
+     * <p>위 본문에 필드 둘이 더 붙는다. Story 1.8이 frozen 블록에서 의도적으로 되짚은 지점이며,
+     * 구분하지 않으면 표시된 세션은 CSRF 토큰을 받지 못해 회복 경로가 없다.
+     *
+     * <p>토큰 값만 가리고 <b>전문을 비교한다</b>. 조각 포함 검사로 두면 임의의 상위집합이
+     * 통과하고, 그러면 이 파일이 하는 일(응답 본문의 모양을 고정하는 것)이 사라진다 — 필드가
+     * 하나 새어 나가도 아무도 모른다.
+     */
+    private static final String REAUTH_REQUIRED_BODY =
+            "{\"authenticated\":false,\"destination\":\"entry\","
+                    + "\"reauthRequired\":true,\"csrfToken\":\"<가림>\"}";
+
+    /**
+     * 토큰 값을 가린 응답 본문.
+     *
+     * <p>값은 실행마다 다르므로 전문에 고정할 수 없지만, 고정하려는 것은 값이 아니라 <b>무엇이
+     * 나가는가</b>다. {@code verify-same-origin.sh}와 {@code AuthSessionContractTest}가 쓰는 것과
+     * 같은 관용이다.
+     */
+    private static String maskToken(String body) {
+        return body.replaceAll("\"csrfToken\":\"[^\"]*\"", "\"csrfToken\":\"<가림>\"");
+    }
 
     @Test
     void 절대_수명_설정_키가_실제로_바인딩된다() {
@@ -198,8 +223,8 @@ class AuthSessionExpiryTest extends AuthFlowTestBase {
         HttpResponse<String> login = signIn(subject);
         String cookie = sessionCookieOf(login).orElseThrow();
         UUID userId = userIdOf(OidcStubConfiguration.issuer(), subject).orElseThrow();
-        // 표시 전에 받아 둔다. 표시 뒤에는 세션 확인이 미인증으로 답해 토큰이 실리지 않으므로,
-        // 여기서 받지 않으면 아래 단정이 "토큰이 없어서 403"과 구분되지 않는다.
+        // 표시 전에 받아 둔다. 표시된 세션도 토큰을 받지만(Story 1.8), 그 값이 같은지 다른지는
+        // 이 시험의 관심이 아니다 — 확인하려는 것은 "토큰이 맞아도 상태 변경이 막힌다"이다.
         String token = csrfTokenOf(cookie);
         assertThat(token).isNotNull();
 
@@ -207,12 +232,22 @@ class AuthSessionExpiryTest extends AuthFlowTestBase {
 
         HttpResponse<String> response = sessionState(cookie);
 
-        // 폐기와 응답으로 구분되지 않는다. 위 `관리상_폐기된_세션`과 같은 문자열이다.
-        assertThat(response.statusCode()).isEqualTo(200);
-        assertThat(response.body()).isEqualTo(UNAUTHENTICATED_BODY);
         /*
-         * 차이는 여기 하나다. 행이 남아 1.8의 재인증이 회전시킬 대상이 보존된다. 이 단정이 없으면
-         * 두 상태가 같은 것으로 구현돼도 아무 시험이 실패하지 않고, 1.8이 상태 기계를 다시 만든다.
+         * 표시된 세션은 여전히 미인증으로 답한다. 달라진 것은 필드 둘이며 Story 1.8이 frozen
+         * 블록에서 의도적으로 되짚은 지점이다 — 구분하지 않으면 그 세션은 CSRF 토큰을 받지
+         * 못하고 로그인 버튼은 "이미 인증된 세션"으로 거절당해 회복 경로가 없다.
+         *
+         * 폐기와는 이제 응답으로 갈라진다. 그래도 **폐기와 미인증의 본문은 서로 같고** 이
+         * 스토리 전과도 같다(위 `관리상_폐기된_세션`) — 그 둘에는 회복 경로가 없으므로 구분할
+         * 이유도 없다.
+         */
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(maskToken(response.body())).isEqualTo(REAUTH_REQUIRED_BODY);
+        // 가림이 실제로 값을 가렸는지 본다. 토큰이 없으면 위 전문 비교가 아무것도 보지 않는다.
+        assertThat(csrfTokenIn(response.body())).isNotBlank();
+        /*
+         * 차이는 저장소에도 있다. 행이 남아 재인증이 회전시킬 대상이 보존된다. 이 단정이 없으면
+         * 두 상태가 같은 것으로 구현돼도 아무 시험이 실패하지 않는다.
          */
         assertThat(sessionCountOf(userId)).isEqualTo(1);
 
@@ -256,7 +291,7 @@ class AuthSessionExpiryTest extends AuthFlowTestBase {
 
         /*
          * 인증 시작은 safe GET이라 위 403에 걸리지 않는다. 그래서 guard가 이 경로에서 thread-local
-         * 인증을 남겨 두고, `authorizationStartFilter`의 "이미 인증된 세션은 새 흐름을 열지
+         * 인증을 남겨 두고, `authenticationFlowFilter`의 "이미 인증된 세션은 새 흐름을 열지
          * 않는다" 판정이 그것을 보고 거절한다. 지우면 그 판정이 성립하지 않아 이 세션이 새 흐름을
          * 열고, 그 흐름의 콜백이 같은 세션 행에 다른 주체를 심는다 — 계정 갈아타기다.
          */
@@ -273,7 +308,9 @@ class AuthSessionExpiryTest extends AuthFlowTestBase {
         assertThat(sessionCountOf(userId)).isEqualTo(1);
         assertThat(sessionCount()).isEqualTo(1);
         // 세션 확인은 여전히 미인증이다. 인증 흐름 밖에서는 표시가 그대로 차단한다.
-        assertThat(sessionState(cookie).body()).isEqualTo(UNAUTHENTICATED_BODY);
+        // 표시 사실과 토큰은 실리지만(Story 1.8) 인증 상태는 아니다 — 회복은 재인증 흐름을
+        // 무장한 뒤에만 열린다(`AuthReauthenticationTest`).
+        assertThat(maskToken(sessionState(cookie).body())).isEqualTo(REAUTH_REQUIRED_BODY);
     }
 
     @Test
@@ -281,7 +318,8 @@ class AuthSessionExpiryTest extends AuthFlowTestBase {
         String subject = "expiry-reauth-logout-" + UUID.randomUUID();
         String cookie = sessionCookieOf(signIn(subject)).orElseThrow();
         UUID userId = userIdOf(OidcStubConfiguration.issuer(), subject).orElseThrow();
-        // 표시 전에 받아 둔다. 표시 뒤에는 세션 확인이 미인증으로 답해 토큰이 실리지 않는다.
+        // 표시 전에 받아 둔다. 표시된 세션도 토큰을 받지만(Story 1.8) 이 시험이 고정하려는 것은
+        // "표시된 세션이 스스로 로그아웃할 수 있다"이지 어느 토큰으로 되는가가 아니다.
         String token = csrfTokenOf(cookie);
         assertThat(sessionGuard().requireReauthenticationOf(userId)).isEqualTo(1);
 
@@ -361,9 +399,11 @@ class AuthSessionExpiryTest extends AuthFlowTestBase {
         assertThat(sessionCountOf(userA)).isZero();
         assertThat(sessionCountOf(userB)).isEqualTo(1);
 
-        // 재인증 요구도 같다. B는 표시되지 않는다.
+        // 재인증 요구도 같다. 대상은 B의 행뿐이고 A는 이미 사라졌다.
         assertThat(sessionGuard().requireReauthenticationOf(userB)).isEqualTo(1);
-        assertThat(sessionState(cookieB).body()).isEqualTo(UNAUTHENTICATED_BODY);
+        assertThat(maskToken(sessionState(cookieB).body())).isEqualTo(REAUTH_REQUIRED_BODY);
+        // 폐기된 A의 본문은 그대로다. 표시만 갈라지고 폐기·미인증은 한 문자열로 남는다.
+        assertThat(sessionState(cookieA).body()).isEqualTo(UNAUTHENTICATED_BODY);
         assertThat(sessionCountOf(userB)).isEqualTo(1);
     }
 

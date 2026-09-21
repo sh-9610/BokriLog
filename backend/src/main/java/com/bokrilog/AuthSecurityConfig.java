@@ -104,6 +104,21 @@ class AuthSecurityConfig {
     static final String LOGOUT_PATH = "/api/auth/logout";
 
     /**
+     * 재인증 시작 경로의 접두사. 뒤에 제공자 등록 id가 붙는다
+     * ({@code /api/auth/reauthenticate/google}).
+     *
+     * <p>{@code POST}다. 이 요청이 하는 일은 세션에 일회성 흐름을 심는 것이고 그것은 상태 변경
+     * 이므로 safe method가 될 수 없다. 그리고 {@code /api/auth/} 아래이므로 아래
+     * {@link #PROTECTED_PATH_PREFIX}의 보호(세션 귀속 CSRF 토큰 + 동일 출처 {@code Origin})가
+     * 예외 없이 걸린다 — 로그아웃을 여기 둔 것과 같은 이유다.
+     *
+     * <p>인가 시작({@link #AUTHORIZATION_BASE_URI})과 경로를 나눈 것이 요점이다. 인가 시작은
+     * 제공자로 가는 최상위 내비게이션이라 {@code GET}이어야 하고, 그 경로에 무장을 얹으면 표지가
+     * 붙은 링크 하나로 남의 세션에 재인증 흐름을 심을 수 있다.
+     */
+    static final String REAUTHENTICATION_BASE_URI = "/api/auth/reauthenticate";
+
+    /**
      * CSRF 토큰이 실리는 요청 헤더 이름.
      *
      * <p>Spring Security의 기본값과 같은 값을 명시한다. 이 문자열은 프런트엔드
@@ -165,6 +180,22 @@ class AuthSecurityConfig {
     private static final String KAKAO_TOKEN_URI = KAKAO_ISSUER_URI + "/oauth/token";
 
     private static final String KAKAO_JWK_SET_URI = KAKAO_ISSUER_URI + "/.well-known/jwks.json";
+
+    /*
+     * Google의 재인증 증거 요청.
+     *
+     * 공식 OpenID Connect 문서가 안내하는 `claims` 요청 파라미터의 값이다. Google discovery의
+     * `claims_supported`에는 `auth_time`이 없지만 그 문서는 ID Token payload 목록에 이 claim을
+     * 싣고 essential로 요청하는 방법을 함께 적는다(2026-09-21 실측).
+     *
+     * JSON 리터럴이다. 값이 세 겹 중첩된 객체 하나뿐이라 직렬화 라이브러리를 들이지 않는다 —
+     * 이 문자열이 곧 그 문서가 보여 주는 값이고, 조립으로 만들면 무엇을 보내는지가 읽는 자리에서
+     * 사라진다. 인코딩은 `OAuth2AuthorizationRequest`가 URI를 만들 때 한다.
+     *
+     * 자격정보가 아니다. 공개된 프로토콜 파라미터이므로 이 리터럴은 gitleaks의 대상이 아니다.
+     */
+    private static final String GOOGLE_ESSENTIAL_AUTH_TIME_CLAIMS =
+            "{\"id_token\":{\"auth_time\":{\"essential\":true}}}";
 
     /**
      * 인증 설정. 값은 환경이 주고 이 record는 이름만 정한다.
@@ -438,6 +469,57 @@ class AuthSecurityConfig {
                     .userNameAttributeName(IdTokenClaimNames.SUB);
         }
 
+        /**
+         * 그 제공자의 재인증 인가 요청에 얹을 파라미터.
+         *
+         * <p><b>제공자마다 다른 것은 이것 하나다.</b> 검증도 판정도 오류도 셋이 공유하고, 차이는
+         * "재인증을 어떻게 요청하는가"에만 있다. 그래서 이 맵이 제공자 차이가 사는 유일한 자리이며
+         * 등록 조립 바로 옆에 있다.
+         *
+         * <p>공통은 {@code max_age}다. OIDC Core가 이 파라미터를 쓰면 OP는 필요 시 재인증해야 하고
+         * ID Token은 {@code auth_time}을 <b>반드시</b> 실어야 한다고 정한다. 모르는 파라미터는
+         * 무시되므로 공표하지 않은 제공자에게 보내도 흐름이 깨지지 않는다. 값은
+         * {@link ReauthenticationFlow#MAX_AGE_SECONDS} 하나이며 콜백에서 재는 창과 같은 상수다.
+         *
+         * <p>그 위에 각 제공자가 <b>공표한</b> 수단만 더한다(2026-09-21 실측).
+         *
+         * <ul>
+         *   <li>Google — 공식 OpenID Connect 문서가 {@code claims} 요청 파라미터로
+         *       {@code {"id_token":{"auth_time":{"essential":true}}}}를 안내한다. 그 문서가
+         *       공표하는 {@code prompt} 값은 {@code none}·{@code consent}·{@code select_account}
+         *       뿐이라 {@code login}을 보내지 않는다 — 증거는 요청할 수 있고 강제 수단은 미공표다.
+         *   <li>네이버 — 공식 답변(naveridlogin-API 이슈 #92)이 "ID Token의 claim 구성과 nonce를
+         *       별도로 설명한 공식 문서는 현재 제공되고 있지 않습니다"이다. 공표된 증거도 요청
+         *       파라미터도 없으므로 공통 {@code max_age}만 보내고, 증거가 없으면 fail-closed다.
+         *   <li>카카오 — 공식 REST 문서가 {@code prompt=login}("이미 인증되어 있어도 재인증을
+         *       요청할 때")과 ID Token claim {@code auth_time}을 함께 공표한다. {@code max_age}는
+         *       공표하지 않지만 모르는 파라미터는 무시된다.
+         * </ul>
+         *
+         * <p>이 파라미터를 상시로 얹지 않는다. 얹으면 일반 로그인이 매번 재인증을 요구하고,
+         * 카카오의 {@code prompt=login}은 이미 로그인한 사용자에게 매번 자격정보를 다시 묻는다.
+         * 얹는 판정은 무장된 흐름 하나이며 {@code authorizationRequestResolver}가 소유한다.
+         *
+         * @return 얹을 파라미터, 아는 제공자가 아니면 빈 맵
+         */
+        static Map<String, Object> reauthenticationParameters(String registrationId) {
+            Map<String, Object> parameters = new LinkedHashMap<>();
+            parameters.put("max_age", Long.toString(ReauthenticationFlow.MAX_AGE_SECONDS));
+            if (GOOGLE_REGISTRATION_ID.equals(registrationId)) {
+                parameters.put("claims", GOOGLE_ESSENTIAL_AUTH_TIME_CLAIMS);
+            } else if (KAKAO_REGISTRATION_ID.equals(registrationId)) {
+                parameters.put("prompt", "login");
+            } else if (!NAVER_REGISTRATION_ID.equals(registrationId)) {
+                /*
+                 * 모르는 제공자다. 여기 오지 않는다 — 무장은 아는 이름에만 붙고
+                 * (`AuthSessionController`) 등록이 없으면 인가 시작이 resolver에 닿지 않는다.
+                 * 그래도 공통 파라미터를 얹지 않는다: 이름을 모르는 제공자에게 보낼 값이 없다.
+                 */
+                return Map.of();
+            }
+            return parameters;
+        }
+
         @Override
         public @Nullable ClientRegistration findByRegistrationId(String registrationId) {
             return this.registrations.get(registrationId);
@@ -534,6 +616,15 @@ class AuthSecurityConfig {
      * 필터를 그대로 지나가게 하고, {@code AuthSessionController}가 공통 오류 계약으로 답한다.
      * 얻는 것은 두 가지다 — 로그에 스택이 남지 않고, 모르는 제공자와 구성되지 않은 제공자가 같은
      * 한 곳에서 같은 모양으로 답한다.
+     *
+     * <p>두 번째 일은 재인증 파라미터를 얹는 것이다. 무장된 흐름이 있고 그 흐름의 제공자가 지금
+     * 시작하는 제공자와 같을 때만 얹는다 — 상시로 얹으면 일반 로그인이 매번 재인증을 요구하고,
+     * 제공자를 보지 않고 얹으면 google로 무장한 세션의 kakao 로그인에 카카오의
+     * {@code prompt=login}이 실린다.
+     *
+     * <p>{@code Consumer} 오버로드를 쓴다. {@code Map} 오버로드도 {@code putAll}이지만, 소비자
+     * 형태가 "기존 값을 덮지 않고 더한다"를 호출 자리에서 말한다. 덮으면 같은 맵에 사는
+     * {@code nonce}와 PKCE {@code code_challenge}가 사라지고 검증이 통째로 무너진다.
      */
     @Bean
     OAuth2AuthorizationRequestResolver authorizationRequestResolver(
@@ -545,7 +636,10 @@ class AuthSecurityConfig {
             @Override
             public @Nullable OAuth2AuthorizationRequest resolve(HttpServletRequest request) {
                 try {
-                    return delegate.resolve(request);
+                    return withReauthenticationParameters(
+                            request,
+                            delegate.resolve(request),
+                            authorizationStartProvider(request));
                 } catch (IllegalArgumentException ex) {
                     return null;
                 }
@@ -555,12 +649,67 @@ class AuthSecurityConfig {
             public @Nullable OAuth2AuthorizationRequest resolve(
                     HttpServletRequest request, String clientRegistrationId) {
                 try {
-                    return delegate.resolve(request, clientRegistrationId);
+                    return withReauthenticationParameters(
+                            request,
+                            delegate.resolve(request, clientRegistrationId),
+                            clientRegistrationId);
                 } catch (IllegalArgumentException ex) {
                     return null;
                 }
             }
         };
+    }
+
+    /**
+     * 무장된 재인증 흐름이 있으면 그 제공자의 파라미터를 얹는다.
+     *
+     * <p>흐름이 없거나 제공자가 다르면 인가 요청을 그대로 돌려준다. 그것이 일반 로그인이다.
+     */
+    private static @Nullable OAuth2AuthorizationRequest withReauthenticationParameters(
+            HttpServletRequest request,
+            @Nullable OAuth2AuthorizationRequest resolved,
+            @Nullable String registrationId) {
+        if (resolved == null || registrationId == null) {
+            return resolved;
+        }
+        ReauthenticationFlow.Armed armed = ReauthenticationFlow.peek(request);
+        if (armed == null || !armed.provider().equals(registrationId)) {
+            return resolved;
+        }
+        Map<String, Object> extra =
+                ProviderClientRegistrations.reauthenticationParameters(registrationId);
+        if (extra.isEmpty()) {
+            return resolved;
+        }
+        return OAuth2AuthorizationRequest.from(resolved)
+                .additionalParameters(parameters -> parameters.putAll(extra))
+                .build();
+    }
+
+    /**
+     * 인증 시작 요청이 가리키는 제공자 등록 id.
+     *
+     * <p>package-private이다. 소비자가 둘이고 둘 다 같은 비교를 한다 — 이 클래스의 resolver가
+     * "무장된 흐름의 제공자인가"를 보고 재인증 파라미터를 얹을지 정하고,
+     * {@code AuthFlowHandlers}의 인증 흐름 경계가 같은 비교로 인증된 세션의 시작을 통과시킬지
+     * 정한다. 판정이 두 곳에 있으면 한쪽만 고쳐지는 날이 오고, 그때 한쪽은 통과시키고 다른
+     * 쪽은 파라미터를 얹지 않는 상태가 된다. {@link #isLogoutRequest}·
+     * {@link #isReauthenticationStart}와 같은 이유의 같은 배치다.
+     *
+     * <p>요청 URI의 마지막 세그먼트를 읽는다. 프레임워크가 인가 요청 attribute에 같은 값을
+     * 담지만 그 이름은 우리 계약이 아니라 라이브러리의 것이라, 바뀌면 조용히 {@code null}이
+     * 되고 재인증 파라미터가 아무 오류 없이 사라진다. 경로는 이 클래스가 소유한 값이다.
+     *
+     * @return 제공자 등록 id, 인증 시작 경로가 아니거나 세그먼트가 갈리면 {@code null}
+     */
+    static @Nullable String authorizationStartProvider(HttpServletRequest request) {
+        String prefix = AUTHORIZATION_BASE_URI + "/";
+        String uri = request.getRequestURI();
+        if (!uri.startsWith(prefix)) {
+            return null;
+        }
+        String segment = uri.substring(prefix.length());
+        return segment.isEmpty() || segment.indexOf('/') >= 0 ? null : segment;
     }
 
     /**
@@ -703,9 +852,15 @@ class AuthSecurityConfig {
                                 ProviderClientRegistrations.normalizedBaseUrl(
                                         properties.publicBaseUrl())),
                         CsrfFilter.class)
-                // 이미 인증된 세션의 로그인 시작 거절과 복귀 목적지 기록.
-                // authorization request를 만드는 필터보다 앞이어야 한다.
-                .addFilterBefore(handlers.authorizationStartFilter(), CsrfFilter.class)
+                /*
+                 * 인증 흐름 경계. 이미 인증된 세션의 로그인 시작·콜백 거절, 무장된 재인증
+                 * 시작의 통과, 복귀 목적지 기록을 함께 한다.
+                 *
+                 * authorization request를 만드는 필터와 콜백을 처리하는 로그인 필터보다 앞이어야
+                 * 한다. 뒤에 두면 거절 판정이 이미 검증이 끝난 흐름을 보게 되고, 그때는 세션에
+                 * 새 주체가 이미 저장된 뒤다.
+                 */
+                .addFilterBefore(handlers.authenticationFlowFilter(), CsrfFilter.class)
                 /*
                  * 세션 수명·의심 세션 판정.
                  *
@@ -769,6 +924,23 @@ class AuthSecurityConfig {
      */
     static boolean isLogoutRequest(HttpServletRequest request) {
         return "POST".equals(request.getMethod()) && LOGOUT_PATH.equals(request.getRequestURI());
+    }
+
+    /**
+     * 재인증 시작 요청인가.
+     *
+     * <p>package-private이고 근거는 {@link #isLogoutRequest}와 같다. {@code AuthFlowHandlers}의
+     * 세션 guard가 두 가지를 이 판정 하나로 한다 — 표시된 세션의 상태 변경 403에서 이 요청을
+     * 면제하고, 이 요청에서 thread-local 인증을 지우지 않는다. 판정이 두 곳에 있으면 한쪽만
+     * 고쳐지는 날이 온다.
+     *
+     * <p>접두사 비교다. 뒤에 제공자 등록 id가 붙으므로 동등 비교가 될 수 없다. 두 세그먼트짜리
+     * 경로({@code /api/auth/reauthenticate/google/x})는 컨트롤러 매핑이 받지 않아 404로 끝나며,
+     * 그 요청도 이 판정에는 걸려 CSRF·{@code Origin} 보호를 그대로 지난다.
+     */
+    static boolean isReauthenticationStart(HttpServletRequest request) {
+        return "POST".equals(request.getMethod())
+                && request.getRequestURI().startsWith(REAUTHENTICATION_BASE_URI + "/");
     }
 
     /**

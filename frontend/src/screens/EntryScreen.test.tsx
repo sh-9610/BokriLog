@@ -302,6 +302,8 @@ describe('EntryScreen', () => {
       'loggedOut',
       'expired',
       'logoutFailed',
+      'reauthCancelled',
+      'reauthFailed',
       'signedOut',
     ] as const) {
       const { unmount } = render(<EntryScreen notice={notice} />)

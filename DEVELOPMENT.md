@@ -116,7 +116,7 @@ Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패
 | `frontend/src/content/` | 화면 카피 정본. 화면과 시험이 같은 문자열을 참조해 문구 표류를 막는다 |
 | `frontend/src/screens/` | 화면 컴포넌트와 CSS Module |
 | `frontend/src/session/` | 서버 세션 확인 훅. 로그인 상태 경로의 화면만 쓴다 |
-| `frontend/src/test/setup.ts` | Testing Library 등록과 `fetch`·`XMLHttpRequest`·`sendBeacon` 감시 훅. `stubSessionRequest`로 `/api/auth/session` 하나만 시험 단위로 여는 탈출구가 있고 기본 거부는 그대로다 |
+| `frontend/src/test/setup.ts` | Testing Library 등록과 `fetch`·`XMLHttpRequest`·`sendBeacon` 감시 훅. 탈출구는 (메서드, URL) 쌍 단위이며 `stubSessionRequest`·`stubLogoutRequest`·`stubReauthenticationRequest` 셋이 열 수 있고 기본 거부는 그대로다 |
 | `frontend/e2e/` | Playwright 명세 |
 | `frontend/playwright.config.test.ts` | `playwright.config.ts`의 실행 정책(`retries: 0`, trace·screenshot, `globalTimeout`, `CI` 해석) 고정. 대상이 `src/` 밖이라 시험도 그 옆에 두고 `vite.config.ts`의 `test.include`가 이 파일을 더 받는다 |
 | `frontend/eslint.config.ts` | ESLint flat config. typescript-eslint strict·stylistic(타입 인지), React hooks·refresh, perfectionist import 정렬, 파일군별 Vitest·Testing Library·Playwright 플러그인, disable 주석 감사. `eslint-config-prettier`가 서식 규칙을 끈다 |
@@ -133,7 +133,8 @@ Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패
 - 서식은 Prettier가 소유한다. 세미콜론 없음, 단일 인용부호, 후행 쉼표, 2칸 들여쓰기, LF, `printWidth` 100. ESLint의 서식 규칙은 `eslint-config-prettier`가 끄므로 두 도구가 충돌하지 않는다.
 - 외부 폰트·CDN·분석·광고 SDK를 넣지 않는다. 진입 화면은 문서와 번들 외 네트워크 요청이 0건이어야 하고 시험이 이를 고정한다.
 - `localStorage`·`sessionStorage`·쿠키·IndexedDB에 쓰지 않는다. 인증 토큰과 금융 원본은 브라우저 영속 저장소에 두지 않는다. 브라우저에 남는 유일한 값은 서버가 심는 `HttpOnly`·`Secure`·`SameSite=Lax` 세션 쿠키이며 애플리케이션 코드가 그것을 읽지도 쓰지도 않는다.
-- 외부 요청은 전역 거부가 기본이다. 단위 시험에서 여는 예외는 `stubSessionRequest`가 허용하는 `GET /api/auth/session` 하나뿐이고, 그 허용도 시험 하나의 범위다(`afterEach`가 닫는다). 진입 화면(`/`)은 이 탈출구를 쓰지 않으며 "문서·번들 외 요청 0건"이 그대로 유지된다.
+- 외부 요청은 전역 거부가 기본이다. 단위 시험이 여는 예외는 (메서드, URL) 쌍 단위이며 `GET /api/auth/session`·`POST /api/auth/logout`·`POST /api/auth/reauthenticate/<제공자>` 셋뿐이고, 그 허용도 시험 하나의 범위다(`afterEach`가 닫는다). 진입 화면(`/`)은 이 탈출구를 쓰지 않으며 "문서·번들 외 요청 0건"이 그대로 유지된다.
+- 재인증 화면은 새 경로가 아니다. 서버가 `reauthRequired`로 답하면 두 로그인 상태 화면이 본문 자리에 공유 패널(`components/ReauthPanel.tsx`)을 **제자리에** 렌더한다. 이동하지 않는 이유는 표시된 세션이 이미 자기 목적지에 있기 때문이며, 인증 화면으로 보내면 그 화면의 로그인 버튼을 서버가 거절해 무한 왕복이 된다. 패널은 세 제공자 버튼을 고정 순서로 그대로 보이고 연결된 제공자를 묻지 않으며, 로그아웃 버튼을 함께 둔다 — 표시된 세션이 화면에서 스스로 나갈 수 있게 되는 자리다. 제공자 공식 마크는 `components/ProviderMark.tsx` 하나가 소유하고 진입 화면과 패널이 함께 쓴다.
 - 경로는 라우터 없이 `App.tsx`의 닫힌 맵이 화면에 대응한다(`/`·`/onboarding`·`/dashboard`). 그 세 값은 `deploy/nginx/bokrilog.conf`의 허용 목록과 같은 집합이어야 한다. 라우트를 더할 때는 두 곳을 함께 고친다. 로그인 상태 경로는 `GET /api/auth/session`으로 서버 세션을 확인한 뒤에만 내용을 그리고, 미인증·오류는 인증 화면으로 되돌린다.
 - 라이트 모드만 제공한다. 다크 모드는 별도 대비 검증 뒤 후속 범위다.
 - 확대 검증은 브라우저 zoom 설정 대신 **뷰포트 폭 = 1280px ÷ 배율**로 재현한다(WCAG 1.4.10 표준 해석). 400%는 320×512, 200%는 640×512다.
@@ -210,18 +211,19 @@ docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --b
 | `backend/src/main/java/com/bokrilog/StatusController.java` | `GET /api/status`. 고정된 최소 필드 `{"status":"UP"}` |
 | `backend/src/main/java/com/bokrilog/ApiErrorHandler.java` | 공통 오류 계약과 프레임워크 오류 경로 대체 |
 | `backend/src/main/java/com/bokrilog/AuthSecurityConfig.java` | 인증 표면과 세션 정책. 제공자 등록 맵(Google·네이버·카카오), PKCE 강제, 세션 고정 방어, CSRF·`Origin` 검증, 401·403 응답 |
-| `backend/src/main/java/com/bokrilog/AuthSessionService.java` | 검증된 `(issuer, subject)`를 `identity` 공개 API로 계정·세션에 옮긴다. 경합 재시도와 롤백 경계 |
-| `backend/src/main/java/com/bokrilog/AuthFlowHandlers.java` | 인증 시작 전처리, 성공 시 목적지 허용 목록과 인증 주체 교체, 실패 표지 수렴 |
-| `backend/src/main/java/com/bokrilog/AuthSessionController.java` | `GET /api/auth/session`(인증 여부·목적지 종류)과 인증 시작 fail-closed 응답 |
-| `backend/src/main/java/com/bokrilog/DevOidcStub.java` | 결정적 local OIDC 제공자의 논리. 자기 RSA 키로 JWKS를 제공하고 ID Token을 서명한다. HTTP도 Spring도 없고 자격정보 리터럴도 없다 |
+| `backend/src/main/java/com/bokrilog/AuthSessionService.java` | 검증된 `(issuer, subject)`를 `identity` 공개 API로 계정·세션에 옮긴다. 경합 재시도와 롤백 경계. 재인증의 계정 쪽 판정(`confirmReauthentication`)도 여기 하나다 |
+| `backend/src/main/java/com/bokrilog/AuthFlowHandlers.java` | 인증 흐름 경계(인증된 세션의 로그인 시작·콜백 거절, 무장된 재인증 시작 통과), 성공 시 목적지 허용 목록과 인증 주체 교체, 재인증 분기, 실패 표지 수렴 |
+| `backend/src/main/java/com/bokrilog/ReauthenticationFlow.java` | 세션에 심는 일회성 재인증 흐름. 무장 record(제공자·사용자·복귀 목적지·무장 시각), `arm`·`peek`·`consume`·`discard`, 무장 수명 5분·신선도 창 5분·clock skew 60초와 `auth_time` 판정 |
+| `backend/src/main/java/com/bokrilog/AuthSessionController.java` | `GET /api/auth/session`(인증 여부·목적지 종류·재인증 요구·CSRF 토큰), `POST /api/auth/reauthenticate/<제공자>`, 인증 시작 fail-closed 응답 |
+| `backend/src/main/java/com/bokrilog/DevOidcStub.java` | 결정적 local OIDC 제공자의 논리. 자기 RSA 키로 JWKS를 제공하고 ID Token을 서명한다(기본 claim에 `auth_time`이 들어 있고 `TokenPlan`이 그 값을 주입·생략한다). 받은 `max_age`·`prompt`·`claims`는 기록만 하고 행동을 바꾸지 않는다. HTTP도 Spring도 없고 자격정보 리터럴도 없다 |
 | `backend/src/main/java/com/bokrilog/DevOidcStubConfig.java` | 그 스텁의 HTTP 표면(`/api/dev-oidc/<제공자>/**`)과 제공자 등록. 제공자마다 `DevOidcStub` 인스턴스가 하나(issuer·client·서명 키가 다르다)이고 라우터 빈은 하나다. `dev-oidc` 프로필에만 존재하고 실제 제공자 등록(Google·네이버·카카오 어느 쪽이든)과 함께 활성이면 기동을 거부한다 |
 | `backend/src/main/java/com/bokrilog/identity/` | 첫 모듈. 계정 소유권·삭제 상태의 권위. 공개 API 세 개(`AccountLifecycleApi`·`AccountAccessApi`·`AccountDeletionApi`)와 `internal` 구현 |
 | `backend/src/main/resources/db/migration/` | Flyway 마이그레이션. `V1__identity_account.sql`이 guard·payload·매핑 세 테이블을, `V2__spring_session.sql`이 Spring Session JDBC의 세션 두 테이블을 만든다 |
 | `backend/src/main/resources/application.yml` | 포트, 상대 리다이렉트, 세션 쿠키 속성, 오류 노출 끄기, 로그 수준, datasource·flyway·session, `bokrilog.auth` 이름, `dev-oidc`·`migrate` 프로필. 자격정보를 두지 않는다 |
 | `backend/src/test/java/com/bokrilog/PostgresTestcontainersConfig.java` | 시험 전체가 공유하는 실제 PostgreSQL 컨테이너 하나 |
 | `backend/src/test/java/com/bokrilog/OidcStubConfiguration.java` | 위 `DevOidcStub`을 루프백 HTTP 서버에 올리는 시험 표면. 스텁 논리를 다시 만들지 않는다 |
-| `backend/src/test/java/com/bokrilog/AuthFlowTestBase.java` | 인증 시험 다섯 개의 공통 배선. 같은 컨텍스트를 공유하려면 `@DynamicPropertySource`가 한 곳에 있어야 한다 |
-| `backend/src/test/java/com/bokrilog/Auth*Test.java` | 토큰·`state` 검증, 계정·매핑, 세션·쿠키·CSRF, 복귀 목적지·redaction, 삭제 경로 |
+| `backend/src/test/java/com/bokrilog/AuthFlowTestBase.java` | 인증 시험 전부의 공통 배선(왕복·재인증·CSRF·쿠키·저장소 헬퍼). 같은 컨텍스트를 공유하려면 `@DynamicPropertySource`가 한 곳에 있어야 한다 |
+| `backend/src/test/java/com/bokrilog/Auth*Test.java` | 토큰·`state` 검증, 계정·매핑, 세션·쿠키·CSRF, 복귀 목적지·redaction, 삭제 경로, 로그아웃·만료, 재인증과 세션 회전 |
 | `backend/src/test/java/com/bokrilog/DevOidcStubProfileTest.java` | 기본 프로필의 스텁 빈 부재·경로 미노출·fail-closed 등록과 프로필 오용 시 기동 거부 |
 | `backend/src/test/java/com/bokrilog/ModuleBoundaryTest.java` | Modulith 경계 검증, `internal` 미노출, identity에 HTTP 표면 없음 |
 | `backend/src/test/java/com/bokrilog/StatusApiTest.java` | 실제 HTTP로 상태·404·405·누출 금지를 시험 |
@@ -247,6 +249,20 @@ docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --b
 - 카카오 콘솔에서 운영자가 켜야 하는 것이 셋이다. **카카오 로그인 활성화**(꺼져 있으면 인가 요청 자체가 서지 않는다), **OpenID Connect 활성화**(꺼져 있으면 ID Token이 오지 않아 `scope=openid`가 뜻을 잃는다), **Client Secret 발급**(선택 기능이고 우리 fail-closed 게이트가 필수로 요구한다). 그리고 Redirect URI를 콘솔에 **사전 등록**해야 한다 — 값은 `<BOKRILOG_PUBLIC_BASE_URL>/api/auth/callback/kakao`이고 `ProviderClientRegistrations.put`이 그 모양으로 조립한다(요청 헤더에서 유도하지 않으므로 콘솔 값과 글자까지 같아야 한다). 넷 중 하나라도 빠지면 로그인은 공통 오류 계약으로 끝나고 응답은 "운영자가 구성하지 않았다"와 구분되지 않는다.
 - 카카오의 `sub`은 **pairwise**다(discovery의 `subject_types_supported`). 그 값은 사용자만이 아니라 **client 등록에도** 묶이므로, 조회 키가 `(issuer, subject)` 하나인 이 시스템에서 카카오만 제공자별 단서를 갖는다 — 카카오 앱을 다시 만들거나 REST API 키를 교체하면 기존 `(kauth.kakao.com, sub)` 매핑 전부가 고아가 되고 돌아온 사용자마다 **조용히 새 계정**이 생긴다. 오류도 경고도 없이 신규 가입 경로를 지나므로 그 사건은 응답으로 관측되지 않는다. Google·네이버에는 없는 제약이며, 카카오 쪽 키 교체는 계정 마이그레이션을 동반해야 하는 작업이다.
 - `identity_social_link.provider`에는 인증에 **실제로 쓰인** registration id가 들어간다. 값은 `OAuth2AuthenticationToken#getAuthorizedClientRegistrationId()`가 알려 주고 `AuthFlowHandlers`가 `AuthSessionService.establish`로 넘긴다. 리터럴을 쓰면 어느 제공자로 로그인해도 같은 이름이 저장되고, 그 컬럼을 술어로 쓰는 이후 스토리(로그인 수단 연결·해제)가 거짓을 읽는다.
+- 재인증 표면은 두 단계다. `POST /api/auth/reauthenticate/<제공자>`가 세션에 일회성 흐름을 심고(204), 그 뒤 브라우저가 `GET /api/auth/authorize/<제공자>`로 최상위 이동한다. 나눈 이유는 보호다 — 무장은 상태 변경이라 세션 귀속 CSRF 토큰과 동일 출처 `Origin`을 지나야 하고, 인가 시작은 제공자로 가는 내비게이션이라 `GET`이어야 한다. 한 경로에 합치면 표지가 붙은 링크 하나로 남의 세션에 재인증 흐름을 심을 수 있다. 무장 요청의 답은 셋뿐이다 — 모르는 제공자 404, 주체 없음 403, 그 밖에는 204. 등록 구성 여부는 조회하지 않으며 그 판정은 뒤따르는 인가 시작이 이미 소유한다.
+- 재인증은 **두 번째 인증 경로가 아니다**. 같은 `oauth2Login` 왕복을 지나므로 PKCE·`state`·`nonce`·JWS·`iss`·`aud`·`azp`·`exp` 검증과 세션 회전이 로그인과 같은 배선에서 나오고, 재인증이 더하는 것은 판정 둘뿐이다 — 검증된 `(issuer, subject)`가 현재 사용자의 것인가(`AuthSessionService.confirmReauthentication`, `findUserIdBySocialIdentity` + `AccountAccessApi.decide(SENSITIVE)`)와 제공자가 서명한 `auth_time`이 신선한가(`ReauthenticationFlow.isFreshAuthentication`). 별도 등록 id(`google-reauth` 같은 것)를 만드는 길은 막혀 있다: 두 등록이 같은 issuer로 해석되면 `rejectSharedIssuer`가 기동을 거부한다.
+- 복귀 목적지는 **무장 시각에** 붙들어 둔다. 출처는 세션이 이미 가진 확정 목적지 하나이고 클라이언트는 목적지를 보내지 않는다. 그래서 콜백이 들고 온 어떤 값도 목적지가 되지 않으며, 재인증 시작에서는 `next` 처리를 건너뛴다. 성공은 그 목적지로 표지 없이 돌아가고 실패·취소는 같은 목적지로 표지 하나(`reauthFailed`·`reauthCancelled`)를 달고 돌아간다 — 인증 화면이 아니다. 이미 로그인한 사용자를 로그인 화면으로 보내면 표지가 설명하려는 상황과 화면이 어긋난다.
+- 최근 인증 증거는 제공자가 서명한 `auth_time` 하나다. 부재·신선도 창(5분) 초과·허용 skew(60초) 밖의 미래가 모두 실패이고 완화하지 않는다. 콜백 도착 시각·제공자 세션의 존재·계정 선택은 증거가 아니다. 제공자별로 다른 것은 **인가 요청 파라미터**뿐이다.
+
+  | 제공자 | 보내는 파라미터 | 공표된 증거 | 증거 부재 시 |
+  |---|---|---|---|
+  | Google | `max_age=300` + `claims={"id_token":{"auth_time":{"essential":true}}}` | ID Token `auth_time`(공식 문서). `prompt=login`은 **미공표** | 재인증 실패 |
+  | 네이버 | `max_age=300` | **없음**(공식 답변: ID Token claim 구성 문서 미제공) | 재인증 실패 |
+  | 카카오 | `max_age=300` + `prompt=login` | ID Token `auth_time`(문서·discovery), `prompt=login`(문서) | 재인증 실패 |
+
+  네이버가 실연동에서 fail-closed될 수 있고 그것이 계약이다. 막아 두지 않는 이유는 실제로 `auth_time`을 돌려줄 수도 있기 때문이며, 막으면 그 사실을 확인할 기회 자체가 사라진다. 판정은 콜백의 claim 하나로 하고 결과는 실연동이 알려 준다. 이 파라미터들은 **무장된 흐름에만** 얹는다 — 상시로 얹으면 일반 로그인이 매번 재인증을 요구하고 카카오의 `prompt=login`은 이미 로그인한 사용자에게 매번 자격정보를 다시 묻는다.
+- 재인증을 요구받은 세션만 `GET /api/auth/session`에서 갈라진다. 그 응답에 `reauthRequired: true`와 세션 귀속 CSRF 토큰이 함께 실리고, **폐기된 세션과 미인증 요청의 본문은 글자까지 그대로다**. Story 1.5가 표시와 폐기를 응답으로 구분하지 않게 한 예외를 Story 1.8이 되짚은 자리이며, 구분하지 않으면 표시된 세션은 토큰을 받지 못하고 로그인 버튼은 "이미 인증된 세션"으로 거절당해 목적지로 되돌려진다 — 되살릴 방법이 없는 무한 왕복이다. 구분을 열어도 얻는 것은 "이 세션이 표시됐다"는 사실 하나이고 회복에는 제공자 자격이 필요하다. 표시된 세션에 열리는 상태 변경은 로그아웃과 재인증 시작 둘뿐이고 나머지는 403이다.
+- 인증된 세션에 도착한 **무장 없는 콜백**은 검증에 넘기지 않고 지금 목적지로 되돌린다. Story 1.8 전에는 인증된 세션이 진행 중인 authorization request를 가질 수 없어(시작이 거절됐다) 이 경로가 필요 없었다. 재인증이 그 전제를 깨므로 경계를 콜백까지 넓혔다 — 넓히지 않으면 흐름이 만료된 뒤 도착한 콜백이 성공 핸들러의 **로그인 분기**로 들어가 같은 세션 행에 다른 계정을 심을 수 있다.
 - 인증 표면은 servlet 웹 애플리케이션에서만 배선한다(`@ConditionalOnWebApplication(type = SERVLET)`). 같은 이미지의 일회성 migration 역할은 웹 서버 없이 뜨므로 `HttpSecurity`가 없고, 조건이 없으면 마이그레이션이 컨텍스트 생성 실패로 끝난다.
 
 ## 동일 출처 실행 (`deploy/`)

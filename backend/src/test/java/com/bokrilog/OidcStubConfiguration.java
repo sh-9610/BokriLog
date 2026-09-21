@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.jspecify.annotations.Nullable;
 import org.springframework.test.context.DynamicPropertyRegistry;
 
 /**
@@ -135,6 +136,31 @@ final class OidcStubConfiguration {
     static String issueCode(
             String provider, TokenPlan plan, Map<String, String> authorizationRequest) {
         return FRONT.stub(provider).issueCode(plan, authorizationRequest);
+    }
+
+    /**
+     * 인가 요청을 그 제공자 스텁의 동의 경로로 보낸다.
+     *
+     * <p>{@code /authorize}를 HTTP로 올리지 않는 대신 스텁의 같은 메서드를 직접 부른다. 시험이
+     * 그 왕복을 브라우저처럼 지날 이유는 없지만, <b>제공자 자리에 무엇이 도착했는가</b>는
+     * 이 호출을 지나야 관측된다 — 인가 요청의 {@code Location}만 보면 우리가 만든 URL을 다시
+     * 읽는 것이고, 재인증 파라미터는 "실제로 보냈는가"가 계약이다.
+     *
+     * @param authorizationRequest 서버가 만든 인가 요청의 쿼리 파라미터
+     * @return 콜백 URI, 인가 요청의 모양이 아니면 {@code null}
+     */
+    static @Nullable String consent(String provider, Map<String, String> authorizationRequest) {
+        return FRONT.stub(provider).consentRedirect(authorizationRequest);
+    }
+
+    /**
+     * 그 제공자 스텁이 마지막 인가 요청에서 받은 재인증 파라미터.
+     *
+     * <p>인스턴스당 마지막 요청 하나다({@code DevOidcStub}). 인가 요청 하나를 보낸 직후에 읽어야
+     * 하며, 흐름을 여럿 띄운 뒤 몰아서 읽으면 이 값은 아무것도 고정하지 않는다.
+     */
+    static Map<String, String> reauthenticationParametersOf(String provider) {
+        return FRONT.stub(provider).lastReauthenticationParameters();
     }
 
     /** JDK 내장 HTTP 서버로 도는 표면. 시험 JVM에 하나만 뜬다. */
