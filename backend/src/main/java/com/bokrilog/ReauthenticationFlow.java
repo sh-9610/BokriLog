@@ -189,6 +189,26 @@ final class ReauthenticationFlow {
     }
 
     /**
+     * 이 세션의 마지막 재인증 시각.
+     *
+     * <p>{@link #recordAuthentication}의 짝이다. Story 1.8은 기록만 남겼고 읽는 쪽이 없었다 — 그
+     * 값을 5분·일회성 허가로 바꾸는 Story 1.9의 발급 게이트가 첫 소비자다.
+     *
+     * <p><b>여기서 신선도를 판정하지 않는다.</b> 판정은 발급 INSERT의 술어가 하고 두 시각 모두
+     * PostgreSQL이 읽는다({@code ActionGrantRepository.issueIfReauthenticationFresh}). 인스턴스마다
+     * 다른 애플리케이션 시계가 허가 정책을 흔들지 않게 하려는 것이며, 그래서 이 메서드가 돌려주는
+     * 것은 판정이 아니라 기록된 값 하나다.
+     *
+     * <p>타입이 어긋난 값은 없는 것과 같다. 속성 이름과 타입은 1.8이 정한 그대로이고 이 스토리는
+     * 그 의미를 바꾸지 않는다.
+     *
+     * @return 기록된 시각, 없거나 읽히지 않으면 {@code null}
+     */
+    static @Nullable Instant lastAuthenticatedAt(HttpSession session) {
+        return session.getAttribute(AUTHENTICATED_AT_ATTRIBUTE) instanceof Instant at ? at : null;
+    }
+
+    /**
      * 제공자가 서명한 인증 시각이 신선한가.
      *
      * <p>최근 인증의 증거는 이 claim 하나다. 콜백 도착 시각도, 제공자 세션의 존재도, 계정 선택

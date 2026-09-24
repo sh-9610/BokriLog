@@ -176,3 +176,15 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-8-reauthentication-session-rotation.md`
   summary: `useSignOut`·`useReauthentication`의 중복 제출 가드가 React 상태를 읽어 같은 tick의 두 번째 호출을 막지 못한다.
   evidence: 두 훅 모두 `if (pending) return` 뒤에 `setPending(true)`를 하는데 그 값은 재렌더까지 갱신되지 않는다. 브라우저는 클릭을 별도 task로 보내고 React는 discrete event마다 flush하므로 실제 브라우저에서 이 창은 사실상 닫혀 있지만, 프로그래밍 방식 연속 dispatch에서는 열린다. 재인증 쪽 결과가 더 무겁다 — 두 번째 무장이 첫 번째를 덮어 사용자가 고른 제공자와 실제로 열리는 제공자가 달라진다. `useRef` 래치 하나가 두 훅을 함께 닫으므로 훅 하나만 고쳐 관용을 갈라 놓지 않는다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-9-reauthentication-action-grant.md`
+  summary: 소비된 허가 행에 보존 상한이 없어 민감 작업마다 `result` 문자열이 무기한 쌓인다.
+  evidence: sweep은 미소비 행만 지운다(소비된 행이 곧 멱등 기록이라 의도된 설계다). 그래서 소비된 행은 계정 삭제의 FK cascade 전까지 영구히 남고, 민감 작업이 늘수록 테이블과 그 안의 결과 문자열이 단조 증가한다. 적절한 보존 기간은 "재전송이 도착할 수 있는 최대 시간"이고 그것은 첫 소비자의 클라이언트 재시도 정책이 정한다 — 이 스토리에는 그 소비자가 없으므로 값을 지어내지 않았다. 1.10이 그 정책과 함께 상한을 정하고 sweep 술어를 넓히는 것이 맞다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-9-reauthentication-action-grant.md`
+  summary: 허가 포트가 `MockHttpSession`으로만 구동되고 실제 Spring Session JDBC 세션으로 발급→소비 왕복을 지나는 층이 없다.
+  evidence: 세 시험 파일의 모든 세션이 `new MockHttpSession(null, <uuid>)`이다. 실제 로그인을 지나는 두 축도 세션 id만 꺼내 mock에 실어 넣으므로, `HttpSession#getId()`가 `session_id` 귀속과 같은 값이라는 사실은 관측되지 않고 `sessionIdOf(cookie)`와의 동일성으로 전제된다. 포트에 HTTP 표면이 없는 것이 이 스토리의 Never이므로 여기서 그 층을 만들 수 없다 — 엔드포인트를 만드는 첫 소비자 스토리(1.10)가 실제 세션으로 같은 계약을 다시 단정해야 한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-9-reauthentication-action-grant.md`
+  summary: 같은 `(user, command, target)`으로 동시에 들어온 두 발급이 각자 무효화 후 삽입해 살아 있는 허가를 둘 남길 수 있다.
+  evidence: 리뷰 반영으로 발급이 같은 귀속의 미소비 허가를 먼저 무효화하게 했지만, 두 발급이 동시에 그 순서를 밟으면 서로의 삭제를 지나친 뒤 각자 INSERT한다. 발급은 확인 화면이 몰고 오는 요청이라 같은 사용자의 이중 제출이 필요하고, 소비는 여전히 허가 단위로 한 번뿐이므로 민감 작업이 두 번 실행되지는 않는다 — 다만 "재인증 한 번에 살아 있는 허가 하나"라는 더 강한 성질은 성립하지 않는다. 닫으려면 발급 경로에 행 잠금이나 `(user_id, command, target)` 부분 유일 색인이 필요하고 SPEC은 그것을 요구하지 않았다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-9-reauthentication-action-grant.md`
+  summary: sweep이 발급 사용자 범위로 좁혀져 다시 발급하지 않는 사용자의 만료 미소비 행이 영구히 남는다.
+  evidence: 전체 테이블 DELETE가 모든 발급마다 도는 형태를 리뷰가 지적해 사용자 범위로 좁혔다. 그 대가로 한 번 발급한 뒤 돌아오지 않는 사용자의 만료 행은 아무도 지우지 않는다. 계정 삭제의 FK cascade가 유일한 퇴로이며, 위의 "소비된 행 보존 상한" 항목과 같은 뿌리다 — 보존 정책을 정하는 라운드가 두 경우를 함께 다뤄야 한다.
