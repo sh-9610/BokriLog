@@ -84,7 +84,7 @@ npm --prefix frontend run test:e2e
 
 ## 백엔드·동일 출처 실행
 
-`backend/`는 Java 25 + Spring Boot 4.1.1 + Gradle wrapper이고 모듈 경계는 Spring Modulith 2.1.1이 시험에서 검증한다(운영 classpath에는 없다). Story 1.3부터 PostgreSQL 18을 쓰고 Story 1.4부터 Spring Security OAuth2 Client·Spring Session JDBC가 있다. HTTP 엔드포인트는 `GET /api/status`, `GET /api/auth/session`, `POST /api/auth/logout`, `POST /api/auth/reauthenticate/<provider>`, 그리고 Spring Security 필터가 받는 `/api/auth/authorize/<provider>`·`/api/auth/callback/<provider>`다. 상태·인증 컨트롤러는 루트 패키지 `com.bokrilog`에 있고 첫 모듈 패키지는 `com.bokrilog.identity`다. 컴파일 경고는 `-Werror`로 실패다.
+`backend/`는 Java 25 + Spring Boot 4.1.1 + Gradle wrapper이고 모듈 경계는 Spring Modulith 2.1.1이 시험에서 검증한다(운영 classpath에는 없다). Story 1.3부터 PostgreSQL 18을 쓰고 Story 1.4부터 Spring Security OAuth2 Client·Spring Session JDBC가 있다. HTTP 엔드포인트는 `GET /api/status`, `GET /api/auth/session`, `POST /api/auth/logout`, `POST /api/auth/reauthenticate/<provider>`, 그리고 Spring Security 필터가 받는 `/api/auth/authorize/<provider>`·`/api/auth/callback/<provider>`다. 상태·인증 컨트롤러는 루트 패키지 `com.bokrilog`에 있고 첫 모듈 패키지는 `com.bokrilog.identity`다. Story 1.9부터 루트 패키지가 자기 테이블 하나(`action_grant`, `V3`)를 소유한다 — 그전까지 모든 테이블은 `identity` 소유였다. 컴파일 경고는 `-Werror`로 실패다.
 
 제공자 자격정보는 여전히 필요 없다. 판정은 **제공자마다 독립**이다 — `BOKRILOG_PUBLIC_BASE_URL`과 그 제공자의 `BOKRILOG_<제공자>_CLIENT_ID`·`_CLIENT_SECRET` 중 하나라도 비면 그 등록만 만들어지지 않고 그 제공자의 인증 시작이 공통 오류 계약으로 fail-closed이며, 다른 제공자의 로그인은 살아 있다. 어느 제공자도 구성되지 않으면 `oauth2Login` DSL 자체를 배선하지 않는다. 서로 다른 두 등록이 같은 issuer로 해석되면 기동을 거부한다 — 조회 키가 `(issuer, subject)`라서 override 하나로 계정 병합이 열리기 때문이다(`DevOidcStubProfileTest`·`AuthNaverSignInTest`가 이 계약을 지킨다). 정상 흐름의 결정성은 `dev-oidc` 프로필에서만 사는 local OIDC 스텁이 만든다. 스텁 논리는 `DevOidcStub`이 소유하고 표면은 두 곳이다 — 개발·CI 스택은 `DevOidcStubConfig`가 `/api/dev-oidc/<제공자>/**`에 제공자마다 인스턴스 하나로 올리고(라우터 빈은 하나다)(브라우저와 백엔드가 같은 origin에서 도달해야 성공 경로를 브라우저 층에서 검증할 수 있다), 백엔드 시험은 `OidcStubConfiguration`이 루프백 HTTP 서버에 올린다. 스텁을 두 번 만들지 않는다. 그 프로필이 어느 제공자든 실제 등록과 함께 활성이면 기동을 거부하고, 실제 제공자 왕복은 Epic 1의 **실연동 미검증** 게이트가 소유한다. 백엔드가 자기 스텁에 닿는 주소는 `BOKRILOG_DEV_OIDC_INTERNAL_BASE_URL`이며 브라우저가 보는 origin과 다른 값이다.
 
@@ -146,7 +146,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 ## 현재 진행 지점
 
-기획은 완료됐다. `epics.md`는 `implementationReadinessStatus: ready-for-sprint-planning`이고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. `sprint-status.yaml`은 2026-09-02에 생성됐고 첫 스프린트 Story 1.1~1.5(진입 화면 → 동일 출처 셸 → 소유권·삭제 상태 → Google 로그인 → 로그아웃)와 스트레치였던 1.6·1.7(네이버·카카오 로그인)이 모두 머지됐다. 첫 스프린트가 끝났고 Epic 1이 확정한 세 제공자 집합이 완성됐다. 그 위에 1.8(재인증·세션 회전)도 머지됐다. 다음은 1.9(민감 작업의 5분·일회성 재인증 허가)다.
+기획은 완료됐다. `epics.md`는 `implementationReadinessStatus: ready-for-sprint-planning`이고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. `sprint-status.yaml`은 2026-09-02에 생성됐고 첫 스프린트 Story 1.1~1.5(진입 화면 → 동일 출처 셸 → 소유권·삭제 상태 → Google 로그인 → 로그아웃)와 스트레치였던 1.6·1.7(네이버·카카오 로그인)이 모두 머지됐다. 첫 스프린트가 끝났고 Epic 1이 확정한 세 제공자 집합이 완성됐다. 그 위에 1.8(재인증·세션 회전)과 1.9(5분·일회성 재인증 허가)도 머지됐다. 다음은 1.10(새 로그인 수단 연결)이다.
 
 | 스토리 | 상태 | 근거 |
 |---|---|---|
@@ -158,7 +158,8 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 1.6 네이버 로그인 | done | `spec-1-6-naver-sign-in.md`, PR #20 머지 커밋 `7f0f816` |
 | 1.7 카카오 로그인 | done | `spec-1-7-kakao-sign-in.md`, PR #22 머지 커밋 `c60729f` |
 | 1.8 재인증·세션 회전 | done | `spec-1-8-reauthentication-session-rotation.md`, PR #24 머지 커밋 `b2a4d5d` |
-| 1.9 재인증 허가(5분·일회성) | backlog — **다음 착수** | `epics.md` Story 1.9, `epic-1-context.md` |
+| 1.9 재인증 허가(5분·일회성) | done | `spec-1-9-reauthentication-action-grant.md`, PR #26 머지 커밋 `3798010` |
+| 1.10 로그인 수단 연결 | backlog — **다음 착수** | `epics.md` Story 1.10, `epic-1-context.md` |
 
 Story 1.3이 `identity` 모듈, PostgreSQL 18 마이그레이션, 소유권·삭제 상태 판정 계약, 해당 데이터의 삭제 경로와 시험을 들였다. 이 스토리가 처음 도입한 것: 첫 모듈 패키지와 Spring Modulith 경계 검사, PostgreSQL Testcontainers, 마이그레이션(expand 우선, startup은 schema 검증만), 두 사용자·동시성·실패 주입 시험.
 
@@ -182,9 +183,15 @@ Story 1.8이 되짚은 것과 새로 고정한 것. **표시된 세션에만 `re
 
 Story 1.8의 범위 밖: 5분·일회성 action grant(1.9), 로그인 수단 연결·해제(1.10·1.11), 제공자 측 로그아웃. 재인증 성공이 실행하는 파괴적 작업은 하나도 없다 — 남기는 것은 세션의 재인증 시각 하나이고 HTTP로 나가지 않는다. `authorizeHttpRequests`는 여전히 전부 `permitAll`이다. 표시된 세션은 `SessionGuard`에 HTTP 표면이 없고 세션 속성이 Java 직렬화라 브라우저 층에서 만들 수 없다 — 그 경로는 백엔드 시험과 Vitest가 소유하고 `verify-same-origin.sh`는 자발 재인증으로 같은 HTTP 계약을 본다.
 
+Story 1.9가 그 재인증 결과를 **서버 보관형 일회성 허가**로 바꿨다. 소비는 조건부 UPDATE 한 문장이고 그 술어가 다섯 귀속(user·session·command·target·canonical confirmation hash)과 미소비·미만료를 함께 판정한다 — 판정과 소비 사이에 창이 없으므로 동시 소비가 인덱스 하나로 갈린다. 소비와 호출자 업무 변경은 같은 트랜잭션에서 커밋되고, 업무 변경이 실패하면 허가는 미소비로 남으며, 같은 `operation_id` 재전송은 요청 지문이 전부 일치할 때만 저장된 결과를 돌려준다. 처음 도입한 것: `V3__action_grant.sql`과 **루트 패키지가 처음 소유하는 테이블**, `ActionGrant`(수명 5분·재인증 창 5분·미래 skew 60초와 정본 확인 해시), `ActionGrantRepository`(JdbcClient SQL 다섯), `ActionGrantService`(포트 둘), `ReauthenticationFlow.lastAuthenticatedAt`(1.8이 기록만 하고 조회가 없던 짝).
+
+Story 1.9가 고정한 계약 셋. **시각의 권위는 PostgreSQL이다** — 발급이 `expires_at`을 절대 시각으로 못 박고 만료는 소비 술어가 판정하며 애플리케이션 시계는 만료를 판정하지 않는다. 발급 신선도 술어도 과거(창)와 미래(skew) 양쪽을 닫는데, 비교 대상 한쪽이 애플리케이션 시계가 쓴 값이기 때문이다. **`(user_id, operation_id)` 부분 유일 색인이 멱등의 권위다** — 사용자 축이 없으면 추측 가능한 키를 먼저 쓴 쪽이 다른 사용자의 그 작업을 영구히 막는다. **허가는 계정 소유권이 아니라 세션·작업에 귀속하므로 `identity`에 둘 수 없다**(그 모듈은 서블릿·HTTP 의존이 금지돼 세션 개념을 가질 수 없고 `AccessDecision`은 두 값뿐이다). 대신 `action_grant`가 `identity_account`를 `ON DELETE CASCADE`로 참조해 삭제 경로가 새 테이블을 몰라도 된다 — `V1`의 `RESTRICT` 관용을 뒤집는 선택이고 그 근거는 `V3` 머리말에 있다.
+
+Story 1.9의 범위 밖: 로그인 수단 연결·해제(1.10·1.11), Bybit 변경(Epic 2), 계정 삭제의 업무 상태 변경(Epic 5). **HTTP 표면을 하나도 만들지 않았다** — 실행 가능한 민감 command가 아직 없어 지금 엔드포인트를 만들면 소비자 없는 표면이 된다. `SECURITY-ACTION-1.0`이 요구하는 "성공 시 세션 재회전"은 포트가 결과 타입 이름으로 의무를 알리고 첫 소비자(1.10)가 자기 엔드포인트에서 배선한다 — 회전은 HTTP 요청 문맥을 요구하는데 이 스토리엔 그 문맥이 없다.
+
 프런트엔드는 이제 `/api` 호출 셋(`GET /api/auth/session`, `POST /api/auth/logout`, `POST /api/auth/reauthenticate/<제공자>`)과 고정 순서(Google → 네이버 → 카카오)의 제공자 버튼 셋, 로그아웃 버튼, 두 인증 화면이 공유하는 재인증 패널을 갖는다. 라우터 의존은 여전히 없고 `App.tsx`의 닫힌 경로 맵이 그 역할을 한다. `/api/status`는 서버 경계를 확인하는 엔드포인트이며 화면이 부르지 않는다.
 
-미룬 결정은 55건이고 항목과 판정은 `deferred-work.md`와 해소 원장이 소유한다(2026-09-09 기준 해소 14·부분 해소 4·미해소 32이고 그 뒤 Story 1.8이 다섯을 더했다). 아래는 지금 코드에 닿는 미해소만 고른 선택적 열거다: artifact `run_attempt`와 재실행 복구의 충돌, 통합 job의 `npm ci`·Chromium 설치 중복, 백엔드 포매터·정적 분석 게이트를 소유할 스토리와 그 게이트가 함께 정할 import 정렬, nginx 컨테이너 권한 강화, `identity` 행 잠금 대기 상한, Testcontainers 컨테이너 수명과 컨텍스트 캐시 분리, `verify-same-origin.sh` 마이그레이션 호출의 시간 상한, `identity`가 `spring_session`에 직접 닿는 결합, 두 인증 화면의 중복과 그 레이아웃 CSS 복제, `lint:css` 범위 단정이 새 CSS 모듈을 놓치는 것, Windows 전용 결함을 CI가 보지 못하는 공백, 계층을 넘나드는 계약 리터럴의 중복을 Docker 없는 검사로 묶는 문제, 그리고 Story 1.6이 더한 일곱 — 그중 무게 있는 둘은 **제공자 이름 목록이 열 곳 넘게 복제됐고 그 목록들이 서로 같은지 보는 검사가 없다는 것**과 **한 제공자만 구성된 스택이 HTTP·화면 층에서 검증되지 않아 실제 제공자 등록이 하나씩 들어오는 시점에 사용자가 원본 오류 JSON을 보는 창이 열린다는 것**이다. 어느 것도 Story 1.9 착수를 막지 않는다. 행 잠금 대기 상한과 `spring_session` 결합은 Story 1.6이 같은 경로를 지나며 보고 **재차 미뤘다**(근거는 해소 원장 항목 23·27). Story 1.7이 여섯을 더했다 — 제공자별 왕복 시험 축의 3차 복제, `credentials()` fixture 3중 복제, 스텁 기동 guard의 손으로 쓴 OR 사슬, 계층 **안** 목록 중복과 `SUPPORTED_REGISTRATION_IDS` 등가 단정 부재, 카카오 심볼 추출 산출물 부재, 그리고 `OnboardingScreen.test.tsx`가 부하 아래 간헐 실패하는 것이다. Story 1.8이 다섯을 더했다 — `dev_subject` 파라미터 이름의 계층 간 리터럴 중복, `ReauthPanel.module.css`가 복제한 제공자 버튼 규칙, 구성되지 않은 제공자로 무장할 때 최상위 내비게이션이 원본 오류 JSON에 닿는 것(미해소 항목 40의 두 번째 진입점), 절대 수명 끝에 성공한 재인증이 몇 분 뒤 만료로 끝나는 것, 그리고 두 훅의 중복 제출 가드가 React 상태를 읽어 같은 tick의 두 번째 호출을 막지 못하는 것이다.
+미룬 결정은 59건이고 항목과 판정은 `deferred-work.md`와 해소 원장이 소유한다(2026-09-09 기준 해소 14·부분 해소 4·미해소 32이고 그 뒤 Story 1.8이 다섯, 1.9가 넷을 더했다). 아래는 지금 코드에 닿는 미해소만 고른 선택적 열거다: artifact `run_attempt`와 재실행 복구의 충돌, 통합 job의 `npm ci`·Chromium 설치 중복, 백엔드 포매터·정적 분석 게이트를 소유할 스토리와 그 게이트가 함께 정할 import 정렬, nginx 컨테이너 권한 강화, `identity` 행 잠금 대기 상한, Testcontainers 컨테이너 수명과 컨텍스트 캐시 분리, `verify-same-origin.sh` 마이그레이션 호출의 시간 상한, `identity`가 `spring_session`에 직접 닿는 결합, 두 인증 화면의 중복과 그 레이아웃 CSS 복제, `lint:css` 범위 단정이 새 CSS 모듈을 놓치는 것, Windows 전용 결함을 CI가 보지 못하는 공백, 계층을 넘나드는 계약 리터럴의 중복을 Docker 없는 검사로 묶는 문제, 그리고 Story 1.6이 더한 일곱 — 그중 무게 있는 둘은 **제공자 이름 목록이 열 곳 넘게 복제됐고 그 목록들이 서로 같은지 보는 검사가 없다는 것**과 **한 제공자만 구성된 스택이 HTTP·화면 층에서 검증되지 않아 실제 제공자 등록이 하나씩 들어오는 시점에 사용자가 원본 오류 JSON을 보는 창이 열린다는 것**이다. 어느 것도 Story 1.10 착수를 막지 않는다. 행 잠금 대기 상한과 `spring_session` 결합은 Story 1.6이 같은 경로를 지나며 보고 **재차 미뤘다**(근거는 해소 원장 항목 23·27). Story 1.7이 여섯을 더했다 — 제공자별 왕복 시험 축의 3차 복제, `credentials()` fixture 3중 복제, 스텁 기동 guard의 손으로 쓴 OR 사슬, 계층 **안** 목록 중복과 `SUPPORTED_REGISTRATION_IDS` 등가 단정 부재, 카카오 심볼 추출 산출물 부재, 그리고 `OnboardingScreen.test.tsx`가 부하 아래 간헐 실패하는 것이다. Story 1.8이 다섯을 더했다 — `dev_subject` 파라미터 이름의 계층 간 리터럴 중복, `ReauthPanel.module.css`가 복제한 제공자 버튼 규칙, 구성되지 않은 제공자로 무장할 때 최상위 내비게이션이 원본 오류 JSON에 닿는 것(미해소 항목 40의 두 번째 진입점), 절대 수명 끝에 성공한 재인증이 몇 분 뒤 만료로 끝나는 것, 그리고 두 훅의 중복 제출 가드가 React 상태를 읽어 같은 tick의 두 번째 호출을 막지 못하는 것이다. Story 1.9가 넷을 더했고 **넷 다 첫 소비자 스토리가 같은 경로를 지나며 함께 정할 일이다** — 소비된 허가 행의 보존 상한 부재, 허가 포트가 `MockHttpSession`으로만 구동되고 실제 Spring Session 세션으로 도는 층이 없는 것, 같은 귀속의 동시 발급이 살아 있는 허가를 둘 남길 수 있는 창, 그리고 사용자 범위로 좁힌 sweep이 돌아오지 않는 사용자의 만료 행을 남기는 것이다.
 
 ## 브랜치·커밋
 
