@@ -188,3 +188,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-9-reauthentication-action-grant.md`
   summary: sweep이 발급 사용자 범위로 좁혀져 다시 발급하지 않는 사용자의 만료 미소비 행이 영구히 남는다.
   evidence: 전체 테이블 DELETE가 모든 발급마다 도는 형태를 리뷰가 지적해 사용자 범위로 좁혔다. 그 대가로 한 번 발급한 뒤 돌아오지 않는 사용자의 만료 행은 아무도 지우지 않는다. 계정 삭제의 FK cascade가 유일한 퇴로이며, 위의 "소비된 행 보존 상한" 항목과 같은 뿌리다 — 보존 정책을 정하는 라운드가 두 경우를 함께 다뤄야 한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-10-link-sign-in-method.md`
+  summary: `/settings`에서 시작한 재인증이 그 화면이 아니라 세션의 확정 목적지로 돌아온다.
+  evidence: 재인증 시작은 복귀 경로를 세션의 `DESTINATION_ATTRIBUTE` 하나에서 가져오고, 그 값은 로그인 시점에 정해져 `/onboarding`이나 `/dashboard`다. 그래서 설정 화면에서 본인 확인을 마친 사용자는 대시보드로 떨어진다. 이 라운드가 두 인증 화면에 설정 링크를 더해 되돌아올 길은 생겼지만 클릭 하나가 더 든다. 곧장 돌아오게 하려면 재인증 시작이 복귀 목적지를 인자로 받아야 하는데, 그것은 Story 1.8의 frozen 경계("그 값의 출처는 세션이 이미 가진 `DESTINATION_ATTRIBUTE` 하나이며 클라이언트는 목적지를 보내지 않는다")를 다시 협상하는 일이다. 로그인 시작이 이미 `?next=`를 닫힌 집합으로 검증해 받으므로 선례는 있고, 그 계약을 여는 판단은 1.8을 소유한 사람이 할 일이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-10-link-sign-in-method.md`
+  summary: 내부 경로 집합이 다섯 곳에 복제됐고 그것들이 서로 같은지 보는 검사가 없다.
+  evidence: 이 스토리가 `/settings` 하나를 더하면서 `App.tsx` 경로 맵·Nginx 허용 목록 정규식·`AuthFlowHandlers.ALLOWED_DESTINATIONS`·`useSessionState`의 `DESTINATION_PATHS`·`content/auth.ts`의 `RETURN_DESTINATIONS` 다섯 곳을 함께 고쳐야 했다. 문서와 javadoc은 "네 곳"이라고 적었고 그 넷의 구성도 파일마다 다르게 열거한다 — 세는 사람마다 답이 다르다는 사실 자체가 검사가 없다는 증거다. 타입 검사가 잡아 주는 것은 목적지 유니언 하나뿐이고 나머지 넷은 빠져도 조용하다(각각 404·진입 화면·목적지 접힘·`next` 소실로 증상이 갈린다). 계층 간 계약 리터럴 중복(미해소 항목 33·38)과 같은 뿌리이며 등가 검사를 세우는 일은 별도로 배포 가능한 목표다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-10-link-sign-in-method.md`
+  summary: 제공자 버튼 CSS 규칙의 세 번째 사본이 생겼다.
+  evidence: `EntryScreen.module.css`·`ReauthPanel.module.css`에 이어 `SettingsScreen.module.css`가 같은 세 규칙을 다시 갖는다. 값은 모두 같은 토큰을 참조하므로 표류해도 조용하고, "세 버튼의 바깥 크기가 서로 같다"를 단정하는 e2e는 진입 화면에서만 돈다. Story 1.9가 이미 적은 두 번째 사본 항목과 같은 뿌리이며 CSS 소유 구조를 정하는 라운드가 함께 다룰 일이다.

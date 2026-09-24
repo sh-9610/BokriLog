@@ -59,6 +59,29 @@ class AuthRedirectDestinationTest extends AuthFlowTestBase {
     }
 
     @Test
+    void 설정_화면도_허용_목록의_목적지다() throws Exception {
+        /*
+         * Story 1.10이 더한 경로다. 허용 목록에서 빠지면 미인증으로 `/settings`를 연 사용자가
+         * 로그인 뒤 그 화면이 아니라 대시보드에 착지하고, 연결하러 온 사람이 연결 조작이 없는
+         * 화면에 남는다.
+         */
+        String subject = "settings-destination-" + UUID.randomUUID();
+        signIn(subject);
+
+        HttpResponse<String> response =
+                signInWithDestination(subject, AuthFlowHandlers.SETTINGS_PATH);
+
+        assertThat(locationOf(response)).endsWith(AuthFlowHandlers.SETTINGS_PATH);
+
+        /*
+         * 화면이 읽는 것은 경로가 아니라 종류다. `destinationKind`의 그 가지가 빠지면 세션 확인이
+         * `entry`를 답하고, 방금 그 목적지로 보낸 사용자가 인증 화면으로 되돌려진다.
+         */
+        String cookie = sessionCookieOf(response).orElseThrow();
+        assertThat(sessionState(cookie).body()).contains("\"destination\":\"settings\"");
+    }
+
+    @Test
     void 외부_주소_목적지는_버리고_기본_대시보드로_보낸다() throws Exception {
         String subject = "external-destination-" + UUID.randomUUID();
         signIn(subject);

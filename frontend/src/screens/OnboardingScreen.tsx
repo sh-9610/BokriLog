@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 
 import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
-import { authContent, reauthNoticeKindOf } from '../content/auth'
+import { authContent, reauthNoticeKindOf, SETTINGS_PATH } from '../content/auth'
 import { entryContent } from '../content/entry'
 import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
@@ -63,7 +63,19 @@ export function OnboardingScreen(): ReactElement {
         <p className={styles.brand}>{entryContent.brand}</p>
         {/* 세션이 확인된 뒤에만 둔다. 확인 전에는 로그아웃할 대상이 아직 없다. */}
         {ready ? (
-          <SignOutButton onSignOut={signOut.requestSignOut} pending={signOut.pending} />
+          <div className={styles.headerActions}>
+            {/*
+              설정 화면으로 가는 길. 이 링크가 없으면 그 화면은 주소를 직접 쳐야만 닿고,
+              사용자가 자기 로그인 수단을 볼 자리가 사실상 없다. 전역 내비게이션은 아직 없으므로
+              (Epic 1의 범위가 아니다) 머리말의 링크 하나가 그 자리다.
+
+              `<a href>`다. 화면 전환은 전부 문서 요청이고 이 저장소에는 클라이언트 라우팅이 없다.
+            */}
+            <a className={styles.settingsLink} href={SETTINGS_PATH}>
+              {authContent.settings.link}
+            </a>
+            <SignOutButton onSignOut={signOut.requestSignOut} pending={signOut.pending} />
+          </div>
         ) : null}
       </header>
 

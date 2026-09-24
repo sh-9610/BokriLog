@@ -1,6 +1,7 @@
 package com.bokrilog;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.bokrilog.AuthSecurityConfig.AuthProperties;
 import com.bokrilog.AuthSecurityConfig.ProviderClientRegistrations;
@@ -132,6 +133,32 @@ class DevOidcStubProfileTest {
         assertThat(ProviderClientRegistrations.isSupportedProvider(UNREGISTERED_PROVIDER)).isFalse();
         assertThat(ProviderClientRegistrations.isSupportedProvider("")).isFalse();
         assertThat(ProviderClientRegistrations.isSupportedProvider("GOOGLE")).isFalse();
+        // 순서가 고정이다. 연결 상태 조회가 이 순서를 그대로 응답에 싣는다.
+        assertThat(ProviderClientRegistrations.supportedProviders())
+                .containsExactlyElementsOf(PROVIDERS);
+    }
+
+    @Test
+    void 같은_등록_id가_두_번_적힌_목록은_기동에서_거부된다() {
+        /*
+         * 이 목록이 `Set`이던 동안에는 중복이 조용히 하나로 접혔다. 순서가 필요해 `List`로 바꾸면서
+         * 그 암묵적 guard가 사라졌으므로 명시적으로 둔다 — 중복이 남으면 연결 상태 조회가 같은
+         * 제공자를 두 번 답하고, "아는 제공자 집합"이 몇 개인지 읽는 사람이 세어야 한다.
+         */
+        assertThatThrownBy(
+                        () ->
+                                ProviderClientRegistrations.rejectDuplicateRegistrationIds(
+                                        List.of(
+                                                AuthSecurityConfig.GOOGLE_REGISTRATION_ID,
+                                                AuthSecurityConfig.NAVER_REGISTRATION_ID,
+                                                AuthSecurityConfig.GOOGLE_REGISTRATION_ID)))
+                .isInstanceOf(IllegalStateException.class)
+                // 메시지에 어느 이름인지 적지 않는다. 답은 어느 쪽이든 "이름을 서로 다르게" 하나다.
+                .hasMessageNotContaining(AuthSecurityConfig.GOOGLE_REGISTRATION_ID);
+
+        // 서로 다른 목록은 그대로 돌려준다. 실제 목록이 그 경로를 지나 만들어진다.
+        assertThat(ProviderClientRegistrations.rejectDuplicateRegistrationIds(PROVIDERS))
+                .isEqualTo(PROVIDERS);
     }
 
     @Test

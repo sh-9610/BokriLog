@@ -109,7 +109,9 @@ class AuthSessionService {
      * 바꾸지 않는다 — 이 메서드가 하는 일은 조회 하나와 판정 하나를 읽는 것뿐이고 어떤 쓰기도
      * 없다. 그래서 {@link #establish}와 달리 트랜잭션 경계도 재시도도 없다.
      *
-     * <p>{@code identity} 공개 API를 부르는 자리가 이 클래스 하나라는 계약을 지킨다. 두 호출을
+     * <p>인증 표면이 {@code identity} 공개 API를 부르는 자리는 목적마다 하나다 — 세션 개설과
+     * 재인증은 이 클래스가, 민감 작업의 삭제 상태 판정은 {@code ActionGrantService}가, 로그인 수단
+     * 연결은 {@code LinkService}가 소유한다. 그 밖의 어느 클래스도 그 API를 부르지 않는다. 두 호출을
      * 함께 두는 이유는 각각이 다른 것을 막기 때문이다 — 조회는 "다른 사용자의 식별자"와 "어느
      * 계정에도 없는 식별자"를 걸러 내고, {@link AccountAccessKind#SENSITIVE} 판정은 삭제가 시작된
      * 계정을 걸러 낸다. 두 거부는 호출자에게 같은 {@code false} 하나이며 그 값에서 대상 계정의

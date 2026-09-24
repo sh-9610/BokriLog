@@ -660,6 +660,68 @@ class ActionGrantTest extends AuthFlowTestBase {
     }
 
     // ----------------------------------------------------------------------
+    // 제시된 귀속 세션 id
+    // ----------------------------------------------------------------------
+
+    @Test
+    void 회전한_세션도_발급_시각의_세션_id를_제시하면_소비한다() {
+        UUID userId = accountLifecycle().createAccount();
+        MockHttpSession issuing = grantSession(userId);
+        String reference = issue(issuing, userId).orElseThrow();
+        // 같은 사용자·같은 재인증 기록이지만 id가 다른 세션. OIDC 콜백이 정확히 이 상태다.
+        MockHttpSession rotated = grantSession(userId);
+
+        /*
+         * 제시하지 않으면 live id로 판정하므로 거부다. 왕복을 지나는 민감 작업이 구조적으로
+         * 성립할 수 없는 이유가 이 한 줄이다 — 세션 고정 방어가 성공 핸들러 직전에 ID를 반드시
+         * 회전시킨다.
+         */
+        assertThat(consume(rotated, userId, reference, operationId()))
+                .isInstanceOf(Consumption.Denied.class);
+        assertThat(actionGrantConsumed(reference)).isFalse();
+
+        assertThat(consumeBoundTo(rotated, userId, reference, issuing.getId()))
+                .isInstanceOf(Consumption.ConsumedRequiringSessionRotation.class);
+        assertThat(actionGrantConsumed(reference)).isTrue();
+    }
+
+    @Test
+    void 제시한_세션_id가_발급_시각과_다르면_거부된다() {
+        UUID userId = accountLifecycle().createAccount();
+        MockHttpSession issuing = grantSession(userId);
+        String reference = issue(issuing, userId).orElseThrow();
+
+        /*
+         * 제시가 귀속을 무르지 않는다. 술어는 여전히 "행에 적힌 세션 id와 같은가"이고, 아무 값이나
+         * 제시하면 그 술어가 0행을 만든다. 이 인자가 여는 것은 "회전 전 id를 가리키는 것" 하나뿐이며
+         * 그 값의 출처가 서버 측 흐름 기록이어야 한다는 것이 포트의 계약이다.
+         */
+        assertThat(
+                        consumeBoundTo(
+                                issuing, userId, reference, "not-the-issuing-session-" + UUID.randomUUID()))
+                .isInstanceOf(Consumption.Denied.class);
+        assertThat(actionGrantConsumed(reference)).isFalse();
+    }
+
+    @Test
+    void 제시된_세션_id가_주체_대조를_무르지_않는다() {
+        UUID mine = accountLifecycle().createAccount();
+        UUID theirs = accountLifecycle().createAccount();
+        MockHttpSession myIssuing = grantSession(mine);
+        String reference = issue(myIssuing, mine).orElseThrow();
+
+        /*
+         * 남의 세션이 내 발급 세션 id를 제시해도 통하지 않는다. 주체 대조는 <b>지금 이 요청의
+         * 세션</b>이 답하고, 그 값은 제시로 바꿀 수 없다.
+         */
+        assertThat(consumeBoundTo(grantSession(theirs), theirs, reference, myIssuing.getId()))
+                .isInstanceOf(Consumption.Denied.class);
+        assertThat(consumeBoundTo(grantSession(theirs), mine, reference, myIssuing.getId()))
+                .isInstanceOf(Consumption.Denied.class);
+        assertThat(actionGrantConsumed(reference)).isFalse();
+    }
+
+    // ----------------------------------------------------------------------
     // 트랜잭션 경계는 포트가 소유한다
     // ----------------------------------------------------------------------
 
@@ -741,6 +803,22 @@ class ActionGrantTest extends AuthFlowTestBase {
                         GRANT_TARGET,
                         GRANT_CONFIRMATION,
                         operationId),
+                () -> "실행됨");
+    }
+
+    /** 귀속의 세션 축을 호출자가 제시하는 소비. 왕복을 지나는 민감 작업이 쓰는 형태다. */
+    private Consumption consumeBoundTo(
+            HttpSession session, UUID userId, String reference, String boundSessionId) {
+        return this.actionGrants.consume(
+                new ConsumptionRequest(
+                        session,
+                        userId,
+                        reference,
+                        GRANT_COMMAND,
+                        GRANT_TARGET,
+                        GRANT_CONFIRMATION,
+                        operationId(),
+                        boundSessionId),
                 () -> "실행됨");
     }
 

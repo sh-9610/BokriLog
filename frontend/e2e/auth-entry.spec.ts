@@ -476,7 +476,9 @@ test.describe('실패 표지', () => {
 })
 
 test.describe('로그인 상태 경로 · 미인증', () => {
-  for (const path of ['/onboarding', '/dashboard']) {
+  // 로그인 상태 경로 셋 전부를 돈다. Story 1.10이 `/settings`를 더했고, 그 경로도 문서는
+  // 200이지만 미인증에서는 사용자 데이터를 한 글자도 그리지 않아야 한다.
+  for (const path of ['/onboarding', '/dashboard', '/settings']) {
     test(`${path}는 문서를 받지만 인증 화면으로 되돌린다`, async ({ page }) => {
       const response = await page.goto(path)
 
@@ -506,10 +508,16 @@ test.describe('로그인 상태 경로 · 미인증', () => {
     })
   }
 
-  for (const path of ['/onboarding', '/dashboard', '/?auth=cancelled', '/?auth=failed']) {
+  for (const path of [
+    '/onboarding',
+    '/dashboard',
+    '/settings',
+    '/?auth=cancelled',
+    '/?auth=failed',
+  ]) {
     test(`${path}의 미인증 화면 변형도 WCAG 2.2 AA 자동 검사 위반이 0건이다`, async ({ page }) => {
-      // 이 스토리가 만든 화면 변형은 다섯이다 — 진입, 실패 표지 둘, 로그인 상태 경로의 미인증
-      // 복귀 둘. 하나만 검사하면 나머지에 들어간 마크업은 아무도 보지 않는다.
+      // 화면 변형 여섯이다 — 진입, 실패 표지 둘, 로그인 상태 경로 셋의 미인증 복귀.
+      // 하나만 검사하면 나머지에 들어간 마크업은 아무도 보지 않는다.
       await page.goto(path)
       await expectAuthScreenMounted(page)
 
@@ -773,9 +781,64 @@ test.describe('스텁 제공자 성공 왕복', () => {
     await page.keyboard.press('Tab')
     await expect(skipLink).toBeFocused()
 
-    // 로그아웃은 그 다음이다. 반복되는 머리말을 지나치려는 사용자가 먼저 만나는 것은 건너뛰기다.
+    /*
+     * 설정 링크가 그 다음이고 로그아웃이 마지막이다. 반복되는 머리말을 지나치려는 사용자가 먼저
+     * 만나는 것은 건너뛰기여야 하며, 그 뒤 순서는 문서 순서가 정한다.
+     */
+    await page.keyboard.press('Tab')
+    await expect(page.getByRole('link', { name: authContent.settings.link })).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(page.getByRole('button', { name: authContent.signOut.label })).toBeFocused()
+
+    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
+
+    expect(results.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([])
+  })
+
+  test('설정 화면이 게이트 안쪽에서 WCAG 2.2 AA와 목표 크기를 지킨다', async ({ page }) => {
+    /*
+     * 이 스토리가 더한 가장 큰 마크업 표면이다. e2e의 `/settings` 축은 미인증뿐이고 그 상태는
+     * 진입 화면을 렌더하므로, 스텁 왕복으로 로그인한 뒤 열지 않으면 연결 목록·연결 버튼·본인 확인
+     * 버튼·다시 확인 조작이 저장소의 접근성 검증 밖에 남는다.
+     */
+    await page.setViewportSize(NARROW_VIEWPORT)
+    await signInThroughStub(page)
+
+    await page.getByRole('link', { name: authContent.settings.link }).click()
+
+    await expect(page.getByRole('heading', { name: authContent.settings.heading })).toBeVisible()
+    expect(new URL(page.url()).pathname).toBe('/settings')
+
+    // 방금 가입한 계정이므로 연결된 수단은 왕복이 쓴 제공자 하나뿐이다.
+    await expect(page.getByText(authContent.settings.linked)).toBeVisible()
+
+    /*
+     * 조작 대상은 모두 최소 44×44px이다. 연결 버튼은 미연결 제공자에만, 본인 확인 버튼은 셋 다
+     * 있으므로 화면에 있는 것을 역할과 이름으로 찾아 전부 잰다.
+     */
+    const targets = [
+      ...SIGN_IN_PROVIDERS.map((provider) => authContent.settings.reauth.labels[provider]),
+      authContent.settings.linkLabels.naver,
+      authContent.settings.linkLabels.kakao,
+      authContent.signOut.label,
+    ]
+    for (const name of targets) {
+      const box = await page.getByRole('button', { name }).boundingBox()
+      expect(box?.width ?? 0, name).toBeGreaterThanOrEqual(44)
+      expect(box?.height ?? 0, name).toBeGreaterThanOrEqual(44)
+    }
+
+    // 320px에서 가로 스크롤이 생기지 않는다.
+    const metrics = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }))
+    expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth)
+
+    // 외부 식별자는 화면에 도달하지 않는다. 서버가 제공자 이름만 돌려주기 때문이다.
+    const text = await page.locator('body').innerText()
+    expect(text).not.toContain('http://')
+    expect(text).not.toContain('sub=')
 
     const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
 
@@ -812,8 +875,9 @@ test.describe('스텁 제공자 성공 왕복', () => {
       }
     })
 
-    // `Tab` 두 번이면 로그아웃에 닿고 `Enter`가 실행한다. jsdom이 구현하지 않는 활성화 동작이라
-    // 이 층이 그것을 확인하는 유일한 자리다.
+    // `Tab` 세 번이면 로그아웃에 닿고 `Enter`가 실행한다(건너뛰기 → 설정 링크 → 로그아웃).
+    // jsdom이 구현하지 않는 활성화 동작이라 이 층이 그것을 확인하는 유일한 자리다.
+    await page.keyboard.press('Tab')
     await page.keyboard.press('Tab')
     await page.keyboard.press('Tab')
     await expect(page.getByRole('button', { name: authContent.signOut.label })).toBeFocused()

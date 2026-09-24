@@ -67,6 +67,25 @@ export function reauthenticatePath(provider: SignInProvider): string {
 }
 
 /**
+ * 연결 표면의 경로. **이 계층에서 그 경로를 정의하는 상수는 이것 하나다.**
+ *
+ * 두 표면이 한 접두사를 나눠 쓰고 메서드가 그것을 가른다 — `GET /api/auth/link`는 연결 상태
+ * 조회이고 `POST /api/auth/link/<제공자>`는 연결 시작이다. 이름을 둘로 두면 "이 경로가 어디
+ * 정의됐나"의 답이 둘이 된다.
+ *
+ * 조회 응답에 실리는 것은 제공자 이름뿐이며 `issuer`·`subject`·이메일·토큰·연결 시각은 오지
+ * 않는다 — 서버가 그 값을 담지 않으므로 화면이 실수로 그릴 수도 없다. 시작이 `POST`인 근거는
+ * 재인증 시작과 같다 — 허가를 발급하고 세션에 흐름을 심는 상태 변경이라 세션 귀속 CSRF 토큰과
+ * 동일 출처 `Origin`을 지나야 한다.
+ */
+export const LINK_BASE_PATH = '/api/auth/link'
+
+/** 그 제공자의 연결 시작 경로. 경로를 조립하는 유일한 자리다. */
+export function linkPath(provider: SignInProvider): string {
+  return `${LINK_BASE_PATH}/${provider}`
+}
+
+/**
  * CSRF 토큰을 싣는 요청 헤더 이름.
  *
  * 백엔드 `AuthSecurityConfig.CSRF_HEADER_NAME`과 같은 값이다. 두 계층이 한 계약을 나눠 갖는
@@ -83,6 +102,17 @@ export const ONBOARDING_PATH = '/onboarding'
 
 export const DASHBOARD_PATH = '/dashboard'
 
+/**
+ * 로그인 수단 설정 화면.
+ *
+ * 연결 조작이 사는 유일한 자리다. 이 경로를 더할 때 **다섯 곳**을 함께 고친다 — 아래
+ * `RETURN_DESTINATIONS`, `App.tsx`의 경로 맵, `useSessionState`의 목적지 집합,
+ * `deploy/nginx/bokrilog.conf`의 허용 목록 정규식, 그리고 서버의
+ * `AuthFlowHandlers.ALLOWED_DESTINATIONS`. 다섯이 같은 집합이어야 하고 그 등가를 보는 검사는 아직
+ * 없다 — 한 곳만 고치면 증상이 제각각이다.
+ */
+export const SETTINGS_PATH = '/settings'
+
 /** 서버가 실패 표지로 쓰는 쿼리 이름. `AuthFlowHandlers`와 같은 값이다. */
 export const NOTICE_PARAMETER = 'auth'
 
@@ -96,7 +126,7 @@ export const RETURN_DESTINATION_PARAMETER = 'next'
  * 값은 서버가 버리므로 여기서도 보내지 않는다 — 보내면 화면이 지키지 못할 약속을 URL에 싣는 것이
  * 된다.
  */
-const RETURN_DESTINATIONS: readonly string[] = [ONBOARDING_PATH, DASHBOARD_PATH]
+const RETURN_DESTINATIONS: readonly string[] = [ONBOARDING_PATH, DASHBOARD_PATH, SETTINGS_PATH]
 
 /**
  * 지금 경로에서 시작하는 그 제공자의 인증 시작 링크 `href`.
@@ -136,13 +166,27 @@ export function authorizeHref(provider: SignInProvider, pathname: string): strin
  * 메모리에만 있다(`useSessionState`, `signOut`). `signedOut`은 로그인 상태 경로에 처음부터
  * 미인증으로 들어온 경우이며 URL 표지 없이 화면이 직접 고른다.
  *
- * 여덟 값 중 어느 것도 계정의 존재·상태를 알려 주지 않는다. 재인증 실패 표지 하나에 타 사용자
- * 식별자·미연결 식별자·증거 부재·삭제 전환이 모두 접혀 있는 것이 그 계약이다.
+ * `linkCancelled`·`linkFailed`는 재인증 표지와 같은 규칙으로 갈린다 — 콜백을 지난 모든 연결
+ * 실패는 서버가 붙이고, 시작 요청 자체가 성립하지 않은 경우(403·네트워크 단절·시한 초과)는
+ * 클라이언트가 같은 값을 붙인다(`linkNoticePath`). `linkSucceeded`는 **서버만** 만든다.
+ * 셋 다 목적지가 설정 화면이다.
+ *
+ * `linkSucceeded`가 실패가 아닌 유일한 표지인 이유는 비대칭 때문이다. 화면은 조작의 시작을
+ * `role="status"`로 알리는데 결과를 알릴 재료가 없으면 스크린리더 사용자에게 그 조작은 끝나지
+ * 않은 것과 같고, 왕복 뒤의 문서는 새로 열리므로 "방금 연결했다"를 아는 값은 주소의 표지뿐이다.
+ *
+ * 열한 값 중 어느 것도 계정의 존재·상태를 알려 주지 않는다. 재인증 실패 표지 하나에 타 사용자
+ * 식별자·미연결 식별자·증거 부재·삭제 전환이 접혀 있고, 연결 실패 표지 하나에 이미 연결됨·다른
+ * 계정에 연결됨·허가 만료·세션 불일치·삭제 상태가 접혀 있으며, 성공 표지는 무엇을 연결했는지
+ * 말하지 않는다.
  */
 export type AuthNoticeKind =
   | 'cancelled'
   | 'expired'
   | 'failed'
+  | 'linkCancelled'
+  | 'linkFailed'
+  | 'linkSucceeded'
   | 'loggedOut'
   | 'logoutFailed'
   | 'reauthCancelled'
@@ -173,6 +217,28 @@ export type ClientNoticeKind = 'expired' | 'loggedOut' | 'logoutFailed'
 export type ReauthNoticeKind = 'reauthCancelled' | 'reauthFailed'
 
 /**
+ * 설정 화면이 보여 줄 수 있는 표지.
+ *
+ * `ReauthNoticeKind`와 같은 근거의 같은 배치다. 설정 화면이 `AuthNoticeKind`를 그대로 받으면
+ * `/settings?auth=loggedOut`이 "로그아웃했습니다 … 다시 로그인해 주세요"를 아직 로그인해 있는
+ * 사용자에게 보여 준다. 타입을 좁혀 두면 화면이 URL 값을 거르는 일을 타입 검사가 강제한다
+ * (`linkNoticeKindOf`).
+ */
+export type LinkNoticeKind = 'linkCancelled' | 'linkFailed' | 'linkSucceeded'
+
+/**
+ * **인증 화면**이 보여 줄 수 있는 표지.
+ *
+ * 재인증·연결 표지가 여기 없다. 그 문장들은 로그인한 사용자에게만 참이고, 진입 화면에서
+ * 렌더되면 거짓을 말한다 — `/?auth=linkFailed`가 본인 확인도 연결도 없는 화면에서 "아래에서
+ * 본인 확인을 마친 뒤 다시 연결해 주세요"를 보여 주는 것이 그 모양이다. `ReauthNoticeKind`·
+ * `LinkNoticeKind`가 두 인증 화면과 설정 화면을 좁히는 것과 같은 방식으로, 이 타입이 진입
+ * 화면을 좁힌다.
+ */
+export type EntryNoticeKind =
+  'cancelled' | 'expired' | 'failed' | 'loggedOut' | 'logoutFailed' | 'signedOut'
+
+/**
  * URL 표지로 인정하는 값 전부. 목록에 없는 값은 무시한다.
  *
  * 한 목록이다. 값마다 분기를 두면 다음 표지가 한쪽에만 추가되는 자리가 생기고, 그때 그 값은
@@ -182,6 +248,9 @@ const URL_NOTICE_KINDS: readonly AuthNoticeKind[] = [
   'cancelled',
   'expired',
   'failed',
+  'linkCancelled',
+  'linkFailed',
+  'linkSucceeded',
   'loggedOut',
   'logoutFailed',
   'reauthCancelled',
@@ -189,18 +258,45 @@ const URL_NOTICE_KINDS: readonly AuthNoticeKind[] = [
 ]
 
 /**
+ * 그중 **인증 화면**이 보여 줄 수 있는 값. 위 목록의 진부분집합이다.
+ *
+ * 재인증·연결 표지를 여기서 뺀다. 화면마다 보여 줄 수 있는 표지를 좁히는 일을 세 거름망이
+ * 나눠 갖고(`noticeKindOf`·`reauthNoticeKindOf`·`linkNoticeKindOf`), 그래야 어느 주소도 그
+ * 화면에서 거짓인 문장을 만들 수 없다.
+ */
+const ENTRY_NOTICE_KINDS: readonly EntryNoticeKind[] = [
+  'cancelled',
+  'expired',
+  'failed',
+  'loggedOut',
+  'logoutFailed',
+]
+
+/**
  * URL 표지 → 화면 안내 종류. 목록에 없는 값은 무시한다.
  *
  * `signedOut`만 이 집합에서 빠진다. 그 표지는 URL이 아니라 세션 확인 결과가 고르며, 여기 넣으면
- * 화면이 자기 확인 결과와 무관한 문장을 URL만으로 띄운다. 나머지 일곱은 주소창에서 설정할 수
- * 있다 — 서버가 만드는 `cancelled`·`failed`·`reauthCancelled`·`reauthFailed`도, 클라이언트가
- * 만드는 `expired`·`loggedOut`·`logoutFailed`도 그렇다. 어느 값도 계정의 존재·상태를 알려 주지
- * 않고 로그인 상태를 바꾸지도 않으므로, 그 설정 가능성 자체는 위험이 아니다. 표지는 문장 하나를
- * 고를 뿐이다.
+ * 화면이 자기 확인 결과와 무관한 문장을 URL만으로 띄운다. 나머지 아홉은 주소창에서 설정할 수
+ * 있다 — 서버가 만드는 `cancelled`·`failed`·`reauthCancelled`·`reauthFailed`·`linkCancelled`·
+ * `linkFailed`도, 클라이언트가 만드는 `expired`·`loggedOut`·`logoutFailed`도 그렇다. 어느 값도
+ * 계정의 존재·상태를 알려 주지 않고 로그인 상태를 바꾸지도 않으므로, 그 설정 가능성 자체는
+ * 위험이 아니다. 표지는 문장 하나를 고를 뿐이다.
  */
-export function noticeKindOf(search: string): AuthNoticeKind | null {
+function urlNoticeKindOf(search: string): AuthNoticeKind | null {
   const marker = new URLSearchParams(search).get(NOTICE_PARAMETER)
   return URL_NOTICE_KINDS.find((kind) => kind === marker) ?? null
+}
+
+/**
+ * 주소의 표지 중 **인증 화면에 속하는 것만** 돌려준다.
+ *
+ * 진입 화면이 쓰는 거름망이다. 재인증·연결 표지는 로그인한 사용자의 화면으로 오는 값이라 여기서
+ * 걸러진다 — 걸러 내지 않으면 `/?auth=linkFailed`가 본인 확인도 연결도 없는 화면에서 그 안내를
+ * 렌더한다.
+ */
+export function noticeKindOf(search: string): EntryNoticeKind | null {
+  const kind = urlNoticeKindOf(search)
+  return ENTRY_NOTICE_KINDS.find((candidate) => candidate === kind) ?? null
 }
 
 /** 재인증 패널이 보여 줄 수 있는 표지 둘. 위 목록의 진부분집합이다. */
@@ -215,8 +311,26 @@ const REAUTH_NOTICE_KINDS: readonly ReauthNoticeKind[] = ['reauthCancelled', 're
  * 두 화면이 갈라질 자리를 만들지 않기 위해서다.
  */
 export function reauthNoticeKindOf(search: string): ReauthNoticeKind | null {
-  const kind = noticeKindOf(search)
+  const kind = urlNoticeKindOf(search)
   return REAUTH_NOTICE_KINDS.find((candidate) => candidate === kind) ?? null
+}
+
+/** 설정 화면이 보여 줄 수 있는 표지 셋. 위 목록의 진부분집합이다. */
+const LINK_NOTICE_KINDS: readonly LinkNoticeKind[] = [
+  'linkCancelled',
+  'linkFailed',
+  'linkSucceeded',
+]
+
+/**
+ * 주소의 표지 중 **연결에 속하는 것만** 돌려준다.
+ *
+ * `reauthNoticeKindOf`와 같은 근거의 같은 거름망이다. `noticeKindOf`를 그대로 넘기면
+ * `/settings?auth=loggedOut`이 "로그아웃했습니다"를 아직 로그인해 있는 사용자에게 보여 준다.
+ */
+export function linkNoticeKindOf(search: string): LinkNoticeKind | null {
+  const kind = urlNoticeKindOf(search)
+  return LINK_NOTICE_KINDS.find((candidate) => candidate === kind) ?? null
 }
 
 /**
@@ -248,10 +362,52 @@ export function reauthNoticePath(pathname: string): string {
   return `${pathname}?${query.toString()}`
 }
 
+/**
+ * 연결 실패 표지를 달고 설정 화면을 다시 여는 경로.
+ *
+ * `reauthNoticePath`와 같은 근거의 같은 모양이다. 목적지가 고정 경로인 것이 다른 점이며, 연결
+ * 조작이 사는 화면이 하나이기 때문이다 — 서버도 같은 경로에 같은 표지를 달아 보낸다
+ * (`AuthFlowHandlers`).
+ *
+ * 연결 시작이 성립하지 않은 경우에만 클라이언트가 이 값을 만든다(`startLinking`). 그 밖의 모든
+ * 연결 실패는 콜백을 지나므로 서버가 만든다.
+ */
+export function linkNoticePath(): string {
+  const kind: LinkNoticeKind = 'linkFailed'
+  const query = new URLSearchParams({ [NOTICE_PARAMETER]: kind })
+  return `${SETTINGS_PATH}?${query.toString()}`
+}
+
 const NOTICES: Readonly<Record<AuthNoticeKind, string>> = {
   cancelled: '로그인을 끝내지 않았습니다. 아래 버튼으로 다시 시도할 수 있습니다.',
   expired: '로그인 상태가 만료되어 화면을 닫았습니다. 아래 버튼으로 다시 로그인해 주세요.',
   failed: '로그인을 끝내지 못했습니다. 아래 버튼으로 다시 시도해 주세요.',
+  /**
+   * 사용자가 연결을 스스로 끝내지 않았다.
+   *
+   * 재인증 취소와 문장을 나누는 이유는 사용자가 한 일이 다르기 때문이다. 이 문장을 보는 사람은
+   * 로그인 수단을 연결하려다 그만둔 것이고, "본인 확인을 끝내지 않았습니다"는 그 상황을 틀리게
+   * 설명한다.
+   */
+  linkCancelled: '로그인 수단 연결을 끝내지 않았습니다. 아래에서 다시 시도할 수 있습니다.',
+  /**
+   * 그 밖의 모든 연결 실패.
+   *
+   * 무엇이 어긋났는지 말하지 않는다. 이미 연결된 수단, 다른 계정에 연결된 식별자, 만료된 허가,
+   * 세션 불일치가 모두 이 한 문장으로 접히며, 값을 나누는 순간 그 표지가 **다른 계정의 존재와
+   * 소유자**를 알려 주는 신호가 된다.
+   *
+   * 다음 행동을 함께 말한다. 연결에는 최근 본인 확인이 필요하고 그것이 가장 흔한 원인이므로,
+   * 이유를 특정하지 않으면서 사용자가 할 수 있는 일 하나를 가리킨다.
+   */
+  linkFailed: '로그인 수단을 연결하지 못했습니다. 아래에서 본인 확인을 마친 뒤 다시 연결해 주세요.',
+  /**
+   * 연결이 끝났다.
+   *
+   * 무엇을 연결했는지 말하지 않는다. 대상 제공자를 표지에 실으면 그 값이 주소·`Referer`·
+   * 히스토리에 남고, 아래 목록이 어차피 지금 상태를 보여 준다.
+   */
+  linkSucceeded: '로그인 수단을 연결했습니다. 아래 목록에서 확인할 수 있습니다.',
   loggedOut: '로그아웃했습니다. 다시 이용하려면 아래 버튼으로 로그인해 주세요.',
   /**
    * 로그아웃 요청이 성립하지 않았다.
@@ -428,6 +584,97 @@ export const authContent = {
       '복리 계획과 기록의 비교는 이후 단계에서 제공합니다.',
     ],
   },
+  /**
+   * 로그인 수단 설정 화면.
+   *
+   * 여기에는 계정의 사실 하나만 있다 — 세 제공자 각각이 이 계정에 연결됐는가. `issuer`·
+   * `subject`·이메일·연결 시각은 서버가 보내지 않으므로 화면이 그릴 수도 없다.
+   *
+   * 해제는 이 스토리의 범위가 아니다(Story 1.11). 연결된 수단에는 상태만 보이고 조작을 주지
+   * 않으며, 마지막 수단 보호와 확인 대화상자는 그 스토리가 자기 작업과 함께 만든다.
+   */
+  settings: {
+    id: 'auth-settings',
+    heading: '로그인 수단',
+    /**
+     * 두 로그인 상태 화면이 이 화면으로 가는 길.
+     *
+     * 이 링크가 없으면 주소를 직접 쳐야만 닿는 화면이 되고, 이 스토리가 없애려던 문제("사용자가
+     * 자기 로그인 수단을 볼 자리가 없다")가 그대로 남는다. 전역 내비게이션은 아직 없으므로
+     * (Epic 1의 범위가 아니다) 머리말의 링크 하나가 그 자리다.
+     */
+    link: '로그인 수단 설정',
+    body: '이 계정에 연결된 로그인 수단입니다. 연결된 수단 중 어느 것으로도 이 계정에 로그인할 수 있습니다.',
+    /**
+     * 제공자의 표시 이름.
+     *
+     * 로그인 버튼의 라벨에서 잘라 쓰지 않는다. 잘라 쓰면 그 라벨의 문구를 바꾸는 날 이 화면의
+     * 이름이 조용히 함께 바뀌고, 두 자리의 규칙이 문자열 조작 하나에 묶인다.
+     */
+    providerNames: {
+      google: 'Google',
+      naver: '네이버',
+      kakao: '카카오',
+    },
+    /** 연결된 수단의 상태. 연결 시각도 식별자도 말하지 않는다. */
+    linked: '연결됨',
+    /**
+     * 연결 조작의 라벨.
+     *
+     * 로그인 버튼의 "계속하기"와 문구를 나눈다. 이 조작은 로그인이 아니라 지금 계정에 수단을
+     * 더하는 일이고, 같은 문구를 쓰면 화면에 같은 이름의 컨트롤이 둘 생겨 보조기술 사용자가
+     * 어느 것이 무엇인지 구분할 수 없다.
+     */
+    linkLabels: {
+      google: 'Google 계정 연결하기',
+      naver: '네이버 계정 연결하기',
+      kakao: '카카오 계정 연결하기',
+    },
+    /** 연결이 요구하는 것과 요구하지 않는 것. 버튼 아래에 둔다. */
+    boundary:
+      '연결에는 최근 본인 확인이 필요합니다. 연결된 수단은 본인 확인에만 사용하며 Bybit 자격정보·금융 데이터·계획은 공유하지 않습니다.',
+    /** 화면당 하나뿐인 `role="status"` 영역이 말할 문장. 연결 상태를 확인하는 동안이다. */
+    status: '로그인 수단을 확인하고 있습니다.',
+    /**
+     * 연결 상태를 확인하지 못했다.
+     *
+     * 빈 목록으로 접지 않는다. 접으면 일시적 실패에서 **이미 연결된 수단에도 연결 버튼이
+     * 그려지고**, 그 클릭은 서버가 거절해 "본인 확인을 마친 뒤 다시 연결해 주세요"라는 엉뚱한
+     * 안내로 끝난다. 확인하지 못한 것과 연결된 것이 없는 것은 다른 사실이다.
+     */
+    unavailable: '로그인 수단을 확인하지 못했습니다. 아래 버튼으로 다시 확인해 주세요.',
+    /** 다시 확인하는 조작. 자동 재시도하지 않는 것이 이 버튼이 있는 이유다. */
+    retry: '로그인 수단 다시 확인',
+    /** 연결 시작이 도는 중. `role="status"` 영역이 같은 자리에서 말한다. */
+    pending: '로그인 수단 연결 화면으로 이동하고 있습니다.',
+    /**
+     * 연결 전에 지나야 하는 본인 확인.
+     *
+     * 이 자리가 있어야 "두 클릭"이 성립한다. 재인증이 신선하지 않으면 연결 시작이 거부되고,
+     * 그때 사용자가 할 수 있는 일은 본인 확인 하나뿐이다. 자동으로 이어 하지 않는 것이 계약이며
+     * (AC-6) 그래서 이 조작은 사용자가 직접 누른다.
+     *
+     * 연결된 제공자를 묻지 않는다. 세 버튼을 그대로 보이고, 연결되지 않은 수단을 고른 결과는
+     * 다른 실패와 구분되지 않는 표지 하나로 수렴한다 — 재인증 패널과 같은 판단이다.
+     */
+    reauth: {
+      id: 'auth-settings-reauth',
+      heading: '본인 확인',
+      /**
+       * 확인 뒤 어디로 가는지를 사실대로 적는다.
+       *
+       * 재인증의 복귀 목적지는 세션이 로그인 시각에 붙들어 둔 값이고(Story 1.8) 이 화면이 아니다.
+       * 미인증으로 `/settings`를 열어 로그인한 경우에만 그 값이 이 화면이 된다. "돌아옵니다"로
+       * 적으면 대개 거짓이므로, 로그인 상태 화면의 설정 링크로 다시 오면 된다고 말한다.
+       */
+      body: '로그인 수단을 연결하려면 먼저 이 계정에 연결된 수단으로 본인 확인을 해 주세요. 확인을 마치면 로그인 상태 화면으로 돌아가며, 거기서 이 설정 화면을 다시 열어 연결할 수 있습니다.',
+      labels: {
+        google: 'Google로 본인 확인하기',
+        naver: '네이버로 본인 확인하기',
+        kakao: '카카오로 본인 확인하기',
+      },
+    },
+  },
 } as const
 
 /** 진입 화면의 로그인 블록에 렌더되어야 하는 카피. 시험이 문구 표류를 감지하는 데 쓴다. */
@@ -476,6 +723,7 @@ export const onboardingCopyStrings: readonly string[] = [
   authContent.disclaimer,
   authContent.onboarding.heading,
   ...authContent.onboarding.items,
+  authContent.settings.link,
   authContent.signOut.label,
 ]
 
@@ -485,5 +733,25 @@ export const dashboardCopyStrings: readonly string[] = [
   authContent.disclaimer,
   authContent.dashboard.heading,
   ...authContent.dashboard.items,
+  authContent.settings.link,
+  authContent.signOut.label,
+]
+
+/**
+ * 설정 화면에서 **언제나** 렌더되는 카피.
+ *
+ * 연결 라벨은 여기 없다. 그 버튼은 아직 연결되지 않은 제공자에만 나타나므로 계정 상태에 따라
+ * 렌더 여부가 갈리고, 이 배열에 섞으면 모든 수단이 연결된 계정의 문구 단정이 늘 실패한다.
+ * 연결 여부에 따른 렌더는 화면 시험이 제공자마다 따로 본다.
+ */
+export const settingsCopyStrings: readonly string[] = [
+  authContent.pageTitle,
+  authContent.disclaimer,
+  authContent.settings.heading,
+  authContent.settings.body,
+  authContent.settings.boundary,
+  authContent.settings.reauth.heading,
+  authContent.settings.reauth.body,
+  ...SIGN_IN_PROVIDERS.map((provider) => authContent.settings.reauth.labels[provider]),
   authContent.signOut.label,
 ]

@@ -1129,7 +1129,7 @@ assert_equals '왕복 루프가 제공자 수만큼 돌았다' "${round_trip_cou
 # 세 왕복이 서로 다른 계정을 만들었다. 같은 계정이면 제공자 식별자가 병합된 것이다.
 assert_rows '세 왕복이 서로 다른 계정을 만들었다' \
   'SELECT count(DISTINCT user_id) FROM identity_social_link' '3'
-# 한 계정이 두 매핑을 갖지 않는다. 로그인 수단 연결은 Story 1.10이며 이 스토리에는 그 경로가 없다.
+# 이 시점에는 한 계정이 두 매핑을 갖지 않는다. 연결 경로는 아래 `연결 왕복` 절이 처음 지난다.
 assert_rows '한 계정이 두 제공자 매핑을 갖지 않는다' \
   'SELECT count(*) FROM (SELECT user_id FROM identity_social_link GROUP BY user_id HAVING count(*) > 1) multi' \
   '0'
@@ -1348,6 +1348,346 @@ else
 fi
 
 
+
+printf '\n연결 왕복\n'
+
+# 로그인 수단 연결이다. Story 1.10의 HTTP 계약을 보는 유일한 자리이자, 1.8의 재인증과 1.9의
+# 허가가 실제로 작동하는지 보는 **첫 층**이다 — 그전까지 두 계약에는 소비자가 하나도 없었다.
+#
+# 위 재인증 절이 Google 세션의 재인증 시각을 막 기록했다. 연결 시작은 그 값이 신선할 때만
+# 허가를 발급하므로 이 절은 그 바로 뒤에 있어야 한다.
+#
+# 세션 쿠키와 토큰은 재인증 절이 갱신한 값이다. 연결 성공이 세션을 한 번 더 회전시키므로 아래에서
+# 두 전역을 다시 갱신한다 — 갱신하지 않으면 뒤따르는 로그아웃 절이 죽은 쿠키로 403을 받고 그
+# 실패는 "로그아웃이 깨졌다"로 잘못 읽힌다.
+
+link_session_cookie="${google_session_cookie}"
+link_csrf_token="${google_csrf_token}"
+
+if [ -n "${link_session_cookie}" ] && [ -n "${link_csrf_token}" ]; then
+  record_pass '연결에 쓸 세션 쿠키와 토큰을 얻었다'
+else
+  record_fail '연결에 쓸 세션 쿠키와 토큰을 얻었다' \
+    '재인증 뒤의 쿠키나 토큰이 없다. 아래 단정이 아무것도 보지 않는다.'
+fi
+
+# 1) 연결 상태 조회. 제공자 이름만 나간다.
+fetch GET /api/auth/link -H "Cookie: BOKRILOG_SESSION=${link_session_cookie}"
+assert_equals '연결 상태 조회 200' "${last_status}" '200'
+assert_equals '연결 상태 조회 Content-Type' "$(header_value 'Content-Type')" 'application/json'
+# 본문 전문을 고정한다. 필드가 하나 늘면 그것이 곧 외부 식별자가 새어 나갈 자리다.
+#
+# 뒤에 `assert_body_lacks`를 붙이지 않는다. 전문 동등성이 이미 그 계약을 통째로 소유하므로 같은
+# 본문에 "무엇이 없다"를 다시 거는 단정은 실패할 수 없다.
+assert_equals '연결 상태 본문은 제공자 이름 배열뿐' \
+  "$(cat "${last_body}")" '{"providers":["google"]}'
+assert_security_headers '연결 상태 조회'
+
+# 미인증 조회는 공통 거부 하나다. 아는 제공자 이름도 개수도 실리지 않는다.
+fetch GET /api/auth/link
+assert_equals '미인증 연결 상태 조회 403' "${last_status}" '403'
+# 본문은 공통 오류 계약이 소유한다. 그 모양에 제공자 이름이 들어갈 자리가 없으므로 "없다"를
+# 다시 거는 단정은 실패할 수 없고, 여기서 볼 것은 code와 correlation ID 둘이다.
+assert_body_contains '미인증 연결 상태 조회 안정 code' '"code":"FORBIDDEN"'
+assert_correlation_id '미인증 연결 상태 조회 correlation ID'
+
+# 접두사를 메서드가 가른다. 안전한 메서드로는 시작할 수 없고, 제공자 없는 시작은 경로가 아니다.
+fetch GET /api/auth/link/naver -H "Cookie: BOKRILOG_SESSION=${link_session_cookie}"
+# 그 경로는 있고 메서드가 다르다. 안전한 메서드로는 연결을 시작할 수 없다는 사실이 이 405다.
+assert_equals '`GET /api/auth/link/<제공자>` 405(시작은 안전한 메서드가 아니다)' \
+  "${last_status}" '405'
+assert_body_contains '`GET /api/auth/link/<제공자>` 안정 code' '"code":"METHOD_NOT_ALLOWED"'
+assert_body_lacks '`GET /api/auth/link/<제공자>`가 연결 상태를 돌려주지 않는다' 'providers'
+
+fetch POST /api/auth/link \
+  -H "Cookie: BOKRILOG_SESSION=${link_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${link_csrf_token}"
+assert_status_in '`POST /api/auth/link` 405 또는 404(시작은 제공자를 요구한다)' \
+  "${last_status}" '405' '404'
+assert_body_lacks '`POST /api/auth/link`가 연결을 시작하지 않는다' 'providers'
+assert_rows '메서드 탐침이 허가를 만들지 않는다' 'SELECT count(*) FROM action_grant' '0'
+
+# 2) 시작의 보호. `/api/auth/` 아래 상태 변경이므로 로그아웃·재인증과 같은 계약을 지난다.
+fetch POST /api/auth/link/naver \
+  -H "Cookie: BOKRILOG_SESSION=${link_session_cookie}" \
+  -H "Origin: ${base_url}"
+assert_equals '토큰 없는 연결 시작 403' "${last_status}" '403'
+assert_body_contains '토큰 없는 연결 시작 안정 code' '"code":"FORBIDDEN"'
+assert_correlation_id '토큰 없는 연결 시작 correlation ID'
+
+fetch POST /api/auth/link/naver \
+  -H "Cookie: BOKRILOG_SESSION=${link_session_cookie}" \
+  -H 'Origin: https://evil.example' \
+  -H "X-CSRF-TOKEN: ${link_csrf_token}"
+assert_equals '교차 출처 연결 시작 403' "${last_status}" '403'
+assert_body_contains '교차 출처 연결 시작 안정 code' '"code":"FORBIDDEN"'
+
+fetch POST /api/auth/link/naver -H "Origin: ${base_url}" \
+  -H 'X-CSRF-TOKEN: verifyanonymouslinkmarker'
+assert_equals '미인증 연결 시작 403' "${last_status}" '403'
+assert_body_contains '미인증 연결 시작 안정 code' '"code":"FORBIDDEN"'
+
+fetch POST /api/auth/link/nosuchprovider \
+  -H "Cookie: BOKRILOG_SESSION=${link_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${link_csrf_token}"
+assert_equals '미지 제공자 연결 시작 404' "${last_status}" '404'
+assert_body_contains '미지 제공자 연결 시작 안정 code' '"code":"NOT_FOUND"'
+assert_body_lacks '미지 제공자 연결 시작이 이름을 되비추지 않는다' 'nosuchprovider'
+assert_body_lacks '미지 제공자 연결 시작에 아는 제공자 이름이 없다' 'naver'
+
+# 이미 연결된 제공자. 재인증은 신선한데도 거부이며 응답은 위 넷과 구분되지 않는다.
+fetch POST /api/auth/link/google \
+  -H "Cookie: BOKRILOG_SESSION=${link_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${link_csrf_token}"
+assert_equals '이미 연결된 제공자의 연결 시작 403' "${last_status}" '403'
+assert_body_contains '이미 연결된 제공자의 안정 code' '"code":"FORBIDDEN"'
+
+# 위 다섯 거절 중 어느 것도 허가를 만들지 않았다.
+assert_rows '연결 시작 거절이 허가를 만들지 않는다' 'SELECT count(*) FROM action_grant' '0'
+assert_rows '연결 시작 거절이 매핑을 만들지 않는다' 'SELECT count(*) FROM identity_social_link' '3'
+
+# 3) 무장. 본문 없는 204이고 허가 행이 정확히 하나 생긴다.
+#
+# 무장 전에는 그 속성이 없다. 이 줄이 없으면 아래 "정확히 하나" 단정이 앞선 절이 남긴 값을 보고
+# 통과할 수 있다.
+assert_rows '무장 전에는 연결 흐름 속성이 없다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.link'" '0'
+
+fetch POST /api/auth/link/naver \
+  -H "Cookie: BOKRILOG_SESSION=${link_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${link_csrf_token}"
+assert_equals '연결 시작 204' "${last_status}" '204'
+if [ ! -s "${last_body}" ]; then
+  record_pass '연결 시작 응답에 본문이 없다'
+else
+  record_fail '연결 시작 응답에 본문이 없다' "$(head -c 200 "${last_body}")"
+fi
+assert_security_headers '연결 시작 204'
+assert_rows '연결 시작이 허가 하나를 발급한다' 'SELECT count(*) FROM action_grant' '1'
+assert_rows '발급된 허가는 아직 소비되지 않았다' \
+  'SELECT count(*) FROM action_grant WHERE consumed_at IS NULL' '1'
+assert_rows '연결 시작이 세션 행을 늘리지 않는다' 'SELECT count(*) FROM spring_session' '3'
+
+# 허가 참조는 브라우저로 나가지 않는다. 서버가 세션에 들고 있다가 콜백에서 그대로 소비한다.
+link_grant_reference="$(psql_value 'SELECT grant_id FROM action_grant')"
+if [ -n "${link_grant_reference}" ]; then
+  record_pass '허가 참조를 저장소에서 읽었다'
+else
+  record_fail '허가 참조를 저장소에서 읽었다' '아래 누출 검사가 아무것도 보지 않는다.'
+fi
+
+# 무장은 세션 속성 하나다. 이름으로 센다 — 전체 행 수의 델타로 보면 같은 요청이 함께 바꾸는
+# 다른 속성(성공한 인증마다 갈아치우는 CSRF 토큰 등)에 그 값이 묻힌다.
+assert_rows '연결 무장이 세션 속성 하나를 만든다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.link'" '1'
+
+# 4) 인가 시작. 인증된 세션인데도 통과한다 — 무장이 그 예외를 만든다.
+fetch GET /api/auth/authorize/naver -H "Cookie: BOKRILOG_SESSION=${link_session_cookie}"
+assert_equals '무장된 세션의 연결 인가 시작 302' "${last_status}" '302'
+link_authorize_location="$(header_value 'Location')"
+assert_prefix '연결 인가 시작이 대상 제공자 스텁으로 간다' \
+  "${link_authorize_location}" "${base_url}/api/dev-oidc/naver/authorize"
+# 연결은 재인증이 아니다. 재인증 파라미터를 얹으면 이 왕복이 매번 재인증을 요구한다.
+assert_value_lacks '연결 인가 요청에 max_age가 없다' "${link_authorize_location}" 'max_age='
+assert_value_lacks '연결 인가 요청에 prompt가 없다' "${link_authorize_location}" 'prompt='
+# 기존 검증 재료는 그대로다.
+assert_value_contains '연결 인가 요청이 PKCE S256을 쓴다' \
+  "${link_authorize_location}" 'code_challenge_method=S256'
+assert_value_contains '연결 인가 요청에 nonce가 있다' "${link_authorize_location}" 'nonce='
+assert_value_lacks '연결 인가 요청에 PKCE verifier가 실리지 않는다' \
+  "${link_authorize_location}" 'code_verifier'
+
+# 5) 동의 화면. 위 네이버 로그인 왕복과 **다른** subject를 보낸다 — 연결은 미연결 식별자를
+#    지금 계정에 붙이는 일이고, 같은 값을 보내면 "다른 계정에 연결된 식별자" 실패를 본다.
+fetch GET "${link_authorize_location#"${base_url}"}&dev_subject=link-${stub_subject_marker}"
+assert_equals '연결 동의 화면 200' "${last_status}" '200'
+link_consent_href="$(sed -n 's/.*<a href="\([^"]*\)".*/\1/p' "${last_body}" | head -1 | sed 's/&amp;/\&/g')"
+assert_prefix '연결 동의 링크가 공개 origin의 콜백으로 되돌린다' \
+  "${link_consent_href}" "${base_url}/api/auth/callback/naver"
+link_code="$(printf '%s' "${link_consent_href}" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')"
+link_state="$(printf '%s' "${link_consent_href}" | sed -n 's/.*[?&]state=\([^&]*\).*/\1/p')"
+
+# 6) 콜백. 설정 화면으로 돌아가고 매핑과 허가 소비가 함께 커밋된다.
+fetch GET "${link_consent_href#"${base_url}"}" \
+  -H "Cookie: BOKRILOG_SESSION=${link_session_cookie}"
+assert_equals '연결 콜백 302' "${last_status}" '302'
+link_callback_location="$(header_value 'Location')"
+# 목적지는 서버 상수 하나다. 클라이언트가 보낸 값이 아니다.
+#
+# 성공도 표지 하나를 단다. 왕복 뒤의 문서는 새로 열리므로 "방금 연결했다"를 아는 값은 주소의
+# 표지뿐이고, 그것이 없으면 화면은 조작의 시작만 알리고 결과는 알리지 않는다.
+assert_equals '연결이 설정 화면으로 결과 표지와 함께 돌아간다' \
+  "$(resolve_location "${link_callback_location}")" "${base_url}/settings?auth=linkSucceeded"
+# 무엇을 연결했는지는 말하지 않는다.
+assert_value_lacks '연결 성공 표지가 대상 제공자를 말하지 않는다' \
+  "${link_callback_location}" 'naver'
+assert_value_lacks '연결 목적지에 code가 없다' "${link_callback_location}" 'code='
+assert_value_lacks '연결 목적지에 state가 없다' "${link_callback_location}" 'state='
+assert_body_lacks '연결 콜백 응답에 계정 식별자가 없다' 'user_id'
+
+link_rotated_cookie="$(session_cookie_value)"
+if [ -n "${link_rotated_cookie}" ] && [ "${link_rotated_cookie}" != "${link_session_cookie}" ]; then
+  record_pass '연결 성공 시점에 세션 ID가 회전한다'
+else
+  record_fail '연결 성공 시점에 세션 ID가 회전한다' \
+    '콜백이 새 세션 쿠키를 주지 않았다. 허가 소비가 요구하는 재회전이 성립하지 않았다.'
+fi
+
+# 매핑이 하나 늘고 그 계정이 두 제공자를 갖는다. 계정은 늘지 않았다.
+assert_rows '연결이 매핑을 하나 더한다' 'SELECT count(*) FROM identity_social_link' '4'
+assert_rows '연결이 계정을 만들지 않는다' 'SELECT count(*) FROM identity_account_lifecycle' '3'
+assert_rows '한 계정이 두 제공자 매핑을 갖는다' \
+  'SELECT count(*) FROM (SELECT user_id FROM identity_social_link GROUP BY user_id HAVING count(*) = 2) linked' \
+  '1'
+assert_rows '그 두 매핑의 제공자가 서로 다르다' \
+  'SELECT count(DISTINCT provider) FROM identity_social_link WHERE user_id = (SELECT user_id FROM identity_social_link GROUP BY user_id HAVING count(*) = 2)' \
+  '2'
+# 허가 소비와 매핑 추가가 한 트랜잭션이다. 반쪽 상태가 남지 않는다.
+assert_rows '허가가 정확히 한 번 소비됐다' \
+  'SELECT count(*) FROM action_grant WHERE consumed_at IS NOT NULL' '1'
+assert_rows '연결이 세션 행을 늘리지 않는다' 'SELECT count(*) FROM spring_session' '3'
+
+# 무장은 일회성이다. 소비 뒤 그 속성이 어느 세션에도 남지 않는다 — 남으면 다음 콜백이 같은
+# 무장을 다시 쓴다.
+assert_rows '연결 콜백이 무장 속성을 소비한다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.link'" '0'
+# 목적지와 재인증 기록은 회전을 건너 살아남는다. 이 왕복에서 세션 ID가 두 번 바뀌므로(고정 방어
+# + 허가 소비의 재회전) 그 둘 중 하나라도 속성을 잃으면 사용자는 다음 연결을 이유 없이 거부당한다.
+assert_rows '연결 뒤에도 목적지 속성이 세 세션에 남아 있다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.destination'" '3'
+assert_rows '연결 뒤에도 재인증 기록이 남아 있다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.reauthenticated-at'" '1'
+
+# 7) 회전 전 쿠키는 죽었고 새 쿠키로는 두 제공자가 보인다.
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${link_session_cookie}"
+assert_equals '연결 전 쿠키의 세션 확인은 미인증이다' \
+  "$(cat "${last_body}")" '{"authenticated":false,"destination":"entry"}'
+
+fetch GET /api/auth/link -H "Cookie: BOKRILOG_SESSION=${link_rotated_cookie}"
+assert_equals '연결 뒤 상태 조회 200' "${last_status}" '200'
+# 순서가 고정이다. 화면이 아는 고정 순서와 같은 목록이 응답을 만든다.
+assert_equals '연결 뒤 상태 조회가 두 제공자를 답한다' \
+  "$(cat "${last_body}")" '{"providers":["google","naver"]}'
+
+# 다른 두 사용자는 그대로다.
+fetch GET /api/auth/link -H "Cookie: BOKRILOG_SESSION=${naver_session_cookie}"
+assert_equals '다른 사용자의 연결 상태 조회 200' "${last_status}" '200'
+assert_equals '다른 사용자의 연결 상태는 그대로다' "$(cat "${last_body}")" '{"providers":["naver"]}'
+fetch GET /api/auth/link -H "Cookie: BOKRILOG_SESSION=${kakao_session_cookie}"
+assert_equals '세 번째 사용자의 연결 상태 조회 200' "${last_status}" '200'
+assert_equals '세 번째 사용자의 연결 상태도 그대로다' \
+  "$(cat "${last_body}")" '{"providers":["kakao"]}'
+
+# 8) 회전한 쿠키의 새 토큰으로 전역을 갱신한다. 아래 거부 탐침과 로그아웃 절이 이 값을 쓴다.
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${link_rotated_cookie}"
+google_session_cookie="${link_rotated_cookie}"
+google_csrf_token="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
+if [ -n "${google_csrf_token}" ]; then
+  record_pass '연결 뒤 세션이 새 CSRF 토큰을 준다'
+else
+  record_fail '연결 뒤 세션이 새 CSRF 토큰을 준다' \
+    "본문에 csrfToken이 없다 — $(head -c 200 "${last_body}")"
+fi
+
+# 9) 거부 탐침: 연결 무장 도중 본인 확인을 시작하면 그 흐름이 대신 성립한다.
+#
+# 설정 화면은 연결 버튼 셋과 본인 확인 버튼 셋을 같은 페이지에 그린다. "무장 → 제공자 화면에서
+# 이탈 → 본인 확인"은 그래서 평범한 경로이고, 연결 무장이 남아 있으면 그 콜백이 연결 분기에
+# 삼켜져 재인증이 성립하지 않는다. 무장 시각에 상대 흐름을 버리는 것이 그 상태를 없앤다.
+fetch POST /api/auth/link/kakao \
+  -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${google_csrf_token}"
+assert_equals '연결 무장(버려질 것) 204' "${last_status}" '204'
+assert_rows '그 무장이 허가 하나를 남긴다' \
+  'SELECT count(*) FROM action_grant WHERE consumed_at IS NULL' '1'
+
+fetch POST /api/auth/reauthenticate/google \
+  -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${google_csrf_token}"
+assert_equals '연결 무장 뒤의 재인증 시작 204' "${last_status}" '204'
+# 흐름도 허가도 함께 사라진다. 흐름만 버리면 참조할 수 없는 허가가 수명을 산다.
+assert_rows '재인증 시작이 연결 무장을 버린다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.link'" '0'
+assert_rows '버려진 무장의 허가도 함께 사라진다' \
+  'SELECT count(*) FROM action_grant WHERE consumed_at IS NULL' '0'
+
+fetch GET /api/auth/authorize/google -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}"
+assert_equals '갈아탄 흐름의 인가 시작 302' "${last_status}" '302'
+switched_authorize_location="$(header_value 'Location')"
+fetch GET "${switched_authorize_location#"${base_url}"}&dev_subject=google-${stub_subject_marker}"
+switched_consent_href="$(sed -n 's/.*<a href="\([^"]*\)".*/\1/p' "${last_body}" | head -1 | sed 's/&amp;/\&/g')"
+fetch GET "${switched_consent_href#"${base_url}"}" \
+  -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}"
+switched_callback_location="$(header_value 'Location')"
+# 재인증이 성립한다 — 붙들어 둔 목적지로 표지 없이 돌아간다. 연결 분기에 삼켜지면 여기가
+# `/settings?auth=linkFailed`가 된다.
+assert_equals '갈아탄 콜백은 재인증으로 성립한다' \
+  "$(resolve_location "${switched_callback_location}")" "${base_url}/onboarding"
+assert_rows '갈아탄 콜백이 매핑을 만들지 않는다' 'SELECT count(*) FROM identity_social_link' '4'
+
+# 회전한 쿠키와 새 토큰으로 전역을 갱신한다.
+switched_cookie="$(session_cookie_value)"
+if [ -n "${switched_cookie}" ]; then
+  record_pass '갈아탄 재인증이 세션을 회전시킨다'
+  fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${switched_cookie}"
+  google_session_cookie="${switched_cookie}"
+  google_csrf_token="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
+else
+  record_fail '갈아탄 재인증이 세션을 회전시킨다' '콜백이 새 세션 쿠키를 주지 않았다.'
+fi
+
+# 10) 거부 탐침: 다른 계정에 연결된 식별자.
+#
+# 카카오 왕복이 만든 식별자를 이 계정에 붙이려 한다. 스키마의 `(issuer, subject)` 전역 유일이
+# 최종 방어이고, 여기서 보는 것은 그 거부가 HTTP 층에서 **표지 하나**로 수렴하며 양쪽 계정의
+# 매핑이 모두 그대로라는 사실이다. 상대 계정의 존재도 소유자도 드러나지 않는다.
+fetch POST /api/auth/link/kakao \
+  -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${google_csrf_token}"
+assert_equals '두 번째 연결 시작 204' "${last_status}" '204'
+
+fetch GET /api/auth/authorize/kakao -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}"
+assert_equals '두 번째 연결 인가 시작 302' "${last_status}" '302'
+taken_authorize_location="$(header_value 'Location')"
+
+fetch GET "${taken_authorize_location#"${base_url}"}&dev_subject=kakao-${stub_subject_marker}"
+assert_equals '두 번째 연결 동의 화면 200' "${last_status}" '200'
+taken_consent_href="$(sed -n 's/.*<a href="\([^"]*\)".*/\1/p' "${last_body}" | head -1 | sed 's/&amp;/\&/g')"
+
+fetch GET "${taken_consent_href#"${base_url}"}" \
+  -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}"
+assert_equals '남의 식별자를 쓴 연결 콜백 302' "${last_status}" '302'
+taken_callback_location="$(header_value 'Location')"
+assert_equals '남의 식별자를 쓴 연결은 표지 하나로 수렴한다' \
+  "$(resolve_location "${taken_callback_location}")" "${base_url}/settings?auth=linkFailed"
+assert_value_lacks '거부 표지가 사유를 말하지 않는다' "${taken_callback_location}" 'taken'
+# 양쪽 다 무변경이다. 허가도 소비되지 않았다 — 반쪽 상태가 남지 않는다.
+assert_rows '거부된 연결이 매핑을 만들지 않는다' 'SELECT count(*) FROM identity_social_link' '4'
+assert_rows '거부된 연결이 허가를 소비하지 않는다' \
+  'SELECT count(*) FROM action_grant WHERE consumed_at IS NOT NULL' '1'
+assert_rows '거부된 연결이 계정을 만들지 않는다' \
+  'SELECT count(*) FROM identity_account_lifecycle' '3'
+
+# 검증을 통과한 뒤 거절됐으므로 세션 ID는 이미 회전한 상태다(재인증 실패와 같은 근거).
+taken_rotated_cookie="$(session_cookie_value)"
+if [ -n "${taken_rotated_cookie}" ]; then
+  record_pass '거부된 연결도 세션을 잃지 않는다'
+  fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${taken_rotated_cookie}"
+  assert_body_contains '거부된 연결 뒤에도 인증 상태다' '"authenticated":true'
+  google_session_cookie="${taken_rotated_cookie}"
+  google_csrf_token="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
+else
+  record_fail '거부된 연결도 세션을 잃지 않는다' '콜백이 새 세션 쿠키를 주지 않았다.'
+fi
+
+
 printf '\n로그아웃 왕복\n'
 
 # 위 왕복들이 만든 세션을 실제로 끝낸다. 여기까지가 Story 1.5의 성공 경로 전부다.
@@ -1414,7 +1754,8 @@ fi
 # 세션 행이 하나만 사라졌다. 계정과 매핑은 그대로다 — 로그아웃은 계정 상태를 바꾸지 않는다.
 assert_rows '로그아웃이 그 세션 행만 지운다' 'SELECT count(*) FROM spring_session' '2'
 assert_rows '로그아웃이 계정을 지우지 않는다' 'SELECT count(*) FROM identity_account_lifecycle' '3'
-assert_rows '로그아웃이 인증 매핑을 지우지 않는다' 'SELECT count(*) FROM identity_social_link' '3'
+# 넷이다. 위 연결 왕복이 Google 계정에 네이버 매핑 하나를 더했다.
+assert_rows '로그아웃이 인증 매핑을 지우지 않는다' 'SELECT count(*) FROM identity_social_link' '4'
 
 # 그 쿠키로 이어지는 세션 확인이 더 이상 인증 상태가 아니다.
 fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${session_cookie}"
@@ -1503,14 +1844,17 @@ printf '\n스텁 제공자 성공 왕복 정리\n'
 
 # 스택을 원래 상태로 되돌린다. 뒤 단계와 Playwright 회귀가 빈 저장소를 전제한다.
 psql_exec '왕복이 만든 세션을 지운다' 'TRUNCATE TABLE spring_session, spring_session_attributes'
+# `action_grant`를 이름으로 적는다. `identity_account`를 참조하므로 CASCADE가 어차피 비우지만,
+# 이름이 없으면 그 정리가 외래키 설정에 딸린 부수 효과로만 성립한다(`AuthFlowTestBase`와 같은 규율).
 psql_exec '왕복이 만든 계정과 매핑을 지운다' \
-  'TRUNCATE TABLE identity_social_link, identity_account, identity_account_lifecycle CASCADE'
+  'TRUNCATE TABLE action_grant, identity_social_link, identity_account, identity_account_lifecycle CASCADE'
 assert_rows '되돌린 뒤 계정 행이 0개다' 'SELECT count(*) FROM identity_account_lifecycle' '0'
 assert_rows '되돌린 뒤 세션 행이 0개다' 'SELECT count(*) FROM spring_session' '0'
+assert_rows '되돌린 뒤 허가 행이 0개다' 'SELECT count(*) FROM action_grant' '0'
 
 printf '\n알려진 내부 경로 허용 목록\n'
 
-# 폴백이 아니라 허용 목록이다. 이름을 적은 두 경로만 진입 문서를 받는다.
+# 폴백이 아니라 허용 목록이다. 이름을 적은 세 경로만 진입 문서를 받는다.
 while read -r allowed_path; do
   [ -n "${allowed_path}" ] || continue
   fetch GET "${allowed_path}"
@@ -1523,6 +1867,7 @@ while read -r allowed_path; do
 done <<'ALLOWED_PATHS'
 /onboarding
 /dashboard
+/settings
 ALLOWED_PATHS
 
 # 정적 경로의 잘못된 메서드. 허용 목록 location도 파일을 찾기 전에 되돌린다.
@@ -1543,6 +1888,8 @@ done <<'REJECTED_PATHS'
 /onboarding-x
 /dashboards
 /dashboard/
+/settings/x
+/settings-x
 REJECTED_PATHS
 
 printf '\n한도를 넘는 요청\n'
@@ -1743,12 +2090,18 @@ if [ "${log_ready}" = true ]; then
   # 세 왕복의 값을 모두 본다. 제공자가 늘어도 access log의 `map`은 하나지만, 한 왕복의 값만
   # 검사하면 다른 제공자의 콜백이 다른 location으로 흘러 쿼리를 남기기 시작해도 통과한다.
   for leaked_label in 'google code' 'google state' 'naver code' 'naver state' \
-    'kakao code' 'kakao state' 'reauth code' 'reauth state'; do
+    'kakao code' 'kakao state' 'reauth code' 'reauth state' 'link code' 'link state' \
+    'link 허가 참조'; do
     case "${leaked_label}" in
       'google code') leaked_value="${google_round_trip_code}" ;;
       'google state') leaked_value="${google_round_trip_state}" ;;
       'reauth code') leaked_value="${reauth_code}" ;;
       'reauth state') leaked_value="${reauth_state}" ;;
+      'link code') leaked_value="${link_code}" ;;
+      'link state') leaked_value="${link_state}" ;;
+      # 허가 참조는 브라우저에도 로그에도 나가지 않는다. 서버가 세션에 들고 있다가 소비하는
+      # 값이므로 응답에 실릴 자리가 없고, 그 사실을 실제 값으로 확인한다.
+      'link 허가 참조') leaked_value="${link_grant_reference}" ;;
       'naver code') leaked_value="${naver_round_trip_code}" ;;
       'naver state') leaked_value="${naver_round_trip_state}" ;;
       'kakao code') leaked_value="${kakao_round_trip_code}" ;;

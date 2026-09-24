@@ -66,6 +66,11 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * 바꾸지도 않고, 검증된 {@code (issuer, subject)}가 현재 사용자의 것인지와 제공자가 서명한
  * {@code auth_time}이 신선한지만 확인하며, 결과는 인증 화면이 아니라 무장 시각에 붙들어 둔
  * 목적지로 돌아간다. 재인증 표지도 닫힌 두 값({@code reauthCancelled}·{@code reauthFailed})이다.
+ *
+ * <p>연결은 <b>세 번째 흐름</b>이다(Story 1.10). 같은 왕복을 지나되 {@link LinkFlow}가 성공·실패
+ * 핸들러를 다시 갈라 놓고, 그 분기는 계정을 만들지 않으면서 <b>매핑 하나를 더한다</b> — 허가 소비와
+ * 같은 트랜잭션에서다({@code LinkService}). 재인증 무장에 섞지 않는 이유가 그것이며, 연결 표지도
+ * 닫힌 두 값({@code linkCancelled}·{@code linkFailed})이다.
  */
 @Component
 @ConditionalOnWebApplication(type = Type.SERVLET)
@@ -81,13 +86,30 @@ class AuthFlowHandlers {
     static final String DASHBOARD_PATH = "/dashboard";
 
     /**
+     * 로그인 수단 설정 화면.
+     *
+     * <p>연결 조작이 사는 유일한 자리이고, 연결 흐름의 복귀 경로도 이 상수 하나다 — 클라이언트가
+     * 목적지를 보내지 않는다는 계약이 그 조작에서도 그대로 성립한다({@code LinkService}).
+     *
+     * <p>이 경로를 더할 때 <b>다섯 곳을 함께</b> 고친다 — 아래 {@link #ALLOWED_DESTINATIONS},
+     * {@code deploy/nginx/bokrilog.conf}의 허용 목록 정규식, {@code frontend/src/App.tsx}의 경로 맵,
+     * {@code frontend/src/session/useSessionState.ts}의 목적지 집합, 그리고
+     * {@code frontend/src/content/auth.ts}의 {@code RETURN_DESTINATIONS}다. 한 곳만 고치면 증상이
+     * 제각각이다: Nginx가 빠지면 404, {@code App.tsx}가 빠지면 진입 화면, 여기가 빠지면 복귀가
+     * 대시보드로 접히고, 목적지 집합이 빠지면 타입이 막으며, {@code RETURN_DESTINATIONS}가 빠지면
+     * 미인증 진입에서 {@code next}가 실리지 않는다. 다섯의 등가를 보는 검사는 아직 없다.
+     */
+    static final String SETTINGS_PATH = "/settings";
+
+    /**
      * 복귀 목적지 허용 목록.
      *
      * <p>닫힌 집합이다. 목록에 없는 값은 검사할 필요조차 없이 버려지므로, 경로 정규화·스킴 검사·
      * 호스트 비교 같은 판정이 애초에 존재하지 않는다. 라우트가 늘 때 사람이 한 줄을 더하는 비용을
      * 지불하는 대신, 판정 논리에 구멍이 생길 자리를 없앤다.
      */
-    private static final Set<String> ALLOWED_DESTINATIONS = Set.of(ONBOARDING_PATH, DASHBOARD_PATH);
+    private static final Set<String> ALLOWED_DESTINATIONS =
+            Set.of(ONBOARDING_PATH, DASHBOARD_PATH, SETTINGS_PATH);
 
     /** 인증 시작이 기록한 요청 목적지. 성공하면 지운다. */
     static final String REQUESTED_DESTINATION_ATTRIBUTE = "bokrilog.auth.requested-destination";
@@ -129,6 +151,38 @@ class AuthFlowHandlers {
      * 신호가 된다. 연결되지 않은 제공자를 고른 것도 다른 실패와 구분되지 않는다.
      */
     static final String FAILURE_MARKER_REAUTH_FAILED = "reauthFailed";
+
+    /**
+     * 사용자가 연결을 취소했거나 동의를 거부했다.
+     *
+     * <p>재인증 표지와 값을 나누는 이유는 문장이다. 두 조작은 같은 화면으로 돌아오지만 사용자가
+     * 한 일이 다르고, 같은 값을 쓰면 "본인 확인을 끝내지 않았습니다"가 연결을 취소한 사람에게
+     * 렌더된다.
+     */
+    static final String FAILURE_MARKER_LINK_CANCELLED = "linkCancelled";
+
+    /**
+     * 그 밖의 모든 연결 실패.
+     *
+     * <p>이미 내 계정에 연결된 제공자, 다른 계정에 연결된 식별자, 같은 제공자의 다른
+     * {@code subject}, 제공자 바꿔치기, 허가 만료·이미 사용됨, 세션 불일치, 삭제가 시작된 계정,
+     * 제공자 오류가 모두 이 하나로 접힌다. 로그인·재인증 표지를 닫힌 두 값으로 둔 것과 같은
+     * 이유다 — 값을 나누는 순간 그 표지가 <b>다른 계정의 존재와 소유자</b>를 알려 주는 신호가 된다.
+     */
+    static final String FAILURE_MARKER_LINK_FAILED = "linkFailed";
+
+    /**
+     * 연결이 끝났다.
+     *
+     * <p>이 파일의 다른 표지와 달리 실패가 아니다. 성공에 표지를 다는 이유는 비대칭 때문이다 —
+     * 화면은 시작을 {@code role="status"}로 알리는데 결과를 알릴 재료가 없으면 스크린리더
+     * 사용자에게 그 조작은 끝나지 않은 것과 같다. 왕복 뒤의 문서는 새로 열리므로 "방금 연결했다"를
+     * 아는 값은 주소의 표지 하나뿐이다.
+     *
+     * <p>무엇을 연결했는지는 말하지 않는다. 대상 제공자를 표지에 실으면 그 값이 주소·`Referer`·
+     * 히스토리에 남고, 화면은 어차피 연결 상태를 다시 조회해 목록으로 보여 준다.
+     */
+    static final String NOTICE_MARKER_LINK_SUCCEEDED = "linkSucceeded";
 
     /**
      * 인증 전 흐름 세션의 유휴 수명(초).
@@ -176,13 +230,24 @@ class AuthFlowHandlers {
      */
     private final SessionGuard guard;
 
+    /**
+     * 연결의 판정과 실행.
+     *
+     * <p>이 클래스는 흐름 경계만 소유한다. "재인증이 신선한가"·"허가가 살아 있는가"·"매핑을 더해도
+     * 되는가"는 전부 그쪽이 답하며, 여기서 하는 일은 무장을 꺼내 그 호출에 넘기고 결과를
+     * 리다이렉트로 옮기는 것뿐이다.
+     */
+    private final LinkService linkService;
+
     AuthFlowHandlers(
             AuthSessionService authSessionService,
             SessionRepository<? extends Session> sessions,
-            SessionGuard guard) {
+            SessionGuard guard,
+            LinkService linkService) {
         this.authSessionService = authSessionService;
         this.sessions = sessions;
         this.guard = guard;
+        this.linkService = linkService;
     }
 
     /**
@@ -221,8 +286,35 @@ class AuthFlowHandlers {
                     throws ServletException, IOException {
                 if (isAuthorizationCallback(request)) {
                     if (isAuthenticated(SecurityContextHolder.getContext().getAuthentication())) {
+                        LinkFlow.Armed link = LinkFlow.peekIncludingExpired(request);
                         ReauthenticationFlow.Armed armed =
                                 ReauthenticationFlow.peekIncludingExpired(request);
+                        link =
+                                callbackLinkFlow(
+                                        link, armed, AuthSecurityConfig.callbackProvider(request));
+                        if (link != null) {
+                            if (!link.isLive(Instant.now())) {
+                                /*
+                                 * 연결 무장이 있었지만 늦었다. 재인증 무장의 같은 가지와 근거가
+                                 * 같다 — 아무 설명 없이 튕기지 않도록 흐름만 버리고 붙들어 둔
+                                 * 목적지로 표지와 함께 보낸다. 허가는 건드리지 않는다: 만료된
+                                 * 허가는 데이터베이스가 판정하고, 살아 있는 허가는 다음 발급이
+                                 * 무효화한다.
+                                 */
+                                LinkFlow.discard(request);
+                                redirects.sendRedirect(
+                                        request,
+                                        response,
+                                        link.returnPath()
+                                                + "?"
+                                                + FAILURE_MARKER_PARAMETER
+                                                + "="
+                                                + FAILURE_MARKER_LINK_FAILED);
+                                return;
+                            }
+                            filterChain.doFilter(request, response);
+                            return;
+                        }
                         if (armed == null) {
                             /*
                              * 인증된 세션에 도착한, 무장 없는 콜백이다. 이 흐름은 이 세션의
@@ -260,32 +352,34 @@ class AuthFlowHandlers {
                     return;
                 }
 
-                boolean reauthenticating = false;
+                boolean armedFlow = false;
                 if (isAuthenticated(SecurityContextHolder.getContext().getAuthentication())) {
                     /*
-                     * 이미 인증된 세션이다. 무장된 재인증 흐름이 있고 그 제공자로 시작하는
-                     * 경우에만 통과시킨다.
+                     * 이미 인증된 세션이다. 무장된 흐름이 있고 그 흐름의 제공자로 시작하는
+                     * 경우에만 통과시킨다. 흐름은 둘이다 — 재인증(Story 1.8)과 연결(Story 1.10).
                      *
                      * 조건 없이 열면 같은 브라우저에서 두 번째 신규 가입이 시작될 수 있고, 그
                      * 흐름의 콜백이 기존 세션을 다른 계정으로 갈아탄다. 반대로 조건 없이 막으면
-                     * 재인증이 성립하지 않는다 — 표시된 세션은 CSRF 토큰도 받지 못하고 로그인
-                     * 버튼은 여기서 거절당해 목적지로 되돌려지며, 그 목적지는 다시 미인증으로
-                     * 답한다. 되살릴 방법이 없는 무한 왕복이 그 상태다.
+                     * 재인증도 연결도 성립하지 않는다 — 표시된 세션은 CSRF 토큰도 받지 못하고
+                     * 로그인 버튼은 여기서 거절당해 목적지로 되돌려지며, 그 목적지는 다시
+                     * 미인증으로 답한다. 되살릴 방법이 없는 무한 왕복이 그 상태다.
                      *
                      * 무장을 소비하지 않는다. 판정은 콜백에서 하고, 여기서 지우면 그 판정이
                      * 볼 것이 사라진다.
                      */
+                    String provider = AuthSecurityConfig.authorizationStartProvider(request);
+                    LinkFlow.Armed link = LinkFlow.peek(request);
                     ReauthenticationFlow.Armed armed = ReauthenticationFlow.peek(request);
-                    if (armed == null
-                            || !armed.provider()
-                                    .equals(AuthSecurityConfig.authorizationStartProvider(request))) {
+                    armedFlow =
+                            (link != null && link.targetProvider().equals(provider))
+                                    || (armed != null && armed.provider().equals(provider));
+                    if (!armedFlow) {
                         redirects.sendRedirect(request, response, currentDestination(request));
                         return;
                     }
-                    reauthenticating = true;
                 }
 
-                if (!reauthenticating) {
+                if (!armedFlow) {
                     String requested = allowedDestination(request.getParameter("next"));
                     if (requested != null) {
                         request.getSession()
@@ -301,12 +395,13 @@ class AuthFlowHandlers {
                     }
                 }
                 /*
-                 * 재인증 시작에서는 `next`를 보지 않는다.
+                 * 무장된 흐름의 시작에서는 `next`를 보지 않는다.
                  *
-                 * 목적지는 무장 시각에 이미 정해졌고 그 출처는 세션이 가진 확정 목적지 하나다.
-                 * 여기서 쿼리를 읽으면 클라이언트가 보낸 값이 복귀 목적지가 되는 두 번째 경로가
-                 * 열리고, 그것은 "콜백이 들고 온 어떤 값도 목적지가 되지 않는다"를 무르는 것과
-                 * 같은 크기의 구멍이다.
+                 * 목적지는 무장 시각에 이미 정해졌다. 재인증은 세션이 가진 확정 목적지 하나에서,
+                 * 연결은 그 조작이 사는 화면 상수 하나에서 온다(`LinkService`). 여기서 쿼리를
+                 * 읽으면 클라이언트가 보낸 값이 복귀 목적지가 되는 두 번째 경로가 열리고, 그것은
+                 * "콜백이 들고 온 어떤 값도 목적지가 되지 않는다"를 무르는 것과 같은 크기의
+                 * 구멍이다.
                  */
                 filterChain.doFilter(request, response);
                 /*
@@ -444,17 +539,34 @@ class AuthFlowHandlers {
             HttpServletRequest request, HttpServletResponse response, Authentication authentication)
             throws IOException {
         /*
-         * 무장된 재인증 흐름이 있으면 로그인 분기를 타지 않는다.
+         * 무장된 흐름이 있으면 로그인 분기를 타지 않는다.
          *
-         * `establish`는 미연결 식별자를 신규 가입으로 처리하는 경로이므로, 재인증이 그것을 지나면
-         * "재인증 실패"여야 할 입력이 **새 계정**을 만들고 그 계정으로 세션이 갈아탄다. 두 분기가
-         * 갈리는 자리는 여기 하나다.
+         * `establish`는 미연결 식별자를 신규 가입으로 처리하는 경로다. 재인증이 그것을 지나면
+         * "재인증 실패"여야 할 입력이 **새 계정**을 만들고 그 계정으로 세션이 갈아타며, 연결이
+         * 그것을 지나면 연결하려던 식별자로 **두 번째 계정**이 생기고 사용자는 자기 계정을
+         * 떠난다. 세 분기가 갈리는 자리는 여기 하나다.
+         *
+         * 어느 흐름이 이 콜백을 소비하는지는 `callbackBelongsToLink`가 가른다. 순서로 정하면
+         * 살아 있는 연결 무장이 재인증 콜백을 삼킨다 — 두 흐름이 함께 무장된 상태는 평범한
+         * 경로이기 때문이다(그 근거는 그 메서드의 javadoc이 소유한다).
          *
          * 소비는 어느 쪽 결과에서도 일어난다. 흐름은 콜백 하나로 끝나며 그것이 일회성이다.
          */
+        VerifiedIdentity identity = verifiedIdentityOf(authentication);
+        LinkFlow.Armed link =
+                callbackLinkFlow(
+                        LinkFlow.peek(request),
+                        ReauthenticationFlow.peek(request),
+                        identity == null ? null : identity.provider());
+        if (link != null) {
+            LinkFlow.discard(request);
+            onLinkSuccess(request, response, identity, link);
+            return;
+        }
+
         ReauthenticationFlow.Armed armed = ReauthenticationFlow.consume(request);
         if (armed != null) {
-            onReauthenticationSuccess(request, response, authentication, armed);
+            onReauthenticationSuccess(request, response, identity, armed);
             return;
         }
 
@@ -526,10 +638,9 @@ class AuthFlowHandlers {
     private void onReauthenticationSuccess(
             HttpServletRequest request,
             HttpServletResponse response,
-            Authentication authentication,
+            @Nullable VerifiedIdentity identity,
             ReauthenticationFlow.Armed armed)
             throws IOException {
-        VerifiedIdentity identity = verifiedIdentityOf(authentication);
         if (identity == null
                 || !identity.provider().equals(armed.provider())
                 || !ReauthenticationFlow.isFreshAuthentication(
@@ -556,6 +667,125 @@ class AuthFlowHandlers {
 
         // 목적지는 무장 시각에 붙들어 둔 값 하나다. 콜백이 들고 온 어떤 값도 여기 오지 않는다.
         this.redirects.sendRedirect(request, response, armed.returnPath());
+    }
+
+    /**
+     * 연결 콜백의 판정과 커밋.
+     *
+     * <p>이 경로는 로그인도 가입도 아니다. {@code establish}를 부르지 않으므로 미연결 식별자로
+     * 새 계정이 생기지 않고, 세션의 사용자는 무장이 붙들어 둔 값 그대로다.
+     *
+     * <p><b>주체를 먼저 되돌린다.</b> {@code AbstractAuthenticationProcessingFilter}는 성공 핸들러를
+     * 부르기 전에 {@code OAuth2AuthenticationToken}을 세션에 이미 저장했고, 그 토큰은 ID Token과
+     * claim을 들고 있다. 그대로 두면 검증 직후 버려야 할 ID Token이 PostgreSQL 세션 행에 남고,
+     * 세션 행의 {@code principal_name}이 내부 {@code user_id}에서 제공자 {@code sub}으로 갈아타며,
+     * 무엇보다 <b>허가 포트가 "세션이 결정한 사용자"를 읽지 못해</b> 정상 연결이 거부된다
+     * ({@code ActionGrantService}의 주체 대조). 그래서 판정보다 앞이다.
+     *
+     * <p>제공자 일치를 본다. 무장은 naver인데 kakao 콜백이 도착하면 판정할 것이 없다 — 그 흐름의
+     * 사실이 아니다. 나머지 판정(허가·삭제 상태·유일성)은 {@code LinkService}가 한 트랜잭션에서
+     * 한다.
+     *
+     * <p>성공하면 세션 ID를 <b>다시</b> 회전한다. 한 번은 검증 직후 세션 고정 방어가 이미 했고,
+     * 이 두 번째 회전은 {@code SECURITY-ACTION-1.0}이 허가 소비 성공에 요구하는 것이며 1.9의
+     * 결과 타입 이름({@code ConsumedRequiringSessionRotation})이 이 자리로 넘긴 의무다.
+     */
+    private void onLinkSuccess(
+            HttpServletRequest request,
+            HttpServletResponse response,
+            @Nullable VerifiedIdentity identity,
+            LinkFlow.Armed armed)
+            throws IOException {
+        writeEstablishedPrincipal(request, response, armed.userId());
+
+        LinkService.Outcome outcome =
+                identity == null || !identity.provider().equals(armed.targetProvider())
+                        ? LinkService.Outcome.DENIED
+                        : this.linkService.complete(
+                                request.getSession(), armed, identity.issuer(), identity.subject());
+
+        if (rotateIfLinked(request, outcome) == null) {
+            /*
+             * 여러 갈래가 하나로 접힌다. 제공자 바꿔치기, 이미 내 계정에 있는 제공자, 다른 계정에
+             * 연결된 식별자, 허가 만료·이미 사용됨, 세션 불일치, 삭제가 시작된 계정이다. 어느
+             * 쪽인지 표지로 구분되면 그 차이가 곧 "그 식별자가 누구의 것인가"를 알려 준다.
+             */
+            this.redirects.sendRedirect(
+                    request,
+                    response,
+                    armed.returnPath()
+                            + "?"
+                            + FAILURE_MARKER_PARAMETER
+                            + "="
+                            + FAILURE_MARKER_LINK_FAILED);
+            return;
+        }
+
+        // 목적지는 무장 시각에 붙들어 둔 값 하나다. 결과는 표지 하나로 말한다.
+        this.redirects.sendRedirect(
+                request,
+                response,
+                armed.returnPath()
+                        + "?"
+                        + FAILURE_MARKER_PARAMETER
+                        + "="
+                        + NOTICE_MARKER_LINK_SUCCEEDED);
+    }
+
+    /**
+     * 허가 소비 성공이 요구하는 세션 재회전.
+     *
+     * <p>{@code SECURITY-ACTION-1.0}의 의무이고 1.9의 결과 타입 이름
+     * ({@code ConsumedRequiringSessionRotation})이 이 자리로 넘긴 것이다. 소비와 매핑은 이미
+     * 커밋됐고 여기서 바꾸는 것은 세션 식별자 하나뿐이므로, 이 호출이 실패하더라도 연결이 부분
+     * 상태로 남지 않는다.
+     *
+     * <p><b>메서드로 뽑은 이유는 관측이다.</b> HTTP 왕복에서는 세션 고정 방어가 검증 직후 이미 한 번
+     * 회전시키므로 "쿠키가 바뀌었다"가 이 두 번째 회전 없이도 참이고, 그래서 이 호출이 사라져도
+     * 어떤 왕복 단정도 실패하지 않는다(변이로 확인했다). 판정과 호출을 한 자리에 모아 두면 그
+     * 사실을 HTTP 밖에서 직접 볼 수 있다 — 소비에 성공했을 때만 회전하고 거부에서는 하지 않는다는
+     * 것이 여기서 고정된다({@code AuthFlowHandlersRotationTest}).
+     *
+     * @return 회전한 새 세션 id, 연결이 거부됐으면 {@code null}
+     */
+    static @Nullable String rotateIfLinked(HttpServletRequest request, LinkService.Outcome outcome) {
+        if (outcome != LinkService.Outcome.LINKED) {
+            return null;
+        }
+        return request.changeSessionId();
+    }
+
+    /**
+     * 이 콜백을 소비하는 연결 무장. 없으면 {@code null}이고 그때는 재인증·로그인 분기가 받는다.
+     *
+     * <p><b>두 흐름이 함께 무장된 상태는 평범한 경로다.</b> 설정 화면이 연결 버튼 셋과 본인 확인
+     * 버튼 셋을 같은 페이지에 그리므로 "네이버 연결 무장 → 제공자 화면에서 이탈 → Google 본인
+     * 확인"이 그대로 성립한다. 그때 콜백의 등록 id를 보지 않고 연결을 먼저 집으면 Google 재인증이
+     * 연결 분기에 삼켜져 제공자 불일치로 끝나고, {@code recordAuthentication}이 불리지 않아
+     * <b>재인증이 성립하지 않으며</b> {@code reauth_required} 표시도 풀리지 않는다.
+     *
+     * <p>그래서 <b>일치하는 쪽이 이긴다</b>. 무장 시각에 상대 흐름을 버리는 것이 1차 방어이고
+     * ({@code LinkService.start}·{@code AuthSessionController.startReauthentication}) 이 판정은 그
+     * 뒤에 남는 상태를 위한 2차 방어다.
+     *
+     * <p>어느 쪽도 일치하지 않으면 연결이 먼저다. 그 경우는 어느 흐름에서도 실패이고 순서가 정하는
+     * 것은 표지 하나뿐이며, 재인증만 무장된 상태의 제공자 바꿔치기는 Story 1.8이 고정한 대로
+     * 재인증 실패로 수렴한다.
+     *
+     * @param provider 이 콜백이 알려 준 등록 id. 성공 핸들러는 검증된 인증 결과에서, 흐름 경계와
+     *     실패 핸들러는 경로에서 읽는다
+     */
+    private static LinkFlow.@Nullable Armed callbackLinkFlow(
+            LinkFlow.@Nullable Armed link,
+            ReauthenticationFlow.@Nullable Armed armed,
+            @Nullable String provider) {
+        if (link == null) {
+            return null;
+        }
+        if (armed == null || link.targetProvider().equals(provider)) {
+            return link;
+        }
+        return armed.provider().equals(provider) ? null : link;
     }
 
     /**
@@ -689,6 +919,32 @@ class AuthFlowHandlers {
          * 세션은 건드리지 않는다"도 그대로 성립한다. 그래도 이 경로를 지나지 않는 이유는
          * 목적지다 — 이미 로그인한 사용자를 인증 화면으로 보낼 이유가 없다.
          */
+        /*
+         * 어느 흐름이 이 실패를 소비하는지도 콜백의 등록 id가 가른다(`callbackLinkFlow`). 성공
+         * 핸들러와 달리 여기에는 검증된 인증 결과가 없으므로 그 값을 경로에서 읽는다.
+         */
+        LinkFlow.Armed link =
+                callbackLinkFlow(
+                        LinkFlow.peek(request),
+                        ReauthenticationFlow.peek(request),
+                        AuthSecurityConfig.callbackProvider(request));
+        if (link != null) {
+            /*
+             * 연결의 취소·제공자 오류다. 허가는 소비되지 않았고 매핑도 만들어지지 않았으므로
+             * 저장소의 변화는 0건이다. 남아 있는 허가는 다음 발급이 무효화한다.
+             */
+            LinkFlow.discard(request);
+            this.redirects.sendRedirect(
+                    request,
+                    response,
+                    link.returnPath()
+                            + "?"
+                            + FAILURE_MARKER_PARAMETER
+                            + "="
+                            + linkMarker(exception));
+            return;
+        }
+
         ReauthenticationFlow.Armed armed = ReauthenticationFlow.consume(request);
         if (armed != null) {
             this.redirects.sendRedirect(
@@ -828,6 +1084,13 @@ class AuthFlowHandlers {
                 : FAILURE_MARKER_REAUTH_FAILED;
     }
 
+    /** 연결 실패 표지. 같은 규칙으로 갈리고 값만 다르다. */
+    private static String linkMarker(AuthenticationException exception) {
+        return isUserCancellation(exception)
+                ? FAILURE_MARKER_LINK_CANCELLED
+                : FAILURE_MARKER_LINK_FAILED;
+    }
+
     /** 사용자가 스스로 취소했거나 동의를 거부했는가. 자동 재시도를 만들지 않을 유일한 근거다. */
     private static boolean isUserCancellation(AuthenticationException exception) {
         return exception instanceof OAuth2AuthenticationException oauth2Exception
@@ -865,6 +1128,9 @@ class AuthFlowHandlers {
         }
         if (DASHBOARD_PATH.equals(destination)) {
             return "dashboard";
+        }
+        if (SETTINGS_PATH.equals(destination)) {
+            return "settings";
         }
         return "entry";
     }

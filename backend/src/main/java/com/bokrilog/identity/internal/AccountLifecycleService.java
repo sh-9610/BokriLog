@@ -4,6 +4,7 @@ import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountLifecycleApi;
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
@@ -129,6 +130,17 @@ class AccountLifecycleService implements AccountLifecycleApi {
         }
         // 상태 술어는 질의 안에 있다. 삭제가 시작된 계정과 존재하지 않는 계정이 같은 빈 값이다.
         return repository.findActiveUserIdBySocialIdentity(issuer, subject);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Set<String> findLinkedProviders(@Nullable UUID userId) {
+        if (userId == null) {
+            // 거부 계약과 같은 모양이다. 예외가 아니라 다른 모든 빈 답과 구분되지 않는 빈 집합이다.
+            return Set.of();
+        }
+        // 상태 술어는 질의 안에 있다. 미존재·삭제 진행·삭제 완료가 모두 빈 목록으로 접힌다.
+        return Set.copyOf(repository.findLinkedProvidersOfActive(userId));
     }
 
     /**
