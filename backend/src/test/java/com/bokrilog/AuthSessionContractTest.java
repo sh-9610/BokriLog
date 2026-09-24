@@ -65,6 +65,35 @@ class AuthSessionContractTest extends AuthFlowTestBase {
     }
 
     @Test
+    void 재인증_성공_시에도_세션_ID가_회전한다() throws Exception {
+        /*
+         * 회전의 형태는 로그인과 같다. 배선이 하나이기 때문이다 —
+         * `sessionFixation().changeSessionId()`가 성공 핸들러보다 앞에서 돌고, 재인증은 그 뒤에서
+         * 갈라진다. 재인증이 자기 회전을 따로 만들지 않는다는 것이 이 단정의 뜻이며, 만들면
+         * 회전이 두 벌이 되어 한쪽만 고쳐지는 날이 온다.
+         */
+        String subject = "contract-reauth-rotation-" + UUID.randomUUID();
+        String beforeReauth = sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID userId = userIdOf(OidcStubConfiguration.issuer(), subject).orElseThrow();
+
+        HttpResponse<String> response =
+                reauthenticate(
+                        AuthSecurityConfig.GOOGLE_REGISTRATION_ID,
+                        beforeReauth,
+                        csrfTokenOf(beforeReauth),
+                        plan -> plan.subject(subject));
+
+        String afterReauth = sessionCookieOf(response).orElseThrow();
+        assertThat(afterReauth).isNotEqualTo(beforeReauth);
+        // 행은 하나다. 회전이 UPDATE가 아니라 INSERT로 끝나면 여기서 둘이 된다.
+        assertThat(sessionCount()).isEqualTo(1);
+        assertThat(sessionCountOf(userId)).isEqualTo(1);
+        // 회전 전 쿠키로는 더 이상 인증된 상태가 아니다.
+        assertThat(sessionState(beforeReauth).body()).contains("\"authenticated\":false");
+        assertThat(sessionState(afterReauth).body()).contains("\"authenticated\":true");
+    }
+
+    @Test
     void 세션_저장소에_제공자_토큰과_subject가_남지_않는다() throws Exception {
         String subject = "stored-attributes-" + UUID.randomUUID();
         HttpResponse<String> login = signIn(subject);

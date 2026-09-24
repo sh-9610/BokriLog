@@ -182,7 +182,18 @@ class AuthTokenValidationTest extends AuthFlowTestBase {
                 callback(authorization, establishedCookie, replayCode, authorization.state());
 
         assertThat(replay.statusCode()).isEqualTo(302);
-        assertThat(locationOf(replay)).endsWith(failureLocation(AuthFlowHandlers.FAILURE_MARKER_FAILED));
+        /*
+         * 인증 화면이 아니라 지금 목적지로 되돌린다(Story 1.8).
+         *
+         * 이 요청은 인증된 세션에 도착한 무장 없는 콜백이므로 인증 흐름 경계가 검증 앞에서
+         * 접는다. 그전에는 같은 요청이 `state` 검사를 지나 실패 핸들러로 갔고 표지와 함께 인증
+         * 화면으로 수렴했다 — 상태는 어느 쪽에서도 바뀌지 않지만, 이미 로그인한 사용자에게
+         * "로그인을 끝내지 못했습니다"를 보여 줄 이유가 없다. 경계를 콜백까지 넓힌 이유는 따로
+         * 있다: 재인증이 인증된 세션에 진행 중인 authorization request를 만들 수 있게 했고,
+         * 그것을 접지 않으면 흐름이 만료된 뒤 도착한 콜백이 성공 핸들러의 로그인 분기로 들어가
+         * 같은 세션 행에 다른 계정을 심는다.
+         */
+        assertThat(locationOf(replay)).endsWith(AuthFlowHandlers.ONBOARDING_PATH);
         // 두 번째 시도가 계정이나 매핑을 하나 더 만들지 않았다.
         assertThat(accountCount()).isEqualTo(1);
         assertThat(socialLinkCount()).isEqualTo(1);
@@ -241,7 +252,14 @@ class AuthTokenValidationTest extends AuthFlowTestBase {
                         "forced-state");
 
         assertThat(forced.statusCode()).isEqualTo(302);
-        assertThat(locationOf(forced)).endsWith(failureLocation(AuthFlowHandlers.FAILURE_MARKER_FAILED));
+        /*
+         * Story 1.8부터 이 요청은 검증에 닿지도 않는다. 인증 흐름 경계가 "인증된 세션의 무장
+         * 없는 콜백"으로 보고 지금 목적지로 되돌리며, 그 편이 이 공격에 대한 답으로도 낫다 —
+         * 피해자는 자기 화면에 그대로 있고 공격자는 아무것도 관측하지 못한다. 실패 표지와 함께
+         * 인증 화면을 보여 주던 이전 동작은 피해자에게 "로그인을 끝내지 못했습니다"라는 거짓
+         * 설명을 주는 것이기도 했다.
+         */
+        assertThat(locationOf(forced)).endsWith(AuthFlowHandlers.ONBOARDING_PATH);
         // 세션 행도, 그 세션이 결정하는 주체도 그대로다.
         assertThat(sessionCount()).isEqualTo(1);
         assertThat(sessionState(established).body()).contains("\"authenticated\":true");

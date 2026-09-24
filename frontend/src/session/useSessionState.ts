@@ -44,6 +44,18 @@ export interface SessionSnapshot {
    */
   readonly csrfToken: string | null
   /**
+   * 이 세션이 재인증을 요구받았는가.
+   *
+   * 서버가 표시된 세션에만 싣는 필드다(`GET /api/auth/session`). 폐기된 세션과 처음부터 없는
+   * 세션의 본문에는 이 필드가 없고 그래야 한다 — 그 둘에는 회복 경로가 없으므로 구분할 이유도
+   * 없다. 표시된 세션만 갈라지는 이유는 반대다: 구분하지 않으면 그 세션은 CSRF 토큰을 받지
+   * 못하고 로그인 버튼은 서버가 거절하며 목적지는 다시 미인증으로 답한다 — 되살릴 방법이 없는
+   * 무한 왕복이다.
+   *
+   * 참이면 `csrfToken`도 함께 온다. 회복에 필요한 것이 그 둘이다.
+   */
+  readonly reauthRequired: boolean
+  /**
    * 인증을 한 번 관측한 뒤의 미인증인가.
    *
    * 서버 응답은 두 경우에 같다 — 만료된 세션과 처음부터 없는 세션 모두
@@ -64,7 +76,8 @@ export interface SessionSnapshot {
  * `redirecting`은 세션은 있지만 서버가 다른 목적지를 골랐다는 뜻이다. 그 경우 이 화면은 아무
  * 사용자 데이터도 그리지 않고 서버가 고른 목적지로 문서를 다시 요청한다.
  */
-export type SessionGate = 'checking' | 'ready' | 'redirecting' | 'unauthenticated'
+export type SessionGate =
+  'checking' | 'reauth-required' | 'ready' | 'redirecting' | 'unauthenticated'
 
 /** 목적지 종류 → 그 목적지의 내부 경로. 서버 허용 목록·Nginx 허용 목록과 같은 집합이다. */
 const DESTINATION_PATHS = {
@@ -91,6 +104,7 @@ const CHECKING: SessionSnapshot = {
   state: 'checking',
   destination: 'entry',
   csrfToken: null,
+  reauthRequired: false,
   expired: false,
 }
 
@@ -98,6 +112,7 @@ const UNAUTHENTICATED: SessionSnapshot = {
   state: 'unauthenticated',
   destination: 'entry',
   csrfToken: null,
+  reauthRequired: false,
   expired: false,
 }
 
@@ -115,6 +130,11 @@ function tokenOf(payload: object): string | null {
   return typeof value === 'string' && value !== '' ? value : null
 }
 
+/** 서버가 표시한 세션인가. 필드가 없거나 `true`가 아니면 표시되지 않은 것과 같다. */
+function markedOf(payload: object): boolean {
+  return 'reauthRequired' in payload && payload.reauthRequired === true
+}
+
 /**
  * 서버 응답에서 읽는 값. `user_id`·`subject`·제공자 토큰은 애초에 오지 않는다.
  *
@@ -130,12 +150,27 @@ function snapshotOf(payload: unknown): SessionSnapshot | null {
     return null
   }
   if (payload.authenticated !== true) {
+    /*
+     * 표시된 세션은 미인증으로 답하면서 필드 둘을 더 싣는다. 회복에 필요한 것이 그 둘이므로
+     * 여기서 함께 읽는다 — 표시만 읽고 토큰을 버리면 패널은 그려지지만 어느 버튼도 통하지
+     * 않는다.
+     */
+    if (markedOf(payload)) {
+      return {
+        state: 'unauthenticated',
+        destination: 'entry',
+        csrfToken: tokenOf(payload),
+        reauthRequired: true,
+        expired: false,
+      }
+    }
     return UNAUTHENTICATED
   }
   return {
     state: 'authenticated',
     destination: destinationOf('destination' in payload ? payload.destination : null),
     csrfToken: tokenOf(payload),
+    reauthRequired: false,
     expired: false,
   }
 }
@@ -202,7 +237,16 @@ export function useSessionState(): SessionAccess {
        * "만료됐다"는 문장을 본다. 그 경우 화면 안의 표시로 끝내는 것이 이 변경 전의 동작이다.
        */
       setSnapshot(
-        answered && next.state === 'unauthenticated' && sawAuthenticated.current
+        answered &&
+          next.state === 'unauthenticated' &&
+          sawAuthenticated.current &&
+          /*
+           * 표시된 세션은 만료가 아니다. 서버가 미인증으로 답하는 모양은 같지만 결과가 다르다 —
+           * 만료는 인증 화면으로 보내고, 표시는 제자리에서 회복 경로를 연다. 이 조건이 없으면
+           * 열린 탭이 표시되는 순간 사용자가 "만료됐다"는 문장과 함께 로그인 화면으로 밀려나고,
+           * 회복에 필요한 토큰은 그 이동과 함께 사라진다.
+           */
+          !next.reauthRequired
           ? { ...next, expired: true }
           : next,
       )
@@ -320,9 +364,19 @@ export interface SessionGateResult {
  *
  * @returns 말할 문장. 게이트가 `ready`이고 로그아웃도 도는 중이 아니면 화면이 이 값을 쓰지 않는다
  */
-export function liveRegionMessage(gate: SessionGate, signingOut: boolean): string {
+export function liveRegionMessage(
+  gate: SessionGate,
+  signingOut: boolean,
+  reauthenticating = false,
+): string {
   if (signingOut) {
     return authContent.signOut.pending
+  }
+  if (reauthenticating) {
+    return authContent.reauth.pending
+  }
+  if (gate === 'reauth-required') {
+    return authContent.reauth.status
   }
   if (gate === 'redirecting') {
     return authContent.session.redirecting
@@ -349,7 +403,7 @@ export function liveRegionMessage(gate: SessionGate, signingOut: boolean): strin
  * `useSessionState`의 `recheck`를 부르는 유일한 제품 경로다.
  */
 export function useSessionGate(expected: ScreenDestination): SessionGateResult {
-  const { csrfToken, destination, expired, recheck, state } = useSessionState()
+  const { csrfToken, destination, expired, reauthRequired, recheck, state } = useSessionState()
 
   /*
    * 탭이 다시 보이게 되면 세션을 다시 확인한다.
@@ -402,6 +456,19 @@ export function useSessionGate(expected: ScreenDestination): SessionGateResult {
 
   if (state === 'checking') {
     return { gate: 'checking', csrfToken: null }
+  }
+  if (reauthRequired) {
+    /*
+     * 표시된 세션이다. 제자리에서 회복 경로를 연다.
+     *
+     * 이동하지 않는 것이 요점이다. 표시된 세션은 이미 자기 목적지에 있고 필요한 것은 그 자리에서
+     * 본인을 확인할 수단이지 다른 주소가 아니다. 인증 화면으로 보내면 그 화면의 로그인 버튼은
+     * 서버가 "이미 인증된 세션"으로 거절하고 목적지는 다시 미인증으로 답한다 — 무한 왕복이다.
+     *
+     * 토큰을 보존한다. 재인증 시작과 로그아웃이 둘 다 그 값을 필요로 하고, 표시된 세션이 화면에서
+     * 스스로 나갈 수 있게 되는 것도 이 한 줄이다.
+     */
+    return { gate: 'reauth-required', csrfToken }
   }
   if (expiredTarget) {
     /*

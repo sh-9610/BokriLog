@@ -131,6 +131,10 @@ forbidden_fragments=(
   'BOKRILOG_DEV_OIDC_INTERNAL_BASE_URL'
   'SPRING_PROFILES_ACTIVE'
   'NGINX_ENTRYPOINT_QUIET_LOGS'
+  # 재인증이 제공자에게 보내는 최근 인증 요청·증거. 인가 요청의 `claims`와 ID Token의 claim
+  # 이름이 그 값이며 둘 다 로그에 남을 이유가 없다. access log의 `map`이 쿼리를 지우고
+  # 백엔드는 요청을 찍지 않으므로 0건이어야 한다.
+  'auth_time'
 )
 
 # assert_no_forbidden_fragments <대상 이름> <파일>
@@ -872,6 +876,11 @@ fi
 
 printf '\n스텁 제공자 성공 왕복\n'
 
+# 이 실행의 스텁 `subject` 표지. 제공자 이름이 앞에 붙어 왕복마다 값이 갈리고, 실행마다 달라지므로
+# 저장소에 남는 고정 리터럴이 되지 않는다. `(issuer, subject)`가 전역 유일 키이고 issuer가
+# 제공자마다 다르므로 세 왕복은 같은 표지를 써도 별개 계정이다.
+stub_subject_marker="verify-subject-$$"
+
 # 인가 시작 → 동의 → 콜백 → 세션 쿠키 → 목적지. 여기까지가 Story 1.4의 성공 경로이고 Story 1.6·1.7이
 # 그것을 제공자마다 한 번씩 돌린다. 앞의 두 저장소 단정이 0을 확인했으므로, 아래에서 늘어난 행은
 # 이 왕복들이 만든 것뿐이다. 끝에서 그 행들을 지워 스택을 원래 상태로 되돌린다 — 이 스크립트 뒤에
@@ -957,7 +966,12 @@ round_trip() {
 
   # 2) 동의 화면. 실제 제공자의 동의 화면 자리이며 조작은 링크 하나뿐이다.
   #    폼도 인라인 스크립트도 쓰지 않으므로 `form-action 'none'` 아래에서 그대로 동작한다.
-  fetch GET "${authorize_location#"${base_url}"}"
+  #
+  #    스텁의 `subject`를 이 왕복이 고정한다. 기본값은 요청마다 새 UUID이고 그래서 개발 스택의
+  #    왕복은 늘 신규 가입이지만, 그 상태에서는 "같은 사람이 다시 돌아오는" 흐름을 이 계층에서
+  #    만들 수 없다 — 재인증이 정확히 그 흐름이다. 값은 스크립트가 고르므로 저장소에 식별자
+  #    리터럴이 남지 않고, 아래 재인증 절이 같은 값을 다시 보낸다.
+  fetch GET "${authorize_location#"${base_url}"}&dev_subject=${provider}-${stub_subject_marker}"
   assert_equals "${provider} 스텁 동의 화면 상태 200" "${last_status}" '200'
   assert_prefix "${provider} 스텁 동의 화면 Content-Type" \
     "$(header_value 'Content-Type')" 'text/html'
@@ -1134,6 +1148,205 @@ else
   record_fail '세 왕복이 서로 다른 세션을 만든다' \
     '세 왕복의 세션 쿠키를 얻지 못했거나 같은 값이 섞여 있다. 아래 보존 단정이 아무것도 보지 않는다.'
 fi
+
+printf '\n재인증 왕복\n'
+
+# 인증된 세션의 자발 재인증이다. Story 1.8의 HTTP 계약을 보는 유일한 자리이며, 표시된 세션의
+# 회복은 여기서 만들 수 없다 — `SessionGuard`에는 HTTP 표면이 없고 세션 속성은 Java 직렬화라
+# SQL로도 만들 수 없다. 그 축은 백엔드 시험이 소유한다(`AuthReauthenticationTest`).
+#
+# 위 왕복이 만든 Google 세션을 쓴다. 회전 뒤에는 쿠키와 토큰이 새 값이 되므로 아래에서 두 전역을
+# 갱신한다 — 갱신하지 않으면 뒤따르는 로그아웃 절이 죽은 쿠키로 403을 받고, 그 실패는 "로그아웃이
+# 깨졌다"로 잘못 읽힌다.
+
+reauth_session_cookie="${google_session_cookie}"
+reauth_csrf_token="${google_csrf_token}"
+
+if [ -n "${reauth_session_cookie}" ] && [ -n "${reauth_csrf_token}" ]; then
+  record_pass '재인증에 쓸 세션 쿠키와 토큰을 얻었다'
+else
+  record_fail '재인증에 쓸 세션 쿠키와 토큰을 얻었다' \
+    'Google 왕복의 쿠키나 토큰이 없다. 아래 단정이 아무것도 보지 않는다.'
+fi
+
+# 1) 시작의 보호. `/api/auth/` 아래 상태 변경이므로 로그아웃과 같은 계약을 예외 없이 지난다.
+fetch POST /api/auth/reauthenticate/google \
+  -H "Cookie: BOKRILOG_SESSION=${reauth_session_cookie}" \
+  -H "Origin: ${base_url}"
+assert_equals '토큰 없는 재인증 시작 403' "${last_status}" '403'
+assert_body_contains '토큰 없는 재인증 시작 안정 code' '"code":"FORBIDDEN"'
+assert_correlation_id '토큰 없는 재인증 시작 correlation ID'
+
+fetch POST /api/auth/reauthenticate/google \
+  -H "Cookie: BOKRILOG_SESSION=${reauth_session_cookie}" \
+  -H 'Origin: https://evil.example' \
+  -H "X-CSRF-TOKEN: ${reauth_csrf_token}"
+assert_equals '교차 출처 재인증 시작 403' "${last_status}" '403'
+assert_body_contains '교차 출처 재인증 시작 안정 code' '"code":"FORBIDDEN"'
+
+fetch POST /api/auth/reauthenticate/google -H "Origin: ${base_url}" \
+  -H 'X-CSRF-TOKEN: verifyanonymousreauthmarker'
+assert_equals '미인증 재인증 시작 403' "${last_status}" '403'
+assert_body_contains '미인증 재인증 시작 안정 code' '"code":"FORBIDDEN"'
+
+# 모르는 제공자는 그 경로가 존재하지 않는 것이다. 아는 이름도 개수도 응답에 실리지 않는다.
+fetch POST /api/auth/reauthenticate/nosuchprovider \
+  -H "Cookie: BOKRILOG_SESSION=${reauth_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${reauth_csrf_token}"
+assert_equals '미지 제공자 재인증 시작 404' "${last_status}" '404'
+assert_body_contains '미지 제공자 재인증 시작 안정 code' '"code":"NOT_FOUND"'
+assert_body_lacks '미지 제공자 응답이 이름을 되비추지 않는다' 'nosuchprovider'
+assert_body_lacks '미지 제공자 응답에 아는 제공자 이름이 없다' 'google'
+
+# 위 네 거절 중 어느 것도 상태를 바꾸지 않았다.
+assert_rows '재인증 시작 거절이 세션을 만들지 않는다' 'SELECT count(*) FROM spring_session' '3'
+
+# 2) 무장. 본문 없는 204이고 세션 행 수는 그대로다.
+#
+# 무장 전의 속성 행 수를 먼저 센다. "행이 하나라도 있다"를 보는 단정은 앞선 세 로그인이 남긴
+# `SPRING_SECURITY_CONTEXT`·목적지 속성 때문에 이미 참이고, 그러면 무장 호출을 통째로 지워도
+# green이다 — 검사가 아무것도 관측하지 않는 상태다. 델타를 보면 그 호출이 실제로 행을 하나
+# 더했는지가 드러난다.
+reauth_attributes_before="$(psql_value 'SELECT count(*) FROM spring_session_attributes')"
+
+fetch POST /api/auth/reauthenticate/google \
+  -H "Cookie: BOKRILOG_SESSION=${reauth_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${reauth_csrf_token}"
+assert_equals '재인증 시작 204' "${last_status}" '204'
+if [ ! -s "${last_body}" ]; then
+  record_pass '재인증 시작 응답에 본문이 없다'
+else
+  record_fail '재인증 시작 응답에 본문이 없다' "$(head -c 200 "${last_body}")"
+fi
+assert_security_headers '재인증 시작 204'
+assert_rows '재인증 시작이 세션 행을 늘리지 않는다' 'SELECT count(*) FROM spring_session' '3'
+
+# 무장은 세션 속성 **하나**다. 새 컬럼도 새 테이블도 만들지 않았다.
+#
+# 델타가 정확히 1이어야 한다. 0이면 무장이 저장되지 않은 것이고(그때 아래 인가 시작은 재인증이
+# 아니라 거절로 끝난다), 2 이상이면 이 스토리가 세션에 값을 하나보다 많이 심은 것이다.
+reauth_attributes_after="$(psql_value 'SELECT count(*) FROM spring_session_attributes')"
+if [ -n "${reauth_attributes_before}" ] && [ -n "${reauth_attributes_after}" ] \
+  && [ "$((reauth_attributes_after - reauth_attributes_before))" = '1' ]; then
+  record_pass '무장이 세션 속성 하나를 더한다'
+else
+  record_fail '무장이 세션 속성 하나를 더한다' \
+    "속성 행이 '${reauth_attributes_before}'에서 '${reauth_attributes_after}'로 바뀌었다 (기대 +1)"
+fi
+
+# 3) 인가 시작. 인증된 세션인데도 통과한다 — 무장이 그 예외를 만든다.
+fetch GET /api/auth/authorize/google -H "Cookie: BOKRILOG_SESSION=${reauth_session_cookie}"
+assert_equals '무장된 세션의 인가 시작 302' "${last_status}" '302'
+reauth_authorize_location="$(header_value 'Location')"
+assert_prefix '재인증 인가 시작이 제공자 스텁으로 간다' \
+  "${reauth_authorize_location}" "${base_url}/api/dev-oidc/google/authorize"
+# 공통 `max_age`. OIDC Core가 이 파라미터와 함께 `auth_time`을 필수로 만든다.
+assert_value_contains '재인증 인가 요청이 max_age를 보낸다' \
+  "${reauth_authorize_location}" 'max_age=300'
+# Google이 공표한 증거 요청. essential `auth_time`이 `claims`에 실린다.
+assert_value_contains 'Google 재인증 인가 요청이 essential auth_time을 요청한다' \
+  "${reauth_authorize_location}" 'auth_time'
+# 공표하지 않은 수단은 보내지 않는다. Google 문서의 `prompt` 목록에 `login`이 없다.
+assert_value_lacks 'Google 재인증 인가 요청에 prompt가 없다' \
+  "${reauth_authorize_location}" 'prompt='
+# 기존 검증 재료가 그대로다. 파라미터를 덮어썼다면 여기서 먼저 걸린다.
+assert_value_contains '재인증 인가 요청이 PKCE S256을 쓴다' \
+  "${reauth_authorize_location}" 'code_challenge_method=S256'
+assert_value_contains '재인증 인가 요청에 nonce가 있다' "${reauth_authorize_location}" 'nonce='
+assert_value_lacks '재인증 인가 요청에 PKCE verifier가 실리지 않는다' \
+  "${reauth_authorize_location}" 'code_verifier'
+
+# 4) 동의 화면. 로그인과 같은 화면이며 제공자 이름을 적지 않는다.
+# 로그인 왕복과 **같은** `subject`를 보낸다. 재인증은 검증된 식별자가 현재 사용자의 것인지를
+# 묻는 것이므로, 다른 값을 보내면 이 절은 성공 경로가 아니라 "미연결 식별자" 실패를 본다.
+fetch GET "${reauth_authorize_location#"${base_url}"}&dev_subject=google-${stub_subject_marker}"
+assert_equals '재인증 동의 화면 200' "${last_status}" '200'
+reauth_consent_href="$(sed -n 's/.*<a href="\([^"]*\)".*/\1/p' "${last_body}" | head -1 | sed 's/&amp;/\&/g')"
+assert_prefix '재인증 동의 링크가 공개 origin의 콜백으로 되돌린다' \
+  "${reauth_consent_href}" "${base_url}/api/auth/callback/google"
+reauth_code="$(printf '%s' "${reauth_consent_href}" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')"
+reauth_state="$(printf '%s' "${reauth_consent_href}" | sed -n 's/.*[?&]state=\([^&]*\).*/\1/p')"
+
+# 5) 콜백. 붙들어 둔 목적지로 돌아가고 세션 ID가 회전한다.
+fetch GET "${reauth_consent_href#"${base_url}"}" \
+  -H "Cookie: BOKRILOG_SESSION=${reauth_session_cookie}"
+assert_equals '재인증 콜백 302' "${last_status}" '302'
+reauth_callback_location="$(header_value 'Location')"
+# 무장 시각에 붙들어 둔 목적지다. 콜백이 들고 온 어떤 값도 목적지가 되지 않는다.
+assert_equals '재인증이 붙들어 둔 목적지로 돌아간다' \
+  "$(resolve_location "${reauth_callback_location}")" "${base_url}/onboarding"
+# 성공에는 표지가 붙지 않는다. 할 말이 없다.
+assert_value_lacks '재인증 성공 목적지에 표지가 없다' "${reauth_callback_location}" 'auth='
+assert_value_lacks '재인증 목적지에 code가 없다' "${reauth_callback_location}" 'code='
+assert_value_lacks '재인증 목적지에 state가 없다' "${reauth_callback_location}" 'state='
+
+reauth_rotated_cookie="$(session_cookie_value)"
+if [ -n "${reauth_rotated_cookie}" ] && [ "${reauth_rotated_cookie}" != "${reauth_session_cookie}" ]; then
+  record_pass '재인증 성공 시점에 세션 ID가 회전한다'
+else
+  record_fail '재인증 성공 시점에 세션 ID가 회전한다' \
+    '콜백이 새 세션 쿠키를 주지 않았다. 재인증이 회전을 만들지 못했다.'
+fi
+
+# 행은 그대로 셋이다. 회전이 UPDATE가 아니라 INSERT로 끝나면 여기서 넷이 된다.
+assert_rows '재인증이 세션 행을 늘리지 않는다' 'SELECT count(*) FROM spring_session' '3'
+# 계정도 매핑도 그대로다. 재인증은 계정을 만들지도 바꾸지도 않는다.
+assert_rows '재인증이 계정을 만들지 않는다' 'SELECT count(*) FROM identity_account_lifecycle' '3'
+assert_rows '재인증이 인증 매핑을 만들지 않는다' 'SELECT count(*) FROM identity_social_link' '3'
+
+# 무장은 일회성이다. 소비 뒤 속성 행 수가 무장 전으로 되돌아간다 — 되돌아오지 않으면 소비된
+# 흐름이 세션에 그대로 남아 다음 콜백이 같은 무장을 다시 쓴다.
+reauth_attributes_consumed="$(psql_value 'SELECT count(*) FROM spring_session_attributes')"
+if [ "${reauth_attributes_consumed}" = "${reauth_attributes_before}" ]; then
+  record_pass '재인증 콜백이 무장 속성을 소비한다'
+else
+  record_fail '재인증 콜백이 무장 속성을 소비한다' \
+    "속성 행이 '${reauth_attributes_consumed}'다 (기대 '${reauth_attributes_before}')"
+fi
+
+# 6) 회전 전 쿠키는 죽었고 새 쿠키는 인증 상태다.
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${reauth_session_cookie}"
+assert_equals '재인증 전 쿠키의 세션 확인은 미인증이다' \
+  "$(cat "${last_body}")" '{"authenticated":false,"destination":"entry"}'
+
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${reauth_rotated_cookie}"
+assert_equals '재인증 뒤 세션 확인 200' "${last_status}" '200'
+# 본문 모양이 로그인 직후와 글자까지 같다. 재인증이 응답에 필드를 늘리지 않는다.
+assert_equals '재인증 뒤 세션 확인 본문은 상태·목적지·토큰뿐' \
+  "$(sed 's/"csrfToken":"[^"]*"/"csrfToken":"<가림>"/' "${last_body}")" \
+  '{"authenticated":true,"destination":"onboarding","csrfToken":"<가림>"}'
+assert_cache_control '재인증 뒤 세션 확인은 저장하지 않는다' "${expected_document_cache_control}"
+
+# 7) 다른 두 사용자 세션은 그대로다.
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${naver_session_cookie}"
+assert_body_contains '재인증이 다른 사용자의 세션을 건드리지 않는다' '"authenticated":true'
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${kakao_session_cookie}"
+assert_body_contains '재인증이 세 번째 사용자의 세션도 건드리지 않는다' '"authenticated":true'
+
+# 8) 무장은 일회성이다. 같은 콜백을 다시 보내도 아무것도 바뀌지 않는다.
+fetch GET "${reauth_consent_href#"${base_url}"}" \
+  -H "Cookie: BOKRILOG_SESSION=${reauth_rotated_cookie}"
+assert_equals '두 번째 재인증 콜백 302' "${last_status}" '302'
+# 무장이 소비됐으므로 검증에 넘기지 않고 지금 목적지로 되돌린다.
+assert_equals '두 번째 콜백은 지금 목적지로 되돌린다' \
+  "$(resolve_location "$(header_value 'Location')")" "${base_url}/onboarding"
+assert_rows '두 번째 콜백이 계정을 만들지 않는다' \
+  'SELECT count(*) FROM identity_account_lifecycle' '3'
+assert_rows '두 번째 콜백이 세션 행을 바꾸지 않는다' 'SELECT count(*) FROM spring_session' '3'
+
+# 회전한 쿠키와 그 세션의 새 토큰으로 전역을 갱신한다. 아래 로그아웃 절이 이 값을 쓴다.
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${reauth_rotated_cookie}"
+google_session_cookie="${reauth_rotated_cookie}"
+google_csrf_token="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
+if [ -n "${google_csrf_token}" ]; then
+  record_pass '재인증 뒤 세션이 새 CSRF 토큰을 준다'
+else
+  record_fail '재인증 뒤 세션이 새 CSRF 토큰을 준다' \
+    "본문에 csrfToken이 없다 — $(head -c 200 "${last_body}")"
+fi
+
 
 printf '\n로그아웃 왕복\n'
 
@@ -1530,10 +1743,12 @@ if [ "${log_ready}" = true ]; then
   # 세 왕복의 값을 모두 본다. 제공자가 늘어도 access log의 `map`은 하나지만, 한 왕복의 값만
   # 검사하면 다른 제공자의 콜백이 다른 location으로 흘러 쿼리를 남기기 시작해도 통과한다.
   for leaked_label in 'google code' 'google state' 'naver code' 'naver state' \
-    'kakao code' 'kakao state'; do
+    'kakao code' 'kakao state' 'reauth code' 'reauth state'; do
     case "${leaked_label}" in
       'google code') leaked_value="${google_round_trip_code}" ;;
       'google state') leaked_value="${google_round_trip_state}" ;;
+      'reauth code') leaked_value="${reauth_code}" ;;
+      'reauth state') leaked_value="${reauth_state}" ;;
       'naver code') leaked_value="${naver_round_trip_code}" ;;
       'naver state') leaked_value="${naver_round_trip_state}" ;;
       'kakao code') leaked_value="${kakao_round_trip_code}" ;;

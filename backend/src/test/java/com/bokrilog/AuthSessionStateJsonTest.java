@@ -38,7 +38,8 @@ class AuthSessionStateJsonTest {
 
                     String json =
                             mapper.writeValueAsString(
-                                    new AuthSessionController.SessionState(false, "entry", null));
+                                    new AuthSessionController.SessionState(
+                                            false, "entry", null, null));
 
                     // Story 1.4가 고정한 문자열 그대로다. 필드 하나가 늘면 여기서 먼저 깨진다.
                     assertThat(json).isEqualTo("{\"authenticated\":false,\"destination\":\"entry\"}");
@@ -54,16 +55,53 @@ class AuthSessionStateJsonTest {
                     String json =
                             mapper.writeValueAsString(
                                     new AuthSessionController.SessionState(
-                                            true, "onboarding", "csrf-token-value"));
+                                            true, "onboarding", null, "csrf-token-value"));
 
                     /*
                      * 필드 순서는 record 컴포넌트 순서다. 클라이언트가 순서에 의존하지는 않지만,
                      * 이 동등성이 "무엇이 나가는가"를 한 줄로 고정한다.
+                     *
+                     * Story 1.8이 `reauthRequired`를 세 번째 컴포넌트로 더했어도 이 문자열은 그대로다.
+                     * 표시되지 않은 세션에서 그 값은 `null`이고 `NON_NULL`이 그것을 걸러 낸다 —
+                     * 인증된 응답의 본문도 이 스토리 전후로 글자까지 같아야 하기 때문이다.
                      */
                     assertThat(json)
                             .isEqualTo(
                                     "{\"authenticated\":true,\"destination\":\"onboarding\","
                                             + "\"csrfToken\":\"csrf-token-value\"}");
+                });
+    }
+
+    @Test
+    void 표시된_세션의_응답만_재인증_요구를_싣는다() {
+        this.contexts.run(
+                context -> {
+                    ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+                    /*
+                     * 표시된 세션은 미인증으로 답하면서 필드 둘을 더 싣는다. 회복에 필요한 것이
+                     * 그 둘이다 — 화면이 패널을 그릴 근거와 재인증 시작에 실을 토큰.
+                     *
+                     * 값이 `Boolean.FALSE`인 상태를 만들지 않는 것이 컨트롤러의 계약이다. 그 값도
+                     * `NON_NULL`을 지나가므로 `"reauthRequired":false`가 미인증 응답에 실리고,
+                     * 그러면 위 전문 동등성이 깨진다. 아래 단정이 그 두 값이 다르게 직렬화된다는
+                     * 사실을 남긴다.
+                     */
+                    String marked =
+                            mapper.writeValueAsString(
+                                    new AuthSessionController.SessionState(
+                                            false, "entry", Boolean.TRUE, "csrf-token-value"));
+                    assertThat(marked)
+                            .isEqualTo(
+                                    "{\"authenticated\":false,\"destination\":\"entry\","
+                                            + "\"reauthRequired\":true,"
+                                            + "\"csrfToken\":\"csrf-token-value\"}");
+
+                    String notMarked =
+                            mapper.writeValueAsString(
+                                    new AuthSessionController.SessionState(
+                                            false, "entry", Boolean.FALSE, null));
+                    assertThat(notMarked).contains("\"reauthRequired\":false");
                 });
     }
 
@@ -82,7 +120,8 @@ class AuthSessionStateJsonTest {
                      */
                     String json =
                             mapper.writeValueAsString(
-                                    new AuthSessionController.SessionState(true, "dashboard", ""));
+                                    new AuthSessionController.SessionState(
+                                            true, "dashboard", null, ""));
 
                     assertThat(json).contains("\"csrfToken\":\"\"");
                 });

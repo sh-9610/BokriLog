@@ -1,8 +1,10 @@
 import type { ReactElement } from 'react'
 
+import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
-import { authContent } from '../content/auth'
+import { authContent, reauthNoticeKindOf } from '../content/auth'
 import { entryContent } from '../content/entry'
+import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
 import { EntryScreen } from './EntryScreen'
@@ -30,6 +32,7 @@ const MAIN_ID = 'onboarding-main'
 export function OnboardingScreen(): ReactElement {
   const { csrfToken, gate } = useSessionGate('onboarding')
   const signOut = useSignOut(csrfToken)
+  const reauthentication = useReauthentication(csrfToken)
 
   if (gate === 'unauthenticated') {
     /*
@@ -42,6 +45,12 @@ export function OnboardingScreen(): ReactElement {
   }
 
   const ready = gate === 'ready'
+  /*
+   * 재인증을 요구받은 세션이다. 이동하지 않고 이 자리에서 회복 경로를 연다 —
+   * 표시된 세션은 이미 자기 목적지에 있고, 인증 화면으로 보내면 그 화면의 로그인 버튼을
+   * 서버가 "이미 인증된 세션"으로 거절해 무한 왕복이 된다.
+   */
+  const reauthRequired = gate === 'reauth-required'
 
   return (
     <div className={styles.page}>
@@ -73,15 +82,32 @@ export function OnboardingScreen(): ReactElement {
           상태가 된다.
         */}
         <div
-          aria-busy={!ready || signOut.pending}
+          /*
+            표시된 세션은 갱신 중이 아니다. 게이트가 `reauth-required`인 상태는 확인이
+            끝나고 다음 행동을 기다리는 자리이므로 `aria-busy`를 세우면 보조기술에 "지금
+            바뀌는 중"이라고 잘못 말한다. 확인 중·이동 중·요청 중만 참이다.
+          */
+          aria-busy={(!ready && !reauthRequired) || signOut.pending || reauthentication.pending}
           aria-live="polite"
           className={styles.notice}
           role="status"
         >
           {ready && !signOut.pending ? null : (
-            <p className={styles.noticeText}>{liveRegionMessage(gate, signOut.pending)}</p>
+            <p className={styles.noticeText}>
+              {liveRegionMessage(gate, signOut.pending, reauthentication.pending)}
+            </p>
           )}
         </div>
+
+        {reauthRequired ? (
+          <ReauthPanel
+            notice={reauthNoticeKindOf(window.location.search)}
+            onReauthenticate={reauthentication.requestReauthentication}
+            onSignOut={signOut.requestSignOut}
+            pending={reauthentication.pending}
+            signingOut={signOut.pending}
+          />
+        ) : null}
 
         {ready ? (
           <section aria-labelledby={authContent.onboarding.id} className={styles.section}>

@@ -1,7 +1,15 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { authContent, onboardingCopyStrings, SIGN_IN_PROVIDERS } from '../content/auth'
+import {
+  authContent,
+  authorizePath,
+  CSRF_HEADER,
+  onboardingCopyStrings,
+  reauthCopyStrings,
+  reauthNoticePath,
+  SIGN_IN_PROVIDERS,
+} from '../content/auth'
 import { entryContent } from '../content/entry'
 import { navigateTo, replaceLocation } from '../session/navigation'
 import {
@@ -9,6 +17,7 @@ import {
   getObservedSessionRequests,
   getObservedStorageEntries,
   stubLogoutRequest,
+  stubReauthenticationRequest,
   stubSessionRequest,
 } from '../test/setup'
 import { OnboardingScreen } from './OnboardingScreen'
@@ -51,6 +60,21 @@ function pendingResponse(): Promise<Response> {
 beforeEach(() => {
   vi.mocked(replaceLocation).mockClear()
   vi.mocked(navigateTo).mockClear()
+})
+
+/**
+ * 이 화면의 경로를 그 쿼리와 함께 연다.
+ *
+ * `App.test.tsx`의 관용이다. jsdom의 기본 `search`는 빈 문자열이라 주소를 옮기지 않으면 화면이
+ * 패널에 넘기는 표지가 언제나 `null`이고, 그 배선은 어느 단정도 지나지 않는다.
+ */
+function navigateToOnboardingScreen(search: string): void {
+  window.history.pushState({}, '', `/onboarding${search}`)
+}
+
+/* 주소를 옮긴 시험이 다음 시험에 그 쿼리를 물려주지 않게 한다. */
+afterEach(() => {
+  window.history.pushState({}, '', '/onboarding')
 })
 
 describe('OnboardingScreen', () => {
@@ -424,5 +448,261 @@ describe('OnboardingScreen', () => {
 
     expect(screen.getAllByRole('status')).toHaveLength(1)
     expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite')
+  })
+
+  // --------------------------------------------------------------------
+  // 재인증 (Story 1.8)
+  // --------------------------------------------------------------------
+
+  it('재인증: 표시된 세션에서 패널을 제자리에 렌더하고 이동하지 않는다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: false, csrfToken: 'reauth-token', reauthRequired: true }),
+      ),
+    )
+
+    render(<OnboardingScreen />)
+
+    expect(
+      await screen.findByRole('heading', { level: 2, name: authContent.reauth.heading }),
+    ).toBeInTheDocument()
+    /*
+     * 미인증 응답이지만 인증 화면으로 되돌리지 않는다. 표시된 세션은 이미 자기 목적지에 있고,
+     * 인증 화면으로 보내면 그 화면의 로그인 버튼을 서버가 "이미 인증된 세션"으로 거절해
+     * 무한 왕복이 된다.
+     */
+    expect(screen.queryByText(authContent.notices.signedOut)).not.toBeInTheDocument()
+    expect(vi.mocked(replaceLocation)).not.toHaveBeenCalled()
+    expect(vi.mocked(navigateTo)).not.toHaveBeenCalled()
+    // 사용자 데이터는 한 글자도 없다. 이 세션은 아직 쓸 수 없는 상태다.
+    for (const item of authContent.onboarding.items) {
+      expect(screen.queryByText(item)).not.toBeInTheDocument()
+    }
+  })
+
+  it('재인증: live region이 하나로 남고 표시된 세션은 갱신 중이 아니다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: false, csrfToken: 'reauth-token', reauthRequired: true }),
+      ),
+    )
+
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.reauth.heading })
+
+    // 패널이 자기 live region을 만들지 않는다. 상태를 말하는 자리는 화면당 하나다.
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    const status = screen.getByRole('status')
+    expect(status.textContent).toBe(authContent.reauth.status)
+    expect(status).toHaveAttribute('aria-busy', 'false')
+  })
+
+  it('재인증: 로그아웃 버튼이 패널에 하나뿐이다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: false, csrfToken: 'reauth-token', reauthRequired: true }),
+      ),
+    )
+
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.reauth.heading })
+
+    /*
+     * 머리말 버튼은 게이트가 `ready`일 때만 나온다. 표시된 세션에서 둘이 함께 나오면 같은
+     * 조작이 화면에 두 번 있고, 그중 하나는 사용자가 방금 읽은 안내와 멀리 떨어져 있다.
+     */
+    expect(screen.getAllByRole('button', { name: authContent.signOut.label })).toHaveLength(1)
+  })
+
+  it('재인증: 버튼을 누르면 토큰을 헤더에 싣고 그 제공자의 인가 경로로 이동한다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: false, csrfToken: 'reauth-token', reauthRequired: true }),
+      ),
+    )
+    let observedInit: RequestInit | undefined
+    stubReauthenticationRequest('naver', (init) => {
+      observedInit = init
+      return Promise.resolve(new Response(null, { status: 204 }))
+    })
+
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.reauth.heading })
+
+    fireEvent.click(screen.getByRole('button', { name: authContent.signIn.labels.naver }))
+
+    await waitFor(() => {
+      expect(vi.mocked(navigateTo)).toHaveBeenCalledWith(authorizePath('naver'))
+    })
+    // 세션 귀속 토큰이 헤더로 간다. 쿼리 문자열이면 로그·`Referer`·히스토리에 남는다.
+    expect(new Headers(observedInit?.headers).get(CSRF_HEADER)).toBe('reauth-token')
+    expect(observedInit?.credentials).toBe('same-origin')
+    expect(getObservedAllowedRequests()).toEqual([
+      'GET /api/auth/session',
+      'POST /api/auth/reauthenticate/naver',
+    ])
+  })
+
+  it('재인증: 진행 중에는 두 번째 요청이 나가지 않는다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: false, csrfToken: 'reauth-token', reauthRequired: true }),
+      ),
+    )
+    stubReauthenticationRequest('google', pendingResponse)
+
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.reauth.heading })
+
+    const google = screen.getByRole('button', { name: authContent.signIn.labels.google })
+    fireEvent.click(google)
+    await waitFor(() => {
+      expect(google).toHaveAttribute('aria-disabled', 'true')
+    })
+    fireEvent.click(google)
+    // 다른 제공자도 막힌다. 두 흐름이 심기면 사용자가 고른 것과 실제로 열리는 것이 달라진다.
+    fireEvent.click(screen.getByRole('button', { name: authContent.signIn.labels.kakao }))
+
+    expect(getObservedAllowedRequests()).toEqual([
+      'GET /api/auth/session',
+      'POST /api/auth/reauthenticate/google',
+    ])
+    expect(screen.getByRole('status').textContent).toBe(authContent.reauth.pending)
+  })
+
+  it('재인증: 시작이 성립하지 않으면 제자리에 표지를 달고 제공자로 가지 않는다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: false, csrfToken: 'reauth-token', reauthRequired: true }),
+      ),
+    )
+    stubReauthenticationRequest('google', () =>
+      Promise.resolve(new Response(null, { status: 403 })),
+    )
+
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.reauth.heading })
+
+    fireEvent.click(screen.getByRole('button', { name: authContent.signIn.labels.google }))
+
+    await waitFor(() => {
+      expect(vi.mocked(replaceLocation)).toHaveBeenCalledWith(
+        reauthNoticePath(window.location.pathname),
+      )
+    })
+    // 무장이 없으면 인가 시작은 목적지로 되돌려질 뿐이다. 보내지 않는다.
+    expect(vi.mocked(navigateTo)).not.toHaveBeenCalled()
+  })
+
+  it('재인증: 표시된 세션은 만료로 세지 않는다', async () => {
+    let answered = 0
+    stubSessionRequest(() => {
+      answered += 1
+      return Promise.resolve(
+        answered === 1
+          ? jsonResponse({ authenticated: true, destination: 'onboarding' })
+          : jsonResponse({
+              authenticated: false,
+              csrfToken: 'reauth-token',
+              reauthRequired: true,
+            }),
+      )
+    })
+
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.onboarding.heading })
+
+    // 탭이 다시 보이는 순간의 재확인이 표시를 관측한다.
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+
+    expect(
+      await screen.findByRole('heading', { level: 2, name: authContent.reauth.heading }),
+    ).toBeInTheDocument()
+    /*
+     * 만료가 아니다. 서버 응답의 모양은 같지만 결과가 다르다 — 만료는 인증 화면으로 보내고
+     * 표시는 제자리에서 회복 경로를 연다. 만료로 세면 회복에 필요한 토큰이 그 이동과 함께
+     * 사라진다.
+     */
+    expect(vi.mocked(replaceLocation)).not.toHaveBeenCalled()
+  })
+
+  it('재인증: 브라우저 저장소에 아무것도 쓰지 않는다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: false, csrfToken: 'reauth-token', reauthRequired: true }),
+      ),
+    )
+    stubReauthenticationRequest('google', () =>
+      Promise.resolve(new Response(null, { status: 204 })),
+    )
+
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.reauth.heading })
+    fireEvent.click(screen.getByRole('button', { name: authContent.signIn.labels.google }))
+    await waitFor(() => {
+      expect(vi.mocked(navigateTo)).toHaveBeenCalled()
+    })
+
+    // 토큰은 메모리에만 있다. 브라우저에 남는 값은 세션 쿠키 하나로 유지된다.
+    expect(getObservedStorageEntries()).toEqual([])
+  })
+
+  it('재인증: 패널이 차지한 화면에도 제목과 고지가 인접한다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: false, csrfToken: 'reauth-token', reauthRequired: true }),
+      ),
+    )
+
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.reauth.heading })
+
+    /*
+     * 배열 전체를 본다. 패널이 화면의 본문 자리를 통째로 차지하므로 UX-DR23의 두 문장도 이
+     * 상태에서 함께 렌더돼야 하고, 그 둘은 패널이 아니라 화면이 낸다 — 배열을 쪼개 보면 그
+     * 경계가 어느 쪽에서도 확인되지 않는다.
+     */
+    for (const copy of reauthCopyStrings) {
+      expect(screen.getByText(copy)).toBeInTheDocument()
+    }
+  })
+
+  it('재인증: 주소의 표지를 패널 문장으로 옮긴다', async () => {
+    for (const kind of ['reauthCancelled', 'reauthFailed'] as const) {
+      navigateToOnboardingScreen(`?auth=${kind}`)
+      stubSessionRequest(() =>
+        Promise.resolve(
+          jsonResponse({ authenticated: false, csrfToken: 'reauth-token', reauthRequired: true }),
+        ),
+      )
+
+      const { unmount } = render(<OnboardingScreen />)
+      await screen.findByRole('heading', { level: 2, name: authContent.reauth.heading })
+
+      // 서버가 붙들어 둔 목적지에 달아 보낸 표지다. 화면이 그것을 패널로 옮기지 않으면
+      // 사용자는 왜 돌아왔는지 알 수 없다.
+      expect(screen.getByText(authContent.notices[kind])).toBeInTheDocument()
+      unmount()
+    }
+  })
+
+  it('재인증: 재인증과 무관한 표지는 패널에 나타나지 않는다', async () => {
+    navigateToOnboardingScreen('?auth=loggedOut')
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: false, csrfToken: 'reauth-token', reauthRequired: true }),
+      ),
+    )
+
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.reauth.heading })
+
+    /*
+     * "로그아웃했습니다 … 다시 로그인해 주세요"는 아직 로그인해 있는 사용자에게 거짓이다.
+     * 주소는 누구나 적을 수 있으므로 거름은 화면의 일이고, 타입이 그 거름을 강제한다.
+     */
+    expect(screen.queryByText(authContent.notices.loggedOut)).not.toBeInTheDocument()
   })
 })

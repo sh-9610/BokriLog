@@ -14,7 +14,12 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach } from 'vitest'
 
-import { LOGOUT_ENDPOINT, SESSION_ENDPOINT } from '../content/auth'
+import {
+  LOGOUT_ENDPOINT,
+  reauthenticatePath,
+  SESSION_ENDPOINT,
+  type SignInProvider,
+} from '../content/auth'
 
 const observedRequests: string[] = []
 const observedIndexedDbNames: string[] = []
@@ -67,6 +72,20 @@ export function stubSessionRequest(responder: RequestResponder): void {
  */
 export function stubLogoutRequest(responder: RequestResponder): void {
   responders.set(requestKey('POST', LOGOUT_ENDPOINT), responder)
+}
+
+/**
+ * 그 제공자의 재인증 시작 요청 하나를 이 시험 동안만 허용한다.
+ *
+ * 제공자마다 경로가 다르므로 여는 것도 제공자 단위다. 시험이 열지 않은 제공자로 요청이 나가면
+ * 전역 거부가 그것을 기록하고 실패시킨다 — 패널이 사용자가 고른 것과 다른 제공자를 여는 회귀가
+ * 그 기록으로 드러난다.
+ */
+export function stubReauthenticationRequest(
+  provider: SignInProvider,
+  responder: RequestResponder,
+): void {
+  responders.set(requestKey('POST', reauthenticatePath(provider)), responder)
 }
 
 /** 허용된 세션 확인 요청의 기록. 몇 번 불렸는지 단정하는 데 쓴다. */

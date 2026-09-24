@@ -65,6 +65,15 @@ final class DevOidcStub {
 
     private static final Duration DEFAULT_LIFETIME = Duration.ofMinutes(5);
 
+    /**
+     * 브라우저 왕복이 스텁의 {@code subject}를 고정하는 인가 요청 파라미터.
+     *
+     * <p>이름에 {@code dev_}가 붙는다. 실제 OIDC 파라미터와 섞이지 않아야 하고, 이 값을 보내는
+     * 코드가 개발·CI 층의 것임이 호출 자리에서 읽혀야 한다. 값이 없으면 {@code subject}는 요청마다
+     * 새로 만들어지며 그것이 기본이다(아래 {@link #consentRedirect}).
+     */
+    static final String SUBJECT_OVERRIDE_PARAMETER = "dev_subject";
+
     private final String issuer;
 
     private final String clientId;
@@ -78,6 +87,29 @@ final class DevOidcStub {
     private final byte[] macSecret;
 
     private final Map<String, Grant> grants = new ConcurrentHashMap<>();
+
+    /**
+     * 마지막 인가 요청이 실어 온 재인증 파라미터.
+     *
+     * <p>기록만 한다. 값에 따라 행동을 바꾸지 않는 것이 요점이다 — 이 스텁의 존재 이유는 정상
+     * 흐름의 결정성이고, {@code prompt}나 {@code max_age}에 반응하기 시작하면 그 결정성이
+     * 사라진다.
+     *
+     * <p>기록하는 이유는 시험이 <b>우리가 실제로 보냈는가</b>를 볼 자리가 필요하기 때문이다.
+     * 인가 요청의 {@code Location}만 보면 서버가 만든 URL을 확인하는 것이고, 여기 남는 값은
+     * 제공자 자리에 실제로 도착한 것이다. 세 이름만 담는다 — {@code state}·{@code nonce}·
+     * {@code code_challenge}는 흐름의 비밀이라 기록할 값이 아니다.
+     *
+     * <p><b>인스턴스당 "마지막 요청" 하나다.</b> 같은 제공자로 인가 요청이 동시에 둘 들어오면
+     * 나중에 도착한 쪽이 앞의 값을 덮으므로 이 맵을 읽는 단정은 순서에 의존한다. 그래서
+     * {@link #grants}와 달리 code에 귀속되지 않으며, 시험은 인가 요청 하나를 보낸 직후에 읽어야
+     * 한다. 흐름을 여럿 띄운 뒤 몰아서 읽으면 그 단정은 아무것도 고정하지 않는다.
+     */
+    private final Map<String, String> reauthenticationParameters = new ConcurrentHashMap<>();
+
+    /** 재인증 파라미터로 기록하는 이름. 이 셋뿐이다. */
+    private static final List<String> REAUTHENTICATION_PARAMETER_NAMES =
+            List.of("max_age", "prompt", "claims");
 
     /**
      * @param issuer 이 스텁이 주장하는 {@code iss}. ID Token의 같은 claim이 이 값이며 제공자 등록의
@@ -192,8 +224,19 @@ final class DevOidcStub {
      * 여기서 만드는 계획은 언제나 정상 계획이다 — 실패 주입은 시험이 {@link #issueCode(TokenPlan)}로
      * 직접 한다.
      *
-     * <p>{@code subject}는 요청마다 새로 만든다. 그래서 개발 스택의 왕복은 늘 신규 가입이고 목적지는
-     * 온보딩이다. 고정된 {@code subject}를 두면 그 값이 곧 저장소에 남는 식별자 리터럴이 된다.
+     * <p>{@code subject}는 기본적으로 요청마다 새로 만든다. 그래서 개발 스택의 왕복은 늘 신규
+     * 가입이고 목적지는 온보딩이다. 고정된 {@code subject}를 소스에 두면 그 값이 곧 저장소에 남는
+     * 식별자 리터럴이 된다.
+     *
+     * <p>{@link #SUBJECT_OVERRIDE_PARAMETER}가 그 예외다. 값을 <b>호출자가</b> 주므로 리터럴은
+     * 저장소에 남지 않고, 같은 사람이 다시 돌아오는 흐름을 브라우저 층에서 재현할 수 있다 —
+     * 재인증이 정확히 그 흐름이다(검증된 식별자가 현재 사용자의 것이어야 한다). 이 파라미터가
+     * 없으면 개발·CI 스택에서 재인증 성공 경로가 존재할 수 없고, 그 계층은 실패만 볼 수 있다.
+     *
+     * <p>이 예외가 검사를 무르지 않는다. PKCE 재계산, code 일회성, client 인증,
+     * {@code redirect_uri} 일치는 그대로다 — 바뀌는 것은 스텁이 주장하는 신원 하나이고, 실제
+     * 제공자도 그 값을 스스로 정한다. 그리고 이 표면은 {@code dev-oidc} 프로필에만 존재하며 그
+     * 프로필은 실제 제공자 등록과 함께 활성일 수 없다({@code DevOidcStubConfig}).
      *
      * <p>PKCE 없는 인가 요청은 열지 않는다. {@code code_challenge}가 없거나 method가 {@code S256}이
      * 아니면 code를 만들지 않는다 — 우리 쪽에서 PKCE가 꺼지면 브라우저 왕복이 여기서 멈춘다.
@@ -201,6 +244,7 @@ final class DevOidcStub {
      * @return 콜백 URI, 요청이 authorization request의 모양이 아니면 {@code null}
      */
     @Nullable String consentRedirect(Map<String, String> query) {
+        recordReauthenticationParameters(query);
         String redirectUri = query.get("redirect_uri");
         String state = query.get("state");
         String nonce = query.get("nonce");
@@ -208,9 +252,14 @@ final class DevOidcStub {
             // 세 값 중 하나라도 없으면 이 흐름은 검증을 통과할 수 없다. 열어 주지 않는다.
             return null;
         }
+        TokenPlan plan = TokenPlan.valid(nonce);
+        String subjectOverride = query.get(SUBJECT_OVERRIDE_PARAMETER);
+        if (!isBlank(subjectOverride)) {
+            plan.subject(subjectOverride);
+        }
         String code;
         try {
-            code = issueCode(TokenPlan.valid(nonce), query);
+            code = issueCode(plan, query);
         } catch (IllegalArgumentException ex) {
             // PKCE S256이 아니다. 제공자가 인가를 거절하는 자리이며 이유를 본문에 적지 않는다.
             return null;
@@ -221,6 +270,31 @@ final class DevOidcStub {
                 + encode(code)
                 + "&state="
                 + encode(state);
+    }
+
+    private void recordReauthenticationParameters(Map<String, String> query) {
+        for (String name : REAUTHENTICATION_PARAMETER_NAMES) {
+            String value = query.get(name);
+            if (value != null) {
+                this.reauthenticationParameters.put(name, value);
+            } else {
+                /*
+                 * 없으면 지운다. 남겨 두면 재인증 왕복 뒤의 일반 로그인이 앞 왕복의 값을 그대로
+                 * 보여 주고, "일반 로그인에는 얹지 않는다"를 보려는 시험이 통과하지 못한다.
+                 */
+                this.reauthenticationParameters.remove(name);
+            }
+        }
+    }
+
+    /**
+     * 마지막 인가 요청에 실려 온 재인증 파라미터. 없으면 빈 맵이다.
+     *
+     * <p>이 스텁 인스턴스 하나의 마지막 요청이다. 제공자마다 인스턴스가 다르므로
+     * ({@code DevOidcStubConfig}) 값이 제공자별로 갈린다.
+     */
+    Map<String, String> lastReauthenticationParameters() {
+        return Map.copyOf(this.reauthenticationParameters);
     }
 
     /**
@@ -302,6 +376,18 @@ final class DevOidcStub {
 
         private @Nullable Instant issuedAt;
 
+        /**
+         * ID Token의 {@code auth_time}.
+         *
+         * <p>기본값이 없다는 것이 {@link #authTime}의 뜻이 아니다 — 값이 {@code null}이면 아래
+         * {@link #idToken}이 발급 시각을 쓴다. "방금 인증했다"가 정상 흐름이므로 그것이 기본이고,
+         * 이 필드는 그 기본을 어긋나게 하려는 시험만 채운다.
+         */
+        private @Nullable Instant authTime;
+
+        /** claim 자체를 싣지 않는다. {@code auth_time}을 공표하지 않은 제공자를 재현한다. */
+        private boolean omitAuthTime;
+
         private boolean foreignKey;
 
         private boolean macAlgorithm;
@@ -373,6 +459,29 @@ final class DevOidcStub {
         /** RS256이 아닌 알고리즘으로 서명한다. 허용 알고리즘 검사가 막아야 한다. */
         TokenPlan macAlgorithm() {
             this.macAlgorithm = true;
+            return this;
+        }
+
+        /**
+         * {@code auth_time}을 특정 시각으로 둔다.
+         *
+         * <p>재인증의 신선도 판정을 어긋나게 하는 유일한 축이다. 오래된 인증과 미래의 인증을
+         * 여기서 주입한다.
+         */
+        TokenPlan authTime(Instant value) {
+            this.authTime = value;
+            return this;
+        }
+
+        /**
+         * {@code auth_time} claim을 아예 싣지 않는다.
+         *
+         * <p>증거 부재다. 네이버처럼 그 claim을 공표하지 않은 제공자가 실연동에서 만들 수 있는
+         * 응답이며, 이 축이 없으면 "증거가 없으면 완화하지 않고 실패한다"를 아무 시험도 보지
+         * 않는다.
+         */
+        TokenPlan omitAuthTime() {
+            this.omitAuthTime = true;
             return this;
         }
 
@@ -472,6 +581,20 @@ final class DevOidcStub {
         }
         if (plan.authorizedParty != null) {
             claims.claim("azp", plan.authorizedParty);
+        }
+        if (!plan.omitAuthTime) {
+            /*
+             * 최근 인증 증거.
+             *
+             * 기본은 발급 시각이다 — 정상 흐름은 "방금 인증했다"이고, 그 기본이 없으면 재인증의
+             * 성공 경로를 시험이 지날 수 없다. 일반 로그인 왕복에도 같은 claim이 실리며, 그것은
+             * OIDC Core가 `max_age`와 함께 요구하는 모양 그대로다.
+             *
+             * 초 단위 정수로 싣는다. OIDC Core의 NumberDate이며 실제 제공자가 보내는 모양이다.
+             * `Instant`를 그대로 담으면 Nimbus가 다른 표현으로 직렬화해 검증기가 읽지 못한다.
+             */
+            Instant authTime = plan.authTime != null ? plan.authTime : issuedAt;
+            claims.claim("auth_time", authTime.getEpochSecond());
         }
 
         if (plan.macAlgorithm) {

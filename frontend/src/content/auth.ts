@@ -52,6 +52,21 @@ export const SESSION_ENDPOINT = '/api/auth/session'
 export const LOGOUT_ENDPOINT = '/api/auth/logout'
 
 /**
+ * 재인증 시작 경로의 접두사. 뒤에 제공자 등록 id가 붙는다.
+ *
+ * 인증 시작(`AUTHORIZE_BASE_PATH`)과 다른 경로이고 `POST`다. 무장은 상태 변경이라 세션 귀속
+ * CSRF 토큰과 동일 출처 `Origin`을 지나야 하고, 그 다음 단계인 인가 시작은 제공자로 가는 최상위
+ * 내비게이션이라 링크여야 한다. 두 단계를 한 경로에 합치면 표지가 붙은 링크 하나로 남의 세션에
+ * 재인증 흐름을 심을 수 있다.
+ */
+export const REAUTHENTICATE_BASE_PATH = '/api/auth/reauthenticate'
+
+/** 그 제공자의 재인증 시작 경로. 경로를 조립하는 유일한 자리다. */
+export function reauthenticatePath(provider: SignInProvider): string {
+  return `${REAUTHENTICATE_BASE_PATH}/${provider}`
+}
+
+/**
  * CSRF 토큰을 싣는 요청 헤더 이름.
  *
  * 백엔드 `AuthSecurityConfig.CSRF_HEADER_NAME`과 같은 값이다. 두 계층이 한 계약을 나눠 갖는
@@ -109,24 +124,53 @@ export function authorizeHref(provider: SignInProvider, pathname: string): strin
 /**
  * 인증 화면이 보여 줄 안내의 종류.
  *
- * `cancelled`·`failed`는 **서버가** URL에 실어 보내는 닫힌 두 값이다. `loggedOut`·`expired`·
- * `logoutFailed`는 **클라이언트가** 만든다 — 로그아웃 성공·세션 만료·로그아웃 실패를 서버가 응답으로
- * 갈라 주면 세션의 존재 이력이 새므로, 그 구분은 브라우저의 메모리에만 있다(`useSessionState`,
- * `signOut`). `signedOut`은 로그인 상태 경로에 처음부터 미인증으로 들어온 경우이며 URL 표지 없이
- * 화면이 직접 고른다.
+ * `cancelled`·`failed`는 **서버만** 만든다. `reauthCancelled`는 **서버만** 만들고,
+ * `reauthFailed`는 **양쪽이** 만든다 — 콜백을 지난 모든 재인증 실패는 서버가 붙이고, 무장 요청
+ * 자체가 성립하지 않은 경우(403·네트워크 단절·시한 초과)는 콜백에 닿지 않으므로 클라이언트가
+ * 같은 값을 붙인다(`reauthNoticePath`). 재인증 표지 둘이 로그인 표지 둘과 값을 나누는 이유는
+ * 목적지다 — 앞의 둘은 인증 화면으로, 뒤의 둘은 재인증이 붙들어 둔 목적지로 온다. 같은 값을 쓰면
+ * 인증 화면의 "다시 로그인해 주세요" 문장이 이미 로그인한 사용자에게 렌더된다.
  *
- * 여섯 값 중 어느 것도 계정의 존재·상태를 알려 주지 않는다.
+ * `loggedOut`·`expired`·`logoutFailed`는 **클라이언트만** 만든다 — 로그아웃 성공·세션 만료·
+ * 로그아웃 실패를 서버가 응답으로 갈라 주면 세션의 존재 이력이 새므로, 그 구분은 브라우저의
+ * 메모리에만 있다(`useSessionState`, `signOut`). `signedOut`은 로그인 상태 경로에 처음부터
+ * 미인증으로 들어온 경우이며 URL 표지 없이 화면이 직접 고른다.
+ *
+ * 여덟 값 중 어느 것도 계정의 존재·상태를 알려 주지 않는다. 재인증 실패 표지 하나에 타 사용자
+ * 식별자·미연결 식별자·증거 부재·삭제 전환이 모두 접혀 있는 것이 그 계약이다.
  */
 export type AuthNoticeKind =
-  'cancelled' | 'expired' | 'failed' | 'loggedOut' | 'logoutFailed' | 'signedOut'
+  | 'cancelled'
+  | 'expired'
+  | 'failed'
+  | 'loggedOut'
+  | 'logoutFailed'
+  | 'reauthCancelled'
+  | 'reauthFailed'
+  | 'signedOut'
 
 /**
- * 클라이언트가 URL에 실을 수 있는 표지.
+ * 클라이언트가 **인증 화면** URL에 실을 수 있는 표지.
  *
  * `noticePath`의 입력이며, 서버가 만드는 `cancelled`·`failed`와 화면이 직접 고르는 `signedOut`이
  * 여기 없다. 셋을 섞으면 어느 계층이 어떤 표지를 만드는지가 타입에서 사라진다.
+ *
+ * `reauthFailed`도 여기 없다. 클라이언트가 그 값을 만들기는 하지만(`reauthNoticePath`) 목적지가
+ * 인증 화면이 아니라 **지금 경로**다 — 그 표지를 보는 사용자는 이미 로그인한 상태이고, 이
+ * 타입에 넣으면 `noticePath('reauthFailed')`가 타입 검사를 통과해 그 사람을 로그인 화면으로
+ * 보내는 경로가 열린다.
  */
 export type ClientNoticeKind = 'expired' | 'loggedOut' | 'logoutFailed'
+
+/**
+ * 재인증 패널이 보여 줄 수 있는 표지.
+ *
+ * `AuthNoticeKind`의 진부분집합이다. 패널이 `AuthNoticeKind`를 그대로 받으면 재인증과 무관한
+ * 표지도 그 안에서 렌더되고, `/dashboard?auth=loggedOut`이 "로그아웃했습니다 … 다시 로그인해
+ * 주세요"를 아직 로그인해 있는 사용자에게 보여 준다. 타입을 좁혀 두면 두 화면이 URL 값을
+ * 거르는 일을 타입 검사가 강제한다(`reauthNoticeKindOf`).
+ */
+export type ReauthNoticeKind = 'reauthCancelled' | 'reauthFailed'
 
 /**
  * URL 표지로 인정하는 값 전부. 목록에 없는 값은 무시한다.
@@ -140,31 +184,68 @@ const URL_NOTICE_KINDS: readonly AuthNoticeKind[] = [
   'failed',
   'loggedOut',
   'logoutFailed',
+  'reauthCancelled',
+  'reauthFailed',
 ]
 
 /**
  * URL 표지 → 화면 안내 종류. 목록에 없는 값은 무시한다.
  *
  * `signedOut`만 이 집합에서 빠진다. 그 표지는 URL이 아니라 세션 확인 결과가 고르며, 여기 넣으면
- * 화면이 자기 확인 결과와 무관한 문장을 URL만으로 띄운다. 나머지 다섯은 주소창에서 설정할 수
- * 있다 — 서버가 만드는 `cancelled`·`failed`도, 클라이언트가 만드는 `expired`·`loggedOut`·
- * `logoutFailed`도 그렇다. 어느 값도 계정의 존재·상태를 알려 주지 않고 로그인 상태를 바꾸지도
- * 않으므로, 그 설정 가능성 자체는 위험이 아니다. 표지는 문장 하나를 고를 뿐이다.
+ * 화면이 자기 확인 결과와 무관한 문장을 URL만으로 띄운다. 나머지 일곱은 주소창에서 설정할 수
+ * 있다 — 서버가 만드는 `cancelled`·`failed`·`reauthCancelled`·`reauthFailed`도, 클라이언트가
+ * 만드는 `expired`·`loggedOut`·`logoutFailed`도 그렇다. 어느 값도 계정의 존재·상태를 알려 주지
+ * 않고 로그인 상태를 바꾸지도 않으므로, 그 설정 가능성 자체는 위험이 아니다. 표지는 문장 하나를
+ * 고를 뿐이다.
  */
 export function noticeKindOf(search: string): AuthNoticeKind | null {
   const marker = new URLSearchParams(search).get(NOTICE_PARAMETER)
   return URL_NOTICE_KINDS.find((kind) => kind === marker) ?? null
 }
 
+/** 재인증 패널이 보여 줄 수 있는 표지 둘. 위 목록의 진부분집합이다. */
+const REAUTH_NOTICE_KINDS: readonly ReauthNoticeKind[] = ['reauthCancelled', 'reauthFailed']
+
 /**
- * 그 표지를 달고 인증 화면을 여는 경로.
+ * 주소의 표지 중 **재인증에 속하는 것만** 돌려준다.
  *
- * 표지를 URL에 싣는 유일한 생산자다. 문자열을 직접 조립하는 자리가 늘면 `noticeKindOf`의 닫힌
- * 집합과 갈라져 조용히 무시되는 값이 생긴다.
+ * 두 인증 화면이 패널에 넘기기 전에 지나는 거름망이다. `noticeKindOf`를 그대로 넘기면
+ * `/dashboard?auth=loggedOut`이 "로그아웃했습니다"를 아직 로그인해 있는 사용자에게 보여 주고,
+ * 그 문장은 자기 화면에 앉아 있는 사람에게 거짓이다. 거름을 화면마다 손으로 쓰지 않는 이유는
+ * 두 화면이 갈라질 자리를 만들지 않기 위해서다.
+ */
+export function reauthNoticeKindOf(search: string): ReauthNoticeKind | null {
+  const kind = noticeKindOf(search)
+  return REAUTH_NOTICE_KINDS.find((candidate) => candidate === kind) ?? null
+}
+
+/**
+ * 그 표지를 달고 **인증 화면**을 여는 경로.
+ *
+ * 표지를 URL에 싣는 생산자는 이 모듈에 둘뿐이고 이것이 그중 하나다(다른 하나는 아래
+ * `reauthNoticePath`이며 목적지가 지금 경로다). 문자열을 직접 조립하는 자리가 늘면
+ * `noticeKindOf`의 닫힌 집합과 갈라져 조용히 무시되는 값이 생긴다.
  */
 export function noticePath(kind: ClientNoticeKind): string {
   const query = new URLSearchParams({ [NOTICE_PARAMETER]: kind })
   return `${ENTRY_PATH}?${query.toString()}`
+}
+
+/**
+ * 재인증 실패 표지를 달고 지금 화면을 다시 여는 경로.
+ *
+ * 인증 화면이 아니라 <b>지금 경로</b>다. 이 표지를 보는 사용자는 이미 로그인한 상태이고 화면은
+ * 자기 목적지이므로, 로그인 화면으로 보내면 표지가 설명하려는 상황과 화면이 어긋난다. 서버도
+ * 같은 값을 붙들어 둔 목적지에 달아 보낸다(`AuthFlowHandlers`) — 두 생산자가 같은 모양을 만드는
+ * 것이 요점이고, 그래서 화면은 표지 하나만 읽으면 된다.
+ *
+ * 재인증 시작이 성립하지 않은 경우에만 클라이언트가 이 값을 만든다(`startReauthentication`).
+ * 그 밖의 모든 재인증 실패는 콜백을 지나므로 서버가 만든다.
+ */
+export function reauthNoticePath(pathname: string): string {
+  const kind: ReauthNoticeKind = 'reauthFailed'
+  const query = new URLSearchParams({ [NOTICE_PARAMETER]: kind })
+  return `${pathname}?${query.toString()}`
 }
 
 const NOTICES: Readonly<Record<AuthNoticeKind, string>> = {
@@ -180,6 +261,22 @@ const NOTICES: Readonly<Record<AuthNoticeKind, string>> = {
    */
   logoutFailed:
     '로그아웃을 끝내지 못했습니다. 로그인 상태가 남아 있을 수 있습니다. 아래 버튼으로 다시 로그인해 확인해 주세요.',
+  /**
+   * 사용자가 본인 확인을 스스로 끝내지 않았다.
+   *
+   * 로그인 취소와 문장을 나누는 이유는 사용자가 있는 자리가 다르기 때문이다. 이 문장을 보는
+   * 사람은 이미 로그인한 상태이고 화면은 자기 목적지이며, "다시 로그인해 주세요"는 그 상황을
+   * 틀리게 설명한다.
+   */
+  reauthCancelled: '본인 확인을 끝내지 않았습니다. 아래 버튼으로 다시 시도할 수 있습니다.',
+  /**
+   * 그 밖의 모든 재인증 실패.
+   *
+   * 무엇이 어긋났는지 말하지 않는다. 타 사용자의 식별자, 어느 계정에도 없는 식별자, 제공자가
+   * 증명하지 않은 인증 시각이 모두 이 한 문장으로 접히며, 값을 나누는 순간 그 표지가 계정의
+   * 존재나 연결 상태를 알려 주는 신호가 된다.
+   */
+  reauthFailed: '본인 확인을 끝내지 못했습니다. 아래 버튼으로 다시 시도해 주세요.',
   signedOut: '로그인 상태가 아닙니다. 아래 버튼으로 로그인해 주세요.',
 }
 
@@ -219,6 +316,36 @@ export const authContent = {
     checking: '로그인 상태를 확인하고 있습니다.',
     /** 서버가 다른 목적지를 골랐다. 그 화면으로 문서를 다시 요청하는 동안 보여 준다. */
     redirecting: '로그인 상태에 맞는 화면으로 이동합니다.',
+  },
+  /**
+   * 두 인증 화면이 공유하는 재인증 패널의 카피.
+   *
+   * 연결된 제공자를 묻지도 말하지도 않는다. 어느 수단으로 가입했는지를 화면에 도달시키는 경로가
+   * 곧 계정 소속 신호이므로(진입 화면의 복구 안내가 세 제공자를 언제나 함께 보여 주는 것과 같은
+   * 이유) 여기서도 세 버튼을 그대로 보이고, 연결되지 않은 제공자를 고른 결과는 다른 실패와
+   * 구분되지 않는 하나로 수렴한다.
+   */
+  reauth: {
+    id: 'auth-reauth',
+    heading: '본인 확인이 필요합니다',
+    body: '이 로그인 상태를 계속 사용하려면 아래 로그인 수단 중 하나로 본인 확인을 다시 해 주세요.',
+    /**
+     * 확인이 성립하는 조건.
+     *
+     * 어느 제공자인지 말하지 않으면서 "아무거나 눌러도 된다"는 오해만 막는다. 이 문장이 없으면
+     * 연결되지 않은 수단을 고른 사용자는 실패 표지 하나만 보고 이유를 짐작할 수 없다.
+     */
+    boundary: '이 계정에 연결된 로그인 수단으로만 본인 확인을 끝낼 수 있습니다.',
+    /** 화면당 하나뿐인 `role="status"` 영역이 말할 문장. */
+    status: '본인 확인이 필요합니다.',
+    /**
+     * 진행 중 상태.
+     *
+     * 같은 live region이 말한다. 버튼 안의 문구를 바꾸는 것은 live region이 아니어서 보조기술에
+     * 전달되지 않고, 그 문구가 버튼의 접근 가능한 이름이 되면 컨트롤의 이름이 동작 아닌 상태가
+     * 된다. 중복 제출을 막는 것은 이 문구가 아니라 `useReauthentication`의 가드다.
+     */
+    pending: '본인 확인 화면으로 이동하고 있습니다.',
   },
   /** 두 인증 화면이 공유하는 로그아웃 조작. 화면마다 문구를 따로 두지 않는다. */
   signOut: {
@@ -322,6 +449,25 @@ export const recoveryCopyStrings: readonly string[] = [
   authContent.recovery.body,
   ...authContent.recovery.links.map((link) => link.label),
   authContent.recovery.caveat,
+]
+
+/**
+ * 재인증 패널에 렌더되어야 하는 카피.
+ *
+ * 두 화면의 `*CopyStrings`와 따로 둔다. 그 배열들은 게이트가 `ready`일 때의 카피 목록이고 이
+ * 문장들은 표시된 세션에서만 나타난다. 한 배열에 섞으면 정상 화면의 문구 단정이 늘 실패한다.
+ *
+ * UX-DR23의 두 문장과 제공자 버튼 셋, 로그아웃 라벨이 함께 든다 — 패널이 화면을 통째로 차지하는
+ * 상태이므로 그 화면에도 제목과 고지가 인접해 있어야 한다.
+ */
+export const reauthCopyStrings: readonly string[] = [
+  authContent.pageTitle,
+  authContent.disclaimer,
+  authContent.reauth.heading,
+  authContent.reauth.body,
+  authContent.reauth.boundary,
+  ...SIGN_IN_PROVIDERS.map((provider) => authContent.signIn.labels[provider]),
+  authContent.signOut.label,
 ]
 
 /** 온보딩 화면의 카피 전부. */

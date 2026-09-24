@@ -193,19 +193,6 @@
   text-decoration: none;
 }
 
-.googleMark {
-  inline-size: var(--component-social-sign-in-google-logo-size);
-  block-size: var(--component-social-sign-in-google-logo-size);
-
-  /*
-   * 줄어들지 않는다. flex 항목의 기본 축소가 걸리면 좁은 폭에서 로고가 찌그러진다.
-   * `overflow: visible`은 UA 기본값(`hidden`)을 되돌려 놓는다. 잘라내지 않는 요소여야
-   * "텍스트가 잘리지 않는다"를 관측하는 E2E가 이 요소를 후보로 삼지 않는다.
-   */
-  flex: none;
-  overflow: visible;
-}
-
 /*
  * 네이버 버튼.
  *
@@ -253,15 +240,6 @@
   text-decoration: none;
 }
 
-.naverMark {
-  inline-size: var(--component-social-sign-in-naver-logo-size);
-  block-size: var(--component-social-sign-in-naver-logo-size);
-
-  /* 근거는 위 `.googleMark`와 같다. */
-  flex: none;
-  overflow: visible;
-}
-
 /*
  * 카카오 버튼.
  *
@@ -304,20 +282,6 @@
   font-weight: var(--type-label-font-weight);
   line-height: var(--type-label-line-height);
   text-decoration: none;
-}
-
-/*
- * 심볼은 정사각형이 아니다. 공식 애셋의 잉크 비율이 25.39 : 24(가로가 5.8% 넓다)이므로 높이만
- * 정하고 폭을 `auto`로 두어 `viewBox`의 비율이 렌더에서 그대로 산다. 두 축을 같은 값으로 묶으면
- * 브라우저가 `preserveAspectRatio`로 여백을 만들어 잉크가 선언한 크기보다 작아진다.
- */
-.kakaoMark {
-  inline-size: auto;
-  block-size: var(--component-social-sign-in-kakao-logo-size);
-
-  /* 근거는 위 `.googleMark`와 같다. */
-  flex: none;
-  overflow: visible;
 }
 
 /*
