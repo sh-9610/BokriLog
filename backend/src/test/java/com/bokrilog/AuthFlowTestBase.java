@@ -11,6 +11,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
@@ -27,6 +29,12 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.mock.web.MockHttpSession;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.authentication.preauth.PreAuthenticatedAuthenticationToken;
+import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.session.Session;
 import org.springframework.session.SessionRepository;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -104,9 +112,11 @@ abstract class AuthFlowTestBase {
     @BeforeEach
     void resetStore() {
         this.jdbc.sql("TRUNCATE TABLE spring_session, spring_session_attributes").update();
+        // `action_grant`를 이름으로 적는다. `identity_account`를 참조하므로 CASCADE가 어차피
+        // 비우지만, 이름이 없으면 그 정리가 외래키 설정에 딸린 부수 효과로만 성립한다.
         this.jdbc
                 .sql(
-                        "TRUNCATE TABLE identity_social_link, identity_account, "
+                        "TRUNCATE TABLE action_grant, identity_social_link, identity_account, "
                                 + "identity_account_lifecycle CASCADE")
                 .update();
     }
@@ -688,6 +698,202 @@ abstract class AuthFlowTestBase {
                         armed.returnPath(),
                         armed.armedAt().minus(elapsed)));
         repository.save(session);
+    }
+
+    // ----------------------------------------------------------------------
+    // 허가(action grant)
+    // ----------------------------------------------------------------------
+
+    /**
+     * 허가 시험 셋이 공유하는 command·target·확인 문구.
+     *
+     * <p>세 파일에 같은 리터럴을 두면 한쪽만 바뀌는 날 "귀속이 어긋난 요청"과 "시험이 서로 다른
+     * 값을 쓴다"가 같은 실패로 보인다. 값의 뜻은 이 포트가 해석하지 않으므로 무엇이어도 되지만,
+     * 셋이 같아야 한다는 것은 계약이다.
+     */
+    static final String GRANT_COMMAND = "link-provider";
+
+    /** 위와 한 쌍. */
+    static final String GRANT_TARGET = "naver";
+
+    /** 위와 한 쌍. */
+    static final String GRANT_CONFIRMATION = "연결합니다";
+
+    /** 방금 재인증을 마친, 이 사용자의 세션. */
+    static MockHttpSession grantSession(UUID userId) {
+        return grantSession(UUID.randomUUID().toString(), userId);
+    }
+
+    /** 그 세션 id를 가지고 방금 재인증을 마친, 이 사용자의 세션. */
+    static MockHttpSession grantSession(String sessionId, UUID userId) {
+        return grantSession(sessionId, userId, Instant.now(), Duration.ZERO);
+    }
+
+    /**
+     * 허가 포트에 건네는 세션.
+     *
+     * <p>{@link MockHttpSession}인 이유는 그 포트에 HTTP 표면이 없어 요청 문맥이 없고, Spring
+     * Session의 {@code HttpSession} 어댑터가 공개 타입이 아니기 때문이다. 세션 id를 실제 로그인이
+     * 만든 값으로 주는 축에서는 그 값을 그대로 넣어 저장소의 사실과 맞춘다.
+     *
+     * <p>주체를 {@code AuthFlowHandlers}가 심는 것과 같은 모양으로 넣는다. 그 값이 없으면 포트가
+     * "세션이 결정한 사용자"를 확인할 수 없어 거부하며, 그 자체가 하나의 시험 축이다.
+     *
+     * <p>생성 시각을 인자로 받는다. {@code MockHttpSession}의 기본 생성 시각은 언제나 "지금"이라
+     * 세션 절대 수명 축이 한 번도 실행되지 않는다.
+     *
+     * @param userId 세션에 심을 주체. {@code null}이면 주체 없는 세션이다
+     * @param reauthenticatedAt 세션에 기록할 재인증 시각. {@code null}이면 기록하지 않는다
+     * @param createdAgo 생성 시각을 지금보다 이만큼 과거로 둔다
+     */
+    static MockHttpSession grantSession(
+            String sessionId,
+            @Nullable UUID userId,
+            @Nullable Instant reauthenticatedAt,
+            Duration createdAgo) {
+        long created = System.currentTimeMillis() - createdAgo.toMillis();
+        MockHttpSession session =
+                new MockHttpSession(null, sessionId) {
+                    @Override
+                    public long getCreationTime() {
+                        return created;
+                    }
+                };
+        if (userId != null) {
+            SecurityContext context = SecurityContextHolder.createEmptyContext();
+            context.setAuthentication(
+                    new PreAuthenticatedAuthenticationToken(
+                            userId.toString(), null, List.of(new SimpleGrantedAuthority("ROLE_USER"))));
+            session.setAttribute(
+                    HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY, context);
+        }
+        if (reauthenticatedAt != null) {
+            session.setAttribute(ReauthenticationFlow.AUTHENTICATED_AT_ATTRIBUTE, reauthenticatedAt);
+        }
+        return session;
+    }
+
+    /**
+     * 데이터베이스의 지금.
+     *
+     * <p>발급 창의 경계를 정확히 짚는 데 필요하다. 그 판정의 두 피연산자 중 하나는 {@code now()}
+     * 이므로, 자바 시계로 좌표를 잡으면 JVM과 컨테이너의 시차만큼 경계가 흔들린다.
+     */
+    Instant databaseNow() {
+        return this.jdbc.sql("SELECT now()").query(OffsetDateTime.class).single().toInstant();
+    }
+
+    /** 허가 행 수. */
+    long actionGrantCount() {
+        return count("SELECT count(*) FROM action_grant");
+    }
+
+    /**
+     * 한 사용자의 허가 행 수.
+     *
+     * <p>전체 개수만 세면 "다른 사용자의 허가가 보존됐다"를 확인할 수 없다
+     * ({@link #sessionCountOf}와 같은 근거). 계정 payload 삭제가 그 계정의 허가만 지우는지 보는
+     * 자리가 여기다.
+     */
+    long actionGrantCountOf(UUID userId) {
+        return this.jdbc
+                .sql("SELECT count(*) FROM action_grant WHERE user_id = :userId")
+                .param("userId", userId)
+                .query(Long.class)
+                .single();
+    }
+
+    /** 그 허가 행이 아직 있는가. */
+    boolean actionGrantExists(String reference) {
+        return this.jdbc
+                .sql("SELECT count(*) FROM action_grant WHERE grant_id = :reference")
+                .param("reference", reference)
+                .query(Long.class)
+                .single()
+                == 1L;
+    }
+
+    /**
+     * 그 허가가 소비됐는가.
+     *
+     * <p>허가를 <b>읽기만</b> 하는 경로다. 확인 화면 조회가 소비를 일으키지 않는다는 단정이 이
+     * 헬퍼로 관측된다.
+     *
+     * @throws IllegalStateException 그 행이 없을 때. 조용히 {@code false}를 돌려주면 "지워진 허가"가
+     *     "미소비 허가"로 보이고 뒤따르는 단정이 엉뚱한 이유로 통과한다
+     */
+    boolean actionGrantConsumed(String reference) {
+        return this.jdbc
+                .sql("SELECT consumed_at IS NOT NULL FROM action_grant WHERE grant_id = :reference")
+                .param("reference", reference)
+                .query(Boolean.class)
+                .optional()
+                .orElseThrow(() -> new IllegalStateException("허가 행이 없다: " + reference));
+    }
+
+    /** 그 허가에 저장된 결과. 아직 없으면 빈 값이다. */
+    Optional<String> actionGrantResult(String reference) {
+        return this.jdbc
+                .sql("SELECT result FROM action_grant WHERE grant_id = :reference AND result IS NOT NULL")
+                .param("reference", reference)
+                .query(String.class)
+                .optional();
+    }
+
+    /**
+     * 허가의 만료 시각을 지금 기준 상대 위치로 옮긴다.
+     *
+     * <p>시험이 5분을 기다릴 수는 없고, 수명을 줄이는 설정을 따로 두면 그 설정이 검증하는 값과
+     * 제품이 쓰는 값이 갈린다({@link #ageLastAccess}와 같은 근거). 만료 판정이 데이터베이스에 있어
+     * 그 seam이 공짜로 생긴 자리이며, 그래서 이 헬퍼도 자바 시각이 아니라 {@code now()}를 기준으로
+     * 옮긴다 — JVM과 컨테이너의 시계가 어긋나도 경계 단정이 흔들리지 않는다.
+     *
+     * <p>필요하면 발급 시각도 함께 당긴다. 스키마가 {@code expires_at > issued_at}을 요구하므로
+     * 만료를 과거로 옮기는 것만으로는 행이 제약을 깬다. 당기는 값은 새 만료보다 1초 앞이며, 발급
+     * 시각 자체를 보는 시험은 아래 {@link #moveActionGrantIssuedAt}으로 다시 정한다.
+     *
+     * @param fromNow 음수면 과거, {@link Duration#ZERO}면 정확히 지금이다
+     */
+    void moveActionGrantExpiry(String reference, Duration fromNow) {
+        requireSingleGrantRow(
+                this.jdbc
+                        .sql(
+                                "UPDATE action_grant SET expires_at = "
+                                        + "now() + make_interval(secs => CAST(:seconds AS double precision)), "
+                                        + "issued_at = LEAST(issued_at, "
+                                        + "now() + make_interval(secs => CAST(:seconds AS double precision)) "
+                                        + "- interval '1 second') "
+                                        + "WHERE grant_id = :reference")
+                        .param("seconds", fromNow.toSeconds())
+                        .param("reference", reference)
+                        .update(),
+                reference);
+    }
+
+    /**
+     * 허가의 발급 시각을 지금 기준 상대 위치로 옮긴다. 만료 시각은 건드리지 않는다.
+     *
+     * <p>"아무도 {@code issued_at + 수명}을 다시 계산하지 않는다"를 관측하는 도구다. 서버 시각이
+     * 뒤로 간 것처럼 발급 시각을 미래로 옮겨도 만료 판정은 바뀌지 않아야 한다.
+     */
+    void moveActionGrantIssuedAt(String reference, Duration fromNow) {
+        requireSingleGrantRow(
+                this.jdbc
+                        .sql(
+                                "UPDATE action_grant SET issued_at = "
+                                        + "now() + make_interval(secs => CAST(:seconds AS double precision)) "
+                                        + "WHERE grant_id = :reference")
+                        .param("seconds", fromNow.toSeconds())
+                        .param("reference", reference)
+                        .update(),
+                reference);
+    }
+
+    private static void requireSingleGrantRow(int updated, String reference) {
+        if (updated != 1) {
+            throw new IllegalStateException(
+                    "허가 하나를 옮기려 했는데 " + updated + "행이 바뀌었다: " + reference);
+        }
     }
 
     /** 특정 인증 매핑에 연결된 계정. 재로그인이 같은 계정을 쓰는지 본다. */
