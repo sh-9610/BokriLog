@@ -8,6 +8,7 @@ import {
   onboardingCopyStrings,
   reauthCopyStrings,
   reauthNoticePath,
+  SETTINGS_PATH,
   SIGN_IN_PROVIDERS,
 } from '../content/auth'
 import { entryContent } from '../content/entry'
@@ -106,6 +107,34 @@ describe('OnboardingScreen', () => {
     for (const copy of onboardingCopyStrings) {
       expect(rendered).toContain(copy)
     }
+  })
+
+  it('설정 화면으로 가는 길을 준다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(jsonResponse({ authenticated: true, destination: 'onboarding' })),
+    )
+
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.onboarding.heading })
+
+    /*
+     * 이 링크가 없으면 설정 화면은 주소를 직접 쳐야만 닿고, 사용자가 자기 로그인 수단을 볼
+     * 자리가 사실상 없다. 전역 내비게이션은 아직 없으므로 머리말의 링크 하나가 그 자리다.
+     */
+    const link = screen.getByRole('link', { name: authContent.settings.link })
+
+    expect(link).toHaveAttribute('href', SETTINGS_PATH)
+    // 경로 리터럴을 한 번 고정한다. Nginx 허용 목록·서버 목적지 집합과 같은 값이어야 한다.
+    expect(SETTINGS_PATH).toBe('/settings')
+  })
+
+  it('세션이 확인되기 전에는 설정 링크도 없다', () => {
+    stubSessionRequest(pendingResponse)
+
+    render(<OnboardingScreen />)
+
+    // 확인 전에는 이 화면이 로그인 상태를 주장하지 않는다. 갈 곳도 아직 없다.
+    expect(screen.queryByRole('link', { name: authContent.settings.link })).not.toBeInTheDocument()
   })
 
   it('UX-DR23: `복리 계획 비교` 제목과 비추천 고지를 인접 배치한다', async () => {

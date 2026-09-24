@@ -90,6 +90,16 @@ abstract class AuthFlowTestBase {
     private SessionGuard sessionGuard;
 
     /**
+     * 연결의 판정과 실행.
+     *
+     * <p>HTTP를 지나지 않는 축 하나가 이 빈을 직접 부른다 — 같은 {@code operation_id}의 재전송이다.
+     * 연결 흐름은 콜백 하나로 소비되므로 HTTP 층에서는 같은 무장으로 두 번 들어갈 수 없고, 그래서
+     * 멱등 경로를 관측하려면 포트를 직접 두 번 불러야 한다.
+     */
+    @Autowired
+    private LinkService linkService;
+
+    /**
      * 세션 저장소.
      *
      * <p>세션 속성을 애플리케이션과 같은 경로로 읽기 위해 필요하다. 새
@@ -417,6 +427,79 @@ abstract class AuthFlowTestBase {
         return callback(authorization, sessionCookie, code, authorization.state());
     }
 
+    /**
+     * 연결 상태 조회.
+     *
+     * <p>안전한 메서드라 CSRF·{@code Origin}을 요구하지 않는다. 주체가 없으면 공통 오류 계약의
+     * 403으로 끝나며 그 판정은 세션 하나가 한다.
+     */
+    HttpResponse<String> linkStatus(@Nullable String sessionCookie)
+            throws IOException, InterruptedException {
+        return get(AuthSecurityConfig.LINK_BASE_URI, sessionCookie);
+    }
+
+    /**
+     * 연결 시작 요청.
+     *
+     * <p>로그아웃·재인증 시작과 같은 {@code /api/auth/} 상태 변경 계약을 지난다 — 세션 귀속 CSRF
+     * 토큰과 동일 출처 {@code Origin}이다. 둘 중 하나를 비우거나 틀린 값으로 주는 것이 이
+     * 스토리의 거절 시험이므로 인자로 받는다.
+     */
+    HttpResponse<String> startLink(
+            String provider,
+            @Nullable String sessionCookie,
+            @Nullable String csrfToken,
+            @Nullable String origin)
+            throws IOException, InterruptedException {
+        List<String> headers = new ArrayList<>();
+        if (origin != null) {
+            headers.add("Origin");
+            headers.add(origin);
+        }
+        if (csrfToken != null) {
+            headers.add(AuthSecurityConfig.CSRF_HEADER_NAME);
+            headers.add(csrfToken);
+        }
+        return send(
+                "POST",
+                AuthSecurityConfig.LINK_BASE_URI + "/" + provider,
+                sessionCookie,
+                headers.toArray(new String[0]));
+    }
+
+    /** 계약을 모두 만족시키는 연결 시작. 정상 경로가 필요한 시험이 쓴다. */
+    HttpResponse<String> startLink(
+            String provider, @Nullable String sessionCookie, @Nullable String csrfToken)
+            throws IOException, InterruptedException {
+        return startLink(provider, sessionCookie, csrfToken, OidcStubConfiguration.PUBLIC_BASE_URL);
+    }
+
+    /**
+     * 연결 왕복 하나. 무장 → 인가 시작 → 검증된 콜백까지 간다.
+     *
+     * <p>무장이 204가 아니면 그 자리에서 멈춘다({@link #reauthenticate}와 같은 근거). 조용히 이어
+     * 가면 뒤따르는 단정이 "연결이 실패했다"를 보면서 통과하는데, 실제 원인은 흐름이 시작조차
+     * 하지 않은 것이다.
+     *
+     * @param subject 대상 제공자가 줄 외부 식별자. 연결의 판정이 보는 값이다
+     */
+    HttpResponse<String> link(
+            String provider,
+            String sessionCookie,
+            @Nullable String csrfToken,
+            String subject)
+            throws IOException, InterruptedException {
+        HttpResponse<String> armed = startLink(provider, sessionCookie, csrfToken);
+        if (armed.statusCode() != 204) {
+            throw new IllegalStateException(
+                    "연결 무장이 204가 아니다: " + armed.statusCode() + " " + armed.body());
+        }
+        Authorization authorization = startAuthorization(provider, null, sessionCookie);
+        String code =
+                issueCode(authorization, TokenPlan.valid(authorization.nonce()).subject(subject));
+        return callback(authorization, sessionCookie, code, authorization.state());
+    }
+
     HttpResponse<String> get(String path, @Nullable String sessionCookie)
             throws IOException, InterruptedException {
         return send("GET", path, sessionCookie);
@@ -641,6 +724,44 @@ abstract class AuthFlowTestBase {
         return this.sessionGuard;
     }
 
+    /** 연결의 판정과 실행. HTTP 없이 멱등 재전송을 관측하는 시험이 쓴다. */
+    LinkService linkService() {
+        return this.linkService;
+    }
+
+    /**
+     * 세션에 기록된 재인증 시각을 과거로 옮긴다.
+     *
+     * <p>시험이 5분을 기다릴 수는 없고, 창을 줄이는 설정을 따로 두면 그 설정이 검증하는 값과
+     * 제품이 쓰는 값이 갈린다({@link #ageLastAccess}와 같은 근거). 신선도 판정은 데이터베이스가
+     * 하지만 그 피연산자 하나는 세션에 사는 {@code Instant}이므로, 여기서는 그 속성을 더 이른
+     * 시각으로 다시 쓴다.
+     *
+     * <p>기록이 없으면 소리 내어 실패한다. 조용히 지나가면 뒤따르는 단정이 "오래된 재인증"이
+     * 아니라 "재인증이 아예 없는" 세션을 보며 통과한다 — 두 상태의 결과가 같아서 더 위험하다.
+     *
+     * @param sessionId {@link #sessionIdOf}로 되돌린 세션 id
+     */
+    void ageReauthentication(String sessionId, Duration elapsed) {
+        ageReauthentication(this.sessions, sessionId, elapsed);
+    }
+
+    /** 와일드카드 저장소의 타입 매개변수를 한 번만 붙들어 둔다({@link #ageReauthenticationFlow}와 같다). */
+    private static <S extends Session> void ageReauthentication(
+            SessionRepository<S> repository, String sessionId, Duration elapsed) {
+        S session = repository.findById(sessionId);
+        if (session == null) {
+            throw new IllegalStateException("세션이 없다: " + sessionId);
+        }
+        Object stored = session.getAttribute(ReauthenticationFlow.AUTHENTICATED_AT_ATTRIBUTE);
+        if (!(stored instanceof Instant recorded)) {
+            throw new IllegalStateException("재인증 기록이 없는 세션이다: " + sessionId);
+        }
+        session.setAttribute(
+                ReauthenticationFlow.AUTHENTICATED_AT_ATTRIBUTE, recorded.minus(elapsed));
+        repository.save(session);
+    }
+
     /**
      * 세션 하나가 들고 있는 속성.
      *
@@ -654,6 +775,30 @@ abstract class AuthFlowTestBase {
     @Nullable Object sessionAttribute(String sessionId, String name) {
         Session session = this.sessions.findById(sessionId);
         return session == null ? null : session.getAttribute(name);
+    }
+
+    /**
+     * 세션 하나의 속성을 덮어쓴다.
+     *
+     * <p>시계 대신 저장소의 값을 옮기는 관용의 일반형이다({@link #ageLastAccess}와 같은 근거).
+     * {@code ATTRIBUTE_BYTES}는 Java 직렬화라 SQL로 다룰 수 없으므로 저장소를 지나야 하고, 그래서
+     * 여기서 쓰는 변환은 애플리케이션이 쓰는 것과 같다.
+     *
+     * @param sessionId {@link #sessionIdOf}로 되돌린 세션 id
+     */
+    void setSessionAttribute(String sessionId, String name, Object value) {
+        setSessionAttribute(this.sessions, sessionId, name, value);
+    }
+
+    /** 와일드카드 저장소의 타입 매개변수를 한 번만 붙들어 둔다({@link #ageReauthenticationFlow}와 같다). */
+    private static <S extends Session> void setSessionAttribute(
+            SessionRepository<S> repository, String sessionId, String name, Object value) {
+        S session = repository.findById(sessionId);
+        if (session == null) {
+            throw new IllegalStateException("세션이 없다: " + sessionId);
+        }
+        session.setAttribute(name, value);
+        repository.save(session);
     }
 
     /**

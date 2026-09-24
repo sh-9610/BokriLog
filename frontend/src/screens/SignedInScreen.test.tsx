@@ -8,6 +8,7 @@ import {
   dashboardCopyStrings,
   reauthCopyStrings,
   reauthNoticePath,
+  SETTINGS_PATH,
   SIGN_IN_PROVIDERS,
 } from '../content/auth'
 import { navigateTo, replaceLocation } from '../session/navigation'
@@ -112,6 +113,65 @@ describe('SignedInScreen', () => {
 
     expect(title.textContent).toBe('복리 계획 비교')
     expect(title.nextElementSibling?.textContent).toBe('투자성과·계좌 수익률·투자 추천이 아닙니다.')
+  })
+
+  it('서버가 설정 화면을 골라도 대시보드는 밀려나지 않는다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: true, destination: 'settings', csrfToken: CSRF_TOKEN }),
+      ),
+    )
+
+    render(<SignedInScreen />)
+
+    /*
+     * 미인증으로 `/settings`를 열어 로그인한 사용자는 확정 목적지가 `settings`로 굳는다. 그
+     * 방향을 열지 않으면 그 세션은 내내 대시보드에 닿지 못하고 `/settings`로 튕긴다 — 예외가
+     * 한 방향뿐일 때 생기는 고착이다.
+     */
+    expect(
+      await screen.findByRole('heading', { level: 2, name: authContent.dashboard.heading }),
+    ).toBeInTheDocument()
+    expect(vi.mocked(replaceLocation)).not.toHaveBeenCalled()
+  })
+
+  it('온보딩을 지나지 않은 계정은 온보딩으로 밀려난다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(jsonResponse({ authenticated: true, destination: 'onboarding' })),
+    )
+
+    render(<SignedInScreen />)
+
+    // 온보딩만이 강제 목적지다. 설정·대시보드는 서로를 밀어내지 않는다.
+    await waitFor(() => {
+      expect(vi.mocked(replaceLocation)).toHaveBeenCalledWith('/onboarding')
+    })
+  })
+
+  it('설정 화면으로 가는 길을 준다', async () => {
+    stubSessionRequest(authenticated)
+
+    render(<SignedInScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.dashboard.heading })
+
+    /*
+     * 이 링크가 없으면 설정 화면은 주소를 직접 쳐야만 닿고, 사용자가 자기 로그인 수단을 볼
+     * 자리가 사실상 없다. 전역 내비게이션은 아직 없으므로 머리말의 링크 하나가 그 자리다.
+     */
+    const link = screen.getByRole('link', { name: authContent.settings.link })
+
+    expect(link).toHaveAttribute('href', SETTINGS_PATH)
+    // 경로 리터럴을 한 번 고정한다. Nginx 허용 목록·서버 목적지 집합과 같은 값이어야 한다.
+    expect(SETTINGS_PATH).toBe('/settings')
+  })
+
+  it('세션이 확인되기 전에는 설정 링크도 없다', () => {
+    stubSessionRequest(pendingResponse)
+
+    render(<SignedInScreen />)
+
+    // 확인 전에는 이 화면이 로그인 상태를 주장하지 않는다. 갈 곳도 아직 없다.
+    expect(screen.queryByRole('link', { name: authContent.settings.link })).not.toBeInTheDocument()
   })
 
   it('금융값을 담지 않는다', async () => {

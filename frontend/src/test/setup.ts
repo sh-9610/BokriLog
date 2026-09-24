@@ -7,7 +7,8 @@
  * 3. 브라우저 저장소(localStorage, sessionStorage, cookie, IndexedDB) 사용을 관측한다.
  *    금지 목록은 DEVELOPMENT.md의 `## 프런트엔드` 절과 같아야 한다.
  * 4. 시험이 (메서드, URL) 쌍 단위로 명시적으로 열 수 있는 탈출구를 둔다(`stubSessionRequest`,
- *    `stubLogoutRequest`). 전역 거부는 그대로다. 아래 `responders` 절의 근거를 참고한다.
+ *    `stubLogoutRequest`, `stubReauthenticationRequest`, `stubLinkStatusRequest`,
+ *    `stubLinkRequest`). 전역 거부는 그대로다. 아래 `responders` 절의 근거를 참고한다.
  */
 
 import '@testing-library/jest-dom/vitest'
@@ -15,6 +16,8 @@ import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach } from 'vitest'
 
 import {
+  LINK_BASE_PATH,
+  linkPath,
   LOGOUT_ENDPOINT,
   reauthenticatePath,
   SESSION_ENDPOINT,
@@ -86,6 +89,27 @@ export function stubReauthenticationRequest(
   responder: RequestResponder,
 ): void {
   responders.set(requestKey('POST', reauthenticatePath(provider)), responder)
+}
+
+/**
+ * 연결 상태 조회 하나를 이 시험 동안만 허용한다.
+ *
+ * 설정 화면만 이 요청을 보낸다. 다른 화면에서 나가면 전역 거부가 그것을 기록하고 실패시킨다 —
+ * 계정의 사실을 필요 없는 화면이 물어보지 않는다는 단정이 그 기록이다.
+ */
+export function stubLinkStatusRequest(responder: RequestResponder): void {
+  responders.set(requestKey('GET', LINK_BASE_PATH), responder)
+}
+
+/**
+ * 그 제공자의 연결 시작 요청 하나를 이 시험 동안만 허용한다.
+ *
+ * 제공자마다 경로가 다르므로 여는 것도 제공자 단위다({@code stubReauthenticationRequest}와 같은
+ * 근거). 시험이 열지 않은 제공자로 요청이 나가면 전역 거부가 그것을 기록하고 실패시킨다 —
+ * 화면이 사용자가 고른 것과 다른 제공자를 연결하려는 회귀가 그 기록으로 드러난다.
+ */
+export function stubLinkRequest(provider: SignInProvider, responder: RequestResponder): void {
+  responders.set(requestKey('POST', linkPath(provider)), responder)
 }
 
 /** 허용된 세션 확인 요청의 기록. 몇 번 불렸는지 단정하는 데 쓴다. */

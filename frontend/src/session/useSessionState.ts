@@ -6,6 +6,7 @@ import {
   noticePath,
   ONBOARDING_PATH,
   SESSION_ENDPOINT,
+  SETTINGS_PATH,
 } from '../content/auth'
 import { replaceLocation } from './navigation'
 
@@ -30,7 +31,7 @@ export type SessionState = 'authenticated' | 'checking' | 'unauthenticated'
  * 경로가 아니라 종류다(`GET /api/auth/session`). 서버가 경로 문자열을 내보내면 그 값이 리다이렉트
  * 입력으로 쓰일 자리가 생기므로, 경로를 아는 것은 아래 표 하나뿐이다.
  */
-export type SessionDestination = 'dashboard' | 'entry' | 'onboarding'
+export type SessionDestination = 'dashboard' | 'entry' | 'onboarding' | 'settings'
 
 export interface SessionSnapshot {
   readonly state: SessionState
@@ -83,10 +84,33 @@ export type SessionGate =
 const DESTINATION_PATHS = {
   dashboard: DASHBOARD_PATH,
   onboarding: ONBOARDING_PATH,
+  settings: SETTINGS_PATH,
 } as const
 
 /** 화면이 존재하는 목적지. `entry`는 화면이 아니라 "인증 화면으로 되돌린다"는 뜻이다. */
 export type ScreenDestination = keyof typeof DESTINATION_PATHS
+
+/**
+ * 이 화면이 서버가 고른 목적지 위에 머물러도 되는가.
+ *
+ * 서버가 고르는 목적지는 "로그인 뒤 착지할 화면"이다 — 신규 사용자는 온보딩, 기존 사용자는
+ * 유효한 원래 목적지 또는 기본 대시보드. 그래서 종류가 다르면 화면을 그리지 않고 그 목적지로
+ * 문서를 다시 요청하는 것이 기본 규칙이고, 그 규칙이 "이미 온보딩을 지난 계정에 온보딩 화면이
+ * 그려지는" 상태를 막는다.
+ *
+ * **설정 화면은 어느 방향으로도 이 규칙에 참여하지 않는다.** 그 화면은 서버가 고르는 착지 대상이
+ * 아니라 사용자가 스스로 여는 자리다. 밀려나는 쪽으로 두면 그 경로에 도달할 방법이 아예 없어지고
+ * (방금 가입한 계정의 `destination`은 `onboarding`이라 설정 링크가 곧바로 되튕긴다, 연결 왕복이
+ * 돌아오는 자리도 그 화면이다), 미는 쪽으로 두면 미인증으로 `/settings`를 열어 로그인한 사용자가
+ * `destination`이 `settings`로 굳어 그 세션 내내 대시보드에 닿지 못한다. 그래서 미는 일은 착지
+ * 화면 둘(온보딩·대시보드) 사이에서만 일어난다.
+ */
+function staysOn(expected: ScreenDestination, destination: SessionDestination): boolean {
+  if (destination === expected) {
+    return true
+  }
+  return expected === 'settings' || destination === 'settings'
+}
 
 /**
  * 세션 확인 요청의 시한(ms).
@@ -118,7 +142,7 @@ const UNAUTHENTICATED: SessionSnapshot = {
 
 /** 서버가 준 목적지 종류. 아는 값이 아니면 `entry`다. */
 function destinationOf(value: unknown): SessionDestination {
-  return value === 'dashboard' || value === 'onboarding' ? value : 'entry'
+  return value === 'dashboard' || value === 'onboarding' || value === 'settings' ? value : 'entry'
 }
 
 /** 서버가 준 CSRF 토큰. 비어 있거나 문자열이 아니면 없는 것과 같다. */
@@ -360,7 +384,8 @@ export interface SessionGateResult {
  * 두면 한쪽에만 새 상태가 추가되는 자리가 생긴다.
  *
  * 로그아웃 진행이 세션 상태보다 앞선다. 그 순간 사용자가 알아야 하는 것은 자기가 시작한 조작이
- * 도는 중이라는 사실이고, 게이트는 그 조작이 끝날 때까지 `ready`로 남아 있다.
+ * 도는 중이라는 사실이고, 게이트는 그 조작이 끝날 때까지 `ready`로 남아 있다. 연결·재인증 시작도
+ * 같은 이유로 게이트보다 앞서며, 세 조작은 서로를 막으므로 둘이 동시에 참일 수 없다.
  *
  * @returns 말할 문장. 게이트가 `ready`이고 로그아웃도 도는 중이 아니면 화면이 이 값을 쓰지 않는다
  */
@@ -368,9 +393,13 @@ export function liveRegionMessage(
   gate: SessionGate,
   signingOut: boolean,
   reauthenticating = false,
+  linking = false,
 ): string {
   if (signingOut) {
     return authContent.signOut.pending
+  }
+  if (linking) {
+    return authContent.settings.pending
   }
   if (reauthenticating) {
     return authContent.reauth.pending
@@ -436,7 +465,7 @@ export function useSessionGate(expected: ScreenDestination): SessionGateResult {
   }, [observing, recheck])
 
   const target =
-    state === 'authenticated' && destination !== expected && destination !== 'entry'
+    state === 'authenticated' && destination !== 'entry' && !staysOn(expected, destination)
       ? DESTINATION_PATHS[destination]
       : null
 
@@ -486,8 +515,9 @@ export function useSessionGate(expected: ScreenDestination): SessionGateResult {
     // 미인증과 "인증됐다는데 목적지가 인증 화면"은 화면이 할 일이 같다. 되돌린다.
     return { gate: 'unauthenticated', csrfToken: null }
   }
+  const stays = staysOn(expected, destination)
   return {
-    gate: destination === expected ? 'ready' : 'redirecting',
-    csrfToken: destination === expected ? csrfToken : null,
+    gate: stays ? 'ready' : 'redirecting',
+    csrfToken: stays ? csrfToken : null,
   }
 }

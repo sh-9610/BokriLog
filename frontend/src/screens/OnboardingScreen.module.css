@@ -81,6 +81,38 @@
   color: var(--color-primary);
 }
 
+/*
+ * 머리말의 조작 묶음. 설정 링크와 로그아웃 버튼을 한 줄에 둔다.
+ *
+ * 320px에서도 겹치지 않아야 하므로 `wrap`을 허용한다(위 `.header`와 같은 근거).
+ */
+.headerActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/*
+ * 설정 화면으로 가는 링크.
+ *
+ * 최소 목표 크기 44×44px은 `social-sign-in`만이 아니라 모든 핵심 조작의 바닥선이다
+ * (EXPERIENCE.md Accessibility Floor). 포커스 표시는 global.css의 전역 `:focus-visible`이
+ * 처리한다 — 여기서 다시 선언하면 특이도가 올라가 forced-colors 탈출구를 이겨 버린다.
+ */
+.settingsLink {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--color-primary);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
 .main {
   width: 100%;
   max-width: var(--component-app-shell-max-content-width);

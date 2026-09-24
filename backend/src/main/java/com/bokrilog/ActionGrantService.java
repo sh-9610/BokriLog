@@ -42,12 +42,16 @@ import org.springframework.transaction.support.TransactionTemplate;
  * (트랜잭션을 먼저 연 채로 부르는 것, 상한을 넘는 결과를 돌려주는 것)는 예외다. 그런 배선 실수를
  * 거부로 접으면 원인을 볼 자리가 없어진다.
  *
- * <p><b>세션을 인자로 받되 세션 id를 인자로 받지 않는다.</b> 귀속의 세션 축은 언제나 <i>지금 이
- * 요청의 세션</i>에서 읽는다({@code HttpSession#getId}). 그래서 로그아웃으로 사라진 세션에는
- * 건넬 {@link HttpSession}이 없고, 회전으로 id가 바뀐 세션은 이전 허가의 술어와 어긋난다.
- * 클라이언트가 세션 id를 보내는 경로를 만들면 그 값이 곧 귀속을 우회하는 입력이 된다. 같은 이유로
- * {@code userId}도 그 세션에 저장된 주체와 대조한다 — 두 값 모두 호출자가 건네므로 대조가 없으면
- * "세션이 결정한 사용자"라는 계약이 문장으로만 남는다.
+ * <p><b>세션을 인자로 받는다.</b> 귀속의 세션 축은 기본적으로 <i>지금 이 요청의 세션</i>에서
+ * 읽는다({@code HttpSession#getId}). 그래서 로그아웃으로 사라진 세션에는 건넬 {@link HttpSession}이
+ * 없고, {@code userId}도 그 세션에 저장된 주체와 대조한다 — 두 값 모두 호출자가 건네므로 대조가
+ * 없으면 "세션이 결정한 사용자"라는 계약이 문장으로만 남는다.
+ *
+ * <p>예외가 하나 있다. 소비는 <b>발급 시각의 세션 id</b>를 호출자가 제시할 수 있다
+ * ({@link ConsumptionRequest#boundSessionId()}). OIDC 왕복을 지나는 민감 작업에서는 세션 고정
+ * 방어가 성공 핸들러 직전에 ID를 회전시켜 두 값이 언제나 다르기 때문이며, 그 값의 출처는
+ * <b>서버 측 흐름 기록</b> 하나다. 클라이언트가 세션 id를 보내는 경로를 만들면 그 값이 곧 귀속을
+ * 우회하는 입력이 되므로, 요청 파라미터·헤더·본문에서 읽은 값을 이 인자로 넘기지 않는다.
  *
  * <p><b>트랜잭션 경계는 이 포트가 소유한다.</b> 호출자가 이미 트랜잭션을 연 채로 부르면 거절한다
  * ({@link IllegalStateException}). 참여하면 두 가지가 함께 깨진다 — 멱등 재전송의 유일 인덱스 충돌이
@@ -110,6 +114,15 @@ class ActionGrantService {
      * @param confirmation 확인 문구 <b>원문</b>. 해시는 이 포트가 만든다
      * @param operationId 이 실행의 멱등 키. <b>같은 요청</b>의 재전송은 저장된 결과를 그대로 받고
      *     업무 변경을 다시 실행하지 않는다. 다른 요청에 같은 값을 쓰면 재전송이 아니라 거부다
+     * @param boundSessionId 발급 시각의 세션 id. {@code null}이면 지금 이 요청의 세션 id를 쓰며
+     *     그것이 기본 경로다. <b>이 값은 클라이언트가 아니라 서버 측 흐름 기록에서만 온다</b> —
+     *     요청 파라미터·헤더·본문에서 읽어 넘기면 그 순간 이 인자가 남의 허가를 겨누는 입력이
+     *     된다. 지금 이 값을 건네는 호출자는 {@code LinkService} 하나이고 그 출처는 세션 속성에
+     *     사는 {@code LinkFlow.Armed}다. 그 record를 읽을 수 있다는 사실 자체가 "회전 전 세션의
+     *     연속"을 증명하므로(세션 속성은 {@code changeSessionId}를 건너 살아남고 다른 세션에는
+     *     없다) 귀속이 무르지 않는다. 이 성분이 필요한 이유는 하나다: OIDC 콜백에서 세션 고정
+     *     방어가 성공 핸들러 직전에 ID를 회전시키므로 발급 시각의 세션 id와 소비 시각의 live id가
+     *     <b>언제나</b> 다르고, live id로만 판정하면 왕복을 지나는 민감 작업은 성립할 수 없다
      */
     record ConsumptionRequest(
             HttpSession session,
@@ -118,7 +131,21 @@ class ActionGrantService {
             String command,
             String target,
             String confirmation,
-            String operationId) {}
+            String operationId,
+            @Nullable String boundSessionId) {
+
+        /** 귀속 세션이 지금 이 요청의 세션인 기본 경로. 왕복을 지나지 않는 소비가 쓴다. */
+        ConsumptionRequest(
+                HttpSession session,
+                UUID userId,
+                String grantReference,
+                String command,
+                String target,
+                String confirmation,
+                String operationId) {
+            this(session, userId, grantReference, command, target, confirmation, operationId, null);
+        }
+    }
 
     /**
      * 우리 {@code (user_id, operation_id)} 유일 색인의 충돌.
@@ -191,7 +218,8 @@ class ActionGrantService {
             String confirmation) {
         requireOwnedTransactionBoundary();
         SessionFacts facts = SessionFacts.of(session);
-        Binding binding = bindingOf(facts, userId, command, target, confirmation);
+        // 발급은 언제나 지금 이 요청의 세션에 귀속한다. 제시된 값을 받는 자리는 소비 하나뿐이다.
+        Binding binding = bindingOf(facts, null, userId, command, target, confirmation);
         if (binding == null || facts == null || !isUsableSession(facts)) {
             return Optional.empty();
         }
@@ -209,6 +237,26 @@ class ActionGrantService {
         String reference = ActionGrant.newReference();
         Integer issued = insert(reference, binding, reauthenticatedAt);
         return issued != null && issued == 1 ? Optional.of(reference) : Optional.empty();
+    }
+
+    /**
+     * 그 작업의 살아 있는 허가를 무효화한다.
+     *
+     * <p>{@link #issue}가 발급 앞에서 부르는 것과 같은 문장이고, 이 표면은 <b>발급 없이</b> 그
+     * 무효화만 필요한 경우를 위한 것이다 — 흐름 기록을 버리면서 그것이 가리키던 허가를 남기면
+     * 아무도 참조할 수 없는 허가가 수명이 다할 때까지 산다({@code LinkService.abandon}).
+     *
+     * <p>소비된 행은 건드리지 않는다. 그 행은 멱등 재전송의 근거다.
+     *
+     * <p>트랜잭션을 열지 않는다. 문장 하나라 그 자체로 원자적이고, 발급과 함께 쓰는 경로는
+     * {@link #issue}가 자기 경계 안에서 같은 저장소 메서드를 다시 부른다.
+     */
+    void invalidate(@Nullable UUID userId, String command, String target) {
+        if (userId == null) {
+            return;
+        }
+        this.repository.invalidateLiveGrants(
+                userId, ActionGrant.normalize(command), ActionGrant.normalize(target));
     }
 
     private @Nullable Integer insert(String reference, Binding binding, Instant reauthenticatedAt) {
@@ -265,6 +313,7 @@ class ActionGrantService {
         Binding binding =
                 bindingOf(
                         facts,
+                        request.boundSessionId(),
                         request.userId(),
                         request.command(),
                         request.target(),
@@ -465,9 +514,14 @@ class ActionGrantService {
     /**
      * 다섯 귀속을 만든다. 받아들일 수 없는 값이 하나라도 있으면 {@code null}이다.
      *
-     * <p>세션 id는 인자가 아니라 세션에서 읽고, {@code userId}는 그 세션에 저장된 주체와 대조한다.
-     * 대조가 없으면 두 값 모두 호출자가 건네는 값이라 "세션이 유일한 {@code user_id} 권위"라는 계약이
-     * 문장으로만 남는다.
+     * <p>세션 id는 기본적으로 세션에서 읽고, {@code userId}는 <b>언제나</b> 그 세션에 저장된 주체와
+     * 대조한다. 대조가 없으면 두 값 모두 호출자가 건네는 값이라 "세션이 유일한 {@code user_id}
+     * 권위"라는 계약이 문장으로만 남는다.
+     *
+     * <p>{@code presentedSessionId}가 있으면 귀속의 세션 축만 그 값으로 바뀐다. 그 값의 출처는
+     * 서버 측 흐름 기록 하나이며 근거는 {@link ConsumptionRequest#boundSessionId()}의 javadoc이
+     * 소유한다. 주체 대조와 세션 판정({@link #isUsableSession})은 그대로 <b>지금 이 요청의
+     * 세션</b>이 답하므로, 제시된 값이 여는 것은 "회전 전 id를 가리키는 것" 하나뿐이다.
      *
      * <p>{@code command}·{@code target}은 {@link ActionGrant#normalize}를 지난 값을 담는다. 컬럼에
      * 저장되는 값과 해시에 들어가는 값이 같아야 하기 때문이다 — 한쪽만 정규화하면 해시는 맞고 컬럼은
@@ -476,6 +530,7 @@ class ActionGrantService {
      */
     private static @Nullable Binding bindingOf(
             @Nullable SessionFacts facts,
+            @Nullable String presentedSessionId,
             @Nullable UUID userId,
             @Nullable String command,
             @Nullable String target,
@@ -487,9 +542,10 @@ class ActionGrantService {
             // 세션이 결정한 사용자가 아니다. 다른 거부와 같은 하나로 접힌다.
             return null;
         }
+        String sessionId = presentedSessionId == null ? facts.id() : presentedSessionId;
         String normalizedCommand = ActionGrant.normalize(command);
         String normalizedTarget = ActionGrant.normalize(target);
-        if (!ActionGrant.isAcceptable(facts.id(), ActionGrant.MAX_SESSION_ID_BYTES)
+        if (!ActionGrant.isAcceptable(sessionId, ActionGrant.MAX_SESSION_ID_BYTES)
                 || !ActionGrant.isAcceptable(normalizedCommand, ActionGrant.MAX_COMMAND_BYTES)
                 || !ActionGrant.isAcceptable(normalizedTarget, ActionGrant.MAX_TARGET_BYTES)
                 || !ActionGrant.isAcceptable(
@@ -498,7 +554,7 @@ class ActionGrantService {
         }
         return new Binding(
                 userId,
-                facts.id(),
+                sessionId,
                 normalizedCommand,
                 normalizedTarget,
                 ActionGrant.canonicalConfirmationHash(normalizedCommand, normalizedTarget, confirmation));

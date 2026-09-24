@@ -1,5 +1,6 @@
 package com.bokrilog.identity.internal;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -129,6 +130,32 @@ public class IdentityAccountRepository {
                 .param("subject", subject)
                 .query(UUID.class)
                 .optional();
+    }
+
+    /**
+     * 활성 계정에 연결된 제공자 이름.
+     *
+     * <p>상태 술어가 질의 안에 있다({@link #findActiveUserIdBySocialIdentity}와 같은 근거). 삭제가
+     * 시작된 계정은 매핑 행이 아직 남아 있어도 0행이 되고, 삭제가 끝난 계정은 매핑 자체가 없어
+     * 역시 0행이다 — 두 경우와 "그런 계정이 없다"가 호출자에게 같은 빈 목록으로 보인다.
+     *
+     * <p>{@code provider} 하나만 고른다. {@code issuer}·{@code subject}·{@code linked_at}을 함께
+     * 고르면 그 값들이 공개 API의 반환에 실릴 자리가 생긴다. 고르지 않으므로 실을 수도 없다.
+     *
+     * <p>잠그지 않는다. 아무것도 바꾸지 않는 조회 경로이고, 실제로 매핑을 더하는 쪽이 자기
+     * 트랜잭션에서 유일 인덱스로 다시 판정한다({@link #insertSocialLinkIfActive}).
+     *
+     * @return 연결된 제공자 이름. 중복은 스키마가 막는다({@code (user_id, provider)} 유일)
+     */
+    public List<String> findLinkedProvidersOfActive(UUID userId) {
+        return jdbc.sql(
+                        "SELECT link.provider FROM identity_social_link AS link "
+                                + "JOIN identity_account_lifecycle AS lifecycle "
+                                + "ON lifecycle.user_id = link.user_id "
+                                + "WHERE link.user_id = :userId AND lifecycle.state = 'ACTIVE'")
+                .param("userId", userId)
+                .query(String.class)
+                .list();
     }
 
     /**

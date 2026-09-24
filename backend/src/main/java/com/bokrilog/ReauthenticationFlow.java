@@ -179,8 +179,20 @@ final class ReauthenticationFlow {
     static void discard(HttpServletRequest request) {
         HttpSession session = request.getSession(false);
         if (session != null) {
-            session.removeAttribute(FLOW_ATTRIBUTE);
+            discard(session);
         }
+    }
+
+    /**
+     * 세션이 이미 있는 자리에서 무장만 버린다.
+     *
+     * <p>연결 시작이 이것을 쓴다({@code LinkService.start}). 한 세션에 두 흐름이 함께 무장돼
+     * 있으면 콜백이 어느 쪽 것인지를 등록 id로 매번 가려야 하고, 그 판정이 한 번 어긋나면
+     * 재인증 콜백이 연결 분기에 삼켜진다. 무장 시각에 상대 흐름을 버리는 것이 그 상태를 애초에
+     * 만들지 않는 1차 방어다.
+     */
+    static void discard(HttpSession session) {
+        session.removeAttribute(FLOW_ATTRIBUTE);
     }
 
     /** 이 세션의 마지막 재인증 시각을 기록한다. */

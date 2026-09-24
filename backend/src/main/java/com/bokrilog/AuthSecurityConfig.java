@@ -9,6 +9,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.jspecify.annotations.Nullable;
@@ -117,6 +118,31 @@ class AuthSecurityConfig {
      * 붙은 링크 하나로 남의 세션에 재인증 흐름을 심을 수 있다.
      */
     static final String REAUTHENTICATION_BASE_URI = "/api/auth/reauthenticate";
+
+    /**
+     * 연결 표면의 경로. <b>이 계층에서 그 경로를 정의하는 상수는 이것 하나다.</b>
+     *
+     * <p>두 표면이 한 접두사를 나눠 쓰고 메서드가 그것을 가른다 — {@code GET /api/auth/link}는
+     * 연결 상태 조회이고 {@code POST /api/auth/link/<제공자>}는 연결 시작이다. 이름을 둘로 두면
+     * "이 경로가 어디 정의됐나"의 답이 둘이 된다.
+     *
+     * <p>조회는 인증된 소유자에게 <b>자기 계정의 사실</b>을 돌려준다. 응답에 실리는 것은 제공자
+     * 이름뿐이며 {@code issuer}·{@code subject}·이메일·토큰·연결 시각은 담지 않는다
+     * ({@code AuthSessionController}). 안전한 메서드라 CSRF·{@code Origin} 보호 대상이 아니고,
+     * 주체가 없으면 컨트롤러가 공통 오류 계약의 403으로 접는다.
+     *
+     * <p>시작이 {@code POST}인 근거는 {@link #REAUTHENTICATION_BASE_URI}와 같다. 허가를 발급하고
+     * 세션에 일회성 흐름을 심는 상태 변경이므로 safe method가 될 수 없고, {@code /api/auth/}
+     * 아래이므로 아래 {@link #PROTECTED_PATH_PREFIX}의 보호(세션 귀속 CSRF 토큰 + 동일 출처
+     * {@code Origin})가 예외 없이 걸린다.
+     *
+     * <p><b>세션 guard의 403 예외 목록에 들어가지 않는다.</b> 재인증 시작은 표시된 세션의 유일한
+     * 회복 경로라 면제되지만({@link #isReauthenticationStart}) 연결은 그 반대다 — 재인증을
+     * 요구받은 세션이 계정에 매핑을 더할 수 있으면 그 표시가 막으려던 것이 그대로 열린다. 그래서
+     * 이 경로에는 대응하는 판정 메서드가 없고, 표시된 세션의 연결 시작은 다른 모든 상태 변경과
+     * 같은 403으로 끝난다.
+     */
+    static final String LINK_BASE_URI = "/api/auth/link";
 
     /**
      * CSRF 토큰이 실리는 요청 헤더 이름.
@@ -287,13 +313,36 @@ class AuthSecurityConfig {
         /**
          * 이 애플리케이션이 이름을 아는 제공자.
          *
-         * <p>구성 여부와 무관한 닫힌 집합이다. {@code AuthSessionController}가 "모르는 제공자"(404)와
+         * <p>구성 여부와 무관한 닫힌 목록이다. {@code AuthSessionController}가 "모르는 제공자"(404)와
          * "아는 제공자인데 구성되지 않았다"(500)를 가르는 데 쓰며, 그 판정은 아래 맵으로 할 수 없다 —
          * 구성된 제공자의 인증 시작은 필터가 302로 끝내므로 컨트롤러에 도달하는 것은 언제나 맵에
          * 없는 이름이고, 맵을 술어로 쓰면 모든 요청이 404가 되어 fail-closed의 500이 사라진다.
+         *
+         * <p>집합이 아니라 <b>순서 있는 목록</b>이다. Story 1.10의 연결 상태 조회가 이 순서를 그대로
+         * 응답에 싣는다 — 값이 실행마다 흔들리면 본문 전문을 고정하는 검증이 성립하지 않고, 화면이
+         * 아는 고정 순서(Google → 네이버 → 카카오)와도 갈린다.
          */
-        private static final Set<String> SUPPORTED_REGISTRATION_IDS =
-                Set.of(GOOGLE_REGISTRATION_ID, NAVER_REGISTRATION_ID, KAKAO_REGISTRATION_ID);
+        private static final List<String> SUPPORTED_REGISTRATION_IDS =
+                rejectDuplicateRegistrationIds(
+                        List.of(GOOGLE_REGISTRATION_ID, NAVER_REGISTRATION_ID, KAKAO_REGISTRATION_ID));
+
+        /**
+         * 같은 등록 id가 두 번 적힌 목록을 거부한다.
+         *
+         * <p>이 목록이 {@link Set}이던 동안에는 중복이 조용히 하나로 접혔다. 순서가 필요해
+         * {@link List}로 바꾸면서 그 암묵적 guard가 사라졌으므로 명시적으로 둔다 — 중복이 남으면
+         * 연결 상태 조회가 같은 제공자를 두 번 답하고, 그보다 나쁘게는 "아는 제공자 집합"이
+         * 실제로 몇 개인지 읽는 사람이 세어야 한다.
+         *
+         * <p>{@code rejectSharedIssuer}와 같은 규율이다 — 잘못 적힌 구성은 조용히 동작하는 대신
+         * 기동에서 멈춘다. 메시지에 이름을 적지 않는다.
+         */
+        static List<String> rejectDuplicateRegistrationIds(List<String> registrationIds) {
+            if (Set.copyOf(registrationIds).size() != registrationIds.size()) {
+                throw new IllegalStateException("제공자 등록 id가 중복된다. 이름은 서로 달라야 한다.");
+            }
+            return registrationIds;
+        }
 
         private final Map<String, ClientRegistration> registrations;
 
@@ -540,6 +589,23 @@ class AuthSecurityConfig {
         }
 
         /**
+         * 그 제공자의 등록이 <b>실제로 만들어졌는가</b>.
+         *
+         * <p>{@link #isSupportedProvider}와 다른 질문이다. 그쪽은 이름을 아는가이고 이것은 자격정보가
+         * 갖춰졌는가이며, 둘이 갈리는 구간(아는 이름인데 구성되지 않음)이 연결 시작에서 문제가 된다 —
+         * 그 요청을 통과시키면 허가와 무장이 만들어진 뒤 뒤따르는 인가 시작이 fail-closed로 끝나고,
+         * 참조할 수 없게 된 허가가 그대로 5분을 산다. Story 1.9의 "등록 구성 여부는 조회하지 않는다"는
+         * <b>재인증 시작</b>의 계약이었고 그 경로는 남는 상태가 없었다.
+         *
+         * <p>열거 위험이 다르다는 것이 이 조회를 여는 근거다. 연결 시작은 인증된 소유자에게만 답하는
+         * 경로이고 거부는 다른 모든 거부와 구분되지 않는 403 하나이므로, 이 판정이 제공자 목록을
+         * 밖으로 흘리지 않는다.
+         */
+        boolean isConfiguredProvider(String registrationId) {
+            return this.registrations.containsKey(registrationId);
+        }
+
+        /**
          * 이 애플리케이션이 이름을 아는 제공자인가.
          *
          * <p>구성 여부를 보지 않는다. 이름조차 모르는 제공자는 그 경로가 존재하지 않는 것이고(404),
@@ -548,6 +614,18 @@ class AuthSecurityConfig {
          */
         static boolean isSupportedProvider(String registrationId) {
             return SUPPORTED_REGISTRATION_IDS.contains(registrationId);
+        }
+
+        /**
+         * 이름을 아는 제공자 전부. 고정 순서다.
+         *
+         * <p>연결 상태 조회가 이 목록을 걸러 응답을 만든다. 구성 여부를 보지 않는 것은
+         * {@link #isSupportedProvider}와 같은 이유이며, 그래서 이 목록이 응답에 <b>그대로</b>
+         * 실리지 않는다 — 실리는 것은 이 목록과 연결 사실의 교집합이고, 어느 제공자가 구성됐는지는
+         * 그 응답에서 복원되지 않는다.
+         */
+        static List<String> supportedProviders() {
+            return SUPPORTED_REGISTRATION_IDS;
         }
 
         /**
@@ -703,7 +781,34 @@ class AuthSecurityConfig {
      * @return 제공자 등록 id, 인증 시작 경로가 아니거나 세그먼트가 갈리면 {@code null}
      */
     static @Nullable String authorizationStartProvider(HttpServletRequest request) {
-        String prefix = AUTHORIZATION_BASE_URI + "/";
+        return lastSegment(request, AUTHORIZATION_BASE_URI);
+    }
+
+    /**
+     * 콜백이 가리키는 제공자 등록 id.
+     *
+     * <p>{@link #authorizationStartProvider}와 같은 근거의 같은 추출이다. 소비자는
+     * {@code AuthFlowHandlers}의 흐름 경계와 실패 핸들러이며, 둘 다 "이 콜백이 어느 무장의
+     * 것인가"를 이 값으로 가른다 — 보지 않으면 재인증 콜백이 살아 있는 연결 무장에 삼켜진다.
+     *
+     * <p>성공 핸들러는 이 값을 쓰지 않는다. 그쪽에는 검증을 통과한 인증 결과가 있고, 흐름을
+     * 실제로 처리한 등록 id는 경로가 아니라 그 결과가 들고 있다
+     * ({@code OAuth2AuthenticationToken#getAuthorizedClientRegistrationId()}).
+     *
+     * @return 제공자 등록 id, 콜백 경로가 아니거나 세그먼트가 갈리면 {@code null}
+     */
+    static @Nullable String callbackProvider(HttpServletRequest request) {
+        return lastSegment(request, CALLBACK_BASE_URI);
+    }
+
+    /**
+     * 그 접두사 뒤의 세그먼트 하나.
+     *
+     * <p>프레임워크가 같은 값을 attribute에 담지만 그 이름은 우리 계약이 아니라 라이브러리의
+     * 것이라, 바뀌면 조용히 {@code null}이 된다. 경로는 이 클래스가 소유한 값이다.
+     */
+    private static @Nullable String lastSegment(HttpServletRequest request, String baseUri) {
+        String prefix = baseUri + "/";
         String uri = request.getRequestURI();
         if (!uri.startsWith(prefix)) {
             return null;

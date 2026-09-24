@@ -1,6 +1,7 @@
 package com.bokrilog.identity;
 
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 
@@ -84,4 +85,26 @@ public interface AccountLifecycleApi {
      * @return 연결된 활성 계정의 내부 {@code user_id}, 없으면 빈 값
      */
     Optional<UUID> findUserIdBySocialIdentity(@Nullable String issuer, @Nullable String subject);
+
+    /**
+     * 이 계정에 연결된 제공자 이름.
+     *
+     * <p>소유자에게 자기 계정의 사실을 보여 주기 위한 읽기 전용 조회다. 반환은 <b>제공자 이름
+     * 집합</b> 하나이며 {@code issuer}·{@code subject}·연결 시각을 담지 않는다. 담으면 그 값이
+     * 화면과 로그를 지나 외부 식별자가 밖으로 나가는 경로가 되고, 이름만으로는 어느 계정의
+     * 것인지도 복원되지 않는다.
+     *
+     * <p>빈 집합은 하나의 답이다. 연결이 없는 계정, 삭제가 시작된 계정, 삭제가 끝난 계정,
+     * 존재하지 않는 계정, {@code null} 입력이 모두 빈 집합으로 접힌다 — 호출자는 이 값에서 대상
+     * 계정의 존재 여부를 복원할 수 없다. {@link AccessDecision#DENIED}가 사유를 노출하지 않는 것과
+     * 같은 계약이다.
+     *
+     * <p>이 조회로 <b>남의 계정</b>을 물을 수는 있지만 답은 언제나 그 계정의 사실이므로, 호출자가
+     * 세션이 결정한 {@code user_id}만 건네는 것은 인증 표면의 계약이다
+     * ({@code AccountAccessApi#decide}의 {@code callerUserId}와 같은 규율).
+     *
+     * @param userId 조회 대상 계정
+     * @return 연결된 제공자 이름, 없으면 빈 집합
+     */
+    Set<String> findLinkedProviders(@Nullable UUID userId);
 }

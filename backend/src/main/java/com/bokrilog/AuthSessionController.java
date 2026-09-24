@@ -5,7 +5,9 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import java.io.IOException;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -27,8 +29,9 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * 인증 표면의 HTTP 경계.
  *
- * <p>세 가지만 답한다. 로그인 상태 화면이 서버 세션으로 상태를 확인하는 경로 하나, 재인증 흐름을
- * 세션에 심는 경로 하나, 그리고 인증 시작이 성립하지 않을 때의 공통 오류 계약 하나다.
+ * <p>다섯 가지만 답한다. 로그인 상태 화면이 서버 세션으로 상태를 확인하는 경로 하나, 재인증
+ * 흐름을 세션에 심는 경로 하나, 연결 상태를 조회하는 경로 하나, 연결 흐름을 시작하는 경로 하나,
+ * 그리고 인증 시작이 성립하지 않을 때의 공통 오류 계약 하나다.
  * 나머지(authorization request 발급, 콜백 검증)는 Spring Security의 필터가 서블릿보다 앞에서
  * 처리하므로 이 컨트롤러에 오지 않는다.
  *
@@ -42,6 +45,18 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @ConditionalOnWebApplication(type = Type.SERVLET)
 class AuthSessionController {
+
+    /**
+     * 연결의 판정과 실행.
+     *
+     * <p>이 컨트롤러는 HTTP 경계만 소유한다. 연결 여부·재인증 신선도·허가·매핑은 전부 그쪽이
+     * 답하며, 여기서 하는 일은 주체를 읽어 넘기고 결과를 상태 코드로 옮기는 것뿐이다.
+     */
+    private final LinkService linkService;
+
+    AuthSessionController(LinkService linkService) {
+        this.linkService = linkService;
+    }
 
     /**
      * 세션 상태.
@@ -251,7 +266,115 @@ class AuthSessionController {
         String destination =
                 Optional.ofNullable(AuthFlowHandlers.allowedDestination(sessionAttribute(request)))
                         .orElse(AuthFlowHandlers.DASHBOARD_PATH);
+        /*
+         * 남아 있는 연결 무장을 먼저 버리고 그 허가도 함께 무효화한다.
+         *
+         * 한 세션에 두 흐름이 함께 무장돼 있으면 콜백이 어느 쪽 것인지를 등록 id로 매번 가려야
+         * 하고, 그 판정이 한 번 어긋나면 재인증 콜백이 연결 분기에 삼켜진다 — 그때 재인증 시각이
+         * 기록되지 않아 본인 확인이 성립하지 않고 표시도 풀리지 않는다. 설정 화면이 연결 버튼과
+         * 본인 확인 버튼을 같은 페이지에 그리므로 그 상태는 평범한 경로다.
+         *
+         * 흐름만 버리면 그 무장이 가리키던 허가가 아무도 참조할 수 없는 채 수명을 산다. 두 가지를
+         * 함께 하는 자리는 `LinkService.abandon` 하나다.
+         */
+        this.linkService.abandon(session);
         ReauthenticationFlow.arm(session, provider, userId, destination);
+        response.setStatus(HttpStatus.NO_CONTENT.value());
+    }
+
+    /**
+     * 연결 상태.
+     *
+     * <p>{@code providers} 하나뿐이고 값은 <b>제공자 이름</b>의 배열이다. {@code issuer}·
+     * {@code subject}·이메일·토큰·연결 시각을 싣지 않는다 — {@code identity} 공개 API가 이름
+     * 집합만 돌려주므로 여기서 실을 수 있는 다른 값이 애초에 없다.
+     *
+     * <p>순서가 고정이다. 화면이 아는 고정 순서와 같은 목록을 지나므로 응답이 실행마다 흔들리지
+     * 않고, 그 안정성이 없으면 본문 전문을 고정하는 검증이 성립하지 않는다.
+     *
+     * @param providers 이 계정에 연결된 제공자 이름
+     */
+    record LinkState(List<String> providers) {}
+
+    /**
+     * 이 계정에 연결된 제공자.
+     *
+     * <p>인증된 소유자에게 <b>자기 계정의 사실</b>을 보여 주는 자리다. Story 1.9가
+     * {@link #startReauthentication}에 "연결된 제공자 목록도 보지 않는다"를 적어 둔 것과 성질이
+     * 다르다 — 그쪽은 <b>미인증·재인증 시작</b> 경로라 목록을 보면 열거 표면이 되지만, 여기는
+     * 세션이 이미 결정한 사용자에게 그 사용자의 값을 돌려준다. 그래도 반환은 제공자 이름으로
+     * 좁고 미존재·삭제 계정은 빈 집합으로 접히므로, 이 응답에서 계정의 존재나 외부 식별자를
+     * 복원할 수 없다.
+     *
+     * <p>주체가 없으면 403이다. 미인증 요청·재인증을 요구받은 세션·폐기된 세션·수명을 넘긴 세션이
+     * 모두 같은 하나로 수렴한다 — 세션 guard가 그 요청의 인증을 이미 지웠으므로 여기서는 주체
+     * 하나만 보면 된다.
+     *
+     * <p>안전한 메서드라 CSRF·{@code Origin} 보호 대상이 아니다. 이 응답은 상태를 바꾸지 않고,
+     * 동일 출처 정책이 다른 origin의 스크립트가 본문을 읽는 것을 막는다. 대신 캐시에는 남기지
+     * 않는다 — 공유 캐시나 뒤로 가기가 이 값을 되살리면 로그아웃한 브라우저가 계정의 사실을
+     * 다시 그린다.
+     */
+    @GetMapping(
+            path = AuthSecurityConfig.LINK_BASE_URI,
+            produces = MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<LinkState> links(HttpServletResponse response) throws IOException {
+        UUID userId = currentUserId();
+        if (userId == null) {
+            response.sendError(HttpStatus.FORBIDDEN.value());
+            return null;
+        }
+        Set<String> linked = this.linkService.linkedProviders(userId);
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(
+                        new LinkState(
+                                AuthSecurityConfig.ProviderClientRegistrations.supportedProviders()
+                                        .stream()
+                                        .filter(linked::contains)
+                                        .toList()));
+    }
+
+    /**
+     * 연결 흐름을 시작한다.
+     *
+     * <p>{@link #startReauthentication}과 같은 두 단계 배치다. 이 요청이 하는 일은 허가를 받고
+     * 세션에 일회성 흐름을 심는 것이며, 그 다음 단계는 클라이언트가 여는
+     * {@code GET /api/auth/authorize/<제공자>} 최상위 내비게이션이다. 나눈 이유도 같다 — 무장은
+     * 상태 변경이라 세션 귀속 CSRF 토큰과 동일 출처 {@code Origin}을 지나야 하고, 인가 시작은
+     * 제공자로 가는 내비게이션이라 {@code GET}이어야 한다.
+     *
+     * <p>답은 셋뿐이다.
+     *
+     * <ul>
+     *   <li>모르는 제공자 — 그 경로는 존재하지 않는다. 404다. 아는 제공자 <b>목록도 개수도</b>
+     *       응답에 실리지 않는다.
+     *   <li>주체 없음, 또는 시작이 성립하지 않음 — 403이다. 이미 연결된 제공자·재인증 없음·
+     *       오래된 재인증·의심 세션·삭제 상태가 모두 이 하나로 수렴하며 <b>응답으로 구분되지
+     *       않는다</b>. 다른 계정의 존재나 소유자를 드러내지 않는다는 계약이 여기서 시작된다.
+     *   <li>그 밖 — 허가를 발급하고 무장하고 204. 본문이 없다.
+     * </ul>
+     *
+     * <p>복귀 목적지를 받지 않는다. 연결 조작이 사는 화면은 하나이므로 그 경로는 서버 상수이며
+     * ({@code AuthFlowHandlers.SETTINGS_PATH}) 클라이언트가 보낼 값이 없다.
+     */
+    @PostMapping(AuthSecurityConfig.LINK_BASE_URI + "/{provider}")
+    void startLink(
+            @PathVariable String provider, HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
+        if (!AuthSecurityConfig.ProviderClientRegistrations.isSupportedProvider(provider)) {
+            response.sendError(HttpStatus.NOT_FOUND.value());
+            return;
+        }
+        UUID userId = currentUserId();
+        HttpSession session = request.getSession(false);
+        if (userId == null
+                || session == null
+                || this.linkService.start(session, userId, provider).isEmpty()) {
+            // 거부는 하나의 값이다. 사유를 남기지 않는다.
+            response.sendError(HttpStatus.FORBIDDEN.value());
+            return;
+        }
         response.setStatus(HttpStatus.NO_CONTENT.value());
     }
 

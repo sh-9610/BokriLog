@@ -6,11 +6,14 @@ import {
   authContent,
   authorizePath,
   DASHBOARD_PATH,
+  linkNoticeKindOf,
   ONBOARDING_PATH,
+  reauthNoticeKindOf,
+  SETTINGS_PATH,
   SIGN_IN_PROVIDERS,
 } from './content/auth'
 import { entryContent } from './content/entry'
-import { getObservedRequests, stubSessionRequest } from './test/setup'
+import { getObservedRequests, stubLinkStatusRequest, stubSessionRequest } from './test/setup'
 
 /**
  * 경로 → 화면 대응.
@@ -94,13 +97,27 @@ describe('App 경로 맵', () => {
     ).toBeInTheDocument()
   })
 
+  it('설정 경로는 설정 화면을 마운트한다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(jsonResponse({ authenticated: true, destination: 'settings' })),
+    )
+    stubLinkStatusRequest(() => Promise.resolve(jsonResponse({ providers: ['google'] })))
+    navigate(SETTINGS_PATH)
+
+    render(<App />)
+
+    expect(
+      await screen.findByRole('heading', { level: 2, name: authContent.settings.heading }),
+    ).toBeInTheDocument()
+  })
+
   it('미인증으로 되돌려진 화면은 원래 목적지를 `next`로 실어 보낸다', async () => {
     /*
      * 서버는 복귀 목적지를 닫힌 허용 목록으로 판정하고 "기존 사용자는 유효한 원래 목적지"로
      * 보낸다. 그 목적지를 알려 주는 것은 `next` 하나이고, 화면에 그 생산자가 없으면 서버의 그
      * 분기는 제품 코드로 도달할 수 없다.
      */
-    for (const path of [ONBOARDING_PATH, DASHBOARD_PATH]) {
+    for (const path of [ONBOARDING_PATH, DASHBOARD_PATH, SETTINGS_PATH]) {
       stubSessionRequest(() =>
         Promise.resolve(jsonResponse({ authenticated: false, destination: 'entry' })),
       )
@@ -152,21 +169,46 @@ describe('App 경로 맵', () => {
     }
   })
 
-  it('재인증 표지 둘도 닫힌 집합에 든다', () => {
+  it('재인증·연결 표지는 인증 화면에서 문장이 되지 않는다', () => {
     /*
-     * 이 둘은 서버가 만들고 붙들어 둔 목적지로 보낸다(`AuthFlowHandlers`). 그 화면이 두 인증
-     * 화면 중 하나이므로 정상 경로에서는 진입 화면이 이 값을 보지 않지만, `noticeKindOf`의 닫힌
-     * 집합은 한 목록이다 — 여기 없으면 그 값이 조용히 무시되고 재인증 실패가 아무 설명 없는
-     * 화면으로 끝난다.
+     * 다섯 값 모두 로그인한 사용자의 화면으로 오는 표지다(`AuthFlowHandlers`가 붙들어 둔
+     * 목적지나 설정 화면으로 보낸다). 진입 화면에서 렌더되면 거짓을 말한다 —
+     * `/?auth=linkFailed`는 본인 확인도 연결도 없는 화면에서 "아래에서 본인 확인을 마친 뒤 다시
+     * 연결해 주세요"를 보여 준다. `noticeKindOf`의 거름망이 그 값을 걸러 낸다.
      */
-    for (const kind of ['reauthCancelled', 'reauthFailed'] as const) {
+    for (const kind of [
+      'reauthCancelled',
+      'reauthFailed',
+      'linkCancelled',
+      'linkFailed',
+      'linkSucceeded',
+    ] as const) {
       navigate('/', `?auth=${kind}`)
 
       const { unmount } = render(<App />)
 
-      expect(screen.getByRole('status').textContent).toBe(authContent.notices[kind])
+      expect(screen.getByRole('status').textContent).toBe('')
+      expect(document.body.textContent).not.toContain(authContent.notices[kind])
       unmount()
     }
+  })
+
+  it('그래도 다섯 값은 URL 표지의 닫힌 집합에 든다', () => {
+    /*
+     * 거름망과 집합은 다른 일을 한다. 집합에서 빠지면 그 값이 어느 화면에서도 조용히 무시되고
+     * 재인증·연결 실패가 아무 설명 없는 화면으로 끝난다. 화면별 거름망
+     * (`reauthNoticeKindOf`·`linkNoticeKindOf`)이 그 집합을 읽으므로, 두 함수가 값을 돌려주는
+     * 것이 곧 집합에 들어 있다는 사실이다.
+     */
+    for (const kind of ['reauthCancelled', 'reauthFailed'] as const) {
+      expect(reauthNoticeKindOf(`?auth=${kind}`)).toBe(kind)
+    }
+    for (const kind of ['linkCancelled', 'linkFailed', 'linkSucceeded'] as const) {
+      expect(linkNoticeKindOf(`?auth=${kind}`)).toBe(kind)
+    }
+    // 거름망은 서로의 값을 받지 않는다. 화면마다 보여 줄 수 있는 표지가 그만큼 좁다.
+    expect(reauthNoticeKindOf('?auth=linkFailed')).toBeNull()
+    expect(linkNoticeKindOf('?auth=reauthFailed')).toBeNull()
   })
 
   it('`signedOut`은 URL 표지로 만들 수 없다', () => {

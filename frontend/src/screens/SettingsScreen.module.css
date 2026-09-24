@@ -1,0 +1,342 @@
+/*
+ * 로그인 수단 설정 화면 레이아웃.
+ *
+ * `DESIGN.md`가 소유하는 범주(색·타이포그래피·모서리·간격)는 반드시 tokens.css의 변수를 참조한다.
+ * `DESIGN.md`에 토큰이 없는 범주(구조적 1px 테두리 두께, 모션 duration/easing, z-index)만 예외로
+ * 리터럴을 쓴다. 새 토큰을 만들지 않았다 — 표면·경계·간격은 기존 값이 이미 들고 있고, 제공자
+ * 버튼의 브랜드 값은 `-google-`·`-naver-`·`-kakao-` 토큰이 소유한다.
+ *
+ * 이 파일의 page·skipLink·header·brand·main·intro·title·disclaimer·notice·section 규칙은 두 인증
+ * 화면의 같은 이름 규칙과 선언이 겹치고, 아래 제공자 버튼 세 규칙은 `EntryScreen.module.css`·
+ * `components/ReauthPanel.module.css`의 같은 이름 규칙과 겹친다. 값은 전부 같은 토큰을 참조하므로
+ * 브랜드 값이 여러 벌이 되지는 않지만 규칙은 여러 벌이다. 그 중복을 닫는 것은 별도로 배포 가능한
+ * 딴 목표이며(미해소 항목 33) 이 스토리가 손대지 않는다.
+ *
+ * 근거: DESIGN.md Layout & Spacing / Shapes / components.social-sign-in / components.history-row,
+ *      EXPERIENCE.md Responsive & Platform, Accessibility Floor(최소 44×44px).
+ */
+
+.page {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding-block: var(--space-5) var(--space-7);
+
+  /* env()에 폴백이 없으면 미지원 브라우저에서 선언 전체가 무효가 되어 좌우 여백이 0으로 떨어진다. */
+  padding-inline: max(var(--space-page-mobile), env(safe-area-inset-left, 0px))
+    max(var(--space-page-mobile), env(safe-area-inset-right, 0px));
+}
+
+/* 건너뛰기 링크. 두 인증 화면과 같은 관용이다. 문서의 첫 focusable 요소다. */
+.skipLink {
+  position: absolute;
+  inset-block-start: calc(-1 * var(--space-7) - var(--space-6));
+  inset-inline-start: var(--space-page-mobile);
+
+  /* 레이어링은 DESIGN.md가 토큰으로 소유하지 않는 범주다. */
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding-inline: var(--space-4);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface-raised);
+  border: var(--space-focus-width) solid var(--color-focus-ring);
+  color: var(--color-ink-primary);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  text-decoration: none;
+
+  /* 모션 duration/easing 토큰은 DESIGN.md에 없다. prefers-reduced-motion에서 0s로 제거된다. */
+  transition: inset-block-start 120ms ease-out;
+}
+
+/*
+ * `:focus-visible`만 쓰면 프로그래밍 방식 `.focus()`나 포인터 포커스에서 매치되지 않아
+ * 링크가 화면 밖에 남는다. `:focus`도 함께 받아 어떤 경로로 포커스를 얻어도 드러나게 한다.
+ */
+.skipLink:focus,
+.skipLink:focus-visible {
+  inset-block-start: var(--space-2);
+}
+
+.header {
+  width: 100%;
+  max-width: var(--component-app-shell-max-content-width);
+  margin-inline: auto;
+  padding-block-end: var(--space-5);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.brand {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  color: var(--color-primary);
+}
+
+.main {
+  width: 100%;
+  max-width: var(--component-app-shell-max-content-width);
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.title {
+  font-family: var(--type-page-title-font-family);
+  font-size: var(--type-page-title-font-size);
+  font-weight: var(--type-page-title-font-weight);
+  line-height: var(--type-page-title-line-height);
+  letter-spacing: var(--type-page-title-letter-spacing);
+  color: var(--color-ink-primary);
+}
+
+/* UX-DR23: 제목 바로 아래에 인접 배치한다. */
+.disclaimer {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  color: var(--color-ink-secondary);
+}
+
+/* 화면당 하나뿐인 polite live region의 자리. 값이 없으면 자식이 없어 높이가 0이다. */
+.notice {
+  display: grid;
+}
+
+/*
+ * 상태 통지 표면. live region의 문장과 연결 표지가 같은 모양이라 한 규칙이 둘을 맡는다.
+ *
+ * 색만으로 의미를 만들지 않는다. 무엇이 일어났는지 말하는 것은 문장이고 색은 그것을 거들 뿐이다.
+ */
+
+.noticeText,
+.linkNotice {
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background-color: var(--component-service-notice-background);
+  color: var(--component-service-notice-foreground);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--component-service-notice-border);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-border-default);
+}
+
+.sectionHeading {
+  font-family: var(--type-section-title-font-family);
+  font-size: var(--type-section-title-font-size);
+  font-weight: var(--type-section-title-font-weight);
+  line-height: var(--type-section-title-line-height);
+  letter-spacing: var(--type-section-title-letter-spacing);
+  color: var(--color-ink-primary);
+}
+
+/* 연결 목록을 확인하는 동안. 확인 전에는 연결 여부를 주장하지 않는다. */
+.checking {
+  color: var(--color-ink-secondary);
+}
+
+/*
+ * 다시 확인하는 조작.
+ *
+ * 최소 목표 크기 44×44px은 모든 핵심 조작의 바닥선이다(EXPERIENCE.md Accessibility Floor).
+ * 포커스 표시는 global.css의 전역 `:focus-visible`이 처리한다.
+ */
+.retryButton {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding-inline: var(--space-4);
+  border-radius: var(--radius-md);
+  background-color: var(--component-operator-control-background);
+  color: var(--component-operator-control-foreground);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--component-operator-control-border);
+}
+
+/*
+ * 제공자 행 목록. `history-row` 토큰이 소유하는 표면·구분선을 쓴다.
+ *
+ * 세 행의 시각 면적이 같다. 행마다 다른 강조를 두면 추천 표지가 되고, 그것은 DESIGN.md가
+ * 금지한 것이다.
+ */
+.providerList {
+  display: flex;
+  flex-direction: column;
+}
+
+.providerRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-block: var(--space-4);
+  background-color: var(--component-history-row-background);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border-block-end: 1px solid var(--component-history-row-divider);
+}
+
+.providerRow:last-child {
+  border-block-end: none;
+}
+
+.providerName {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  color: var(--color-ink-primary);
+}
+
+/*
+ * 연결된 수단의 상태.
+ *
+ * 색만으로 구분하지 않는다. 읽히는 것은 "연결됨"이라는 낱말이고 색은 그것을 거들 뿐이다.
+ * 이 자리에 조작이 없는 것이 계약이다 — 해제는 Story 1.11이 소유한다.
+ */
+.linkedState {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--space-target-min);
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-full);
+  background-color: var(--color-trust-confirmed-bg);
+  color: var(--color-trust-confirmed);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+/*
+ * 본인 확인 버튼 묶음. 전체 폭 세로 스택이고 순서는 문서 순서가 정한다(DESIGN.md).
+ *
+ * 간격만 소유한다. 세 버튼의 시각 면적은 각자의 규칙이 같은 최소 목표 크기와 전체 폭을 쓰므로
+ * 동등하고, 여기서 크기를 다시 정하지 않는다.
+ */
+.providerActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--component-social-sign-in-gap);
+}
+
+/*
+ * 채움색·글자색·테두리·모서리·내부 여백은 Google 공식 버튼 가이드가 소유한다.
+ * 글꼴은 그 목록에 없으므로 BokriLog의 label 스타일을 쓰고 외부 폰트를 불러오지 않는다.
+ *
+ * 포커스 표시는 global.css의 전역 `:focus-visible`이 처리한다. 여기서 다시 선언하면 특이도가
+ * 올라가 forced-colors 탈출구를 이겨 버린다.
+ */
+.googleButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--component-social-sign-in-google-logo-gap);
+  min-block-size: var(--component-social-sign-in-min-target-size);
+  min-inline-size: var(--component-social-sign-in-min-target-size);
+  padding-inline: var(--component-social-sign-in-google-padding-inline);
+  border-radius: var(--component-social-sign-in-google-radius);
+  background-color: var(--component-social-sign-in-google-background);
+  border: 1px solid var(--component-social-sign-in-google-border);
+  color: var(--component-social-sign-in-google-foreground);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+/*
+ * 네이버 버튼. 채움색·글자색·로고 간격은 네이버 공식 버튼 가이드가 소유한다.
+ *
+ * 레이블만 20px·700인 것은 공표 색 조합의 대비가 3.095:1이라 큰 텍스트 문턱으로만 닫히기
+ * 때문이다. 세 버튼의 동등한 위계는 바깥 크기·간격·순서·추천 표지 부재로 성립하며 타이포그래피의
+ * 동일성이 아니다. 근거는 tokens.css의 `-naver-label-` 주석이 소유한다.
+ */
+.naverButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--component-social-sign-in-naver-logo-gap);
+  min-block-size: var(--component-social-sign-in-min-target-size);
+  min-inline-size: var(--component-social-sign-in-min-target-size);
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--component-social-sign-in-naver-background);
+  color: var(--component-social-sign-in-naver-foreground);
+  font-size: var(--component-social-sign-in-naver-label-font-size);
+  font-weight: var(--component-social-sign-in-naver-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+/*
+ * 카카오 버튼. 채움색·글자색·모서리 반경은 카카오 공식 가이드가 소유한다.
+ *
+ * 반경 토큰이 있는 것이 네이버와 다른 점이고 그것은 예외가 아니라 같은 규칙의 결과다 — 카카오는
+ * 12px을 본문으로 공표했고 네이버는 반경을 공표하지 않았다.
+ */
+.kakaoButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--component-social-sign-in-kakao-logo-gap);
+  min-block-size: var(--component-social-sign-in-min-target-size);
+  min-inline-size: var(--component-social-sign-in-min-target-size);
+  padding-inline: var(--space-3);
+  border-radius: var(--component-social-sign-in-kakao-radius);
+  background-color: var(--component-social-sign-in-kakao-background);
+  color: var(--component-social-sign-in-kakao-foreground);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+/* 연결이 요구하는 것과 요구하지 않는 것. 목록 아래에 둔다. */
+.boundary {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  color: var(--color-ink-secondary);
+}
+
+@media (min-width: 768px) {
+  .page {
+    padding-inline: max(var(--space-page-tablet), env(safe-area-inset-left, 0px))
+      max(var(--space-page-tablet), env(safe-area-inset-right, 0px));
+  }
+}
+
+@media (min-width: 1024px) {
+  .page {
+    padding-inline: max(var(--space-page-desktop), env(safe-area-inset-left, 0px))
+      max(var(--space-page-desktop), env(safe-area-inset-right, 0px));
+  }
+}

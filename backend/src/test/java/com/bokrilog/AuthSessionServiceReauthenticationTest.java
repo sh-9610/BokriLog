@@ -9,6 +9,7 @@ import com.bokrilog.identity.AccountLifecycleApi;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -155,6 +156,11 @@ class AuthSessionServiceReauthenticationTest {
         public Optional<UUID> findUserIdBySocialIdentity(
                 @Nullable String issuer, @Nullable String subject) {
             return Optional.ofNullable(this.linked);
+        }
+
+        @Override
+        public Set<String> findLinkedProviders(@Nullable UUID userId) {
+            throw new AssertionError("재인증은 연결된 제공자 목록을 보지 않는다.");
         }
     }
 
