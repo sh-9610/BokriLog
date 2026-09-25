@@ -8,7 +8,9 @@
  *    금지 목록은 DEVELOPMENT.md의 `## 프런트엔드` 절과 같아야 한다.
  * 4. 시험이 (메서드, URL) 쌍 단위로 명시적으로 열 수 있는 탈출구를 둔다(`stubSessionRequest`,
  *    `stubLogoutRequest`, `stubReauthenticationRequest`, `stubLinkStatusRequest`,
- *    `stubLinkRequest`). 전역 거부는 그대로다. 아래 `responders` 절의 근거를 참고한다.
+ *    `stubLinkRequest`, `stubUnlinkPrepareRequest`, `stubUnlinkConfirmRequest`,
+ *    `stubUnlinkCancelRequest`).
+ *    전역 거부는 그대로다. 아래 `responders` 절의 근거를 참고한다.
  */
 
 import '@testing-library/jest-dom/vitest'
@@ -21,6 +23,9 @@ import {
   LOGOUT_ENDPOINT,
   reauthenticatePath,
   SESSION_ENDPOINT,
+  unlinkCancelPath,
+  unlinkConfirmPath,
+  unlinkPath,
   type SignInProvider,
 } from '../content/auth'
 
@@ -110,6 +115,45 @@ export function stubLinkStatusRequest(responder: RequestResponder): void {
  */
 export function stubLinkRequest(provider: SignInProvider, responder: RequestResponder): void {
   responders.set(requestKey('POST', linkPath(provider)), responder)
+}
+
+/**
+ * 그 제공자의 해제 **준비** 요청 하나를 이 시험 동안만 허용한다.
+ *
+ * 최종 확인과 따로 연다. 두 경로를 한 번에 열면 "대화상자를 여는 요청은 아무것도 바꾸지 않는다"를
+ * 확인하려는 시험이 확인 요청까지 통과시키고, 그때 그 시험은 자기가 무엇을 본 것인지 알 수 없다.
+ */
+export function stubUnlinkPrepareRequest(
+  provider: SignInProvider,
+  responder: RequestResponder,
+): void {
+  responders.set(requestKey('POST', unlinkPath(provider)), responder)
+}
+
+/**
+ * 그 제공자의 해제 **최종 확인** 요청 하나를 이 시험 동안만 허용한다.
+ *
+ * 열지 않은 시험에서 이 요청이 나가면 전역 거부가 그것을 기록하고 실패시킨다 — 화면이 확인 없이
+ * 해제를 보내는 회귀가 그 기록으로 드러난다.
+ */
+export function stubUnlinkConfirmRequest(
+  provider: SignInProvider,
+  responder: RequestResponder,
+): void {
+  responders.set(requestKey('POST', unlinkConfirmPath(provider)), responder)
+}
+
+/**
+ * 그 제공자의 해제 **취소** 요청 하나를 이 시험 동안만 허용한다.
+ *
+ * 취소는 준비가 만든 무장과 허가를 되돌린다. 열지 않은 시험에서 이 요청이 나가면 전역 거부가 그것을
+ * 기록하고 실패시킨다 — 대화상자를 닫기만 해도 서버로 나가는 요청이 있다는 사실이 그 기록이다.
+ */
+export function stubUnlinkCancelRequest(
+  provider: SignInProvider,
+  responder: RequestResponder,
+): void {
+  responders.set(requestKey('POST', unlinkCancelPath(provider)), responder)
 }
 
 /** 허용된 세션 확인 요청의 기록. 몇 번 불렸는지 단정하는 데 쓴다. */

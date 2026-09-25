@@ -29,9 +29,10 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * 인증 표면의 HTTP 경계.
  *
- * <p>다섯 가지만 답한다. 로그인 상태 화면이 서버 세션으로 상태를 확인하는 경로 하나, 재인증
+ * <p>여덟 가지만 답한다. 로그인 상태 화면이 서버 세션으로 상태를 확인하는 경로 하나, 재인증
  * 흐름을 세션에 심는 경로 하나, 연결 상태를 조회하는 경로 하나, 연결 흐름을 시작하는 경로 하나,
- * 그리고 인증 시작이 성립하지 않을 때의 공통 오류 계약 하나다.
+ * 해제 확인 대화상자를 열 준비를 하는 경로 하나, 그 확인을 실행하는 경로 하나, 그 준비를 되돌리는
+ * 경로 하나, 그리고 인증 시작이 성립하지 않을 때의 공통 오류 계약 하나다.
  * 나머지(authorization request 발급, 콜백 검증)는 Spring Security의 필터가 서블릿보다 앞에서
  * 처리하므로 이 컨트롤러에 오지 않는다.
  *
@@ -54,8 +55,46 @@ class AuthSessionController {
      */
     private final LinkService linkService;
 
-    AuthSessionController(LinkService linkService) {
+    /**
+     * 해제의 판정과 실행.
+     *
+     * <p>{@link #linkService}와 같은 분담이다. 이 컨트롤러는 HTTP 경계만 소유하고 마지막 수단
+     * 보호·재인증 신선도·허가·매핑·세션 정리는 전부 그쪽이 답한다.
+     */
+    private final UnlinkService unlinkService;
+
+    AuthSessionController(LinkService linkService, UnlinkService unlinkService) {
         this.linkService = linkService;
+        this.unlinkService = unlinkService;
+    }
+
+    /**
+     * 이 세션에 남은 허가 딸린 무장을 전부 버린다.
+     *
+     * <p><b>세 흐름이 서로를 버린다</b> — 재인증(1.8)·연결(1.10)·해제(1.11)다. 설정 화면이 세 조작을
+     * 같은 페이지에 그리므로 무장이 겹칠 수 있고, 겹치면 콜백이나 확인이 엉뚱한 흐름을 소비하거나
+     * 참조할 수 없게 된 허가가 수명을 산다. 무장 시각에 나머지를 버리고 그 허가도 함께 무효화하는
+     * 것이 그 화면에서 성립하는 유일한 규칙이다.
+     *
+     * <p><b>버리는 것은 무장이 확정된 뒤다.</b> 거절되는 시작 요청 하나가 진행 중이던 다른 흐름의
+     * 무장과 허가를 파괴하면, 이미 연결된 제공자를 눌러 본 사용자가 방금 연 해제 대화상자를 잃는다 —
+     * 같은 파일이 {@code confirmUnlink}에서 "대상이 다른 확인은 무장을 없애지 않는다"를 계약으로
+     * 두었는데 그 규칙이 여기서 갈린다. 그래서 재인증 시작만 이 메서드를 쓴다(그 무장에는 게이트가
+     * 없어 언제나 성립한다). 연결·해제 시작은 자기 {@code start}가 성공을 돌려준 <b>뒤에</b> 상대
+     * 하나만 버린다.
+     *
+     * <p>여기서 버리는 것은 허가를 든 둘(연결·해제)이다. 재인증 무장에는 허가가 없고 그것을 버리는
+     * 일은 각 무장 경로가 이미 한다 — {@code LinkService.start}·{@code UnlinkService.start}가
+     * {@code ReauthenticationFlow.discard}를 부르고, 재인증 시작은 {@code arm}이 앞선 값을 덮는다.
+     *
+     * <p>이 자리가 컨트롤러인 이유는 빈 순환이다. {@code LinkService}와 {@code UnlinkService}가
+     * 서로를 주입받으면 생성자 순환이 되므로, 각 서비스는 <b>자기 흐름과 재인증만</b> 버리고 상대
+     * 서비스의 흐름은 두 서비스를 함께 아는 이 컨트롤러가 버린다. 세 무장 엔드포인트가 모두 여기
+     * 있으므로 규칙이 한 파일에서 읽힌다.
+     */
+    private void abandonArmedFlows(HttpSession session) {
+        this.linkService.abandon(session);
+        this.unlinkService.abandon(session);
     }
 
     /**
@@ -267,17 +306,16 @@ class AuthSessionController {
                 Optional.ofNullable(AuthFlowHandlers.allowedDestination(sessionAttribute(request)))
                         .orElse(AuthFlowHandlers.DASHBOARD_PATH);
         /*
-         * 남아 있는 연결 무장을 먼저 버리고 그 허가도 함께 무효화한다.
+         * 남아 있는 연결·해제 무장을 먼저 버리고 그 허가도 함께 무효화한다.
          *
          * 한 세션에 두 흐름이 함께 무장돼 있으면 콜백이 어느 쪽 것인지를 등록 id로 매번 가려야
          * 하고, 그 판정이 한 번 어긋나면 재인증 콜백이 연결 분기에 삼켜진다 — 그때 재인증 시각이
-         * 기록되지 않아 본인 확인이 성립하지 않고 표시도 풀리지 않는다. 설정 화면이 연결 버튼과
-         * 본인 확인 버튼을 같은 페이지에 그리므로 그 상태는 평범한 경로다.
+         * 기록되지 않아 본인 확인이 성립하지 않고 표시도 풀리지 않는다. 설정 화면이 세 조작을 같은
+         * 페이지에 그리므로 그 상태는 평범한 경로다.
          *
-         * 흐름만 버리면 그 무장이 가리키던 허가가 아무도 참조할 수 없는 채 수명을 산다. 두 가지를
-         * 함께 하는 자리는 `LinkService.abandon` 하나다.
+         * 흐름만 버리면 그 무장이 가리키던 허가가 아무도 참조할 수 없는 채 수명을 산다.
          */
-        this.linkService.abandon(session);
+        abandonArmedFlows(session);
         ReauthenticationFlow.arm(session, provider, userId, destination);
         response.setStatus(HttpStatus.NO_CONTENT.value());
     }
@@ -371,6 +409,131 @@ class AuthSessionController {
         if (userId == null
                 || session == null
                 || this.linkService.start(session, userId, provider).isEmpty()) {
+            // 거부는 하나의 값이다. 사유를 남기지 않는다.
+            response.sendError(HttpStatus.FORBIDDEN.value());
+            return;
+        }
+        /*
+         * 상대 흐름은 무장이 확정된 뒤에만 버린다(`abandonArmedFlows`의 근거). 앞에 두면 거절되는
+         * 연결 시작 하나가 진행 중이던 해제 대화상자의 무장과 허가를 함께 없앤다.
+         *
+         * 자기 흐름과 재인증 무장은 위 `start`가 같은 규율로 버린다.
+         */
+        this.unlinkService.abandon(session);
+        response.setStatus(HttpStatus.NO_CONTENT.value());
+    }
+
+    /**
+     * 해제 확인 대화상자를 열 준비를 한다. <b>매핑·세션·목록을 건드리지 않는다.</b>
+     *
+     * <p>해제에는 OIDC 왕복이 없으므로 확인 대화상자가 그 자리를 대신한다. 이 요청이 하는 일은 허가를
+     * 발급받아 세션에 일회성 무장을 심는 것 하나이고, 실제 제거는 그 무장을 소비하는
+     * {@link #confirmUnlink}가 한다. <b>최종 확인 전에는 아무것도 바뀌지 않는다</b>는 계약이 두
+     * 경로를 나눈 이유다.
+     *
+     * <p>답은 셋뿐이다.
+     *
+     * <ul>
+     *   <li>모르는 제공자 — 그 경로는 존재하지 않는다. 404다. 아는 제공자 <b>목록도 개수도</b>
+     *       응답에 실리지 않는다.
+     *   <li>주체 없음, 또는 준비가 성립하지 않음 — 403이다. 마지막 수단·미연결 제공자·재인증 없음·
+     *       오래된 재인증·의심 세션·삭제 상태가 모두 이 하나로 수렴하며 <b>응답으로 구분되지
+     *       않는다</b>. 마지막 수단만은 화면이 연결 목록에서 이미 아는 사실로 미리 설명하며, 서버는
+     *       그 사실을 응답으로 알려 주지 않는다.
+     *   <li>그 밖 — 허가를 발급하고 무장하고 204. 본문이 없다.
+     * </ul>
+     *
+     * <p>등록 구성 여부를 보지 않는다. 그 게이트는 연결 시작의 것이며, 근거는 뒤따르는 인가 시작이
+     * fail-closed로 끝나는 것이었다({@code LinkService.start}). 해제에는 그 왕복이 없고, 자격정보가
+     * 빠진 제공자일수록 떼어 낼 수 있어야 한다.
+     */
+    @PostMapping(AuthSecurityConfig.UNLINK_BASE_URI + "/{provider}")
+    void prepareUnlink(
+            @PathVariable String provider, HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
+        if (!AuthSecurityConfig.ProviderClientRegistrations.isSupportedProvider(provider)) {
+            response.sendError(HttpStatus.NOT_FOUND.value());
+            return;
+        }
+        UUID userId = currentUserId();
+        HttpSession session = request.getSession(false);
+        if (userId == null
+                || session == null
+                || this.unlinkService.start(session, userId, provider).isEmpty()) {
+            response.sendError(HttpStatus.FORBIDDEN.value());
+            return;
+        }
+        // 무장이 확정된 뒤에만 상대 흐름을 버린다(`startLink`와 같은 근거).
+        this.linkService.abandon(session);
+        response.setStatus(HttpStatus.NO_CONTENT.value());
+    }
+
+    /**
+     * 열어 둔 확인 대화상자를 닫는다. <b>준비가 만든 것을 되돌린다.</b>
+     *
+     * <p>준비가 서버 상태를 만들므로(무장과 허가) 되돌리는 경로가 있어야 한다. 화면의 취소 문장이
+     * "바뀐 것은 없습니다"라고 말하는데 그 말이 참이려면 준비가 남긴 둘도 함께 사라져야 하고, 남겨
+     * 두면 아무도 참조하지 않는 허가가 수명을 산다.
+     *
+     * <p>답은 둘뿐이다 — 모르는 제공자는 404, 그 밖은 <b>언제나 204</b>다. 무장이 있었는지 없었는지로
+     * 답을 나누지 않는다: 나누면 이 경로가 "저 세션이 지금 무엇을 준비했는가"를 묻는 오라클이 된다.
+     * 그래서 멱등이고, 아무것도 없을 때 부르면 아무 일도 하지 않는다.
+     *
+     * <p>주체가 없어도 204다. 버릴 무장이 애초에 없고, 이 요청은 어떤 계정 상태도 읽지 않는다 — 다만
+     * {@code /api/auth/} 아래이므로 CSRF·{@code Origin}은 그대로 지난다.
+     */
+    @PostMapping(
+            AuthSecurityConfig.UNLINK_BASE_URI
+                    + "/{provider}/"
+                    + AuthSecurityConfig.UNLINK_CANCEL_SEGMENT)
+    void cancelUnlink(
+            @PathVariable String provider, HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
+        if (!AuthSecurityConfig.ProviderClientRegistrations.isSupportedProvider(provider)) {
+            response.sendError(HttpStatus.NOT_FOUND.value());
+            return;
+        }
+        HttpSession session = request.getSession(false);
+        if (session != null) {
+            this.unlinkService.abandon(session);
+        }
+        response.setStatus(HttpStatus.NO_CONTENT.value());
+    }
+
+    /**
+     * 해제의 최종 확인. <b>여기서만 상태가 바뀐다.</b>
+     *
+     * <p>무장을 소비하고, 허가 소비와 매핑 제거를 한 트랜잭션으로 커밋하고, 커밋 뒤 이 사용자의 다른
+     * 세션을 모두 폐기하고 현재 세션을 회전시킨다. 셋의 순서와 경계는 {@code UnlinkService}가
+     * 소유한다.
+     *
+     * <p>답은 {@link #prepareUnlink}와 같은 셋이다 — 404·403·204. 거부에 마지막 수단·허가 만료·
+     * 이미 사용됨·세션 불일치·삭제 상태·미연결이 모두 접힌다.
+     *
+     * <p>204에 본문이 없다. 결과 문장은 화면이 자기 상태로 만들고, 해제된 제공자 이름은 응답에도
+     * 주소에도 싣지 않는다 — 실을 이유가 없고 싣는 순간 로그·히스토리에 남는다. 화면은 이어서 연결
+     * 목록을 다시 조회해 지금 상태를 그린다.
+     *
+     * <p>리다이렉트가 아니다. 해제는 문서를 떠나지 않는 조작이고, 302를 돌려주면 {@code fetch}가
+     * 그것을 따라가 본문 없는 HTML을 받는다(로그아웃이 204인 것과 같은 근거).
+     */
+    @PostMapping(
+            AuthSecurityConfig.UNLINK_BASE_URI
+                    + "/{provider}/"
+                    + AuthSecurityConfig.UNLINK_CONFIRM_SEGMENT)
+    void confirmUnlink(
+            @PathVariable String provider, HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
+        if (!AuthSecurityConfig.ProviderClientRegistrations.isSupportedProvider(provider)) {
+            response.sendError(HttpStatus.NOT_FOUND.value());
+            return;
+        }
+        UUID userId = currentUserId();
+        HttpSession session = request.getSession(false);
+        if (userId == null
+                || session == null
+                || this.unlinkService.complete(request, session, userId, provider)
+                        != UnlinkService.Outcome.UNLINKED) {
             // 거부는 하나의 값이다. 사유를 남기지 않는다.
             response.sendError(HttpStatus.FORBIDDEN.value());
             return;

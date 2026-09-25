@@ -108,6 +108,45 @@ public class IdentityAccountRepository {
     }
 
     /**
+     * 계정이 {@code ACTIVE}이고 <b>남은 수단이 둘 이상일 때만</b> 그 인증 매핑을 지운다.
+     *
+     * <p>{@link #insertSocialLinkIfActive}와 같은 모양이다. 판정과 쓰기가 한 문장에 있으므로 거부된
+     * 호출은 아무것도 지우지 않고 데이터베이스 오류도 일으키지 않는다.
+     *
+     * <ul>
+     *   <li>{@code EXISTS (… state = 'ACTIVE')} -- 상태 술어가 DELETE 안에 있다. 삭제가 시작된
+     *       계정에는 원자적으로 0행이 된다.
+     *   <li>{@code (SELECT count(*) …) > 1} -- <b>마지막 수단 보호</b>다. 이 술어가 문장 안에 있어야
+     *       하는 이유는 밖에 두면 "세기"와 "지우기" 사이에 창이 생기기 때문이다. 같은 계정의 동시
+     *       해제 둘이 그 창에서 만나면 둘 다 "지금은 2개니까 괜찮다"를 보고 통과해 계정이 잠긴다.
+     *       호출자가 잡는 생명주기 행 잠금이 그 동시 요청을 직렬화하고, 이 술어가 두 번째 요청을
+     *       0행으로 끝낸다. <b>둘 다 필요하다</b> — 잠금만으로는 서로 다른 트랜잭션의 스냅숏이
+     *       갈리고, 술어만으로는 잠금 없는 동시 실행에서 둘 다 통과한다.
+     *   <li>{@code provider} 일치 -- 연결되지 않은 제공자는 대상 행이 없어 0행이다. "마지막
+     *       수단이라 거부됐다"와 "그 제공자가 애초에 없었다"가 호출자에게 같은 값으로 보인다.
+     * </ul>
+     *
+     * <p>세는 시점이 문장의 스냅숏이다. PostgreSQL의 {@code DELETE}는 자기 서브쿼리를 삭제 이전
+     * 스냅숏에서 읽으므로 {@code > 1}은 "지우기 전에 둘 이상"이고, 그것이 곧 "지운 뒤 하나 이상"이다.
+     *
+     * @return 1이면 매핑이 사라졌고, 0이면 상태가 {@code ACTIVE}가 아니거나 그 제공자가 연결돼 있지
+     *     않거나 마지막 수단이었다. 어느 쪽인지는 호출자에게 구분되지 않으며 그것이 거부 계약이다.
+     */
+    public int deleteSocialLinkIfNotLast(UUID userId, String provider) {
+        return jdbc.sql(
+                        "DELETE FROM identity_social_link AS target "
+                                + "WHERE target.user_id = :userId AND target.provider = :provider "
+                                + "AND EXISTS ("
+                                + "SELECT 1 FROM identity_account_lifecycle AS lifecycle "
+                                + "WHERE lifecycle.user_id = :userId AND lifecycle.state = 'ACTIVE') "
+                                + "AND (SELECT count(*) FROM identity_social_link AS remaining "
+                                + "WHERE remaining.user_id = :userId) > 1")
+                .param("userId", userId)
+                .param("provider", provider)
+                .update();
+    }
+
+    /**
      * 활성 계정에 연결된 인증 매핑을 찾는다.
      *
      * <p>상태 술어가 질의 안에 있다. 삭제가 시작된 계정은 매핑 행이 아직 남아 있어도 여기서

@@ -1,8 +1,9 @@
-import { useEffect, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
 
 import { ProviderMark } from '../components/ProviderMark'
 import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
+import { UnlinkDialog } from '../components/UnlinkDialog'
 import {
   authContent,
   linkNoticeKindOf,
@@ -16,11 +17,23 @@ import { useLinking } from '../session/useLinking'
 import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
+import { useUnlinking } from '../session/useUnlinking'
 import { EntryScreen } from './EntryScreen'
 import styles from './SettingsScreen.module.css'
 
 /** 본문 랜드마크의 id. 건너뛰기 링크의 목적지이기도 하다. */
 const MAIN_ID = 'settings-main'
+
+/**
+ * 마지막 수단 설명 문장의 id.
+ *
+ * 제공자마다 다른 값이다. 목록에는 행이 셋 있고 id가 같으면 문서에 중복 id가 생긴다 — 마지막
+ * 수단인 행은 하나뿐이라 실제로 겹치지는 않지만, 그 사실에 기대면 목록 조건이 바뀌는 날 조용히
+ * 깨진다.
+ */
+function lastMethodDescriptionId(provider: SignInProvider): string {
+  return `settings-last-method-${provider}`
+}
 
 /**
  * 제공자별 버튼 규칙. 닫힌 맵인 근거는 진입 화면·재인증 패널과 같다.
@@ -58,9 +71,14 @@ type LinkStatus = 'checking' | 'loaded' | 'unavailable'
  * 말한다 — <b>자동으로 이어 하지 않는 것이 계약이다</b>(AC-6). 사용자가 아래 본인 확인 버튼을
  * 직접 누르고, 확인을 마친 뒤 이 화면에서 다시 연결을 누른다.
  *
- * 이미 연결된 수단에는 연결 조작을 주지 않는다. 해제는 이 스토리의 범위가 아니므로(Story 1.11)
- * 그 수단에 남는 것은 "연결됨" 상태 하나이며, 마지막 수단 보호와 확인 대화상자는 그 스토리가
- * 자기 작업과 함께 만든다.
+ * 이미 연결된 수단에는 연결 조작 대신 해제 조작을 준다. 해제는 준비와 최종 확인 두 단계이며 그
+ * 사이가 확인 대화상자다 — 대화상자를 여는 요청이 허가를 발급하고 무장할 뿐 <b>매핑·세션·목록을
+ * 건드리지 않는다</b>.
+ *
+ * <b>마지막 남은 수단은 화면이 미리 설명한다.</b> 서버는 그 거부를 다른 거부와 구분하지 않지만
+ * (구분하면 그 차이가 계정의 수단 구성을 알려 준다) 이 사실은 화면이 자기 목록에서 직접 만든다 —
+ * 사용자가 이미 보고 있는 것이고, 숨기면 비활성화된 버튼에 이유가 없어 접근성이 깨진다. 권위는
+ * 여전히 서버의 삭제 문장이므로 이 화면을 우회한 직접 호출도 같은 거부로 끝난다.
  *
  * 서버 세션이 유일한 권위다. 확인 전에는 어떤 상태도 주장하지 않고, 미인증은 인증 화면으로
  * 되돌린다. 재인증을 요구받은 세션은 이동하지 않고 이 자리에서 회복 패널을 연다 — 두 인증 화면과
@@ -79,8 +97,35 @@ export function SettingsScreen(): ReactElement {
    *
    * 값이 바뀌면 아래 effect가 다시 돈다. 자동 재시도가 아니라 사용자의 조작 하나가 그 값을
    * 옮기며, 그것이 "실패를 반복 요청으로 덮지 않는다"는 이 저장소의 규율이다.
+   *
+   * 해제 성공도 같은 값을 옮긴다. 목록이 바뀌었으므로 다시 읽어야 하고, 그 요청을 여기 하나로
+   * 모으면 "언제 목록을 다시 읽는가"의 답이 이 effect 하나로 남는다.
    */
   const [attempt, setAttempt] = useState(0)
+
+  const onUnlinked = useCallback((removed: SignInProvider): void => {
+    /*
+     * 사라진 수단을 먼저 목록에서 뺀다.
+     *
+     * 재조회가 돌아오기 전까지 그 행은 여전히 "연결됨"과 해제 버튼을 그린다. 그 사이에 누르면
+     * 서버가 거절해 실패 표지가 나고, 사용자는 방금 해제한 것을 다시 해제하려다 실패를 본다.
+     * 서버가 무엇을 지웠는지는 이 화면이 이미 알고 있으므로 기다릴 이유가 없다.
+     */
+    setLinked((current) => current.filter((provider) => provider !== removed))
+    setAttempt((value) => value + 1)
+  }, [])
+
+  const unlinking = useUnlinking(csrfToken, onUnlinked)
+
+  /**
+   * 해제 결과 문장의 자리.
+   *
+   * 포커스를 여기로 옮겨야 하는 경우가 하나 있다 — 해제에 성공하면 대화상자를 연 버튼이 사라져
+   * (그 제공자가 더 이상 연결돼 있지 않다) 대화상자가 되돌릴 호출점이 없다. 그때 포커스는
+   * `<body>`에 남고, 키보드·보조기술 사용자는 무엇이 일어났는지 듣지 못한 채 문서 처음으로
+   * 떨어진다.
+   */
+  const unlinkNoticeRef = useRef<HTMLParagraphElement>(null)
 
   const ready = gate === 'ready'
 
@@ -110,6 +155,24 @@ export function SettingsScreen(): ReactElement {
     }
   }, [attempt, ready])
 
+  /*
+   * 해제에 성공하면 결과 문장으로 포커스를 옮긴다.
+   *
+   * 성공에서만 옮기는 것이 계약이고 그 반대편이 대화상자의 호출점 복귀다 — 취소·실패에서는 그
+   * 버튼이 그대로 있으므로 대화상자가 돌려주고, 성공에서는 곧 사라질 버튼이라 대화상자가 손을
+   * 떼고 이 effect가 받는다(`UnlinkDialog`의 `restoreFocus`). 두 자리가 조건을 나눠 갖지 않으면
+   * 포커스가 잠깐 그 버튼에 얹혔다가 목록 갱신과 함께 `<body>`로 떨어진다.
+   *
+   * `activeElement`를 보고 정하지 않는다. 대화상자가 닫히는 시점에는 호출점 버튼이 아직 문서에
+   * 있어 그 판정이 언제나 거짓이 되고, 실제 포커스 상실은 그 뒤 목록이 갱신될 때 일어난다.
+   */
+  const unlinkNotice = unlinking.notice
+  useEffect(() => {
+    if (unlinkNotice === 'unlinkSucceeded') {
+      unlinkNoticeRef.current?.focus()
+    }
+  }, [unlinkNotice])
+
   if (gate === 'unauthenticated') {
     /*
      * 냉시작 미인증이다. 이 자리에서 표지 없이 인증 화면을 그린다(두 인증 화면과 같은 동작).
@@ -126,166 +189,283 @@ export function SettingsScreen(): ReactElement {
    */
   const reauthRequired = gate === 'reauth-required'
   const notice = linkNoticeKindOf(window.location.search)
-  const busy = linking.pending || reauthentication.pending || signOut.pending
+  /**
+   * 대화상자가 열려 있는가.
+   *
+   * 배경을 비활성화하는 판정이자 배경 조작을 막는 판정이다. `inert`가 없는 브라우저에서도 배경의
+   * 연결·본인 확인·로그아웃이 눌리면 안 된다 — 그 조작들은 열려 있는 해제 무장을 버리므로, 사용자가
+   * 확인을 누르는 순간 이유 없이 실패한다.
+   */
+  const dialogOpen = unlinking.confirming !== null
+  const busy =
+    linking.pending ||
+    reauthentication.pending ||
+    signOut.pending ||
+    unlinking.pending ||
+    dialogOpen
+  /**
+   * 마지막 남은 접근 수단인가.
+   *
+   * 목록을 확인한 뒤에만 참이다. 확인하지 못한 상태에서는 목록 자체를 그리지 않으므로
+   * (`linkStatus === 'unavailable'`) 이 값이 쓰이지 않는다.
+   */
+  const lastMethod = linked.length <= 1
 
   return (
-    <div className={styles.page}>
-      {/* 건너뛰기 링크는 두 인증 화면과 같은 관용이다. 반복되는 머리말을 지나칠 첫 조작이다. */}
-      <a className={styles.skipLink} href={`#${MAIN_ID}`}>
-        {entryContent.skipLink}
-      </a>
+    <>
+      {/*
+        대화상자가 열려 있는 동안 배경을 비활성화한다.
 
-      <header className={styles.header}>
-        <p className={styles.brand}>{entryContent.brand}</p>
-        {/* 세션이 확인된 뒤에만 둔다. 확인 전에는 로그아웃할 대상이 아직 없다. */}
-        {ready ? (
-          <SignOutButton onSignOut={signOut.requestSignOut} pending={signOut.pending} />
-        ) : null}
-      </header>
+        `inert`가 없으면 스크린리더의 가상 커서가 뒤 화면을 그대로 읽고 포인터·키보드가 그 조작에
+        닿는다 — 모달의 뜻이 성립하지 않는다. 대화상자를 이 요소의 **형제**로 둔 이유가 그것이다:
+        안에 두면 그 속성이 대화상자까지 덮는다.
+      */}
+      <div className={styles.page} inert={dialogOpen}>
+        {/* 건너뛰기 링크는 두 인증 화면과 같은 관용이다. 반복되는 머리말을 지나칠 첫 조작이다. */}
+        <a className={styles.skipLink} href={`#${MAIN_ID}`}>
+          {entryContent.skipLink}
+        </a>
 
-      <main className={styles.main} id={MAIN_ID} tabIndex={-1}>
-        <div className={styles.intro}>
-          {/* UX-DR23: 제목과 바로 아래 고지를 인접 배치한다. */}
-          <h1 className={styles.title}>{authContent.pageTitle}</h1>
-          <p className={styles.disclaimer}>{authContent.disclaimer}</p>
-        </div>
+        <header className={styles.header}>
+          <p className={styles.brand}>{entryContent.brand}</p>
+          {/* 세션이 확인된 뒤에만 둔다. 확인 전에는 로그아웃할 대상이 아직 없다. */}
+          {ready ? (
+            /*
+              다른 조작이 도는 동안에는 막힌다(`ReauthPanel`과 같은 배치). 로그아웃이 그 사이에
+              성립하면 방금 심은 무장이 세션과 함께 사라지고, 특히 확인 대화상자가 열려 있는 동안
+              눌리면 사용자가 확인을 누르는 순간 이유 없이 실패한다.
+            */
+            <SignOutButton
+              onSignOut={() => {
+                if (busy && !signOut.pending) {
+                  return
+                }
+                signOut.requestSignOut()
+              }}
+              pending={busy}
+            />
+          ) : null}
+        </header>
 
-        {/*
+        <main className={styles.main} id={MAIN_ID} tabIndex={-1}>
+          <div className={styles.intro}>
+            {/* UX-DR23: 제목과 바로 아래 고지를 인접 배치한다. */}
+            <h1 className={styles.title}>{authContent.pageTitle}</h1>
+            <p className={styles.disclaimer}>{authContent.disclaimer}</p>
+          </div>
+
+          {/*
           화면당 polite live region 하나. 두 인증 화면과 같은 배치이며 진행을 말하는 자리도 여기다.
 
           표시된 세션은 갱신 중이 아니다. 게이트가 `reauth-required`인 상태는 확인이 끝나고 다음
           행동을 기다리는 자리이므로 `aria-busy`를 세우면 보조기술에 "지금 바뀌는 중"이라고
           잘못 말한다.
         */}
-        <div
-          aria-busy={(!ready && !reauthRequired) || busy}
-          aria-live="polite"
-          className={styles.notice}
-          role="status"
-        >
-          {ready && !busy ? null : (
-            <p className={styles.noticeText}>
-              {liveRegionMessage(gate, signOut.pending, reauthentication.pending, linking.pending)}
-            </p>
-          )}
-        </div>
+          <div
+            aria-busy={(!ready && !reauthRequired) || busy}
+            aria-live="polite"
+            className={styles.notice}
+            role="status"
+          >
+            {ready && !busy ? (
+              /*
+              해제 결과는 이 live region이 말한다. 섹션 안에 두면 취소·실패에서 포커스도 움직이지
+              않아 보조기술 사용자에게 아무것도 알려지지 않는다 — 그 조작은 문서를 떠나지 않으므로
+              화면 어디에도 변화 신호가 없다.
+            */
+              unlinking.notice === null ? null : (
+                <p className={styles.noticeText} ref={unlinkNoticeRef} tabIndex={-1}>
+                  {authContent.notices[unlinking.notice]}
+                </p>
+              )
+            ) : (
+              <p className={styles.noticeText}>
+                {liveRegionMessage(
+                  gate,
+                  signOut.pending,
+                  reauthentication.pending,
+                  linking.pending,
+                  unlinking.pending,
+                )}
+              </p>
+            )}
+          </div>
 
-        {reauthRequired ? (
-          <ReauthPanel
-            notice={reauthNoticeKindOf(window.location.search)}
-            onReauthenticate={reauthentication.requestReauthentication}
-            onSignOut={signOut.requestSignOut}
-            pending={reauthentication.pending}
-            signingOut={signOut.pending}
-          />
-        ) : null}
+          {reauthRequired ? (
+            <ReauthPanel
+              notice={reauthNoticeKindOf(window.location.search)}
+              onReauthenticate={reauthentication.requestReauthentication}
+              onSignOut={signOut.requestSignOut}
+              pending={reauthentication.pending}
+              signingOut={signOut.pending}
+            />
+          ) : null}
 
-        {ready ? (
-          <>
-            <section aria-labelledby={authContent.settings.id} className={styles.section}>
-              <h2 className={styles.sectionHeading} id={authContent.settings.id}>
-                {authContent.settings.heading}
-              </h2>
-              <p>{authContent.settings.body}</p>
+          {ready ? (
+            <>
+              <section aria-labelledby={authContent.settings.id} className={styles.section}>
+                <h2 className={styles.sectionHeading} id={authContent.settings.id}>
+                  {authContent.settings.heading}
+                </h2>
+                <p>{authContent.settings.body}</p>
 
-              {/*
+                {/*
                 표지. 서버가 콜백 뒤에 붙이거나(취소·실패) 클라이언트가 시작 실패에 붙인다.
                 두 값 모두 무엇이 어긋났는지 말하지 않으며, 그 침묵이 다른 계정의 존재를 감춘다.
               */}
-              {notice === null ? null : (
-                <p className={styles.linkNotice}>{authContent.notices[notice]}</p>
-              )}
+                {notice === null ? null : (
+                  <p className={styles.linkNotice}>{authContent.notices[notice]}</p>
+                )}
 
-              {linkStatus === 'checking' ? (
-                <p className={styles.checking}>{authContent.settings.status}</p>
-              ) : linkStatus === 'unavailable' ? (
-                /*
-                 * 확인하지 못했다. 목록을 그리지 않는 것이 요점이다 — 빈 목록을 그리면 이미
-                 * 연결된 수단에도 연결 버튼이 붙고 그 클릭이 엉뚱한 안내로 끝난다.
-                 */
-                <>
-                  <p className={styles.linkNotice}>{authContent.settings.unavailable}</p>
-                  <button
-                    className={styles.retryButton}
-                    onClick={() => {
-                      // 확인 중으로 되돌리는 것은 이 조작의 일이다. effect 본문에서 하면 렌더가
-                      // 한 번 더 돌고 `react-hooks/set-state-in-effect`가 그것을 막는다.
-                      setLinkStatus('checking')
-                      setAttempt((value) => value + 1)
-                    }}
-                    type="button"
-                  >
-                    {authContent.settings.retry}
-                  </button>
-                </>
-              ) : (
-                <ul className={styles.providerList} role="list">
+                {linkStatus === 'checking' ? (
+                  <p className={styles.checking}>{authContent.settings.status}</p>
+                ) : linkStatus === 'unavailable' ? (
+                  /*
+                   * 확인하지 못했다. 목록을 그리지 않는 것이 요점이다 — 빈 목록을 그리면 이미
+                   * 연결된 수단에도 연결 버튼이 붙고 그 클릭이 엉뚱한 안내로 끝난다.
+                   */
+                  <>
+                    <p className={styles.linkNotice}>{authContent.settings.unavailable}</p>
+                    <button
+                      className={styles.retryButton}
+                      onClick={() => {
+                        // 확인 중으로 되돌리는 것은 이 조작의 일이다. effect 본문에서 하면 렌더가
+                        // 한 번 더 돌고 `react-hooks/set-state-in-effect`가 그것을 막는다.
+                        setLinkStatus('checking')
+                        setAttempt((value) => value + 1)
+                      }}
+                      type="button"
+                    >
+                      {authContent.settings.retry}
+                    </button>
+                  </>
+                ) : (
+                  <ul className={styles.providerList} role="list">
+                    {SIGN_IN_PROVIDERS.map((provider) => (
+                      <li className={styles.providerRow} key={provider}>
+                        <span className={styles.providerName}>
+                          {authContent.settings.providerNames[provider]}
+                        </span>
+                        {linked.includes(provider) ? (
+                          <span className={styles.linkedActions}>
+                            <span className={styles.linkedState}>
+                              {authContent.settings.linked}
+                            </span>
+                            {/*
+                            마지막 남은 수단이면 비활성이고 이유를 문장으로 말한다.
+
+                            `aria-disabled`이지 `disabled`가 아니다. 그 속성은 요소를 탭 순서에서
+                            떨어뜨려 키보드 사용자가 그 버튼의 존재도 이유도 알 수 없게 만든다 —
+                            여기서는 그 이유가 정확히 사용자가 알아야 하는 것이다. 실제 차단은
+                            아래 `onClick`의 가드가 하고, 서버의 삭제 문장이 최종 방어다.
+
+                            설명은 `aria-describedby`로 버튼에 붙인다. 문장이 버튼 옆에 있기만
+                            하면 보조기술은 그 둘의 관계를 모른다.
+                          */}
+                            <button
+                              aria-describedby={
+                                lastMethod ? lastMethodDescriptionId(provider) : undefined
+                              }
+                              aria-disabled={busy || lastMethod}
+                              className={styles.unlinkButton}
+                              onClick={() => {
+                                if (busy || lastMethod) {
+                                  return
+                                }
+                                unlinking.requestUnlink(provider)
+                              }}
+                              type="button"
+                            >
+                              {authContent.settings.unlinkLabels[provider]}
+                            </button>
+                            {lastMethod ? (
+                              <span
+                                className={styles.lastMethod}
+                                id={lastMethodDescriptionId(provider)}
+                              >
+                                {authContent.settings.lastMethod}
+                              </span>
+                            ) : null}
+                          </span>
+                        ) : (
+                          <button
+                            /*
+                             * `aria-disabled`이지 `disabled`가 아니다. 그 속성은 요소를 탭 순서에서
+                             * 떨어뜨리므로 방금 `Enter`로 이 버튼을 실행한 키보드·스크린리더
+                             * 사용자가 그 순간 포커스를 잃는다. 실제 중복 제출 차단은 화면이 소유한
+                             * 가드가 한다(`useLinking`).
+                             */
+                            aria-disabled={busy}
+                            className={PROVIDER_BUTTON_CLASS[provider]}
+                            onClick={() => {
+                              if (busy) {
+                                return
+                              }
+                              linking.requestLink(provider)
+                            }}
+                            type="button"
+                          >
+                            <ProviderMark provider={provider} />
+                            <span>{authContent.settings.linkLabels[provider]}</span>
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <p className={styles.boundary}>{authContent.settings.boundary}</p>
+              </section>
+
+              <section aria-labelledby={authContent.settings.reauth.id} className={styles.section}>
+                <h2 className={styles.sectionHeading} id={authContent.settings.reauth.id}>
+                  {authContent.settings.reauth.heading}
+                </h2>
+                <p>{authContent.settings.reauth.body}</p>
+
+                <div className={styles.providerActions}>
                   {SIGN_IN_PROVIDERS.map((provider) => (
-                    <li className={styles.providerRow} key={provider}>
-                      <span className={styles.providerName}>
-                        {authContent.settings.providerNames[provider]}
-                      </span>
-                      {linked.includes(provider) ? (
-                        <span className={styles.linkedState}>{authContent.settings.linked}</span>
-                      ) : (
-                        <button
-                          /*
-                           * `aria-disabled`이지 `disabled`가 아니다. 그 속성은 요소를 탭 순서에서
-                           * 떨어뜨리므로 방금 `Enter`로 이 버튼을 실행한 키보드·스크린리더
-                           * 사용자가 그 순간 포커스를 잃는다. 실제 중복 제출 차단은 화면이 소유한
-                           * 가드가 한다(`useLinking`).
-                           */
-                          aria-disabled={busy}
-                          className={PROVIDER_BUTTON_CLASS[provider]}
-                          onClick={() => {
-                            if (busy) {
-                              return
-                            }
-                            linking.requestLink(provider)
-                          }}
-                          type="button"
-                        >
-                          <ProviderMark provider={provider} />
-                          <span>{authContent.settings.linkLabels[provider]}</span>
-                        </button>
-                      )}
-                    </li>
+                    <button
+                      aria-disabled={busy}
+                      className={PROVIDER_BUTTON_CLASS[provider]}
+                      key={provider}
+                      onClick={() => {
+                        if (busy) {
+                          return
+                        }
+                        reauthentication.requestReauthentication(provider)
+                      }}
+                      type="button"
+                    >
+                      <ProviderMark provider={provider} />
+                      <span>{authContent.settings.reauth.labels[provider]}</span>
+                    </button>
                   ))}
-                </ul>
-              )}
+                </div>
+              </section>
+            </>
+          ) : null}
+        </main>
+      </div>
 
-              <p className={styles.boundary}>{authContent.settings.boundary}</p>
-            </section>
+      {/*
+        확인 대화상자. 준비 요청이 204로 답한 뒤에만 열린다.
 
-            <section aria-labelledby={authContent.settings.reauth.id} className={styles.section}>
-              <h2 className={styles.sectionHeading} id={authContent.settings.reauth.id}>
-                {authContent.settings.reauth.heading}
-              </h2>
-              <p>{authContent.settings.reauth.body}</p>
+        위 화면의 <b>형제</b>다. 안에 두면 배경을 비활성화하는 `inert`가 대화상자까지 덮어 어떤
+        조작도 닿지 않는다.
 
-              <div className={styles.providerActions}>
-                {SIGN_IN_PROVIDERS.map((provider) => (
-                  <button
-                    aria-disabled={busy}
-                    className={PROVIDER_BUTTON_CLASS[provider]}
-                    key={provider}
-                    onClick={() => {
-                      if (busy) {
-                        return
-                      }
-                      reauthentication.requestReauthentication(provider)
-                    }}
-                    type="button"
-                  >
-                    <ProviderMark provider={provider} />
-                    <span>{authContent.settings.reauth.labels[provider]}</span>
-                  </button>
-                ))}
-              </div>
-            </section>
-          </>
-        ) : null}
-      </main>
-    </div>
+        해제에 성공하면 호출점으로 돌려주지 않는다(`restoreFocus`). 그 버튼은 곧 사라지고, 포커스는
+        화면이 결과 문장으로 옮겨 받는다.
+      */}
+      {unlinking.confirming === null ? null : (
+        <UnlinkDialog
+          onCancel={unlinking.cancel}
+          onConfirm={unlinking.confirm}
+          pending={unlinking.pending}
+          provider={unlinking.confirming}
+          restoreFocus={unlinking.notice !== 'unlinkSucceeded'}
+        />
+      )}
+    </>
   )
 }

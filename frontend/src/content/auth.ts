@@ -86,6 +86,43 @@ export function linkPath(provider: SignInProvider): string {
 }
 
 /**
+ * 해제 표면의 경로. **이 계층에서 그 경로를 정의하는 상수는 이것 하나다.**
+ *
+ * 세 표면이 한 접두사를 나눠 쓰고 **경로가** 그것을 가른다 — `POST /api/auth/unlink/<제공자>`는
+ * 확인 대화상자를 열 준비, `POST /api/auth/unlink/<제공자>/confirm`은 그것을 소비하는 최종 확인,
+ * `POST /api/auth/unlink/<제공자>/cancel`은 그 준비를 되돌리는 취소다. 연결이 메서드로 두 표면을
+ * 가른 것과 다른 이유는 셋 다 상태 변경이기 때문이다 — 안전한 메서드로 놓을 수 있는 것이 없다.
+ *
+ * 준비와 확인을 합치지 않는 이유가 이 스토리의 계약 하나다. 합치면 대화상자를 여는 순간 매핑이
+ * 사라지고, "최종 확인 전에는 아무것도 바뀌지 않는다"가 성립하지 않는다.
+ *
+ * 셋 다 `POST`이고 `/api/auth/` 아래이므로 세션 귀속 CSRF 토큰과 동일 출처 `Origin`을 함께
+ * 요구한다(로그아웃·재인증 시작·연결 시작과 같은 계약).
+ */
+export const UNLINK_BASE_PATH = '/api/auth/unlink'
+
+/** 그 제공자의 해제 준비 경로. 경로를 조립하는 유일한 자리다. */
+export function unlinkPath(provider: SignInProvider): string {
+  return `${UNLINK_BASE_PATH}/${provider}`
+}
+
+/** 그 제공자의 해제 최종 확인 경로. 위 준비 경로 하나에서만 자란다. */
+export function unlinkConfirmPath(provider: SignInProvider): string {
+  return `${unlinkPath(provider)}/confirm`
+}
+
+/**
+ * 그 제공자의 해제 취소 경로. 준비가 만든 무장과 허가를 되돌린다.
+ *
+ * 준비가 서버 상태를 만드는 설계라 되돌리는 짝이 있어야 한다 — 없으면 화면의 "바뀐 것은 없습니다"가
+ * 거짓이 되고 아무도 참조하지 않는 허가가 수명을 산다. 연결에는 이 짝이 없다: 그쪽의 취소는 제공자
+ * 콜백으로 돌아오므로 서버가 그 사실을 알지만, 해제의 취소는 브라우저 안에서만 일어난다.
+ */
+export function unlinkCancelPath(provider: SignInProvider): string {
+  return `${unlinkPath(provider)}/cancel`
+}
+
+/**
  * CSRF 토큰을 싣는 요청 헤더 이름.
  *
  * 백엔드 `AuthSecurityConfig.CSRF_HEADER_NAME`과 같은 값이다. 두 계층이 한 계약을 나눠 갖는
@@ -175,9 +212,15 @@ export function authorizeHref(provider: SignInProvider, pathname: string): strin
  * `role="status"`로 알리는데 결과를 알릴 재료가 없으면 스크린리더 사용자에게 그 조작은 끝나지
  * 않은 것과 같고, 왕복 뒤의 문서는 새로 열리므로 "방금 연결했다"를 아는 값은 주소의 표지뿐이다.
  *
- * 열한 값 중 어느 것도 계정의 존재·상태를 알려 주지 않는다. 재인증 실패 표지 하나에 타 사용자
+ * `unlinkCancelled`·`unlinkFailed`·`unlinkSucceeded`는 **클라이언트만** 만들고 URL에 실리지
+ * 않는다. 해제에는 제공자 왕복이 없어 문서를 떠나지 않으므로 표지를 주소에 나를 이유가 없고,
+ * 결과는 같은 문서의 상태 하나로 남는다 — `signedOut`이 URL 집합에서 빠진 것과 같은 자리이며
+ * 아래 `URL_NOTICE_KINDS`가 그 사실을 소유한다.
+ *
+ * 열네 값 중 어느 것도 계정의 존재·상태를 알려 주지 않는다. 재인증 실패 표지 하나에 타 사용자
  * 식별자·미연결 식별자·증거 부재·삭제 전환이 접혀 있고, 연결 실패 표지 하나에 이미 연결됨·다른
- * 계정에 연결됨·허가 만료·세션 불일치·삭제 상태가 접혀 있으며, 성공 표지는 무엇을 연결했는지
+ * 계정에 연결됨·허가 만료·세션 불일치·삭제 상태가 접혀 있고, 해제 실패 표지 하나에 마지막 수단·
+ * 미연결·허가 만료·세션 불일치·삭제 상태가 접혀 있으며, 두 성공 표지는 무엇을 연결·해제했는지
  * 말하지 않는다.
  */
 export type AuthNoticeKind =
@@ -192,6 +235,9 @@ export type AuthNoticeKind =
   | 'reauthCancelled'
   | 'reauthFailed'
   | 'signedOut'
+  | 'unlinkCancelled'
+  | 'unlinkFailed'
+  | 'unlinkSucceeded'
 
 /**
  * 클라이언트가 **인증 화면** URL에 실을 수 있는 표지.
@@ -227,6 +273,17 @@ export type ReauthNoticeKind = 'reauthCancelled' | 'reauthFailed'
 export type LinkNoticeKind = 'linkCancelled' | 'linkFailed' | 'linkSucceeded'
 
 /**
+ * 설정 화면이 **자기 상태로** 만드는 해제 표지.
+ *
+ * `LinkNoticeKind`와 갈라 두는 이유는 출처다. 연결 표지는 왕복 뒤의 새 문서가 주소에서 읽고, 해제
+ * 표지는 같은 문서가 자기 요청의 결과로 만든다. 한 타입으로 합치면 `linkNoticeKindOf`가 주소에서
+ * 해제 표지를 읽을 수 있게 되고, 그 순간 아무 해제도 하지 않은 사용자가 `/settings?auth=
+ * unlinkSucceeded`에서 "해제했습니다"를 본다 — 연결 표지와 달리 그 문장을 만들 수 있는 서버 경로가
+ * 아예 없으므로 그것은 순수한 거짓이다.
+ */
+export type UnlinkNoticeKind = 'unlinkCancelled' | 'unlinkFailed' | 'unlinkSucceeded'
+
+/**
  * **인증 화면**이 보여 줄 수 있는 표지.
  *
  * 재인증·연결 표지가 여기 없다. 그 문장들은 로그인한 사용자에게만 참이고, 진입 화면에서
@@ -243,6 +300,12 @@ export type EntryNoticeKind =
  *
  * 한 목록이다. 값마다 분기를 두면 다음 표지가 한쪽에만 추가되는 자리가 생기고, 그때 그 값은
  * 조용히 무시된다 — 로그아웃한 사용자가 아무 안내도 없는 진입 화면을 보는 결함이 정확히 그 모양이다.
+ *
+ * **해제 표지 셋이 여기 없다.** 그 값들은 URL을 지나지 않는다 — 해제에는 제공자 왕복이 없어 문서가
+ * 바뀌지 않으므로 표지를 주소에 실어 나를 이유가 없고, 여기 넣으면 어떤 서버 경로도 만들지 않는
+ * 문장을 주소창이 만들어 낼 수 있게 된다. `signedOut`이 같은 이유로 빠져 있다(그 값은 세션 확인
+ * 결과가 고른다). 조용히 무시되는 값이 생기지 않는다는 이 목록의 목적은 그대로다 — 세 값의 소비자는
+ * 설정 화면의 상태 하나이고 타입이 그 연결을 강제한다(`UnlinkNoticeKind`).
  */
 const URL_NOTICE_KINDS: readonly AuthNoticeKind[] = [
   'cancelled',
@@ -434,6 +497,39 @@ const NOTICES: Readonly<Record<AuthNoticeKind, string>> = {
    */
   reauthFailed: '본인 확인을 끝내지 못했습니다. 아래 버튼으로 다시 시도해 주세요.',
   signedOut: '로그인 상태가 아닙니다. 아래 버튼으로 로그인해 주세요.',
+  /**
+   * 사용자가 확인 대화상자를 닫았다.
+   *
+   * 무엇도 바뀌지 않았다는 사실을 함께 말한다. 대화상자를 여는 요청이 서버에 이미 나갔으므로
+   * "아무 일도 없었다"가 참인지 사용자가 스스로 알 방법이 없고, 그 침묵은 불안으로 남는다.
+   */
+  unlinkCancelled: '로그인 수단 연결 해제를 취소했습니다. 바뀐 것은 없습니다.',
+  /**
+   * 그 밖의 모든 해제 실패.
+   *
+   * 무엇이 어긋났는지 말하지 않는다. 마지막 수단, 연결되지 않은 제공자, 만료된 허가, 세션
+   * 불일치가 모두 이 한 문장으로 접힌다 — 마지막 수단만은 화면이 목록에서 **미리** 설명하므로
+   * 정상 경로에서는 이 문장에 닿지 않는다.
+   *
+   * 다음 행동을 함께 말한다. 해제에는 최근 본인 확인이 필요하고 그것이 가장 흔한 원인이므로,
+   * 이유를 특정하지 않으면서 사용자가 할 수 있는 일 하나를 가리킨다(`linkFailed`와 같은 판단).
+   */
+  unlinkFailed:
+    '로그인 수단 연결을 해제하지 못했습니다. 아래에서 본인 확인을 마친 뒤 다시 시도해 주세요.',
+  /**
+   * 해제가 끝났다.
+   *
+   * 무엇을 해제했는지 말하지 않는다. 아래 목록이 어차피 지금 상태를 보여 준다.
+   *
+   * 다른 기기에 일어난 일을 함께 말한다. 그것은 사용자가 관측할 수 없는 곳에서 일어난 변화이고,
+   * 말하지 않으면 다른 기기에서 갑자기 로그아웃된 이유를 알 수 없다.
+   *
+   * "모두 종료됐습니다"라고 쓰지 않는다. 서버의 폐기는 조회와 삭제 사이에 커밋된 로그인을 놓칠 수
+   * 있으므로(`SessionGuard.SessionStore.REVOKE_ATTEMPTS`) 그 문장은 드물게 거짓이 된다. 대신
+   * 사용자가 할 일을 말한다 — 그것은 어느 경우에도 참이다.
+   */
+  unlinkSucceeded:
+    '로그인 수단 연결을 해제했습니다. 아래 목록에서 확인할 수 있습니다. 다른 기기에서는 다시 로그인해야 합니다.',
 }
 
 export const authContent = {
@@ -590,8 +686,10 @@ export const authContent = {
    * 여기에는 계정의 사실 하나만 있다 — 세 제공자 각각이 이 계정에 연결됐는가. `issuer`·
    * `subject`·이메일·연결 시각은 서버가 보내지 않으므로 화면이 그릴 수도 없다.
    *
-   * 해제는 이 스토리의 범위가 아니다(Story 1.11). 연결된 수단에는 상태만 보이고 조작을 주지
-   * 않으며, 마지막 수단 보호와 확인 대화상자는 그 스토리가 자기 작업과 함께 만든다.
+   * 연결된 수단에는 상태와 해제 조작이 함께 있고, 남은 수단이 하나뿐이면 그 조작은 비활성이며
+   * 이유를 문장으로 말한다(Story 1.11). 마지막 수단 보호의 권위는 서버의 삭제 문장이고, 화면이
+   * 그것을 미리 설명하는 이유는 접근성이다 — 비활성화된 버튼에 이유가 없으면 조작할 수 없는
+   * 까닭을 알 길이 없다.
    */
   settings: {
     id: 'auth-settings',
@@ -630,9 +728,74 @@ export const authContent = {
       naver: '네이버 계정 연결하기',
       kakao: '카카오 계정 연결하기',
     },
-    /** 연결이 요구하는 것과 요구하지 않는 것. 버튼 아래에 둔다. */
+    /**
+     * 해제 조작의 라벨.
+     *
+     * 제공자마다 다른 문구다. 화면에 해제 버튼이 최대 셋 있고 이름이 같으면 보조기술 사용자가
+     * 어느 것이 무엇인지 구분할 수 없다 — `linkLabels`와 같은 근거의 같은 배치다.
+     */
+    unlinkLabels: {
+      google: 'Google 계정 연결 해제',
+      naver: '네이버 계정 연결 해제',
+      kakao: '카카오 계정 연결 해제',
+    },
+    /**
+     * 마지막 남은 수단이라 해제할 수 없다.
+     *
+     * 이 문장이 없으면 비활성화된 버튼에 이유가 없다. 서버 응답은 마지막 수단을 다른 거부와
+     * 구분하지 않지만(구분하면 그 차이가 계정의 수단 구성을 알려 준다) 이 사실은 화면이 자기
+     * 목록에서 직접 만든다 — 사용자가 이미 보고 있는 것이다.
+     *
+     * 다음 행동을 함께 말한다. 해제하려면 수단을 하나 더 연결해야 하고, 그 조작은 같은 화면에
+     * 있다.
+     */
+    lastMethod: '마지막 남은 접근 수단이라 해제할 수 없습니다. 다른 수단을 먼저 연결해 주세요.',
+    /** 해제 준비·실행이 도는 중. `role="status"` 영역이 같은 자리에서 말한다. */
+    unlinkPending: '로그인 수단 연결 해제를 처리하고 있습니다.',
+    /**
+     * 확인 대화상자.
+     *
+     * DESIGN.md `confirmation-dialog`가 규정한 형태다 — 제목에 **대상과 결과**를 쓰고, **삭제되는
+     * 것과 보존되는 것을 분리**하며, 기본 포커스는 취소다. 대상명 재입력은 요구하지 않는다: 그
+     * 요구는 같은 표가 "계정 삭제처럼 범위가 큰 작업"에만 건 것이고(Epic 5), 해제는 남은 수단으로
+     * 계정에 그대로 닿을 수 있는 조작이다.
+     *
+     * 제공자 이름을 문자열 조작으로 끼워 넣지 않는다. 닫힌 맵이 제목 셋을 직접 들고 있으므로
+     * 제공자가 늘 때 문구를 사람이 쓰게 되고, 조사·띄어쓰기가 어색해지는 경로가 없다.
+     */
+    unlinkDialog: {
+      titleId: 'auth-unlink-dialog-title',
+      descriptionId: 'auth-unlink-dialog-description',
+      titles: {
+        google: 'Google 계정 연결을 해제할까요?',
+        naver: '네이버 계정 연결을 해제할까요?',
+        kakao: '카카오 계정 연결을 해제할까요?',
+      },
+      /** 비가역 결과. 무엇이 사라지는지 먼저 말한다. */
+      removed:
+        '해제하면 이 수단으로는 더 이상 이 계정에 로그인할 수 없습니다. 같은 수단을 다시 쓰려면 본인 확인을 거쳐 다시 연결해야 하며, 자동으로 다시 연결되지 않습니다.',
+      /** 보존되는 것. 삭제되는 것과 문단을 나눈다(DESIGN.md `confirmation-dialog`). */
+      kept: '계정과 남은 로그인 수단은 그대로 유지됩니다. 이 조작은 계정을 삭제하지 않습니다.',
+      /**
+       * 세션에 일어나는 일. 사용자가 관측할 수 없는 변화라 미리 말한다.
+       *
+       * 결과 표지와 같은 규율로 "모두"를 약속하지 않는다 — 말하는 것은 이 화면이 남는다는 사실과
+       * 다른 기기에서 해야 할 일이다.
+       */
+      sessions: '해제를 마치면 이 화면의 로그인만 남고 다른 기기에서는 다시 로그인해야 합니다.',
+      /**
+       * 최종 확인 조작.
+       *
+       * 문구가 동작을 말한다. "확인"처럼 무엇을 하는지 말하지 않는 라벨을 쓰지 않는 것은 이
+       * 대화상자가 비가역 조작을 다루기 때문이다.
+       */
+      confirm: '연결 해제',
+      /** 취소. **기본 포커스가 여기 있다**(DESIGN.md `confirmation-dialog`). */
+      cancel: '취소',
+    },
+    /** 연결·해제가 요구하는 것과 요구하지 않는 것. 목록 아래에 둔다. */
     boundary:
-      '연결에는 최근 본인 확인이 필요합니다. 연결된 수단은 본인 확인에만 사용하며 Bybit 자격정보·금융 데이터·계획은 공유하지 않습니다.',
+      '연결과 해제에는 최근 본인 확인이 필요합니다. 연결된 수단은 본인 확인에만 사용하며 Bybit 자격정보·금융 데이터·계획은 공유하지 않습니다.',
     /** 화면당 하나뿐인 `role="status"` 영역이 말할 문장. 연결 상태를 확인하는 동안이다. */
     status: '로그인 수단을 확인하고 있습니다.',
     /**
@@ -667,7 +830,7 @@ export const authContent = {
        * 미인증으로 `/settings`를 열어 로그인한 경우에만 그 값이 이 화면이 된다. "돌아옵니다"로
        * 적으면 대개 거짓이므로, 로그인 상태 화면의 설정 링크로 다시 오면 된다고 말한다.
        */
-      body: '로그인 수단을 연결하려면 먼저 이 계정에 연결된 수단으로 본인 확인을 해 주세요. 확인을 마치면 로그인 상태 화면으로 돌아가며, 거기서 이 설정 화면을 다시 열어 연결할 수 있습니다.',
+      body: '로그인 수단을 연결하거나 해제하려면 먼저 이 계정에 연결된 수단으로 본인 확인을 해 주세요. 확인을 마치면 로그인 상태 화면으로 돌아가며, 거기서 이 설정 화면을 다시 열어 이어서 진행할 수 있습니다.',
       labels: {
         google: 'Google로 본인 확인하기',
         naver: '네이버로 본인 확인하기',
@@ -754,4 +917,21 @@ export const settingsCopyStrings: readonly string[] = [
   authContent.settings.reauth.body,
   ...SIGN_IN_PROVIDERS.map((provider) => authContent.settings.reauth.labels[provider]),
   authContent.signOut.label,
+]
+
+/**
+ * 확인 대화상자에 렌더되어야 하는 카피 전부.
+ *
+ * `settingsCopyStrings`와 따로 둔다. 그 배열은 화면이 언제나 그리는 카피의 목록이고 이 문장들은
+ * 대화상자가 열렸을 때만 나타난다 — 한 배열에 섞으면 대화상자를 열지 않은 화면의 문구 단정이 늘
+ * 실패한다(`reauthCopyStrings`와 같은 근거).
+ *
+ * 제목은 여기 없다. 제공자마다 다른 값이라 대화상자 시험이 그 제공자의 제목을 직접 본다.
+ */
+export const unlinkDialogCopyStrings: readonly string[] = [
+  authContent.settings.unlinkDialog.removed,
+  authContent.settings.unlinkDialog.kept,
+  authContent.settings.unlinkDialog.sessions,
+  authContent.settings.unlinkDialog.confirm,
+  authContent.settings.unlinkDialog.cancel,
 ]

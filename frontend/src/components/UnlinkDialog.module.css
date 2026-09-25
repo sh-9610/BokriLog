@@ -1,0 +1,165 @@
+/*
+ * 로그인 수단 해제의 확인 대화상자.
+ *
+ * `DESIGN.md`가 소유하는 범주(색·타이포그래피·모서리·간격)는 반드시 tokens.css의 변수를 참조한다.
+ * `DESIGN.md`에 토큰이 없는 범주(구조적 1px 테두리 두께, 겹침 불투명도, z-index, 최대 폭)만 예외로
+ * 리터럴을 쓴다. 새 토큰을 만들지 않았다 — 표면·모서리·파괴적 강조는
+ * `--component-confirmation-dialog-*` 넷이 이미 소유하고, 나머지는 기존 간격·타이포그래피 토큰이다.
+ *
+ * 근거: DESIGN.md components.confirmation-dialog / Layout & Spacing / Shapes,
+ *      EXPERIENCE.md Accessibility Floor(최소 44×44px, 대화상자 포커스 트랩과 호출점 복귀).
+ */
+
+/*
+ * 화면을 덮는 겹.
+ *
+ * 스크림 색을 이 요소에 직접 칠하지 않고 `::before`에 둔다. 여기에 `opacity`를 걸면 자식인 대화상자
+ * 까지 함께 투명해져 본문 대비가 무너진다. `DESIGN.md`에 겹침용 색 토큰이 없으므로 먹색 토큰 하나를
+ * 불투명도로 낮춰 쓰며, 그 불투명도는 토큰이 소유하지 않는 범주다.
+ */
+.backdrop {
+  position: fixed;
+  inset: 0;
+
+  /* 레이어링은 DESIGN.md가 토큰으로 소유하지 않는 범주다. */
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  overflow-y: auto;
+}
+
+.backdrop::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-color: var(--color-ink-primary);
+
+  /* 불투명도는 DESIGN.md가 토큰으로 소유하지 않는 범주다. */
+  opacity: 0.6;
+}
+
+.dialog {
+  position: relative;
+
+  /* 겹침 순서만 정한다. 위 스크림보다 앞에 있어야 조작할 수 있다. */
+  z-index: 1;
+  width: 100%;
+
+  /* 최대 폭은 DESIGN.md가 토큰으로 소유하지 않는 구조 값이다. */
+  max-inline-size: 30rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border-radius: var(--component-confirmation-dialog-radius);
+  background-color: var(--component-confirmation-dialog-background);
+  color: var(--component-confirmation-dialog-foreground);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--color-border-default);
+}
+
+.title {
+  font-family: var(--type-section-title-font-family);
+  font-size: var(--type-section-title-font-size);
+  font-weight: var(--type-section-title-font-weight);
+  line-height: var(--type-section-title-line-height);
+  letter-spacing: var(--type-section-title-letter-spacing);
+  color: var(--component-confirmation-dialog-foreground);
+}
+
+/*
+ * 삭제되는 것.
+ *
+ * 색만으로 의미를 만들지 않는다. 무엇이 사라지는지 말하는 것은 문장이고 파괴적 색은 그것을 거들
+ * 뿐이다 — 이 문단을 지우면 대화상자에 비가역 결과를 설명하는 자리가 없어진다.
+ */
+.destructive {
+  font-size: var(--type-body-font-size);
+  font-weight: var(--type-body-font-weight);
+  line-height: var(--type-body-line-height);
+  color: var(--component-confirmation-dialog-destructive);
+}
+
+/* 보존되는 것과 세션에 일어나는 일. 위 문단과 색으로 갈린다. */
+.body {
+  font-size: var(--type-body-font-size);
+  font-weight: var(--type-body-font-weight);
+  line-height: var(--type-body-line-height);
+  color: var(--component-confirmation-dialog-foreground);
+}
+
+/*
+ * 조작 둘. 문서 순서가 곧 탭 순서이고 취소가 먼저다.
+ *
+ * 좁은 폭에서 줄바꿈한다. 320 CSS px에서 두 버튼이 한 줄에 들어가지 않으면 넘치는 대신 접힌다.
+ */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  justify-content: flex-end;
+}
+
+/*
+ * 두 버튼의 공통 기하.
+ *
+ * 최소 목표 크기 44×44px은 모든 핵심 조작의 바닥선이다(EXPERIENCE.md Accessibility Floor).
+ * 포커스 표시는 global.css의 전역 `:focus-visible`이 처리한다 — 여기서 다시 선언하면 특이도가
+ * 올라가 forced-colors 탈출구를 이겨 버린다.
+ */
+.cancelButton,
+.confirmButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding-inline: var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+/* 되돌릴 수 있는 쪽. 중립 표면이며 기본 포커스가 여기 있다. */
+.cancelButton {
+  background-color: var(--component-operator-control-background);
+  color: var(--component-operator-control-foreground);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--component-operator-control-border);
+}
+
+/* 비가역인 쪽. 채움색이 파괴적 강조이고 글자색은 그 위의 대비 색이다. */
+.confirmButton {
+  background-color: var(--component-confirmation-dialog-destructive);
+  color: var(--color-on-destructive);
+  border: 1px solid var(--component-confirmation-dialog-destructive);
+}
+
+/*
+ * 진행 중.
+ *
+ * `:disabled`가 아니라 `[aria-disabled='true']`다. 그 속성은 포커스를 남기므로 방금 이 버튼을
+ * 실행한 키보드 사용자가 컨트롤을 잃지 않는다(`SignOutButton.module.css`와 같은 관용).
+ *
+ * 색만으로 상태를 만들지 않는다. 무엇이 일어나는지 말하는 것은 화면 live region의 문장이고 여기
+ * 색은 그것을 거들 뿐이다. 포인터 커서를 두지 않는다 — 이 저장소는 어떤 조작에도 커서를 바꾸지
+ * 않는다.
+ *
+ * 파괴적인 쪽은 채움을 걷어 낸다. 채운 채로 두면 "지금 누를 수 있다"가 그대로 남고, 그 버튼은
+ * 되돌릴 수 없는 조작의 것이다.
+ */
+.cancelButton[aria-disabled='true'] {
+  color: var(--color-ink-secondary);
+  border-color: var(--color-border-default);
+}
+
+.confirmButton[aria-disabled='true'] {
+  background-color: var(--component-operator-control-background);
+  color: var(--color-ink-secondary);
+  border-color: var(--color-border-default);
+}

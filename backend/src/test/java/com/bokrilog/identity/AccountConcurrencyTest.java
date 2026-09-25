@@ -315,6 +315,88 @@ class AccountConcurrencyTest {
     }
 
     @Test
+    void 두_수단을_동시에_해제하면_정확히_하나만_성공한다() throws Exception {
+        /*
+         * 마지막 수단 보호의 핵심 축이다.
+         *
+         * 애플리케이션이 먼저 세고 나중에 지우는 형태였다면 두 요청이 각자 "지금은 둘이니 괜찮다"를
+         * 보고 둘 다 통과해 계정이 잠긴다. 그 창이 실제로 없는지는 두 트랜잭션을 같은 순간에 살려
+         * 두어야만 관측되고, 이 파일의 잠금 대기열이 그것을 강제한다.
+         *
+         * 두 요청이 같은 생명주기 행을 기다리므로 대기열 순서가 곧 승자다. 먼저 줄 선 쪽이 지우고,
+         * 뒤의 쪽은 깨어난 뒤 "남은 수단 2개 이상" 술어를 만족하지 못해 0행으로 끝난다.
+         */
+        for (int round = 0; round < ROUNDS; round++) {
+            UUID userId = lifecycle.createAccount();
+            for (String provider : new String[] {"google", "naver"}) {
+                assertThat(
+                                lifecycle.linkSocialIdentity(
+                                        userId,
+                                        provider,
+                                        "https://" + provider + ".example/" + UUID.randomUUID(),
+                                        UUID.randomUUID().toString()))
+                        .isEqualTo(AccessDecision.ALLOWED);
+            }
+
+            // 절반은 google이, 절반은 naver가 먼저 줄을 선다. 어느 쪽이 이기든 불변식은 같다.
+            boolean googleFirst = round % 2 == 0;
+            Callable<AccessDecision> unlinkGoogle =
+                    () -> lifecycle.unlinkSocialIdentity(userId, "google");
+            Callable<AccessDecision> unlinkNaver =
+                    () -> lifecycle.unlinkSocialIdentity(userId, "naver");
+
+            List<AccessDecision> results =
+                    runQueuedOnLifecycleLocks(
+                            List.of(userId),
+                            googleFirst
+                                    ? List.of(unlinkGoogle, unlinkNaver)
+                                    : List.of(unlinkNaver, unlinkGoogle));
+
+            // 정확히 하나만 성공한다. 그리고 남은 행이 반드시 하나다 — 계정이 잠기지 않는다.
+            assertThat(results).describedAs("round=%d", round).containsExactly(
+                    AccessDecision.ALLOWED, AccessDecision.DENIED);
+            assertThat(countLinks(userId)).describedAs("round=%d 남은 수단", round).isEqualTo(1L);
+            assertThat(lifecycle.findLinkedProviders(userId))
+                    .describedAs("round=%d 남은 수단", round)
+                    .containsExactly(googleFirst ? "naver" : "google");
+        }
+    }
+
+    @Test
+    void 해제와_삭제_전환이_경합해도_마지막_수단은_남는다() throws Exception {
+        for (int round = 0; round < ROUNDS; round++) {
+            UUID userId = lifecycle.createAccount();
+            for (String provider : new String[] {"google", "naver"}) {
+                assertThat(
+                                lifecycle.linkSocialIdentity(
+                                        userId,
+                                        provider,
+                                        "https://" + provider + ".example/" + UUID.randomUUID(),
+                                        UUID.randomUUID().toString()))
+                        .isEqualTo(AccessDecision.ALLOWED);
+            }
+
+            boolean unlinkFirst = round % 2 == 0;
+            Callable<Object> unlink = () -> lifecycle.unlinkSocialIdentity(userId, "naver");
+            Callable<Object> begin = () -> deletion.beginDeletion(userId);
+
+            List<Object> results =
+                    runQueuedOnLifecycleLocks(
+                            List.of(userId), unlinkFirst ? List.of(unlink, begin) : List.of(begin, unlink));
+
+            AccessDecision removal = (AccessDecision) results.get(unlinkFirst ? 0 : 1);
+            // 대기열 순서가 곧 승자다. 삭제 전환이 먼저 커밋되면 상태 술어가 해제를 0행으로 끝낸다.
+            assertThat(removal)
+                    .describedAs("round=%d 먼저 줄 선 쪽=%s", round, unlinkFirst ? "해제" : "삭제 전환")
+                    .isEqualTo(unlinkFirst ? AccessDecision.ALLOWED : AccessDecision.DENIED);
+            assertThat(countLinks(userId))
+                    .describedAs("round=%d", round)
+                    .isEqualTo(unlinkFirst ? 1L : 2L);
+            assertThat(storedState(userId)).isEqualTo("DELETION_IN_PROGRESS");
+        }
+    }
+
+    @Test
     void 같은_매핑을_동시에_연결하면_하나만_성공한다() throws Exception {
         for (int round = 0; round < ROUNDS; round++) {
             UUID first = lifecycle.createAccount();
