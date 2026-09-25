@@ -425,6 +425,10 @@ uv run --managed-python --no-cache _bmad/scripts/resolve_config.py \
 
 BMAD 스킬은 에이전트별 디렉터리로 설치되며, 이 저장소는 Codex와 Claude Code를 함께 사용한다. 두 디렉터리는 같은 설치본에서 생성된 동일한 파일이며 한쪽만 갱신하면 안 된다. 스킬 본문은 실행 시점에 `_bmad/render`의 불변 스냅샷으로 렌더링되므로, 두 타깃은 같은 스냅샷 하나를 공유한다.
 
+지침 파일은 스킬과 달리 **한 벌이 아니다.** Claude Code는 `CLAUDE.md`를, Codex는 `AGENTS.md`를 자동으로 읽는다. 규칙의 권위는 `CLAUDE.md` 하나이며 `AGENTS.md`는 작은 블록이다 — 오리엔테이션, 정책 몇 줄, 루트에 매니페스트가 없어서 어느 파일도 말해 주지 않는 실행 명령, 그리고 `backend/`·`frontend/`·`deploy/`·`.github/`·`_bmad-output/`을 바꾸기 전에 `CLAUDE.md`를 읽으라는 지시다. 규칙을 두 파일에 나눠 적지 않는다 — 스킬 트리는 `check-bmad-env.sh`가 동일성을 검사하지만 지침 파일에는 그런 장치가 없어 복사본은 조용히 갈라진다.
+
+`AGENTS.md`의 `<!-- bmad:context -->` 마커 안쪽은 `bmad-project-context` 스킬이 소유한다. 손으로 고친 내용은 다음 refresh에서 교체되므로 보존할 것은 마커 바깥에 둔다. 저장소가 크게 바뀌거나 에이전트가 같은 실수를 되풀이하면 그 스킬을 다시 돌린다.
+
 인스톨러를 다시 실행할 때는 항상 두 타깃을 함께 지정한다.
 
 ```bash
