@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 09-25-2026
+last_updated: 09-25-2026 11:43
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -47,7 +47,7 @@ development_status:
   1-9-민감-작업에-5분-일회성-재인증-허가-적용하기: done
   1-10-새-로그인-수단을-현재-계정에-연결하기: done
   1-11-로그인-수단을-안전하게-해제하기: done
-  epic-1-retrospective: optional
+  epic-1-retrospective: done
 
   epic-2: backlog
   2-1-읽기-전용-bybit-uta-연결을-검증하고-안전하게-저장하기: backlog
@@ -94,3 +94,89 @@ development_status:
   5-3-외부-tombstone으로-복원을-차단하고-30일-내-백업-파기-추적하기: backlog
   5-4-삭제-계정이-복원-후-재활성화되지-않음을-통합-검증하고-완료-안내하기: backlog
   epic-5-retrospective: optional
+action_items:
+  - id: "epic-1-retro-item-1-재인증-시각-bokrilog-auth-reauthenticated-at"
+    epic: 1
+    action: "재인증 시각(bokrilog.auth.reauthenticated-at)을 작업 하나에 묶는다 — 허가 소비 시 제거하거나
+      (command, target)에 귀속시켜, 본인 확인 1회가 연결·해제 여러 건을 5분 창 안에서 연쇄 승인하지 못하게 한다. 실연동
+      게이트 전 필수"
+    owner: "SSAFY"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
+  - id: "epic-1-retro-item-2-authflowhandlers-onfailure의-무장-폐기에-disca"
+    epic: 1
+    action: "AuthFlowHandlers.onFailure의 무장 폐기에 discardSession과 같은 급의 가드를 넣어, 교차 사이트
+      최상위 내비게이션이 피해자의 살아 있는 LinkFlow 무장을 반복 파괴하지 못하게 한다. 실연동 게이트 전 필수"
+    owner: "SSAFY"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
+  - id: "epic-1-retro-item-3-authsessioncontroller-cancelunlink가-prov"
+    epic: 1
+    action: "AuthSessionController.cancelUnlink가 provider를 UnlinkService.abandon에
+      넘기고 대상이 다르면 무시하게 한다. 다른 지원 제공자로 취소하는 시험 축을 더한다"
+    owner: "SSAFY"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
+  - id: "epic-1-retro-item-4-authflowhandlers-callbacklinkflow가-재인증-무"
+    epic: 1
+    action: "AuthFlowHandlers.callbackLinkFlow가 재인증 무장이 없을 때도 콜백의 등록 id를 보게 한다. 살아
+      있는 연결 무장이 남의 제공자 콜백에 소비되지 않음을 단정한다"
+    owner: "SSAFY"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
+  - id: "epic-1-retro-item-5-해제-확인-대화상자에-epics-md-story-1-11-ac-4의-세"
+    epic: 1
+    action: "해제 확인 대화상자에 epics.md Story 1.11 AC-4의 세 번째 문장(같은 제공자로 다시 로그인하면 빈 신규 계정이
+      생길 수 있다)을 더한다. AuthUnlinkProviderTest가 이미 accountCount()==2로 그 동작을 고정하고 있다"
+    owner: "SSAFY"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
+  - id: "epic-1-retro-item-6-재인증-신선도의-합성-상한을-하나의-축으로-본다-auth_time-기준으"
+    epic: 1
+    action: "재인증 신선도의 합성 상한을 하나의 축으로 본다 — auth_time 기준으로 기록하거나, auth_time에서 실행까지의
+      end-to-end 지연을 단정하는 시험을 둔다. 현재 세 축이 곱해져 최대 약 16분이다"
+    owner: "SSAFY"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
+  - id: "epic-1-retro-item-7-security-action-1-0-erd-5장-의-다섯-번째-귀속인-c"
+    epic: 1
+    action: "SECURITY-ACTION-1.0(ERD 5장)의 다섯 번째 귀속인 confirmation hash를 정한다 — 화면이 보여
+      준 실제 확인 문구를 해시에 넣어 살리거나, ERD를 네 귀속 + 선택적 확인 해시로 정정한다. 현재 판별력이 0이다"
+    owner: "SSAFY"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
+  - id: "epic-1-retro-item-8-미룬-결정-원장-deferred-work-resolutions-md-의"
+    epic: 1
+    action: "미룬 결정 원장(deferred-work-resolutions.md)의 판정 단계를 강제 가능한 자리에 넣는다. 항목 51~64가
+      판정을 받지 못한 것이 deferred-work.md 항목 35가 예고한 재발의 네 번째 증거다"
+    owner: "SSAFY"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
+  - id: "epic-1-retro-item-9-architecture-spine-md의-모듈-지도를-as-built에"
+    epic: 1
+    action: "ARCHITECTURE-SPINE.md의 모듈 지도를 as-built에 맞춘다 — 루트 패키지 약 7,100줄과 루트가 소유한
+      첫 테이블(action_grant)을 AD로 인정하거나 새 모듈 경계를 선언한다"
+    owner: "SSAFY"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
+  - id: "epic-1-retro-item-10-epic-1-실연동-미검증-게이트를-기계가-읽는-자리에-둔다-epics"
+    epic: 1
+    action: "Epic 1 실연동 미검증 게이트를 기계가 읽는 자리에 둔다(epics.md frontmatter의 externalLaunchGates
+      또는 sprint-status의 동등한 필드). Epic 2 착수 전"
+    owner: "SSAFY"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
+  - id: "epic-1-retro-item-11-authsecurityconfig의-permitall-근거-주석을-현실에"
+    epic: 1
+    action: "AuthSecurityConfig의 permitAll 근거 주석을 현실에 맞게 고치고, 인가 규칙 도입 시점을 Epic 2
+      착수 전에 정한다. 도달 불가능한 authenticationEntryPoint 401도 함께 판단한다"
+    owner: "SSAFY"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
+  - id: "epic-1-retro-item-12-반복-로그아웃-403의-화면-처리를-정한다-signout-ts가-403"
+    epic: 1
+    action: "반복 로그아웃 403의 화면 처리를 정한다 — signOut.ts가 403 + 세션 없음을 로그아웃 완료로 접거나, epics.md
+      Story 1.5 AC-1의 안전하게 처리를 다시 쓴다"
+    owner: "SSAFY"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
