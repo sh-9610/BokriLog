@@ -17,6 +17,7 @@ import {
   getObservedAllowedRequests,
   getObservedRequests,
   getObservedStorageEntries,
+  stubConnectionStatusRequest,
   stubLinkRequest,
   stubLinkStatusRequest,
   stubLogoutRequest,
@@ -61,6 +62,16 @@ function linkedWith(...providers: string[]): Promise<Response> {
   return Promise.resolve(jsonResponse({ providers }))
 }
 
+/**
+ * Bybit 연결이 없는 계정(Story 2.1).
+ *
+ * 이 화면은 게이트가 `ready`가 되면 연결 상태를 한 번 묻는다. 그 요청을 열지 않으면 전역 거부가
+ * 그것을 기록하고 "요청 0건" 단정이 있는 시험이 실패한다 — 열어 두는 것이 이 화면의 사실이다.
+ */
+function notConnected(): Promise<Response> {
+  return Promise.resolve(jsonResponse({ connected: false }))
+}
+
 /** 이 화면의 경로를 그 쿼리와 함께 연다(`App.test.tsx`·두 인증 화면과 같은 관용). */
 function navigateToSettings(search = ''): void {
   window.history.pushState({}, '', `/settings${search}`)
@@ -89,6 +100,7 @@ describe('SettingsScreen', () => {
   it('세션이 확인되면 설정 카피를 렌더한다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google'))
+    stubConnectionStatusRequest(notConnected)
 
     render(<SettingsScreen />)
 
@@ -104,6 +116,7 @@ describe('SettingsScreen', () => {
   it('UX-DR23: `복리 계획 비교` 제목과 비추천 고지를 인접 배치한다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google'))
+    stubConnectionStatusRequest(notConnected)
 
     render(<SettingsScreen />)
     await screen.findByRole('heading', { level: 2, name: authContent.settings.heading })
@@ -117,6 +130,7 @@ describe('SettingsScreen', () => {
   it('연결된 수단에는 연결 조작을 주지 않고 미연결 수단에만 준다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google'))
+    stubConnectionStatusRequest(notConnected)
 
     render(<SettingsScreen />)
     await screen.findByRole('heading', { level: 2, name: authContent.settings.heading })
@@ -145,6 +159,7 @@ describe('SettingsScreen', () => {
   it('모든 수단이 연결된 계정에는 연결 조작이 하나도 없다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google', 'naver', 'kakao'))
+    stubConnectionStatusRequest(notConnected)
 
     render(<SettingsScreen />)
     await screen.findByRole('heading', { level: 2, name: authContent.settings.heading })
@@ -202,6 +217,7 @@ describe('SettingsScreen', () => {
   it('서버가 대시보드를 골라도 설정 화면은 밀려나지 않는다', async () => {
     stubSessionRequest(() => authenticated('dashboard'))
     stubLinkStatusRequest(() => linkedWith('google'))
+    stubConnectionStatusRequest(notConnected)
 
     render(<SettingsScreen />)
 
@@ -218,6 +234,7 @@ describe('SettingsScreen', () => {
   it('방금 가입한 계정도 설정 화면을 열 수 있다', async () => {
     stubSessionRequest(() => authenticated('onboarding'))
     stubLinkStatusRequest(() => linkedWith('google'))
+    stubConnectionStatusRequest(notConnected)
 
     render(<SettingsScreen />)
 
@@ -235,6 +252,7 @@ describe('SettingsScreen', () => {
   it('연결 시작: 토큰 헤더와 동일 출처 쿠키를 함께 보낸다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google'))
+    stubConnectionStatusRequest(notConnected)
     let observed: RequestInit | undefined
     stubLinkRequest('naver', (init) => {
       observed = init
@@ -262,6 +280,7 @@ describe('SettingsScreen', () => {
   it('연결 시작: 거부되면 제공자로 보내지 않고 표지를 단다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google'))
+    stubConnectionStatusRequest(notConnected)
     stubLinkRequest('naver', () => Promise.resolve(jsonResponse({ code: 'FORBIDDEN' }, 403)))
 
     render(<SettingsScreen />)
@@ -283,6 +302,7 @@ describe('SettingsScreen', () => {
   it('연결 시작: 진행 중 중복 제출을 차단한다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google'))
+    stubConnectionStatusRequest(notConnected)
     let resolveLink: (response: Response) => void = () => undefined
     stubLinkRequest(
       'naver',
@@ -321,6 +341,7 @@ describe('SettingsScreen', () => {
   it('해제: 수단이 하나뿐이면 조작이 비활성이고 이유를 문장으로 말한다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google'))
+    stubConnectionStatusRequest(notConnected)
 
     render(<SettingsScreen />)
     await screen.findByText(authContent.settings.linked)
@@ -344,6 +365,7 @@ describe('SettingsScreen', () => {
   it('해제: 수단이 둘이면 두 행 모두 해제할 수 있고 설명이 없다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    stubConnectionStatusRequest(notConnected)
 
     render(<SettingsScreen />)
     await screen.findAllByText(authContent.settings.linked)
@@ -359,6 +381,7 @@ describe('SettingsScreen', () => {
   it('해제: 준비가 204면 확인 대화상자를 열고 아직 아무것도 지우지 않는다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    stubConnectionStatusRequest(notConnected)
     let observed: RequestInit | undefined
     stubUnlinkPrepareRequest('naver', (init) => {
       observed = init
@@ -386,6 +409,7 @@ describe('SettingsScreen', () => {
   it('해제: 준비가 거부되면 대화상자를 열지 않고 표지를 말한다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    stubConnectionStatusRequest(notConnected)
     stubUnlinkPrepareRequest('naver', () =>
       Promise.resolve(jsonResponse({ code: 'FORBIDDEN' }, 403)),
     )
@@ -407,6 +431,7 @@ describe('SettingsScreen', () => {
   it('해제: 취소하면 준비를 되돌리고 아무것도 바뀌지 않았다고 말한다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    stubConnectionStatusRequest(notConnected)
     stubUnlinkPrepareRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
     let cancelled: RequestInit | undefined
     stubUnlinkCancelRequest('naver', (init) => {
@@ -440,6 +465,7 @@ describe('SettingsScreen', () => {
   it('해제: 대화상자가 열려 있는 동안 배경 조작이 막힌다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    stubConnectionStatusRequest(notConnected)
     stubUnlinkPrepareRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
 
     render(<SettingsScreen />)
@@ -516,6 +542,7 @@ describe('SettingsScreen', () => {
   it('해제: 확인이 거부되면 대화상자를 닫고 실패를 말한다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    stubConnectionStatusRequest(notConnected)
     stubUnlinkPrepareRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
     stubUnlinkConfirmRequest('naver', () =>
       Promise.resolve(jsonResponse({ code: 'FORBIDDEN' }, 403)),
@@ -540,6 +567,7 @@ describe('SettingsScreen', () => {
   it('해제: 진행 중 중복 제출을 차단한다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    stubConnectionStatusRequest(notConnected)
     let resolvePrepare: (response: Response) => void = () => undefined
     stubUnlinkPrepareRequest(
       'naver',
@@ -575,6 +603,7 @@ describe('SettingsScreen', () => {
   it('해제 결과를 화면당 하나뿐인 live region이 말한다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    stubConnectionStatusRequest(notConnected)
     stubUnlinkPrepareRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
     stubUnlinkCancelRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
 
@@ -625,6 +654,7 @@ describe('SettingsScreen', () => {
   it('본인 확인: 세 제공자 버튼이 고정 순서로 있고 시작 호출이 토큰을 싣는다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google'))
+    stubConnectionStatusRequest(notConnected)
     let observed: RequestInit | undefined
     stubReauthenticationRequest('google', (init) => {
       observed = init
@@ -657,6 +687,7 @@ describe('SettingsScreen', () => {
       navigateToSettings(`?auth=${kind}`)
       stubSessionRequest(() => authenticated())
       stubLinkStatusRequest(() => linkedWith('google'))
+      stubConnectionStatusRequest(notConnected)
 
       const { unmount } = render(<SettingsScreen />)
       await screen.findByRole('heading', { level: 2, name: authContent.settings.heading })
@@ -670,6 +701,7 @@ describe('SettingsScreen', () => {
     navigateToSettings('?auth=loggedOut')
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google'))
+    stubConnectionStatusRequest(notConnected)
 
     render(<SettingsScreen />)
     await screen.findByRole('heading', { level: 2, name: authContent.settings.heading })
@@ -702,6 +734,7 @@ describe('SettingsScreen', () => {
   it('로그아웃 버튼이 하나뿐이고 상태 변경을 보낸다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google'))
+    stubConnectionStatusRequest(notConnected)
     stubLogoutRequest(() => Promise.resolve(new Response(null, { status: 204 })))
 
     render(<SettingsScreen />)
@@ -718,6 +751,7 @@ describe('SettingsScreen', () => {
   it('저장소에 아무것도 남기지 않는다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google'))
+    stubConnectionStatusRequest(notConnected)
     stubLinkRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
 
     render(<SettingsScreen />)
@@ -770,6 +804,7 @@ describe('SettingsScreen', () => {
   it('연결 상태가 JSON이 아니어도 빈 목록으로 주장하지 않는다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => Promise.resolve(jsonResponse({ providers: 'google' })))
+    stubConnectionStatusRequest(notConnected)
 
     render(<SettingsScreen />)
     await screen.findByRole('heading', { level: 2, name: authContent.settings.heading })
@@ -780,6 +815,7 @@ describe('SettingsScreen', () => {
   it('금융값을 담지 않는다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google'))
+    stubConnectionStatusRequest(notConnected)
 
     render(<SettingsScreen />)
     await screen.findByRole('heading', { level: 2, name: authContent.settings.heading })

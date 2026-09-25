@@ -204,13 +204,54 @@ class AuthSecurityConfig {
     static final String STATUS_PATH = "/api/status";
 
     /**
+     * 금융 source 연결 표면의 접두사. <b>인증으로 막는 첫 경로다</b>(Story 2.1).
+     *
+     * <p>이 접두사 아래에만 {@code authenticated()}가 걸린다. 전역으로 켜지 않는 이유는
+     * {@link #authSecurityFilterChain}의 근거 주석에 있다 — Story 1.2가 고정한 404·405가 401·302로
+     * 뒤집힌다.
+     *
+     * <p>{@code /api/auth/}와 함께 아래 {@link #PROTECTED_PATH_PREFIXES}에 든다. 상태 변경이 세션
+     * 귀속 CSRF 토큰과 동일 출처 {@code Origin}을 지나야 하는 것은 두 접두사가 같고, <b>판정 함수는
+     * 하나로 유지한다</b>({@link #isProtectedRequest}).
+     *
+     * <p>Nginx에 새 location이 필요 없다. {@code /api/}를 통째로 프록시하는 블록이 이미 이 경로를
+     * 받는다({@code deploy/nginx/bokrilog.conf}).
+     */
+    static final String CONNECTIONS_BASE_URI = "/api/connections";
+
+    /** Bybit 연결 표면의 경로. 이 계층에서 그 경로를 정의하는 상수는 이것 하나다. */
+    static final String BYBIT_CONNECTION_PATH = CONNECTIONS_BASE_URI + "/bybit";
+
+    /**
+     * 최종 확인 경로의 마지막 세그먼트.
+     *
+     * <p>준비와 확인을 한 경로로 합치지 않는다. 합치면 폼을 여는 요청과 자격정보를 보내는 요청이
+     * 구분되지 않아 "최종 확인 전에는 아무것도 바뀌지 않는다"가 성립하지 않는다
+     * ({@link #UNLINK_CONFIRM_SEGMENT}와 같은 근거).
+     */
+    static final String CONNECT_SEGMENT = "connect";
+
+    /** 취소 경로의 마지막 세그먼트. 준비가 만든 무장과 허가를 되돌린다. */
+    static final String CANCEL_SEGMENT = "cancel";
+
+    /**
      * 상태를 바꾸지 않는 메서드. RFC 9110의 safe method에 {@code OPTIONS}를 더한 집합이며
      * Spring Security의 기본 CSRF 제외 집합과 같다.
      */
     private static final Set<String> SAFE_METHODS = Set.of("GET", "HEAD", "OPTIONS", "TRACE");
 
-    /** CSRF·{@code Origin} 검증이 걸리는 경로 접두사. */
-    private static final String PROTECTED_PATH_PREFIX = "/api/auth/";
+    /**
+     * CSRF·{@code Origin} 검증이 걸리는 경로 접두사.
+     *
+     * <p>Story 2.1이 집합으로 넓혔다. 값이 둘인 것이 요점이 아니라 <b>판정이 하나</b>인 것이
+     * 요점이다 — {@link #isProtectedRequest}가 여전히 그 판정의 유일한 자리이고, 세션 guard와 CSRF
+     * 매처와 {@code SameOriginFilter}가 그 함수 하나를 본다. 접두사마다 판정을 따로 두면 한쪽만
+     * 고쳐지는 날 그 접두사의 상태 변경이 보호 없이 지나간다.
+     *
+     * <p>전역으로 넓히지 않는다. {@code /api/status}·{@code /api/nope}에 이 보호를 걸면 Story 1.2가
+     * 고정한 405·404가 403으로 뒤집힌다.
+     */
+    private static final Set<String> PROTECTED_PATH_PREFIXES = Set.of("/api/auth/");
 
     /*
      * 네이버 OIDC 엔드포인트.
@@ -915,16 +956,28 @@ class AuthSecurityConfig {
         http.authorizeHttpRequests(
                         requests ->
                                 /*
-                                 * 이 스토리는 어떤 경로도 인증으로 막지 않는다.
+                                 * 인증으로 막는 경로가 하나 생겼다(Story 2.1).
                                  *
-                                 * 막을 사용자 소유 자원이 아직 없고, `anyRequest().authenticated()`를
+                                 * Story 1.4가 "보호는 서버가 소유한 자원이 생기는 스토리가 그 자원과
+                                 * 함께 더한다"를 여기 적었고, 금융 source 연결이 그 첫 자원이다.
+                                 * 막는 범위는 `/api/connections/` 접두사 하나이며
+                                 * (`requiresAuthentication`) 나머지는 그대로 `permitAll`이다.
+                                 *
+                                 * 전역으로 켜지 않는 이유는 그대로다. `anyRequest().authenticated()`를
                                  * 두면 Story 1.2가 고정한 오류 계약이 뒤집힌다 — `/api/nope`의 404와
                                  * `POST /api/status`의 405가 전부 401·302가 되고, 그 회귀는
                                  * `StatusApiTest`와 `verify-same-origin.sh`의 탐침 열한 개에서
-                                 * 동시에 드러난다. 로그인 상태 경로의 보호는 서버가 소유한 자원이
-                                 * 생기는 스토리가 그 자원과 함께 더한다.
+                                 * 동시에 드러난다. 진입 화면과 인증 표면도 미인증 요청을 받아야
+                                 * 하므로 `permitAll`이 그 경로들의 계약이다.
+                                 *
+                                 * 핸들러의 주체 검사를 지우지 않는다. 인가 규칙이 실수로 넓어지거나
+                                 * 좁아지는 날 그 검사가 마지막 말을 한다(이중 방어).
                                  */
-                                requests.anyRequest().permitAll())
+                                requests
+                                        .requestMatchers(AuthSecurityConfig::requiresAuthentication)
+                                        .authenticated()
+                                        .anyRequest()
+                                        .permitAll())
                 /*
                  * 보안 응답 헤더는 Nginx가 유일하게 정의한다. 여기서 켜 두면 같은 헤더가 두 번
                  * 나가고, `Cache-Control`도 Story 1.2가 관측한 응답에 새로 붙는다.
@@ -1103,8 +1156,48 @@ class AuthSecurityConfig {
     static boolean isProtectedRequest(HttpServletRequest request) {
         // 컨텍스트 경로가 비어 있는 배치다(`server.servlet.context-path`를 두지 않는다).
         // 그래서 요청 URI가 그대로 애플리케이션 경로다.
-        return !SAFE_METHODS.contains(request.getMethod())
-                && request.getRequestURI().startsWith(PROTECTED_PATH_PREFIX);
+        if (SAFE_METHODS.contains(request.getMethod())) {
+            return false;
+        }
+        String uri = request.getRequestURI();
+        for (String prefix : PROTECTED_PATH_PREFIXES) {
+            if (uri.startsWith(prefix)) {
+                return true;
+            }
+        }
+        /*
+         * 연결 표면도 같은 보호를 받는다. 접두사 목록에 문자열로 더하지 않고 아래 판정 하나를
+         * 부르는 이유는 비대칭을 만들지 않기 위해서다 — `requiresAuthentication`은 맨
+         * `/api/connections`도 포함하는데 접두사 문자열은 `/api/connections/`만 덮는다. 두 판정이
+         * 갈린 상태 자체가 이 함수가 하나로 유지되는 이유와 부딪힌다.
+         */
+        return isConnectionsPath(uri);
+    }
+
+    /**
+     * 인증을 요구하는 요청인가. <b>이 판정도 하나뿐이다.</b>
+     *
+     * <p>Story 2.1이 처음 연다. 대상은 금융 source 연결 표면 하나이며 나머지 경로는 그대로
+     * {@code permitAll}이다 — 전역으로 켜면 Story 1.2가 고정한 404·405가 401·302로 뒤집힌다.
+     *
+     * <p>접두사 비교에 {@code /}를 붙인다. {@code startsWith("/api/connections")}만 쓰면
+     * {@code /api/connectionsfoo}처럼 우리 것이 아닌 경로가 함께 걸리고, 그 요청의 404가 401로
+     * 바뀐다. 접두사 없는 정확한 {@code /api/connections}도 함께 든다 — 그 경로에 핸들러가 없어
+     * 404지만, 인증 없이 404를 돌려주면 이 접두사의 존재가 밖에서 열거된다.
+     */
+    static boolean requiresAuthentication(HttpServletRequest request) {
+        return isConnectionsPath(request.getRequestURI());
+    }
+
+    /**
+     * 금융 source 연결 표면의 경로인가.
+     *
+     * <p>인가 판정({@link #requiresAuthentication})과 CSRF·{@code Origin} 판정
+     * ({@link #isProtectedRequest})이 <b>같은 함수</b>를 본다. 한쪽이 접두사 문자열을 따로 들면 그
+     * 둘이 덮는 집합이 갈리고, 그때 어느 경로는 인증을 요구받으면서 CSRF는 지나지 않는다.
+     */
+    private static boolean isConnectionsPath(String uri) {
+        return uri.equals(CONNECTIONS_BASE_URI) || uri.startsWith(CONNECTIONS_BASE_URI + "/");
     }
 
     /**

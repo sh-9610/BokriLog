@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
 
+import { BybitConnectionForm } from '../components/BybitConnectionForm'
 import { ProviderMark } from '../components/ProviderMark'
 import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
@@ -11,8 +12,10 @@ import {
   SIGN_IN_PROVIDERS,
   type SignInProvider,
 } from '../content/auth'
+import { connectionContent, formatVerifiedAt, rejectionMessage } from '../content/connection'
 import { entryContent } from '../content/entry'
 import { fetchLinkedProviders } from '../session/linkProvider'
+import { useBybitConnection, type ConnectionNotice } from '../session/useBybitConnection'
 import { useLinking } from '../session/useLinking'
 import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
@@ -20,6 +23,30 @@ import { useSignOut } from '../session/useSignOut'
 import { useUnlinking } from '../session/useUnlinking'
 import { EntryScreen } from './EntryScreen'
 import styles from './SettingsScreen.module.css'
+
+/**
+ * 연결 조작의 결과 문장.
+ *
+ * 화면이 아니라 이 함수가 카피를 고른다. 세 갈래가 인라인 삼항식으로 흩어지면 새 갈래가 생길 때
+ * 한쪽에만 추가되는 자리가 생기고, 그때 그 결과는 아무 문장도 없이 지나간다.
+ *
+ * **폼이 열려 있는 동안 거절은 여기서 나오지 않는다.** 그 문장은 폼 안의 `role="alert"` 오류
+ * 요약이 이미 말하고, 두 곳에서 렌더하면 보조기술이 같은 문장을 두 번 읽는다 — assertive와
+ * polite가 겹치는 자리이므로 소유자를 하나로 정한다. 폼이 닫힌 채 거절된 경우(준비 실패)는
+ * 말할 자리가 이 region뿐이므로 그대로 나온다.
+ */
+function connectionNoticeText(notice: ConnectionNotice | null, formOpen: boolean): string | null {
+  if (notice === null) {
+    return null
+  }
+  if (notice.kind === 'succeeded') {
+    return connectionContent.succeeded
+  }
+  if (notice.kind === 'cancelled') {
+    return connectionContent.cancelled
+  }
+  return formOpen ? null : rejectionMessage(notice.code)
+}
 
 /** 본문 랜드마크의 id. 건너뛰기 링크의 목적지이기도 하다. */
 const MAIN_ID = 'settings-main'
@@ -102,6 +129,15 @@ export function SettingsScreen(): ReactElement {
    * 모으면 "언제 목록을 다시 읽는가"의 답이 이 effect 하나로 남는다.
    */
   const [attempt, setAttempt] = useState(0)
+  /**
+   * 사용자가 마지막으로 시작한 흐름.
+   *
+   * 화면당 polite live region은 하나인데 결과를 만드는 흐름이 둘이다(해제와 연결). 우선순위를
+   * "해제 표지가 없으면 연결 표지"로 두면 지난 연결 결과가 **되살아난다** — 새 해제 조작이
+   * 자기 표지를 비우는 순간 그 자리로 옛 문장이 올라온다. 마지막으로 만진 흐름이 그 자리를
+   * 소유하게 하면 그 되살아남이 구조적으로 불가능해진다.
+   */
+  const [lastFlow, setLastFlow] = useState<'auth' | 'connection'>('auth')
 
   const onUnlinked = useCallback((removed: SignInProvider): void => {
     /*
@@ -116,6 +152,7 @@ export function SettingsScreen(): ReactElement {
   }, [])
 
   const unlinking = useUnlinking(csrfToken, onUnlinked)
+  const connection = useBybitConnection(csrfToken, gate === 'ready')
 
   /**
    * 해제 결과 문장의 자리.
@@ -173,6 +210,21 @@ export function SettingsScreen(): ReactElement {
     }
   }, [unlinkNotice])
 
+  /*
+   * 연결에 성공하면 같은 문장으로 포커스를 옮긴다.
+   *
+   * 해제와 같은 이유다 — 성공하면 폼이 사라지고 그 안의 제출 버튼도 함께 사라져 포커스가
+   * `<body>`로 떨어진다. 그때 키보드·보조기술 사용자는 무엇이 일어났는지 듣지 못한 채 문서
+   * 처음으로 간다. 취소·실패에서는 옮기지 않는다: 취소는 폼을 연 버튼이 그대로 있고, 실패는
+   * 폼이 남아 있어 그 안의 Secret 필드가 포커스를 받는다.
+   */
+  const connectionNotice = connection.notice
+  useEffect(() => {
+    if (connectionNotice?.kind === 'succeeded') {
+      unlinkNoticeRef.current?.focus()
+    }
+  }, [connectionNotice])
+
   if (gate === 'unauthenticated') {
     /*
      * 냉시작 미인증이다. 이 자리에서 표지 없이 인증 화면을 그린다(두 인증 화면과 같은 동작).
@@ -197,7 +249,25 @@ export function SettingsScreen(): ReactElement {
    * 확인을 누르는 순간 이유 없이 실패한다.
    */
   const dialogOpen = unlinking.confirming !== null
+  /**
+   * 연결 구역의 조작을 시작한다.
+   *
+   * 두 가지를 함께 한다 — 이 흐름이 live region을 소유하게 하고, 그 조작을 실제로 부른다. 호출
+   * 자리마다 두 줄을 적으면 하나를 빠뜨리는 날 그 조작의 결과가 엉뚱한 흐름의 표지 아래 묻힌다.
+   */
+  const runConnection = (action: () => void): void => {
+    setLastFlow('connection')
+    action()
+  }
+
+  /** 인증 흐름(연결·해제·본인 확인·로그아웃)의 조작. {@link runConnection}의 짝이다. */
+  const runAuth = (action: () => void): void => {
+    setLastFlow('auth')
+    action()
+  }
+
   const busy =
+    connection.pending ||
     linking.pending ||
     reauthentication.pending ||
     signOut.pending ||
@@ -210,6 +280,18 @@ export function SettingsScreen(): ReactElement {
    * (`linkStatus === 'unavailable'`) 이 값이 쓰이지 않는다.
    */
   const lastMethod = linked.length <= 1
+  /**
+   * live region이 말할 결과 문장.
+   *
+   * 해제와 연결이 같은 자리를 나눠 쓴다. 두 조작은 동시에 끝날 수 없고(`busy`가 서로를 막는다)
+   * 화면당 polite live region은 하나여야 한다.
+   */
+  const resultMessage =
+    lastFlow === 'connection'
+      ? connectionNoticeText(connection.notice, connection.confirmation !== null)
+      : unlinking.notice === null
+        ? null
+        : authContent.notices[unlinking.notice]
 
   return (
     <>
@@ -240,7 +322,7 @@ export function SettingsScreen(): ReactElement {
                 if (busy && !signOut.pending) {
                   return
                 }
-                signOut.requestSignOut()
+                runAuth(signOut.requestSignOut)
               }}
               pending={busy}
             />
@@ -269,13 +351,16 @@ export function SettingsScreen(): ReactElement {
           >
             {ready && !busy ? (
               /*
-              해제 결과는 이 live region이 말한다. 섹션 안에 두면 취소·실패에서 포커스도 움직이지
-              않아 보조기술 사용자에게 아무것도 알려지지 않는다 — 그 조작은 문서를 떠나지 않으므로
-              화면 어디에도 변화 신호가 없다.
+              해제·연결 결과는 이 live region이 말한다. 섹션 안에 두면 취소·실패에서 포커스도
+              움직이지 않아 보조기술 사용자에게 아무것도 알려지지 않는다 — 두 조작 모두 문서를
+              떠나지 않으므로 화면 어디에도 변화 신호가 없다.
+
+              한 자리가 둘을 맡는다. 화면당 polite live region은 하나이고, 두 조작이 동시에
+              끝날 수는 없다(`busy`가 서로를 막는다).
             */
-              unlinking.notice === null ? null : (
+              resultMessage === null ? null : (
                 <p className={styles.noticeText} ref={unlinkNoticeRef} tabIndex={-1}>
-                  {authContent.notices[unlinking.notice]}
+                  {resultMessage}
                 </p>
               )
             ) : (
@@ -286,6 +371,7 @@ export function SettingsScreen(): ReactElement {
                   reauthentication.pending,
                   linking.pending,
                   unlinking.pending,
+                  connection.pending,
                 )}
               </p>
             )}
@@ -372,7 +458,9 @@ export function SettingsScreen(): ReactElement {
                                 if (busy || lastMethod) {
                                   return
                                 }
-                                unlinking.requestUnlink(provider)
+                                runAuth(() => {
+                                  unlinking.requestUnlink(provider)
+                                })
                               }}
                               type="button"
                             >
@@ -401,7 +489,9 @@ export function SettingsScreen(): ReactElement {
                               if (busy) {
                                 return
                               }
-                              linking.requestLink(provider)
+                              runAuth(() => {
+                                linking.requestLink(provider)
+                              })
                             }}
                             type="button"
                           >
@@ -415,6 +505,126 @@ export function SettingsScreen(): ReactElement {
                 )}
 
                 <p className={styles.boundary}>{authContent.settings.boundary}</p>
+              </section>
+
+              {/*
+                읽기 전용 Bybit 연결(Story 2.1).
+
+                새 내부 경로를 만들지 않는다. UX-DR15가 설정 화면을 이 조작의 집으로 정했고, 경로를
+                더하면 등가 검사 없는 다섯 곳을 또 손으로 맞춰야 한다.
+
+                폼은 준비가 200으로 답한 뒤에만 열린다. 여는 요청은 허가를 발급하고 무장할 뿐
+                아무것도 바꾸지 않으며, 취소는 그 둘을 실제로 되돌린다.
+              */}
+              <section aria-labelledby={connectionContent.id} className={styles.section}>
+                <h2 className={styles.sectionHeading} id={connectionContent.id}>
+                  {connectionContent.heading}
+                </h2>
+                <p>{connectionContent.body}</p>
+                <p className={styles.boundary}>{connectionContent.requirements}</p>
+
+                {connection.view.status === 'checking' ? (
+                  <p className={styles.checking}>{connectionContent.checking}</p>
+                ) : connection.view.status === 'unavailable' ? (
+                  /*
+                   * 확인하지 못했다. 연결 여부를 주장하지 않는 것이 요점이다 — "연결 없음"으로
+                   * 접으면 이미 연결된 계정에도 연결 버튼이 붙고 그 클릭이 엉뚱한 안내로 끝난다.
+                   */
+                  <>
+                    <p className={styles.linkNotice}>{connectionContent.unavailable}</p>
+                    <button
+                      /*
+                       * `aria-disabled`가 없으면 `busy` 가드가 조용히 무시한다 — 보조기술은 누를
+                       * 수 있는 버튼이라 말하고 클릭은 아무 일도 하지 않는다. 형제 조작과 같은
+                       * 표현으로 맞춘다.
+                       */
+                      aria-disabled={busy}
+                      className={styles.retryButton}
+                      onClick={() => {
+                        if (busy) {
+                          return
+                        }
+                        runConnection(connection.refresh)
+                      }}
+                      type="button"
+                    >
+                      {connectionContent.retry}
+                    </button>
+                  </>
+                ) : connection.view.connected ? (
+                  <>
+                    <p className={styles.linkedState}>{connectionContent.connected}</p>
+                    {/*
+                      검증 시각과 적용 정책 버전. 자산도 계정 식별자도 그리지 않는다 — 이 조회는
+                      공식 현재가치 스냅샷이 아니며 그 발행은 Story 2.2가 소유한다.
+                    */}
+                    <dl className={styles.connectionMeta}>
+                      <div className={styles.connectionMetaRow}>
+                        <dt className={styles.connectionTerm}>
+                          {connectionContent.verifiedAtLabel}
+                        </dt>
+                        <dd className={styles.connectionValue}>
+                          {connection.view.verifiedAt === null
+                            ? ''
+                            : formatVerifiedAt(connection.view.verifiedAt)}
+                        </dd>
+                      </div>
+                      <div className={styles.connectionMetaRow}>
+                        <dt className={styles.connectionTerm}>
+                          {connectionContent.policyVersionLabel}
+                        </dt>
+                        <dd className={styles.connectionValue}>
+                          {connection.view.policyVersion ?? ''}
+                        </dd>
+                      </div>
+                    </dl>
+                    <p className={styles.boundary}>{connectionContent.connectedBoundary}</p>
+                  </>
+                ) : connection.confirmation === null ? (
+                  <>
+                    <p className={styles.checking}>{connectionContent.notConnected}</p>
+                    <button
+                      /*
+                       * `aria-disabled`이지 `disabled`가 아니다. 그 속성은 요소를 탭 순서에서
+                       * 떨어뜨리므로 방금 `Enter`로 실행한 키보드·스크린리더 사용자가 그 순간
+                       * 포커스를 잃는다. 실제 중복 제출 차단은 훅의 ref 가드가 한다.
+                       */
+                      aria-disabled={busy}
+                      className={styles.retryButton}
+                      onClick={() => {
+                        if (busy) {
+                          return
+                        }
+                        runConnection(connection.start)
+                      }}
+                      type="button"
+                    >
+                      {connectionContent.start}
+                    </button>
+                  </>
+                ) : (
+                  <BybitConnectionForm
+                    confirmation={connection.confirmation}
+                    onCancel={() => {
+                      runConnection(connection.cancel)
+                    }}
+                    onSubmit={async (apiKey, apiSecret) => {
+                      setLastFlow('connection')
+                      return connection.submit(apiKey, apiSecret)
+                    }}
+                    /*
+                     * 형제 조작과 같은 게이트다. `connection.pending`만 보면 다른 요청이 도는
+                     * 동안에도 비밀을 실은 제출이 나갈 수 있고, 그것은 이 화면의 다른 어떤
+                     * 조작에도 없는 예외가 된다.
+                     */
+                    pending={busy}
+                    rejection={
+                      connection.notice?.kind === 'rejected'
+                        ? rejectionMessage(connection.notice.code)
+                        : null
+                    }
+                  />
+                )}
               </section>
 
               <section aria-labelledby={authContent.settings.reauth.id} className={styles.section}>
@@ -433,7 +643,9 @@ export function SettingsScreen(): ReactElement {
                         if (busy) {
                           return
                         }
-                        reauthentication.requestReauthentication(provider)
+                        runAuth(() => {
+                          reauthentication.requestReauthentication(provider)
+                        })
                       }}
                       type="button"
                     >

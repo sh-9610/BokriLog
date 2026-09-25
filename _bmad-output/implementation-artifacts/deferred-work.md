@@ -203,3 +203,21 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-11-unlink-sign-in-method.md`
   summary: 최소 조작 영역 44×44px 규칙의 사본이 CSS 네 곳으로 늘었다.
   evidence: `EntryScreen`·`ReauthPanel`·`SettingsScreen`에 이어 `UnlinkDialog.module.css`가 같은 규칙을 다시 갖는다. 값은 모두 같은 토큰을 참조하므로 표류해도 조용하고, 기하를 실제로 재는 e2e는 화면마다 따로 써야 한다. Story 1.10이 적은 "제공자 버튼 CSS 세 번째 사본" 항목과 같은 뿌리이며 CSS 소유 구조를 정하는 라운드가 함께 다룰 일이다.
+- source_spec: none
+  summary: Epic 1의 `link-provider`·`unlink-provider` 두 command를 Story 2.1이 정하는 새 confirmation hash 계약으로 개조한다.
+  evidence: Story 2.1의 다중 목표 점검에서 갈라낸 목표다. 현재 `ActionGrant.canonicalConfirmationHash`의 세 입력 중 `confirmation`이 command별 상수(`LinkService.CONFIRMATION = "연결"`, `UnlinkService.CONFIRMATION = "해제"`)라 해시가 `(command, target)`의 결정적 함수이고 독립 판별력이 0이다. `ERD-1.0.0` §5가 그 축을 따로 둔 뜻(사용자가 확인한 것과 실행되는 것을 묶는다)이 as-built에서 성립하지 않으며, Epic 1 회고가 항목 7로 같은 것을 지적했다. Story 2.1이 `bybit-connection-create`를 위해 그 계약을 새로 정하지만 기존 두 command를 함께 옮기는 것은 Bybit 연결 없이도 독립으로 검토·시험·머지할 수 있는 별개 PR이며, 2.1은 그 개조 없이도 성립한다. 개조 라운드는 Story 2.13·2.16이 같은 계약을 세 번째·네 번째로 소비하기 전에 도는 것이 싸다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-bybit-connection.md`
+  summary: Bybit permission·retCode 허용 목록이 비어 있어 실제 제공자에서 거절 사유가 오분류될 수 있고, 그 공백을 기계가 읽는 게이트가 없다.
+  evidence: SPEC이 목록을 지어내지 말라고 했고 구현은 그대로 비워 둔 채 시험 하나로 '비어 있음'을 고정했다 — 여기까지는 의도한 설계다. 남는 위험은 실연동 시점의 모양이다. `READ_ONLY_PERMISSION_GROUPS`가 비어 있으면 비어 있지 않은 permission 배열이 전부 `WRITE_PERMISSION`이 되어 사용자는 이미 가진 읽기 전용 키를 다시 발급하라는 안내를 받는다. 그리고 `RET_CODE_REASONS`가 비어 있으면 `retCode != 0`이 전부 `AUTHENTICATION_REJECTED`로 접히는데, Bybit의 실제 rate limit·IP 거부는 HTTP 429·503이 아니라 **200 + retCode**로 온다 — 즉 `RATE_LIMITED`·`PROVIDER_UNAVAILABLE`은 스텁만 내는 모양이고 실제 제공자에서는 나오지 않는다. API 스파이크가 표를 채우는 라운드가 이 두 가지를 함께 봐야 하며, 목록이 빈 채로 실연동 게이트를 열지 못하게 하는 기계 판독 가능한 표시가 필요하다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-bybit-connection.md`
+  summary: 모듈별 삭제 경로를 열거하는 포트도 레지스트리도 없고, `operations_restriction`에는 삭제 경로 자체가 없다.
+  evidence: `SourceConnectionApi.eraseSourceData`와 `PortfolioMembershipApi.erasePortfolioData`는 운영 코드에 호출자가 없고 시험이 손으로 세 메서드를 부른다. `ON DELETE RESTRICT`가 만든 삭제 순서 계약은 javadoc에만 있다. Epic 5의 orchestration이 모듈 하나를 빠뜨리면 유일한 신호가 런타임 FK 위반이다. `operations_restriction`은 삭제 경로가 아예 없어 `AuthFlowTestBase`가 별도로 TRUNCATE한다. Epic 1 회고가 같은 뿌리를 지적했다 — `AuthDeletionPathTest`가 `action_grant`를 한 번도 언급하지 않는 것. 삭제 참여자를 기계가 열거하게 만드는 일은 Epic 5가 자기 자원과 함께 정할 별도 목표다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-bybit-connection.md`
+  summary: 5분 무장 수명이 화면에 보이지 않고 만료가 구분되지 않는 거부로 끝난다.
+  evidence: `BybitConnectionFlow.ARMED_LIFETIME`은 5분인데 카피는 확인 문구가 '이번 연결 요청에만 유효'라고만 말하고 남은 시간도 갱신 수단도 주지 않는다. 그런데 같은 카피가 사용자를 Bybit 콘솔로 보내 키를 발급하고 IP를 등록하게 한다 — 5분 안에 끝나기 어려운 작업이다. 만료는 구분되지 않는 `FORBIDDEN`으로 돌아오고 화면은 '본인 확인을 마친 뒤 다시 시도'라고 말한다. 거부를 하나의 값으로 두는 것은 SPEC이 고정한 계약이라 응답을 나눌 수 없고, 남은 길은 화면이 만료를 스스로 알고 미리 말하는 것이다. 그것은 무장 시각을 클라이언트에 주는 결정이라 별도 판단이 필요하다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-bybit-connection.md`
+  summary: Bybit 왕복 e2e 넷이 `PLAYWRIGHT_BASE_URL` 게이트 안에 있어 기본 실행에서 돌지 않는다.
+  evidence: Story 1.4가 세운 관용을 그대로 따른 것이고 매트릭스 19행은 항상 도는 백엔드·Vitest가 덮으므로 감사 기준은 만족한다. 다만 브라우저 층에서 자격정보 비노출을 보는 유일한 시험이 주입 origin 실행에만 있다는 사실은 남는다. 같은 성질의 미해소 항목(주입 origin 게이트 밖에서 보이지 않는 축)과 한 뿌리이며, e2e 게이트 구조를 정하는 라운드가 함께 다룰 일이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-bybit-connection.md`
+  summary: `SettingsScreen.test.tsx`의 여러 시험이 연결 상태 요청을 stub하지 않아 Bybit 절이 의도치 않게 `unavailable` 분기로 렌더된다.
+  evidence: `해제: 확인하면 목록을 다시 읽고 결과를 말한다`, `해제 성공 뒤 포커스가 결과 문장으로 간다`, 그리고 연결 상태 재확인 시험이 `ready` 게이트를 지나면서 새 상태 요청을 전역 deny에 부딪힌다. 어느 것도 `getObservedRequests()`가 비었음을 단정하지 않아 통과하지만, 그 시험들이 의도한 화면 상태가 아니다. 새 섹션이 기존 화면 시험의 전제를 바꿨다는 뜻이고, 화면 시험이 자기 전제를 명시하게 만드는 일은 화면 시험 구조를 정하는 라운드의 몫이다.

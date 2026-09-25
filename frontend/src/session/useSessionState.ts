@@ -8,6 +8,7 @@ import {
   SESSION_ENDPOINT,
   SETTINGS_PATH,
 } from '../content/auth'
+import { connectionContent } from '../content/connection'
 import { replaceLocation } from './navigation'
 
 /**
@@ -395,6 +396,7 @@ export function liveRegionMessage(
   reauthenticating = false,
   linking = false,
   unlinking = false,
+  connecting = false,
 ): string {
   if (signingOut) {
     return authContent.signOut.pending
@@ -404,6 +406,10 @@ export function liveRegionMessage(
   }
   if (unlinking) {
     return authContent.settings.unlinkPending
+  }
+  if (connecting) {
+    // Story 2.1의 다섯 번째 진행 상태. 같은 화면이 다섯 조작을 그리므로 문장도 같은 자리에서 난다.
+    return connectionContent.pending
   }
   if (reauthenticating) {
     return authContent.reauth.pending

@@ -1,0 +1,21 @@
+/**
+ * 운영 제한의 durable 판독 기반.
+ *
+ * <p><b>이 스토리는 읽기만 한다.</b> 제한을 만들고 푸는 운영자 표면은 Epic 3이 얹는다(Story
+ * 3.1·3.2). 그럼에도 모듈이 지금 생기는 이유는 두 가지다 — {@code epics.md}의 Epic 2 독립 완료
+ * 조건이 판독 기반의 소유자로 이 이름을 쓰고, Story 3.2가 선행으로 "Epic 2의 restriction 검사
+ * 지점"을 든다. 판독 기반을 {@code source}에 두면 Epic 3이 그것을 옮겨야 하고 옮기는 동안
+ * admission이 가리키는 곳이 바뀐다.
+ *
+ * <p>검사 지점은 넷이다 — admission·lease·publication·display. 이 스토리가 그중 <b>admission</b>
+ * 하나를 실제로 연결하고 나머지는 그 기능을 만드는 스토리가 같은 API로 연결한다.
+ *
+ * <p>다른 모듈은 이 패키지의 공개 application API로만 협력하고 {@code internal} 하위 패키지나 소유
+ * 테이블에 직접 닿지 않는다. {@code ModuleBoundaryTest}가 이를 강제한다. 여기에도 HTTP 표면은
+ * 없다.
+ *
+ * <p>판독은 fail-closed로 쓴다. 제한이 <b>있으면</b> 막는 것이 이 API의 답이고, 읽지 못하는 상황
+ * (저장소 장애)은 값이 아니라 예외로 올라가 요청 전체를 실패시킨다 — 조회 실패를 "제한 없음"으로
+ * 접으면 그 순간 제한이 무의미해진다.
+ */
+package com.bokrilog.operations;

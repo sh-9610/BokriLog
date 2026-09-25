@@ -117,7 +117,7 @@ services:
       #
       # `:-`가 아니라 `-`다. 실제 Google 자격정보를 쓰려는 실행은 이 변수를 빈 값으로 두어
       # 기본 프로필로 뜬다. 스텁과 실제 제공자가 함께 구성되면 백엔드가 기동을 거부한다.
-      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE-dev-oidc}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE-dev-oidc,dev-bybit}
       # 브라우저가 보는 origin이다. redirect URI와 스텁의 인가 주소를 여기서 조립한다.
       # 요청 Host에서 유도하지 않으므로 nginx가 포트를 잃는 것과 무관하다.
       BOKRILOG_PUBLIC_BASE_URL: ${BOKRILOG_PUBLIC_BASE_URL:-http://127.0.0.1:18080}
@@ -137,6 +137,35 @@ services:
       BOKRILOG_NAVER_CLIENT_SECRET: ${BOKRILOG_NAVER_CLIENT_SECRET:-}
       BOKRILOG_KAKAO_CLIENT_ID: ${BOKRILOG_KAKAO_CLIENT_ID:-}
       BOKRILOG_KAKAO_CLIENT_SECRET: ${BOKRILOG_KAKAO_CLIENT_SECRET:-}
+      # 개발용 Bybit 스텁(Story 2.1).
+      #
+      # 위 `dev-bybit` 프로필에서만 `/api/dev-bybit/**`에 local Bybit이 존재하고 어댑터가 그
+      # 주소를 가리킨다(`DevBybitStubConfig`). 그래서 이 스택은 실제 거래소 계정 없이도
+      # "폼 제출 → 세 검증 → 저장 → 세션 회전" 왕복이 완성되며, 검증 스크립트가 그 경로를 실제로
+      # 지난다. 제공자 API 호출은 백엔드가 서버 대 서버로 보내므로 브라우저 안에서 흉내낼 수 없다.
+      #
+      # 주소가 위 `SERVER_PORT`와 한 쌍이다. 프로필이 켜졌는데 이 값이 스텁을 가리키지 않으면
+      # 백엔드가 기동을 거부한다 — 스텁과 실제 제공자가 한 프로세스에 섞이지 않는다.
+      # `:-`가 아니라 `-`다. 위 `SPRING_PROFILES_ACTIVE`와 같은 관용이며 이유도 같다 — 실제
+      # 제공자를 쓰려는 실행은 이 변수를 **빈 값**으로 두어 스텁 프로필과 함께 벗어난다. `:-`로
+      # 두면 빈 값에도 스텁 경로가 남고, 그 스택에는 그 라우트가 없어 404가 인증 거절로 접힌다.
+      # 프로필이 꺼졌는데 이 값이 스텁을 가리키면 백엔드가 기동을 거부한다
+      # (`BybitProviderTargetGuard`).
+      BOKRILOG_BYBIT_BASE_URL: ${BOKRILOG_BYBIT_BASE_URL-http://127.0.0.1:8080/api/dev-bybit}
+      # 운영 reserved IP. 키의 `ips` 허용 목록에 이 값이 있어야 연결이 통과한다(AR-21).
+      #
+      # 문서용 주소(RFC 5737 TEST-NET-3)다. 자격정보가 아니며, 이 스택에서 실제로 나가는 IP와
+      # 다른 값인 것이 의도다 — IP binding이 "호출자의 주소"가 아니라 "키에 등록된 주소"를 본다는
+      # 계약이 그래야 검증된다.
+      BOKRILOG_BYBIT_RESERVED_IP: ${BOKRILOG_BYBIT_RESERVED_IP-203.0.113.10}
+      # 자격정보 암호화 key ring. 이름만 여기 있고 **값은 이 파일에 없다.**
+      #
+      # 32바이트 키의 base64는 자격정보 모양 리터럴이다. 가짜 값이어도 커밋하지 않는다 —
+      # gitleaks 규칙을 완화하고 싶어지고 그 완화가 남는다(위 client secret과 같은 근거).
+      # 개발·CI의 키는 `verify-same-origin.sh`가 실행 시점에 만들어 이 두 변수로 넣고, 값이 없으면
+      # 연결 기능만 공통 오류 계약으로 fail-closed다. production 비밀 공급은 Story 3.8이 소유한다.
+      BOKRILOG_SOURCE_CREDENTIAL_KEYS: ${BOKRILOG_SOURCE_CREDENTIAL_KEYS:-}
+      BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION: ${BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION:-}
     healthcheck:
       # alpine 베이스의 busybox wget이다. 이미지에 도구를 더 넣지 않는다.
       test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1:8080/api/status']
