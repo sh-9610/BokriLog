@@ -128,8 +128,8 @@ class AuthSessionServiceReauthenticationTest {
     /**
      * 조회 하나만 답하는 생명주기 API.
      *
-     * <p>나머지 셋은 재인증 경로가 부르지 않는다. 부르면 여기서 소리 내어 실패하며, 그것이
-     * "재인증은 계정을 만들지도 매핑을 만들지도 않는다"를 이 층에서 고정하는 방식이다.
+     * <p>나머지 넷은 재인증 경로가 부르지 않는다. 부르면 여기서 소리 내어 실패하며, 그것이
+     * "재인증은 계정을 만들지도 매핑을 만들지도 지우지도 않는다"를 이 층에서 고정하는 방식이다.
      */
     private record StubLifecycle(@Nullable UUID linked) implements AccountLifecycleApi {
 
@@ -145,6 +145,12 @@ class AuthSessionServiceReauthenticationTest {
                 @Nullable String issuer,
                 @Nullable String subject) {
             throw new AssertionError("재인증은 인증 매핑을 만들지 않는다.");
+        }
+
+        @Override
+        public AccessDecision unlinkSocialIdentity(
+                @Nullable UUID userId, @Nullable String provider) {
+            throw new AssertionError("재인증은 인증 매핑을 지우지 않는다.");
         }
 
         @Override

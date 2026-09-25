@@ -177,27 +177,31 @@ class LinkService {
             return Optional.empty();
         }
 
+        Optional<String> reference =
+                this.grants.issue(session, userId, COMMAND, provider, CONFIRMATION);
+        if (reference.isEmpty()) {
+            return Optional.empty();
+        }
+
         /*
-         * 앞선 흐름을 먼저 정리한다.
+         * 앞선 흐름은 무장이 확정된 **뒤에** 정리한다.
          *
-         * 연결 무장은 허가를 함께 버려야 한다 — `issue`의 무효화 술어는 `(user, command, target)`
-         * 이고 target이 제공자 이름이라, 네이버로 무장한 뒤 카카오로 다시 무장하면 네이버 허가만
-         * 살아남고 그것을 가리키던 흐름 기록은 사라진다. 아무도 참조할 수 없는 허가가 수명을 사는
-         * 상태가 정확히 그것이다.
+         * 앞에 두면 거절되는 시작 요청 하나가(재인증이 오래된 경우가 그렇다) 진행 중이던 흐름의
+         * 무장과 허가를 함께 없앤다 — 사용자는 아무 조작도 성립하지 않았는데 열어 둔 것을 잃는다.
+         *
+         * 앞선 연결 무장은 허가를 함께 버려야 한다 — `issue`의 무효화 술어는 `(user, command,
+         * target)`이고 target이 제공자 이름이라, 네이버로 무장한 뒤 카카오로 다시 무장하면 네이버
+         * 허가만 살아남고 그것을 가리키던 흐름 기록은 사라진다. 아무도 참조할 수 없는 허가가
+         * 수명을 사는 상태가 정확히 그것이다. 대상이 같으면 방금 `issue`가 이미 지웠으므로
+         * 다시 지우지 않는다(지우면 방금 발급한 허가가 같은 술어에 걸린다).
          *
          * 재인증 무장은 값만 버린다. 한 세션에 두 흐름이 함께 무장돼 있으면 콜백이 어느 쪽 것인지
          * 매번 등록 id로 가려야 하고, 그 판정이 한 번 어긋나면 재인증 콜백이 연결 분기에 삼켜진다.
          * 연결 시작이 성립한다는 것은 재인증이 이미 끝났다는 뜻이므로(그 시각이 없으면 허가가
          * 서지 않는다) 남아 있는 재인증 무장은 완료되지 않은 옛 의도다.
          */
-        abandon(session);
+        supersedePreviousArming(session, provider);
         ReauthenticationFlow.discard(session);
-
-        Optional<String> reference =
-                this.grants.issue(session, userId, COMMAND, provider, CONFIRMATION);
-        if (reference.isEmpty()) {
-            return Optional.empty();
-        }
 
         LinkFlow.Armed armed =
                 new LinkFlow.Armed(
@@ -230,6 +234,22 @@ class LinkService {
         LinkFlow.discard(session);
         if (armed != null) {
             this.grants.invalidate(armed.userId(), COMMAND, armed.targetProvider());
+        }
+    }
+
+    /**
+     * 새 무장이 앞선 무장을 대신한다. <b>대상이 다를 때만</b> 그 허가를 무효화한다.
+     *
+     * <p>{@link #abandon}과 갈라 두는 이유가 그 한 조건이다. 같은 제공자로 다시 무장하면 방금
+     * {@code issue}가 그 {@code (user, command, target)}의 살아 있는 허가를 이미 지웠고, 여기서 한
+     * 번 더 지우면 <b>방금 발급한 허가</b>가 같은 술어에 걸려 사라진다 — 그러면 그 무장은 태어나는
+     * 순간 참조할 것이 없다.
+     */
+    private void supersedePreviousArming(HttpSession session, String provider) {
+        LinkFlow.Armed previous = LinkFlow.peekIncludingExpired(session);
+        LinkFlow.discard(session);
+        if (previous != null && !previous.targetProvider().equals(provider)) {
+            this.grants.invalidate(previous.userId(), COMMAND, previous.targetProvider());
         }
     }
 

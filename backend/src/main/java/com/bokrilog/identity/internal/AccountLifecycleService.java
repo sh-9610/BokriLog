@@ -106,6 +106,37 @@ class AccountLifecycleService implements AccountLifecycleApi {
     }
 
     @Override
+    @Transactional
+    public AccessDecision unlinkSocialIdentity(@Nullable UUID userId, @Nullable String provider) {
+        if (userId == null || !isAcceptable(provider, MAX_PROVIDER_BYTES)) {
+            return AccessDecision.DENIED;
+        }
+
+        // 잠금. 같은 계정의 동시 해제가 여기서 직렬화된다. 이것이 없으면 두 트랜잭션이 각자의
+        // 스냅숏에서 "아직 둘이다"를 보고 둘 다 통과해 마지막 수단까지 사라진다.
+        if (repository.lockLifecycleForUpdate(userId).orElse(null) != AccountState.ACTIVE) {
+            // 아직 아무것도 지우지 않았다. 되돌릴 것이 없으니 롤백 표시도 필요 없다.
+            return AccessDecision.DENIED;
+        }
+
+        /*
+         * 판정과 지우기가 한 문장이다.
+         *
+         * 상태 술어·대상 존재·"남은 수단 2개 이상"이 모두 DELETE의 술어 안에 있다. 그래서 거부된
+         * 호출은 0행으로 끝나고 데이터베이스 오류도 롤백 표시도 남기지 않는다 — `linkSocialIdentity`가
+         * `setRollbackOnly`를 쓰지 않는 것과 정확히 같은 근거이며(그 메서드의 긴 주석 참조), 이
+         * 메서드도 호출자의 트랜잭션 안에서 불릴 수 있다(`UnlinkService`의 허가 소비 경계).
+         *
+         * 잠금과 술어 둘 다 필요하다. 위 잠금은 같은 계정의 동시 해제를 줄 세우고, 이 술어는 줄에서
+         * 두 번째로 깨어난 요청이 이미 하나만 남은 상태를 보게 만든다. 잠금만 있으면 READ COMMITTED
+         * 에서 각 문장이 새 스냅숏을 보긴 하지만 판정이 애플리케이션에 있으면 그 판정은 잠금 밖에서
+         * 일어날 수 있고, 술어만 있으면 잠금 없는 동시 실행에서 두 DELETE가 같은 스냅숏을 본다.
+         */
+        int deleted = repository.deleteSocialLinkIfNotLast(userId, provider);
+        return deleted == 1 ? AccessDecision.ALLOWED : AccessDecision.DENIED;
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public AccessDecision decideSessionCreation(@Nullable UUID userId) {
         if (userId == null) {

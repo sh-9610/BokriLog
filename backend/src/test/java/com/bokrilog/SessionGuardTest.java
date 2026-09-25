@@ -191,9 +191,54 @@ class SessionGuardTest extends AuthFlowTestBase {
     }
 
     @Test
+    void 하나만_남기는_폐기는_그_세션과_다른_사용자를_보존한다() throws Exception {
+        /*
+         * Story 1.11이 메운 간극이다. 전부 폐기와 하나만 폐기 사이에 "현재 세션만 남기고 전부"가
+         * 있고, 해제가 그 자리에 사는 유일한 조작이다 — 해제된 수단에서 유래했을 수도 있는 세션을
+         * 모두 끊으면서 방금 그 조작을 한 사용자는 자기 화면에 남아야 한다.
+         */
+        String subject = "guard-keep-" + UUID.randomUUID();
+        String kept = sessionCookieOf(signIn(subject)).orElseThrow();
+        sessionCookieOf(signIn(subject)).orElseThrow();
+        sessionCookieOf(signIn(subject)).orElseThrow();
+        String otherSubject = "guard-keep-other-" + UUID.randomUUID();
+        String othersCookie = sessionCookieOf(signIn(otherSubject)).orElseThrow();
+        UUID userId = userIdOf(OidcStubConfiguration.issuer(), subject).orElseThrow();
+        UUID otherUserId = userIdOf(OidcStubConfiguration.issuer(), otherSubject).orElseThrow();
+        assertThat(sessionCountOf(userId)).isEqualTo(3);
+
+        assertThat(sessionGuard().revokeSessionsOfExcept(userId, sessionIdOf(kept))).isEqualTo(2);
+
+        // 남긴 세션 하나만 살아 있고 그 세션은 여전히 인증 상태다.
+        assertThat(sessionCountOf(userId)).isEqualTo(1);
+        assertThat(sessionState(kept).body()).contains("\"authenticated\":true");
+        // 다른 사용자는 그대로다. 대상은 `PRINCIPAL_NAME` 색인이 고른 목록 안에서만 정해진다.
+        assertThat(sessionCountOf(otherUserId)).isEqualTo(1);
+        assertThat(sessionState(othersCookie).body()).contains("\"authenticated\":true");
+    }
+
+    @Test
+    void 남길_세션이_없으면_그_사용자의_세션이_모두_사라진다() throws Exception {
+        /*
+         * 이 메서드가 약속하는 것은 "하나는 남는다"가 아니라 "남길 id 말고는 남지 않는다"다. 목록에
+         * 없는 id를 건네면 전부 폐기와 같아지며, 그것이 정확한 계약이다.
+         */
+        String subject = "guard-keep-none-" + UUID.randomUUID();
+        sessionCookieOf(signIn(subject)).orElseThrow();
+        sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID userId = userIdOf(OidcStubConfiguration.issuer(), subject).orElseThrow();
+
+        assertThat(sessionGuard().revokeSessionsOfExcept(userId, "no-such-session-id")).isEqualTo(2);
+
+        assertThat(sessionCountOf(userId)).isZero();
+    }
+
+    @Test
     void 없는_대상에_대한_조작은_실패가_아니라_0건이다() {
         // 존재 여부를 예외나 값으로 알려 주지 않는다. 대상이 없는 것과 실패는 다른 일이다.
         assertThat(sessionGuard().revokeSessionsOf(UUID.randomUUID())).isZero();
+        assertThat(sessionGuard().revokeSessionsOfExcept(UUID.randomUUID(), "no-such-session-id"))
+                .isZero();
         assertThat(sessionGuard().requireReauthenticationOf(UUID.randomUUID())).isZero();
         assertThat(sessionGuard().revokeSession("no-such-session-id")).isFalse();
         assertThat(sessionGuard().requireReauthentication("no-such-session-id")).isFalse();

@@ -83,6 +83,29 @@ async function signInThroughStub(page: Page, provider: SignInProvider = 'google'
   await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
 }
 
+/**
+ * 스텁 동의 화면에서 `subject`를 고정한 채 동의한다.
+ *
+ * 스텁은 기본적으로 요청마다 새 `subject`를 만든다(`DevOidcStub`). 그래서 같은 제공자로 두 번
+ * 왕복하면 두 번째는 **다른 사람**이고, 재인증은 "이 식별자가 현재 사용자의 것인가"를 보므로
+ * 조용히 실패한다 — 그 실패는 붙들어 둔 목적지로 돌아가는 모양이 성공과 같아서 화면만 보면
+ * 구분되지 않는다.
+ *
+ * 고정 수단은 스텁의 인가 요청 파라미터 하나이며(`dev_subject`) 검증 스크립트가 쓰는 것과 같다.
+ * 여기서는 동의 화면에 도착한 뒤 그 주소에 파라미터를 더해 다시 연다 — 스텁의 인가 화면은 상태를
+ * 만들지 않으므로 다시 여는 것이 안전하고, 우리 세션의 `state`·PKCE는 그대로 남는다.
+ *
+ * 제품 코드는 이 파라미터를 알지 못한다. 붙이는 대상은 제공자 자리에 선 개발 전용 표면이다.
+ */
+async function consentWithSubject(page: Page, subject: string): Promise<void> {
+  // 동의 화면에 도착할 때까지 기다린다. 그 전에 주소를 읽으면 우리 인가 시작 경로가 잡힌다.
+  await expect(page.getByRole('link', { name: STUB_CONSENT.link })).toBeVisible()
+  const url = new URL(page.url())
+  url.searchParams.set('dev_subject', subject)
+  await page.goto(url.toString())
+  await page.getByRole('link', { name: STUB_CONSENT.link }).click()
+}
+
 test.describe('로그인 진입', () => {
   test('세 제공자 버튼이 각자의 서버 인증 시작 경로로 가는 링크다', async ({ page }) => {
     await page.goto('/')
@@ -843,6 +866,156 @@ test.describe('스텁 제공자 성공 왕복', () => {
     const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
 
     expect(results.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([])
+  })
+
+  test('해제 확인 대화상자가 WCAG 2.2 AA·목표 크기·키보드 계약을 지킨다', async ({ page }) => {
+    /*
+     * 이 스토리가 더한 가장 큰 마크업 표면이자, 기하와 포커스를 실제로 잴 수 있는 유일한 층이다.
+     * jsdom은 레이아웃도 `Tab` 활성화도 구현하지 않으므로 단위 시험은 속성과 호출만 본다.
+     *
+     * 해제가 성립하려면 세 단계를 지나야 한다 — 로그인 → 본인 확인 → 두 번째 수단 연결. 마지막
+     * 수단 보호 때문에 수단이 둘이어야 하고, 준비는 최근 본인 확인을 요구한다.
+     */
+    await page.setViewportSize(NARROW_VIEWPORT)
+    /*
+     * 같은 사람이 세 번 왕복한다 — 로그인, 본인 확인, 연결. 앞의 둘은 같은 Google 식별자여야 하고,
+     * 스텁의 기본값은 요청마다 새 `subject`라 고정하지 않으면 본인 확인이 조용히 실패한다.
+     *
+     * 표지는 실행마다 다르다. 고정 문자열을 쓰면 앞선 실행이 남긴 계정에 붙어 "신규 가입"을
+     * 전제한 아래 단정이 흔들린다.
+     */
+    const marker = `unlink-${Date.now().toString()}`
+    await page.goto('/')
+    await expectAuthScreenMounted(page)
+    await page.getByRole('link', { name: authContent.signIn.labels.google }).click()
+    await consentWithSubject(page, `google-${marker}`)
+    await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
+
+    await page.getByRole('link', { name: authContent.settings.link }).click()
+    await expect(page.getByRole('heading', { name: authContent.settings.heading })).toBeVisible()
+
+    // 본인 확인. 복귀 목적지는 세션이 로그인 시각에 붙들어 둔 값이라 온보딩이다(Story 1.8).
+    await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
+    await consentWithSubject(page, `google-${marker}`)
+    await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
+    /*
+     * 성공한 재인증은 표지 없이 돌아온다. 이 단정이 없으면 실패한 재인증도 같은 화면으로
+     * 수렴하므로(`?auth=reauthFailed`) 아래 연결 시작이 거부될 때까지 아무도 그것을 모른다.
+     */
+    expect(new URL(page.url()).search).toBe('')
+
+    // 두 번째 수단 연결. 여기까지가 해제의 전제다.
+    await page.getByRole('link', { name: authContent.settings.link }).click()
+    await page.getByRole('button', { name: authContent.settings.linkLabels.naver }).click()
+    await consentWithSubject(page, `naver-${marker}`)
+    await expect(page.getByText(authContent.notices.linkSucceeded)).toBeVisible()
+    await expect(page.getByText(authContent.settings.linked)).toHaveCount(2)
+    // 수단이 둘이므로 마지막 수단 설명이 사라진다.
+    await expect(page.getByText(authContent.settings.lastMethod)).toHaveCount(0)
+
+    const unlinkButton = page.getByRole('button', {
+      name: authContent.settings.unlinkLabels.naver,
+    })
+    await unlinkButton.click()
+
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toHaveAccessibleName(authContent.settings.unlinkDialog.titles.naver)
+
+    const cancel = dialog.getByRole('button', { name: authContent.settings.unlinkDialog.cancel })
+    const confirm = dialog.getByRole('button', { name: authContent.settings.unlinkDialog.confirm })
+
+    // 기본 포커스가 취소에 있다. 비가역 조작에서 `Enter` 한 번이 실행이 되면 안 된다.
+    await expect(cancel).toBeFocused()
+
+    // 두 조작 모두 최소 44×44px이다.
+    for (const target of [cancel, confirm]) {
+      const box = await target.boundingBox()
+      expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
+    }
+
+    // 320px에서 가로 스크롤이 생기지 않는다. 대화상자가 열린 상태에서도 그렇다.
+    const metrics = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }))
+    expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth)
+
+    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
+    expect(results.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([])
+
+    // 포커스가 대화상자 안에 갇힌다. `Tab` 두 번이면 취소로 돌아온다.
+    await page.keyboard.press('Tab')
+    await expect(confirm).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(cancel).toBeFocused()
+
+    /*
+     * 겹을 눌러도 방어가 살아 있다. 겹은 포커스를 받을 수 없으므로 아무 방어도 없으면 이 클릭
+     * 하나로 포커스가 `<body>`로 떨어지고, 그 뒤의 keydown은 React 루트에 닿지 않아 `Esc`와
+     * 포커스 가둠이 함께 죽는다 — 실제 브라우저에서만 재현되는 경로다.
+     *
+     * 방어가 둘이고 둘 다 본다. 먼저 `onMouseDown`이 포커스를 잃는 것 자체를 막고,
+     */
+    await page.mouse.click(5, 5)
+    await expect(cancel).toBeFocused()
+
+    // 그래도 포커스를 잃는 경로가 남으면 `document` 처리기가 다음 `Tab`에 안으로 끌어온다.
+    await page.evaluate(() => {
+      const active = document.activeElement
+      if (active instanceof HTMLElement) {
+        active.blur()
+      }
+    })
+    await page.keyboard.press('Tab')
+    await expect(cancel).toBeFocused()
+
+    // `Esc`가 닫고 포커스가 호출점으로 돌아간다. 아무것도 바뀌지 않았다는 사실을 문장이 말한다.
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await expect(unlinkButton).toBeFocused()
+    await expect(page.getByRole('status')).toHaveText(authContent.notices.unlinkCancelled)
+    await expect(page.getByText(authContent.settings.linked)).toHaveCount(2)
+
+    /*
+     * 다시 열어 확인까지 지난다. 브라우저 층에서 해제 왕복 전체가 성립하는지 보는 유일한 자리다.
+     *
+     * 최종 확인 버튼은 대화상자 안에서 찾는다. "연결 해제"는 목록의 "<제공자> 계정 연결 해제"의
+     * 부분 문자열이라 문서 전체에서 찾으면 셋에 걸린다.
+     */
+    await unlinkButton.click()
+    const reopened = page.getByRole('dialog')
+    await expect(reopened).toBeVisible()
+    await reopened.getByRole('button', { name: authContent.settings.unlinkDialog.confirm }).click()
+
+    const result = page.getByRole('status')
+    await expect(result).toHaveText(authContent.notices.unlinkSucceeded)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    /*
+     * 포커스가 결과 문장으로 간다. 호출점 버튼은 목록이 갱신되며 사라지므로 거기로 돌려주면 포커스가
+     * 잠시 뒤 `<body>`로 떨어진다 — jsdom은 포인터 조작으로 포커스를 옮기지 않아 이 층만 그것을 본다.
+     */
+    await expect(page.getByText(authContent.notices.unlinkSucceeded)).toBeFocused()
+    // 목록을 다시 읽어 지금 상태를 그린다. 이제 남은 수단이 하나뿐이다.
+    await expect(page.getByText(authContent.settings.linked)).toHaveCount(1)
+    await expect(page.getByText(authContent.settings.lastMethod)).toBeVisible()
+    // 마지막 수단이 된 행의 해제 조작은 비활성이고 이유를 자기 설명으로 가리킨다.
+    const lastUnlink = page.getByRole('button', { name: authContent.settings.unlinkLabels.google })
+    await expect(lastUnlink).toHaveAttribute('aria-disabled', 'true')
+    await expect(lastUnlink).toHaveAccessibleDescription(authContent.settings.lastMethod)
+    /*
+     * 주소는 그대로다. 해제는 문서를 떠나지 않는 조작이므로 결과를 주소에 싣지 않으며, 해제한
+     * 제공자 이름도 주소·히스토리에 남지 않는다.
+     */
+    expect(new URL(page.url()).pathname).toBe('/settings')
+    expect(new URL(page.url()).search).not.toContain('unlink')
+    expect(new URL(page.url()).search).not.toContain('naver')
+
+    const afterResults = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
+    expect(
+      afterResults.violations.map((violation) => `${violation.id}: ${violation.help}`),
+    ).toEqual([])
   })
 
   test('로그아웃 버튼이 최소 44×44px이고 좁은 폭에서도 유지된다', async ({ page }) => {

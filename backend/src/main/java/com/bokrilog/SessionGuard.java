@@ -2,6 +2,7 @@ package com.bokrilog;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
@@ -161,6 +162,34 @@ class SessionGuard {
     }
 
     /**
+     * 이 사용자의 세션 중 <b>하나만 남기고</b> 전부 폐기한다.
+     *
+     * <p>{@link #revokeSessionsOf}와 {@link #revokeSession} 사이의 간극을 메운다. 로그인 수단 해제가
+     * 그 간극에 사는 유일한 조작이다(Story 1.11) — 해제된 수단에서 유래했을 수도 있는 세션을 모두
+     * 끊으면서 방금 그 조작을 한 사용자는 자기 화면에 남아야 한다.
+     *
+     * <p><b>왜 전부인가.</b> 세션은 어떤 제공자로 인증됐는지 기록하지 않는다 — 세션이 담는 값은 내부
+     * {@code user_id} 하나라는 불변식이 그 기록을 금지한다. 그래서 "해제된 수단에서 유래한 세션"을
+     * 골라낼 방법이 없고, 남는 답은 fail-safe 쪽 하나다: 출처를 안전하게 판정할 수 없으면 현재 세션
+     * 외의 세션을 모두 폐기한다. 사용자는 다른 기기에서 다시 로그인해야 하며, 그것이 해제라는
+     * 조작의 무게에 맞는 대가다.
+     *
+     * <p>남길 세션도 {@code PRINCIPAL_NAME} 색인이 고른 목록 안에서 이름으로 뺀다. 그래서 남의
+     * 세션을 실수로 남길 수 없고, 목록에 없는 id를 건네면 그 사용자의 세션이 전부 사라진다 —
+     * "하나는 남는다"를 이 메서드가 약속하지 않는 것이 정확하다. 약속하는 것은 "{@code keptSessionId}
+     * 말고는 남지 않는다"뿐이다.
+     *
+     * <p>조회와 삭제 사이의 경합 재확인은 {@link #revokeSessionsOf}와 같은 것을 그대로 쓴다.
+     *
+     * @param keptSessionId 남길 세션. 보통 이 요청의 세션이며 <b>회전 전</b>의 id다 — 회전은 요청
+     *     끝에 저장소에 반영되므로 이 호출 시점의 저장소에는 아직 옛 id가 있다
+     * @return 실제로 지운 세션 수
+     */
+    int revokeSessionsOfExcept(UUID userId, String keptSessionId) {
+        return this.store.deleteByPrincipal(principalName(userId), keptSessionId);
+    }
+
+    /**
      * 세션 하나를 폐기한다.
      *
      * @return 그 세션이 있었는가
@@ -235,17 +264,32 @@ class SessionGuard {
         private static final int REVOKE_ATTEMPTS = 2;
 
         int deleteByPrincipal(String principalName) {
+            return deleteByPrincipal(principalName, null);
+        }
+
+        /**
+         * @param keptSessionId 대상에서 뺄 세션 id. {@code null}이면 전부 지운다
+         */
+        int deleteByPrincipal(String principalName, @Nullable String keptSessionId) {
             int deleted = 0;
             for (int attempt = 0; attempt < REVOKE_ATTEMPTS; attempt++) {
-                Map<String, S> found = this.repository.findByPrincipalName(principalName);
-                if (found.isEmpty()) {
+                /*
+                 * 남길 세션을 대상 목록에서 뺀다. "비었으면 끝"을 찾은 수가 아니라 대상 수로
+                 * 판정하는 것이 요점이다 — 남길 세션이 있으면 `found`는 결코 비지 않으므로, 찾은
+                 * 수로 보면 이 순환이 언제나 두 번 돈다.
+                 */
+                List<String> targets =
+                        this.repository.findByPrincipalName(principalName).keySet().stream()
+                                .filter(sessionId -> !sessionId.equals(keptSessionId))
+                                .toList();
+                if (targets.isEmpty()) {
                     /*
-                     * 남은 세션이 없다. 첫 시도에서 이 값을 보면 대상이 애초에 없었다는 뜻이고,
+                     * 남은 대상이 없다. 첫 시도에서 이 값을 보면 대상이 애초에 없었다는 뜻이고,
                      * 두 번째에서 보면 삭제가 실제로 비웠다는 뜻이다. 둘 다 여기서 끝난다.
                      */
                     return deleted;
                 }
-                for (String sessionId : found.keySet()) {
+                for (String sessionId : targets) {
                     /*
                      * 세는 것은 지운 수다. 찾은 수를 돌려주면 그 사이에 사라진 행(유휴 만료 정리,
                      * 같은 사용자의 로그아웃)까지 "내가 지웠다"로 보고된다.

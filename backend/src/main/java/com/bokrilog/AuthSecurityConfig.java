@@ -145,6 +145,52 @@ class AuthSecurityConfig {
     static final String LINK_BASE_URI = "/api/auth/link";
 
     /**
+     * 해제 표면의 경로. <b>이 계층에서 그 경로를 정의하는 상수는 이것 하나다.</b>
+     *
+     * <p>세 표면이 한 접두사를 나눠 쓰고 <b>경로가</b> 그것을 가른다 —
+     * {@code POST /api/auth/unlink/<제공자>}는 확인 대화상자를 열 준비(허가 발급·무장),
+     * {@code POST /api/auth/unlink/<제공자>/confirm}은 그것을 소비하는 최종 확인,
+     * {@code POST /api/auth/unlink/<제공자>/cancel}은 그 준비를 되돌리는 취소다. 연결이 메서드로
+     * 두 표면을 가른 것과 다른 이유는 셋 다 상태 변경이기 때문이다 — 안전한 메서드로 놓을 수 있는
+     * 것이 없다.
+     *
+     * <p>준비와 확인을 한 경로로 합치지 않는다. 합치면 "확인 대화상자를 여는 요청"과 "그 확인을
+     * 실행하는 요청"이 구분되지 않아, 대화상자를 여는 순간 매핑이 사라진다. "최종 확인 전에는
+     * 아무것도 바뀌지 않는다"는 계약이 그 둘로 성립한다.
+     *
+     * <p>취소가 <b>셋째</b>인 이유는 대칭이다. 준비가 서버 상태를 만드는 설계라면 되돌리는 경로가
+     * 있어야 하고, 없으면 화면의 "바뀐 것은 없습니다"가 거짓이 되며 아무도 참조하지 않는 허가가
+     * 수명을 산다. 연결에는 이 짝이 없다 — 그쪽의 취소는 제공자 콜백으로 돌아오므로 서버가 그
+     * 사실을 알지만, 해제의 취소는 브라우저 안에서만 일어난다.
+     *
+     * <p>{@code POST}인 근거는 {@link #REAUTHENTICATION_BASE_URI}·{@link #LINK_BASE_URI}와 같다.
+     * {@code /api/auth/} 아래이므로 아래 {@link #PROTECTED_PATH_PREFIX}의 보호(세션 귀속 CSRF 토큰 +
+     * 동일 출처 {@code Origin})가 예외 없이 걸린다.
+     *
+     * <p><b>세션 guard의 403 예외 목록에 들어가지 않는다.</b> 연결과 같은 이유다 — 재인증을 요구받은
+     * 세션이 계정에서 로그인 수단을 떼어 낼 수 있으면 그 표시가 막으려던 것이 그대로 열리며, 해제는
+     * 연결보다 되돌리기 어렵다. 그래서 이 경로에도 대응하는 판정 메서드가 없고, 표시된 세션의 해제는
+     * 다른 모든 상태 변경과 같은 403으로 끝난다.
+     */
+    static final String UNLINK_BASE_URI = "/api/auth/unlink";
+
+    /**
+     * 최종 확인 경로의 마지막 세그먼트.
+     *
+     * <p>{@link #UNLINK_BASE_URI} 뒤에 제공자 이름과 이 값이 붙는다. 상수로 두는 이유는 컨트롤러
+     * 매핑과 시험·검증 스크립트가 같은 문자열을 봐야 하기 때문이며, 컴파일 시점 상수라 애노테이션
+     * 안에서 이어 붙일 수 있다.
+     */
+    static final String UNLINK_CONFIRM_SEGMENT = "confirm";
+
+    /**
+     * 취소 경로의 마지막 세그먼트.
+     *
+     * <p>{@link #UNLINK_CONFIRM_SEGMENT}와 같은 근거의 같은 모양이다.
+     */
+    static final String UNLINK_CANCEL_SEGMENT = "cancel";
+
+    /**
      * CSRF 토큰이 실리는 요청 헤더 이름.
      *
      * <p>Spring Security의 기본값과 같은 값을 명시한다. 이 문자열은 프런트엔드

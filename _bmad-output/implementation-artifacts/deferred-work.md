@@ -197,3 +197,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-10-link-sign-in-method.md`
   summary: 제공자 버튼 CSS 규칙의 세 번째 사본이 생겼다.
   evidence: `EntryScreen.module.css`·`ReauthPanel.module.css`에 이어 `SettingsScreen.module.css`가 같은 세 규칙을 다시 갖는다. 값은 모두 같은 토큰을 참조하므로 표류해도 조용하고, "세 버튼의 바깥 크기가 서로 같다"를 단정하는 e2e는 진입 화면에서만 돈다. Story 1.9가 이미 적은 두 번째 사본 항목과 같은 뿌리이며 CSS 소유 구조를 정하는 라운드가 함께 다룰 일이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-11-unlink-sign-in-method.md`
+  summary: 제공자별 닫힌 맵이 화면 카피에 둘 더 생겼고 그 목록들이 서로 같은지 보는 검사가 없다.
+  evidence: 이 스토리가 `settings.unlinkLabels`와 `settings.unlinkDialog.titles`를 더해 `SIGN_IN_PROVIDERS`를 키로 쓰는 닫힌 맵이 화면 층에서만 다섯이 됐다. `as const`라 키 누락은 타입 검사가 잡지만 **값이 엉뚱한 제공자를 가리키는 것**은 잡지 못하고, 그 축을 보는 단정도 없다. 제공자 이름 목록의 계층 간·계층 안 중복(미해소 항목 33·38)과 같은 뿌리이며, 등가 검사를 세우는 일은 별도로 배포 가능한 목표다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-11-unlink-sign-in-method.md`
+  summary: 최소 조작 영역 44×44px 규칙의 사본이 CSS 네 곳으로 늘었다.
+  evidence: `EntryScreen`·`ReauthPanel`·`SettingsScreen`에 이어 `UnlinkDialog.module.css`가 같은 규칙을 다시 갖는다. 값은 모두 같은 토큰을 참조하므로 표류해도 조용하고, 기하를 실제로 재는 e2e는 화면마다 따로 써야 한다. Story 1.10이 적은 "제공자 버튼 CSS 세 번째 사본" 항목과 같은 뿌리이며 CSS 소유 구조를 정하는 라운드가 함께 다룰 일이다.

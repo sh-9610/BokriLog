@@ -635,6 +635,38 @@ class AuthLinkProviderTest extends AuthFlowTestBase {
     }
 
     @Test
+    void 거절되는_연결_시작은_앞선_무장과_허가를_그대로_둔다() throws Exception {
+        /*
+         * 무장을 버리는 일이 게이트보다 앞에 있으면 403 하나가 진행 중이던 흐름을 파괴한다 — 이미
+         * 연결된 제공자를 눌러 본 사용자가 방금 연 네이버 흐름을 잃는다. 그 순서는 Story 1.11이
+         * 고친 것이고 이 단정이 그것을 붙잡는다.
+         */
+        Linked user = signInAndReauthenticate("link-rejected-keeps");
+        assertThat(startLink(NAVER, user.cookie(), csrfTokenOf(user.cookie())).statusCode())
+                .isEqualTo(204);
+        String armed = singleGrantReference();
+        String sessionId = sessionIdOf(user.cookie());
+
+        // Google은 이미 이 계정에 연결돼 있다. 시작 게이트가 그것을 거절한다.
+        assertLinkStartDenied(startLink(GOOGLE, user.cookie(), csrfTokenOf(user.cookie())));
+
+        assertThat(sessionAttribute(sessionId, LinkFlow.FLOW_ATTRIBUTE))
+                .isInstanceOf(LinkFlow.Armed.class);
+        assertThat(actionGrantExists(armed)).isTrue();
+        assertThat(actionGrantCount()).isEqualTo(1);
+
+        // 그리고 그 무장은 여전히 쓸 수 있다.
+        Authorization naver = startAuthorization(NAVER, null, user.cookie());
+        String code =
+                issueCode(
+                        naver,
+                        TokenPlan.valid(naver.nonce())
+                                .subject("link-rejected-keeps-naver-" + UUID.randomUUID()));
+        assertThat(callback(naver, user.cookie(), code, naver.state()).statusCode()).isEqualTo(302);
+        assertThat(socialLinkCount()).isEqualTo(2);
+    }
+
+    @Test
     void 구성되지_않은_제공자의_연결_시작은_거부된다() {
         /*
          * 아는 이름이지만 등록이 만들어지지 않은 구간이다. 통과시키면 허가와 무장이 남은 채

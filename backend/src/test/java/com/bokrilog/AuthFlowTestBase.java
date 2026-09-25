@@ -100,6 +100,16 @@ abstract class AuthFlowTestBase {
     private LinkService linkService;
 
     /**
+     * 해제의 판정과 실행.
+     *
+     * <p>HTTP를 지나지 않는 축 하나가 이 빈을 직접 부른다 — 같은 {@code operation_id}의 재전송이다.
+     * 해제 무장은 최종 확인 하나로 소비되므로 HTTP 층에서는 같은 무장으로 두 번 들어갈 수 없고,
+     * 그래서 멱등 경로를 관측하려면 포트를 직접 두 번 불러야 한다({@link #linkService}와 같은 근거).
+     */
+    @Autowired
+    private UnlinkService unlinkService;
+
+    /**
      * 세션 저장소.
      *
      * <p>세션 속성을 애플리케이션과 같은 경로로 읽기 위해 필요하다. 새
@@ -338,20 +348,11 @@ abstract class AuthFlowTestBase {
     HttpResponse<String> logout(
             @Nullable String sessionCookie, @Nullable String csrfToken, @Nullable String origin)
             throws IOException, InterruptedException {
-        List<String> headers = new ArrayList<>();
-        if (origin != null) {
-            headers.add("Origin");
-            headers.add(origin);
-        }
-        if (csrfToken != null) {
-            headers.add(AuthSecurityConfig.CSRF_HEADER_NAME);
-            headers.add(csrfToken);
-        }
         return send(
                 "POST",
                 AuthSecurityConfig.LOGOUT_PATH,
                 sessionCookie,
-                headers.toArray(new String[0]));
+                protectedHeaders(csrfToken, origin));
     }
 
     /** 계약을 모두 만족시키는 로그아웃. 정상 경로가 필요한 시험이 쓴다. */
@@ -376,20 +377,11 @@ abstract class AuthFlowTestBase {
             @Nullable String csrfToken,
             @Nullable String origin)
             throws IOException, InterruptedException {
-        List<String> headers = new ArrayList<>();
-        if (origin != null) {
-            headers.add("Origin");
-            headers.add(origin);
-        }
-        if (csrfToken != null) {
-            headers.add(AuthSecurityConfig.CSRF_HEADER_NAME);
-            headers.add(csrfToken);
-        }
         return send(
                 "POST",
                 AuthSecurityConfig.REAUTHENTICATION_BASE_URI + "/" + provider,
                 sessionCookie,
-                headers.toArray(new String[0]));
+                protectedHeaders(csrfToken, origin));
     }
 
     /** 계약을 모두 만족시키는 재인증 시작. 정상 경로가 필요한 시험이 쓴다. */
@@ -451,20 +443,11 @@ abstract class AuthFlowTestBase {
             @Nullable String csrfToken,
             @Nullable String origin)
             throws IOException, InterruptedException {
-        List<String> headers = new ArrayList<>();
-        if (origin != null) {
-            headers.add("Origin");
-            headers.add(origin);
-        }
-        if (csrfToken != null) {
-            headers.add(AuthSecurityConfig.CSRF_HEADER_NAME);
-            headers.add(csrfToken);
-        }
         return send(
                 "POST",
                 AuthSecurityConfig.LINK_BASE_URI + "/" + provider,
                 sessionCookie,
-                headers.toArray(new String[0]));
+                protectedHeaders(csrfToken, origin));
     }
 
     /** 계약을 모두 만족시키는 연결 시작. 정상 경로가 필요한 시험이 쓴다. */
@@ -498,6 +481,125 @@ abstract class AuthFlowTestBase {
         String code =
                 issueCode(authorization, TokenPlan.valid(authorization.nonce()).subject(subject));
         return callback(authorization, sessionCookie, code, authorization.state());
+    }
+
+    /**
+     * 해제 준비 요청. 확인 대화상자를 여는 자리이며 <b>아무것도 바꾸지 않는다.</b>
+     *
+     * <p>로그아웃·재인증 시작·연결 시작과 같은 {@code /api/auth/} 상태 변경 계약을 지난다 — 세션
+     * 귀속 CSRF 토큰과 동일 출처 {@code Origin}이다. 둘 중 하나를 비우거나 틀린 값으로 주는 것이
+     * 이 스토리의 거절 시험이므로 인자로 받는다.
+     */
+    HttpResponse<String> prepareUnlink(
+            String provider,
+            @Nullable String sessionCookie,
+            @Nullable String csrfToken,
+            @Nullable String origin)
+            throws IOException, InterruptedException {
+        return send(
+                "POST",
+                AuthSecurityConfig.UNLINK_BASE_URI + "/" + provider,
+                sessionCookie,
+                protectedHeaders(csrfToken, origin));
+    }
+
+    /** 계약을 모두 만족시키는 해제 준비. 정상 경로가 필요한 시험이 쓴다. */
+    HttpResponse<String> prepareUnlink(
+            String provider, @Nullable String sessionCookie, @Nullable String csrfToken)
+            throws IOException, InterruptedException {
+        return prepareUnlink(
+                provider, sessionCookie, csrfToken, OidcStubConfiguration.PUBLIC_BASE_URL);
+    }
+
+    /** 해제 최종 확인 요청. <b>여기서만 상태가 바뀐다.</b> */
+    HttpResponse<String> confirmUnlink(
+            String provider,
+            @Nullable String sessionCookie,
+            @Nullable String csrfToken,
+            @Nullable String origin)
+            throws IOException, InterruptedException {
+        return send(
+                "POST",
+                AuthSecurityConfig.UNLINK_BASE_URI
+                        + "/"
+                        + provider
+                        + "/"
+                        + AuthSecurityConfig.UNLINK_CONFIRM_SEGMENT,
+                sessionCookie,
+                protectedHeaders(csrfToken, origin));
+    }
+
+    /** 계약을 모두 만족시키는 해제 최종 확인. */
+    HttpResponse<String> confirmUnlink(
+            String provider, @Nullable String sessionCookie, @Nullable String csrfToken)
+            throws IOException, InterruptedException {
+        return confirmUnlink(
+                provider, sessionCookie, csrfToken, OidcStubConfiguration.PUBLIC_BASE_URL);
+    }
+
+    /**
+     * 해제 왕복 하나. 준비 → 최종 확인까지 간다.
+     *
+     * <p>준비가 204가 아니면 그 자리에서 멈춘다({@link #link}·{@link #reauthenticate}와 같은 근거).
+     * 조용히 이어 가면 뒤따르는 단정이 "해제가 실패했다"를 보면서 통과하는데, 실제 원인은 흐름이
+     * 시작조차 하지 않은 것이다.
+     */
+    HttpResponse<String> unlink(
+            String provider, String sessionCookie, @Nullable String csrfToken)
+            throws IOException, InterruptedException {
+        HttpResponse<String> armed = prepareUnlink(provider, sessionCookie, csrfToken);
+        if (armed.statusCode() != 204) {
+            throw new IllegalStateException(
+                    "해제 준비가 204가 아니다: " + armed.statusCode() + " " + armed.body());
+        }
+        return confirmUnlink(provider, sessionCookie, csrfToken);
+    }
+
+    /** 해제 취소 요청. 준비가 만든 무장과 허가를 되돌린다. */
+    HttpResponse<String> cancelUnlink(
+            String provider,
+            @Nullable String sessionCookie,
+            @Nullable String csrfToken,
+            @Nullable String origin)
+            throws IOException, InterruptedException {
+        return send(
+                "POST",
+                AuthSecurityConfig.UNLINK_BASE_URI
+                        + "/"
+                        + provider
+                        + "/"
+                        + AuthSecurityConfig.UNLINK_CANCEL_SEGMENT,
+                sessionCookie,
+                protectedHeaders(csrfToken, origin));
+    }
+
+    /** 계약을 모두 만족시키는 해제 취소. */
+    HttpResponse<String> cancelUnlink(
+            String provider, @Nullable String sessionCookie, @Nullable String csrfToken)
+            throws IOException, InterruptedException {
+        return cancelUnlink(provider, sessionCookie, csrfToken, OidcStubConfiguration.PUBLIC_BASE_URL);
+    }
+
+    /**
+     * {@code /api/auth/} 상태 변경이 요구하는 헤더 둘. {@code null}인 값은 붙이지 않는다.
+     *
+     * <p>이 파일의 상태 변경 헬퍼 다섯이 모두 이것을 지난다 — 로그아웃·재인증 시작·연결 시작·해제
+     * 준비·해제 확인·해제 취소다. 조립을 각자 인라인으로 두면 "토큰을 비운다"·"다른 origin을
+     * 보낸다"는 거절 축이 헬퍼마다 조금씩 다른 모양이 되고, 그 차이는 시험이 무엇을 보는지 읽는
+     * 사람이 매번 확인해야 한다.
+     */
+    private static String[] protectedHeaders(
+            @Nullable String csrfToken, @Nullable String origin) {
+        List<String> headers = new ArrayList<>();
+        if (origin != null) {
+            headers.add("Origin");
+            headers.add(origin);
+        }
+        if (csrfToken != null) {
+            headers.add(AuthSecurityConfig.CSRF_HEADER_NAME);
+            headers.add(csrfToken);
+        }
+        return headers.toArray(new String[0]);
     }
 
     HttpResponse<String> get(String path, @Nullable String sessionCookie)
@@ -727,6 +829,11 @@ abstract class AuthFlowTestBase {
     /** 연결의 판정과 실행. HTTP 없이 멱등 재전송을 관측하는 시험이 쓴다. */
     LinkService linkService() {
         return this.linkService;
+    }
+
+    /** 해제의 판정과 실행. HTTP 없이 멱등 재전송을 관측하는 시험이 쓴다. */
+    UnlinkService unlinkService() {
+        return this.unlinkService;
     }
 
     /**

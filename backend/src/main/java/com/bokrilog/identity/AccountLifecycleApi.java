@@ -55,6 +55,31 @@ public interface AccountLifecycleApi {
             @Nullable String subject);
 
     /**
+     * 인증 매핑을 계정에서 떼어 낸다.
+     *
+     * <p><b>마지막 남은 수단은 떼어 낼 수 없다.</b> 그 판정이 이 API 안에 있는 것이 계약이다 —
+     * 호출자가 먼저 세고 나중에 지우는 형태를 만들면 두 문장 사이에 다른 요청이 들어와 둘 다
+     * 통과하고, 그 순간 사용자는 자기 계정에서 영구히 잠긴다. 여기서는 계정 생명주기 행을 잠근 뒤
+     * <b>한 문장</b>이 {@code ACTIVE}·대상 매핑 존재·남은 수단 2개 이상을 함께 판정한다
+     * ({@code linkSocialIdentity}가 상태 술어를 INSERT 안에 넣은 것과 같은 관용).
+     *
+     * <p>거부는 하나다. 마지막 수단, 연결되지 않은 제공자, 존재하지 않는 계정, 삭제가 시작됐거나
+     * 끝난 계정, 받아들일 수 없는 값이 모두 {@link AccessDecision#DENIED}로 접힌다 — 호출자는 그
+     * 값에서 대상 계정이 어떤 수단을 몇 개 갖고 있었는지 복원할 수 없다.
+     *
+     * <p>거부하면 아무것도 지워지지 않는다. 그리고 거부가 호출자의 트랜잭션을 건드리지 않는다
+     * ({@link #linkSocialIdentity}와 같은 근거) — 삭제 0행은 값이지 예외가 아니다.
+     *
+     * <p>떼어 낸 매핑을 되살리는 경로는 없다. 같은 {@code (issuer, subject)}로 다시 로그인하면 그
+     * 식별자는 어느 계정에도 연결돼 있지 않으므로 신규 가입 경로를 지난다.
+     *
+     * @param userId 대상 계정
+     * @param provider 떼어 낼 제공자 이름
+     * @return 허용 또는 거부
+     */
+    AccessDecision unlinkSocialIdentity(@Nullable UUID userId, @Nullable String provider);
+
+    /**
      * 이 계정에 새 세션을 만들어도 되는지 판정한다.
      *
      * <p>{@code ACTIVE}가 아니면 거부한다. payload와 매핑이 모두 삭제된 뒤에도 생명주기 guard 행이

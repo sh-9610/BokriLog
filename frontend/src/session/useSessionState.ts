@@ -384,8 +384,8 @@ export interface SessionGateResult {
  * 두면 한쪽에만 새 상태가 추가되는 자리가 생긴다.
  *
  * 로그아웃 진행이 세션 상태보다 앞선다. 그 순간 사용자가 알아야 하는 것은 자기가 시작한 조작이
- * 도는 중이라는 사실이고, 게이트는 그 조작이 끝날 때까지 `ready`로 남아 있다. 연결·재인증 시작도
- * 같은 이유로 게이트보다 앞서며, 세 조작은 서로를 막으므로 둘이 동시에 참일 수 없다.
+ * 도는 중이라는 사실이고, 게이트는 그 조작이 끝날 때까지 `ready`로 남아 있다. 연결·해제·재인증
+ * 시작도 같은 이유로 게이트보다 앞서며, 네 조작은 서로를 막으므로 둘이 동시에 참일 수 없다.
  *
  * @returns 말할 문장. 게이트가 `ready`이고 로그아웃도 도는 중이 아니면 화면이 이 값을 쓰지 않는다
  */
@@ -394,12 +394,16 @@ export function liveRegionMessage(
   signingOut: boolean,
   reauthenticating = false,
   linking = false,
+  unlinking = false,
 ): string {
   if (signingOut) {
     return authContent.signOut.pending
   }
   if (linking) {
     return authContent.settings.pending
+  }
+  if (unlinking) {
+    return authContent.settings.unlinkPending
   }
   if (reauthenticating) {
     return authContent.reauth.pending

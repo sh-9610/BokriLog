@@ -1688,6 +1688,399 @@ else
 fi
 
 
+
+printf '\n해제 왕복\n'
+
+# 로그인 수단 해제다. Story 1.11의 HTTP 계약을 보는 유일한 자리이며, 위 연결 왕복이 만든 두 수단
+# 계정이 그대로 전제다.
+#
+# 연결과 다른 것이 셋이다 — 제공자 왕복이 없어 두 경로가 모두 `POST`이고, 결과가 리다이렉트가
+# 아니라 204이며, 커밋 뒤 세션 정리가 따라온다. 그래서 여기서 보는 축도 다르다: "최종 확인 전에는
+# 아무것도 바뀌지 않는다", "마지막 수단은 남는다", "다른 세션이 사라지고 현재 세션만 회전해 남는다".
+#
+# 세션 쿠키와 토큰은 위 절이 갱신한 값이다. 해제 성공이 세션을 한 번 더 회전시키므로 아래에서 두
+# 전역을 다시 갱신한다 — 갱신하지 않으면 뒤따르는 로그아웃 절이 죽은 쿠키로 403을 받고 그 실패는
+# "로그아웃이 깨졌다"로 잘못 읽힌다.
+
+unlink_session_cookie="${google_session_cookie}"
+unlink_csrf_token="${google_csrf_token}"
+
+if [ -n "${unlink_session_cookie}" ] && [ -n "${unlink_csrf_token}" ]; then
+  record_pass '해제에 쓸 세션 쿠키와 토큰을 얻었다'
+else
+  record_fail '해제에 쓸 세션 쿠키와 토큰을 얻었다' \
+    '연결 절 뒤의 쿠키나 토큰이 없다. 아래 단정이 아무것도 보지 않는다.'
+fi
+
+# 이 절의 주인공. 위 연결 왕복이 두 수단을 붙인 그 계정이며, 아래 세션·매핑 단정이 이 값으로
+# 대상을 좁힌다 — 전체 개수만 세면 "다른 사용자가 보존됐다"를 확인할 수 없다.
+#
+# 연결 왕복이 쓴 식별자로 찾는다. "수단이 둘인 계정"으로 찾으면 그런 계정이 둘이 되는 날
+# `psql_value`가 여러 줄을 돌려주고 이후 단정이 조용히 빗나간다 — 모양이 아니라 이름으로 좁힌다.
+unlink_user_id="$(psql_value "SELECT user_id FROM identity_social_link WHERE provider = 'naver' AND subject = 'link-${stub_subject_marker}'")"
+if [ -n "${unlink_user_id}" ]; then
+  record_pass '해제 대상 계정을 찾았다(연결 왕복이 붙인 식별자)'
+else
+  record_fail '해제 대상 계정을 찾았다(연결 왕복이 붙인 식별자)' \
+    '그 식별자의 매핑이 없다. 위 연결 왕복이 성립하지 않았다는 뜻이다.'
+fi
+
+assert_rows '해제 전 그 계정에 수단이 둘이다' \
+  "SELECT count(*) FROM identity_social_link WHERE user_id = '${unlink_user_id}'" '2'
+assert_rows '해제 전 전체 매핑이 넷이다' 'SELECT count(*) FROM identity_social_link' '4'
+assert_rows '해제 전 전체 세션이 셋이다' 'SELECT count(*) FROM spring_session' '3'
+
+# 1) 준비·확인의 보호. `/api/auth/` 아래 상태 변경이므로 로그아웃·재인증·연결과 같은 계약을 지난다.
+fetch POST /api/auth/unlink/naver \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H "Origin: ${base_url}"
+assert_equals '토큰 없는 해제 준비 403' "${last_status}" '403'
+assert_body_contains '토큰 없는 해제 준비 안정 code' '"code":"FORBIDDEN"'
+assert_correlation_id '토큰 없는 해제 준비 correlation ID'
+
+fetch POST /api/auth/unlink/naver/confirm \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H "Origin: ${base_url}"
+assert_equals '토큰 없는 해제 확인 403' "${last_status}" '403'
+assert_body_contains '토큰 없는 해제 확인 안정 code' '"code":"FORBIDDEN"'
+
+fetch POST /api/auth/unlink/naver \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H 'Origin: https://evil.example' \
+  -H "X-CSRF-TOKEN: ${unlink_csrf_token}"
+assert_equals '교차 출처 해제 준비 403' "${last_status}" '403'
+assert_body_contains '교차 출처 해제 준비 안정 code' '"code":"FORBIDDEN"'
+
+fetch POST /api/auth/unlink/naver/confirm \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H 'Origin: https://evil.example' \
+  -H "X-CSRF-TOKEN: ${unlink_csrf_token}"
+assert_equals '교차 출처 해제 확인 403' "${last_status}" '403'
+
+fetch POST /api/auth/unlink/naver -H "Origin: ${base_url}" \
+  -H 'X-CSRF-TOKEN: verifyanonymousunlinkmarker'
+assert_equals '미인증 해제 준비 403' "${last_status}" '403'
+assert_body_contains '미인증 해제 준비 안정 code' '"code":"FORBIDDEN"'
+
+fetch POST /api/auth/unlink/nosuchprovider \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${unlink_csrf_token}"
+assert_equals '미지 제공자 해제 준비 404' "${last_status}" '404'
+assert_body_contains '미지 제공자 해제 준비 안정 code' '"code":"NOT_FOUND"'
+assert_body_lacks '미지 제공자 해제 준비가 이름을 되비추지 않는다' 'nosuchprovider'
+assert_body_lacks '미지 제공자 해제 준비에 아는 제공자 이름이 없다' 'naver'
+
+fetch POST /api/auth/unlink/nosuchprovider/confirm \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${unlink_csrf_token}"
+assert_equals '미지 제공자 해제 확인 404' "${last_status}" '404'
+assert_body_contains '미지 제공자 해제 확인 안정 code' '"code":"NOT_FOUND"'
+
+# 안전한 메서드로는 해제할 수 없다. 두 경로 모두 `POST` 하나뿐이다.
+fetch GET /api/auth/unlink/naver -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}"
+assert_equals '`GET /api/auth/unlink/<제공자>` 405(해제는 안전한 메서드가 아니다)' \
+  "${last_status}" '405'
+assert_body_contains '`GET /api/auth/unlink/<제공자>` 안정 code' '"code":"METHOD_NOT_ALLOWED"'
+
+# 확인·취소도 같다. 준비 경로만 보면 나머지 둘이 안전한 메서드로 열려 있어도 아무도 모른다.
+fetch GET /api/auth/unlink/naver/confirm -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}"
+assert_equals '`GET /api/auth/unlink/<제공자>/confirm` 405' "${last_status}" '405'
+assert_body_contains '`GET /api/auth/unlink/<제공자>/confirm` 안정 code' \
+  '"code":"METHOD_NOT_ALLOWED"'
+
+fetch GET /api/auth/unlink/naver/cancel -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}"
+assert_equals '`GET /api/auth/unlink/<제공자>/cancel` 405' "${last_status}" '405'
+
+# 연결되지 않은 제공자. 재인증은 신선한데도 거부이며 응답이 위와 구분되지 않는다.
+fetch POST /api/auth/unlink/kakao \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${unlink_csrf_token}"
+assert_equals '연결되지 않은 제공자의 해제 준비 403' "${last_status}" '403'
+assert_body_contains '연결되지 않은 제공자의 안정 code' '"code":"FORBIDDEN"'
+
+# 무장 없이 보낸 확인. 소비할 것이 없으므로 같은 거부다.
+fetch POST /api/auth/unlink/naver/confirm \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${unlink_csrf_token}"
+assert_equals '무장 없는 해제 확인 403' "${last_status}" '403'
+assert_body_contains '무장 없는 해제 확인 안정 code' '"code":"FORBIDDEN"'
+
+# 어떤 거절도 상태를 만들지 않았다.
+assert_rows '해제 거절이 해제 허가를 만들지 않는다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'unlink-provider'" '0'
+assert_rows '해제 거절이 매핑을 지우지 않는다' 'SELECT count(*) FROM identity_social_link' '4'
+assert_rows '해제 거절이 무장 속성을 만들지 않는다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.unlink'" '0'
+
+# 2) 다른 기기의 세션 둘. 해제가 그것들을 폐기하는지 보려면 먼저 있어야 한다.
+#
+#    같은 계정의 남은 수단(Google)으로 다시 로그인한다. 왕복의 모양은 위 로그인 절과 같고 여기서는
+#    세션을 만드는 것이 목적이다 — 같은 `dev_subject`이므로 계정도 매핑도 늘지 않는다.
+unlink_other_cookies=''
+unlink_devices_made=0
+for unlink_device in first second; do
+  # 단계마다 상태를 단정한다. 하나가 실패하면 아래 세션 수 단정이 줄줄이 어긋나고, 그때 원인이
+  # "해제가 세션을 잘못 셌다"로 잘못 읽힌다 — 위 `round_trip`이 단계마다 단정하는 것과 같은 근거다.
+  fetch GET /api/auth/authorize/google
+  assert_equals "다른 기기(${unlink_device}) 인가 시작 302" "${last_status}" '302'
+  unlink_device_flow_cookie="$(session_cookie_value)"
+  unlink_device_authorize="$(header_value 'Location')"
+  fetch GET "${unlink_device_authorize#"${base_url}"}&dev_subject=google-${stub_subject_marker}"
+  assert_equals "다른 기기(${unlink_device}) 동의 화면 200" "${last_status}" '200'
+  unlink_device_consent="$(sed -n 's/.*<a href="\([^"]*\)".*/\1/p' "${last_body}" | head -1 | sed 's/&amp;/\&/g')"
+  fetch GET "${unlink_device_consent#"${base_url}"}" \
+    -H "Cookie: BOKRILOG_SESSION=${unlink_device_flow_cookie}"
+  assert_equals "다른 기기(${unlink_device}) 콜백 302" "${last_status}" '302'
+  unlink_device_cookie="$(session_cookie_value)"
+  if [ -n "${unlink_device_cookie}" ]; then
+    record_pass "다른 기기 세션(${unlink_device})을 만들었다"
+    unlink_other_cookies="${unlink_other_cookies} ${unlink_device_cookie}"
+    unlink_devices_made=$((unlink_devices_made + 1))
+  else
+    record_fail "다른 기기 세션(${unlink_device})을 만들었다" \
+      '로그인 왕복이 세션 쿠키를 주지 않았다.'
+  fi
+done
+
+# 완주 가드. 목록이 비면 아래 "다른 기기의 로그인이 끝났다" 순환이 단정을 하나도 기록하지 않고
+# 조용히 지나간다 — 이 스크립트가 이미 여러 곳에서 막는 결함과 같은 모양이다.
+assert_equals '다른 기기 세션 둘을 모두 만들었다' "${unlink_devices_made}" '2'
+
+assert_rows '해제 전 이 사용자의 세션이 셋이다' \
+  "SELECT count(*) FROM spring_session WHERE principal_name = '${unlink_user_id}'" '3'
+
+# 2-1) 거부 탐침: 재인증 없는 세션.
+#
+# 방금 만든 기기 세션은 같은 사용자의 것이고 같은 두 수단을 갖지만 **본인 확인을 지나지 않았다**.
+# 그래서 이 탐침은 재인증 게이트 하나만 남겨 두고 나머지를 모두 만족시킨다 — 다른 축으로 거절되면
+# 그것을 구분할 수 없으므로 이 배치가 그 게이트를 보는 유일한 방법이다.
+unlink_fresh_device_cookie="$(printf '%s' "${unlink_other_cookies}" | awk '{print $1}')"
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${unlink_fresh_device_cookie}"
+unlink_fresh_device_token="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
+if [ -n "${unlink_fresh_device_token}" ]; then
+  record_pass '재인증 없는 세션의 토큰을 얻었다'
+else
+  record_fail '재인증 없는 세션의 토큰을 얻었다' \
+    "본문에 csrfToken이 없다 — $(head -c 200 "${last_body}")"
+fi
+
+fetch POST /api/auth/unlink/naver \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_fresh_device_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${unlink_fresh_device_token}"
+assert_equals '재인증 없는 세션의 해제 준비 403' "${last_status}" '403'
+assert_body_contains '재인증 없는 세션의 안정 code' '"code":"FORBIDDEN"'
+assert_rows '재인증 없는 준비가 허가를 만들지 않는다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'unlink-provider'" '0'
+assert_rows '재인증 없는 준비가 무장을 만들지 않는다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.unlink'" '0'
+assert_rows '다른 기기 로그인이 계정을 늘리지 않는다' \
+  'SELECT count(*) FROM identity_account_lifecycle' '3'
+assert_rows '다른 기기 로그인이 매핑을 늘리지 않는다' \
+  'SELECT count(*) FROM identity_social_link' '4'
+
+# 3) 준비. 허가를 발급하고 무장하며 **아무것도 바꾸지 않는다**.
+fetch POST /api/auth/unlink/naver \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${unlink_csrf_token}"
+assert_equals '해제 준비 204' "${last_status}" '204'
+if [ ! -s "${last_body}" ]; then
+  record_pass '해제 준비 응답에 본문이 없다'
+else
+  record_fail '해제 준비 응답에 본문이 없다' "$(head -c 200 "${last_body}")"
+fi
+assert_security_headers '해제 준비 204'
+assert_rows '해제 준비가 허가 하나를 발급한다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'unlink-provider' AND consumed_at IS NULL" '1'
+
+# 허가 참조. 브라우저에도 로그에도 나가지 않아야 하며, 아래 로그 누출 검사가 이 값을 찾는다.
+unlink_grant_reference="$(psql_value "SELECT grant_id FROM action_grant WHERE command = 'unlink-provider'")"
+if [ -n "${unlink_grant_reference}" ]; then
+  record_pass '해제 허가 참조를 읽었다'
+else
+  record_fail '해제 허가 참조를 읽었다' '허가 행에서 grant_id를 읽지 못해 누출 검사가 아무것도 보지 않는다.'
+fi
+assert_rows '해제 준비가 무장 속성 하나를 만든다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.unlink'" '1'
+# 최종 확인 전에는 아무것도 바뀌지 않는다. 아래 넷이 그 계약이다.
+assert_rows '해제 준비가 매핑을 지우지 않는다' 'SELECT count(*) FROM identity_social_link' '4'
+assert_rows '해제 준비가 세션을 폐기하지 않는다' \
+  "SELECT count(*) FROM spring_session WHERE principal_name = '${unlink_user_id}'" '3'
+if [ -z "$(session_cookie_value)" ]; then
+  record_pass '해제 준비가 세션을 회전시키지 않는다'
+else
+  record_fail '해제 준비가 세션을 회전시키지 않는다' '준비 응답이 새 세션 쿠키를 실었다.'
+fi
+
+fetch GET /api/auth/link -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}"
+assert_equals '해제 준비 뒤에도 연결 목록이 그대로다' \
+  "$(cat "${last_body}")" '{"providers":["google","naver"]}'
+
+# 3-1) 취소. 준비가 만든 무장과 허가를 되돌린다.
+#
+# 준비가 서버 상태를 만드는 설계라 되돌리는 짝이 있어야 한다 — 없으면 화면의 "바뀐 것은
+# 없습니다"가 거짓이 되고 아무도 참조하지 않는 허가가 수명을 산다.
+fetch POST /api/auth/unlink/naver/cancel \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${unlink_csrf_token}"
+assert_equals '해제 취소 204' "${last_status}" '204'
+assert_rows '취소가 무장을 되돌린다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.unlink'" '0'
+assert_rows '취소가 허가도 되돌린다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'unlink-provider'" '0'
+assert_rows '취소가 매핑을 건드리지 않는다' 'SELECT count(*) FROM identity_social_link' '4'
+
+# 되돌린 뒤의 확인은 소비할 것이 없다.
+fetch POST /api/auth/unlink/naver/confirm \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${unlink_csrf_token}"
+assert_equals '취소 뒤 확인은 403' "${last_status}" '403'
+assert_rows '취소 뒤 확인이 매핑을 지우지 않는다' 'SELECT count(*) FROM identity_social_link' '4'
+
+# 무장이 없어도 취소는 204다. 나누면 이 경로가 "저 세션이 무엇을 준비했는가"를 묻는 오라클이 된다.
+fetch POST /api/auth/unlink/naver/cancel \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${unlink_csrf_token}"
+assert_equals '무장 없는 취소도 204' "${last_status}" '204'
+
+# 3-2) 다시 준비한다. 아래 확인 절이 그 무장을 쓴다.
+fetch POST /api/auth/unlink/naver \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${unlink_csrf_token}"
+assert_equals '취소 뒤 다시 준비 204' "${last_status}" '204'
+assert_rows '다시 준비가 허가 하나를 발급한다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'unlink-provider' AND consumed_at IS NULL" '1'
+unlink_grant_reference="$(psql_value "SELECT grant_id FROM action_grant WHERE command = 'unlink-provider'")"
+
+# 4) 대상이 다른 확인. 무장은 네이버의 것이므로 이 확인의 사실이 아니다.
+fetch POST /api/auth/unlink/google/confirm \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${unlink_csrf_token}"
+assert_equals '대상이 다른 해제 확인 403' "${last_status}" '403'
+# 엉뚱한 확인 하나가 살아 있는 의도를 없애지 않는다. 없애면 그 자체가 방해 경로다.
+assert_rows '대상이 다른 확인이 무장을 없애지 않는다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.unlink'" '1'
+assert_rows '대상이 다른 확인이 허가를 소비하지 않는다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'unlink-provider' AND consumed_at IS NOT NULL" \
+  '0'
+assert_rows '대상이 다른 확인이 매핑을 지우지 않는다' \
+  'SELECT count(*) FROM identity_social_link' '4'
+
+# 5) 최종 확인. 여기서만 상태가 바뀐다.
+fetch POST /api/auth/unlink/naver/confirm \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${unlink_csrf_token}"
+assert_equals '해제 확인 204' "${last_status}" '204'
+if [ ! -s "${last_body}" ]; then
+  record_pass '해제 확인 응답에 본문이 없다'
+else
+  record_fail '해제 확인 응답에 본문이 없다' "$(head -c 200 "${last_body}")"
+fi
+assert_security_headers '해제 확인 204'
+
+unlink_rotated_cookie="$(session_cookie_value)"
+if [ -n "${unlink_rotated_cookie}" ] && [ "${unlink_rotated_cookie}" != "${unlink_session_cookie}" ]; then
+  record_pass '해제 성공 시점에 세션 ID가 회전한다'
+else
+  record_fail '해제 성공 시점에 세션 ID가 회전한다' \
+    "쿠키가 '${unlink_session_cookie}'에서 '${unlink_rotated_cookie}'로 바뀌지 않았다."
+fi
+
+# 매핑 하나가 사라졌고 계정은 그대로다.
+assert_rows '해제가 매핑을 하나 지운다' 'SELECT count(*) FROM identity_social_link' '3'
+assert_rows '해제가 계정을 지우지 않는다' 'SELECT count(*) FROM identity_account_lifecycle' '3'
+assert_rows '해제 뒤 그 계정에 대상 제공자 매핑이 없다' \
+  "SELECT count(*) FROM identity_social_link WHERE user_id = '${unlink_user_id}' AND provider = 'naver'" \
+  '0'
+assert_rows '해제 뒤 그 계정에 남은 수단이 하나다' \
+  "SELECT count(*) FROM identity_social_link WHERE user_id = '${unlink_user_id}'" '1'
+assert_rows '해제가 허가를 정확히 한 번 소비한다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'unlink-provider' AND consumed_at IS NOT NULL" \
+  '1'
+# 무장은 남는다. 확인이 그것을 지우면 확인 도중의 예외가 허가를 고아로 남기고, 응답을 잃은
+# 클라이언트가 같은 `operation_id`를 다시 제시할 길도 사라진다 — 바로 아래 재전송 절이 그
+# 계약을 실제로 지난다. 일회성은 무장이 아니라 허가의 성질이다.
+assert_rows '해제 확인이 무장을 남겨 재전송을 가능하게 한다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.unlink'" '1'
+
+# 5-1) 같은 확인의 재전송. 무장이 남아 있으므로 1.9의 멱등 계약이 이 층에서 도달한다.
+fetch POST /api/auth/unlink/naver/confirm \
+  -H "Cookie: BOKRILOG_SESSION=${unlink_rotated_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${unlink_csrf_token}"
+assert_equals '같은 확인의 재전송도 204' "${last_status}" '204'
+assert_rows '재전송이 매핑을 다시 지우지 않는다' 'SELECT count(*) FROM identity_social_link' '3'
+assert_rows '재전송이 허가를 두 번 소비하지 않는다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'unlink-provider' AND consumed_at IS NOT NULL" \
+  '1'
+# 세션 정리도 다시 돌지 않는다. 회전이 다시 일어나면 그것이 `Set-Cookie`로 밖에서 보인다.
+if [ -z "$(session_cookie_value)" ]; then
+  record_pass '재전송이 세션을 다시 회전시키지 않는다'
+else
+  record_fail '재전송이 세션을 다시 회전시키지 않는다' '재전송 응답이 새 세션 쿠키를 실었다.'
+fi
+
+# 다른 세션은 사라지고 현재 세션 하나만 남는다. 다른 사용자의 세션은 그대로다.
+assert_rows '해제가 그 사용자의 다른 세션을 모두 폐기한다' \
+  "SELECT count(*) FROM spring_session WHERE principal_name = '${unlink_user_id}'" '1'
+assert_rows '해제 뒤 전체 세션이 셋이다' 'SELECT count(*) FROM spring_session' '3'
+
+for unlink_other_cookie in ${unlink_other_cookies}; do
+  fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${unlink_other_cookie}"
+  assert_body_contains '해제가 다른 기기의 로그인을 끝낸다' '"authenticated":false'
+done
+
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${unlink_session_cookie}"
+assert_body_contains '해제 전 쿠키의 세션 확인은 미인증이다' '"authenticated":false'
+
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${unlink_rotated_cookie}"
+assert_body_contains '회전한 세션은 그대로 인증 상태다' '"authenticated":true'
+google_session_cookie="${unlink_rotated_cookie}"
+google_csrf_token="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
+if [ -n "${google_csrf_token}" ]; then
+  record_pass '해제 뒤 세션이 CSRF 토큰을 준다'
+else
+  record_fail '해제 뒤 세션이 CSRF 토큰을 준다' \
+    "본문에 csrfToken이 없다 — $(head -c 200 "${last_body}")"
+fi
+
+fetch GET /api/auth/link -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}"
+assert_equals '해제 뒤 상태 조회가 남은 수단 하나를 답한다' \
+  "$(cat "${last_body}")" '{"providers":["google"]}'
+
+# 다른 사용자들의 연결 상태는 그대로다.
+fetch GET /api/auth/link -H "Cookie: BOKRILOG_SESSION=${naver_session_cookie}"
+assert_equals '해제가 다른 사용자의 연결을 건드리지 않는다' \
+  "$(cat "${last_body}")" '{"providers":["naver"]}'
+fetch GET /api/auth/link -H "Cookie: BOKRILOG_SESSION=${kakao_session_cookie}"
+assert_equals '해제가 세 번째 사용자의 연결도 건드리지 않는다' \
+  "$(cat "${last_body}")" '{"providers":["kakao"]}'
+
+# 6) 이제 남은 수단이 하나다. 마지막 수단 보호가 준비부터 거부한다.
+fetch POST /api/auth/unlink/google \
+  -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${google_csrf_token}"
+assert_equals '마지막 수단의 해제 준비 403' "${last_status}" '403'
+assert_body_contains '마지막 수단의 안정 code' '"code":"FORBIDDEN"'
+assert_rows '마지막 수단 거부가 허가를 만들지 않는다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'unlink-provider' AND consumed_at IS NULL" '0'
+assert_rows '마지막 수단 거부가 매핑을 지우지 않는다' \
+  'SELECT count(*) FROM identity_social_link' '3'
+assert_rows '마지막 수단 거부가 세션을 건드리지 않는다' \
+  "SELECT count(*) FROM spring_session WHERE principal_name = '${unlink_user_id}'" '1'
+
 printf '\n로그아웃 왕복\n'
 
 # 위 왕복들이 만든 세션을 실제로 끝낸다. 여기까지가 Story 1.5의 성공 경로 전부다.
@@ -1754,8 +2147,9 @@ fi
 # 세션 행이 하나만 사라졌다. 계정과 매핑은 그대로다 — 로그아웃은 계정 상태를 바꾸지 않는다.
 assert_rows '로그아웃이 그 세션 행만 지운다' 'SELECT count(*) FROM spring_session' '2'
 assert_rows '로그아웃이 계정을 지우지 않는다' 'SELECT count(*) FROM identity_account_lifecycle' '3'
-# 넷이다. 위 연결 왕복이 Google 계정에 네이버 매핑 하나를 더했다.
-assert_rows '로그아웃이 인증 매핑을 지우지 않는다' 'SELECT count(*) FROM identity_social_link' '4'
+# 셋이다. 위 연결 왕복이 Google 계정에 네이버 매핑 하나를 더해 넷이 됐고, 해제 왕복이 그 하나를
+# 되돌렸다. 왕복 셋이 만든 계정당 하나씩이 남는다.
+assert_rows '로그아웃이 인증 매핑을 지우지 않는다' 'SELECT count(*) FROM identity_social_link' '3'
 
 # 그 쿠키로 이어지는 세션 확인이 더 이상 인증 상태가 아니다.
 fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${session_cookie}"
@@ -2091,7 +2485,7 @@ if [ "${log_ready}" = true ]; then
   # 검사하면 다른 제공자의 콜백이 다른 location으로 흘러 쿼리를 남기기 시작해도 통과한다.
   for leaked_label in 'google code' 'google state' 'naver code' 'naver state' \
     'kakao code' 'kakao state' 'reauth code' 'reauth state' 'link code' 'link state' \
-    'link 허가 참조'; do
+    'link 허가 참조' 'unlink 허가 참조'; do
     case "${leaked_label}" in
       'google code') leaked_value="${google_round_trip_code}" ;;
       'google state') leaked_value="${google_round_trip_state}" ;;
@@ -2102,6 +2496,9 @@ if [ "${log_ready}" = true ]; then
       # 허가 참조는 브라우저에도 로그에도 나가지 않는다. 서버가 세션에 들고 있다가 소비하는
       # 값이므로 응답에 실릴 자리가 없고, 그 사실을 실제 값으로 확인한다.
       'link 허가 참조') leaked_value="${link_grant_reference}" ;;
+      # 해제 허가도 같다. 준비와 확인 사이를 세션 안에서만 오가므로 응답·주소·로그 어디에도
+      # 그 값이 실릴 자리가 없다.
+      'unlink 허가 참조') leaked_value="${unlink_grant_reference}" ;;
       'naver code') leaked_value="${naver_round_trip_code}" ;;
       'naver state') leaked_value="${naver_round_trip_state}" ;;
       'kakao code') leaked_value="${kakao_round_trip_code}" ;;
@@ -2181,6 +2578,15 @@ if [ "${log_ready}" = true ]; then
   else
     record_fail 'access log이 로그아웃 요청을 경로로 남긴다' \
       "access log에서 '\"POST /api/auth/logout HTTP'를 찾지 못했다."
+  fi
+
+  # 해제의 최종 확인도 같다. 경로가 곧 "여기서 상태가 바뀌었다"의 기록이며, 그 경로는 쿼리를 갖지
+  # 않으므로 남겨도 새는 값이 없다.
+  if grep -F -- '"POST /api/auth/unlink/naver/confirm HTTP' "${log_file}" >/dev/null; then
+    record_pass 'access log이 해제 확인 요청을 경로로 남긴다'
+  else
+    record_fail 'access log이 해제 확인 요청을 경로로 남긴다' \
+      "access log에서 '\"POST /api/auth/unlink/naver/confirm HTTP'를 찾지 못했다."
   fi
 fi
 

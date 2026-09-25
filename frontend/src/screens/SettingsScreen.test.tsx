@@ -8,16 +8,23 @@ import {
   linkPath,
   settingsCopyStrings,
   SIGN_IN_PROVIDERS,
+  unlinkCancelPath,
+  unlinkConfirmPath,
+  unlinkPath,
 } from '../content/auth'
 import { navigateTo, replaceLocation } from '../session/navigation'
 import {
   getObservedAllowedRequests,
+  getObservedRequests,
   getObservedStorageEntries,
   stubLinkRequest,
   stubLinkStatusRequest,
   stubLogoutRequest,
   stubReauthenticationRequest,
   stubSessionRequest,
+  stubUnlinkCancelRequest,
+  stubUnlinkConfirmRequest,
+  stubUnlinkPrepareRequest,
 } from '../test/setup'
 import { SettingsScreen } from './SettingsScreen'
 
@@ -118,7 +125,7 @@ describe('SettingsScreen', () => {
      * 목록이 도착할 때까지 기다린다. 확인 전에는 연결 여부를 주장하지 않으므로 그 사이의 화면에는
      * 연결 상태도 연결 버튼도 없다 — 기다리지 않으면 이 단정이 그 중간 상태를 보고 흔들린다.
      */
-    // 연결된 제공자는 상태만 보인다. 해제는 이 스토리의 범위가 아니다(Story 1.11).
+    // 연결된 제공자는 상태와 해제 조작을 갖고 연결 조작은 갖지 않는다.
     expect(await screen.findByText(authContent.settings.linked)).toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: authContent.settings.linkLabels.google }),
@@ -308,6 +315,310 @@ describe('SettingsScreen', () => {
     resolveLink(new Response(null, { status: 204 }))
     await waitFor(() => {
       expect(vi.mocked(navigateTo)).toHaveBeenCalledWith(authorizePath('naver'))
+    })
+  })
+
+  it('해제: 수단이 하나뿐이면 조작이 비활성이고 이유를 문장으로 말한다', async () => {
+    stubSessionRequest(() => authenticated())
+    stubLinkStatusRequest(() => linkedWith('google'))
+
+    render(<SettingsScreen />)
+    await screen.findByText(authContent.settings.linked)
+
+    const unlink = screen.getByRole('button', { name: authContent.settings.unlinkLabels.google })
+
+    /*
+     * 마지막 수단은 화면이 미리 설명한다. 서버 응답은 그 거부를 다른 거부와 구분하지 않지만,
+     * 숨기면 비활성화된 버튼에 이유가 없어 접근성이 깨진다.
+     */
+    expect(unlink).toHaveAttribute('aria-disabled', 'true')
+    expect(unlink).toHaveAccessibleDescription(authContent.settings.lastMethod)
+    expect(screen.getByText(authContent.settings.lastMethod)).toBeInTheDocument()
+
+    fireEvent.click(unlink)
+
+    // 준비 요청도 나가지 않는다. 열지 않은 경로로 나가면 전역 거부가 그것을 기록하고 실패시킨다.
+    expect(getObservedAllowedRequests().filter((entry) => entry.startsWith('POST'))).toEqual([])
+  })
+
+  it('해제: 수단이 둘이면 두 행 모두 해제할 수 있고 설명이 없다', async () => {
+    stubSessionRequest(() => authenticated())
+    stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+
+    render(<SettingsScreen />)
+    await screen.findAllByText(authContent.settings.linked)
+
+    for (const provider of ['google', 'naver'] as const) {
+      expect(
+        screen.getByRole('button', { name: authContent.settings.unlinkLabels[provider] }),
+      ).toHaveAttribute('aria-disabled', 'false')
+    }
+    expect(screen.queryByText(authContent.settings.lastMethod)).not.toBeInTheDocument()
+  })
+
+  it('해제: 준비가 204면 확인 대화상자를 열고 아직 아무것도 지우지 않는다', async () => {
+    stubSessionRequest(() => authenticated())
+    stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    let observed: RequestInit | undefined
+    stubUnlinkPrepareRequest('naver', (init) => {
+      observed = init
+      return Promise.resolve(new Response(null, { status: 204 }))
+    })
+
+    render(<SettingsScreen />)
+    await screen.findAllByText(authContent.settings.linked)
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkLabels.naver }))
+
+    const dialog = await screen.findByRole('dialog')
+
+    expect(dialog).toHaveAccessibleName(authContent.settings.unlinkDialog.titles.naver)
+    // 준비 요청 하나만 나갔다. 최종 확인 경로는 열지 않았으므로 나갔다면 전역 거부가 잡는다.
+    expect(getObservedAllowedRequests().filter((entry) => entry.startsWith('POST'))).toEqual([
+      `POST ${unlinkPath('naver')}`,
+    ])
+    expect(observed?.method).toBe('POST')
+    expect(observed?.credentials).toBe('same-origin')
+    expect(new Headers(observed?.headers).get(CSRF_HEADER)).toBe(CSRF_TOKEN)
+    // 목록은 그대로다. 최종 확인 전에는 아무것도 바뀌지 않는다.
+    expect(screen.getAllByText(authContent.settings.linked)).toHaveLength(2)
+  })
+
+  it('해제: 준비가 거부되면 대화상자를 열지 않고 표지를 말한다', async () => {
+    stubSessionRequest(() => authenticated())
+    stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    stubUnlinkPrepareRequest('naver', () =>
+      Promise.resolve(jsonResponse({ code: 'FORBIDDEN' }, 403)),
+    )
+
+    render(<SettingsScreen />)
+    await screen.findAllByText(authContent.settings.linked)
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkLabels.naver }))
+
+    expect(await screen.findByText(authContent.notices.unlinkFailed)).toBeInTheDocument()
+    /*
+     * 대화상자를 열면 소비할 허가가 없는 확인이 되고 그 실패는 설명할 수 없다. 화면은 이동하지도
+     * 않는다 — 해제에는 왕복이 없으므로 표지를 주소에 실을 이유가 없다.
+     */
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(vi.mocked(replaceLocation)).not.toHaveBeenCalled()
+    expect(vi.mocked(navigateTo)).not.toHaveBeenCalled()
+  })
+
+  it('해제: 취소하면 준비를 되돌리고 아무것도 바뀌지 않았다고 말한다', async () => {
+    stubSessionRequest(() => authenticated())
+    stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    stubUnlinkPrepareRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
+    let cancelled: RequestInit | undefined
+    stubUnlinkCancelRequest('naver', (init) => {
+      cancelled = init
+      return Promise.resolve(new Response(null, { status: 204 }))
+    })
+
+    render(<SettingsScreen />)
+    await screen.findAllByText(authContent.settings.linked)
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkLabels.naver }))
+    await screen.findByRole('dialog')
+
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkDialog.cancel }))
+
+    expect(await screen.findByText(authContent.notices.unlinkCancelled)).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    /*
+     * 최종 확인은 나가지 않았고 취소는 나갔다. 준비가 서버 상태를 만들었으므로 되돌리는 요청이
+     * 없으면 "바뀐 것은 없습니다"가 거짓이 되고 참조할 수 없는 허가가 5분을 산다.
+     */
+    await waitFor(() => {
+      expect(getObservedAllowedRequests().filter((entry) => entry.startsWith('POST'))).toEqual([
+        `POST ${unlinkPath('naver')}`,
+        `POST ${unlinkCancelPath('naver')}`,
+      ])
+    })
+    expect(new Headers(cancelled?.headers).get(CSRF_HEADER)).toBe(CSRF_TOKEN)
+    expect(screen.getAllByText(authContent.settings.linked)).toHaveLength(2)
+  })
+
+  it('해제: 대화상자가 열려 있는 동안 배경 조작이 막힌다', async () => {
+    stubSessionRequest(() => authenticated())
+    stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    stubUnlinkPrepareRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
+
+    render(<SettingsScreen />)
+    await screen.findAllByText(authContent.settings.linked)
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkLabels.naver }))
+    await screen.findByRole('dialog')
+
+    /*
+     * 배경은 `inert`로 비활성화되지만 그 속성이 없는 브라우저도 있다. 배경 조작이 실제로 돌면
+     * 열려 있는 해제 무장이 사라지고, 사용자가 확인을 누르는 순간 이유 없이 실패한다.
+     */
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.linkLabels.kakao }))
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.reauth.labels.google }))
+    fireEvent.click(screen.getByRole('button', { name: authContent.signOut.label }))
+
+    /*
+     * 준비 하나뿐이다. 세 조작은 각자 다른 경로로 나가고 이 시험은 그 어느 것도 열지 않았으므로,
+     * 하나라도 실제로 돌면 전역 거부가 그것을 기록한다 — 허용 목록만 보면 거부된 요청이 그
+     * 목록에 없어 이 단정이 아무것도 관측하지 않는다.
+     */
+    expect(getObservedRequests()).toEqual([])
+    expect(getObservedAllowedRequests().filter((entry) => entry.startsWith('POST'))).toEqual([
+      `POST ${unlinkPath('naver')}`,
+    ])
+  })
+
+  it('해제: 확인하면 목록을 다시 읽고 결과를 말한다', async () => {
+    stubSessionRequest(() => authenticated())
+    let statusCalls = 0
+    stubLinkStatusRequest(() => {
+      statusCalls += 1
+      // 확인 뒤의 조회는 서버가 이미 매핑을 지운 상태를 답한다.
+      return statusCalls === 1 ? linkedWith('google', 'naver') : linkedWith('google')
+    })
+    stubUnlinkPrepareRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
+    let observed: RequestInit | undefined
+    stubUnlinkConfirmRequest('naver', (init) => {
+      observed = init
+      return Promise.resolve(new Response(null, { status: 204 }))
+    })
+
+    render(<SettingsScreen />)
+    await screen.findAllByText(authContent.settings.linked)
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkLabels.naver }))
+    await screen.findByRole('dialog')
+
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkDialog.confirm }))
+
+    expect(await screen.findByText(authContent.notices.unlinkSucceeded)).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(new Headers(observed?.headers).get(CSRF_HEADER)).toBe(CSRF_TOKEN)
+    // 두 요청이 순서대로 나갔다.
+    expect(getObservedAllowedRequests().filter((entry) => entry.startsWith('POST'))).toEqual([
+      `POST ${unlinkPath('naver')}`,
+      `POST ${unlinkConfirmPath('naver')}`,
+    ])
+    /*
+     * 사라진 수단은 재조회를 기다리지 않고 목록에서 빠진다. 기다리면 그 사이에 남은 해제 버튼이
+     * 눌려 곧바로 403 실패 표지가 난다 — 방금 해제한 것을 다시 해제하려다 실패를 보는 상태다.
+     */
+    expect(
+      screen.queryByRole('button', { name: authContent.settings.unlinkLabels.naver }),
+    ).not.toBeInTheDocument()
+    // 목록을 다시 읽어 지금 상태를 그린다. 이제 Google이 마지막 수단이다.
+    await waitFor(() => {
+      expect(statusCalls).toBe(2)
+    })
+    expect(await screen.findByText(authContent.settings.lastMethod)).toBeInTheDocument()
+    // 화면은 이동하지 않았다. 해제는 문서를 떠나지 않는 조작이다.
+    expect(vi.mocked(replaceLocation)).not.toHaveBeenCalled()
+    expect(vi.mocked(navigateTo)).not.toHaveBeenCalled()
+  })
+
+  it('해제: 확인이 거부되면 대화상자를 닫고 실패를 말한다', async () => {
+    stubSessionRequest(() => authenticated())
+    stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    stubUnlinkPrepareRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
+    stubUnlinkConfirmRequest('naver', () =>
+      Promise.resolve(jsonResponse({ code: 'FORBIDDEN' }, 403)),
+    )
+
+    render(<SettingsScreen />)
+    await screen.findAllByText(authContent.settings.linked)
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkLabels.naver }))
+    await screen.findByRole('dialog')
+
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkDialog.confirm }))
+
+    expect(await screen.findByText(authContent.notices.unlinkFailed)).toBeInTheDocument()
+    /*
+     * 무장은 이 확인 하나로 소비됐으므로 같은 대화상자의 두 번째 확인은 언제나 거부다. 열어 두면
+     * 사용자가 통하지 않는 버튼을 다시 누른다.
+     */
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getAllByText(authContent.settings.linked)).toHaveLength(2)
+  })
+
+  it('해제: 진행 중 중복 제출을 차단한다', async () => {
+    stubSessionRequest(() => authenticated())
+    stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    let resolvePrepare: (response: Response) => void = () => undefined
+    stubUnlinkPrepareRequest(
+      'naver',
+      () =>
+        new Promise<Response>((resolve) => {
+          resolvePrepare = resolve
+        }),
+    )
+
+    render(<SettingsScreen />)
+    await screen.findAllByText(authContent.settings.linked)
+
+    const naverUnlink = screen.getByRole('button', {
+      name: authContent.settings.unlinkLabels.naver,
+    })
+    fireEvent.click(naverUnlink)
+
+    expect(naverUnlink).toHaveAttribute('aria-disabled', 'true')
+    // `disabled`가 아니다. 그 속성은 방금 이 버튼을 실행한 키보드 사용자의 포커스를 빼앗는다.
+    expect(naverUnlink).toBeEnabled()
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status').textContent).toBe(authContent.settings.unlinkPending)
+
+    fireEvent.click(naverUnlink)
+    // 다른 행의 해제도 함께 막힌다. 두 흐름이 겹치면 서버가 앞의 무장을 덮는다.
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkLabels.google }))
+
+    expect(getObservedAllowedRequests().filter((entry) => entry.startsWith('POST'))).toHaveLength(1)
+    resolvePrepare(new Response(null, { status: 204 }))
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('해제 결과를 화면당 하나뿐인 live region이 말한다', async () => {
+    stubSessionRequest(() => authenticated())
+    stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    stubUnlinkPrepareRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
+    stubUnlinkCancelRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
+
+    render(<SettingsScreen />)
+    await screen.findAllByText(authContent.settings.linked)
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkLabels.naver }))
+    await screen.findByRole('dialog')
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkDialog.cancel }))
+
+    await screen.findByText(authContent.notices.unlinkCancelled)
+
+    /*
+     * 섹션 안에 두면 취소·실패에서 포커스도 움직이지 않아 보조기술 사용자에게 아무것도 알려지지
+     * 않는다 — 해제는 문서를 떠나지 않으므로 화면 어디에도 다른 변화 신호가 없다.
+     */
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status').textContent).toBe(authContent.notices.unlinkCancelled)
+  })
+
+  it('해제 성공 뒤 포커스가 결과 문장으로 간다', async () => {
+    stubSessionRequest(() => authenticated())
+    let statusCalls = 0
+    stubLinkStatusRequest(() => {
+      statusCalls += 1
+      return statusCalls === 1 ? linkedWith('google', 'naver') : linkedWith('google')
+    })
+    stubUnlinkPrepareRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
+    stubUnlinkConfirmRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
+
+    render(<SettingsScreen />)
+    await screen.findAllByText(authContent.settings.linked)
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkLabels.naver }))
+    await screen.findByRole('dialog')
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkDialog.confirm }))
+
+    const result = await screen.findByText(authContent.notices.unlinkSucceeded)
+
+    /*
+     * 대화상자를 연 버튼은 사라졌다 — 그 제공자가 더 이상 연결돼 있지 않으므로 행의 조작이 바뀐다.
+     * 되돌릴 호출점이 없으면 포커스는 `<body>`에 남고, 키보드·보조기술 사용자는 무엇이 일어났는지
+     * 듣지 못한 채 문서 처음으로 떨어진다.
+     */
+    await waitFor(() => {
+      expect(result).toHaveFocus()
     })
   })
 
