@@ -203,3 +203,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-11-unlink-sign-in-method.md`
   summary: 최소 조작 영역 44×44px 규칙의 사본이 CSS 네 곳으로 늘었다.
   evidence: `EntryScreen`·`ReauthPanel`·`SettingsScreen`에 이어 `UnlinkDialog.module.css`가 같은 규칙을 다시 갖는다. 값은 모두 같은 토큰을 참조하므로 표류해도 조용하고, 기하를 실제로 재는 e2e는 화면마다 따로 써야 한다. Story 1.10이 적은 "제공자 버튼 CSS 세 번째 사본" 항목과 같은 뿌리이며 CSS 소유 구조를 정하는 라운드가 함께 다룰 일이다.
+- source_spec: none
+  summary: Epic 1의 `link-provider`·`unlink-provider` 두 command를 Story 2.1이 정하는 새 confirmation hash 계약으로 개조한다.
+  evidence: Story 2.1의 다중 목표 점검에서 갈라낸 목표다. 현재 `ActionGrant.canonicalConfirmationHash`의 세 입력 중 `confirmation`이 command별 상수(`LinkService.CONFIRMATION = "연결"`, `UnlinkService.CONFIRMATION = "해제"`)라 해시가 `(command, target)`의 결정적 함수이고 독립 판별력이 0이다. `ERD-1.0.0` §5가 그 축을 따로 둔 뜻(사용자가 확인한 것과 실행되는 것을 묶는다)이 as-built에서 성립하지 않으며, Epic 1 회고가 항목 7로 같은 것을 지적했다. Story 2.1이 `bybit-connection-create`를 위해 그 계약을 새로 정하지만 기존 두 command를 함께 옮기는 것은 Bybit 연결 없이도 독립으로 검토·시험·머지할 수 있는 별개 PR이며, 2.1은 그 개조 없이도 성립한다. 개조 라운드는 Story 2.13·2.16이 같은 계약을 세 번째·네 번째로 소비하기 전에 도는 것이 싸다.
