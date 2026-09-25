@@ -35,7 +35,7 @@ project_key: NOKEY
 tracking_system: file-system
 story_location: _bmad-output/implementation-artifacts
 development_status:
-  epic-1: in-progress
+  epic-1: done
   1-1-서비스-이용-범위와-인증-경계를-확인하는-진입-화면: done
   1-2-동일-출처에서-서비스-화면과-서버-상태-확인하기: done
   1-3-계정-소유권과-삭제-상태에-따라-접근을-판정하기: done
@@ -46,7 +46,7 @@ development_status:
   1-8-민감-작업-전에-본인임을-다시-확인하고-세션을-회전하기: done
   1-9-민감-작업에-5분-일회성-재인증-허가-적용하기: done
   1-10-새-로그인-수단을-현재-계정에-연결하기: done
-  1-11-로그인-수단을-안전하게-해제하기: review
+  1-11-로그인-수단을-안전하게-해제하기: done
   epic-1-retrospective: optional
 
   epic-2: backlog
