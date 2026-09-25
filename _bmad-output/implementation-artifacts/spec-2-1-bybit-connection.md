@@ -2,7 +2,8 @@
 title: 'Story 2.1: 읽기 전용 Bybit UTA 연결을 검증하고 안전하게 저장하기'
 type: 'feature'
 created: '2026-09-25'
-status: 'ready-for-dev'
+status: 'done'
+baseline_commit: 'd242645298b4f5ce14a0aeeaba99596b0be3db05'
 review_loop_iteration: 0
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-2-context.md'
@@ -160,24 +161,24 @@ context:
 
 **Execution:**
 
-- [ ] `backend/src/main/resources/db/migration/V4__source_connection.sql` -- `source_provider_account`·`source_connection`·`source_credential`·`portfolio`·`portfolio_source_membership`·`operations_restriction` 생성 -- 모듈 소유 테이블 접두사 관용을 따르고, 한 개 규칙을 조건부 유일 색인으로 강제한다. 헤더에 RESTRICT/CASCADE 선택 근거를 적는다
-- [ ] `backend/src/main/java/com/bokrilog/source/package-info.java` 외 `source` 모듈 -- 공개 API(`SourceConnectionApi`)와 `internal` 구현·`JdbcClient` 저장소 -- Bybit 어댑터와 자격정보 소유
-- [ ] `backend/src/main/java/com/bokrilog/portfolio/…` -- `PortfolioMembershipApi` + `internal` -- 기본 `USD` portfolio와 활성 membership 소유
-- [ ] `backend/src/main/java/com/bokrilog/operations/…` -- `OperationalRestrictionApi`(판독 전용) + `internal` -- durable 제한을 읽는다. 쓰기·운영자 표면은 Epic 3
-- [ ] `backend/src/main/java/com/bokrilog/source/internal/CredentialCipher.java` -- AES-256-GCM·96-bit nonce·AAD 5필드·key ring -- 저장소 첫 암호화 자재
-- [ ] `backend/src/main/java/com/bokrilog/source/internal/BybitAdapter.java` -- 세 엔드포인트 순차 호출, provider-neutral DTO 반환, 허용 목록 밖은 fail-closed -- 재시도 없음
-- [ ] `backend/src/main/java/com/bokrilog/BybitConnectionController.java` + `BybitConnectionService.java` -- `/api/connections/bybit` 준비·확인·취소 -- 루트 패키지가 HTTP를 소유하는 관용(모듈에는 HTTP 표면이 없다)
-- [ ] `backend/src/main/java/com/bokrilog/AuthSecurityConfig.java` -- `PROTECTED_PATH_PREFIX`를 집합으로, 새 접두사에 `authenticated()`, `permitAll` 근거 주석 갱신 -- 판정 함수는 하나로 유지
-- [ ] `backend/src/main/java/com/bokrilog/DevBybitStubConfig.java` + 스텁 논리 -- `@Profile` + 단일 `RouterFunction` + 생성자 guard + 내부 base URL -- 성공 2종·거부 9종을 결정적으로 낸다
-- [ ] `backend/src/main/resources/application.yml`, `deploy/compose/compose.yaml` -- key ring·Bybit base URL·스텁 프로필 변수 -- 이름만, 값은 비움
-- [ ] `frontend/src/screens/SettingsScreen.tsx` + `BybitConnectionForm.tsx` + CSS 모듈 -- `secure-input-form` 계약을 지키는 첫 폼 -- 기존 토큰만 쓴다
-- [ ] `frontend/src/content/auth.ts`(또는 새 content 모듈) -- 연결 카피·오류 문장·시험용 배열 -- 화면에 한글 리터럴을 두지 않는다
-- [ ] `frontend/src/session/bybitConnection.ts` -- 요청 모듈. `unlinkProvider.ts`의 `post()`를 export해 재사용 -- 네 번째 복제를 만들지 않는다
-- [ ] 백엔드 시험 -- admission·어댑터 11종·트랜잭션·암호화·동시성·삭제 경쟁·경계 -- `AuthFlowTestBase` 상속, `resetStore()`에 새 테이블 추가
-- [ ] `backend/src/test/java/com/bokrilog/ModuleBoundaryTest.java` -- 새 모듈 셋의 존재 단정과 `internal` 미노출 규칙 -- 존재 단정을 빠뜨리면 `verify()`가 조용히 통과한다
-- [ ] `frontend/src/screens/*.test.tsx` -- 폼 접근성·Secret만 초기화·저장소 무기록·비밀 미노출
-- [ ] `deploy/compose/verify-same-origin.sh` -- 연결 왕복 절 추가 -- 스텁으로 성공·거부를 실제 HTTP로 지난다
-- [ ] `frontend/e2e/*.spec.ts` -- 주입 origin 게이트 안에서 성공 왕복과 비밀 비노출
+- [x] `backend/src/main/resources/db/migration/V4__source_connection.sql` -- `source_provider_account`·`source_connection`·`source_credential`·`portfolio`·`portfolio_source_membership`·`operations_restriction` 생성 -- 모듈 소유 테이블 접두사 관용을 따르고, 한 개 규칙을 조건부 유일 색인으로 강제한다. 헤더에 RESTRICT/CASCADE 선택 근거를 적는다
+- [x] `backend/src/main/java/com/bokrilog/source/package-info.java` 외 `source` 모듈 -- 공개 API(`SourceConnectionApi`)와 `internal` 구현·`JdbcClient` 저장소 -- Bybit 어댑터와 자격정보 소유
+- [x] `backend/src/main/java/com/bokrilog/portfolio/…` -- `PortfolioMembershipApi` + `internal` -- 기본 `USD` portfolio와 활성 membership 소유
+- [x] `backend/src/main/java/com/bokrilog/operations/…` -- `OperationalRestrictionApi`(판독 전용) + `internal` -- durable 제한을 읽는다. 쓰기·운영자 표면은 Epic 3
+- [x] `backend/src/main/java/com/bokrilog/source/internal/CredentialCipher.java` -- AES-256-GCM·96-bit nonce·AAD 5필드·key ring -- 저장소 첫 암호화 자재
+- [x] `backend/src/main/java/com/bokrilog/source/internal/BybitAdapter.java` -- 세 엔드포인트 순차 호출, provider-neutral DTO 반환, 허용 목록 밖은 fail-closed -- 재시도 없음
+- [x] `backend/src/main/java/com/bokrilog/BybitConnectionController.java` + `BybitConnectionService.java` -- `/api/connections/bybit` 준비·확인·취소 -- 루트 패키지가 HTTP를 소유하는 관용(모듈에는 HTTP 표면이 없다)
+- [x] `backend/src/main/java/com/bokrilog/AuthSecurityConfig.java` -- `PROTECTED_PATH_PREFIX`를 집합으로, 새 접두사에 `authenticated()`, `permitAll` 근거 주석 갱신 -- 판정 함수는 하나로 유지
+- [x] `backend/src/main/java/com/bokrilog/DevBybitStubConfig.java` + 스텁 논리 -- `@Profile` + 단일 `RouterFunction` + 생성자 guard + 내부 base URL -- 성공 2종·거부 9종을 결정적으로 낸다
+- [x] `backend/src/main/resources/application.yml`, `deploy/compose/compose.yaml` -- key ring·Bybit base URL·스텁 프로필 변수 -- 이름만, 값은 비움
+- [x] `frontend/src/screens/SettingsScreen.tsx` + `BybitConnectionForm.tsx` + CSS 모듈 -- `secure-input-form` 계약을 지키는 첫 폼 -- 기존 토큰만 쓴다
+- [x] `frontend/src/content/auth.ts`(또는 새 content 모듈) -- 연결 카피·오류 문장·시험용 배열 -- 화면에 한글 리터럴을 두지 않는다
+- [x] `frontend/src/session/bybitConnection.ts` -- 요청 모듈. `unlinkProvider.ts`의 `post()`를 export해 재사용 -- 네 번째 복제를 만들지 않는다
+- [x] 백엔드 시험 -- admission·어댑터 11종·트랜잭션·암호화·동시성·삭제 경쟁·경계 -- `AuthFlowTestBase` 상속, `resetStore()`에 새 테이블 추가
+- [x] `backend/src/test/java/com/bokrilog/ModuleBoundaryTest.java` -- 새 모듈 셋의 존재 단정과 `internal` 미노출 규칙 -- 존재 단정을 빠뜨리면 `verify()`가 조용히 통과한다
+- [x] `frontend/src/screens/*.test.tsx` -- 폼 접근성·Secret만 초기화·저장소 무기록·비밀 미노출
+- [x] `deploy/compose/verify-same-origin.sh` -- 연결 왕복 절 추가 -- 스텁으로 성공·거부를 실제 HTTP로 지난다
+- [x] `frontend/e2e/*.spec.ts` -- 주입 origin 게이트 안에서 성공 왕복과 비밀 비노출
 
 **Acceptance Criteria:**
 
@@ -223,3 +224,84 @@ context:
 - 성공 연결 뒤 `source_credential` 행을 직접 조회해 평문 조각이 없고 `nonce`가 행마다 다른지 본다
 - 실패한 검증 뒤 `source_*`·`portfolio*` 테이블의 행 수가 0인지 본다
 - 스택 로그 전문에서 API Key·Secret·`BOKRILOG_*` 이름이 나오지 않는지 본다(`verify-same-origin.sh`의 누출 검사가 자동화하지만 새 경로는 눈으로도 확인)
+
+## Suggested Review Order
+
+**세 단계를 순서대로 강제하는 자리 — 여기서 시작한다**
+
+- 준비의 게이트. 저장할 수 없는 스택에서는 제공자를 두드리기 전에 닫는다
+  [`BybitConnectionService.java:191`](../../backend/src/main/java/com/bokrilog/BybitConnectionService.java#L191)
+
+- 확인 단계가 게이트를 처음부터 다시 통과한다 — 준비 시점의 판정을 믿지 않는다
+  [`BybitConnectionService.java:287`](../../backend/src/main/java/com/bokrilog/BybitConnectionService.java#L287)
+
+- 사용자가 본 문구와 되돌아온 문구를 NFC 정규화 후 비교한다. 다섯 번째 귀속 축이 여기서 산다
+  [`BybitConnectionService.java:307`](../../backend/src/main/java/com/bokrilog/BybitConnectionService.java#L307)
+
+**원자성 — 외부 호출은 밖에서, 여섯 저장은 한 트랜잭션에서**
+
+- 허가 포트가 트랜잭션 경계를 소유하므로 외부 호출이 이 앞에서 이미 끝나 있다
+  [`BybitConnectionService.java:343`](../../backend/src/main/java/com/bokrilog/BybitConnectionService.java#L343)
+
+- 트랜잭션 **안**의 운영 제한 재검사. 왕복 중에 제한이 켜지면 여기서 전체가 롤백된다
+  [`BybitConnectionService.java:378`](../../backend/src/main/java/com/bokrilog/BybitConnectionService.java#L378)
+
+- 한 개 규칙을 애플리케이션이 세지 않고 조건부 유일 색인이 강제한다
+  [`V4__source_connection.sql:86`](../../backend/src/main/resources/db/migration/V4__source_connection.sql#L86)
+
+**인증 게이트 — 저장소에서 처음 열리는 자리**
+
+- 새 접두사에만 `authenticated()`. 나머지는 `permitAll`로 남아 Story 1.2의 404·405가 살아 있다
+  [`AuthSecurityConfig.java:956`](../../backend/src/main/java/com/bokrilog/AuthSecurityConfig.java#L956)
+
+- 인가와 CSRF·`Origin`이 같은 술어 하나를 부른다. 비대칭이 생길 자리를 없앴다
+  [`AuthSecurityConfig.java:1199`](../../backend/src/main/java/com/bokrilog/AuthSecurityConfig.java#L1199)
+
+**비밀 — 저장소 첫 암호화 자재**
+
+- AES-256-GCM, 매번 새 96비트 nonce, AAD 다섯 필드가 암호문을 그 행에 묶는다
+  [`CredentialCipher.java:41`](../../backend/src/main/java/com/bokrilog/source/internal/CredentialCipher.java#L41)
+
+- 자격정보 컬럼과 그 CHECK 상한. 평문도 응답 원문도 들어오지 않는다
+  [`V4__source_connection.sql:103`](../../backend/src/main/resources/db/migration/V4__source_connection.sql#L103)
+
+**제공자 판정 — 모르는 값은 전부 닫는다**
+
+- 세 호출을 순서대로 한 번씩. 앞이 거절하면 뒤를 보내지 않고 재시도도 없다
+  [`BybitAdapter.java:208`](../../backend/src/main/java/com/bokrilog/source/internal/BybitAdapter.java#L208)
+
+- 허용 목록은 비어 있고 그 공백은 스파이크가 채운다 — 비어 있으면 닫히는 쪽이 기본값이다
+  [`BybitAdapter.java:257`](../../backend/src/main/java/com/bokrilog/source/internal/BybitAdapter.java#L257)
+
+- 지갑 응답은 단일 `UNIFIED`와 canonical decimal만 받는다. 0으로 대체하지 않는다
+  [`BybitAdapter.java:237`](../../backend/src/main/java/com/bokrilog/source/internal/BybitAdapter.java#L237)
+
+**모듈 경계 — `identity` 하나에서 넷으로**
+
+- 연결·자격정보·어댑터를 소유한다. HTTP 표면은 없다
+  [`SourceConnectionApi.java:20`](../../backend/src/main/java/com/bokrilog/source/SourceConnectionApi.java#L20)
+
+- 호출자의 트랜잭션에 참여할 뿐 자기 경계를 열지 않는다
+  [`PortfolioMembershipApi.java:36`](../../backend/src/main/java/com/bokrilog/portfolio/PortfolioMembershipApi.java#L36)
+
+- 판독 전용. 제한을 만들고 푸는 운영자 표면은 Epic 3이 얹는다
+  [`OperationalRestrictionApi.java:25`](../../backend/src/main/java/com/bokrilog/operations/OperationalRestrictionApi.java#L25)
+
+**화면 — 저장소 첫 텍스트 입력 폼**
+
+- 네이티브 제출을 하지 않으므로 CSP `form-action 'none'`을 넓히지 않았다
+  [`BybitConnectionForm.tsx:50`](../../frontend/src/components/BybitConnectionForm.tsx#L50)
+
+- `/connect`만 20초 예산. 서버 최악(5초×3)을 덮어 성공이 abort로 뒤집히지 않는다
+  [`bybitConnection.ts:43`](../../frontend/src/session/bybitConnection.ts#L43)
+
+**시험 — 감사가 통과한 근거**
+
+- 외부 호출이 도는 동안 열린 트랜잭션도 계정 잠금도 없음을 호출 스레드에서 관측한다
+  [`BybitConnectionTransactionTest.java:1`](../../backend/src/test/java/com/bokrilog/BybitConnectionTransactionTest.java#L1)
+
+- 네 흐름의 상호 폐기 양방향과 "거절되는 시작은 남의 무장을 지킨다"
+  [`BybitConnectionFlowTest.java:1`](../../backend/src/test/java/com/bokrilog/BybitConnectionFlowTest.java#L1)
+
+- 기본 프로필에 스텁이 없고, 프로필과 실제 주소가 겹치면 양방향 모두 기동을 거부한다
+  [`DevBybitStubProfileTest.java:1`](../../backend/src/test/java/com/bokrilog/DevBybitStubProfileTest.java#L1)

@@ -63,9 +63,24 @@ class AuthSessionController {
      */
     private final UnlinkService unlinkService;
 
-    AuthSessionController(LinkService linkService, UnlinkService unlinkService) {
+    /**
+     * Bybit 연결의 판정과 실행.
+     *
+     * <p>이 컨트롤러가 그것을 아는 이유는 무장이 넷이 됐기 때문이다(Story 2.1). 설정 화면이
+     * 재인증·연결·해제·Bybit 연결을 같은 페이지에 그리므로 무장 시각에 나머지를 버려야 하고,
+     * 서비스끼리 서로를 주입받으면 생성자 순환이 된다. 각 서비스는 자기 흐름과 재인증만 버리고
+     * 상대 서비스의 흐름은 두 서비스를 함께 아는 컨트롤러가 버린다 —
+     * {@code BybitConnectionController}가 반대 방향으로 같은 일을 한다.
+     */
+    private final BybitConnectionService bybitConnectionService;
+
+    AuthSessionController(
+            LinkService linkService,
+            UnlinkService unlinkService,
+            BybitConnectionService bybitConnectionService) {
         this.linkService = linkService;
         this.unlinkService = unlinkService;
+        this.bybitConnectionService = bybitConnectionService;
     }
 
     /**
@@ -95,6 +110,8 @@ class AuthSessionController {
     private void abandonArmedFlows(HttpSession session) {
         this.linkService.abandon(session);
         this.unlinkService.abandon(session);
+        // Story 2.1의 네 번째 무장. 같은 화면에서 시작되므로 같은 규칙을 지난다.
+        this.bybitConnectionService.abandon(session);
     }
 
     /**
@@ -420,6 +437,7 @@ class AuthSessionController {
          * 자기 흐름과 재인증 무장은 위 `start`가 같은 규율로 버린다.
          */
         this.unlinkService.abandon(session);
+        this.bybitConnectionService.abandon(session);
         response.setStatus(HttpStatus.NO_CONTENT.value());
     }
 
@@ -465,6 +483,7 @@ class AuthSessionController {
         }
         // 무장이 확정된 뒤에만 상대 흐름을 버린다(`startLink`와 같은 근거).
         this.linkService.abandon(session);
+        this.bybitConnectionService.abandon(session);
         response.setStatus(HttpStatus.NO_CONTENT.value());
     }
 

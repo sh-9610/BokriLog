@@ -80,11 +80,16 @@ export async function cancelUnlink(
 }
 
 /**
- * 세 요청이 공유하는 전송 하나.
+ * 상태 변경 요청 하나의 공유 전송.
+ *
+ * **export하는 이유는 재사용이다.** Story 2.1의 Bybit 연결 취소가 정확히 같은 모양을 필요로 하고
+ * (`POST`, 세션 쿠키, 토큰 헤더, 204만 성공, 자동 재시도 없음), 복제하면 시한·자격정보 정책·
+ * 실패 접기 규칙이 네 번째 사본으로 갈라진다. 정의가 이 모듈에 남는 것은 첫 소비자가 여기였기
+ * 때문이며, 그 자리를 옮기는 것은 별도로 배포 가능한 딴 목표다.
  *
  * @returns 서버가 204로 답했는가. 그 밖은 전부 거짓 하나다
  */
-async function post(path: string, csrfToken: string | null): Promise<boolean> {
+export async function post(path: string, csrfToken: string | null): Promise<boolean> {
   if (csrfToken === null) {
     /*
      * 토큰이 없으면 보내지 않는다. 보내도 서버가 403으로 거절하므로 결과는 같지만, 그 요청은

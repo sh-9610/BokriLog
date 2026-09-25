@@ -165,14 +165,18 @@ public class ApiErrorHandler extends ResponseEntityExceptionHandler {
     }
 
     private static String correlationId(WebRequest request) {
-        return correlationId(request.getHeader(REQUEST_ID_HEADER));
+        return correlationIdOf(request.getHeader(REQUEST_ID_HEADER));
     }
 
     /**
      * 진입점이 준 값이 없으면 새로 만든다. 헤더는 클라이언트가 조작할 수 있으므로 길이를 제한하고
      * 안전한 문자만 남긴다. 조작된 값이 그대로 로그·응답에 들어가면 로그 위조 통로가 된다.
+     *
+     * <p>package-private이다. 자기 본문을 직접 만드는 컨트롤러가 하나 생겼고
+     * ({@code BybitConnectionController}) 그 응답의 correlation ID도 이 규칙을 지나야 한다 — 두
+     * 곳에서 만들면 진입점이 준 값을 한쪽만 존중하는 날이 온다.
      */
-    private static String correlationId(@Nullable String headerValue) {
+    static String correlationIdOf(@Nullable String headerValue) {
         if (headerValue == null) {
             return UUID.randomUUID().toString();
         }
@@ -204,7 +208,7 @@ public class ApiErrorHandler extends ResponseEntityExceptionHandler {
             HttpStatus status = statusOf(request);
             return ResponseEntity.status(status)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(errorFor(status, correlationId(request.getHeader(REQUEST_ID_HEADER))));
+                    .body(errorFor(status, correlationIdOf(request.getHeader(REQUEST_ID_HEADER))));
         }
 
         private static HttpStatus statusOf(HttpServletRequest request) {

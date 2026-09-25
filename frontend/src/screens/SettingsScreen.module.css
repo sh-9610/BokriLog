@@ -389,6 +389,45 @@
   line-height: var(--type-label-line-height);
 }
 
+/*
+ * 연결된 Bybit 계정의 사실 두 가지(Story 2.1).
+ *
+ * 정의 목록이다. "검증 시각"과 "적용 정책 버전"이 각각 이름과 값의 쌍이고, 그 관계를 표현하는
+ * 것이 `dl`의 일이다 — 문장 두 개로 두면 보조기술이 어느 값이 어느 이름의 것인지 모른다.
+ *
+ * 금융값이 없다. 이 구역이 보여 주는 것은 연결 사실뿐이며 총자산도 수익률도 그리지 않는다.
+ */
+.connectionMeta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.connectionMetaRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.connectionTerm {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  color: var(--component-history-row-meta);
+}
+
+/*
+ * 값. 복사 가능한 불투명 값의 관용을 따라 등폭 글꼴을 쓴다(DESIGN.md).
+ */
+.connectionValue {
+  font-family: var(--type-mono-font-family);
+  font-size: var(--type-mono-font-size);
+  font-weight: var(--type-mono-font-weight);
+  line-height: var(--type-mono-line-height);
+  color: var(--color-ink-primary);
+  overflow-wrap: anywhere;
+}
+
 /* 연결이 요구하는 것과 요구하지 않는 것. 목록 아래에 둔다. */
 .boundary {
   font-size: var(--type-label-font-size);

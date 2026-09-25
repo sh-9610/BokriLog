@@ -3,6 +3,8 @@ package com.bokrilog;
 import com.bokrilog.DevOidcStub.TokenPlan;
 import com.bokrilog.identity.AccountDeletionApi;
 import com.bokrilog.identity.AccountLifecycleApi;
+import com.bokrilog.portfolio.PortfolioMembershipApi;
+import com.bokrilog.source.SourceConnectionApi;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URLDecoder;
@@ -72,6 +74,12 @@ abstract class AuthFlowTestBase {
     @DynamicPropertySource
     static void authProperties(DynamicPropertyRegistry registry) {
         OidcStubConfiguration.registerProperties(registry);
+        /*
+         * Story 2.1의 source 구성도 같은 메서드에서 채운다. 새 `@DynamicPropertySource`를 만들면
+         * 컨텍스트 customizer가 달라져 컨텍스트가 하나 더 뜨고, 그 비용은 `backend-quality`의
+         * wall-clock이다.
+         */
+        BybitStubConfiguration.registerProperties(registry);
     }
 
     @LocalServerPort
@@ -88,6 +96,20 @@ abstract class AuthFlowTestBase {
 
     @Autowired
     private SessionGuard sessionGuard;
+
+    /**
+     * 금융 source 연결의 공개 API(Story 2.1).
+     *
+     * <p>HTTP를 지나지 않는 축 하나가 이 빈을 직접 부른다 — 삭제 경로다. 전체 계정 삭제
+     * orchestration은 Epic 5의 것이라 지금은 HTTP 표면이 없고, 그래도 이 스토리가 만든 데이터의
+     * 삭제 경로는 함께 완성돼야 한다.
+     */
+    @Autowired
+    private SourceConnectionApi sources;
+
+    /** portfolio membership의 공개 API. {@link #sources}와 같은 근거로 주입한다. */
+    @Autowired
+    private PortfolioMembershipApi portfolios;
 
     /**
      * 연결의 판정과 실행.
@@ -134,11 +156,19 @@ abstract class AuthFlowTestBase {
         this.jdbc.sql("TRUNCATE TABLE spring_session, spring_session_attributes").update();
         // `action_grant`를 이름으로 적는다. `identity_account`를 참조하므로 CASCADE가 어차피
         // 비우지만, 이름이 없으면 그 정리가 외래키 설정에 딸린 부수 효과로만 성립한다.
+        //
+        // Story 2.1의 다섯 테이블도 같은 이유로 이름으로 적는다. `source_*`·`portfolio*`는
+        // `identity_account`를 `ON DELETE RESTRICT`로 가리키므로 이름이 없으면 TRUNCATE 자체가
+        // 실패하고, 그 실패는 "시험이 서로를 오염시킨다"가 아니라 "초기화가 깨졌다"로 보인다.
         this.jdbc
                 .sql(
-                        "TRUNCATE TABLE action_grant, identity_social_link, identity_account, "
-                                + "identity_account_lifecycle CASCADE")
+                        "TRUNCATE TABLE portfolio_source_membership, portfolio, source_credential, "
+                                + "source_connection, source_provider_account, action_grant, "
+                                + "identity_social_link, identity_account, identity_account_lifecycle "
+                                + "CASCADE")
                 .update();
+        // 운영 제한은 어느 계정도 참조하지 않는다. 그래서 위 CASCADE가 비우지 못한다.
+        this.jdbc.sql("TRUNCATE TABLE operations_restriction").update();
     }
 
     // ----------------------------------------------------------------------
@@ -622,6 +652,247 @@ abstract class AuthFlowTestBase {
             builder.header(headers[index], headers[index + 1]);
         }
         return this.client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    /**
+     * 본문이 있는 요청 하나.
+     *
+     * <p>{@link #send}와 갈라 두는 이유는 자격정보다. Bybit 연결의 최종 확인만 본문을 가지며, 그
+     * 본문에 Secret이 실린다 — 쿼리 문자열로 보내는 오버로드를 만들지 않는 것이 이 분리의 뜻이다.
+     */
+    HttpResponse<String> sendJson(
+            String method, String path, String body, @Nullable String sessionCookie, String... headers)
+            throws IOException, InterruptedException {
+        HttpRequest.Builder builder =
+                HttpRequest.newBuilder()
+                        .uri(URI.create("http://127.0.0.1:" + this.port + path))
+                        .timeout(Duration.ofSeconds(20))
+                        .header("Content-Type", "application/json")
+                        .method(method, HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+        if (sessionCookie != null) {
+            builder.header("Cookie", SESSION_COOKIE_NAME + "=" + sessionCookie);
+        }
+        for (int index = 0; index + 1 < headers.length; index += 2) {
+            builder.header(headers[index], headers[index + 1]);
+        }
+        return this.client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    // ----------------------------------------------------------------------
+    // Bybit 연결(Story 2.1)
+    // ----------------------------------------------------------------------
+
+    /** 최종 확인 경로. 준비와 갈라 두는 것이 "확인 전에는 아무것도 바뀌지 않는다"의 짝이다. */
+    static final String BYBIT_CONNECT_PATH =
+            AuthSecurityConfig.BYBIT_CONNECTION_PATH + "/" + AuthSecurityConfig.CONNECT_SEGMENT;
+
+    /** 취소 경로. 준비가 만든 무장과 허가를 되돌린다. */
+    static final String BYBIT_CANCEL_PATH =
+            AuthSecurityConfig.BYBIT_CONNECTION_PATH + "/" + AuthSecurityConfig.CANCEL_SEGMENT;
+
+    /** 연결 상태 조회. 안전한 메서드라 CSRF·{@code Origin}을 요구하지 않는다. */
+    HttpResponse<String> bybitConnectionState(@Nullable String sessionCookie)
+            throws IOException, InterruptedException {
+        return get(AuthSecurityConfig.BYBIT_CONNECTION_PATH, sessionCookie);
+    }
+
+    /**
+     * 연결 준비 요청. 자격정보 입력 폼을 열 자리이며 <b>아무것도 바꾸지 않는다.</b>
+     *
+     * <p>{@code /api/connections/} 아래이므로 {@code /api/auth/}와 같은 상태 변경 계약을 지난다 —
+     * 세션 귀속 CSRF 토큰과 동일 출처 {@code Origin}. 둘 중 하나를 비우거나 틀린 값으로 주는 것이
+     * 이 스토리의 거절 축이므로 인자로 받는다.
+     */
+    HttpResponse<String> prepareBybitConnection(
+            @Nullable String sessionCookie, @Nullable String csrfToken, @Nullable String origin)
+            throws IOException, InterruptedException {
+        return send(
+                "POST",
+                AuthSecurityConfig.BYBIT_CONNECTION_PATH,
+                sessionCookie,
+                protectedHeaders(csrfToken, origin));
+    }
+
+    /** 계약을 모두 만족시키는 연결 준비. 정상 경로가 필요한 시험이 쓴다. */
+    HttpResponse<String> prepareBybitConnection(
+            @Nullable String sessionCookie, @Nullable String csrfToken)
+            throws IOException, InterruptedException {
+        return prepareBybitConnection(sessionCookie, csrfToken, OidcStubConfiguration.PUBLIC_BASE_URL);
+    }
+
+    /** 준비 응답에서 확인 문구만 꺼낸다. 화면이 렌더하고 최종 확인이 되보낼 값이다. */
+    static String confirmationIn(String body) {
+        Object value = topLevelFieldsOf(body).get("confirmation");
+        return value instanceof String text ? text : "";
+    }
+
+    /** 최종 확인 요청. <b>여기서만 제공자로 나가고 여기서만 상태가 바뀐다.</b> */
+    HttpResponse<String> connectBybit(
+            @Nullable String sessionCookie,
+            @Nullable String csrfToken,
+            @Nullable String origin,
+            @Nullable String apiKey,
+            @Nullable String apiSecret,
+            @Nullable String confirmation)
+            throws IOException, InterruptedException {
+        return sendJson(
+                "POST",
+                BYBIT_CONNECT_PATH,
+                connectBody(apiKey, apiSecret, confirmation),
+                sessionCookie,
+                protectedHeaders(csrfToken, origin));
+    }
+
+    /** 계약을 모두 만족시키는 최종 확인. */
+    HttpResponse<String> connectBybit(
+            @Nullable String sessionCookie,
+            @Nullable String csrfToken,
+            @Nullable String apiKey,
+            @Nullable String apiSecret,
+            @Nullable String confirmation)
+            throws IOException, InterruptedException {
+        return connectBybit(
+                sessionCookie,
+                csrfToken,
+                OidcStubConfiguration.PUBLIC_BASE_URL,
+                apiKey,
+                apiSecret,
+                confirmation);
+    }
+
+    /** 연결 취소 요청. 준비가 만든 무장과 허가를 되돌린다. */
+    HttpResponse<String> cancelBybitConnection(
+            @Nullable String sessionCookie, @Nullable String csrfToken)
+            throws IOException, InterruptedException {
+        return send(
+                "POST",
+                BYBIT_CANCEL_PATH,
+                sessionCookie,
+                protectedHeaders(csrfToken, OidcStubConfiguration.PUBLIC_BASE_URL));
+    }
+
+    /**
+     * 준비 → 최종 확인 왕복 하나.
+     *
+     * <p>준비가 200이 아니면 그 자리에서 멈춘다({@code link}·{@code unlink}와 같은 근거). 조용히
+     * 이어 가면 뒤따르는 단정이 "연결이 실패했다"를 보면서 통과하는데, 실제 원인은 흐름이 시작조차
+     * 하지 않은 것이다.
+     */
+    HttpResponse<String> connectBybitRoundTrip(
+            String sessionCookie, @Nullable String csrfToken, String apiKey, String apiSecret)
+            throws IOException, InterruptedException {
+        HttpResponse<String> prepared = prepareBybitConnection(sessionCookie, csrfToken);
+        if (prepared.statusCode() != 200) {
+            throw new IllegalStateException(
+                    "연결 준비가 200이 아니다: " + prepared.statusCode() + " " + prepared.body());
+        }
+        return connectBybit(
+                sessionCookie, csrfToken, apiKey, apiSecret, confirmationIn(prepared.body()));
+    }
+
+    /**
+     * 최종 확인의 본문.
+     *
+     * <p>{@code null}인 필드는 아예 싣지 않는다. 그래야 "필드가 없다"와 "빈 값이다"를 시험이 갈라
+     * 볼 수 있다.
+     */
+    private static String connectBody(
+            @Nullable String apiKey, @Nullable String apiSecret, @Nullable String confirmation) {
+        List<String> fields = new ArrayList<>();
+        if (apiKey != null) {
+            fields.add("\"apiKey\":\"" + escapeJson(apiKey) + "\"");
+        }
+        if (apiSecret != null) {
+            fields.add("\"apiSecret\":\"" + escapeJson(apiSecret) + "\"");
+        }
+        if (confirmation != null) {
+            fields.add("\"confirmation\":\"" + escapeJson(confirmation) + "\"");
+        }
+        return "{" + String.join(",", fields) + "}";
+    }
+
+    private static String escapeJson(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    /** 운영 제한 하나를 건다. Epic 3의 운영자 표면이 없으므로 시험이 직접 행을 넣는다. */
+    void restrictCommand(String command) {
+        this.jdbc
+                .sql(
+                        "INSERT INTO operations_restriction (restriction_id, command) "
+                                + "VALUES (:id, :command)")
+                .param("id", UUID.randomUUID())
+                .param("command", command)
+                .update();
+    }
+
+    long sourceConnectionCount() {
+        return count("SELECT count(*) FROM source_connection");
+    }
+
+    long sourceCredentialCount() {
+        return count("SELECT count(*) FROM source_credential");
+    }
+
+    long providerAccountCount() {
+        return count("SELECT count(*) FROM source_provider_account");
+    }
+
+    long portfolioCount() {
+        return count("SELECT count(*) FROM portfolio");
+    }
+
+    long membershipCount() {
+        return count("SELECT count(*) FROM portfolio_source_membership");
+    }
+
+    /**
+     * 한 사용자의 연결 행 수.
+     *
+     * <p>전체 개수만 세면 "다른 사용자의 연결이 보존됐다"를 확인할 수 없다
+     * ({@link #sessionCountOf}와 같은 근거).
+     */
+    long sourceConnectionCountOf(UUID userId) {
+        return this.jdbc
+                .sql("SELECT count(*) FROM source_connection WHERE user_id = :userId")
+                .param("userId", userId)
+                .query(Long.class)
+                .single();
+    }
+
+    long portfolioCountOf(UUID userId) {
+        return this.jdbc
+                .sql("SELECT count(*) FROM portfolio WHERE user_id = :userId")
+                .param("userId", userId)
+                .query(Long.class)
+                .single();
+    }
+
+    /** 그 사용자의 안정 식별자. 자격정보를 교체해 다시 연결해도 같은 값이어야 한다. */
+    Optional<UUID> providerAccountIdOf(UUID userId) {
+        return this.jdbc
+                .sql("SELECT provider_account_id FROM source_provider_account WHERE user_id = :userId")
+                .param("userId", userId)
+                .query(UUID.class)
+                .optional();
+    }
+
+    /** 저장된 자격정보 행 하나. 평문 조각이 없는지, nonce가 행마다 다른지 보는 창이다. */
+    record StoredCredential(String keyVersion, String algorithmVersion, byte[] nonce, byte[] ciphertext) {}
+
+    List<StoredCredential> storedCredentials() {
+        return this.jdbc
+                .sql(
+                        "SELECT key_version, algorithm_version, nonce, ciphertext FROM source_credential "
+                                + "ORDER BY created_at")
+                .query(
+                        (rs, rowNum) ->
+                                new StoredCredential(
+                                        rs.getString("key_version"),
+                                        rs.getString("algorithm_version"),
+                                        rs.getBytes("nonce"),
+                                        rs.getBytes("ciphertext")))
+                .list();
     }
 
     static String callbackPath() {
@@ -1155,6 +1426,16 @@ abstract class AuthFlowTestBase {
 
     AccountLifecycleApi accountLifecycle() {
         return this.accountLifecycle;
+    }
+
+    /** 금융 source 연결의 공개 API. 삭제 경로를 HTTP 없이 부르는 시험이 쓴다. */
+    SourceConnectionApi sources() {
+        return this.sources;
+    }
+
+    /** portfolio membership의 공개 API. 같은 근거로 삭제 경로를 부른다. */
+    PortfolioMembershipApi portfolios() {
+        return this.portfolios;
     }
 
     AccountDeletionApi accountDeletion() {

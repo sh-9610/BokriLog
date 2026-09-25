@@ -165,6 +165,32 @@ bokrilog:
     kakao:
       client-id: ${BOKRILOG_KAKAO_CLIENT_ID:}
       client-secret: ${BOKRILOG_KAKAO_CLIENT_SECRET:}
+  # 금융 source 연결(Story 2.1). 이름만 이 파일이 정하고 값은 환경이 준다.
+  #
+  #   BOKRILOG_SOURCE_CREDENTIAL_KEYS  -- `<버전>:<base64 32바이트>`를 쉼표로 이은 key ring.
+  #                                       과거 키를 함께 담아 decrypt-only 호환을 유지한다.
+  #   BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION
+  #                                    -- 새 암호화가 쓸 버전. 위 목록에 그 버전이 있어야 한다.
+  #   BOKRILOG_BYBIT_BASE_URL          -- 제공자 API의 origin. 개발·CI는 local 스텁을 가리킨다.
+  #   BOKRILOG_BYBIT_RESERVED_IP       -- 운영 reserved IP. 키의 `ips`에 이 값이 있어야 통과한다.
+  #   BOKRILOG_BYBIT_REQUEST_TIMEOUT   -- 외부 호출 하나의 상한. 넘으면 거절이며 재시도하지 않는다.
+  #
+  # 값이 없으면 기동이 아니라 **연결 기능**이 fail-closed다(제공자 등록과 같은 관용). key ring이
+  # 없으면 평문으로 저장하는 경로를 만들지 않고 거절하며, base URL이나 reserved IP가 없으면 검증
+  # 자체가 성립하지 않는다. 어느 값이 비었는지는 응답에도 로그에도 남기지 않는다.
+  #
+  # 키 자체는 여기에도 compose에도 없다. 자격정보 모양 리터럴을 커밋하지 않는다는 규율이 그대로
+  # 적용되며, 개발·CI의 키는 `deploy/compose/verify-same-origin.sh`가 실행 시점에 만들고 백엔드
+  # 시험은 시험 JVM이 만든다. production 비밀 공급은 Story 3.8이 소유한다.
+  source:
+    credential:
+      keys: ${BOKRILOG_SOURCE_CREDENTIAL_KEYS:}
+      active-key-version: ${BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION:}
+    bybit:
+      base-url: ${BOKRILOG_BYBIT_BASE_URL:}
+      reserved-ip: ${BOKRILOG_BYBIT_RESERVED_IP:}
+      # 빈 문자열은 Duration으로 읽히지 않는다. 값을 주지 않는 스택의 바닥을 여기서 정한다.
+      request-timeout: ${BOKRILOG_BYBIT_REQUEST_TIMEOUT:5s}
   # 세션 수명의 두 번째 축(Story 1.5).
   #
   # 절대 수명이다. 세션 `CREATION_TIME`을 기준으로 세고 재요청·세션 ID 회전으로 늘어나지 않는다.

@@ -129,6 +129,12 @@ forbidden_fragments=(
   'BOKRILOG_KAKAO_CLIENT_ID'
   'BOKRILOG_KAKAO_CLIENT_SECRET'
   'BOKRILOG_DEV_OIDC_INTERNAL_BASE_URL'
+  # Story 2.1이 더한 이름 넷. 값이 아니라 이름만 나와도 어떤 값을 찾아야 하는지 알려 준다.
+  'BOKRILOG_BYBIT_BASE_URL'
+  'BOKRILOG_BYBIT_RESERVED_IP'
+  'BOKRILOG_BYBIT_REQUEST_TIMEOUT'
+  'BOKRILOG_SOURCE_CREDENTIAL_KEYS'
+  'BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION'
   'SPRING_PROFILES_ACTIVE'
   'NGINX_ENTRYPOINT_QUIET_LOGS'
   # 재인증이 제공자에게 보내는 최근 인증 요청·증거. 인가 요청의 `claims`와 ID Token의 claim
@@ -220,6 +226,19 @@ trap 'cleanup 130; exit 130' INT
 trap 'cleanup 143; exit 143' TERM
 
 printf '동일 출처 검증\n\n'
+
+# 자격정보 암호화 key ring을 **실행 시점에** 만든다(Story 2.1).
+#
+# 32바이트 키의 base64는 자격정보 모양 리터럴이라 저장소에 커밋하지 않는다. compose가 이름만
+# 정하고 값은 여기서 나며(`deploy/compose/compose.yaml`), 이 값을 주지 않으면 백엔드의 연결
+# 기능만 공통 오류 계약으로 fail-closed다 — 나머지 단정은 그대로 성립한다.
+#
+# `base64`는 POSIX 도구가 아니지만 macOS와 GNU coreutils 모두 제공하고 이 스크립트가 이미
+# 요구하는 `docker`·`curl`과 같은 수준의 전제다. 32바이트는 두 구현 모두 한 줄로 내보내지만
+# 줄바꿈 제거를 붙여 그 사실에 기대지 않는다.
+BOKRILOG_SOURCE_CREDENTIAL_KEYS="verify:$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION='verify'
+export BOKRILOG_SOURCE_CREDENTIAL_KEYS BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION
 
 # 스키마 마이그레이션을 `up` 앞에서 한 번만 실행한다(AD-12).
 #
@@ -2081,6 +2100,234 @@ assert_rows '마지막 수단 거부가 매핑을 지우지 않는다' \
 assert_rows '마지막 수단 거부가 세션을 건드리지 않는다' \
   "SELECT count(*) FROM spring_session WHERE principal_name = '${unlink_user_id}'" '1'
 
+printf '\nBybit 연결 왕복\n'
+
+# 읽기 전용 Bybit 연결이다. Story 2.1의 HTTP 계약을 보는 유일한 자리이며, 위 왕복들이 만든
+# Google 계정의 세션이 그대로 전제다.
+#
+# 앞의 세 왕복과 다른 것이 넷이다 — 접두사가 `/api/auth/`가 아니라 `/api/connections/`이고,
+# **미인증 요청이 401로 끝나며**(이 스토리가 인증으로 막는 첫 경로를 연다), 최종 확인이 JSON
+# 본문으로 자격정보를 싣고, 성공 응답이 204가 아니라 연결 사실을 담은 200이다.
+#
+# 제공자는 `dev-bybit` 프로필의 local 스텁이다. 시나리오를 API Key가 고르므로 같은 키로 몇 번을
+# 물어도 같은 답이 나온다(`DevBybitStub`).
+#
+# 재인증은 위 연결 왕복이 이미 마쳤다. 세션의 재인증 시각이 남아 있어야 허가가 서고, 그 값은
+# 세션 회전을 건너 살아남는다.
+
+connection_session_cookie="${google_session_cookie}"
+connection_csrf_token="${google_csrf_token}"
+
+if [ -n "${connection_session_cookie}" ] && [ -n "${connection_csrf_token}" ]; then
+  record_pass 'Bybit 연결에 쓸 세션 쿠키와 토큰을 얻었다'
+else
+  record_fail 'Bybit 연결에 쓸 세션 쿠키와 토큰을 얻었다' \
+    '해제 절 뒤의 쿠키나 토큰이 없다. 아래 단정이 아무것도 보지 않는다.'
+fi
+
+# 이 절이 쓰는 Bybit 메인 UID와 Secret. UID는 시나리오 선택자이고 Secret은 실행 시점 난수다 —
+# 자격정보 모양 리터럴을 스크립트에 두지 않는다.
+#
+# 일곱 자리로 채운다. 아래 "응답에 이 값이 없다" 단정이 이 문자열을 바늘로 쓰는데, 짧은 숫자는
+# 응답에 실리는 ISO 시각의 자릿수와 우연히 겹칠 수 있고 그때 실패는 계약이 아니라 우연이 만든다.
+connection_uid="8$(printf '%06d' "$$")"
+connection_secret="$(head -c 18 /dev/urandom | base64 | tr -d '\n')"
+
+# 1) 인가 규칙. **이 스토리가 인증으로 막는 첫 경로다.**
+fetch GET /api/connections/bybit
+assert_equals '미인증 연결 상태 조회 401' "${last_status}" '401'
+assert_body_contains '미인증 연결 상태 조회 안정 code' '"code":"UNAUTHENTICATED"'
+assert_correlation_id '미인증 연결 상태 조회 correlation ID'
+assert_security_headers '미인증 연결 상태 조회'
+
+# 그 규칙이 접두사 하나에만 걸린다. Story 1.2가 고정한 두 탐침이 그대로여야 한다.
+fetch GET /api/nope
+assert_equals '인가 규칙 뒤에도 `GET /api/nope`는 404다' "${last_status}" '404'
+assert_body_contains '인가 규칙 뒤에도 안정 code가 NOT_FOUND다' '"code":"NOT_FOUND"'
+fetch POST /api/status
+assert_equals '인가 규칙 뒤에도 `POST /api/status`는 405다' "${last_status}" '405'
+assert_body_contains '인가 규칙 뒤에도 안정 code가 METHOD_NOT_ALLOWED다' '"code":"METHOD_NOT_ALLOWED"'
+
+# 2) 상태 변경의 보호. `/api/auth/` 아래와 같은 계약을 지난다.
+fetch POST /api/connections/bybit \
+  -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}" \
+  -H "Origin: ${base_url}"
+assert_equals '토큰 없는 연결 준비 403' "${last_status}" '403'
+assert_body_contains '토큰 없는 연결 준비 안정 code' '"code":"FORBIDDEN"'
+
+fetch POST /api/connections/bybit \
+  -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}" \
+  -H 'Origin: https://evil.example' \
+  -H "X-CSRF-TOKEN: ${connection_csrf_token}"
+assert_equals '교차 출처 연결 준비 403' "${last_status}" '403'
+assert_body_contains '교차 출처 연결 준비 안정 code' '"code":"FORBIDDEN"'
+
+# 3) 연결 전 상태. 확인 전에는 연결 여부를 주장하지 않는다.
+fetch GET /api/connections/bybit -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}"
+assert_equals '연결 전 상태 조회 200' "${last_status}" '200'
+assert_equals '연결 전 상태 본문은 고정된 최소 필드뿐' "$(cat "${last_body}")" '{"connected":false}'
+assert_security_headers '연결 전 상태 조회'
+
+assert_rows '연결 전에는 연결 행이 없다' 'SELECT count(*) FROM source_connection' '0'
+assert_rows '연결 전에는 자격정보 행이 없다' 'SELECT count(*) FROM source_credential' '0'
+assert_rows '연결 전에는 portfolio가 없다' 'SELECT count(*) FROM portfolio' '0'
+
+# 4) 준비. 허가를 발급하고 확인 문구를 돌려줄 뿐 **아무것도 바꾸지 않는다.**
+fetch POST /api/connections/bybit \
+  -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${connection_csrf_token}"
+assert_equals '연결 준비 200' "${last_status}" '200'
+assert_body_contains '연결 준비가 확인 문구를 돌려준다' '"confirmation":"'
+assert_security_headers '연결 준비 200'
+connection_confirmation="$(sed -n 's/.*"confirmation":"\([^"]*\)".*/\1/p' "${last_body}")"
+assert_rows '연결 준비가 허가를 하나 발급한다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'bybit-connection-create'" '1'
+assert_rows '연결 준비가 아무것도 저장하지 않는다' 'SELECT count(*) FROM source_connection' '0'
+
+# 확인 문구가 요청마다 다르다. 이것이 허가의 다섯 번째 귀속 축을 실제로 살아 있게 한다 —
+# command별 상수를 그대로 쓰면 해시가 `(command, target)`의 결정적 함수가 된다.
+fetch POST /api/connections/bybit \
+  -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${connection_csrf_token}"
+assert_equals '두 번째 연결 준비 200' "${last_status}" '200'
+connection_second_confirmation="$(sed -n 's/.*"confirmation":"\([^"]*\)".*/\1/p' "${last_body}")"
+if [ -n "${connection_confirmation}" ] \
+  && [ "${connection_confirmation}" != "${connection_second_confirmation}" ]; then
+  record_pass '확인 문구가 요청마다 다르다'
+else
+  record_fail '확인 문구가 요청마다 다르다' \
+    "두 문구가 같다 — '${connection_confirmation}'"
+fi
+connection_confirmation="${connection_second_confirmation}"
+# 앞선 허가는 새 발급이 무효화했다. 살아 있는 허가는 언제나 하나다.
+assert_rows '새 준비가 앞선 허가를 무효화한다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'bybit-connection-create'" '1'
+
+# 5) 쓰기 권한이 붙은 키. 저장 없이 거절하고 사용자가 할 일을 말한다.
+fetch POST /api/connections/bybit/connect \
+  -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${connection_csrf_token}" \
+  -H 'Content-Type: application/json' \
+  --data "{\"apiKey\":\"write.${connection_uid}\",\"apiSecret\":\"${connection_secret}\",\"confirmation\":\"${connection_confirmation}\"}"
+assert_equals '쓰기 권한 키의 연결 422' "${last_status}" '422'
+assert_body_contains '쓰기 권한 전용 code' '"code":"CONNECTION_WRITE_PERMISSION"'
+assert_correlation_id '쓰기 권한 거절 correlation ID'
+assert_body_lacks '거절이 Secret을 되비추지 않는다' "${connection_secret}"
+assert_body_lacks '거절이 제공자 응답 원문을 나르지 않는다' 'retCode'
+assert_security_headers '쓰기 권한 거절'
+assert_rows '거절이 연결을 만들지 않는다' 'SELECT count(*) FROM source_connection' '0'
+assert_rows '거절이 자격정보를 만들지 않는다' 'SELECT count(*) FROM source_credential' '0'
+assert_rows '거절이 허가를 소비하지 않는다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'bybit-connection-create' AND consumed_at IS NOT NULL" \
+  '0'
+
+# 6) IP가 묶이지 않은 키. 같은 무장으로 다시 시도할 수 있다는 사실이 여기서 관측된다.
+fetch POST /api/connections/bybit/connect \
+  -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${connection_csrf_token}" \
+  -H 'Content-Type: application/json' \
+  --data "{\"apiKey\":\"noip.${connection_uid}\",\"apiSecret\":\"${connection_secret}\",\"confirmation\":\"${connection_confirmation}\"}"
+assert_equals 'IP 미바인딩 키의 연결 422' "${last_status}" '422'
+assert_body_contains 'IP 미바인딩 전용 code' '"code":"CONNECTION_IP_NOT_BOUND"'
+assert_rows 'IP 거절도 아무것도 저장하지 않는다' 'SELECT count(*) FROM source_connection' '0'
+
+# 7) 지원되는 읽기 전용 메인 UID 키. 여섯이 한 트랜잭션으로 커밋된다.
+fetch POST /api/connections/bybit/connect \
+  -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${connection_csrf_token}" \
+  -H 'Content-Type: application/json' \
+  --data "{\"apiKey\":\"uta2.${connection_uid}\",\"apiSecret\":\"${connection_secret}\",\"confirmation\":\"${connection_confirmation}\"}"
+assert_equals '정상 연결 200' "${last_status}" '200'
+assert_body_contains '정상 연결이 연결 사실을 답한다' '"connected":true'
+assert_body_contains '정상 연결이 적용 정책 버전을 답한다' '"policyVersion":"'
+assert_body_contains '정상 연결이 검증 시각을 답한다' '"verifiedAt":"'
+assert_body_lacks '성공 응답에 Secret이 없다' "${connection_secret}"
+assert_body_lacks '성공 응답에 API Key가 없다' "uta2.${connection_uid}"
+assert_security_headers '정상 연결 200'
+
+assert_rows '연결이 하나 생긴다' 'SELECT count(*) FROM source_connection' '1'
+assert_rows '자격정보가 하나 생긴다' 'SELECT count(*) FROM source_credential' '1'
+assert_rows '제공자 계정이 하나 생긴다' 'SELECT count(*) FROM source_provider_account' '1'
+assert_rows '기본 USD portfolio가 하나 생긴다' \
+  "SELECT count(*) FROM portfolio WHERE base_currency = 'USD' AND is_default" '1'
+assert_rows '활성 source membership이 하나 생긴다' \
+  'SELECT count(*) FROM portfolio_source_membership WHERE ended_at IS NULL' '1'
+assert_rows '연결이 허가를 정확히 한 번 소비한다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'bybit-connection-create' AND consumed_at IS NOT NULL" \
+  '1'
+
+# 저장된 자격정보에 평문 조각이 없다. nonce는 96비트이고 active key version이 실려 있다.
+assert_rows '저장된 암호문에 Secret 평문이 없다' \
+  "SELECT count(*) FROM source_credential WHERE position(convert_to('${connection_secret}', 'UTF8') in ciphertext) > 0" \
+  '0'
+assert_rows '저장된 암호문에 API Key 평문이 없다' \
+  "SELECT count(*) FROM source_credential WHERE position(convert_to('uta2.${connection_uid}', 'UTF8') in ciphertext) > 0" \
+  '0'
+assert_rows '저장된 nonce가 96비트다' \
+  'SELECT count(*) FROM source_credential WHERE octet_length(nonce) = 12' '1'
+assert_rows '저장된 자격정보에 active key version이 실려 있다' \
+  "SELECT count(*) FROM source_credential WHERE key_version = 'verify'" '1'
+# 평문 컬럼이 없다는 사실을 스키마에서도 본다. 이름으로 세는 것이 요점이다 — 컬럼이 하나라도
+# 더해지면 이 숫자가 달라진다.
+assert_rows '자격정보 테이블에 평문 컬럼이 없다' \
+  "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'source_credential' AND column_name IN ('api_key', 'api_secret', 'secret', 'plaintext')" \
+  '0'
+
+# 세션 ID가 회전했다. 허가 소비 성공이 요구하는 것이다(`SECURITY-ACTION-1.0`).
+connection_rotated_cookie="$(session_cookie_value)"
+if [ -n "${connection_rotated_cookie}" ] \
+  && [ "${connection_rotated_cookie}" != "${connection_session_cookie}" ]; then
+  record_pass '연결 성공 시점에 세션 ID가 회전한다'
+else
+  record_fail '연결 성공 시점에 세션 ID가 회전한다' \
+    "쿠키가 '${connection_session_cookie}'에서 '${connection_rotated_cookie}'로 바뀌지 않았다."
+fi
+
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${connection_rotated_cookie}"
+assert_body_contains '연결 뒤에도 인증 상태다' '"authenticated":true'
+google_session_cookie="${connection_rotated_cookie}"
+google_csrf_token="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
+connection_session_cookie="${google_session_cookie}"
+connection_csrf_token="${google_csrf_token}"
+
+fetch GET /api/connections/bybit -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}"
+assert_equals '연결 뒤 상태 조회 200' "${last_status}" '200'
+assert_body_contains '연결 뒤 상태 조회가 연결 사실을 답한다' '"connected":true'
+assert_body_lacks '상태 조회에 Secret이 없다' "${connection_secret}"
+assert_body_lacks '상태 조회에 API Key가 없다' "uta2.${connection_uid}"
+assert_body_lacks '상태 조회에 제공자 계정 식별자가 없다' "${connection_uid}"
+
+# 8) 이미 연결된 사용자. 준비부터 거부되며 외부 호출이 0건이다.
+fetch POST /api/connections/bybit \
+  -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${connection_csrf_token}"
+assert_equals '이미 연결된 사용자의 준비 403' "${last_status}" '403'
+assert_body_contains '이미 연결된 사용자의 안정 code' '"code":"FORBIDDEN"'
+assert_rows '거부가 두 번째 연결을 만들지 않는다' 'SELECT count(*) FROM source_connection' '1'
+assert_rows '거부가 새 허가를 만들지 않는다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'bybit-connection-create' AND consumed_at IS NULL" \
+  '0'
+
+# 9) 취소. 준비가 없어도 언제나 204이며 무장이 있었는지로 답을 나누지 않는다.
+fetch POST /api/connections/bybit/cancel \
+  -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${connection_csrf_token}"
+assert_equals '되돌릴 것이 없는 취소도 204' "${last_status}" '204'
+assert_rows '취소가 연결을 건드리지 않는다' 'SELECT count(*) FROM source_connection' '1'
+
+# 10) 모르는 제공자 경로는 존재하지 않는다. 인증된 세션에서도 404다.
+fetch GET /api/connections/nosuchprovider \
+  -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}"
+assert_equals '모르는 source 경로 404' "${last_status}" '404'
+assert_body_contains '모르는 source 경로 안정 code' '"code":"NOT_FOUND"'
+
 printf '\n로그아웃 왕복\n'
 
 # 위 왕복들이 만든 세션을 실제로 끝낸다. 여기까지가 Story 1.5의 성공 경로 전부다.
@@ -2485,7 +2732,8 @@ if [ "${log_ready}" = true ]; then
   # 검사하면 다른 제공자의 콜백이 다른 location으로 흘러 쿼리를 남기기 시작해도 통과한다.
   for leaked_label in 'google code' 'google state' 'naver code' 'naver state' \
     'kakao code' 'kakao state' 'reauth code' 'reauth state' 'link code' 'link state' \
-    'link 허가 참조' 'unlink 허가 참조'; do
+    'link 허가 참조' 'unlink 허가 참조' 'Bybit API Secret' 'Bybit API Key' \
+    'Bybit 암호화 키'; do
     case "${leaked_label}" in
       'google code') leaked_value="${google_round_trip_code}" ;;
       'google state') leaked_value="${google_round_trip_state}" ;;
@@ -2503,6 +2751,13 @@ if [ "${log_ready}" = true ]; then
       'naver state') leaked_value="${naver_round_trip_state}" ;;
       'kakao code') leaked_value="${kakao_round_trip_code}" ;;
       'kakao state') leaked_value="${kakao_round_trip_state}" ;;
+      # 자격정보는 본문으로만 나가고 어디에도 남지 않는다. access log의 `map`이 쿼리를 지우는
+      # 것으로는 부족하다 — 본문을 찍기 시작하는 회귀가 이 검사에 걸린다.
+      'Bybit API Secret') leaked_value="${connection_secret}" ;;
+      'Bybit API Key') leaked_value="uta2.${connection_uid}" ;;
+      # 암호화 key ring은 환경으로만 들어가고 로그를 지나지 않는다. 값이 새면 저장된 암호문이
+      # 그대로 열린다.
+      'Bybit 암호화 키') leaked_value="${BOKRILOG_SOURCE_CREDENTIAL_KEYS#verify:}" ;;
       # 마지막 이름도 자기 분기를 갖는다. `*)`가 그것을 겸하면 오타 하나나 새 이름 하나가
       # 마지막 값을 다른 이름으로 다시 검사하며 통과한다 — 위 왕복 `case`가 이미 쓰는 형태다.
       *)

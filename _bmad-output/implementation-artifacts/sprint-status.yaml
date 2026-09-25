@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 09-25-2026 11:43
+last_updated: 09-25-2026 19:40
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -49,8 +49,8 @@ development_status:
   1-11-로그인-수단을-안전하게-해제하기: done
   epic-1-retrospective: done
 
-  epic-2: backlog
-  2-1-읽기-전용-bybit-uta-연결을-검증하고-안전하게-저장하기: backlog
+  epic-2: in-progress
+  2-1-읽기-전용-bybit-uta-연결을-검증하고-안전하게-저장하기: review
   2-2-첫-정상-현재가치와-측정-시각-확인하기: backlog
   2-3-첫-정상-스냅샷으로-복리-계획-조건을-검증하고-미리보기: backlog
   2-4-초기-계산에-필요한-bybit-현재가치와-원천-사건을-완전하게-수집하기: backlog

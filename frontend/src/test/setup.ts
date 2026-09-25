@@ -9,7 +9,8 @@
  * 4. 시험이 (메서드, URL) 쌍 단위로 명시적으로 열 수 있는 탈출구를 둔다(`stubSessionRequest`,
  *    `stubLogoutRequest`, `stubReauthenticationRequest`, `stubLinkStatusRequest`,
  *    `stubLinkRequest`, `stubUnlinkPrepareRequest`, `stubUnlinkConfirmRequest`,
- *    `stubUnlinkCancelRequest`).
+ *    `stubUnlinkCancelRequest`, `stubConnectionStatusRequest`, `stubConnectionPrepareRequest`,
+ *    `stubConnectRequest`, `stubConnectionCancelRequest`).
  *    전역 거부는 그대로다. 아래 `responders` 절의 근거를 참고한다.
  */
 
@@ -28,6 +29,7 @@ import {
   unlinkPath,
   type SignInProvider,
 } from '../content/auth'
+import { BYBIT_CANCEL_PATH, BYBIT_CONNECT_PATH, BYBIT_CONNECTION_PATH } from '../content/connection'
 
 const observedRequests: string[] = []
 const observedIndexedDbNames: string[] = []
@@ -154,6 +156,42 @@ export function stubUnlinkCancelRequest(
   responder: RequestResponder,
 ): void {
   responders.set(requestKey('POST', unlinkCancelPath(provider)), responder)
+}
+
+/**
+ * Bybit 연결 상태 조회 하나를 이 시험 동안만 허용한다(Story 2.1).
+ *
+ * 설정 화면만 이 요청을 보내고, 그것도 게이트가 `ready`일 때만이다. 다른 화면에서 나가면 전역
+ * 거부가 그것을 기록하고 실패시킨다 — 계정의 사실을 필요 없는 화면이 묻지 않는다는 단정이다.
+ */
+export function stubConnectionStatusRequest(responder: RequestResponder): void {
+  responders.set(requestKey('GET', BYBIT_CONNECTION_PATH), responder)
+}
+
+/**
+ * 연결 **준비** 요청 하나를 이 시험 동안만 허용한다.
+ *
+ * 최종 확인과 따로 연다. 두 경로를 한 번에 열면 "폼을 여는 요청은 아무것도 바꾸지 않는다"를
+ * 확인하려는 시험이 확인 요청까지 통과시키고, 그때 그 시험은 자기가 무엇을 본 것인지 알 수 없다
+ * (`stubUnlinkPrepareRequest`와 같은 근거).
+ */
+export function stubConnectionPrepareRequest(responder: RequestResponder): void {
+  responders.set(requestKey('POST', BYBIT_CONNECTION_PATH), responder)
+}
+
+/**
+ * 연결 **최종 확인** 요청 하나를 이 시험 동안만 허용한다. <b>자격정보가 나가는 유일한 경로다.</b>
+ *
+ * 열지 않은 시험에서 이 요청이 나가면 전역 거부가 그것을 기록하고 실패시킨다 — 화면이 확인 없이
+ * 자격정보를 보내는 회귀가 그 기록으로 드러난다.
+ */
+export function stubConnectRequest(responder: RequestResponder): void {
+  responders.set(requestKey('POST', BYBIT_CONNECT_PATH), responder)
+}
+
+/** 연결 **취소** 요청 하나를 이 시험 동안만 허용한다. 준비가 만든 무장과 허가를 되돌린다. */
+export function stubConnectionCancelRequest(responder: RequestResponder): void {
+  responders.set(requestKey('POST', BYBIT_CANCEL_PATH), responder)
 }
 
 /** 허용된 세션 확인 요청의 기록. 몇 번 불렸는지 단정하는 데 쓴다. */
