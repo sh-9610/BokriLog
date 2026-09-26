@@ -36,7 +36,7 @@ class ModuleBoundaryTest {
      * 없어 조용히 통과하고, 미노출 규칙을 빠뜨리면 그 모듈의 내부가 밖에서 보인다.
      */
     private static final List<String> MODULES =
-            List.of("identity", "source", "portfolio", "operations");
+            List.of("identity", "source", "portfolio", "operations", "sync", "plan");
 
     private static final JavaClasses PRODUCTION_CLASSES =
             new ClassFileImporter()

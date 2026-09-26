@@ -123,6 +123,11 @@ class AuthSessionServiceReauthenticationTest {
             this.calls.add(new Call(callerUserId, targetUserId, kind));
             return this.decision;
         }
+
+        @Override
+        public boolean lockWriteAccess(@Nullable UUID userId) {
+            throw new AssertionError("재인증은 사용자 범위 쓰기 잠금을 잡지 않는다.");
+        }
     }
 
     /**

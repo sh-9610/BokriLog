@@ -2,6 +2,7 @@ package com.bokrilog.source.internal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.source.SourceCredentials;
 import com.bokrilog.source.SourceRejectionReason;
 import com.bokrilog.source.SourceVerification;
@@ -59,6 +60,18 @@ class BybitAdapterTest {
     @AfterEach
     void stopServer() {
         this.server.stop(0);
+    }
+
+    @Test
+    void firstEquityUsesProviderTimeAndExactDecimal() {
+        BybitAdapter adapter=adapter(this.origin,RESERVED_IP,Duration.ofSeconds(1));
+        var outcome=adapter.readEquity(credentials());
+        assertThat(outcome).isInstanceOf(SourceConnectionApi.EquityResult.Observed.class);
+        var value=((SourceConnectionApi.EquityResult.Observed)outcome).value();
+        assertThat(value.decimal()).isEqualTo("10.00");
+        assertThat(value.measuredAt()).isAfter(java.time.Instant.EPOCH);
+        assertThat(this.paths).containsExactly(BybitAdapter.QUERY_API_PATH,
+                BybitAdapter.ACCOUNT_INFO_PATH,BybitAdapter.WALLET_BALANCE_PATH);
     }
 
     @Test
@@ -255,7 +268,8 @@ class BybitAdapterTest {
     }
 
     private static String result(String body) {
-        return "{\"retCode\":0,\"retMsg\":\"OK\",\"result\":" + body + "}";
+        return "{\"retCode\":0,\"retMsg\":\"OK\",\"result\":" + body
+                + ",\"time\":" + System.currentTimeMillis() + "}";
     }
 
     private static BybitAdapter adapter(String baseUrl, String reservedIp, Duration timeout) {

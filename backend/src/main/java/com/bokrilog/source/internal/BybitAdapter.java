@@ -1,6 +1,7 @@
 package com.bokrilog.source.internal;
 
 import com.bokrilog.source.SourceCredentials;
+import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.source.SourceRejectionReason;
 import com.bokrilog.source.SourceVerification;
 import java.io.IOException;
@@ -246,6 +247,59 @@ class BybitAdapter {
                 providerAccountRef, Instant.now(this.clock), POLICY_VERSION);
     }
 
+    /** 연결 때 검증한 지갑을 Worker가 새로 조회한다. 제공자 시각은 응답의 time(tc)이다. */
+    SourceConnectionApi.EquityResult readEquity(SourceCredentials credentials) {
+        if (!isConfigured())
+            return new SourceConnectionApi.EquityResult.Rejected(SourceRejectionReason.UNAVAILABLE);
+        if (!isHeaderSafe(credentials.apiKey()) || !isAcceptable(credentials.apiSecret()))
+            return new SourceConnectionApi.EquityResult.Rejected(SourceRejectionReason.INVALID_FORMAT);
+        Call keyCall = call(credentials, QUERY_API_PATH, "");
+        if (keyCall.rejection() != null)
+            return new SourceConnectionApi.EquityResult.Rejected(keyCall.rejection());
+        JsonNode keyFacts = resultOf(keyCall);
+        if (keyFacts == null)
+            return new SourceConnectionApi.EquityResult.Rejected(
+                    reasonOf(keyCall, SourceRejectionReason.AUTHENTICATION_REJECTED));
+        SourceRejectionReason keyVerdict = judgeKey(keyFacts);
+        if (keyVerdict != null)
+            return new SourceConnectionApi.EquityResult.Rejected(keyVerdict);
+        String accountRef = text(keyFacts, "userID");
+        if (accountRef == null || accountRef.isBlank())
+            return new SourceConnectionApi.EquityResult.Rejected(SourceRejectionReason.RESPONSE_FORMAT);
+        Call accountCall = call(credentials, ACCOUNT_INFO_PATH, "");
+        if (accountCall.rejection() != null)
+            return new SourceConnectionApi.EquityResult.Rejected(accountCall.rejection());
+        JsonNode account = resultOf(accountCall);
+        if (account == null)
+            return new SourceConnectionApi.EquityResult.Rejected(
+                    reasonOf(accountCall, SourceRejectionReason.AUTHENTICATION_REJECTED));
+        if (!isSupportedAccountMode(account))
+            return new SourceConnectionApi.EquityResult.Rejected(
+                    SourceRejectionReason.UNSUPPORTED_ACCOUNT_MODE);
+        Call call = call(credentials, WALLET_BALANCE_PATH, WALLET_BALANCE_QUERY);
+        if (call.rejection() != null)
+            return new SourceConnectionApi.EquityResult.Rejected(call.rejection());
+        JsonNode result = resultOf(call);
+        if (result == null)
+            return new SourceConnectionApi.EquityResult.Rejected(
+                    reasonOf(call, SourceRejectionReason.WALLET_UNAVAILABLE));
+        if (!hasUsableUnifiedEquity(result))
+            return new SourceConnectionApi.EquityResult.Rejected(SourceRejectionReason.RESPONSE_FORMAT);
+        JsonNode tc = call.body().get("time");
+        if (tc == null || !tc.isIntegralNumber() || tc.asLong() <= 0)
+            return new SourceConnectionApi.EquityResult.Rejected(SourceRejectionReason.RESPONSE_FORMAT);
+        Instant measured;
+        try {
+            measured = Instant.ofEpochMilli(tc.asLong());
+        } catch (RuntimeException invalid) {
+            return new SourceConnectionApi.EquityResult.Rejected(SourceRejectionReason.RESPONSE_FORMAT);
+        }
+        JsonNode equity = result.get("list").get(0).get("totalEquity");
+        return new SourceConnectionApi.EquityResult.Observed(
+                new SourceConnectionApi.EquityObservation(accountRef, equity.asString(), measured,
+                        Instant.now(this.clock), POLICY_VERSION));
+    }
+
     /**
      * 키 자체의 성질을 판정한다.
      *
@@ -378,8 +432,8 @@ class BybitAdapter {
         if (!UNIFIED_ACCOUNT_TYPE.equals(text(entry, "accountType"))) {
             return false;
         }
-        String equity = text(entry, "totalEquity");
-        return equity != null && isCanonicalDecimal(equity);
+        JsonNode equity = entry.get("totalEquity");
+        return equity != null && equity.isString() && isCanonicalDecimal(equity.asString());
     }
 
     /**

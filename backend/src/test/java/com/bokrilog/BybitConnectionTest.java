@@ -253,7 +253,7 @@ class BybitConnectionTest extends AuthFlowTestBase {
          */
         jdbc().sql("UPDATE source_connection SET status = 'REVOKED'").update();
         jdbc()
-                .sql("UPDATE portfolio_source_membership SET ended_at = now() WHERE ended_at IS NULL")
+                .sql("UPDATE portfolio_source_membership SET ended_at = GREATEST(now(), started_at + interval '1 microsecond') WHERE ended_at IS NULL")
                 .update();
 
         Session again = reauthenticate(session);

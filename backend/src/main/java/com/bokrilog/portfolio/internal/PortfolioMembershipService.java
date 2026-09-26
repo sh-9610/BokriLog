@@ -23,6 +23,43 @@ class PortfolioMembershipService implements PortfolioMembershipApi {
     }
 
     @Override
+    public Optional<ActiveMembership> eligibleMembership(UUID userId, UUID connectionId,
+            UUID providerAccountId, Instant measuredAt) {
+        return this.repository.eligible(userId, connectionId, providerAccountId, measuredAt)
+            .map(row -> new ActiveMembership(row.portfolioId(),row.membershipId()));
+    }
+
+    @Override
+    public boolean publishFirst(FirstComponent component) {
+        if (!this.repository.lockEligible(component.userId(),component.portfolioId(),
+                component.membershipId(),component.connectionId(),component.providerAccountId(),
+                component.measuredAt()) || this.repository.hasOfficial(component.portfolioId())) return false;
+        UUID snapshotId=UUID.randomUUID();
+        this.repository.insertSnapshot(snapshotId,component.portfolioId(),component.userId(),
+                component.decimal(),component.measuredAt());
+        this.repository.insertComponent(snapshotId,component.membershipId(),
+                component.sourceSnapshotId(),component.portfolioId(),component.userId(),
+                component.connectionId(),component.providerAccountId(),component.decimal(),
+                component.policyVersion());
+        return this.repository.pointFirst(component.portfolioId(),snapshotId)==1;
+    }
+
+    @Override
+    public Optional<OfficialValue> officialValue(@Nullable UUID userId) {
+        return userId==null ? Optional.empty() : this.repository.official(userId);
+    }
+
+    @Override
+    public Optional<FirstOfficialSnapshot> firstOfficialSnapshot(@Nullable UUID userId) {
+        return userId==null ? Optional.empty() : this.repository.firstOfficial(userId);
+    }
+
+    @Override
+    public Optional<ActiveSource> activeSource(@Nullable UUID userId) {
+        return userId==null ? Optional.empty() : this.repository.activeSource(userId);
+    }
+
+    @Override
     public ActiveMembership attachActiveSource(
             UUID userId, UUID connectionId, UUID providerAccountId, Instant startedAt) {
         /*

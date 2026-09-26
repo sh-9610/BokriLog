@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
 
+import { FirstSnapshotPanel } from '../components/FirstSnapshotPanel'
 import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
 import { authContent, reauthNoticeKindOf, SETTINGS_PATH } from '../content/auth'
@@ -126,6 +127,7 @@ export function SignedInScreen(): ReactElement {
           />
         ) : null}
 
+        {ready ? <FirstSnapshotPanel csrfToken={csrfToken} ready={ready} /> : null}
         {ready ? (
           <section aria-labelledby={authContent.dashboard.id} className={styles.section}>
             <h2 className={styles.sectionHeading} id={authContent.dashboard.id}>

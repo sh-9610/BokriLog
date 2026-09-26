@@ -1,0 +1,21 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-surface-raised);
+}
+
+.panel button,
+.panel a {
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  align-self: start;
+}
+
+.axes {
+  display: grid;
+  gap: var(--space-3);
+}

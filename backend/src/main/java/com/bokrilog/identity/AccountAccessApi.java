@@ -27,4 +27,10 @@ public interface AccountAccessApi {
      */
     AccessDecision decide(
             @Nullable UUID callerUserId, @Nullable UUID targetUserId, @Nullable AccountAccessKind kind);
+
+    /**
+     * Lock this account's lifecycle row and return whether a user-scoped write may commit.
+     * The caller must already have an active transaction; the lock remains held until that transaction ends.
+     */
+    boolean lockWriteAccess(@Nullable UUID userId);
 }

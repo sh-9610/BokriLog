@@ -30,6 +30,7 @@ import {
   type SignInProvider,
 } from '../content/auth'
 import { BYBIT_CANCEL_PATH, BYBIT_CONNECT_PATH, BYBIT_CONNECTION_PATH } from '../content/connection'
+import { FIRST_SNAPSHOT_PATH } from '../content/firstSnapshot'
 
 const observedRequests: string[] = []
 const observedIndexedDbNames: string[] = []
@@ -60,6 +61,16 @@ export type RequestResponder = (init?: RequestInit) => Promise<Response>
 /** 열린 요청의 키. 메서드는 대문자로 정규화한다. */
 function requestKey(method: string, url: string): string {
   return `${method.toUpperCase()} ${url}`
+}
+
+export function stubFirstSnapshotState(responder: RequestResponder): void {
+  responders.set(requestKey('GET', FIRST_SNAPSHOT_PATH), responder)
+}
+export function stubFirstSnapshotStart(responder: RequestResponder): void {
+  responders.set(requestKey('POST', FIRST_SNAPSHOT_PATH), responder)
+}
+export function stubPlanConditionState(responder: RequestResponder): void {
+  responders.set(requestKey('GET', '/api/plans/conditions'), responder)
 }
 
 /**
