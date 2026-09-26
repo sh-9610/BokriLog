@@ -22,6 +22,23 @@ public interface SourceConnectionApi {
     /** 활성 연결 하나의 요약. 자격정보도 식별자도 담지 않는다. */
     record ActiveConnection(UUID connectionId, Instant verifiedAt, String policyVersion) {}
 
+    /** Worker가 받은 provider-neutral 관측값. 비밀과 원 응답은 포함하지 않는다. */
+    record EquityObservation(String providerAccountRef, String decimal, Instant measuredAt, Instant receivedAt,
+            String policyVersion) {}
+
+    /** 활성 연결의 안정 식별자와 현재 revision. */
+    record SnapshotConnection(UUID connectionId, UUID providerAccountId, String policyVersion) {}
+
+    sealed interface EquityResult {
+        record Observed(EquityObservation value) implements EquityResult {}
+        record Rejected(SourceRejectionReason reason) implements EquityResult {}
+    }
+
+    Optional<SnapshotConnection> snapshotConnection(@Nullable UUID userId);
+
+    /** 저장된 암호문을 복호한 뒤 한 번만 제공자에 묻는다. 호출자는 DB 트랜잭션 밖에서 호출한다. */
+    EquityResult readEquity(UUID userId, UUID connectionId);
+
     /** 저장의 결과. */
     sealed interface StoreOutcome {
 

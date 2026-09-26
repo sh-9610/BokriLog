@@ -53,6 +53,32 @@ class SourceConnectionRepository {
                 .optional();
     }
 
+    record SnapshotRow(UUID connectionId, UUID providerAccountId, String providerAccountRef, String policyVersion,
+            UUID credentialId, String keyVersion, String algorithmVersion,
+            byte[] nonce, byte[] ciphertext) {}
+
+    Optional<SnapshotRow> snapshotConnection(UUID userId, UUID connectionId) {
+        return this.jdbc.sql("SELECT c.connection_id, c.provider_account_id, a.provider_account_ref, c.policy_version, "
+                + "k.credential_id, k.key_version, k.algorithm_version, k.nonce, k.ciphertext "
+                + "FROM source_connection c JOIN source_provider_account a ON a.provider_account_id=c.provider_account_id JOIN source_credential k ON k.connection_id=c.connection_id "
+                + "WHERE c.user_id=:userId AND c.connection_id=:connectionId AND c.status='ACTIVE'")
+            .param("userId", userId).param("connectionId", connectionId)
+            .query((rs,n) -> new SnapshotRow(rs.getObject(1,UUID.class), rs.getObject(2,UUID.class),rs.getString(3),
+                rs.getString(4), rs.getObject(5,UUID.class),rs.getString(6),rs.getString(7),
+                rs.getBytes(8),rs.getBytes(9))).optional();
+    }
+
+    Optional<SnapshotRow> activeSnapshotConnection(UUID userId) {
+        return this.jdbc.sql("SELECT c.connection_id, c.provider_account_id, a.provider_account_ref, c.policy_version, "
+                + "k.credential_id, k.key_version, k.algorithm_version, k.nonce, k.ciphertext "
+                + "FROM source_connection c JOIN source_provider_account a ON a.provider_account_id=c.provider_account_id JOIN source_credential k ON k.connection_id=c.connection_id "
+                + "WHERE c.user_id=:userId AND c.status='ACTIVE'")
+            .param("userId", userId)
+            .query((rs,n) -> new SnapshotRow(rs.getObject(1,UUID.class), rs.getObject(2,UUID.class),rs.getString(3),
+                rs.getString(4), rs.getObject(5,UUID.class),rs.getString(6),rs.getString(7),
+                rs.getBytes(8),rs.getBytes(9))).optional();
+    }
+
     /**
      * 그 제공자 계정이 이미 있는가.
      *

@@ -219,6 +219,9 @@ class AuthSecurityConfig {
      */
     static final String CONNECTIONS_BASE_URI = "/api/connections";
 
+    static final String FIRST_SNAPSHOT_PATH = "/api/snapshots/first";
+    static final String PLAN_CONDITIONS_PATH = "/api/plans/conditions";
+
     /** Bybit 연결 표면의 경로. 이 계층에서 그 경로를 정의하는 상수는 이것 하나다. */
     static final String BYBIT_CONNECTION_PATH = CONNECTIONS_BASE_URI + "/bybit";
 
@@ -1171,7 +1174,7 @@ class AuthSecurityConfig {
          * `/api/connections`도 포함하는데 접두사 문자열은 `/api/connections/`만 덮는다. 두 판정이
          * 갈린 상태 자체가 이 함수가 하나로 유지되는 이유와 부딪힌다.
          */
-        return isConnectionsPath(uri);
+        return isConnectionsPath(uri) || isSnapshotPath(uri) || isPlanConditionsPath(uri);
     }
 
     /**
@@ -1186,7 +1189,8 @@ class AuthSecurityConfig {
      * 404지만, 인증 없이 404를 돌려주면 이 접두사의 존재가 밖에서 열거된다.
      */
     static boolean requiresAuthentication(HttpServletRequest request) {
-        return isConnectionsPath(request.getRequestURI());
+        return isConnectionsPath(request.getRequestURI()) || isSnapshotPath(request.getRequestURI())
+                || isPlanConditionsPath(request.getRequestURI());
     }
 
     /**
@@ -1196,6 +1200,14 @@ class AuthSecurityConfig {
      * ({@link #isProtectedRequest})이 <b>같은 함수</b>를 본다. 한쪽이 접두사 문자열을 따로 들면 그
      * 둘이 덮는 집합이 갈리고, 그때 어느 경로는 인증을 요구받으면서 CSRF는 지나지 않는다.
      */
+    private static boolean isSnapshotPath(String uri) {
+        return uri.equals(FIRST_SNAPSHOT_PATH) || uri.startsWith(FIRST_SNAPSHOT_PATH + "/");
+    }
+
+    private static boolean isPlanConditionsPath(String uri) {
+        return uri.equals(PLAN_CONDITIONS_PATH) || uri.startsWith(PLAN_CONDITIONS_PATH + "/");
+    }
+
     private static boolean isConnectionsPath(String uri) {
         return uri.equals(CONNECTIONS_BASE_URI) || uri.startsWith(CONNECTIONS_BASE_URI + "/");
     }

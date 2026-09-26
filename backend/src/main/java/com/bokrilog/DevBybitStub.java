@@ -70,6 +70,9 @@ final class DevBybitStub {
         /** 서브 UID 키다. */
         SUB_ACCOUNT("sub"),
 
+        /** 저장된 메인 UID와 Worker 재조회 UID가 다르다. */
+        UID_CHANGED("uidchanged"),
+
         /** UTA 1.0이다. 지원 목록에 없다. */
         LEGACY_UTA("uta1"),
 
@@ -110,6 +113,21 @@ final class DevBybitStub {
 
         /** 응답이 JSON이 아니다. */
         MALFORMED("malformed"),
+
+        /** lease 경쟁을 재현하는 느린 지갑 응답. */
+        SLOW_WALLET("slowwallet"),
+
+        /** 저장 자격정보의 Worker 재조회에서 요청 시간초과를 재현한다. */
+        TIMEOUT("timeout"),
+
+        /** 정상 0 현재가치. */
+        ZERO_EQUITY("zeroequity"),
+
+        /** 정상 음수 현재가치. */
+        NEGATIVE_EQUITY("negativeequity"),
+
+        /** 측정 시각이 없다. */
+        BAD_MEASURED_TIME("badtime"),
 
         /** 제공자가 자격정보를 거절한다. */
         AUTH_FAILURE("authfail");
@@ -180,6 +198,15 @@ final class DevBybitStub {
             return error(10003);
         }
 
+        if ((scenario == Scenario.SLOW_WALLET || scenario == Scenario.TIMEOUT)
+                && WALLET_BALANCE_PATH.equals(path)) {
+            try {
+                Thread.sleep(scenario == Scenario.TIMEOUT ? 3500 : 1500);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return error(10016);
+            }
+        }
         return switch (path) {
             case QUERY_API_PATH -> queryApi(scenario, uid);
             case ACCOUNT_INFO_PATH -> accountInfo(scenario);
@@ -206,7 +233,7 @@ final class DevBybitStub {
                                     + ",\"parentUid\":\""
                                     + (scenario == Scenario.SUB_ACCOUNT ? "7" : "0")
                                     + "\",\"userID\":\""
-                                    + uid
+                                    + (scenario == Scenario.UID_CHANGED ? uid + "-changed" : uid)
                                     + "\"}");
         };
     }
@@ -230,7 +257,9 @@ final class DevBybitStub {
         if (scenario == Scenario.WALLET_FAILURE) {
             return error(10016);
         }
-        return ok("{\"list\":" + walletList(scenario) + "}");
+        return scenario == Scenario.BAD_MEASURED_TIME
+                ? new Response(200, JSON, "{\"retCode\":0,\"result\":{\"list\":" + walletList(scenario) + "},\"time\":0}")
+                : ok("{\"list\":" + walletList(scenario) + "}");
     }
 
     /**
@@ -263,6 +292,8 @@ final class DevBybitStub {
             case WALLET_NO_EQUITY -> "[{\"accountType\":\"UNIFIED\",\"accountIMRate\":\"0\"}]";
             // 지수 표기다. `BigDecimal`은 받아들이지만 우리 경계는 받아들이지 않는다.
             case WALLET_EXPONENT -> "[{\"accountType\":\"UNIFIED\",\"totalEquity\":\"1E+3\"}]";
+            case ZERO_EQUITY -> "[{\"accountType\":\"UNIFIED\",\"totalEquity\":\"0\"}]";
+            case NEGATIVE_EQUITY -> "[{\"accountType\":\"UNIFIED\",\"totalEquity\":\"-12.345678901234567890\"}]";
             default ->
                     "[{\"accountType\":\"UNIFIED\",\"totalEquity\":\"1234.56\","
                             + "\"accountIMRate\":\"0\"}]";
@@ -279,7 +310,7 @@ final class DevBybitStub {
 
     private static Response ok(String result) {
         return new Response(
-                200, JSON, "{\"retCode\":0,\"retMsg\":\"OK\",\"result\":" + result + ",\"time\":0}");
+                200, JSON, "{\"retCode\":0,\"retMsg\":\"OK\",\"result\":" + result + ",\"time\":" + System.currentTimeMillis() + "}");
     }
 
     /** 제공자 오류 응답. 메시지를 비운다 — 어댑터가 그 문장을 나르지 않는다는 계약의 짝이다. */

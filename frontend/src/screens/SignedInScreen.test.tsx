@@ -16,6 +16,8 @@ import {
   getObservedAllowedRequests,
   getObservedSessionRequests,
   getObservedStorageEntries,
+  stubFirstSnapshotStart,
+  stubFirstSnapshotState,
   stubLogoutRequest,
   stubReauthenticationRequest,
   stubSessionRequest,
@@ -101,6 +103,80 @@ describe('SignedInScreen', () => {
     for (const copy of dashboardCopyStrings) {
       expect(rendered).toContain(copy)
     }
+  })
+
+  it('첫 공식값과 제공자 측정 시각, 세 신뢰 축을 표시한다', async () => {
+    stubSessionRequest(authenticated)
+    stubFirstSnapshotState(() =>
+      Promise.resolve(
+        jsonResponse({
+          connected: true,
+          restricted: false,
+          job: { jobId: 'job-1', status: 'SUCCEEDED' },
+          decimal: '-12.345',
+          currency: 'USD',
+          measuredAt: '2026-09-25T00:00:00Z',
+        }),
+      ),
+    )
+    render(<SignedInScreen />)
+    expect(await screen.findByText(/-12\.35 USD/)).toBeInTheDocument()
+    expect(screen.getByText(/Bybit 측정 시각/)).toBeInTheDocument()
+    for (const axis of ['신선도', '입력 신뢰도', '계산 성격']) {
+      expect(screen.getByText(new RegExp(axis))).toBeInTheDocument()
+    }
+    expect(screen.getByText(/현재가치가 0 이하/)).toBeInTheDocument()
+  })
+
+  it('표시 반올림 뒤 음수 영은 0.00으로 표시한다', async () => {
+    stubSessionRequest(authenticated)
+    stubFirstSnapshotState(() =>
+      Promise.resolve(
+        jsonResponse({
+          connected: true,
+          restricted: false,
+          decimal: '-0.001',
+          currency: 'USD',
+          measuredAt: '2026-09-25T00:00:00Z',
+        }),
+      ),
+    )
+    render(<SignedInScreen />)
+    expect(await screen.findByText('0.00 USD')).toBeInTheDocument()
+  })
+
+  it('운영 제한 상태를 연결 해제와 구분하고 금융값을 숨긴다', async () => {
+    stubSessionRequest(authenticated)
+    stubFirstSnapshotState(() =>
+      Promise.resolve(jsonResponse({ connected: true, restricted: true })),
+    )
+    render(<SignedInScreen />)
+    expect(await screen.findByText(/계정 또는 연결 상태가 바뀌어 확인을 중단/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '첫 자산 확인' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/공식 현재가치:/)).not.toBeInTheDocument()
+  })
+
+  it('첫 확인을 202로 접수하고 진행 중 중복 조작을 막는다', async () => {
+    stubSessionRequest(authenticated)
+    stubFirstSnapshotState(() =>
+      Promise.resolve(jsonResponse({ connected: true, restricted: false })),
+    )
+    stubFirstSnapshotStart(() =>
+      Promise.resolve(
+        jsonResponse(
+          {
+            jobId: 'job-2',
+            status: 'QUEUED',
+          },
+          202,
+        ),
+      ),
+    )
+    render(<SignedInScreen />)
+    const button = await screen.findByRole('button', { name: '첫 자산 확인' })
+    fireEvent.click(button)
+    expect(await screen.findByText('첫 자산 확인을 기다리고 있습니다.')).toBeInTheDocument()
+    expect(button).toBeDisabled()
   })
 
   it('UX-DR23: `복리 계획 비교` 제목과 비추천 고지를 인접 배치한다', async () => {

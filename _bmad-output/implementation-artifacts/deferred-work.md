@@ -221,3 +221,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-1-bybit-connection.md`
   summary: `SettingsScreen.test.tsx`의 여러 시험이 연결 상태 요청을 stub하지 않아 Bybit 절이 의도치 않게 `unavailable` 분기로 렌더된다.
   evidence: `해제: 확인하면 목록을 다시 읽고 결과를 말한다`, `해제 성공 뒤 포커스가 결과 문장으로 간다`, 그리고 연결 상태 재확인 시험이 `ready` 게이트를 지나면서 새 상태 요청을 전역 deny에 부딪힌다. 어느 것도 `getObservedRequests()`가 비었음을 단정하지 않아 통과하지만, 그 시험들이 의도한 화면 상태가 아니다. 새 섹션이 기존 화면 시험의 전제를 바꿨다는 뜻이고, 화면 시험이 자기 전제를 명시하게 만드는 일은 화면 시험 구조를 정하는 라운드의 몫이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-plan-condition-preview.md`
+  summary: 10분 확인 참조가 만료된 뒤에도 계정 삭제 전까지 확인 행이 보존된다.
+  evidence: `plan_condition_confirmation.expires_at`은 확인을 거절하는 데 쓰이지만 만료 행을 정리하는 작업이나 삭제 경로가 없다. 계획 화면을 다시 열지 않는 사용자의 만료 참조는 계속 남으므로 확인 데이터 보존 상한을 정하고 청소 작업을 두는 별도 보존 정책 검토가 필요하다.

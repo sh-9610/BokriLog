@@ -21,6 +21,39 @@ public interface PortfolioMembershipApi {
     /** 활성 membership 하나의 요약. */
     record ActiveMembership(UUID portfolioId, UUID membershipId) {}
 
+    /** 발행 후보의 한 구성 요소. */
+    record FirstComponent(UUID userId, UUID portfolioId, UUID membershipId,
+            UUID connectionId, UUID providerAccountId, UUID sourceSnapshotId,
+            String decimal, Instant measuredAt, String policyVersion) {}
+
+    /** 공식 portfolio 값만 화면과 후속 계산에 제공한다. */
+    record OfficialValue(String decimal, String currency, Instant measuredAt,
+            Instant composedAt, Instant publishedAt, UUID snapshotId) {}
+
+    /** The immutable first officially published snapshot and its source provenance. */
+    record FirstOfficialSnapshot(UUID portfolioId, UUID snapshotId, String decimal,
+            Instant measuredAt, Instant composedAt, Instant publishedAt, UUID membershipId,
+            UUID connectionId, UUID providerAccountId, UUID sourceSnapshotId,
+            String sourcePolicyVersion, String portfolioPolicyVersion) {}
+
+    /** 주어진 시각에 정확히 하나의 활성 USD membership이 있는가. */
+    Optional<ActiveMembership> eligibleMembership(UUID userId, UUID connectionId,
+            UUID providerAccountId, Instant measuredAt);
+
+    /** sync의 outer REQUIRED 트랜잭션에 참여한다. 첫 공식값만 CAS로 발행한다. */
+    boolean publishFirst(FirstComponent component);
+
+    Optional<OfficialValue> officialValue(@Nullable UUID userId);
+
+    /** First published USD snapshot, independent of the current official pointer. */
+    Optional<FirstOfficialSnapshot> firstOfficialSnapshot(@Nullable UUID userId);
+
+    /** The user's currently active source membership, if any. */
+    Optional<ActiveSource> activeSource(@Nullable UUID userId);
+
+    record ActiveSource(UUID portfolioId, UUID membershipId, UUID connectionId,
+            UUID providerAccountId) {}
+
     /**
      * 기본 {@code USD} portfolio를 만들거나 재사용하고 그 안에 활성 source 구간을 연다.
      *

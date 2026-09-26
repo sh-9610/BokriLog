@@ -2328,6 +2328,48 @@ fetch GET /api/connections/nosuchprovider \
 assert_equals '모르는 source 경로 404' "${last_status}" '404'
 assert_body_contains '모르는 source 경로 안정 code' '"code":"NOT_FOUND"'
 
+printf '\n첫 공식 현재가치 왕복\n'
+
+fetch GET /api/snapshots/first -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}"
+assert_equals '첫 스냅샷 전 상태 조회 200' "${last_status}" '200'
+assert_body_lacks '공식값이 없을 때 0으로 대신하지 않는다' '"decimal":"0"'
+
+fetch POST /api/snapshots/first \
+  -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${connection_csrf_token}" \
+  -H 'Idempotency-Key: first-snapshot-roundtrip'
+assert_equals '첫 스냅샷 접수 202' "${last_status}" '202'
+snapshot_job_id="$(sed -n 's/.*"jobId":"\([^"]*\)".*/\1/p' "${last_body}")"
+if [ -n "${snapshot_job_id}" ]; then
+  record_pass '첫 스냅샷 작업 ID를 돌려준다'
+else
+  record_fail '첫 스냅샷 작업 ID를 돌려준다' '202 본문에 jobId가 없다.'
+fi
+fetch POST /api/snapshots/first \
+  -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${connection_csrf_token}" \
+  -H 'Idempotency-Key: first-snapshot-roundtrip'
+assert_equals '같은 작업 재접수 202' "${last_status}" '202'
+assert_body_contains '재접수는 같은 작업을 돌려준다' "${snapshot_job_id}"
+
+for snapshot_attempt in $(seq 1 30); do
+  fetch GET /api/snapshots/first -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}"
+  case "$(cat "${last_body}")" in
+    *'"status":"SUCCEEDED"'*) break ;;
+  esac
+  sleep 1
+done
+assert_equals '첫 공식 현재가치 상태 200' "${last_status}" '200'
+assert_body_contains '공식 USD 현재가치' '"decimal":"1234.56"'
+assert_body_contains '제공자 측정 시각' '"measuredAt":"'
+assert_body_lacks '공식 조회에 Secret이 없다' "${connection_secret}"
+assert_rows 'source snapshot 하나' 'SELECT count(*) FROM sync_source_snapshot' '1'
+assert_rows 'portfolio snapshot 하나' 'SELECT count(*) FROM portfolio_snapshot' '1'
+assert_rows '유일 component 하나' 'SELECT count(*) FROM portfolio_snapshot_component' '1'
+assert_rows '공식 포인터 하나' 'SELECT count(*) FROM portfolio_current_snapshot' '1'
+
 printf '\n로그아웃 왕복\n'
 
 # 위 왕복들이 만든 세션을 실제로 끝낸다. 여기까지가 Story 1.5의 성공 경로 전부다.
@@ -2495,7 +2537,7 @@ assert_rows '되돌린 뒤 허가 행이 0개다' 'SELECT count(*) FROM action_g
 
 printf '\n알려진 내부 경로 허용 목록\n'
 
-# 폴백이 아니라 허용 목록이다. 이름을 적은 세 경로만 진입 문서를 받는다.
+# 폴백이 아니라 허용 목록이다. 이름을 적은 네 경로만 진입 문서를 받는다.
 while read -r allowed_path; do
   [ -n "${allowed_path}" ] || continue
   fetch GET "${allowed_path}"
@@ -2509,6 +2551,7 @@ done <<'ALLOWED_PATHS'
 /onboarding
 /dashboard
 /settings
+/plan-conditions
 ALLOWED_PATHS
 
 # 정적 경로의 잘못된 메서드. 허용 목록 location도 파일을 찾기 전에 되돌린다.
@@ -2531,6 +2574,8 @@ done <<'REJECTED_PATHS'
 /dashboard/
 /settings/x
 /settings-x
+/plan-conditions/x
+/plan-conditions-x
 REJECTED_PATHS
 
 printf '\n한도를 넘는 요청\n'

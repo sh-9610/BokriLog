@@ -74,6 +74,36 @@ class SourceConnectionService implements SourceConnectionApi {
     }
 
     @Override
+    public Optional<SnapshotConnection> snapshotConnection(@Nullable UUID userId) {
+        if (userId == null) return Optional.empty();
+        return this.repository.activeSnapshotConnection(userId)
+            .map(row -> new SnapshotConnection(row.connectionId(), row.providerAccountId(),
+                    row.policyVersion()));
+    }
+
+    @Override
+    public EquityResult readEquity(UUID userId, UUID connectionId) {
+        if (this.accountAccess.decide(userId, userId, AccountAccessKind.SENSITIVE)
+                != AccessDecision.ALLOWED) {
+            return new EquityResult.Rejected(SourceRejectionReason.NOT_PERMITTED);
+        }
+        Optional<SourceConnectionRepository.SnapshotRow> row =
+                this.repository.snapshotConnection(userId, connectionId);
+        if (row.isEmpty()) return new EquityResult.Rejected(SourceRejectionReason.NOT_PERMITTED);
+        var r = row.get();
+        var opened = this.cipher.open(new CredentialCipher.Aad(userId, connectionId,
+                r.credentialId(), r.keyVersion(), r.algorithmVersion()), r.nonce(), r.ciphertext());
+        if (opened.isEmpty()) return new EquityResult.Rejected(SourceRejectionReason.UNAVAILABLE);
+        String[] pair = opened.get();
+        var result = this.bybit.readEquity(new SourceCredentials(pair[0], pair[1]));
+        if (result instanceof EquityResult.Observed observed
+                && !r.providerAccountRef().equals(observed.value().providerAccountRef())) {
+            return new EquityResult.Rejected(SourceRejectionReason.SUB_ACCOUNT);
+        }
+        return result;
+    }
+
+    @Override
     public SourceVerification verify(SourceProvider provider, SourceCredentials credentials) {
         if (provider != SourceProvider.BYBIT) {
             // 닫힌 enum이라 여기 오지 않는다. 값이 늘어나는 날 조용히 Bybit로 흐르지 않게 한다.

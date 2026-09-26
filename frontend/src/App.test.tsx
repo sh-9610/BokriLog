@@ -13,7 +13,13 @@ import {
   SIGN_IN_PROVIDERS,
 } from './content/auth'
 import { entryContent } from './content/entry'
-import { getObservedRequests, stubLinkStatusRequest, stubSessionRequest } from './test/setup'
+import { planConditionContent } from './content/planConditions'
+import {
+  getObservedRequests,
+  stubLinkStatusRequest,
+  stubPlanConditionState,
+  stubSessionRequest,
+} from './test/setup'
 
 /**
  * 경로 → 화면 대응.
@@ -109,6 +115,23 @@ describe('App 경로 맵', () => {
     expect(
       await screen.findByRole('heading', { level: 2, name: authContent.settings.heading }),
     ).toBeInTheDocument()
+  })
+
+  it('계획 조건 경로는 세션과 조건 상태를 확인한다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: true, destination: 'settings', csrfToken: 'csrf' }),
+      ),
+    )
+    stubPlanConditionState(() => Promise.resolve(jsonResponse({ eligible: false })))
+    navigate(planConditionContent.path)
+
+    render(<App />)
+
+    expect(
+      await screen.findByRole('heading', { level: 2, name: planConditionContent.heading }),
+    ).toBeInTheDocument()
+    expect(await screen.findByText(planConditionContent.blocked)).toBeInTheDocument()
   })
 
   it('미인증으로 되돌려진 화면은 원래 목적지를 `next`로 실어 보낸다', async () => {

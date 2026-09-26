@@ -49,4 +49,12 @@ class AccountAccessService implements AccountAccessApi {
             case DELETED -> AccessDecision.DENIED;
         };
     }
+
+    @Override
+    @Transactional
+    public boolean lockWriteAccess(@Nullable UUID userId) {
+        if (userId == null) return false;
+        AccountState state = repository.lockLifecycleForUpdate(userId).orElse(null);
+        return state == AccountState.ACTIVE;
+    }
 }
