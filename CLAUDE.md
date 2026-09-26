@@ -146,7 +146,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 ## 현재 진행 지점
 
-기획은 완료됐다. `epics.md`는 `implementationReadinessStatus: ready-for-sprint-planning`이고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. `sprint-status.yaml`은 2026-09-02에 생성됐고 첫 스프린트 Story 1.1~1.5(진입 화면 → 동일 출처 셸 → 소유권·삭제 상태 → Google 로그인 → 로그아웃)와 스트레치였던 1.6·1.7(네이버·카카오 로그인)이 모두 머지됐다. 첫 스프린트가 끝났고 Epic 1이 확정한 세 제공자 집합이 완성됐다. 그 위에 1.8(재인증·세션 회전)·1.9(5분·일회성 재인증 허가)·1.10(새 로그인 수단 연결)·1.11(로그인 수단 해제)도 머지됐다. **Epic 1의 11개 스토리가 모두 닫혔다.** 회고도 끝났다(판정 accepted-with-open-items). Epic 2가 시작됐고 Story 2.1(읽기 전용 Bybit UTA 연결 검증·저장)이 머지됐다. 다음은 2.2(첫 정상 현재가치와 측정 시각 확인)이며 그 스토리가 Worker·lease·fencing을 들인다. 실연동 게이트는 이제 **둘**이다 — Epic 1의 세 제공자 왕복과 Epic 2의 **연결 정책·실연동 미검증**(실제 Bybit 검증 계정과 regional reserved IP가 필요하다). 둘 다 코드가 아니라 별도 게이트가 소유한다.
+기획은 완료됐다. `epics.md`는 `implementationReadinessStatus: ready-for-sprint-planning`이고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. `sprint-status.yaml`은 2026-09-02에 생성됐고 첫 스프린트 Story 1.1~1.5(진입 화면 → 동일 출처 셸 → 소유권·삭제 상태 → Google 로그인 → 로그아웃)와 스트레치였던 1.6·1.7(네이버·카카오 로그인)이 모두 머지됐다. 첫 스프린트가 끝났고 Epic 1이 확정한 세 제공자 집합이 완성됐다. 그 위에 1.8(재인증·세션 회전)·1.9(5분·일회성 재인증 허가)·1.10(새 로그인 수단 연결)·1.11(로그인 수단 해제)도 머지됐다. **Epic 1의 11개 스토리가 모두 닫혔다.** 회고도 끝났다(판정 accepted-with-open-items). Epic 2에서는 Story 2.1(읽기 전용 Bybit UTA 연결), 2.2(첫 정상 현재가치 스냅샷), 2.3(복리 계획 조건 미리보기)가 `develop`에 머지됐다. Story 2.2와 2.3의 명세도 완료됐고 이 진행표 갱신 PR에서 상태를 `done`으로 정리한다. 다음 구현은 2.4(초기 계산에 필요한 Bybit 현재가치와 원천 사건의 완전 수집)다. 실연동 게이트는 **둘**이다 — Epic 1의 세 제공자 왕복과 Epic 2의 **Bybit 연결 정책·실연동 미검증**(실제 검증 계정과 regional reserved IP 필요)이며, 둘 다 별도 출시 게이트가 소유한다.
 
 | 스토리 | 상태 | 근거 |
 |---|---|---|
@@ -164,7 +164,9 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | Epic 1 | **완료** | 11개 스토리 전부 done |
 | Epic 1 회고 | done | `epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건 |
 | 2.1 Bybit 연결 검증·저장 | done | `spec-2-1-bybit-connection.md`, PR #34 머지 커밋 `ad16b7a` |
-| Epic 2 | in-progress | 16개 중 1개 done. 다음은 2.2 |
+| 2.2 첫 현재가치 스냅샷 | done | `spec-2-2-first-equity-snapshot.md`, PR #36 머지 커밋 `f1df593d0dd233bc72e54e4231cad8a2aacf9e43` |
+| 2.3 계획 조건 미리보기 | done | `spec-2-3-plan-condition-preview.md`, PR #36 머지 커밋 `f1df593d0dd233bc72e54e4231cad8a2aacf9e43` |
+| Epic 2 | in-progress | 16개 중 3개 done. 다음은 2.4 |
 
 Story 1.3이 `identity` 모듈, PostgreSQL 18 마이그레이션, 소유권·삭제 상태 판정 계약, 해당 데이터의 삭제 경로와 시험을 들였다. 이 스토리가 처음 도입한 것: 첫 모듈 패키지와 Spring Modulith 경계 검사, PostgreSQL Testcontainers, 마이그레이션(expand 우선, startup은 schema 검증만), 두 사용자·동시성·실패 주입 시험.
 
