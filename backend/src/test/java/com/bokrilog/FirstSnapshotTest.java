@@ -146,6 +146,153 @@ class FirstSnapshotTest extends AuthFlowTestBase {
     }
 
     @Test
+    void cashflowClassificationPublishesImmutableSignedCandidatesOnceForCompleteInput() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=initialIntent(user,"cashflow-classification");
+        UUID collectionJob=sync.admitInitialInputs(user,intent,"cashflow-classification-inputs-001")
+                .orElseThrow().jobId();
+        assertThat(awaitInitial(user,collectionJob)).isEqualTo("INPUTS_COMPLETE");
+        var bundle=jdbc().sql("SELECT candidate_id,provider_account_id,connection_id,t0,tc FROM "
+                + "sync_initial_candidate_bundle WHERE job_id=:j")
+                .param("j",collectionJob).query((rs,n)->new Object[] {
+                    rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),rs.getObject(3,UUID.class),
+                    rs.getObject(4,java.time.OffsetDateTime.class).toInstant(),
+                    rs.getObject(5,java.time.OffsetDateTime.class).toInstant()}).single();
+        UUID candidate=(UUID)bundle[0]; UUID account=(UUID)bundle[1]; UUID connection=(UUID)bundle[2];
+        Instant occurredAt=((Instant)bundle[4]).minusMillis(1);
+        assertThat(occurredAt).isAfter((Instant)bundle[3]);
+        UUID deposit=insertCandidateEvent(user,account,connection,collectionJob,candidate,"cashflow-in-001",
+                "TRANSFER_IN","BTC","0.0003",occurredAt,"a".repeat(64));
+        UUID withdrawal=insertCandidateEvent(user,account,connection,collectionJob,candidate,"cashflow-out-001",
+                "TRANSFER_OUT","USDT","-12.50",occurredAt,"b".repeat(64));
+        refreshCandidateHash(candidate);
+
+        var accepted=sync.admitCashflowClassification(user,intent,"cashflow-classification-command-001")
+                .orElseThrow();
+        var replay=sync.admitCashflowClassification(user,intent,"cashflow-classification-command-002")
+                .orElseThrow();
+        assertThat(replay.jobId()).isEqualTo(accepted.jobId());
+        assertThat(awaitClassification(accepted.jobId())).isEqualTo("COMPLETE");
+        var state=sync.cashflowClassificationState(user,intent);
+        assertThat(state.permitted()).isTrue();
+        assertThat(state.job()).isNotNull();
+        assertThat(state.job().depositCount()).isEqualTo(1);
+        assertThat(state.job().withdrawalCount()).isEqualTo(1);
+        assertThat(state.job().excludedCount()).isZero();
+        assertThat(state.job().reviewCount()).isZero();
+        assertThat(jdbc().sql("SELECT signed_amount FROM sync_cashflow_flow_candidate "
+                + "WHERE source_event_id=:event").param("event",deposit).query(String.class).single())
+                .isEqualTo("0.0003");
+        assertThat(jdbc().sql("SELECT signed_amount FROM sync_cashflow_flow_candidate "
+                + "WHERE source_event_id=:event").param("event",withdrawal).query(String.class).single())
+                .isEqualTo("-12.5");
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_cashflow_classification_event "
+                + "WHERE classification_id=(SELECT classification_id FROM sync_cashflow_classification_bundle "
+                + "WHERE job_id=:j) AND policy_version='BYBIT-CASHFLOW-1.0' AND source_revision=1")
+                .param("j",accepted.jobId()).query(Integer.class).single()).isEqualTo(2);
+        assertThat(jdbc().sql("SELECT count(*) FROM portfolio_snapshot WHERE user_id=:u")
+                .param("u",user).query(Integer.class).single()).isEqualTo(1);
+        assertThat(jdbc().sql("SELECT to_regclass('active_plan') IS NULL").query(Boolean.class).single()).isTrue();
+
+        UUID other=connect(DevBybitStub.Scenario.UTA2);
+        UUID otherIntent=initialIntent(other,"cashflow-classification-other");
+        UUID otherCollection=sync.admitInitialInputs(other,otherIntent,"cashflow-classification-other-inputs-001")
+                .orElseThrow().jobId();
+        assertThat(awaitInitial(other,otherCollection)).isEqualTo("INPUTS_COMPLETE");
+        var otherBundle=jdbc().sql("SELECT candidate_id,provider_account_id,connection_id,t0,tc FROM "
+                + "sync_initial_candidate_bundle WHERE job_id=:j").param("j",otherCollection)
+                .query((rs,n)->new Object[] {rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),
+                        rs.getObject(3,UUID.class),rs.getObject(4,java.time.OffsetDateTime.class).toInstant(),
+                        rs.getObject(5,java.time.OffsetDateTime.class).toInstant()}).single();
+        Instant malformedAt=((Instant)otherBundle[4]).minusMillis(1);
+        UUID malformed=insertCandidateEvent(other,(UUID)otherBundle[1],(UUID)otherBundle[2],otherCollection,
+                (UUID)otherBundle[0],"cashflow-malformed-001","TRANSFER_IN","BTC","not-a-number",malformedAt,
+                "c".repeat(64));
+        refreshCandidateHash((UUID)otherBundle[0]);
+        var otherClassification=sync.admitCashflowClassification(other,otherIntent,
+                "cashflow-classification-other-command-001").orElseThrow();
+        jdbc().sql("UPDATE sync_cashflow_classification_job SET status='CANCELLED',finished_at=now() WHERE job_id=:j")
+                .param("j",otherClassification.jobId()).update();
+        var retried=sync.admitCashflowClassification(other,otherIntent,"cashflow-classification-other-command-002")
+                .orElseThrow();
+        assertThat(retried.jobId()).isEqualTo(otherClassification.jobId());
+        assertThat(retried.status()).isEqualTo("QUEUED");
+        assertThat(awaitClassification(retried.jobId())).isEqualTo("NEEDS_REVIEW");
+        assertThat(sync.cashflowClassificationState(other,otherIntent).job().reviewCount()).isEqualTo(1);
+        UUID malformedClass=jdbc().sql("SELECT classification_id FROM sync_cashflow_classification_bundle WHERE job_id=:j")
+                .param("j",retried.jobId()).query(UUID.class).single();
+        assertThat(jdbc().sql("SELECT source_quantity FROM sync_cashflow_classification_event "
+                + "WHERE classification_id=:classification AND source_event_id=:event")
+                .param("classification",malformedClass).param("event",malformed).query(String.class).list())
+                .containsExactly((String)null);
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_cashflow_flow_candidate WHERE classification_id=:classification")
+                .param("classification",malformedClass).query(Integer.class).single()).isZero();
+        assertThat(sync.cashflowClassificationState(other,intent).permitted()).isFalse();
+
+        portfolio.erasePortfolioData(user);
+        sync.eraseSyncData(user);
+        source.eraseSourceData(user);
+        for(String table:new String[] {"sync_cashflow_classification_event","sync_cashflow_flow_candidate",
+                "sync_cashflow_exclusion_summary"}) {
+            assertThat(jdbc().sql("SELECT count(*) FROM "+table+" x JOIN sync_cashflow_classification_bundle b "
+                    + "ON b.classification_id=x.classification_id WHERE b.user_id=:u")
+                    .param("u",user).query(Integer.class).single()).as(table).isZero();
+        }
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_cashflow_classification_bundle WHERE user_id=:u")
+                .param("u",user).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_cashflow_classification_job WHERE user_id=:u")
+                .param("u",user).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_cashflow_classification_bundle WHERE job_id=:j")
+                .param("j",otherClassification.jobId()).query(Integer.class).single()).isEqualTo(1);
+    }
+
+    private UUID insertCandidateEvent(UUID user,UUID account,UUID connection,UUID collectionJob,UUID candidate,
+            String sourceId,String type,String currency,String cashFlow,Instant occurredAt,String hash) {
+        UUID event=UUID.randomUUID();
+        jdbc().sql("INSERT INTO sync_initial_source_event(event_id,user_id,provider_account_id,source_id,event_type,"
+                + "currency,cash_flow,transaction_time,account_type,semantic_hash,observed_connection_id) "
+                + "VALUES (:event,:user,:account,:source,:type,:currency,:flow,:time,'UNIFIED',:hash,:connection)")
+            .param("event",event).param("user",user).param("account",account).param("source",sourceId)
+            .param("type",type).param("currency",currency).param("flow",cashFlow)
+            .param("time",java.time.OffsetDateTime.ofInstant(occurredAt,java.time.ZoneOffset.UTC))
+            .param("hash",hash).param("connection",connection).update();
+        jdbc().sql("INSERT INTO sync_initial_event_provenance(job_id,event_id,connection_id,semantic_hash) "
+                + "VALUES (:job,:event,:connection,:hash)")
+            .param("job",collectionJob).param("event",event).param("connection",connection).param("hash",hash).update();
+        jdbc().sql("INSERT INTO sync_initial_candidate_event(candidate_id,event_id) VALUES (:candidate,:event)")
+            .param("candidate",candidate).param("event",event).update();
+        return event;
+    }
+
+    private void refreshCandidateHash(UUID candidate) {
+        var scope=jdbc().sql("SELECT job_id,portfolio_id,intent_id,connection_id,provider_account_id,t0,tc,"
+                + "equity_decimal,measured_at,policy_version FROM sync_initial_candidate_bundle WHERE candidate_id=:candidate")
+            .param("candidate",candidate).query((rs,n)->new Object[] {rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),
+                rs.getObject(3,UUID.class),rs.getObject(4,UUID.class),rs.getObject(5,UUID.class),
+                rs.getObject(6,java.time.OffsetDateTime.class).toInstant(),rs.getObject(7,java.time.OffsetDateTime.class).toInstant(),
+                rs.getString(8),rs.getObject(9,java.time.OffsetDateTime.class).toInstant(),rs.getString(10)}).single();
+        String pages=jdbc().sql("SELECT string_agg(event_type||'|'||range_start::text||'|'||range_end::text||'|'||"
+                + "cursor_hash||'|'||item_count||'|'||COALESCE(first_event_at::text,'')||'|'||"
+                + "COALESCE(last_event_at::text,'')||'|'||has_next_page::text,';' ORDER BY event_type,range_start,cursor_hash) "
+                + "FROM sync_initial_page_evidence WHERE job_id=:job").param("job",scope[0]).query(String.class).single();
+        String events=jdbc().sql("SELECT COALESCE(string_agg(source_id||'|'||semantic_hash,';' ORDER BY source_id),'') "
+                + "FROM sync_initial_source_event WHERE user_id=(SELECT user_id FROM sync_initial_candidate_bundle "
+                + "WHERE candidate_id=:candidate) AND provider_account_id=:account AND transaction_time>:t0 AND transaction_time<=:tc")
+            .param("candidate",candidate).param("account",scope[4])
+            .param("t0",java.time.OffsetDateTime.ofInstant((Instant)scope[5],java.time.ZoneOffset.UTC))
+            .param("tc",java.time.OffsetDateTime.ofInstant((Instant)scope[6],java.time.ZoneOffset.UTC))
+            .query(String.class).single();
+        String payload=scope[0]+"|"+scope[1]+"|"+scope[2]+"|"+scope[3]+"|"+scope[4]+"|"+scope[5]+"|"+
+                scope[6]+"|"+scope[7]+"|"+scope[8]+"|"+scope[9]+"|"+pages+"|"+events;
+        try {
+            String hash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            jdbc().sql("UPDATE sync_initial_candidate_bundle SET completeness_hash=:hash WHERE candidate_id=:candidate")
+                    .param("hash",hash).param("candidate",candidate).update();
+        } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+    }
+
+    @Test
     void staleInitialCollectionFenceCannotPublishCandidate() throws Exception {
         UUID user=connect(DevBybitStub.Scenario.SLOW_COLLECTION);
         UUID intent=initialIntent(user,"stale-collection");
@@ -702,5 +849,14 @@ class FirstSnapshotTest extends AuthFlowTestBase {
             Thread.sleep(100);
         }
         throw new AssertionError("initial input collection did not finish");
+    }
+    private String awaitClassification(UUID job) throws InterruptedException {
+        for(int i=0;i<100;i++) {
+            String status=jdbc().sql("SELECT status FROM sync_cashflow_classification_job WHERE job_id=:j")
+                    .param("j",job).query(String.class).single();
+            if(!status.equals("QUEUED")&&!status.equals("RUNNING")) return status;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("cash-flow classification did not finish");
     }
 }

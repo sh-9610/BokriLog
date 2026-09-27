@@ -88,6 +88,23 @@ test.describe('첫 공식 현재가치', () => {
       timeout: 15_000,
     })
     await expect(page.getByText(planConditionContent.collection.completeHelp)).toBeVisible()
+    const startClassification = page.getByRole('button', {
+      name: planConditionContent.collection.classify,
+    })
+    await expect(startClassification).toBeVisible()
+    await startClassification.focus()
+    await page.keyboard.press('Enter')
+    await expect(
+      page.getByText(planConditionContent.collection.classificationComplete),
+    ).toBeVisible({
+      timeout: 15_000,
+    })
+    await expect(
+      page.getByText(/입금 사건: 0 · 출금 사건: 0 · 제외 사건: 0 · 검토 필요: 0/),
+    ).toBeVisible()
+    const classifiedText = await page.locator('body').innerText()
+    expect(classifiedText).not.toContain('BTC')
+    expect(classifiedText).not.toContain('USDT')
     for (const [zoom, width] of [
       ['200%', 640],
       ['400%', 320],

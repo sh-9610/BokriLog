@@ -41,6 +41,10 @@ class FirstSnapshotController {
     record CollectionJobState(UUID jobId,String status,@Nullable String failureCode,
             @Nullable String lastCheckedAt) {}
     record CollectionState(@Nullable CollectionJobState job) {}
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record CashflowClassificationState(UUID jobId,String status,@Nullable String failureCode,
+            @Nullable String processedAt,int depositCount,int withdrawalCount,int excludedCount,
+            int reviewCount,@Nullable String reasonCode) {}
 
     @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<JobState> start(@RequestHeader(name="Idempotency-Key",required=false)
@@ -100,12 +104,41 @@ class FirstSnapshotController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(new CollectionState(state.job()==null?null:toCollectionState(state.job())));
     }
+    @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/cashflow-classification",
+            consumes=MediaType.APPLICATION_JSON_VALUE,produces=MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<CashflowClassificationState> classifyCashflows(@RequestBody CollectionRequest body,
+            @RequestHeader(name="Idempotency-Key",required=false) @Nullable String key,
+            HttpServletResponse response) throws IOException {
+        UUID user=currentUserId();
+        if(user==null){response.sendError(403);return null;}
+        var job=jobs.admitCashflowClassification(user,body.intentId(),key==null?UUID.randomUUID().toString():key);
+        if(job.isEmpty()){response.sendError(409);return null;}
+        return ResponseEntity.status(HttpStatus.ACCEPTED).cacheControl(CacheControl.noStore())
+                .body(toClassificationState(job.get()));
+    }
+    @GetMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/cashflow-classification",
+            produces=MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<CashflowClassificationState> cashflowClassification(@RequestParam UUID intentId,
+            HttpServletResponse response) throws IOException {
+        UUID user=currentUserId();
+        if(user==null){response.sendError(403);return null;}
+        var state=jobs.cashflowClassificationState(user,intentId);
+        if(!state.permitted()){response.sendError(403);return null;}
+        if(state.job()==null) return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(toClassificationState(state.job()));
+    }
     private static JobState toState(SyncJobApi.Job job) {
         return new JobState(job.jobId(),job.status(),job.failureReason());
     }
     private static CollectionJobState toCollectionState(SyncJobApi.CollectionJob job) {
         return new CollectionJobState(job.jobId(),job.status(),job.failureCode(),
                 job.lastCheckedAt()==null?null:job.lastCheckedAt().toString());
+    }
+    private static CashflowClassificationState toClassificationState(SyncJobApi.ClassificationJob job) {
+        return new CashflowClassificationState(job.jobId(),job.status(),job.failureCode(),
+                job.processedAt()==null?null:job.processedAt().toString(),job.depositCount(),job.withdrawalCount(),
+                job.excludedCount(),job.reviewCount(),job.reasonCode());
     }
     private static @Nullable UUID currentUserId() {
         Authentication authentication=SecurityContextHolder.getContext().getAuthentication();
