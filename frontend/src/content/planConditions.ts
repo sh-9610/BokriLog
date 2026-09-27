@@ -62,6 +62,25 @@ export const planConditionContent = {
     startError: '수집을 접수하지 못했습니다. 연결을 확인하고 다시 시도하세요.',
     ineligible: '계정, 연결 또는 계획 조건 상태가 바뀌었습니다. 최신 상태를 확인하세요.',
     sessionError: '세션이 만료되었습니다. 로그인 상태를 확인한 뒤 다시 시도하세요.',
+    classificationHeading: '외부 자금흐름 판정',
+    classificationIntro:
+      '완전 수집된 사건을 승인된 판정표로 확인합니다. 금액과 거래 상세는 표시하지 않으며, 판정 후보는 아직 공식 계산에 사용되지 않습니다.',
+    classify: '원천 사건 판정 시작',
+    classificationRunning: '판정 중',
+    classificationComplete: '판정 완료',
+    classificationReview: '검토 필요',
+    classificationCancelled: '판정이 중단되었습니다',
+    deposits: '입금 사건',
+    withdrawals: '출금 사건',
+    excluded: '제외 사건',
+    needsReview: '검토 필요',
+    unknownTypeReason:
+      '등록되지 않은 사건 유형이 있어 입력 신뢰도를 확인해야 합니다. 지원 상태를 확인한 뒤 진행해 주세요.',
+    genericReviewReason:
+      '필수 근거나 사건 방향을 확인할 수 없습니다. 연결 상태를 확인한 뒤 다시 검토해 주세요.',
+    classificationLoadError: '판정 상태를 불러오지 못했습니다. 연결을 확인하고 다시 시도하세요.',
+    classificationStartError:
+      '판정을 시작하지 못했습니다. 입력 수집 완료와 연결 상태를 확인하세요.',
   },
   errors: {
     requiredEnd: '종료 시각을 입력하세요.',

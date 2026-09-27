@@ -43,6 +43,12 @@ class FirstSnapshotWorker {
             Thread.ofVirtual().name("initial-inputs-"+lease.jobId()).start(()->runInitial(lease));
         });
     }
+    @Scheduled(fixedDelay=1000)
+    void dispatchCashflowClassification() {
+        service.claimClassification().ifPresent(lease ->
+                Thread.ofVirtual().name("cashflow-classification-"+lease.jobId())
+                        .start(() -> service.processClassification(lease)));
+    }
     void runInitial(InitialCollectionRepository.Lease lease) {
         AtomicBoolean needsReview=new AtomicBoolean(false);
         AtomicReference<String> stage=new AtomicReference<>("PROVIDER_CALL_FAILED");

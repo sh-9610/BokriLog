@@ -67,6 +67,7 @@ describe('PlanConditionPanel', () => {
         ),
       )
       .mockResolvedValueOnce(response({ job: null }))
+      .mockResolvedValueOnce(response(null))
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('crypto', { randomUUID: () => 'plan-confirm-key-001' })
 
@@ -94,7 +95,7 @@ describe('PlanConditionPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: '이 조건 확인' }))
     await screen.findByRole('heading', { name: '계획 조건 검증 완료' })
     await screen.findByText('수집을 아직 시작하지 않았습니다.')
-    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(fetchMock).toHaveBeenCalledTimes(5)
     const confirmInit = fetchMock.mock.calls[2]?.[1]
     expect(confirmInit?.headers).toMatchObject({
       'X-CSRF-TOKEN': 'csrf-value',
@@ -102,6 +103,9 @@ describe('PlanConditionPanel', () => {
     })
     expect(confirmInit?.body).toBe(JSON.stringify({ confirmationRef: 'opaque-reference' }))
     expect(fetchMock.mock.calls[3]?.[0]).toBe('/api/snapshots/first/inputs?intentId=intent-1')
+    expect(fetchMock.mock.calls[4]?.[0]).toBe(
+      '/api/snapshots/first/cashflow-classification?intentId=intent-1',
+    )
   })
 
   it('blocks out-of-range percentages before the preview request', async () => {

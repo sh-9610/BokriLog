@@ -17,6 +17,18 @@ interface CollectionResponse {
   readonly job: CollectionJob | null
 }
 
+interface ClassificationJob {
+  readonly jobId: string
+  readonly status: string
+  readonly failureCode?: string
+  readonly processedAt?: string
+  readonly depositCount: number
+  readonly withdrawalCount: number
+  readonly excludedCount: number
+  readonly reviewCount: number
+  readonly reasonCode?: string
+}
+
 function isJob(value: unknown): value is CollectionJob {
   if (typeof value !== 'object' || value === null) return false
   const job = value as Record<string, unknown>
@@ -42,6 +54,23 @@ function isCollectionResponse(value: unknown): value is CollectionResponse {
     value !== null &&
     'job' in value &&
     (value.job === null || isJob(value.job))
+  )
+}
+
+function isClassificationJob(value: unknown): value is ClassificationJob {
+  if (typeof value !== 'object' || value === null) return false
+  const job = value as Record<string, unknown>
+  return (
+    typeof job.jobId === 'string' &&
+    typeof job.status === 'string' &&
+    ['QUEUED', 'RUNNING', 'COMPLETE', 'NEEDS_REVIEW', 'CANCELLED'].includes(job.status) &&
+    Number.isInteger(job.depositCount) &&
+    Number.isInteger(job.withdrawalCount) &&
+    Number.isInteger(job.excludedCount) &&
+    Number.isInteger(job.reviewCount) &&
+    (job.failureCode === undefined || typeof job.failureCode === 'string') &&
+    (job.processedAt === undefined || typeof job.processedAt === 'string') &&
+    (job.reasonCode === undefined || typeof job.reasonCode === 'string')
   )
 }
 
@@ -105,10 +134,14 @@ export function InitialInputsCollection({
   readonly intentId: string
 }): ReactElement {
   const [job, setJob] = useState<CollectionJob | null>(null)
+  const [classification, setClassification] = useState<ClassificationJob | null>(null)
+  const [classificationIntentId, setClassificationIntentId] = useState<string | null>(null)
+  const [classifying, setClassifying] = useState(false)
   const [busyIntentId, setBusyIntentId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const key = useRef<string | null>(null)
   const keyIntentId = useRef<string | null>(null)
+  const classificationKey = useRef<string | null>(null)
   const live = useRef(true)
   const currentIntentId = useRef(intentId)
   const [jobIntentId, setJobIntentId] = useState<string | null>(null)
@@ -128,6 +161,34 @@ export function InitialInputsCollection({
     if (!isCollectionResponse(body)) throw new Error('response')
     return body
   }, [intentId])
+
+  const readClassification = useCallback(async (): Promise<ClassificationJob | null> => {
+    const response = await fetch(
+      `/api/snapshots/first/cashflow-classification?intentId=${encodeURIComponent(intentId)}`,
+      { credentials: 'same-origin', cache: 'no-store' },
+    )
+    if (!response.ok) throw new Error('request')
+    if (response.status === 204) return null
+    const body: unknown = await response.json()
+    if (body === null) return null
+    if (!isClassificationJob(body)) throw new Error('response')
+    return body
+  }, [intentId])
+
+  const refreshClassification = useCallback(async (): Promise<void> => {
+    try {
+      const result = await readClassification()
+      if (live.current && currentIntentId.current === intentId) {
+        setClassification(result)
+        setClassificationIntentId(intentId)
+      }
+    } catch {
+      if (live.current && currentIntentId.current === intentId) {
+        setError(copy.collection.classificationLoadError)
+        setErrorIntentId(intentId)
+      }
+    }
+  }, [intentId, readClassification])
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
@@ -153,6 +214,7 @@ export function InitialInputsCollection({
     currentIntentId.current = intentId
     key.current = null
     keyIntentId.current = intentId
+    classificationKey.current = null
     void readCollectionState()
       .then((body) => {
         if (live.current && currentIntentId.current === intentId) {
@@ -171,10 +233,23 @@ export function InitialInputsCollection({
       .finally(() => {
         if (live.current && currentIntentId.current === intentId) setLoadedIntentId(intentId)
       })
+    void readClassification()
+      .then((result) => {
+        if (live.current && currentIntentId.current === intentId) {
+          setClassification(result)
+          setClassificationIntentId(intentId)
+        }
+      })
+      .catch(() => {
+        if (live.current && currentIntentId.current === intentId) {
+          setError(copy.collection.classificationLoadError)
+          setErrorIntentId(intentId)
+        }
+      })
     return () => {
       live.current = false
     }
-  }, [intentId, readCollectionState])
+  }, [intentId, readCollectionState, readClassification])
 
   useEffect(() => {
     if (job?.status !== 'QUEUED' && job?.status !== 'RUNNING') return
@@ -185,6 +260,17 @@ export function InitialInputsCollection({
       window.clearInterval(timer)
     }
   }, [job?.status, refresh])
+
+  useEffect(() => {
+    const current = classificationIntentId === intentId ? classification : null
+    if (current?.status !== 'QUEUED' && current?.status !== 'RUNNING') return
+    const timer = window.setInterval(() => {
+      void refreshClassification()
+    }, 2000)
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [classification, classificationIntentId, intentId, refreshClassification])
 
   async function start(): Promise<void> {
     if (csrfToken === null) {
@@ -237,9 +323,44 @@ export function InitialInputsCollection({
     await start()
   }
 
+  async function classify(): Promise<void> {
+    if (csrfToken === null) {
+      setError(copy.collection.sessionError)
+      setErrorIntentId(intentId)
+      return
+    }
+    setClassifying(true)
+    classificationKey.current = crypto.randomUUID()
+    try {
+      const response = await fetch('/api/snapshots/first/cashflow-classification', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-TOKEN': csrfToken,
+          'Idempotency-Key': classificationKey.current,
+        },
+        body: JSON.stringify({ intentId }),
+      })
+      if (response.status === 409) throw new Error('ineligible')
+      if (!response.ok) throw new Error('request')
+      const body: unknown = await response.json()
+      if (!isClassificationJob(body)) throw new Error('response')
+      setClassification(body)
+      setClassificationIntentId(intentId)
+      classificationKey.current = null
+    } catch {
+      setError(copy.collection.classificationStartError)
+      setErrorIntentId(intentId)
+    } finally {
+      if (live.current && currentIntentId.current === intentId) setClassifying(false)
+    }
+  }
+
   const currentJob = jobIntentId === intentId ? job : null
   const currentLoaded = loadedIntentId === intentId
   const currentError = errorIntentId === intentId ? error : null
+  const currentClassification = classificationIntentId === intentId ? classification : null
   const currentStatus = currentJob === null ? null : statusCopy(currentJob.status)
   const currentBusy = busyIntentId === intentId
   const retryable = currentJob?.status === 'RETRY_REQUIRED' || currentJob?.status === 'CANCELLED'
@@ -277,6 +398,60 @@ export function InitialInputsCollection({
         <p className={styles.error} role="alert">
           {currentError}
         </p>
+      ) : null}
+      {currentJob?.status === 'INPUTS_COMPLETE' ? (
+        <div className={styles.status}>
+          <p className={styles.statusLabel}>{copy.collection.classificationHeading}</p>
+          <p>{copy.collection.classificationIntro}</p>
+          {currentClassification !== null ? (
+            <div aria-live="polite" role="status">
+              <p className={styles.statusLabel}>
+                {currentClassification.status === 'COMPLETE'
+                  ? copy.collection.classificationComplete
+                  : currentClassification.status === 'NEEDS_REVIEW'
+                    ? copy.collection.classificationReview
+                    : currentClassification.status === 'CANCELLED'
+                      ? copy.collection.classificationCancelled
+                      : copy.collection.classificationRunning}
+              </p>
+              <p>
+                {copy.collection.deposits}: {currentClassification.depositCount} ·{' '}
+                {copy.collection.withdrawals}: {currentClassification.withdrawalCount} ·{' '}
+                {copy.collection.excluded}: {currentClassification.excludedCount} ·{' '}
+                {copy.collection.needsReview}: {currentClassification.reviewCount}
+              </p>
+              {currentClassification.reasonCode === 'UNRECOGNIZED_EVENT_TYPE' ? (
+                <p>{copy.collection.unknownTypeReason}</p>
+              ) : currentClassification.reasonCode !== undefined ||
+                currentClassification.failureCode !== undefined ? (
+                <p>{copy.collection.genericReviewReason}</p>
+              ) : null}
+            </div>
+          ) : null}
+          <div className={styles.actions}>
+            {currentClassification === null || currentClassification.status === 'CANCELLED' ? (
+              <button
+                className={styles.button}
+                disabled={classifying}
+                onClick={() => void classify()}
+                type="button"
+              >
+                {classifying ? copy.collection.submitting : copy.collection.classify}
+              </button>
+            ) : null}
+            {currentClassification !== null &&
+            currentClassification.status !== 'QUEUED' &&
+            currentClassification.status !== 'RUNNING' ? (
+              <button
+                className={styles.secondary}
+                onClick={() => void refreshClassification()}
+                type="button"
+              >
+                {copy.collection.refresh}
+              </button>
+            ) : null}
+          </div>
+        </div>
       ) : null}
       <div className={styles.actions}>
         {currentJob === null ? (

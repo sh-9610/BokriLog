@@ -26,6 +26,7 @@ class SyncJobService implements SyncJobApi {
     static final String INITIAL_INPUTS_COMMAND="initial-source-event-collection";
     private final SyncJobRepository jobs;
     private final InitialCollectionRepository initialJobs;
+    private final CashflowClassificationRepository classifications;
     private final SourceConnectionApi sources;
     private final PortfolioMembershipApi portfolios;
     private final AccountAccessApi accounts;
@@ -33,10 +34,12 @@ class SyncJobService implements SyncJobApi {
     private final InitialInputsPlanPort plans;
     private final TransactionTemplate transactions;
 
-    SyncJobService(SyncJobRepository jobs, InitialCollectionRepository initialJobs, SourceConnectionApi sources,
+    SyncJobService(SyncJobRepository jobs, InitialCollectionRepository initialJobs,
+            CashflowClassificationRepository classifications, SourceConnectionApi sources,
             PortfolioMembershipApi portfolios, AccountAccessApi accounts,
             OperationalRestrictionApi restrictions, InitialInputsPlanPort plans, PlatformTransactionManager manager) {
-        this.jobs=jobs; this.initialJobs=initialJobs; this.sources=sources; this.portfolios=portfolios;
+        this.jobs=jobs; this.initialJobs=initialJobs; this.classifications=classifications;
+        this.sources=sources; this.portfolios=portfolios;
         this.accounts=accounts; this.restrictions=restrictions; this.plans=plans;
         this.transactions=new TransactionTemplate(manager);
     }
@@ -130,15 +133,93 @@ class SyncJobService implements SyncJobApi {
         return new InitialCollectionState(true,initialJobs.latest(userId,intentId).orElse(null));
     }
     @Override
+    public Optional<ClassificationJob> admitCashflowClassification(@Nullable UUID userId,UUID intentId,String key) {
+        if (userId==null||!validCollectionKey(key)) return Optional.empty();
+        return transactions.execute(status->{
+            var intent=plans.eligibleIntent(userId,intentId).orElse(null);
+            if(intent==null||!initialEligible(userId)) return Optional.empty();
+            var connection=sources.snapshotConnection(userId).orElse(null);
+            if(connection==null||!connection.connectionId().equals(intent.connectionId())
+                    ||!connection.providerAccountId().equals(intent.providerAccountId())) return Optional.empty();
+            return classifications.admit(userId,intentId,intent.portfolioId(),intent.connectionId(),
+                    intent.providerAccountId(),key);
+        });
+    }
+    @Override
+    public ClassificationState cashflowClassificationState(@Nullable UUID userId,UUID intentId) {
+        if(userId==null||accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)!=AccessDecision.ALLOWED
+                ||!initialEligible(userId)) return new ClassificationState(false,null);
+        var intent=plans.eligibleIntent(userId,intentId).orElse(null);
+        var connection=sources.snapshotConnection(userId).orElse(null);
+        if(intent==null||connection==null||!connection.connectionId().equals(intent.connectionId())
+                ||!connection.providerAccountId().equals(intent.providerAccountId())) return new ClassificationState(false,null);
+        return new ClassificationState(true,classifications.latest(userId,intentId).orElse(null));
+    }
+    @Override
     public Optional<SourceSnapshot> sourceSnapshot(@Nullable UUID userId, UUID sourceSnapshotId) {
         return userId==null ? Optional.empty() : jobs.sourceSnapshot(userId,sourceSnapshotId);
     }
     @Override
     public void eraseSyncData(@Nullable UUID userId) {
         if (userId!=null) transactions.executeWithoutResult(status -> {
+            classifications.erase(userId);
             initialJobs.erase(userId);
             jobs.erase(userId);
         });
+    }
+    Optional<CashflowClassificationRepository.Lease> claimClassification() {
+        return transactions.execute(status->classifications.claim().flatMap(lease->{
+            var intent=plans.eligibleIntent(lease.userId(),lease.intentId()).orElse(null);
+            var connection=sources.snapshotConnection(lease.userId()).orElse(null);
+            if(!initialEligible(lease.userId())||intent==null||connection==null
+                    ||!intent.portfolioId().equals(lease.portfolioId())
+                    ||!intent.connectionId().equals(lease.connectionId())
+                    ||!intent.providerAccountId().equals(lease.providerAccountId())
+                    ||!connection.connectionId().equals(lease.connectionId())
+                    ||!connection.providerAccountId().equals(lease.providerAccountId())) {
+                classifications.finish(lease,"CANCELLED","NOT_PERMITTED");
+                return Optional.empty();
+            }
+            return Optional.of(lease);
+        }));
+    }
+    void processClassification(CashflowClassificationRepository.Lease lease) {
+        try {
+            transactions.executeWithoutResult(status->{
+                if(!classifications.lockOwned(lease)) return;
+                var intent=plans.eligibleIntent(lease.userId(),lease.intentId()).orElse(null);
+                var connection=sources.snapshotConnection(lease.userId()).orElse(null);
+                if(!initialEligible(lease.userId())||intent==null||connection==null
+                        ||!intent.portfolioId().equals(lease.portfolioId())
+                        ||!intent.connectionId().equals(lease.connectionId())
+                        ||!intent.providerAccountId().equals(lease.providerAccountId())
+                        ||!connection.connectionId().equals(lease.connectionId())
+                        ||!connection.providerAccountId().equals(lease.providerAccountId())) {
+                    classifications.finish(lease,"CANCELLED","NOT_PERMITTED"); return;
+                }
+                var inputHash=classifications.inputHash(lease);
+                if(inputHash.isEmpty()) { classifications.finish(lease,"NEEDS_REVIEW","INPUT_COMPLETENESS_INVALID"); return; }
+                var inputs=classifications.inputs(lease);
+                var decisions=inputs.stream().map(input->CashflowDecisionTable.decide(input.accountType(),input.eventType(),
+                        input.currency(),input.cashFlow())).toList();
+                classifications.publish(lease,inputHash.get(),inputs,decisions,()->classificationStillPermitted(lease));
+            });
+        } catch (CashflowClassificationRepository.PublicationBlocked blocked) {
+            transactions.executeWithoutResult(status -> classifications.finish(lease,"CANCELLED","NOT_PERMITTED"));
+        } catch (RuntimeException failure) {
+            transactions.executeWithoutResult(status ->
+                    classifications.finish(lease,"NEEDS_REVIEW","CLASSIFICATION_FAILED"));
+        }
+    }
+    private boolean classificationStillPermitted(CashflowClassificationRepository.Lease lease) {
+        var intent=plans.eligibleIntent(lease.userId(),lease.intentId()).orElse(null);
+        var connection=sources.snapshotConnection(lease.userId()).orElse(null);
+        return initialEligible(lease.userId())&&intent!=null&&connection!=null
+                &&intent.portfolioId().equals(lease.portfolioId())
+                &&intent.connectionId().equals(lease.connectionId())
+                &&intent.providerAccountId().equals(lease.providerAccountId())
+                &&connection.connectionId().equals(lease.connectionId())
+                &&connection.providerAccountId().equals(lease.providerAccountId());
     }
     Optional<InitialCollectionRepository.Lease> claimInitial() {
         return transactions.execute(status -> initialJobs.claim().flatMap(lease -> {

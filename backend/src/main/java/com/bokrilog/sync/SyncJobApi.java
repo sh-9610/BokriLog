@@ -16,6 +16,10 @@ public interface SyncJobApi {
     record CollectionJob(UUID jobId, String status, @Nullable String failureCode,
             @Nullable Instant lastCheckedAt) {}
     record InitialCollectionState(boolean permitted, @Nullable CollectionJob job) {}
+    record ClassificationJob(UUID jobId, String status, @Nullable String failureCode,
+            @Nullable Instant processedAt, int depositCount, int withdrawalCount,
+            int excludedCount, int reviewCount, @Nullable String reasonCode) {}
+    record ClassificationState(boolean permitted, @Nullable ClassificationJob job) {}
 
     /** 같은 연결의 진행 작업과 같은 멱등 키는 기존 작업을 반환한다. */
     Optional<Job> admit(@Nullable UUID userId, String idempotencyKey);
@@ -24,6 +28,9 @@ public interface SyncJobApi {
     Optional<CollectionJob> admitInitialInputs(@Nullable UUID userId, UUID intentId, String idempotencyKey);
     Optional<CollectionJob> initialCollectionJob(@Nullable UUID userId, UUID jobId);
     InitialCollectionState initialCollectionState(@Nullable UUID userId, UUID intentId);
+    Optional<ClassificationJob> admitCashflowClassification(@Nullable UUID userId, UUID intentId,
+            String idempotencyKey);
+    ClassificationState cashflowClassificationState(@Nullable UUID userId, UUID intentId);
     /** Read-only source provenance validation for an opaque portfolio snapshot reference. */
     Optional<SourceSnapshot> sourceSnapshot(@Nullable UUID userId, UUID sourceSnapshotId);
     /** portfolio 삭제 뒤, source 삭제 앞에 호출한다. */
