@@ -114,6 +114,16 @@ class PlanConditionRepository {
                 rs.getString(7),rs.getObject(8,UUID.class),instant(rs,9))).optional();
     }
 
+    Optional<CollectionIntentRow> collectionIntent(UUID userId, UUID id) {
+        return jdbc.sql("SELECT intent_id,portfolio_id,connection_id,provider_account_id,t0,end_at,status "
+                + "FROM plan_condition_intent WHERE user_id=:u AND intent_id=:id")
+            .param("u",userId).param("id",id).query((rs,n)->new CollectionIntentRow(
+                rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),rs.getObject(3,UUID.class),
+                rs.getObject(4,UUID.class),instant(rs,5),instant(rs,6),rs.getString(7))).optional();
+    }
+    record CollectionIntentRow(UUID intentId, UUID portfolioId, UUID connectionId,
+            UUID providerAccountId, Instant t0, Instant expiresAt, String status) {}
+
     Optional<Intent> latestOpenForUpdate(UUID userId) {
         return jdbc.sql("SELECT intent_id,status,p0_decimal,t0,end_at,period,target_rate,portfolio_snapshot_id,created_at "
                 + "FROM plan_condition_intent WHERE user_id=:u AND status='OPEN' FOR UPDATE")

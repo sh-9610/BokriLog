@@ -9,6 +9,7 @@ import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.portfolio.PortfolioMembershipApi.FirstOfficialSnapshot;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.SyncJobApi;
+import com.bokrilog.sync.InitialInputsPlanPort;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -25,12 +26,13 @@ import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
-class PlanConditionService implements PlanConditionApi {
+class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort {
     static final String CALENDAR_POLICY="CALENDAR-SEOUL-1.0";
     static final String CALCULATION_POLICY="CALC-1.0";
     static final ZoneId ZONE=ZoneId.of("Asia/Seoul");
@@ -47,7 +49,7 @@ class PlanConditionService implements PlanConditionApi {
     private final TransactionTemplate transactions;
 
     PlanConditionService(PlanConditionRepository repository, PortfolioMembershipApi portfolios,
-            SyncJobApi sync, SourceConnectionApi sources, AccountAccessApi accounts,
+            @Lazy SyncJobApi sync, SourceConnectionApi sources, AccountAccessApi accounts,
             OperationalRestrictionApi restrictions, PlatformTransactionManager manager) {
         this.repository=repository; this.portfolios=portfolios; this.sync=sync; this.sources=sources;
         this.accounts=accounts; this.restrictions=restrictions;
@@ -170,6 +172,33 @@ class PlanConditionService implements PlanConditionApi {
                     !existing.canonicalHash().equals(readCanonicalHash(confirmationHash,userId,sessionId)),
                     repository.intent(userId,existing.intentId()).orElse(null));
         }
+    }
+
+    @Override
+    public Optional<CollectionIntent> collectionIntent(@Nullable UUID userId, UUID intentId) {
+        if (userId == null) return Optional.empty();
+        return transactions.execute(status -> {
+            if (!eligibleUser(userId)) return Optional.empty();
+            var row = repository.collectionIntent(userId,intentId).orElse(null);
+            if (row == null || !"OPEN".equals(row.status()) || !row.expiresAt().isAfter(Instant.now()))
+                return Optional.empty();
+            var connection = sources.snapshotConnection(userId).orElse(null);
+            var active = portfolios.activeSource(userId).orElse(null);
+            if (connection == null || active == null
+                    || !row.connectionId().equals(connection.connectionId())
+                    || !row.providerAccountId().equals(connection.providerAccountId())
+                    || !row.connectionId().equals(active.connectionId())
+                    || !row.providerAccountId().equals(active.providerAccountId())
+                    || !row.portfolioId().equals(active.portfolioId())) return Optional.empty();
+            return Optional.of(new CollectionIntent(row.intentId(),row.portfolioId(),row.connectionId(),
+                    row.providerAccountId(),row.t0(),row.expiresAt()));
+        });
+    }
+
+    @Override
+    public Optional<InitialInputsPlanPort.Intent> eligibleIntent(@Nullable UUID userId, UUID intentId) {
+        return collectionIntent(userId,intentId).map(i->new InitialInputsPlanPort.Intent(
+                i.intentId(),i.portfolioId(),i.connectionId(),i.providerAccountId(),i.t0()));
     }
 
     @Override

@@ -4,9 +4,12 @@ import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.operations.OperationalRestrictionApi;
+import com.bokrilog.sync.InitialInputsPlanPort;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.SyncJobApi;
+import com.bokrilog.source.SourceConnectionApi.CollectionObservation;
+import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
@@ -20,18 +23,21 @@ import org.springframework.transaction.support.TransactionTemplate;
 class SyncJobService implements SyncJobApi {
     static final String SYNC_COMMAND="first-snapshot";
     static final String CONNECTION_COMMAND="bybit-connection-create";
+    static final String INITIAL_INPUTS_COMMAND="initial-source-event-collection";
     private final SyncJobRepository jobs;
+    private final InitialCollectionRepository initialJobs;
     private final SourceConnectionApi sources;
     private final PortfolioMembershipApi portfolios;
     private final AccountAccessApi accounts;
     private final OperationalRestrictionApi restrictions;
+    private final InitialInputsPlanPort plans;
     private final TransactionTemplate transactions;
 
-    SyncJobService(SyncJobRepository jobs, SourceConnectionApi sources,
+    SyncJobService(SyncJobRepository jobs, InitialCollectionRepository initialJobs, SourceConnectionApi sources,
             PortfolioMembershipApi portfolios, AccountAccessApi accounts,
-            OperationalRestrictionApi restrictions, PlatformTransactionManager manager) {
-        this.jobs=jobs; this.sources=sources; this.portfolios=portfolios;
-        this.accounts=accounts; this.restrictions=restrictions;
+            OperationalRestrictionApi restrictions, InitialInputsPlanPort plans, PlatformTransactionManager manager) {
+        this.jobs=jobs; this.initialJobs=initialJobs; this.sources=sources; this.portfolios=portfolios;
+        this.accounts=accounts; this.restrictions=restrictions; this.plans=plans;
         this.transactions=new TransactionTemplate(manager);
     }
     boolean eligible(UUID userId) {
@@ -82,12 +88,117 @@ class SyncJobService implements SyncJobApi {
                 portfolios.officialValue(userId).orElse(null),true,false));
     }
     @Override
+    public Optional<CollectionJob> admitInitialInputs(@Nullable UUID userId, UUID intentId, String key) {
+        if (userId==null || !validCollectionKey(key)) return Optional.empty();
+        try {
+            return transactions.execute(status -> {
+                var intent=plans.eligibleIntent(userId,intentId).orElse(null);
+                if (intent==null || !initialEligible(userId)) return Optional.empty();
+                var connection=sources.snapshotConnection(userId).orElse(null);
+                if (connection==null || !connection.connectionId().equals(intent.connectionId())
+                        || !connection.providerAccountId().equals(intent.providerAccountId())) return Optional.empty();
+                Optional<CollectionJob> same=initialJobs.byKey(userId,intentId,key);
+                if (same.isPresent()) return same;
+                Optional<CollectionJob> active=initialJobs.active(userId,intentId);
+                if (active.isPresent()) return active;
+                UUID id=UUID.randomUUID();
+                if (initialJobs.insert(id,userId,intent.portfolioId(),intent.intentId(),intent.connectionId(),
+                        intent.providerAccountId(),key,intent.t0())!=1)
+                    return initialJobs.byKey(userId,intentId,key).or(()->initialJobs.active(userId,intentId));
+                return initialJobs.byId(userId,id);
+            });
+        } catch (DuplicateKeyException racing) {
+            return plans.eligibleIntent(userId,intentId).flatMap(i->initialJobs.byKey(userId,intentId,key)
+                    .or(()->initialJobs.active(userId,intentId)));
+        }
+    }
+    @Override
+    public Optional<CollectionJob> initialCollectionJob(@Nullable UUID userId, UUID jobId) {
+        if (userId==null || accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)!=AccessDecision.ALLOWED
+                || !initialEligible(userId)) return Optional.empty();
+        return initialJobs.byId(userId,jobId);
+    }
+    @Override
+    public InitialCollectionState initialCollectionState(@Nullable UUID userId,UUID intentId) {
+        if (userId==null || accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)!=AccessDecision.ALLOWED
+                || !initialEligible(userId)) return new InitialCollectionState(false,null);
+        var intent=plans.eligibleIntent(userId,intentId).orElse(null);
+        var connection=sources.snapshotConnection(userId).orElse(null);
+        if (intent==null || connection==null || !connection.connectionId().equals(intent.connectionId())
+                || !connection.providerAccountId().equals(intent.providerAccountId()))
+            return new InitialCollectionState(false,null);
+        return new InitialCollectionState(true,initialJobs.latest(userId,intentId).orElse(null));
+    }
+    @Override
     public Optional<SourceSnapshot> sourceSnapshot(@Nullable UUID userId, UUID sourceSnapshotId) {
         return userId==null ? Optional.empty() : jobs.sourceSnapshot(userId,sourceSnapshotId);
     }
     @Override
     public void eraseSyncData(@Nullable UUID userId) {
-        if (userId!=null) transactions.executeWithoutResult(status -> jobs.erase(userId));
+        if (userId!=null) transactions.executeWithoutResult(status -> {
+            initialJobs.erase(userId);
+            jobs.erase(userId);
+        });
+    }
+    Optional<InitialCollectionRepository.Lease> claimInitial() {
+        return transactions.execute(status -> initialJobs.claim().flatMap(lease -> {
+            var intent=plans.eligibleIntent(lease.userId(),lease.intentId()).orElse(null);
+            var connection=sources.snapshotConnection(lease.userId()).orElse(null);
+            if (!initialEligible(lease.userId())||intent==null||connection==null
+                    ||!intent.portfolioId().equals(lease.portfolioId())
+                    ||!intent.connectionId().equals(lease.connectionId())
+                    ||!intent.providerAccountId().equals(lease.providerAccountId())
+                    ||!intent.t0().equals(lease.t0())
+                    ||!connection.connectionId().equals(lease.connectionId())
+                    ||!connection.providerAccountId().equals(lease.providerAccountId())) {
+                initialJobs.finish(lease,"CANCELLED","NOT_PERMITTED");
+                return Optional.empty();
+            }
+            return Optional.of(lease);
+        }));
+    }
+    boolean heartbeatInitial(InitialCollectionRepository.Lease lease) {
+        return transactions.execute(status->initialJobs.heartbeat(lease)==1);
+    }
+    boolean fixCollectionScope(InitialCollectionRepository.Lease lease,Instant tc) {
+        return transactions.execute(status->initialJobs.lockOwned(lease)&&initialJobs.fixScope(lease,tc));
+    }
+    boolean storeCollectionPage(InitialCollectionRepository.Lease lease,
+            com.bokrilog.source.SourceConnectionApi.CollectionPage page) {
+        return transactions.execute(status->{
+            if (!initialJobs.lockOwned(lease)||!initialEligible(lease.userId()))
+                throw new IllegalStateException("collection lease lost");
+            return initialJobs.storePage(lease,page.evidence(),page.events(),page.reviewRequired());
+        });
+    }
+    void finishCollection(InitialCollectionRepository.Lease lease,CollectionObservation input,boolean needsReview) {
+        transactions.executeWithoutResult(status->{
+            if (!initialJobs.lockOwned(lease)||!initialEligible(lease.userId())) return;
+            var intent=plans.eligibleIntent(lease.userId(),lease.intentId()).orElse(null);
+            var connection=sources.snapshotConnection(lease.userId()).orElse(null);
+            if (intent==null||connection==null||!intent.portfolioId().equals(lease.portfolioId())
+                    ||!intent.connectionId().equals(lease.connectionId())
+                    ||!intent.providerAccountId().equals(lease.providerAccountId())
+                    ||!intent.t0().equals(lease.t0())||!connection.connectionId().equals(lease.connectionId())
+                    ||!connection.providerAccountId().equals(lease.providerAccountId())
+                    ||(lease.tc()!=null&&!lease.tc().equals(input.tc()))
+                    ||!connection.policyVersion().equals(input.policyVersion())) {
+                initialJobs.finish(lease,"CANCELLED","NOT_PERMITTED");
+                return;
+            }
+            var stored=initialJobs.complete(lease,input,needsReview);
+            initialJobs.finish(lease,stored.status(),stored.failureCode());
+        });
+    }
+    void failCollection(InitialCollectionRepository.Lease lease,String safeCode) {
+        transactions.executeWithoutResult(status->{
+            if (initialJobs.lockOwned(lease)) initialJobs.finish(lease,"RETRY_REQUIRED",safeCode);
+        });
+    }
+    void reviewCollection(InitialCollectionRepository.Lease lease,String safeCode) {
+        transactions.executeWithoutResult(status->{
+            if (initialJobs.lockOwned(lease)) initialJobs.finish(lease,"NEEDS_REVIEW",safeCode);
+        });
     }
     Optional<SyncJobRepository.Lease> claim() {
         return transactions.execute(status -> {
@@ -148,6 +259,17 @@ class SyncJobService implements SyncJobApi {
             block(lease);
             return false;
         }
+    }
+    private boolean initialEligible(UUID userId) {
+        return accounts.decide(userId,userId,AccountAccessKind.WRITE)==AccessDecision.ALLOWED
+                && !restrictions.isRestricted(INITIAL_INPUTS_COMMAND)
+                && !restrictions.isRestricted("plan-condition-create")
+                && !restrictions.isRestricted(SYNC_COMMAND)
+                && !restrictions.isRestricted(CONNECTION_COMMAND);
+    }
+    private static boolean validCollectionKey(@Nullable String key) {
+        return key!=null&&key.length()>=16&&key.length()<=128&&key.matches("[A-Za-z0-9._:-]+")
+                &&!key.contains("..")&&!key.startsWith("-");
     }
     private static final class PublicationBlocked extends RuntimeException {
         private static final long serialVersionUID = 1L;

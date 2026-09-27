@@ -6,6 +6,7 @@ import com.bokrilog.source.SourceRejectionReason;
 import com.bokrilog.source.SourceVerification;
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -16,10 +17,15 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.security.MessageDigest;
+import java.util.function.Consumer;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.jspecify.annotations.Nullable;
@@ -69,6 +75,16 @@ class BybitAdapter {
 
     /** 셋째 호출. 실제 지갑 조회가 성립하는지 본다. */
     static final String WALLET_BALANCE_PATH = "/v5/account/wallet-balance";
+
+    static final String SERVER_TIME_PATH = "/v5/market/time";
+
+    static final String TRANSACTION_LOG_PATH = "/v5/account/transaction-log";
+
+    static final String TRANSACTION_LOG_TYPES = "TRANSFER_IN,TRANSFER_OUT";
+
+    static final int TRANSACTION_PAGE_SIZE = 50;
+
+    static final long MAX_WINDOW_MILLIS = 7L * 24 * 60 * 60 * 1000;
 
     /** 셋째 호출의 쿼리. 이 계정 유형 하나만 묻는다. */
     static final String WALLET_BALANCE_QUERY = "accountType=UNIFIED";
@@ -300,6 +316,158 @@ class BybitAdapter {
                         Instant.now(this.clock), POLICY_VERSION));
     }
 
+    /** Captures one server cutoff and exhausts every required type, range, and cursor. */
+    SourceConnectionApi.CollectionResult collectInitialInputs(SourceCredentials credentials, String expectedAccountRef, Instant t0,
+            @Nullable Instant fixedTc, Consumer<Instant> scopeConsumer,
+            Consumer<SourceConnectionApi.CollectionPage> pageConsumer) {
+        if (!isConfigured()) return rejectedCollection(SourceRejectionReason.UNAVAILABLE);
+        if (!isHeaderSafe(credentials.apiKey()) || !isAcceptable(credentials.apiSecret()))
+            return rejectedCollection(SourceRejectionReason.INVALID_FORMAT);
+
+        Instant tc=fixedTc;
+        if (tc==null) {
+            Call timeCall = publicCall(SERVER_TIME_PATH);
+            JsonNode timeResult = resultOf(timeCall);
+            if (timeResult == null) return rejectedCollection(reasonOf(timeCall, SourceRejectionReason.PROVIDER_UNAVAILABLE));
+            try {
+                JsonNode nanos = timeResult.get("timeNano");
+                if (nanos == null || !nanos.isString() || !nanos.asString().matches("[0-9]{19}"))
+                    return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
+                tc = Instant.ofEpochMilli(Long.parseLong(nanos.asString().substring(0, 13)));
+            } catch (RuntimeException malformed) {
+                return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
+            }
+            if (!tc.isAfter(t0)) return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
+            scopeConsumer.accept(tc);
+        }
+        final Instant cutoff=tc;
+
+        Call keyCall = call(credentials, QUERY_API_PATH, "");
+        JsonNode keyFacts = resultOf(keyCall);
+        if (keyFacts == null) return rejectedCollection(reasonOf(keyCall, SourceRejectionReason.AUTHENTICATION_REJECTED));
+        SourceRejectionReason keyVerdict = judgeKey(keyFacts);
+        if (keyVerdict != null) return rejectedCollection(keyVerdict);
+        String accountRef = text(keyFacts, "userID");
+        if (accountRef == null || accountRef.isBlank()) return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
+        if (!expectedAccountRef.equals(accountRef)) return rejectedCollection(SourceRejectionReason.SUB_ACCOUNT);
+
+        Call accountCall = call(credentials, ACCOUNT_INFO_PATH, "");
+        JsonNode account = resultOf(accountCall);
+        if (account == null) return rejectedCollection(reasonOf(accountCall, SourceRejectionReason.AUTHENTICATION_REJECTED));
+        if (!isSupportedAccountMode(account)) return rejectedCollection(SourceRejectionReason.UNSUPPORTED_ACCOUNT_MODE);
+
+        Instant receivedAt = Instant.now(this.clock);
+        Call walletCall = call(credentials, WALLET_BALANCE_PATH, WALLET_BALANCE_QUERY);
+        JsonNode wallet = resultOf(walletCall);
+        if (wallet == null) return rejectedCollection(reasonOf(walletCall, SourceRejectionReason.WALLET_UNAVAILABLE));
+        if (!hasUsableUnifiedEquity(wallet)) return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
+        JsonNode envelopeTime = walletCall.body().get("time");
+        if (envelopeTime == null || !envelopeTime.isIntegralNumber() || envelopeTime.asLong() <= 0)
+            return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
+
+        boolean review = false;
+        int completedPages = 0;
+        Instant start = t0;
+        while (start.isBefore(cutoff)) {
+            Instant end = start.plus(MAX_WINDOW_MILLIS, ChronoUnit.MILLIS);
+            if (end.isAfter(cutoff)) end = cutoff;
+            for (String type : List.of("TRANSFER_IN", "TRANSFER_OUT")) {
+                String cursor = null;
+                Set<String> cursors = new HashSet<>();
+                int pageCount = 0;
+                do {
+                    if (++pageCount > 10000) return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
+                    String query = transactionQuery(type, start, end, cursor);
+                    Instant requestedAt = Instant.now(this.clock);
+                    Call pageCall = call(credentials, TRANSACTION_LOG_PATH, query);
+                    Instant pageReceivedAt = Instant.now(this.clock);
+                    JsonNode page = resultOf(pageCall);
+                    if (page == null) return rejectedCollection(reasonOf(pageCall, SourceRejectionReason.PROVIDER_UNAVAILABLE));
+                    JsonNode list = page.get("list");
+                    JsonNode next = page.get("nextPageCursor");
+                    if (list == null || !list.isArray() || next == null || !next.isString())
+                        return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
+                    if (list.size()>TRANSACTION_PAGE_SIZE)
+                        return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
+                    Instant first = null;
+                    Instant last = null;
+                    int count = 0;
+                    boolean pageReview = false;
+                    List<SourceConnectionApi.CollectionEvent> events = new ArrayList<>();
+                    for (JsonNode item : list) {
+                        if (!item.isObject()) { pageReview = true; continue; }
+                        String id = text(item, "id");
+                        String eventType = text(item, "type");
+                        String currency = text(item, "currency");
+                        String cashFlow = text(item, "cashFlow");
+                        // The endpoint has no accountType response field; its request context is fixed above.
+                        String accountType = "UNIFIED";
+                        Instant eventAt = parseEpochMillis(text(item, "transactionTime"));
+                        if (id == null || id.isBlank() || eventType == null || currency == null
+                                || cashFlow == null || eventAt == null || accountType == null) {
+                            pageReview = true;
+                        } else if (!"UNIFIED".equals(accountType)
+                                || !("TRANSFER_IN".equals(eventType) || "TRANSFER_OUT".equals(eventType))) {
+                            pageReview = true;
+                        }
+                        if (eventAt != null && (eventAt.isAfter(t0) && !eventAt.isAfter(cutoff))) {
+                            first = first == null || eventAt.isBefore(first) ? eventAt : first;
+                            last = last == null || eventAt.isAfter(last) ? eventAt : last;
+                        }
+                        events.add(new SourceConnectionApi.CollectionEvent(id, eventType, currency,
+                                cashFlow, eventAt, accountType));
+                        count++;
+                    }
+                    String nextCursor = next.asString();
+                    boolean hasNext = !nextCursor.isBlank();
+                    if (hasNext && !cursors.add(nextCursor)) return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
+                    var pageEvidence = new SourceConnectionApi.PageEvidence(type, start, end,
+                            sha256(cursor == null ? "FIRST" : cursor), requestedAt, pageReceivedAt,
+                            count, first, last, hasNext);
+                    pageConsumer.accept(new SourceConnectionApi.CollectionPage(pageEvidence,
+                            List.copyOf(events), pageReview));
+                    review |= pageReview;
+                    completedPages++;
+                    cursor = hasNext ? nextCursor : null;
+                } while (cursor != null);
+            }
+            start = end;
+        }
+        JsonNode equity = wallet.get("list").get(0).get("totalEquity");
+        return new SourceConnectionApi.CollectionResult.Collected(
+                new SourceConnectionApi.CollectionObservation(accountRef, equity.asString(),
+                        Instant.ofEpochMilli(envelopeTime.asLong()), receivedAt, cutoff, completedPages,
+                        review, review ? "UNKNOWN_OR_MALFORMED_EVENT" : null, POLICY_VERSION));
+    }
+
+    private Call publicCall(String path) {
+        HttpRequest request = HttpRequest.newBuilder().uri(URI.create(this.baseUrl + path))
+                .timeout(this.requestTimeout).header("Accept", "application/json").GET().build();
+        return send(request);
+    }
+
+    private static String transactionQuery(String type, Instant start, Instant end, @Nullable String cursor) {
+        return "accountType=UNIFIED&type=" + type + "&startTime=" + start.toEpochMilli()
+                + "&endTime=" + end.toEpochMilli() + "&limit=" + TRANSACTION_PAGE_SIZE
+                + (cursor == null ? "" : "&cursor=" + URLEncoder.encode(cursor,StandardCharsets.UTF_8));
+    }
+
+    private static @Nullable Instant parseEpochMillis(@Nullable String value) {
+        if (value == null || !value.matches("[0-9]{1,16}")) return null;
+        try { return Instant.ofEpochMilli(Long.parseLong(value)); }
+        catch (RuntimeException invalid) { return null; }
+    }
+
+    private static String sha256(String value) {
+        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(value.getBytes(StandardCharsets.UTF_8))); }
+        catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+    }
+
+    private static SourceConnectionApi.CollectionResult rejectedCollection(SourceRejectionReason reason) {
+        return new SourceConnectionApi.CollectionResult.Rejected(reason);
+    }
+
     /**
      * 키 자체의 성질을 판정한다.
      *
@@ -473,6 +641,10 @@ class BybitAdapter {
                         .header("Accept", "application/json")
                         .GET()
                         .build();
+        return send(request);
+    }
+
+    private Call send(HttpRequest request) {
         HttpResponse<String> response;
         try {
             response = this.http.send(request, HttpResponse.BodyHandlers.ofString());

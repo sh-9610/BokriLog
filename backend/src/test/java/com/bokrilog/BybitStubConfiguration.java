@@ -99,7 +99,10 @@ final class BybitStubConfiguration {
     /** 계수기를 0으로 되돌린다. 시험 하나가 세는 구간을 자기가 정한다. */
     static void resetRequestCount() {
         Front.REQUESTS.set(0);
+        Front.STUB.resetScenarioState();
     }
+
+    static long lastWalletEnvelopeTime() { return Front.STUB.lastWalletEnvelopeTime(); }
 
     private static String newKey() {
         return Base64.getEncoder().encodeToString(randomBytes(32));
@@ -116,6 +119,7 @@ final class BybitStubConfiguration {
 
         /** 스텁이 받은 요청 수. 시험이 "외부 호출 0건"을 관측하는 값이다. */
         static final AtomicInteger REQUESTS = new AtomicInteger();
+        static final DevBybitStub STUB = new DevBybitStub(RESERVED_IP);
 
         private final String origin;
 
@@ -132,13 +136,14 @@ final class BybitStubConfiguration {
                 // 포트 0은 커널이 고른다. 루프백에만 바인딩해 시험이 바깥으로 열리지 않게 한다.
                 HttpServer server =
                         HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-                DevBybitStub stub = new DevBybitStub(RESERVED_IP);
                 for (String path :
                         List.of(
                                 DevBybitStub.QUERY_API_PATH,
                                 DevBybitStub.ACCOUNT_INFO_PATH,
-                                DevBybitStub.WALLET_BALANCE_PATH)) {
-                    server.createContext(path, exchange -> handle(stub, path, exchange));
+                                DevBybitStub.WALLET_BALANCE_PATH,
+                                DevBybitStub.SERVER_TIME_PATH,
+                                DevBybitStub.TRANSACTION_LOG_PATH)) {
+                    server.createContext(path, exchange -> handle(STUB, path, exchange));
                 }
                 server.setExecutor(null);
                 server.start();

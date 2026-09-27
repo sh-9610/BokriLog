@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactElement, type SyntheticEvent } from 'react'
 
 import { planConditionContent as copy } from '../content/planConditions'
+import { InitialInputsCollection } from './InitialInputsCollection'
 import styles from './PlanConditionPanel.module.css'
 
 interface Snapshot {
@@ -345,6 +346,11 @@ export function PlanConditionPanel({
             {dateTime(saved.endAt)}
           </p>
           <p>{copy.savedAgain}</p>
+          <InitialInputsCollection
+            key={saved.intentId}
+            csrfToken={csrfToken}
+            intentId={saved.intentId}
+          />
           <button
             className={styles.button}
             type="button"

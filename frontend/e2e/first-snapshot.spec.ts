@@ -3,6 +3,7 @@ import { expect, test, type Page } from '@playwright/test'
 import { authContent } from '../src/content/auth'
 import { connectionContent } from '../src/content/connection'
 import { firstSnapshotContent } from '../src/content/firstSnapshot'
+import { planConditionContent } from '../src/content/planConditions'
 
 const injectedOrigin = process.env.PLAYWRIGHT_BASE_URL?.trim() ?? ''
 const STUB_CONSENT = '동의하고 계속하기'
@@ -51,5 +52,52 @@ test.describe('첫 공식 현재가치', () => {
     expect(text).not.toContain(key)
     expect(text).not.toContain(secret)
     expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0)
+
+    await page.getByRole('link', { name: planConditionContent.openConditions }).click()
+    await expect(page.getByRole('heading', { name: planConditionContent.heading })).toBeVisible()
+    const future = new Date(Date.now() + 45 * 24 * 60 * 60 * 1000)
+    const dateParts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Seoul',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(future)
+    const part = (type: string): string =>
+      dateParts.find((value) => value.type === type)?.value ?? ''
+    const endAt = `${part('year')}-${part('month')}-${part('day')}T${part('hour')}:${part('minute')}`
+    await page.getByLabel(planConditionContent.endAt).fill(endAt)
+    await page.getByLabel(`${planConditionContent.rate} (%)`).fill('10')
+    await page.getByRole('button', { name: planConditionContent.review }).click()
+    await expect(page.getByRole('heading', { name: '검토할 조건' })).toBeVisible()
+    await page.getByRole('button', { name: planConditionContent.confirm }).click()
+    await expect(page.getByRole('heading', { name: planConditionContent.saved })).toBeVisible()
+    await expect(page.getByText(planConditionContent.collection.notStarted)).toBeVisible()
+
+    await page.setViewportSize({ width: 320, height: 800 })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    const startCollection = page.getByRole('button', {
+      name: planConditionContent.collection.start,
+    })
+    await expect(startCollection).toBeVisible()
+    await startCollection.focus()
+    await page.keyboard.press('Enter')
+    await expect(page.getByText(planConditionContent.collection.complete)).toBeVisible({
+      timeout: 15_000,
+    })
+    await expect(page.getByText(planConditionContent.collection.completeHelp)).toBeVisible()
+    for (const [zoom, width] of [
+      ['200%', 640],
+      ['400%', 320],
+    ] as const) {
+      // Browser zoom narrows the CSS viewport; use the corresponding CSS widths without scaling the DOM.
+      await page.setViewportSize({ width, height: 800 })
+      expect(
+        await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+        `${zoom} zoom equivalent (${String(width)} CSS px) should not require horizontal scrolling`,
+      ).toBe(true)
+    }
   })
 })

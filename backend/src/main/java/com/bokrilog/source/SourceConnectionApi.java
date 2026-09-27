@@ -1,8 +1,10 @@
 package com.bokrilog.source;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -26,6 +28,21 @@ public interface SourceConnectionApi {
     record EquityObservation(String providerAccountRef, String decimal, Instant measuredAt, Instant receivedAt,
             String policyVersion) {}
 
+    /** Provider-neutral inputs and completeness evidence for the initial calculation collection. */
+    record CollectionEvent(@Nullable String sourceId, @Nullable String type, @Nullable String currency,
+            @Nullable String cashFlow, @Nullable Instant transactionTime, @Nullable String accountType) {}
+    record PageEvidence(String type, Instant startAt, Instant endAt, @Nullable String cursorHash,
+            Instant requestedAt, Instant receivedAt, int count, @Nullable Instant firstEventAt,
+            @Nullable Instant lastEventAt, boolean hasNextPage) {}
+    record CollectionPage(PageEvidence evidence, List<CollectionEvent> events, boolean reviewRequired) {}
+    record CollectionObservation(String providerAccountRef, String equityDecimal, Instant measuredAt,
+            Instant receivedAt, Instant tc, int pageCount, boolean reviewRequired,
+            @Nullable String failureCode, String policyVersion) {}
+    sealed interface CollectionResult {
+        record Collected(CollectionObservation value) implements CollectionResult {}
+        record Rejected(SourceRejectionReason reason) implements CollectionResult {}
+    }
+
     /** 활성 연결의 안정 식별자와 현재 revision. */
     record SnapshotConnection(UUID connectionId, UUID providerAccountId, String policyVersion) {}
 
@@ -38,6 +55,10 @@ public interface SourceConnectionApi {
 
     /** 저장된 암호문을 복호한 뒤 한 번만 제공자에 묻는다. 호출자는 DB 트랜잭션 밖에서 호출한다. */
     EquityResult readEquity(UUID userId, UUID connectionId);
+
+    /** Reads current equity and every required Transaction Log page outside any database transaction. */
+    CollectionResult collectInitialInputs(UUID userId, UUID connectionId, Instant t0,
+            @Nullable Instant fixedTc, Consumer<Instant> scopeConsumer, Consumer<CollectionPage> pageConsumer);
 
     /** 저장의 결과. */
     sealed interface StoreOutcome {
