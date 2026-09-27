@@ -18,6 +18,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /** Same-origin, authenticated first-snapshot entry point. */
@@ -34,6 +36,11 @@ class FirstSnapshotController {
             @Nullable String decimal,@Nullable String currency,
             @Nullable String measuredAt,@Nullable String composedAt,@Nullable String publishedAt,
             @Nullable UUID snapshotId) {}
+    record CollectionRequest(UUID intentId) {}
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record CollectionJobState(UUID jobId,String status,@Nullable String failureCode,
+            @Nullable String lastCheckedAt) {}
+    record CollectionState(@Nullable CollectionJobState job) {}
 
     @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<JobState> start(@RequestHeader(name="Idempotency-Key",required=false)
@@ -71,8 +78,34 @@ class FirstSnapshotController {
                         value==null ? null : value.publishedAt().toString(),
                         value==null ? null : value.snapshotId()));
     }
+    @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/inputs",
+            consumes=MediaType.APPLICATION_JSON_VALUE,produces=MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<CollectionJobState> startInitialInputs(@RequestBody CollectionRequest body,
+            @RequestHeader(name="Idempotency-Key",required=false) @Nullable String key,
+            HttpServletResponse response) throws IOException {
+        UUID user=currentUserId();
+        if(user==null){response.sendError(403);return null;}
+        var job=jobs.admitInitialInputs(user,body.intentId(),key==null?UUID.randomUUID().toString():key);
+        if(job.isEmpty()){response.sendError(409);return null;}
+        return ResponseEntity.status(HttpStatus.ACCEPTED).cacheControl(CacheControl.noStore())
+                .body(toCollectionState(job.get()));
+    }
+    @GetMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/inputs",produces=MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<CollectionState> initialInputs(@RequestParam UUID intentId,
+            HttpServletResponse response) throws IOException {
+        UUID user=currentUserId();
+        if(user==null){response.sendError(403);return null;}
+        var state=jobs.initialCollectionState(user,intentId);
+        if(!state.permitted()){response.sendError(403);return null;}
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(new CollectionState(state.job()==null?null:toCollectionState(state.job())));
+    }
     private static JobState toState(SyncJobApi.Job job) {
         return new JobState(job.jobId(),job.status(),job.failureReason());
+    }
+    private static CollectionJobState toCollectionState(SyncJobApi.CollectionJob job) {
+        return new CollectionJobState(job.jobId(),job.status(),job.failureCode(),
+                job.lastCheckedAt()==null?null:job.lastCheckedAt().toString());
     }
     private static @Nullable UUID currentUserId() {
         Authentication authentication=SecurityContextHolder.getContext().getAuthentication();

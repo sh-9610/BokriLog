@@ -10,6 +10,8 @@ import com.bokrilog.source.SourceRejectionReason;
 import com.bokrilog.source.SourceVerification;
 import java.util.Optional;
 import java.util.UUID;
+import java.time.Instant;
+import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
 
@@ -100,6 +102,30 @@ class SourceConnectionService implements SourceConnectionApi {
                 && !r.providerAccountRef().equals(observed.value().providerAccountRef())) {
             return new EquityResult.Rejected(SourceRejectionReason.SUB_ACCOUNT);
         }
+        return result;
+    }
+
+    @Override
+    public CollectionResult collectInitialInputs(UUID userId, UUID connectionId, Instant t0,
+            @Nullable Instant fixedTc, Consumer<Instant> scopeConsumer,
+            Consumer<com.bokrilog.source.SourceConnectionApi.CollectionPage> pageConsumer) {
+        if (this.accountAccess.decide(userId, userId, AccountAccessKind.SENSITIVE)
+                != AccessDecision.ALLOWED)
+            return new CollectionResult.Rejected(SourceRejectionReason.NOT_PERMITTED);
+        Optional<SourceConnectionRepository.SnapshotRow> row =
+                this.repository.snapshotConnection(userId, connectionId);
+        if (row.isEmpty()) return new CollectionResult.Rejected(SourceRejectionReason.NOT_PERMITTED);
+        var r = row.get();
+        var opened = this.cipher.open(new CredentialCipher.Aad(userId, connectionId,
+                r.credentialId(), r.keyVersion(), r.algorithmVersion()), r.nonce(), r.ciphertext());
+        if (opened.isEmpty()) return new CollectionResult.Rejected(SourceRejectionReason.UNAVAILABLE);
+        String[] pair = opened.get();
+        CollectionResult result = this.bybit.collectInitialInputs(
+                new SourceCredentials(pair[0], pair[1]), r.providerAccountRef(), t0,
+                fixedTc, scopeConsumer, pageConsumer);
+        if (result instanceof CollectionResult.Collected collected
+                && !r.providerAccountRef().equals(collected.value().providerAccountRef()))
+            return new CollectionResult.Rejected(SourceRejectionReason.SUB_ACCOUNT);
         return result;
     }
 

@@ -1,0 +1,68 @@
+.panel {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-subtle);
+}
+
+.panel h3,
+.panel p {
+  margin: 0;
+}
+
+.status {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-inline-start: var(--space-focus-width) solid var(--color-border-strong);
+  background: var(--color-surface-raised);
+}
+
+.statusLabel {
+  font-weight: var(--type-label-font-weight);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.button,
+.secondary {
+  min-height: var(--space-target-min);
+  padding: var(--space-2) var(--space-4);
+  border: 2px solid var(--component-sync-control-background);
+  border-radius: var(--component-sync-control-radius);
+  background: var(--component-sync-control-background);
+  color: var(--component-sync-control-foreground);
+  font-family: var(--type-body-font-family);
+  font-size: var(--type-body-font-size);
+  line-height: var(--type-body-line-height);
+  font-weight: var(--type-label-font-weight);
+  cursor: pointer;
+}
+
+.secondary {
+  background: var(--component-operator-control-background);
+  color: var(--component-operator-control-foreground);
+}
+
+.button:disabled,
+.secondary:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.button:focus-visible,
+.secondary:focus-visible {
+  outline: var(--space-focus-width) solid var(--component-sync-control-focus);
+  outline-offset: var(--space-focus-offset);
+}
+
+.error {
+  color: var(--color-destructive);
+  font-weight: var(--type-label-font-weight);
+}

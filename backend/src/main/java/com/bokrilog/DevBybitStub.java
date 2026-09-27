@@ -2,6 +2,8 @@ package com.bokrilog;
 
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -34,6 +36,10 @@ final class DevBybitStub {
 
     /** 지갑을 묻는 경로. 셋째 호출이다. */
     static final String WALLET_BALANCE_PATH = "/v5/account/wallet-balance";
+
+    static final String SERVER_TIME_PATH = "/v5/market/time";
+
+    static final String TRANSACTION_LOG_PATH = "/v5/account/transaction-log";
 
     /** 시나리오와 UID를 가르는 문자. */
     private static final char KEY_SEPARATOR = '.';
@@ -117,6 +123,30 @@ final class DevBybitStub {
         /** lease 경쟁을 재현하는 느린 지갑 응답. */
         SLOW_WALLET("slowwallet"),
 
+        /** 초기 사건 수집 도중 삭제·fencing 경쟁을 재현하는 느린 transaction-log 응답. */
+        SLOW_COLLECTION("slowcollection"),
+
+        /** 페이지네이션이 반복 cursor를 돌려주는 수집 오류. */
+        REPEATED_CURSOR("repeatedcursor"),
+
+        /** 두 번째 필수 type 조회에서 제공자 오류를 반환한다. */
+        LOG_FAILURE("logfailure"),
+
+        /** 필수 list 스키마 대신 원문 유사 fixture 값을 반환한다. */
+        MALFORMED_LOG("malformedlog"),
+
+        /** 지원하지 않는 사건 유형을 반환한다. */
+        UNKNOWN_LOG_EVENT("unknownlogevent"),
+
+        /** 같은 Bybit ID를 두 번의 수집에서 서로 다른 핵심 값으로 반환한다. */
+        ID_CONFLICT("idconflict"),
+
+        OVERSIZED_EVENT_ID("oversizedeventid"),
+        OVERSIZED_CASH_FLOW("oversizedcashflow"),
+        EXCESSIVE_CASH_FLOW_SCALE("excessivescale"),
+        OUT_OF_WINDOW_EVENT("outofwindowevent"),
+        OVER_LIMIT_PAGE("overlimitpage"),
+
         /** 저장 자격정보의 Worker 재조회에서 요청 시간초과를 재현한다. */
         TIMEOUT("timeout"),
 
@@ -162,6 +192,8 @@ final class DevBybitStub {
 
     /** 이 스텁이 {@code ips}에 싣는 운영 reserved IP. 어댑터가 요구하는 값과 같아야 한다. */
     private final String reservedIp;
+    private final AtomicInteger conflictTransferInReads = new AtomicInteger();
+    private final AtomicLong lastWalletEnvelopeTime = new AtomicLong();
 
     DevBybitStub(String reservedIp) {
         this.reservedIp = reservedIp;
@@ -180,6 +212,10 @@ final class DevBybitStub {
      * @param query 쿼리 파라미터. 지갑 조회의 {@code accountType}을 본다
      */
     Response handle(String path, Map<String, String> headers, Map<String, String> query) {
+        if (SERVER_TIME_PATH.equals(path)) {
+            long millis=System.currentTimeMillis();
+            return ok("{\"timeSecond\":\""+(millis/1000)+"\",\"timeNano\":\""+(millis*1_000_000L)+"\"}");
+        }
         String apiKey = header(headers, "X-BAPI-API-KEY");
         if (apiKey == null
                 || header(headers, "X-BAPI-SIGN") == null
@@ -198,10 +234,11 @@ final class DevBybitStub {
             return error(10003);
         }
 
-        if ((scenario == Scenario.SLOW_WALLET || scenario == Scenario.TIMEOUT)
-                && WALLET_BALANCE_PATH.equals(path)) {
+        if (((scenario == Scenario.SLOW_WALLET || scenario == Scenario.TIMEOUT)
+                && WALLET_BALANCE_PATH.equals(path))
+                || (scenario == Scenario.SLOW_COLLECTION && TRANSACTION_LOG_PATH.equals(path))) {
             try {
-                Thread.sleep(scenario == Scenario.TIMEOUT ? 3500 : 1500);
+                Thread.sleep(scenario == Scenario.TIMEOUT ? 3500 : 2000);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 return error(10016);
@@ -211,9 +248,66 @@ final class DevBybitStub {
             case QUERY_API_PATH -> queryApi(scenario, uid);
             case ACCOUNT_INFO_PATH -> accountInfo(scenario);
             case WALLET_BALANCE_PATH -> walletBalance(scenario, query);
+            case TRANSACTION_LOG_PATH -> transactionLog(scenario, query);
             default -> new Response(404, JSON, "{\"retCode\":10001,\"retMsg\":\"\",\"result\":{}}");
         };
     }
+
+    private Response transactionLog(Scenario scenario,Map<String,String> query) {
+        String type=query.get("type");
+        if (!"UNIFIED".equals(query.get("accountType"))
+                ||!("TRANSFER_IN".equals(type)||"TRANSFER_OUT".equals(type))) return error(10001);
+        if (scenario==Scenario.LOG_FAILURE&&"TRANSFER_OUT".equals(type)) return error(10016);
+        if (scenario==Scenario.REPEATED_CURSOR&&"TRANSFER_IN".equals(type))
+            return ok("{\"list\":[],\"nextPageCursor\":\"loop\"}");
+        if (scenario==Scenario.MALFORMED_LOG&&"TRANSFER_IN".equals(type))
+            return ok("{\"list\":\"fixture-payload-must-not-escape\",\"nextPageCursor\":\"\"}");
+        if (scenario==Scenario.UNKNOWN_LOG_EVENT&&"TRANSFER_IN".equals(type)) {
+            long start=Long.parseLong(query.get("startTime"));
+            return ok("{\"list\":[{\"id\":\"unknown-event-id\",\"type\":\"INTERNAL_SETTLEMENT\","
+                    +"\"currency\":\"USDT\",\"cashFlow\":\"1.000\",\"transactionTime\":\""
+                    +(start+1)+"\"}],\"nextPageCursor\":\"\"}");
+        }
+        if (scenario==Scenario.OVERSIZED_EVENT_ID&&"TRANSFER_IN".equals(type))
+            return eventPage("삼".repeat(171),"TRANSFER_IN","1.00",query,"start+1");
+        if (scenario==Scenario.OVERSIZED_CASH_FLOW&&"TRANSFER_IN".equals(type))
+            return eventPage("large-cash-flow","TRANSFER_IN","9".repeat(129),query,"start+1");
+        if (scenario==Scenario.EXCESSIVE_CASH_FLOW_SCALE&&"TRANSFER_IN".equals(type))
+            return eventPage("wide-scale","TRANSFER_IN","0."+"1".repeat(19),query,"start+1");
+        if (scenario==Scenario.OUT_OF_WINDOW_EVENT&&"TRANSFER_IN".equals(type))
+            return eventPage("out-of-window","TRANSFER_IN","1.00",query,"start");
+        if (scenario==Scenario.OVER_LIMIT_PAGE&&"TRANSFER_IN".equals(type)) {
+            long eventAt=Long.parseLong(query.get("startTime"))+1;
+            StringBuilder items=new StringBuilder("[");
+            for(int i=0;i<51;i++) {
+                if(i>0) items.append(',');
+                items.append("{\"id\":\"limit-").append(i).append("\",\"type\":\"TRANSFER_IN\","
+                        +"\"currency\":\"USDT\",\"cashFlow\":\"1\",\"transactionTime\":\"")
+                        .append(eventAt).append("\"}");
+            }
+            return ok("{\"list\":"+items+"],\"nextPageCursor\":\"\"}");
+        }
+        if (scenario==Scenario.ID_CONFLICT&&"TRANSFER_IN".equals(type)) {
+            int read=conflictTransferInReads.incrementAndGet();
+            String flow=read==1?"1.000":"2.000";
+            long start=Long.parseLong(query.get("startTime"));
+            return ok("{\"list\":[{\"id\":\"stable-event-id\",\"type\":\"TRANSFER_IN\","
+                    +"\"currency\":\"USDT\",\"cashFlow\":\""+flow+"\",\"transactionTime\":\""
+                    +(start+1)+"\"}],\"nextPageCursor\":\"\"}");
+        }
+        return ok("{\"list\":[],\"nextPageCursor\":\"\"}");
+    }
+
+    private static Response eventPage(String id,String type,String flow,Map<String,String> query,String timeKind) {
+        long start=Long.parseLong(query.get("startTime"));
+        long eventAt=timeKind.equals("start")?start:start+1;
+        return ok("{\"list\":[{\"id\":\""+id+"\",\"type\":\""+type+"\","
+                +"\"currency\":\"USDT\",\"cashFlow\":\""+flow+"\",\"transactionTime\":\""
+                +eventAt+"\"}],\"nextPageCursor\":\"\"}");
+    }
+
+    void resetScenarioState() { conflictTransferInReads.set(0); }
+    long lastWalletEnvelopeTime() { return lastWalletEnvelopeTime.get(); }
 
     private Response queryApi(Scenario scenario, String uid) {
         return switch (scenario) {
@@ -249,7 +343,7 @@ final class DevBybitStub {
         return ok("{\"unifiedMarginStatus\":" + mode + ",\"marginMode\":\"REGULAR_MARGIN\"}");
     }
 
-    private static Response walletBalance(Scenario scenario, Map<String, String> query) {
+    private Response walletBalance(Scenario scenario, Map<String, String> query) {
         if (!"UNIFIED".equals(query.get("accountType"))) {
             // 어댑터는 이 값 하나만 묻는다. 다른 값이 오면 흐름이 계약을 벗어났다는 뜻이다.
             return error(10001);
@@ -257,9 +351,11 @@ final class DevBybitStub {
         if (scenario == Scenario.WALLET_FAILURE) {
             return error(10016);
         }
+        long envelopeTime=System.currentTimeMillis();
+        lastWalletEnvelopeTime.set(scenario==Scenario.BAD_MEASURED_TIME?0:envelopeTime);
         return scenario == Scenario.BAD_MEASURED_TIME
                 ? new Response(200, JSON, "{\"retCode\":0,\"result\":{\"list\":" + walletList(scenario) + "},\"time\":0}")
-                : ok("{\"list\":" + walletList(scenario) + "}");
+                : ok("{\"list\":" + walletList(scenario) + "}",envelopeTime);
     }
 
     /**
@@ -309,8 +405,12 @@ final class DevBybitStub {
     }
 
     private static Response ok(String result) {
+        return ok(result,System.currentTimeMillis());
+    }
+
+    private static Response ok(String result,long envelopeTime) {
         return new Response(
-                200, JSON, "{\"retCode\":0,\"retMsg\":\"OK\",\"result\":" + result + ",\"time\":" + System.currentTimeMillis() + "}");
+                200, JSON, "{\"retCode\":0,\"retMsg\":\"OK\",\"result\":" + result + ",\"time\":" + envelopeTime + "}");
     }
 
     /** 제공자 오류 응답. 메시지를 비운다 — 어댑터가 그 문장을 나르지 않는다는 계약의 짝이다. */

@@ -17,6 +17,9 @@ public interface PlanConditionApi {
             String sourcePolicyVersion, String portfolioPolicyVersion) {}
     record Intent(UUID intentId, String status, String decimal, Instant measuredAt,
             Instant endAt, Period period, String targetRate, UUID snapshotId, Instant createdAt) {}
+    /** Validated open intent and its current portfolio/source provenance for sync admission and publish. */
+    record CollectionIntent(UUID intentId, UUID portfolioId, UUID connectionId,
+            UUID providerAccountId, Instant t0, Instant expiresAt) {}
     record State(boolean eligible, @Nullable String reason, @Nullable Snapshot snapshot,
             @Nullable Intent openIntent) {}
     record PreviewInput(@Nullable String endAtSeoul, @Nullable String period, @Nullable String targetRate) {}
@@ -29,5 +32,6 @@ public interface PlanConditionApi {
     Optional<Preview> preview(@Nullable UUID userId, @Nullable String sessionId, @Nullable PreviewInput input);
     Confirmation confirm(@Nullable UUID userId, @Nullable String sessionId,
             @Nullable String confirmationRef, @Nullable String idempotencyKey);
+    Optional<CollectionIntent> collectionIntent(@Nullable UUID userId, UUID intentId);
     void erasePlanData(@Nullable UUID userId);
 }

@@ -17,7 +17,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.net.URLDecoder;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -39,12 +41,18 @@ class BybitAdapterTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     private static final String RESERVED_IP = "203.0.113.10";
+    private static final String SPECIAL_CURSOR = "page:/?&+%# value";
 
     private HttpServer server;
 
     private String origin;
 
     private final List<String> paths = new ArrayList<>();
+    private final List<String> requests = new ArrayList<>();
+    private final java.util.concurrent.atomic.AtomicInteger transactionCalls = new java.util.concurrent.atomic.AtomicInteger();
+    private final AtomicLong walletEnvelopeTime = new AtomicLong();
+    private final List<String> decodedCursors = new ArrayList<>();
+    private volatile boolean oversizedPage;
 
     private final AtomicReference<Duration> delay = new AtomicReference<>(Duration.ZERO);
 
@@ -70,6 +78,7 @@ class BybitAdapterTest {
         var value=((SourceConnectionApi.EquityResult.Observed)outcome).value();
         assertThat(value.decimal()).isEqualTo("10.00");
         assertThat(value.measuredAt()).isAfter(java.time.Instant.EPOCH);
+        assertThat(value.measuredAt().toEpochMilli()).isEqualTo(walletEnvelopeTime.get());
         assertThat(this.paths).containsExactly(BybitAdapter.QUERY_API_PATH,
                 BybitAdapter.ACCOUNT_INFO_PATH,BybitAdapter.WALLET_BALANCE_PATH);
     }
@@ -192,6 +201,56 @@ class BybitAdapterTest {
     }
 
     @Test
+    void initialCollectionFixesServerTimeAndReadsBothTypesAcrossSevenDayWindowsAndEveryCursor() {
+        BybitAdapter adapter=adapter(this.origin,RESERVED_IP,Duration.ofSeconds(1));
+        long tcMillis=System.currentTimeMillis();
+        var t0=java.time.Instant.ofEpochMilli(tcMillis-8L*24*60*60*1000);
+        List<SourceConnectionApi.CollectionPage> pages=new ArrayList<>();
+        var outcome=adapter.collectInitialInputs(credentials(),"1",t0,null,ignored->{},pages::add);
+
+        assertThat(outcome).isInstanceOf(SourceConnectionApi.CollectionResult.Collected.class);
+        var value=((SourceConnectionApi.CollectionResult.Collected)outcome).value();
+        assertThat(value.tc()).isAfter(t0);
+        assertThat(value.equityDecimal()).isEqualTo("10.00");
+        assertThat(value.measuredAt().toEpochMilli()).isEqualTo(walletEnvelopeTime.get());
+        assertThat(value.pageCount()).isEqualTo(5);
+        assertThat(pages).hasSize(5);
+        assertThat(this.paths.getFirst()).isEqualTo(BybitAdapter.SERVER_TIME_PATH);
+        assertThat(this.paths).filteredOn(BybitAdapter.TRANSACTION_LOG_PATH::equals).hasSize(5);
+        assertThat(pages.stream().map(p->p.evidence().type()).toList())
+                .contains("TRANSFER_IN","TRANSFER_OUT");
+        assertThat(pages).allSatisfy(page->{
+            assertThat(java.time.Duration.between(page.evidence().startAt(),page.evidence().endAt()).toDays())
+                    .isLessThanOrEqualTo(7);
+            assertThat(page.evidence().cursorHash()).hasSize(64);
+        });
+        assertThat(this.requests).anyMatch(url->url.contains("accountType=UNIFIED")
+                &&url.contains("type=TRANSFER_IN")&&url.contains("limit=50"));
+        assertThat(this.requests).anyMatch(url->url.contains("type=TRANSFER_OUT"));
+        assertThat(this.decodedCursors).containsExactly(SPECIAL_CURSOR);
+        assertThat(this.requests).anyMatch(url->url.contains("cursor=page%3A%2F%3F%26%2B%25%23+value"));
+        assertThat(pages.getFirst().events()).singleElement().satisfies(event->{
+            assertThat(event.sourceId()).isEqualTo("event-1");
+            assertThat(event.accountType()).isEqualTo("UNIFIED");
+        });
+    }
+
+    @Test
+    void rejectsTransactionLogPagesLargerThanRequestedLimit() {
+        this.oversizedPage=true;
+        BybitAdapter adapter=adapter(this.origin,RESERVED_IP,Duration.ofSeconds(1));
+        List<SourceConnectionApi.CollectionPage> pages=new ArrayList<>();
+        var t0=java.time.Instant.now().minusSeconds(60);
+
+        var outcome=adapter.collectInitialInputs(credentials(),"1",t0,null,ignored->{},pages::add);
+
+        assertThat(outcome).isInstanceOf(SourceConnectionApi.CollectionResult.Rejected.class);
+        assertThat(((SourceConnectionApi.CollectionResult.Rejected)outcome).reason())
+                .isEqualTo(SourceRejectionReason.RESPONSE_FORMAT);
+        assertThat(pages).isEmpty();
+    }
+
+    @Test
     void 허용_목록_밖_permission은_닫히고_요구_목록_부재는_권한_부족이다() {
         JsonNode readOnly = JSON.readTree("{\"Spot\":[],\"Wallet\":[]}");
         JsonNode writeCapable = JSON.readTree("{\"Spot\":[\"SpotTrade\"],\"Wallet\":[]}");
@@ -234,6 +293,7 @@ class BybitAdapterTest {
     private void handle(HttpExchange exchange) throws IOException {
         String path = exchange.getRequestURI().getPath();
         this.paths.add(path);
+        this.requests.add(exchange.getRequestURI().toString());
         Duration wait = this.delay.get();
         if (!wait.isZero()) {
             try {
@@ -245,6 +305,10 @@ class BybitAdapterTest {
         String apiKey = exchange.getRequestHeaders().getFirst("X-BAPI-API-KEY");
         String body =
                 switch (path) {
+                    case BybitAdapter.SERVER_TIME_PATH -> {
+                        long now=System.currentTimeMillis();
+                        yield result("{\"timeSecond\":\""+(now/1000)+"\",\"timeNano\":\""+(now*1_000_000L)+"\"}");
+                    }
                     case BybitAdapter.QUERY_API_PATH ->
                             result(
                                     "{\"readOnly\":1,\"permissions\":{\"Spot\":[]},\"ips\":[\""
@@ -256,8 +320,8 @@ class BybitAdapterTest {
                                             + ",\"parentUid\":\"0\",\"userID\":\"1\"}");
                     case BybitAdapter.ACCOUNT_INFO_PATH -> result("{\"unifiedMarginStatus\":5}");
                     case BybitAdapter.WALLET_BALANCE_PATH ->
-                            result(
-                                    "{\"list\":[{\"accountType\":\"UNIFIED\",\"totalEquity\":\"10.00\"}]}");
+                            walletResponse();
+                    case BybitAdapter.TRANSACTION_LOG_PATH -> transactionResponse(exchange.getRequestURI().getRawQuery());
                     default -> result("{}");
                 };
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
@@ -267,9 +331,42 @@ class BybitAdapterTest {
         exchange.close();
     }
 
+    private String transactionResponse(String query) {
+        int n=this.transactionCalls.incrementAndGet();
+        if(this.oversizedPage&&n==1) {
+            StringBuilder rows=new StringBuilder("[");
+            for(int index=0;index<51;index++) {
+                if(index>0) rows.append(',');
+                rows.append("{\"id\":\"over-limit-").append(index).append("\",\"type\":\"TRANSFER_IN\","
+                        +"\"currency\":\"USDT\",\"cashFlow\":\"1\",\"transactionTime\":\"")
+                        .append(System.currentTimeMillis()).append("\"}");
+            }
+            rows.append(']');
+            return result("{\"list\":"+rows+",\"nextPageCursor\":\"\"}");
+        }
+        if(n==1) return result("{\"list\":[{\"id\":\"event-1\",\"type\":\"TRANSFER_IN\","
+                +"\"currency\":\"USDT\",\"cashFlow\":\"1.000\",\"transactionTime\":\""
+                +(System.currentTimeMillis()-7L*24*60*60*1000)+"\"}],\"nextPageCursor\":\""+SPECIAL_CURSOR+"\"}");
+        String rawCursor=query.contains("cursor=")?query.substring(query.indexOf("cursor=")+7):null;
+        String cursor=rawCursor==null?null:URLDecoder.decode(rawCursor,StandardCharsets.UTF_8);
+        if(cursor!=null) this.decodedCursors.add(cursor);
+        if(SPECIAL_CURSOR.equals(cursor)) return result("{\"list\":[],\"nextPageCursor\":\"\"}");
+        return result("{\"list\":[],\"nextPageCursor\":\"\"}");
+    }
+
+    private String walletResponse() {
+        long envelopeTime=System.currentTimeMillis();
+        this.walletEnvelopeTime.set(envelopeTime);
+        return result("{\"list\":[{\"accountType\":\"UNIFIED\",\"totalEquity\":\"10.00\"}]}",envelopeTime);
+    }
+
     private static String result(String body) {
+        return result(body,System.currentTimeMillis());
+    }
+
+    private static String result(String body,long envelopeTime) {
         return "{\"retCode\":0,\"retMsg\":\"OK\",\"result\":" + body
-                + ",\"time\":" + System.currentTimeMillis() + "}";
+                + ",\"time\":" + envelopeTime + "}";
     }
 
     private static BybitAdapter adapter(String baseUrl, String reservedIp, Duration timeout) {

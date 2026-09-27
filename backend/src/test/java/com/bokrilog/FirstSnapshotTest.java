@@ -14,6 +14,9 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -87,6 +90,376 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 .param("u",user).query(Integer.class).single()).isEqualTo(1);
         assertThat(jdbc().sql("SELECT to_regclass('active_plan') IS NULL")
                 .query(Boolean.class).single()).isTrue();
+    }
+
+    @Test
+    void initialInputsReuseAdmissionAndPublishOnlyACompleteCandidate() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID firstJob=sync.admit(user,"initial-inputs-seed").orElseThrow().jobId();
+        assertThat(await(user,firstJob)).isEqualTo("SUCCEEDED");
+        var snapshot=plans.state(user).snapshot();
+        String end=LocalDateTime.ofInstant(snapshot.measuredAt(),ZoneId.of("Asia/Seoul"))
+                .plusDays(30).withSecond(0).withNano(0).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        var preview=plans.preview(user,"initial-inputs-session",
+                new PlanConditionApi.PreviewInput(end,"DAILY","0.1")).orElseThrow();
+        var intent=plans.confirm(user,"initial-inputs-session",preview.confirmationRef(),
+                "initial-plan-confirm-001").intent();
+        assertThat(intent).isNotNull();
+
+        BybitStubConfiguration.resetRequestCount();
+        var accepted=sync.admitInitialInputs(user,intent.intentId(),"initial-inputs-command-001").orElseThrow();
+        var replay=sync.admitInitialInputs(user,intent.intentId(),"initial-inputs-command-001").orElseThrow();
+        assertThat(replay.jobId()).isEqualTo(accepted.jobId());
+        assertThat(BybitStubConfiguration.requestCount()).isZero();
+        assertThat(awaitInitial(user,accepted.jobId())).as("failure="+sync.initialCollectionJob(user,accepted.jobId())
+                .orElseThrow().failureCode()+", pages="+jdbc().sql("SELECT count(*) FROM sync_initial_page_evidence WHERE job_id=:j")
+                .param("j",accepted.jobId()).query(Integer.class).single()+", events="+
+                jdbc().sql("SELECT count(*) FROM sync_initial_source_event WHERE user_id=:u").param("u",user)
+                .query(Integer.class).single()).isEqualTo("INPUTS_COMPLETE");
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_bundle WHERE user_id=:u")
+                .param("u",user).query(Integer.class).single()).isEqualTo(1);
+        assertThat(jdbc().sql("SELECT equity_decimal FROM sync_initial_candidate_bundle WHERE job_id=:j")
+                .param("j",accepted.jobId()).query(String.class).single()).isEqualTo("1234.56");
+        assertThat(jdbc().sql("SELECT measured_at FROM sync_initial_candidate_bundle WHERE job_id=:j")
+                .param("j",accepted.jobId()).query(java.time.OffsetDateTime.class).single().toInstant().toEpochMilli())
+                .isEqualTo(BybitStubConfiguration.lastWalletEnvelopeTime());
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_page_evidence WHERE job_id=:j")
+                .param("j",accepted.jobId()).query(Integer.class).single()).isEqualTo(2);
+        jdbc().sql("INSERT INTO sync_initial_page_evidence(evidence_id,job_id,user_id,event_type,range_start,range_end,"
+                + "cursor_hash,requested_at,received_at,item_count,first_event_at,last_event_at,has_next_page) "
+                + "SELECT :id,job_id,user_id,event_type,range_start,range_end,cursor_hash,requested_at,received_at,"
+                + "item_count,first_event_at,last_event_at,has_next_page FROM sync_initial_page_evidence "
+                + "WHERE job_id=:j AND event_type='TRANSFER_IN' ORDER BY range_start LIMIT 1 "
+                + "ON CONFLICT(job_id,event_type,range_start,range_end,cursor_hash) DO NOTHING")
+                .param("id",UUID.randomUUID()).param("j",accepted.jobId()).update();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_page_evidence WHERE job_id=:j")
+                .param("j",accepted.jobId()).query(Integer.class).single())
+                .as("replaying the first cursor page remains idempotent").isEqualTo(2);
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_source_event WHERE user_id=:u")
+                .param("u",user).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM portfolio_snapshot WHERE user_id=:u")
+                .param("u",user).query(Integer.class).single()).isEqualTo(1);
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_bundle WHERE user_id=:u "
+                + "AND completeness_hash ~ '^[0-9a-f]{64}$'").param("u",user)
+                .query(Integer.class).single()).isEqualTo(1);
+        assertThat(BybitStubConfiguration.requestCount()).isEqualTo(6);
+    }
+
+    @Test
+    void staleInitialCollectionFenceCannotPublishCandidate() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.SLOW_COLLECTION);
+        UUID intent=initialIntent(user,"stale-collection");
+        BybitStubConfiguration.resetRequestCount();
+        UUID job=sync.admitInitialInputs(user,intent,"stale-collection-command-001").orElseThrow().jobId();
+        awaitCollectionProviderCall(user,job);
+        jdbc().sql("UPDATE sync_initial_collection_job SET fencing_generation=fencing_generation+1 WHERE job_id=:j")
+                .param("j",job).update();
+        Thread.sleep(2500);
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_bundle WHERE job_id=:j")
+                .param("j",job).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT status FROM sync_initial_collection_job WHERE job_id=:j")
+                .param("j",job).query(String.class).single()).isEqualTo("RUNNING");
+    }
+
+    @Test
+    void eraseDuringInitialCollectionCannotRecreateUserData() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.SLOW_COLLECTION);
+        UUID other=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=initialIntent(user,"erase-collection");
+        UUID otherIntent=initialIntent(other,"other-collection");
+        UUID otherJob=sync.admitInitialInputs(other,otherIntent,"other-collection-command-001").orElseThrow().jobId();
+        assertThat(awaitInitial(other,otherJob)).isEqualTo("INPUTS_COMPLETE");
+
+        BybitStubConfiguration.resetRequestCount();
+        UUID job=sync.admitInitialInputs(user,intent,"erase-collection-command-001").orElseThrow().jobId();
+        awaitCollectionProviderCall(user,job);
+        portfolio.erasePortfolioData(user);
+        sync.eraseSyncData(user);
+        source.eraseSourceData(user);
+        Thread.sleep(2500);
+        for (String table : new String[] {"sync_initial_collection_job","sync_initial_source_event",
+                "sync_initial_event_observation","sync_initial_page_evidence","sync_initial_candidate_bundle"}) {
+            assertThat(jdbc().sql("SELECT count(*) FROM "+table+" WHERE user_id=:u")
+                    .param("u",user).query(Integer.class).single()).as(table).isZero();
+        }
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_event_provenance p JOIN sync_initial_collection_job j "
+                + "ON j.job_id=p.job_id WHERE j.user_id=:u").param("u",user).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_event e JOIN sync_initial_candidate_bundle b "
+                + "ON b.candidate_id=e.candidate_id WHERE b.user_id=:u").param("u",user)
+                .query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_bundle WHERE job_id=:j")
+                .param("j",otherJob).query(Integer.class).single()).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentAdmissionCreatesOnlyOneActiveJobForAnIntent() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.SLOW_COLLECTION);
+        UUID intent=initialIntent(user,"active-race");
+        var pool=Executors.newFixedThreadPool(2);
+        var ready=new CountDownLatch(2);
+        var start=new CountDownLatch(1);
+        try {
+            var first=pool.submit(()->{
+                ready.countDown(); start.await();
+                return sync.admitInitialInputs(user,intent,"active-race-command-first").orElseThrow();
+            });
+            var second=pool.submit(()->{
+                ready.countDown(); start.await();
+                return sync.admitInitialInputs(user,intent,"active-race-command-second").orElseThrow();
+            });
+            assertThat(ready.await(5,TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            var firstJob=first.get(5,TimeUnit.SECONDS);
+            var secondJob=second.get(5,TimeUnit.SECONDS);
+            assertThat(secondJob.jobId()).isEqualTo(firstJob.jobId());
+            assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_collection_job WHERE user_id=:u AND intent_id=:i")
+                    .param("u",user).param("i",intent).query(Integer.class).single()).isEqualTo(1);
+            assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_collection_job WHERE user_id=:u AND intent_id=:i "
+                    + "AND status IN ('QUEUED','RUNNING')").param("u",user).param("i",intent)
+                    .query(Integer.class).single()).isEqualTo(1);
+            assertThat(awaitInitial(user,firstJob.jobId())).isEqualTo("INPUTS_COMPLETE");
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void collectionStateIsScopedToSelectedIntentAndReturnsEmptyOnlyForEligibleIntent() throws Exception {
+        String subject="initial-state-scope-"+UUID.randomUUID();
+        var login=signIn(subject);
+        String cookie=sessionCookieOf(login).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID oldIntent=initialIntent(user,"state-old");
+        UUID oldJob=sync.admitInitialInputs(user,oldIntent,"state-old-command-001").orElseThrow().jobId();
+        assertThat(awaitInitial(user,oldJob)).isEqualTo("INPUTS_COMPLETE");
+
+        var snapshot=plans.state(user).snapshot();
+        String end=LocalDateTime.ofInstant(snapshot.measuredAt(),ZoneId.of("Asia/Seoul"))
+                .plusDays(31).withSecond(0).withNano(0).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        var preview=plans.preview(user,"state-replace-session",new PlanConditionApi.PreviewInput(end,"WEEKLY","0.2"))
+                .orElseThrow();
+        UUID currentIntent=plans.confirm(user,"state-replace-session",preview.confirmationRef(),
+                "state-replace-confirm-001").intent().intentId();
+
+        var current=get(AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/inputs?intentId="+currentIntent,cookie);
+        assertThat(current.statusCode()).isEqualTo(200);
+        assertThat(topLevelFieldsOf(current.body()).get("job")).isNull();
+        assertThat(get(AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/inputs?intentId="+oldIntent,cookie).statusCode())
+                .isEqualTo(403);
+        assertThat(sync.initialCollectionJob(user,oldJob).orElseThrow().status()).isEqualTo("INPUTS_COMPLETE");
+    }
+
+    @Test
+    void collectionStateDeniesRestrictedAndDeletedAccounts() throws Exception {
+        String restrictedSubject="initial-state-restricted-"+UUID.randomUUID();
+        var restrictedLogin=signIn(restrictedSubject);
+        String restrictedCookie=sessionCookieOf(restrictedLogin).orElseThrow();
+        UUID restricted=userIdOf(OidcStubConfiguration.issuer(),restrictedSubject).orElseThrow();
+        store(restricted,DevBybitStub.Scenario.UTA2);
+        UUID restrictedIntent=initialIntent(restricted,"state-restricted");
+        jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) VALUES (:id,:command)")
+                .param("id",UUID.randomUUID()).param("command","initial-source-event-collection").update();
+        assertThat(sync.initialCollectionState(restricted,restrictedIntent).permitted()).isFalse();
+        assertThat(get(AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/inputs?intentId="+restrictedIntent,restrictedCookie)
+                .statusCode()).isEqualTo(403);
+
+        String deletedSubject="initial-state-deleted-"+UUID.randomUUID();
+        var deletedLogin=signIn(deletedSubject);
+        String deletedCookie=sessionCookieOf(deletedLogin).orElseThrow();
+        UUID deleted=userIdOf(OidcStubConfiguration.issuer(),deletedSubject).orElseThrow();
+        store(deleted,DevBybitStub.Scenario.UTA2);
+        UUID deletedIntent=initialIntent(deleted,"state-deleted");
+        accountDeletion().beginDeletion(deleted);
+        assertThat(sync.initialCollectionState(deleted,deletedIntent).permitted()).isFalse();
+        assertThat(get(AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/inputs?intentId="+deletedIntent,deletedCookie)
+                .statusCode()).isEqualTo(403);
+    }
+
+    private UUID initialIntent(UUID user,String prefix) throws Exception {
+        UUID firstJob=sync.admit(user,prefix+"-seed").orElseThrow().jobId();
+        assertThat(await(user,firstJob)).isEqualTo("SUCCEEDED");
+        var snapshot=plans.state(user).snapshot();
+        String end=LocalDateTime.ofInstant(snapshot.measuredAt(),ZoneId.of("Asia/Seoul"))
+                .plusDays(30).withSecond(0).withNano(0).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        var preview=plans.preview(user,prefix+"-session",new PlanConditionApi.PreviewInput(end,"DAILY","0.1"))
+                .orElseThrow();
+        return plans.confirm(user,prefix+"-session",preview.confirmationRef(),prefix+"-confirm-001")
+                .intent().intentId();
+    }
+
+    private void awaitCollectionProviderCall(UUID user,UUID job) throws Exception {
+        for (int i=0;i<100;i++) {
+            var status=sync.initialCollectionJob(user,job).orElseThrow().status();
+            if (status.equals("RUNNING")&&BybitStubConfiguration.requestCount()>=4) return;
+            Thread.sleep(50);
+        }
+        throw new AssertionError("initial collection did not reach the transaction-log provider call");
+    }
+
+    @Test
+    void ineligibleCollectionIntentDoesNotCallProvider() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID other=connect(DevBybitStub.Scenario.UTA2);
+        UUID ownIntent=initialIntent(user,"ineligible-own");
+        UUID foreignIntent=initialIntent(other,"ineligible-foreign");
+
+        BybitStubConfiguration.resetRequestCount();
+        assertThat(sync.admitInitialInputs(user,foreignIntent,"ineligible-command-001")).isEmpty();
+        assertThat(BybitStubConfiguration.requestCount()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_collection_job WHERE user_id=:u")
+                .param("u",user).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT status FROM plan_condition_intent WHERE intent_id=:i")
+                .param("i",ownIntent).query(String.class).single()).isEqualTo("OPEN");
+    }
+
+    @Test
+    void repeatedTransactionCursorLeavesPartialEvidenceAndNeedsReview() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.REPEATED_CURSOR);
+        UUID intent=initialIntent(user,"repeated-cursor");
+        BybitStubConfiguration.resetRequestCount();
+        UUID job=sync.admitInitialInputs(user,intent,"repeated-cursor-command-001").orElseThrow().jobId();
+
+        assertThat(awaitInitial(user,job)).isEqualTo("NEEDS_REVIEW");
+        assertThat(sync.initialCollectionJob(user,job).orElseThrow().failureCode()).isEqualTo("MALFORMED_PROVIDER_RESPONSE");
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_page_evidence WHERE job_id=:j")
+                .param("j",job).query(Integer.class).single()).isEqualTo(1);
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_bundle WHERE job_id=:j")
+                .param("j",job).query(Integer.class).single()).isZero();
+    }
+
+    @Test
+    void transactionLogPageFailureLeavesNoCandidateAndRequestsRetry() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.LOG_FAILURE);
+        UUID intent=initialIntent(user,"log-page-failure");
+        BybitStubConfiguration.resetRequestCount();
+        UUID job=sync.admitInitialInputs(user,intent,"log-failure-command-001").orElseThrow().jobId();
+
+        assertThat(awaitInitial(user,job)).isEqualTo("RETRY_REQUIRED");
+        assertThat(sync.initialCollectionJob(user,job).orElseThrow().failureCode()).isEqualTo("PROVIDER_UNAVAILABLE");
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_page_evidence WHERE job_id=:j")
+                .param("j",job).query(Integer.class).single()).isEqualTo(1);
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_bundle WHERE job_id=:j")
+                .param("j",job).query(Integer.class).single()).isZero();
+    }
+
+    @Test
+    void malformedTransactionLogResponseNeedsReviewWithoutExposingPayload() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.MALFORMED_LOG);
+        UUID intent=initialIntent(user,"malformed-log");
+        BybitStubConfiguration.resetRequestCount();
+        UUID job=sync.admitInitialInputs(user,intent,"malformed-log-command-001").orElseThrow().jobId();
+
+        assertThat(awaitInitial(user,job)).isEqualTo("NEEDS_REVIEW");
+        var status=sync.initialCollectionJob(user,job).orElseThrow();
+        assertThat(status.failureCode()).isEqualTo("MALFORMED_PROVIDER_RESPONSE");
+        assertThat(status.failureCode()).doesNotContain("fixture-payload-must-not-escape");
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_bundle WHERE job_id=:j")
+                .param("j",job).query(Integer.class).single()).isZero();
+    }
+
+    @Test
+    void unknownTransactionEventSchemaIsQuarantinedWithoutCandidate() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.UNKNOWN_LOG_EVENT);
+        UUID intent=initialIntent(user,"unknown-log-event");
+        BybitStubConfiguration.resetRequestCount();
+        UUID job=sync.admitInitialInputs(user,intent,"unknown-log-command-001").orElseThrow().jobId();
+
+        assertThat(awaitInitial(user,job)).isEqualTo("NEEDS_REVIEW");
+        assertThat(sync.initialCollectionJob(user,job).orElseThrow().failureCode())
+                .isEqualTo("UNKNOWN_OR_MALFORMED_EVENT");
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_event_observation WHERE job_id=:j "
+                + "AND diagnostic_code='UNKNOWN_EVENT'").param("j",job).query(Integer.class).single()).isEqualTo(1);
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_event_observation o "
+                + "JOIN sync_initial_page_evidence p ON p.evidence_id=o.page_evidence_id AND p.job_id=o.job_id "
+                + "WHERE o.job_id=:j AND p.event_type='TRANSFER_IN'")
+                .param("j",job).query(Integer.class).single()).isEqualTo(1);
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_source_event WHERE user_id=:u")
+                .param("u",user).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_bundle WHERE job_id=:j")
+                .param("j",job).query(Integer.class).single()).isZero();
+    }
+
+    @Test
+    void oversizedUtf8EventIdIsQuarantinedWithoutInsert() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.OVERSIZED_EVENT_ID);
+        UUID intent=initialIntent(user,"oversized-id");
+        UUID job=sync.admitInitialInputs(user,intent,"oversized-id-command-001").orElseThrow().jobId();
+
+        assertThat(awaitInitial(user,job)).isEqualTo("NEEDS_REVIEW");
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_event_observation WHERE job_id=:j "
+                + "AND diagnostic_code='SOURCE_ID_TOO_LONG' AND source_id IS NULL")
+                .param("j",job).query(Integer.class).single()).isEqualTo(1);
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_source_event WHERE user_id=:u")
+                .param("u",user).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_bundle WHERE job_id=:j")
+                .param("j",job).query(Integer.class).single()).isZero();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"OVERSIZED_CASH_FLOW", "EXCESSIVE_CASH_FLOW_SCALE"})
+    void excessiveCashFlowSizeOrScaleIsQuarantined(DevBybitStub.Scenario scenario) throws Exception {
+        UUID user=connect(scenario);
+        UUID intent=initialIntent(user,"cash-flow-limit-"+scenario.name().toLowerCase(java.util.Locale.ROOT));
+        UUID job=sync.admitInitialInputs(user,intent,"cash-flow-limit-command-"+scenario.name()).orElseThrow().jobId();
+
+        assertThat(awaitInitial(user,job)).isEqualTo("NEEDS_REVIEW");
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_event_observation WHERE job_id=:j "
+                + "AND diagnostic_code='MALFORMED_EVENT'").param("j",job).query(Integer.class).single()).isEqualTo(1);
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_source_event WHERE user_id=:u")
+                .param("u",user).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_bundle WHERE job_id=:j")
+                .param("j",job).query(Integer.class).single()).isZero();
+    }
+
+    @Test
+    void outOfWindowTransactionTimeIsQuarantinedWithoutCandidate() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.OUT_OF_WINDOW_EVENT);
+        UUID intent=initialIntent(user,"out-of-window");
+        UUID job=sync.admitInitialInputs(user,intent,"out-of-window-command-001").orElseThrow().jobId();
+
+        assertThat(awaitInitial(user,job)).isEqualTo("NEEDS_REVIEW");
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_event_observation WHERE job_id=:j "
+                + "AND diagnostic_code='EVENT_OUT_OF_WINDOW'").param("j",job).query(Integer.class).single()).isEqualTo(1);
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_source_event WHERE user_id=:u")
+                .param("u",user).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_bundle WHERE job_id=:j")
+                .param("j",job).query(Integer.class).single()).isZero();
+    }
+
+    @Test
+    void overLimitProviderPageLeavesNoCandidate() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.OVER_LIMIT_PAGE);
+        UUID intent=initialIntent(user,"over-limit-page");
+        UUID job=sync.admitInitialInputs(user,intent,"over-limit-page-command-001").orElseThrow().jobId();
+
+        assertThat(awaitInitial(user,job)).isEqualTo("NEEDS_REVIEW");
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_page_evidence WHERE job_id=:j")
+                .param("j",job).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_bundle WHERE job_id=:j")
+                .param("j",job).query(Integer.class).single()).isZero();
+    }
+
+    @Test
+    void duplicateEventIdWithDifferentSemanticHashPreservesOriginalAndRequiresReview() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.ID_CONFLICT);
+        UUID intent=initialIntent(user,"event-conflict");
+        BybitStubConfiguration.resetRequestCount();
+        UUID first=sync.admitInitialInputs(user,intent,"event-conflict-command-001").orElseThrow().jobId();
+        assertThat(awaitInitial(user,first)).isEqualTo("INPUTS_COMPLETE");
+        UUID second=sync.admitInitialInputs(user,intent,"event-conflict-command-002").orElseThrow().jobId();
+
+        assertThat(awaitInitial(user,second)).isEqualTo("NEEDS_REVIEW");
+        assertThat(sync.initialCollectionJob(user,second).orElseThrow().failureCode()).isEqualTo("SOURCE_REQUIRES_REVIEW");
+        assertThat(jdbc().sql("SELECT cash_flow FROM sync_initial_source_event WHERE user_id=:u AND source_id='stable-event-id'")
+                .param("u",user).query(String.class).single()).isEqualTo("1");
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_event_observation "
+                + "WHERE job_id=:j AND diagnostic_code='PROVIDER_ID_CONFLICT'")
+                .param("j",second).query(Integer.class).single()).isEqualTo(1);
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_bundle WHERE job_id=:j")
+                .param("j",second).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_candidate_bundle WHERE user_id=:u")
+                .param("u",user).query(Integer.class).single()).isEqualTo(1);
     }
 
     @Test
@@ -321,5 +694,13 @@ class FirstSnapshotTest extends AuthFlowTestBase {
             Thread.sleep(100);
         }
         throw new AssertionError("job did not finish");
+    }
+    private String awaitInitial(UUID user,UUID job) throws InterruptedException {
+        for(int i=0;i<100;i++) {
+            String status=sync.initialCollectionJob(user,job).orElseThrow().status();
+            if(!status.equals("QUEUED")&&!status.equals("RUNNING")) return status;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("initial input collection did not finish");
     }
 }
