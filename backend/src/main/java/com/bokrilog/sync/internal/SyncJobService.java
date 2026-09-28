@@ -27,6 +27,8 @@ class SyncJobService implements SyncJobApi {
     static final String SYNC_COMMAND="first-snapshot";
     static final String CONNECTION_COMMAND="bybit-connection-create";
     static final String INITIAL_INPUTS_COMMAND="initial-source-event-collection";
+    /** The plan module's condition command, kept here because sync must not depend on plan; {@code SyncCommandNamesTest} pins it. */
+    static final String PLAN_CONDITION_COMMAND="plan-condition-create";
     private final SyncJobRepository jobs;
     private final InitialCollectionRepository initialJobs;
     private final CashflowClassificationRepository classifications;
@@ -38,17 +40,20 @@ class SyncJobService implements SyncJobApi {
     private final InitialInputsPlanPort plans;
     private final TransactionTemplate transactions;
     private final CashflowConversionMarket market;
+    private final PlanPublicationService publications;
 
     SyncJobService(SyncJobRepository jobs, InitialCollectionRepository initialJobs,
             CashflowClassificationRepository classifications, CashflowConversionRepository conversions,
             SourceConnectionApi sources, PortfolioMembershipApi portfolios, AccountAccessApi accounts,
-            OperationalRestrictionApi restrictions, InitialInputsPlanPort plans, PlatformTransactionManager manager) {
+            OperationalRestrictionApi restrictions, InitialInputsPlanPort plans, PlatformTransactionManager manager,
+            PlanPublicationService publications) {
         this.jobs=jobs; this.initialJobs=initialJobs; this.classifications=classifications;
         this.conversions=conversions;
         this.sources=sources; this.portfolios=portfolios;
         this.accounts=accounts; this.restrictions=restrictions; this.plans=plans;
         this.transactions=new TransactionTemplate(manager);
         this.market=new CashflowConversionMarket(sources,conversions,this.transactions);
+        this.publications=publications;
     }
     boolean eligible(UUID userId) {
         return accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)==AccessDecision.ALLOWED
@@ -194,8 +199,26 @@ class SyncJobService implements SyncJobApi {
                 classification.get().classificationId()).orElse(null));
     }
     @Override
+    public PublicationAdmission admitPlanPublication(@Nullable UUID userId, UUID intentId, @Nullable String key) {
+        return publications.admit(userId,intentId,key);
+    }
+    @Override
+    public PublicationState planPublicationState(@Nullable UUID userId, UUID intentId) {
+        return publications.state(userId,intentId);
+    }
+    @Override
+    public ActivePlanResult activePlanResult(@Nullable UUID userId) {
+        return publications.activeResult(userId);
+    }
+    /**
+     * Erases this user's sync rows. The publication rows go first: the official pointer and calculation
+     * version cite the candidate, classification and conversion with ON DELETE RESTRICT. Runs after the
+     * portfolio erasure, whose snapshot components cite the source snapshots.
+     */
+    @Override
     public void eraseSyncData(@Nullable UUID userId) {
         if (userId!=null) transactions.executeWithoutResult(status -> {
+            publications.erase(userId);
             conversions.erase(userId);
             classifications.erase(userId);
             initialJobs.erase(userId);
@@ -477,7 +500,7 @@ class SyncJobService implements SyncJobApi {
     private boolean initialEligible(UUID userId) {
         return accounts.decide(userId,userId,AccountAccessKind.WRITE)==AccessDecision.ALLOWED
                 && !restrictions.isRestricted(INITIAL_INPUTS_COMMAND)
-                && !restrictions.isRestricted("plan-condition-create")
+                && !restrictions.isRestricted(PLAN_CONDITION_COMMAND)
                 && !restrictions.isRestricted(SYNC_COMMAND)
                 && !restrictions.isRestricted(CONNECTION_COMMAND);
     }

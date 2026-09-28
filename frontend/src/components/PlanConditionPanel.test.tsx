@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { activePlanContent } from '../content/planResult'
 import { PlanConditionPanel } from './PlanConditionPanel'
 
 const snapshot = {
@@ -16,6 +17,32 @@ const snapshot = {
   inputStatus: 'VERIFIED',
   sourcePolicyVersion: 'bybit-readonly-uta-1.0',
   portfolioPolicyVersion: 'bybit-readonly-uta-1.0',
+}
+
+/** The active plan summary as the server sends it: canonical decimals, `startAt` is `t0`. */
+function activePlan(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    planId: 'plan-1',
+    status: 'ACTIVE',
+    decimal: '1234.56',
+    startAt: snapshot.measuredAt,
+    endAt: '2026-10-25T04:00:00Z',
+    period: 'DAILY',
+    targetRate: '0.1',
+    snapshotId: snapshot.snapshotId,
+    createdAt: '2026-09-27T01:00:00Z',
+    ...overrides,
+  }
+}
+
+function activeState(): Record<string, unknown> {
+  return {
+    eligible: false,
+    reason: 'ACTIVE_PLAN_EXISTS',
+    snapshot: null,
+    openIntent: null,
+    activePlan: activePlan(),
+  }
 }
 
 function response(body: unknown, status = 200): Response {
@@ -174,6 +201,121 @@ describe('PlanConditionPanel', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('요청을 완료하지 못했습니다')
     expect(screen.queryByRole('heading', { name: '검토할 조건' })).not.toBeInTheDocument()
+  })
+
+  it('shows the active plan summary with a link to its result instead of the condition form', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        response({
+          eligible: false,
+          reason: 'ACTIVE_PLAN_EXISTS',
+          snapshot: null,
+          openIntent: null,
+          activePlan: activePlan({ period: 'WEEKLY', targetRate: '0.0125' }),
+        }),
+      ),
+    )
+    render(<PlanConditionPanel csrfToken="csrf-value" ready />)
+
+    expect(await screen.findByRole('heading', { name: '활성 계획' })).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '이미 활성 계획이 있어 새 조건을 받지 않습니다',
+    )
+    expect(screen.getByText('1,234.56 USD')).toBeInTheDocument()
+    expect(screen.getByText('매주')).toBeInTheDocument()
+    expect(screen.getByText('1.25%')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '결과 보기' })).toHaveAttribute('href', '/dashboard')
+    expect(screen.queryByLabelText('목표 주기율 (%)')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '조건 검토' })).not.toBeInTheDocument()
+  })
+
+  it('reloads into the active plan summary when a preview loses to a publication', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ eligible: true, snapshot }))
+      .mockResolvedValueOnce(
+        response({ code: 'ACTIVE_PLAN_EXISTS', message: 'x', correlationId: 'c' }, 409),
+      )
+      .mockResolvedValueOnce(response(activeState()))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<PlanConditionPanel csrfToken="csrf-value" ready />)
+    fireEvent.change(await screen.findByLabelText('종료 시각 (T)'), {
+      target: { value: '2026-10-25T13:00' },
+    })
+    fireEvent.change(screen.getByLabelText('목표 주기율 (%)'), { target: { value: '10' } })
+    fireEvent.click(screen.getByRole('button', { name: '조건 검토' }))
+
+    expect(await screen.findByRole('link', { name: '결과 보기' })).toBeInTheDocument()
+    // Neutral: this screen does not know whether another tab or this one published the plan.
+    expect(screen.getByRole('status')).toHaveTextContent(activePlanContent.conflict)
+    expect(screen.getByRole('status')).not.toHaveTextContent('다른 탭')
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('reloads into the active plan summary when a confirmation meets an active plan (409)', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ eligible: true, snapshot }))
+      .mockResolvedValueOnce(
+        response({
+          confirmationRef: 'opaque-reference',
+          expiresAt: '2026-09-25T00:10:00Z',
+          snapshot,
+          endAt: '2026-10-25T04:00:00Z',
+          period: 'DAILY',
+          targetRate: '0.1',
+          calendarPolicy: 'CALENDAR-SEOUL-1.0',
+          calculationPolicy: 'CALC-1.0',
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({ code: 'ACTIVE_PLAN_EXISTS', message: 'x', correlationId: 'c' }, 409),
+      )
+      .mockResolvedValueOnce(response(activeState()))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('crypto', { randomUUID: () => 'plan-confirm-key-409' })
+
+    render(<PlanConditionPanel csrfToken="csrf-value" ready />)
+    fireEvent.change(await screen.findByLabelText('종료 시각 (T)'), {
+      target: { value: '2026-10-25T13:00' },
+    })
+    fireEvent.change(screen.getByLabelText('목표 주기율 (%)'), { target: { value: '10' } })
+    fireEvent.click(screen.getByRole('button', { name: '조건 검토' }))
+    fireEvent.click(await screen.findByRole('button', { name: '이 조건 확인' }))
+
+    expect(await screen.findByRole('heading', { name: '활성 계획' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '결과 보기' })).toHaveAttribute('href', '/dashboard')
+    expect(screen.getByRole('status')).toHaveTextContent(activePlanContent.conflict)
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('/api/plans/conditions/confirm')
+    expect(fetchMock.mock.calls[3]?.[0]).toBe('/api/plans/conditions')
+    expect(screen.queryByRole('heading', { name: '계획 조건 검증 완료' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['a rate BigInt cannot read', { targetRate: '0.1%' }],
+    ['a non-canonical amount', { decimal: '1.2e3' }],
+    ['a time that does not parse', { startAt: 'yesterday' }],
+  ])('does not render an active plan summary with %s', async (_name, broken) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        response({
+          eligible: false,
+          reason: 'ACTIVE_PLAN_EXISTS',
+          snapshot: null,
+          openIntent: null,
+          activePlan: activePlan(broken),
+        }),
+      ),
+    )
+    render(<PlanConditionPanel csrfToken="csrf-value" ready />)
+
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      '현재 계획 조건을 확인할 수 없습니다',
+    )
+    expect(screen.queryByRole('heading', { name: '활성 계획' })).not.toBeInTheDocument()
   })
 
   it('does not show inputs when the server rejects qualification', async () => {

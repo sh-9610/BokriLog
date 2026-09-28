@@ -1,6 +1,9 @@
 package com.bokrilog;
 
+import com.bokrilog.ApiErrorHandler.ApiError;
+import com.bokrilog.calculation.PlanCalculator;
 import com.bokrilog.plan.PlanConditionApi;
+import com.bokrilog.plan.PlanConditionApi.ActivePlan;
 import com.bokrilog.plan.PlanConditionApi.Confirmation;
 import com.bokrilog.plan.PlanConditionApi.Intent;
 import com.bokrilog.plan.PlanConditionApi.Preview;
@@ -30,14 +33,31 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @ConditionalOnWebApplication(type=ConditionalOnWebApplication.Type.SERVLET)
 class PlanConditionController {
+    /**
+     * 활성 계획이 있어 새 조건이나 새 계획을 받지 않을 때의 안내. 원인과 다음 행동(결과 보기)만 말한다.
+     * 조건 미리보기·확인과 최초 발행({@code FirstSnapshotController})이 같은 {@code ACTIVE_PLAN_EXISTS}
+     * 코드에 이 문장 하나를 쓴다.
+     */
+    static final String MESSAGE_ACTIVE_PLAN_EXISTS =
+            "이미 활성 계획이 있어 새 계획 조건이나 계획을 만들지 않았습니다. 대시보드에서 현재 계획의 결과를 확인해 주세요.";
+
     private final PlanConditionApi plans;
     PlanConditionController(PlanConditionApi plans) { this.plans=plans; }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record IntentView(UUID intentId,String status,String decimal,String measuredAt,String endAt,
             String period,String targetRate,UUID snapshotId,String createdAt) {}
+    /**
+     * The active plan summary. Present only with the reason {@code ACTIVE_PLAN_EXISTS}.
+     *
+     * @param startAt the plan's start {@code t0} (the first official snapshot's measurement time)
+     * @param decimal {@code P0} in canonical notation
+     * @param targetRate the rate in canonical notation
+     */
+    record ActivePlanView(UUID planId,String status,String decimal,String startAt,String endAt,
+            String period,String targetRate,UUID snapshotId,String createdAt) {}
     record StateView(boolean eligible,@Nullable String reason,@Nullable SnapshotView snapshot,
-            @Nullable IntentView openIntent) {}
+            @Nullable IntentView openIntent,@Nullable ActivePlanView activePlan) {}
     record SnapshotView(String decimal,String measuredAt,String publishedAt,UUID portfolioId,
             UUID snapshotId,UUID membershipId,UUID connectionId,UUID providerAccountId,
             UUID sourceSnapshotId,String inputStatus,String sourcePolicyVersion,
@@ -54,21 +74,26 @@ class PlanConditionController {
         var state=plans.state(user);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new StateView(
                 state.eligible(),state.reason(),state.snapshot()==null?null:view(state.snapshot()),
-                state.openIntent()==null?null:view(state.openIntent())));
+                state.openIntent()==null?null:view(state.openIntent()),
+                state.activePlan()==null?null:view(state.activePlan())));
     }
 
     @PostMapping(path=AuthSecurityConfig.PLAN_CONDITIONS_PATH+"/preview",
             consumes=MediaType.APPLICATION_JSON_VALUE,produces=MediaType.APPLICATION_JSON_VALUE)
-    @Nullable ResponseEntity<PreviewView> preview(@RequestBody PreviewInput input,
+    @Nullable ResponseEntity<?> preview(@RequestBody PreviewInput input,
             HttpServletRequest request,HttpServletResponse response) throws IOException {
         UUID user=currentUserId();
         if (user==null) { response.sendError(403); return null; }
         var session=request.getSession(false);
         if (session==null) { response.sendError(403); return null; }
-        if (!plans.state(user).eligible()) { response.sendError(409); return null; }
+        var state=plans.state(user);
+        if (PlanConditionApi.ACTIVE_PLAN_EXISTS.equals(state.reason())) return activePlanExists(request);
+        if (!state.eligible()) { response.sendError(409); return null; }
         var preview=plans.preview(user,session.getId(),input);
         if (preview.isEmpty()) {
-            response.sendError(plans.state(user).eligible()?422:409);
+            var after=plans.state(user);
+            if (PlanConditionApi.ACTIVE_PLAN_EXISTS.equals(after.reason())) return activePlanExists(request);
+            response.sendError(after.eligible()?422:409);
             return null;
         }
         Preview p=preview.get();
@@ -79,7 +104,7 @@ class PlanConditionController {
 
     @PostMapping(path=AuthSecurityConfig.PLAN_CONDITIONS_PATH+"/confirm",
             consumes=MediaType.APPLICATION_JSON_VALUE,produces=MediaType.APPLICATION_JSON_VALUE)
-    @Nullable ResponseEntity<ConfirmView> confirm(@RequestBody ConfirmRequest body,
+    @Nullable ResponseEntity<?> confirm(@RequestBody ConfirmRequest body,
             @RequestHeader(name="Idempotency-Key",required=false) @Nullable String key,
             HttpServletRequest request,HttpServletResponse response) throws IOException {
         UUID user=currentUserId();
@@ -87,10 +112,22 @@ class PlanConditionController {
         var session=request.getSession(false);
         if (session==null) { response.sendError(403); return null; }
         Confirmation result=plans.confirm(user,session.getId(),body.confirmationRef(),key);
+        if (PlanConditionApi.ACTIVE_PLAN_EXISTS.equals(result.reason())) return activePlanExists(request);
         HttpStatus status=result.accepted()?HttpStatus.CREATED:
                 (result.conflict()?HttpStatus.CONFLICT:HttpStatus.valueOf(422));
         return ResponseEntity.status(status).cacheControl(CacheControl.noStore()).body(new ConfirmView(
                 result.accepted(),result.conflict(),result.intent()==null?null:view(result.intent())));
+    }
+
+    /**
+     * 409 with the stable code {@code ACTIVE_PLAN_EXISTS} in the common error shape. No plan is
+     * created; the client reloads the condition state, which carries the active plan summary.
+     */
+    private static ResponseEntity<ApiError> activePlanExists(HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)
+                .cacheControl(CacheControl.noStore())
+                .body(new ApiError(PlanConditionApi.ACTIVE_PLAN_EXISTS,MESSAGE_ACTIVE_PLAN_EXISTS,
+                        ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER))));
     }
 
     private static SnapshotView view(Snapshot s) {
@@ -102,6 +139,15 @@ class PlanConditionController {
     private static IntentView view(Intent i) {
         return new IntentView(i.intentId(),i.status(),i.decimal(),i.measuredAt().toString(),
                 i.endAt().toString(),i.period().name(),i.targetRate(),i.snapshotId(),i.createdAt().toString());
+    }
+    private static ActivePlanView view(ActivePlan p) {
+        return new ActivePlanView(p.planId(),p.status(),canonical(p.decimal()),p.t0().toString(),p.endAt().toString(),
+                p.period().name(),canonical(p.targetRate()),p.snapshotId(),p.createdAt().toString());
+    }
+    /** The lossless canonical notation of a stored decimal ({@code "1250.00"} → {@code "1250"}). */
+    private static String canonical(String decimal) {
+        String notation=PlanCalculator.plainDecimal(decimal);
+        return notation==null?decimal:notation;
     }
     private static @Nullable UUID currentUserId() {
         Authentication authentication=SecurityContextHolder.getContext().getAuthentication();

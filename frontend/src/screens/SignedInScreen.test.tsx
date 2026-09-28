@@ -11,7 +11,11 @@ import {
   SETTINGS_PATH,
   SIGN_IN_PROVIDERS,
 } from '../content/auth'
+import { firstSnapshotContent } from '../content/firstSnapshot'
+import { planConditionContent } from '../content/planConditions'
+import { METRIC_ORDER, PLAN_RESULT_PATH, planResultContent } from '../content/planResult'
 import { navigateTo, replaceLocation } from '../session/navigation'
+import { planResultFixture } from '../test/planResultFixture'
 import {
   getObservedAllowedRequests,
   getObservedSessionRequests,
@@ -19,6 +23,7 @@ import {
   stubFirstSnapshotStart,
   stubFirstSnapshotState,
   stubLogoutRequest,
+  stubPlanResult,
   stubReauthenticationRequest,
   stubSessionRequest,
 } from '../test/setup'
@@ -107,6 +112,8 @@ describe('SignedInScreen', () => {
 
   it('첫 공식값과 제공자 측정 시각, 세 신뢰 축을 표시한다', async () => {
     stubSessionRequest(authenticated)
+    // 활성 계획이 없다고 서버가 답한 경로다. 그때만 "계획 없음" 문장과 임시 세 축이 보인다.
+    stubPlanResult(() => Promise.resolve(new Response(null, { status: 204 })))
     stubFirstSnapshotState(() =>
       Promise.resolve(
         jsonResponse({
@@ -250,7 +257,7 @@ describe('SignedInScreen', () => {
     expect(screen.queryByRole('link', { name: authContent.settings.link })).not.toBeInTheDocument()
   })
 
-  it('금융값을 담지 않는다', async () => {
+  it('공식 결과가 없으면 금융값을 담지 않는다', async () => {
     stubSessionRequest(authenticated)
 
     render(<SignedInScreen />)
@@ -258,10 +265,147 @@ describe('SignedInScreen', () => {
 
     const rendered = document.body.textContent
 
-    // 지표·수익률·통화 표기는 이 스토리의 범위가 아니다. 빈 카드로 위장하지도 않는다.
+    // 결과 응답이 없는 경로다(Story 2.7 이후에도). 지표·비율·통화 표기가 없고 빈 카드로 위장하지도 않는다.
     expect(rendered).not.toMatch(/\d+(\.\d+)?\s*%/)
     expect(rendered).not.toContain('USDT')
     expect(rendered).not.toContain('$')
+    expect(
+      screen.queryByRole('heading', { name: planResultContent.heading }),
+    ).not.toBeInTheDocument()
+  })
+
+  /*
+   * Story 2.7: 활성 계획의 공식 결과. 결과 응답 하나에서 패널 전체를 그린다.
+   */
+
+  it('결과: 공식 포인터 응답 하나에서 여섯 지표와 세 축을 그리고 단일 상태 리전이 한 번 알린다', async () => {
+    stubSessionRequest(authenticated)
+    stubPlanResult(() => Promise.resolve(jsonResponse(planResultFixture())))
+    stubFirstSnapshotState(() =>
+      Promise.resolve(
+        jsonResponse({
+          connected: true,
+          restricted: false,
+          job: { jobId: 'job-1', status: 'SUCCEEDED' },
+          decimal: '1250',
+          currency: 'USD',
+          measuredAt: '2026-09-27T00:59:59Z',
+        }),
+      ),
+    )
+
+    render(<SignedInScreen />)
+
+    expect(
+      await screen.findByRole('heading', { level: 2, name: planResultContent.heading }),
+    ).toBeInTheDocument()
+    for (const metric of METRIC_ORDER) {
+      expect(
+        screen.getByRole('heading', { level: 4, name: planResultContent.metrics[metric].name }),
+      ).toBeInTheDocument()
+    }
+    const statuses = screen.getAllByRole('status')
+    expect(statuses).toHaveLength(1)
+    expect(statuses[0]).toHaveTextContent('복리 계획 결과를 표시합니다')
+    expect(getObservedAllowedRequests()).toContain(`GET ${PLAN_RESULT_PATH}`)
+    // The pointer now shows the plan's current value: the panel no longer calls it the first value,
+    // no longer claims there is no plan, and its provisional axes give way.
+    expect(await screen.findByText(firstSnapshotContent.currentSucceeded)).toBeInTheDocument()
+    expect(
+      screen.getByRole('heading', { level: 2, name: firstSnapshotContent.currentHeading }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('heading', { name: firstSnapshotContent.heading }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText(firstSnapshotContent.succeeded)).not.toBeInTheDocument()
+    expect(screen.getAllByText(/1,250\.00 USD/)).toHaveLength(2)
+    expect(screen.queryByText(firstSnapshotContent.noPlan)).not.toBeInTheDocument()
+    expect(screen.queryByText(/계산 성격 · 계산 불가/)).not.toBeInTheDocument()
+    // The title and its disclaimer stay adjacent above the result.
+    const title = screen.getByRole('heading', { level: 1 })
+    expect(title.nextElementSibling?.textContent).toBe(authContent.disclaimer)
+  })
+
+  it('결과: 없음(204)·거절(403)·읽기 실패는 기존 화면을 바꾸지 않는다', async () => {
+    for (const answer of [
+      () => Promise.resolve(new Response(null, { status: 204 })),
+      () => Promise.resolve(new Response('{}', { status: 403 })),
+      () => Promise.reject(new Error('network')),
+      () => Promise.resolve(jsonResponse({ planId: 'partial' })),
+    ]) {
+      stubSessionRequest(authenticated)
+      stubPlanResult(answer)
+      const { unmount } = render(<SignedInScreen />)
+      await screen.findByRole('heading', { level: 2, name: authContent.dashboard.heading })
+      await waitFor(() => {
+        expect(getObservedAllowedRequests()).toContain(`GET ${PLAN_RESULT_PATH}`)
+      })
+      expect(
+        screen.queryByRole('heading', { name: planResultContent.heading }),
+      ).not.toBeInTheDocument()
+      expect(screen.getAllByRole('status')).toHaveLength(1)
+      expect(screen.getByRole('status').textContent).toBe('')
+      unmount()
+    }
+  })
+
+  /*
+   * 거절·읽기 실패는 "계획 없음"이 아니다. 서버가 없다고 답했을 때(204)만 그 문장과 계획 조건
+   * 링크를 보이고, 그 밖에는 계획이 있다고도 없다고도 말하지 않는다.
+   */
+  it.each([
+    ['refused (403)', () => Promise.resolve(new Response('{}', { status: 403 }))],
+    ['a failed read', () => Promise.reject(new Error('network'))],
+    ['a malformed body', () => Promise.resolve(jsonResponse({ planId: 'partial' }))],
+  ])('결과: %s는 계획 없음으로 말하지 않고 중립 문장을 보인다', async (_name, answer) => {
+    stubSessionRequest(authenticated)
+    stubPlanResult(answer)
+    stubFirstSnapshotState(() =>
+      Promise.resolve(
+        jsonResponse({
+          connected: true,
+          restricted: false,
+          job: { jobId: 'job-1', status: 'SUCCEEDED' },
+          decimal: '1234.56',
+          currency: 'USD',
+          measuredAt: '2026-09-25T00:00:00Z',
+        }),
+      ),
+    )
+    render(<SignedInScreen />)
+
+    expect(await screen.findByText(firstSnapshotContent.planUnknown)).toBeInTheDocument()
+    expect(screen.queryByText(firstSnapshotContent.noPlan)).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('link', { name: planConditionContent.openConditions }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText(/계산 성격 · 계산 불가/)).not.toBeInTheDocument()
+  })
+
+  it('결과: 서버가 활성 계획이 없다고 답하면(204) 계획 없음 문장과 계획 조건 링크를 보인다', async () => {
+    stubSessionRequest(authenticated)
+    stubPlanResult(() => Promise.resolve(new Response(null, { status: 204 })))
+    stubFirstSnapshotState(() =>
+      Promise.resolve(
+        jsonResponse({
+          connected: true,
+          restricted: false,
+          job: { jobId: 'job-1', status: 'SUCCEEDED' },
+          decimal: '1234.56',
+          currency: 'USD',
+          measuredAt: '2026-09-25T00:00:00Z',
+        }),
+      ),
+    )
+    render(<SignedInScreen />)
+
+    expect(await screen.findByText(firstSnapshotContent.noPlan)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: planConditionContent.openConditions })).toHaveAttribute(
+      'href',
+      planConditionContent.path,
+    )
+    expect(screen.getByText(firstSnapshotContent.succeeded)).toBeInTheDocument()
+    expect(screen.queryByText(firstSnapshotContent.planUnknown)).not.toBeInTheDocument()
   })
 
   it('미인증으로 이 경로에 직접 들어오면 인증 화면으로 되돌린다', async () => {

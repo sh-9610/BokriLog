@@ -15,11 +15,13 @@ import org.springframework.stereotype.Component;
 class FirstSnapshotWorker {
     private final SyncJobService service;
     private final SourceConnectionApi sources;
+    private final PlanPublicationService publications;
     private final Map<java.util.UUID,SyncJobRepository.Lease> inFlight=new ConcurrentHashMap<>();
     private final Map<java.util.UUID,InitialCollectionRepository.Lease> initialInFlight=new ConcurrentHashMap<>();
     private final Map<java.util.UUID,CashflowConversionRepository.Lease> conversionInFlight=new ConcurrentHashMap<>();
-    FirstSnapshotWorker(SyncJobService service,SourceConnectionApi sources) {
-        this.service=service; this.sources=sources;
+    private final Map<java.util.UUID,PlanPublicationRepository.Lease> publicationInFlight=new ConcurrentHashMap<>();
+    FirstSnapshotWorker(SyncJobService service,SourceConnectionApi sources,PlanPublicationService publications) {
+        this.service=service; this.sources=sources; this.publications=publications;
     }
     @Scheduled(fixedDelay=1000)
     void dispatch() {
@@ -39,6 +41,7 @@ class FirstSnapshotWorker {
         renew(inFlight,service::heartbeat,SyncJobRepository.Lease::jobId);
         renew(initialInFlight,service::heartbeatInitial,InitialCollectionRepository.Lease::jobId);
         renew(conversionInFlight,service::heartbeatConversion,CashflowConversionRepository.Lease::jobId);
+        renew(publicationInFlight,publications::heartbeat,PlanPublicationRepository.Lease::jobId);
     }
     static <L> void renew(Map<java.util.UUID,L> leases,java.util.function.Predicate<L> renewal,
             java.util.function.Function<L,java.util.UUID> id) {
@@ -60,6 +63,23 @@ class FirstSnapshotWorker {
                     service.runConversion(lease,()->lease.equals(conversionInFlight.get(lease.jobId())));
                 } finally {
                     conversionInFlight.remove(lease.jobId(),lease);
+                }
+            });
+        });
+    }
+    /**
+     * One first-publication claim per tick (Story 2.7). The pure calculation runs on the virtual thread
+     * between the input read and the publishing transaction; no transaction spans it.
+     */
+    @Scheduled(fixedDelay=1000)
+    void dispatchPlanPublication() {
+        publications.claim().ifPresent(lease->{
+            publicationInFlight.put(lease.jobId(),lease);
+            Thread.ofVirtual().name("plan-publication-"+lease.jobId()).start(()->{
+                try {
+                    publications.run(lease,()->lease.equals(publicationInFlight.get(lease.jobId())));
+                } finally {
+                    publicationInFlight.remove(lease.jobId(),lease);
                 }
             });
         });

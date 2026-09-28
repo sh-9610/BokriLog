@@ -23,7 +23,7 @@ export const planConditionContent = {
   cancel: '조건 수정',
   confirm: '이 조건 확인',
   saved: '계획 조건 검증 완료',
-  savedHelp: '이 기록은 아직 활성 계획이나 공식 계산 지표가 아닙니다.',
+  savedHelp: '이 조건은 최초 계획을 발행하기 전까지 활성 계획이나 공식 계산 지표가 아닙니다.',
   savedAgain:
     '새 조건으로 바꾸려면 입력을 수정한 뒤 다시 확인하세요. 이전 조건은 수정되지 않고 대체됩니다.',
   collection: {
@@ -127,7 +127,8 @@ export const planConditionContent = {
     ) =>
       `입출금 ${String(flows)}건 · 직접 정규화 ${String(converted)}건 · 추정 환산 ${String(estimated)}건 · 환산 보류 ${String(required)}건 · 검토 ${String(review)}건`,
     policies: '적용 정책',
-    calculable: '계산에 쓸 수 있는 자금흐름 묶음입니다. 공식 계획 지표는 아직 계산하지 않았습니다.',
+    calculable:
+      '계산에 쓸 수 있는 자금흐름 묶음입니다. 공식 계획 지표는 아래 최초 계획 계산·발행에서 계산합니다.',
     pendingHeading: '환산 필요·검토 필요 자산',
     pendingAsset: (asset: string, count: number) => `${asset} ${String(count)}건`,
     flowStatus: '상태',

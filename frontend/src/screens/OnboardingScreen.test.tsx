@@ -12,12 +12,15 @@ import {
   SIGN_IN_PROVIDERS,
 } from '../content/auth'
 import { entryContent } from '../content/entry'
+import { PLAN_RESULT_PATH, planResultContent } from '../content/planResult'
 import { navigateTo, replaceLocation } from '../session/navigation'
+import { planResultFixture } from '../test/planResultFixture'
 import {
   getObservedAllowedRequests,
   getObservedSessionRequests,
   getObservedStorageEntries,
   stubLogoutRequest,
+  stubPlanResult,
   stubReauthenticationRequest,
   stubSessionRequest,
 } from '../test/setup'
@@ -107,6 +110,36 @@ describe('OnboardingScreen', () => {
     for (const copy of onboardingCopyStrings) {
       expect(rendered).toContain(copy)
     }
+  })
+
+  it('첫 로그인 세션도 활성 계획의 공식 결과를 같은 패널로 보고, 결과가 없으면 화면이 그대로다', async () => {
+    // A first-login session is sent here from `/dashboard`, so this landing screen shows the result.
+    stubSessionRequest(() =>
+      Promise.resolve(jsonResponse({ authenticated: true, destination: 'onboarding' })),
+    )
+    stubPlanResult(() => Promise.resolve(jsonResponse(planResultFixture())))
+    const { unmount } = render(<OnboardingScreen />)
+
+    expect(
+      await screen.findByRole('heading', { level: 2, name: planResultContent.heading }),
+    ).toBeInTheDocument()
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status')).toHaveTextContent('복리 계획 결과를 표시합니다')
+    unmount()
+
+    stubSessionRequest(() =>
+      Promise.resolve(jsonResponse({ authenticated: true, destination: 'onboarding' })),
+    )
+    stubPlanResult(() => Promise.resolve(new Response(null, { status: 204 })))
+    render(<OnboardingScreen />)
+    await screen.findByRole('heading', { level: 2, name: authContent.onboarding.heading })
+    await waitFor(() => {
+      expect(getObservedAllowedRequests()).toContain(`GET ${PLAN_RESULT_PATH}`)
+    })
+    expect(
+      screen.queryByRole('heading', { name: planResultContent.heading }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole('status').textContent).toBe('')
   })
 
   it('설정 화면으로 가는 길을 준다', async () => {

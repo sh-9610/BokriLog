@@ -101,13 +101,34 @@ class PortfolioRepository {
     }
 
     int insertSnapshot(UUID snapshotId, UUID portfolioId, UUID userId, String decimal,
-            Instant measuredAt) {
+            Instant measuredAt, long sequence) {
         return this.jdbc.sql("INSERT INTO portfolio_snapshot "
                 + "(portfolio_snapshot_id,portfolio_id,user_id,amount_decimal,base_currency,measured_at,publication_sequence) "
-                + "VALUES (:id,:portfolioId,:userId,:decimal,'USD',:measured,1)")
+                + "VALUES (:id,:portfolioId,:userId,:decimal,'USD',:measured,:sequence)")
             .param("id",snapshotId).param("portfolioId",portfolioId).param("userId",userId)
             .param("decimal",decimal).param("measured",OffsetDateTime.ofInstant(measuredAt,ZoneOffset.UTC))
-            .update();
+            .param("sequence",sequence).update();
+    }
+
+    record PointerRow(UUID snapshotId, long sequence) {}
+
+    /** 이 portfolio의 현재 포인터를 잠근다. 소유자가 다르면 빈 값이다. */
+    Optional<PointerRow> lockPointer(UUID portfolioId, UUID userId) {
+        return this.jdbc.sql("SELECT c.portfolio_snapshot_id,c.publication_sequence FROM portfolio_current_snapshot c "
+                + "JOIN portfolio p ON p.portfolio_id=c.portfolio_id WHERE c.portfolio_id=:portfolioId "
+                + "AND p.user_id=:userId FOR UPDATE OF c")
+            .param("portfolioId",portfolioId).param("userId",userId)
+            .query((rs,n)->new PointerRow(rs.getObject(1,UUID.class),rs.getLong(2))).optional();
+    }
+
+    /** 기대한 snapshot·순번일 때만 한 칸 전진한다. 현재값을 {@code max(created_at)}으로 추론하지 않는다. */
+    int advancePointer(UUID portfolioId, UUID expectedSnapshotId, long expectedSequence, UUID snapshotId,
+            long sequence) {
+        return this.jdbc.sql("UPDATE portfolio_current_snapshot SET portfolio_snapshot_id=:snapshotId,"
+                + "publication_sequence=:sequence,published_at=now() WHERE portfolio_id=:portfolioId "
+                + "AND portfolio_snapshot_id=:expectedSnapshotId AND publication_sequence=:expectedSequence")
+            .param("snapshotId",snapshotId).param("sequence",sequence).param("portfolioId",portfolioId)
+            .param("expectedSnapshotId",expectedSnapshotId).param("expectedSequence",expectedSequence).update();
     }
 
     int insertComponent(UUID snapshotId, UUID membershipId, UUID sourceId, UUID portfolioId,
@@ -132,7 +153,7 @@ class PortfolioRepository {
 
     Optional<com.bokrilog.portfolio.PortfolioMembershipApi.OfficialValue> official(UUID userId) {
         return this.jdbc.sql("SELECT s.amount_decimal,s.base_currency,s.measured_at,s.composed_at,"
-                + "c.published_at,s.portfolio_snapshot_id FROM portfolio p "
+                + "c.published_at,s.portfolio_snapshot_id,c.publication_sequence FROM portfolio p "
                 + "JOIN portfolio_current_snapshot c ON c.portfolio_id=p.portfolio_id "
                 + "JOIN portfolio_snapshot s ON s.portfolio_snapshot_id=c.portfolio_snapshot_id "
                 + "WHERE p.user_id=:userId AND s.user_id=:userId AND p.is_default")
@@ -140,7 +161,7 @@ class PortfolioRepository {
             .query((rs,n)->new com.bokrilog.portfolio.PortfolioMembershipApi.OfficialValue(
                 rs.getString(1),rs.getString(2),rs.getObject(3,OffsetDateTime.class).toInstant(),
                 rs.getObject(4,OffsetDateTime.class).toInstant(),
-                rs.getObject(5,OffsetDateTime.class).toInstant(),rs.getObject(6,UUID.class)))
+                rs.getObject(5,OffsetDateTime.class).toInstant(),rs.getObject(6,UUID.class),rs.getLong(7)))
             .optional();
     }
 

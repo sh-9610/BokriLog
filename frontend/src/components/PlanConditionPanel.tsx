@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, type ReactElement, type SyntheticEvent } from 'react'
 
+import { DASHBOARD_PATH } from '../content/auth'
 import { planConditionContent as copy } from '../content/planConditions'
+import { activePlanContent } from '../content/planResult'
+import { formatAmount, isCanonicalNonNegative, percentFromRatio } from '../format/decimal'
 import { InitialInputsCollection } from './InitialInputsCollection'
 import styles from './PlanConditionPanel.module.css'
 
@@ -29,10 +32,56 @@ interface Intent {
   readonly snapshotId: string
   readonly createdAt: string
 }
+/**
+ * The immutable active plan (Story 2.7). Present with the reason `ACTIVE_PLAN_EXISTS`.
+ * `startAt` is the plan's `t0`; `decimal` (P0) and `targetRate` are canonical decimal strings.
+ */
+interface ActivePlan {
+  readonly planId: string
+  readonly status: string
+  readonly decimal: string
+  readonly startAt: string
+  readonly endAt: string
+  readonly period: Intent['period']
+  readonly targetRate: string
+}
 interface StateResponse {
   readonly eligible: boolean
-  readonly snapshot?: Snapshot
-  readonly openIntent?: Intent
+  readonly reason?: string | null
+  readonly snapshot?: Snapshot | null
+  readonly openIntent?: Intent | null
+  readonly activePlan?: ActivePlan | null
+}
+
+const ACTIVE_PLAN_EXISTS = 'ACTIVE_PLAN_EXISTS'
+
+function isInstant(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(new Date(value).getTime())
+}
+
+/**
+ * The summary is shown only when every value can be displayed: the amounts are canonical decimals
+ * (so `formatAmount`/`percentFromRatio` never meet a string `BigInt` cannot read) and the times parse.
+ */
+function isActivePlan(value: unknown): value is ActivePlan {
+  if (typeof value !== 'object' || value === null) return false
+  const plan = value as Record<string, unknown>
+  return (
+    typeof plan.planId === 'string' &&
+    typeof plan.status === 'string' &&
+    isCanonicalNonNegative(plan.decimal) &&
+    isCanonicalNonNegative(plan.targetRate) &&
+    isInstant(plan.startAt) &&
+    isInstant(plan.endAt) &&
+    (plan.period === 'DAILY' || plan.period === 'WEEKLY' || plan.period === 'MONTHLY')
+  )
+}
+
+/** The stable code of a common-shape error body, if any. */
+function codeOf(body: unknown): string | null {
+  if (typeof body !== 'object' || body === null) return null
+  const code = (body as Record<string, unknown>).code
+  return typeof code === 'string' ? code : null
 }
 interface Preview {
   readonly confirmationRef: string
@@ -97,17 +146,6 @@ function ratioFromPercent(value: string): string | null {
   return result
 }
 
-function percentFromRatio(value: string): string {
-  const [whole = '0', fraction = ''] = value.split('.')
-  const coefficient = BigInt(`${whole}${fraction}`)
-  const scale = fraction.length - 2
-  if (scale <= 0) return (coefficient * 10n ** BigInt(-scale)).toString()
-  const digits = coefficient.toString().padStart(scale + 1, '0')
-  const point = digits.length - scale
-  const result = `${digits.slice(0, point)}.${digits.slice(point)}`
-  return result.replace(/\.?0+$/, '') || '0'
-}
-
 function dateTime(value: string): string {
   return new Intl.DateTimeFormat('ko-KR', {
     timeZone: 'Asia/Seoul',
@@ -154,6 +192,8 @@ export function PlanConditionPanel({
   const [endAtError, setEndAtError] = useState<string | null>(null)
   const [rateError, setRateError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [revision, setRevision] = useState(0)
+  const [lostToActivePlan, setLostToActivePlan] = useState(false)
   const retryKey = useRef<string | null>(null)
 
   useEffect(() => {
@@ -176,9 +216,62 @@ export function PlanConditionPanel({
     return () => {
       live = false
     }
-  }, [ready])
+  }, [ready, revision])
+
+  /**
+   * A request was refused because an active plan exists: reload the state, which carries its summary.
+   * Who published it (this tab or another) is not known here, so the notice does not say.
+   */
+  function reloadForActivePlan(): void {
+    setPreview(null)
+    setSaved(null)
+    setError(null)
+    retryKey.current = null
+    setLostToActivePlan(true)
+    setRevision((n) => n + 1)
+  }
 
   if (!ready) return null
+  if (state !== null && isActivePlan(state.activePlan)) {
+    const plan = state.activePlan
+    return (
+      <section aria-labelledby="plan-condition-heading" className={styles.panel}>
+        <h2 id="plan-condition-heading">{copy.heading}</h2>
+        <div className={styles.savedStatus} role="status">
+          <h3>{activePlanContent.heading}</h3>
+          <p>{activePlanContent.help}</p>
+          {lostToActivePlan ? <p>{activePlanContent.conflict}</p> : null}
+        </div>
+        <dl className={styles.facts}>
+          <div>
+            <dt>{copy.p0}</dt>
+            <dd>{formatAmount(plan.decimal)} USD</dd>
+          </div>
+          <div>
+            <dt>{copy.t0}</dt>
+            <dd>{dateTime(plan.startAt)} · Asia/Seoul</dd>
+          </div>
+          <div>
+            <dt>{copy.endAt}</dt>
+            <dd>{dateTime(plan.endAt)} · Asia/Seoul</dd>
+          </div>
+          <div>
+            <dt>{copy.period}</dt>
+            <dd>{periodLabel(plan.period)}</dd>
+          </div>
+          <div>
+            <dt>{copy.rate}</dt>
+            <dd>{percentFromRatio(plan.targetRate)}%</dd>
+          </div>
+        </dl>
+        <p>
+          <a className={styles.button} href={DASHBOARD_PATH}>
+            {activePlanContent.dashboardLink}
+          </a>
+        </p>
+      </section>
+    )
+  }
   if (state === null) {
     return (
       <section aria-labelledby="plan-condition-heading" className={styles.panel}>
@@ -189,7 +282,7 @@ export function PlanConditionPanel({
       </section>
     )
   }
-  if (!state.eligible || state.snapshot === undefined) {
+  if (!state.eligible || state.snapshot === undefined || state.snapshot === null) {
     return (
       <section aria-labelledby="plan-condition-heading" className={styles.panel}>
         <h2 id="plan-condition-heading">{copy.heading}</h2>
@@ -230,6 +323,11 @@ export function PlanConditionPanel({
         body: JSON.stringify({ endAtSeoul: local, period, targetRate: ratio }),
       })
       if (response.status === 409) {
+        const refusal: unknown = await response.json().catch(() => null)
+        if (codeOf(refusal) === ACTIVE_PLAN_EXISTS) {
+          reloadForActivePlan()
+          return
+        }
         setError(copy.errors.unavailable)
         return
       }
@@ -270,8 +368,11 @@ export function PlanConditionPanel({
         accepted: boolean
         conflict: boolean
         intent?: Intent
+        code?: string
       }
-      if (body.conflict && body.intent !== undefined) {
+      if (response.status === 409 && body.code === ACTIVE_PLAN_EXISTS) {
+        reloadForActivePlan()
+      } else if (body.conflict && body.intent !== undefined) {
         setSaved(body.intent)
         setPreview(null)
         retryKey.current = null

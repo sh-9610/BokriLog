@@ -10,6 +10,7 @@ import com.bokrilog.portfolio.PortfolioMembershipApi.FirstOfficialSnapshot;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.SyncJobApi;
 import com.bokrilog.sync.InitialInputsPlanPort;
+import com.bokrilog.sync.PlanPublicationPort;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -29,10 +30,18 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+/**
+ * 계획 조건 intent와 불변 활성 계획.
+ *
+ * <p>활성 계획은 이 모듈이 소유하지만 만드는 것은 sync의 발행 트랜잭션이다. 그래서
+ * {@link PlanPublicationPort}의 변경 command는 호출자 트랜잭션에 참여만 하고, 조건 화면·미리보기·
+ * 확인은 활성 계획이 있으면 새 조건을 받지 않는다({@link PlanConditionApi#ACTIVE_PLAN_EXISTS}).
+ */
 @Service
-class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort {
+class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, PlanPublicationPort {
     static final String CALENDAR_POLICY="CALENDAR-SEOUL-1.0";
     static final String CALCULATION_POLICY="CALC-1.0";
     static final ZoneId ZONE=ZoneId.of("Asia/Seoul");
@@ -58,26 +67,28 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort {
 
     @Override
     public State state(@Nullable UUID userId) {
-        if (userId==null) return new State(false,"NOT_ELIGIBLE",null,null);
+        if (userId==null) return new State(false,"NOT_ELIGIBLE",null,null,null);
         return transactions.execute(status -> {
             repository.lockUser(userId);
             Instant now=Instant.now();
             repository.invalidateExpired(userId,now);
             if (!eligibleUser(userId)) {
                 repository.invalidateOpen(userId);
-                return new State(false,"NOT_ELIGIBLE",null,null);
+                return new State(false,"NOT_ELIGIBLE",null,null,null);
             }
+            var active=repository.activePlan(userId).orElse(null);
+            if (active!=null) return new State(false,ACTIVE_PLAN_EXISTS,null,null,view(active));
             FirstOfficialSnapshot s=eligibleSnapshot(userId).orElse(null);
             if (s==null) {
                 repository.invalidateOpen(userId);
-                return new State(false,"NOT_ELIGIBLE",null,null);
+                return new State(false,"NOT_ELIGIBLE",null,null,null);
             }
             var source=sync.sourceSnapshot(userId,s.sourceSnapshotId()).orElseThrow();
             var snapshot=new Snapshot(s.decimal(),s.measuredAt(),s.publishedAt(),s.portfolioId(),s.snapshotId(),
                     s.membershipId(),s.connectionId(),s.providerAccountId(),s.sourceSnapshotId(),
                     source.inputStatus(),source.policyVersion(),s.portfolioPolicyVersion());
             repository.invalidateOpenUnlessCurrentSnapshot(userId,s,now);
-            return new State(true,null,snapshot,repository.openIntent(userId).orElse(null));
+            return new State(true,null,snapshot,repository.openIntent(userId).orElse(null),null);
         });
     }
 
@@ -86,7 +97,7 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort {
             @Nullable PreviewInput input) {
         if (userId==null || sessionId==null || sessionId.isBlank() || input==null
                 || input.period()==null || input.targetRate()==null || input.endAtSeoul()==null
-                || !eligibleUser(userId)) return Optional.empty();
+                || !eligibleUser(userId) || repository.activePlan(userId).isPresent()) return Optional.empty();
         var s=eligibleSnapshot(userId).orElse(null);
         if (s==null) return Optional.empty();
         Period period;
@@ -114,6 +125,8 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort {
                     repository.invalidateOpen(userId);
                     return false;
                 }
+                // Checked again under the lock: a publication that committed after the check above wins.
+                if (repository.activePlan(userId).isPresent()) return false;
                 repository.insertConfirmation(sha256(ref),userId,sha256(sessionId),hash,s,end,period,rate,expires);
                 return true;
             });
@@ -126,36 +139,43 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort {
     public Confirmation confirm(@Nullable UUID userId, @Nullable String sessionId,
             @Nullable String confirmationRef, @Nullable String idempotencyKey) {
         if (userId==null || sessionId==null || sessionId.isBlank() || confirmationRef==null
-                || !validKey(idempotencyKey) || !eligibleUser(userId)) return new Confirmation(false,false,null);
+                || !validKey(idempotencyKey) || !eligibleUser(userId)) return new Confirmation(false,false,null,null);
         String confirmationHash=sha256(confirmationRef);
         try {
             return transactions.execute(status -> {
                 repository.lockUser(userId);
                 if (!accounts.lockWriteAccess(userId) || !eligibleRestrictions())
-                    return new Confirmation(false,false,null);
+                    return new Confirmation(false,false,null,null);
+                // An active plan takes no new conditions — whatever the reference is: unknown, from another
+                // session, of another policy, or a replay. Checked before the reference is read, so every
+                // one of those answers the actual state (409 ACTIVE_PLAN_EXISTS) instead of "stale" (422).
+                // Read under the plan lock the publication also takes first, so a publication that
+                // committed a moment ago is seen here.
+                if (repository.activePlan(userId).isPresent())
+                    return new Confirmation(false,false,null,ACTIVE_PLAN_EXISTS);
                 var c=repository.confirmation(confirmationHash,userId,sha256(sessionId)).orElse(null);
                 if (c==null
                         || !c.calendarPolicy().equals(CALENDAR_POLICY)
-                        || !c.calculationPolicy().equals(CALCULATION_POLICY)) return new Confirmation(false,false,null);
+                        || !c.calculationPolicy().equals(CALCULATION_POLICY)) return new Confirmation(false,false,null,null);
                 var prior=repository.idempotency(userId,idempotencyKey).orElse(null);
                 if (prior!=null) {
                     return new Confirmation(prior.canonicalHash().equals(c.canonicalHash()),
                             !prior.canonicalHash().equals(c.canonicalHash()),
-                            repository.intent(userId,prior.intentId()).orElse(null));
+                            repository.intent(userId,prior.intentId()).orElse(null),null);
                 }
                 if (!c.expiresAt().isAfter(Instant.now()) || c.consumedAt()!=null)
-                    return new Confirmation(false,false,null);
+                    return new Confirmation(false,false,null,null);
                 if (!eligibleUser(userId) || !confirmationStillValid(userId,c)) {
                     repository.invalidateOpen(userId);
-                    return new Confirmation(false,false,null);
+                    return new Confirmation(false,false,null,null);
                 }
                 Instant now=Instant.now();
-                if (!c.endAt().isAfter(now)) return new Confirmation(false,false,null);
+                if (!c.endAt().isAfter(now)) return new Confirmation(false,false,null,null);
                 repository.invalidateExpired(userId,now);
                 var current=repository.latestOpenForUpdate(userId).orElse(null);
                 // A preview created before another tab's intent is a losing concurrent submission.
                 if (current!=null && !current.createdAt().isBefore(c.issuedAt()))
-                    return new Confirmation(false,true,current);
+                    return new Confirmation(false,true,current,null);
                 UUID intentId=UUID.randomUUID();
                 if (current!=null && repository.replace(userId,current.intentId(),intentId)!=1)
                     throw new StaleState();
@@ -163,14 +183,14 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort {
                 if (repository.idempotency(userId,idempotencyKey,c.canonicalHash(),intentId)!=1)
                     throw new DuplicateKeyException("idempotency conflict");
                 repository.consume(confirmationHash);
-                return new Confirmation(true,false,repository.intent(userId,intentId).orElse(null));
+                return new Confirmation(true,false,repository.intent(userId,intentId).orElse(null),null);
             });
         } catch (DuplicateKeyException | StaleState rejected) {
             var existing=repository.idempotency(userId,idempotencyKey).orElse(null);
-            if (existing==null) return new Confirmation(false,false,null);
+            if (existing==null) return new Confirmation(false,false,null,null);
             return new Confirmation(existing.canonicalHash().equals(readCanonicalHash(confirmationHash,userId,sessionId)),
                     !existing.canonicalHash().equals(readCanonicalHash(confirmationHash,userId,sessionId)),
-                    repository.intent(userId,existing.intentId()).orElse(null));
+                    repository.intent(userId,existing.intentId()).orElse(null),null);
         }
     }
 
@@ -204,6 +224,82 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort {
     @Override
     public void erasePlanData(@Nullable UUID userId) {
         if (userId!=null) transactions.executeWithoutResult(status -> repository.erase(userId));
+    }
+
+    // ------------------------------------------------------------------ PlanPublicationPort (Story 2.7)
+
+    @Override
+    public Optional<Terms> publishableTerms(@Nullable UUID userId, UUID intentId) {
+        if (userId==null || !eligibleUser(userId)) return Optional.empty();
+        return transactions.execute(status -> currentTerms(userId,intentId,false));
+    }
+
+    @Override
+    public Optional<PlanPublicationPort.ActivePlan> activePlan(@Nullable UUID userId) {
+        if (userId==null) return Optional.empty();
+        return repository.activePlan(userId).map(p -> new PlanPublicationPort.ActivePlan(p.planId(),p.intentId(),
+                p.portfolioId(),p.p0(),p.t0(),p.endAt(),p.period().name(),p.rate(),p.createdAt()));
+    }
+
+    @Override
+    public void lockPlanWrites(UUID userId) {
+        requireCallerTransaction();
+        repository.lockUser(userId);
+    }
+
+    @Override
+    public Optional<UUID> createActivePlan(UUID userId, Terms expected) {
+        requireCallerTransaction();
+        if (!eligibleUser(userId)) return Optional.empty();
+        // The intent row is locked here: a racing confirmation's replacement waits for this commit.
+        var current=currentTerms(userId,expected.intentId(),true).orElse(null);
+        if (current==null || !current.equals(expected)) return Optional.empty();
+        var row=repository.intentTerms(userId,expected.intentId(),false).orElseThrow();
+        if (!row.endAt().isAfter(repository.databaseNow())) return Optional.empty();
+        UUID planId=UUID.randomUUID();
+        // A concurrent second insert for the same portfolio fails on the partial unique index and that
+        // exception rolls the caller's whole publication back.
+        repository.insertPlan(planId,userId,row);
+        if (repository.consumeIntent(userId,expected.intentId(),planId)!=1)
+            throw new IllegalStateException("intent changed under its row lock");
+        return Optional.of(planId);
+    }
+
+    /**
+     * The intent's terms while it is still publishable: OPEN, its snapshot provenance still the current
+     * first official snapshot with the same membership, connection and policies, and no active plan on
+     * its portfolio.
+     *
+     * <p>The end time is not judged here with the application clock. The publication judges it against
+     * the database clock and answers {@code PLAN_PERIOD_ENDED} on its own; {@link #createActivePlan}
+     * checks it again against the database clock under the intent's row lock.
+     */
+    private Optional<Terms> currentTerms(UUID userId, UUID intentId, boolean lock) {
+        var row=repository.intentTerms(userId,intentId,lock).orElse(null);
+        if (row==null || !"OPEN".equals(row.status())
+                || !CALENDAR_POLICY.equals(row.calendarPolicy()) || !CALCULATION_POLICY.equals(row.calculationPolicy())
+                || repository.activePlanForPortfolio(row.portfolioId())) return Optional.empty();
+        var s=eligibleSnapshot(userId).orElse(null);
+        if (s==null || !s.portfolioId().equals(row.portfolioId()) || !s.snapshotId().equals(row.snapshotId())
+                || !s.membershipId().equals(row.membershipId()) || !s.connectionId().equals(row.connectionId())
+                || !s.providerAccountId().equals(row.providerAccountId())
+                || !s.sourceSnapshotId().equals(row.sourceSnapshotId()) || !s.decimal().equals(row.p0())
+                || !s.measuredAt().equals(row.t0()) || !s.sourcePolicyVersion().equals(row.sourcePolicyVersion())
+                || !s.portfolioPolicyVersion().equals(row.portfolioPolicyVersion())) return Optional.empty();
+        return Optional.of(new Terms(row.intentId(),row.portfolioId(),row.snapshotId(),row.membershipId(),
+                row.connectionId(),row.providerAccountId(),row.sourceSnapshotId(),row.p0(),row.t0(),row.endAt(),
+                row.period().name(),row.rate(),row.sourcePolicyVersion(),row.portfolioPolicyVersion(),
+                row.calendarPolicy(),row.calculationPolicy()));
+    }
+
+    private static void requireCallerTransaction() {
+        if (!TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("plan publication commands join the caller's transaction");
+    }
+
+    private static PlanConditionApi.ActivePlan view(PlanConditionRepository.ActivePlan p) {
+        return new PlanConditionApi.ActivePlan(p.planId(),p.status(),p.p0(),p.t0(),p.endAt(),p.period(),p.rate(),
+                p.basisSnapshotId(),p.intentId(),p.createdAt());
     }
 
     private @Nullable String readCanonicalHash(String hash, UUID userId, String sessionId) {

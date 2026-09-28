@@ -222,6 +222,14 @@ class AuthSecurityConfig {
     static final String FIRST_SNAPSHOT_PATH = "/api/snapshots/first";
     static final String PLAN_CONDITIONS_PATH = "/api/plans/conditions";
 
+    /**
+     * 활성 계획의 공식 결과(Story 2.7). 공식 포인터 하나에서 읽은 묶음만 나간다.
+     *
+     * <p>{@link #PLAN_CONDITIONS_PATH}와 같은 {@code /api/plans} 아래지만 접두사를 넓혀 한 판정으로
+     * 묶지 않는다. 경로마다 판정 하나를 두고 인가와 CSRF·{@code Origin} 판정이 그 같은 함수를 본다.
+     */
+    static final String ACTIVE_PLAN_PATH = "/api/plans/active";
+
     /** Bybit 연결 표면의 경로. 이 계층에서 그 경로를 정의하는 상수는 이것 하나다. */
     static final String BYBIT_CONNECTION_PATH = CONNECTIONS_BASE_URI + "/bybit";
 
@@ -1174,7 +1182,8 @@ class AuthSecurityConfig {
          * `/api/connections`도 포함하는데 접두사 문자열은 `/api/connections/`만 덮는다. 두 판정이
          * 갈린 상태 자체가 이 함수가 하나로 유지되는 이유와 부딪힌다.
          */
-        return isConnectionsPath(uri) || isSnapshotPath(uri) || isPlanConditionsPath(uri);
+        return isConnectionsPath(uri) || isSnapshotPath(uri) || isPlanConditionsPath(uri)
+                || isActivePlanPath(uri);
     }
 
     /**
@@ -1190,7 +1199,7 @@ class AuthSecurityConfig {
      */
     static boolean requiresAuthentication(HttpServletRequest request) {
         return isConnectionsPath(request.getRequestURI()) || isSnapshotPath(request.getRequestURI())
-                || isPlanConditionsPath(request.getRequestURI());
+                || isPlanConditionsPath(request.getRequestURI()) || isActivePlanPath(request.getRequestURI());
     }
 
     /**
@@ -1206,6 +1215,10 @@ class AuthSecurityConfig {
 
     private static boolean isPlanConditionsPath(String uri) {
         return uri.equals(PLAN_CONDITIONS_PATH) || uri.startsWith(PLAN_CONDITIONS_PATH + "/");
+    }
+
+    private static boolean isActivePlanPath(String uri) {
+        return uri.equals(ACTIVE_PLAN_PATH) || uri.startsWith(ACTIVE_PLAN_PATH + "/");
     }
 
     private static boolean isConnectionsPath(String uri) {

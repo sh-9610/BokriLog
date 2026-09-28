@@ -9,6 +9,9 @@ import org.jspecify.annotations.Nullable;
 public interface PlanConditionApi {
     String COMMAND = "plan-condition-create";
 
+    /** 활성 계획이 있어 새 조건을 받지 않는다(Story 2.7). 조건 화면·미리보기·확인이 같은 값을 쓴다. */
+    String ACTIVE_PLAN_EXISTS = "ACTIVE_PLAN_EXISTS";
+
     enum Period { DAILY, WEEKLY, MONTHLY }
 
     record Snapshot(String decimal, Instant measuredAt, Instant publishedAt,
@@ -20,18 +23,27 @@ public interface PlanConditionApi {
     /** Validated open intent and its current portfolio/source provenance for sync admission and publish. */
     record CollectionIntent(UUID intentId, UUID portfolioId, UUID connectionId,
             UUID providerAccountId, Instant t0, Instant expiresAt) {}
+    /** The immutable active plan a consumed intent became (Story 2.7). */
+    record ActivePlan(UUID planId, String status, String decimal, Instant t0, Instant endAt,
+            Period period, String targetRate, UUID snapshotId, UUID intentId, Instant createdAt) {}
+    /**
+     * @param activePlan 활성 계획이 있으면 그 요약이다. 그때 {@code eligible}은 거짓이고 이유는
+     *     {@link #ACTIVE_PLAN_EXISTS}다 — 새 조건을 받지 않는다
+     */
     record State(boolean eligible, @Nullable String reason, @Nullable Snapshot snapshot,
-            @Nullable Intent openIntent) {}
+            @Nullable Intent openIntent, @Nullable ActivePlan activePlan) {}
     record PreviewInput(@Nullable String endAtSeoul, @Nullable String period, @Nullable String targetRate) {}
     record Preview(String confirmationRef, Instant expiresAt, Snapshot snapshot,
             Instant endAt, Period period, String targetRate,
             String calendarPolicy, String calculationPolicy) {}
-    record Confirmation(boolean accepted, boolean conflict, @Nullable Intent intent) {}
+    /** @param reason 확인하지 못한 이유. 활성 계획이 있으면 {@link #ACTIVE_PLAN_EXISTS}다 */
+    record Confirmation(boolean accepted, boolean conflict, @Nullable Intent intent, @Nullable String reason) {}
 
     State state(@Nullable UUID userId);
     Optional<Preview> preview(@Nullable UUID userId, @Nullable String sessionId, @Nullable PreviewInput input);
     Confirmation confirm(@Nullable UUID userId, @Nullable String sessionId,
             @Nullable String confirmationRef, @Nullable String idempotencyKey);
     Optional<CollectionIntent> collectionIntent(@Nullable UUID userId, UUID intentId);
+    /** 계획·intent·확인·멱등 데이터를 지운다. 다른 사용자 것은 남는다. 멱등하다. */
     void erasePlanData(@Nullable UUID userId);
 }
