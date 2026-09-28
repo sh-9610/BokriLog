@@ -10,8 +10,10 @@ import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.SyncJobApi;
 import com.bokrilog.source.SourceConnectionApi.CollectionObservation;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
 import org.jspecify.annotations.Nullable;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -21,27 +23,32 @@ import org.springframework.transaction.support.TransactionTemplate;
 /** sync owns each short transaction; no transaction spans a provider call. */
 @Service
 class SyncJobService implements SyncJobApi {
+    private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(SyncJobService.class);
     static final String SYNC_COMMAND="first-snapshot";
     static final String CONNECTION_COMMAND="bybit-connection-create";
     static final String INITIAL_INPUTS_COMMAND="initial-source-event-collection";
     private final SyncJobRepository jobs;
     private final InitialCollectionRepository initialJobs;
     private final CashflowClassificationRepository classifications;
+    private final CashflowConversionRepository conversions;
     private final SourceConnectionApi sources;
     private final PortfolioMembershipApi portfolios;
     private final AccountAccessApi accounts;
     private final OperationalRestrictionApi restrictions;
     private final InitialInputsPlanPort plans;
     private final TransactionTemplate transactions;
+    private final CashflowConversionMarket market;
 
     SyncJobService(SyncJobRepository jobs, InitialCollectionRepository initialJobs,
-            CashflowClassificationRepository classifications, SourceConnectionApi sources,
-            PortfolioMembershipApi portfolios, AccountAccessApi accounts,
+            CashflowClassificationRepository classifications, CashflowConversionRepository conversions,
+            SourceConnectionApi sources, PortfolioMembershipApi portfolios, AccountAccessApi accounts,
             OperationalRestrictionApi restrictions, InitialInputsPlanPort plans, PlatformTransactionManager manager) {
         this.jobs=jobs; this.initialJobs=initialJobs; this.classifications=classifications;
+        this.conversions=conversions;
         this.sources=sources; this.portfolios=portfolios;
         this.accounts=accounts; this.restrictions=restrictions; this.plans=plans;
         this.transactions=new TransactionTemplate(manager);
+        this.market=new CashflowConversionMarket(sources,conversions,this.transactions);
     }
     boolean eligible(UUID userId) {
         return accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)==AccessDecision.ALLOWED
@@ -160,8 +167,36 @@ class SyncJobService implements SyncJobApi {
         return userId==null ? Optional.empty() : jobs.sourceSnapshot(userId,sourceSnapshotId);
     }
     @Override
+    public Optional<ConversionJob> admitCashflowConversion(@Nullable UUID userId, UUID intentId, String key) {
+        if (userId==null||!validCollectionKey(key)) return Optional.empty();
+        return transactions.execute(status->{
+            var intent=plans.eligibleIntent(userId,intentId).orElse(null);
+            if(intent==null||!initialEligible(userId)) return Optional.empty();
+            var connection=sources.snapshotConnection(userId).orElse(null);
+            if(connection==null||!connection.connectionId().equals(intent.connectionId())
+                    ||!connection.providerAccountId().equals(intent.providerAccountId())) return Optional.empty();
+            return conversions.admit(userId,intentId,intent.portfolioId(),intent.connectionId(),
+                    intent.providerAccountId(),key).flatMap(jobId->conversions.view(userId,jobId));
+        });
+    }
+    @Override
+    public ConversionState cashflowConversionState(@Nullable UUID userId, UUID intentId) {
+        if(userId==null||accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)!=AccessDecision.ALLOWED
+                ||!initialEligible(userId)) return new ConversionState(false,null);
+        var intent=plans.eligibleIntent(userId,intentId).orElse(null);
+        var connection=sources.snapshotConnection(userId).orElse(null);
+        if(intent==null||connection==null||!connection.connectionId().equals(intent.connectionId())
+                ||!connection.providerAccountId().equals(intent.providerAccountId())) return new ConversionState(false,null);
+        var classification=conversions.eligibleClassification(userId,intentId,intent.portfolioId(),
+                intent.connectionId(),intent.providerAccountId());
+        if(classification.isEmpty()) return new ConversionState(true,null);
+        return new ConversionState(true,conversions.latestView(userId,intentId,
+                classification.get().classificationId()).orElse(null));
+    }
+    @Override
     public void eraseSyncData(@Nullable UUID userId) {
         if (userId!=null) transactions.executeWithoutResult(status -> {
+            conversions.erase(userId);
             classifications.erase(userId);
             initialJobs.erase(userId);
             jobs.erase(userId);
@@ -220,6 +255,104 @@ class SyncJobService implements SyncJobApi {
                 &&intent.providerAccountId().equals(lease.providerAccountId())
                 &&connection.connectionId().equals(lease.connectionId())
                 &&connection.providerAccountId().equals(lease.providerAccountId());
+    }
+    /*
+     * Story 2.6 conversion attempt. Eligibility is re-read at claim, before the first provider
+     * call and inside the publishing transaction; provider calls run between short transactions.
+     */
+    Optional<CashflowConversionRepository.Lease> claimConversion() {
+        return transactions.execute(status->conversions.claim().flatMap(lease->{
+            if(!conversionStillPermitted(lease)) {
+                conversions.finish(lease,"CANCELLED","NOT_PERMITTED",false);
+                return Optional.empty();
+            }
+            return Optional.of(lease);
+        }));
+    }
+    boolean heartbeatConversion(CashflowConversionRepository.Lease lease) {
+        return transactions.execute(status->conversions.heartbeat(lease)==1);
+    }
+    /**
+     * Runs one attempt. {@code alive} is the worker's local lease guard; losing it (or the lease
+     * row) stops the attempt before the next provider call and nothing is published.
+     */
+    void runConversion(CashflowConversionRepository.Lease lease, BooleanSupplier alive) {
+        try {
+            if(!alive.getAsBoolean()) return;
+            List<CashflowConversionRepository.Input> inputs=transactions.execute(status->{
+                if(!conversions.lockOwned(lease)) return null;
+                if(!conversionStillPermitted(lease)) {
+                    conversions.finish(lease,"CANCELLED","NOT_PERMITTED",false);
+                    return null;
+                }
+                return conversions.storedInputs(lease);
+            });
+            if(inputs==null) return;
+            List<PriceConversionPolicy.FlowInput> flows=inputs.stream().map(CashflowConversionRepository.Input::flow).toList();
+            BooleanSupplier active=()->alive.getAsBoolean()
+                    &&Boolean.TRUE.equals(transactions.execute(status->conversions.owns(lease)));
+            PriceConversionPolicy.Reference reference=null;
+            if(flows.stream().anyMatch(PriceConversionPolicy::needsMarket)) {
+                reference=lease.referenceTime()!=null ? new PriceConversionPolicy.Reference.Fixed(lease.referenceTime())
+                        : fixReference(lease,active);
+                if(reference==null) return;
+            }
+            List<PriceConversionPolicy.FlowOutcome> outcomes=market.convert(flows,reference,active);
+            if(outcomes==null) return;
+            publishConversion(lease,inputs,outcomes,
+                    reference instanceof PriceConversionPolicy.Reference.Fixed fixed ? fixed.at() : null);
+        } catch (RuntimeException failure) {
+            /*
+             * The class name only. A message or cause can carry SQL, provider text or values, and none
+             * of that belongs in a log; the job id is enough to find the attempt.
+             */
+            LOG.warn("cash-flow conversion interrupted: job={} failure={}",lease.jobId(),failure.getClass().getName());
+            transactions.executeWithoutResult(status->{
+                if(conversions.lockOwned(lease))
+                    conversions.finish(lease,"CONVERSION_REQUIRED","CONVERSION_INTERRUPTED",true);
+            });
+        }
+    }
+    /** Fixes the attempt's Bybit reference time once; a failed read becomes a per-flow outcome. */
+    private PriceConversionPolicy.@Nullable Reference fixReference(CashflowConversionRepository.Lease lease,
+            BooleanSupplier active) {
+        if(!active.getAsBoolean()) return null;
+        var time=sources.marketTime();
+        if(time instanceof SourceConnectionApi.MarketTimeResult.Rejected rejected)
+            return new PriceConversionPolicy.Reference.Failed(
+                    rejected.reason()==com.bokrilog.source.SourceRejectionReason.RESPONSE_FORMAT);
+        Instant at=((SourceConnectionApi.MarketTimeResult.Observed)time).serverTime();
+        boolean fixed=Boolean.TRUE.equals(transactions.execute(status->
+                conversions.lockOwned(lease)&&conversions.fixReference(lease,at)));
+        return fixed ? new PriceConversionPolicy.Reference.Fixed(at) : null;
+    }
+    private void publishConversion(CashflowConversionRepository.Lease lease,List<CashflowConversionRepository.Input> inputs,
+            List<PriceConversionPolicy.FlowOutcome> outcomes,@Nullable Instant reference) {
+        try {
+            transactions.executeWithoutResult(status->{
+                if(!conversions.lockOwned(lease)) return;
+                if(!conversionStillPermitted(lease)) {
+                    conversions.finish(lease,"CANCELLED","NOT_PERMITTED",false);
+                    return;
+                }
+                conversions.publish(lease,inputs,outcomes,reference,()->conversionStillPermitted(lease));
+            });
+        } catch (CashflowConversionRepository.PublicationBlocked blocked) {
+            transactions.executeWithoutResult(status->{
+                if(conversions.lockOwned(lease)) conversions.finish(lease,"CANCELLED","NOT_PERMITTED",false);
+            });
+        }
+    }
+    private boolean conversionStillPermitted(CashflowConversionRepository.Lease lease) {
+        var intent=plans.eligibleIntent(lease.userId(),lease.intentId()).orElse(null);
+        var connection=sources.snapshotConnection(lease.userId()).orElse(null);
+        return initialEligible(lease.userId())&&intent!=null&&connection!=null
+                &&intent.portfolioId().equals(lease.portfolioId())
+                &&intent.connectionId().equals(lease.connectionId())
+                &&intent.providerAccountId().equals(lease.providerAccountId())
+                &&connection.connectionId().equals(lease.connectionId())
+                &&connection.providerAccountId().equals(lease.providerAccountId())
+                &&conversions.inputsStillValid(lease);
     }
     Optional<InitialCollectionRepository.Lease> claimInitial() {
         return transactions.execute(status -> initialJobs.claim().flatMap(lease -> {

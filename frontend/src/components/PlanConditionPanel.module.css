@@ -83,6 +83,11 @@
   gap: var(--space-4);
 }
 
+.savedStatus {
+  display: grid;
+  gap: var(--space-4);
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

@@ -333,9 +333,16 @@ export function PlanConditionPanel({
       </dl>
 
       {saved !== null && preview === null ? (
-        <div className={styles.saved} role="status">
-          <h3>{copy.saved}</h3>
-          <p>{copy.savedHelp}</p>
+        <div className={styles.saved}>
+          {/*
+           * Only the confirmation is a live region. The collection, classification and conversion
+           * sections below announce their own state; nesting them in this region would read each
+           * change twice.
+           */}
+          <div className={styles.savedStatus} role="status">
+            <h3>{copy.saved}</h3>
+            <p>{copy.savedHelp}</p>
+          </div>
           {error !== null ? (
             <p className={styles.error} role="alert">
               {error}

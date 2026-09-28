@@ -130,6 +130,21 @@ class SourceConnectionService implements SourceConnectionApi {
     }
 
     @Override
+    public MarketTimeResult marketTime() {
+        return this.bybit.marketTime();
+    }
+
+    @Override
+    public InstrumentResult spotInstrument(String symbol) {
+        return this.bybit.spotInstrument(symbol);
+    }
+
+    @Override
+    public CandleResult spotMinuteCandles(String symbol, Instant start, Instant end) {
+        return this.bybit.spotMinuteCandles(symbol, start, end);
+    }
+
+    @Override
     public SourceVerification verify(SourceProvider provider, SourceCredentials credentials) {
         if (provider != SourceProvider.BYBIT) {
             // 닫힌 enum이라 여기 오지 않는다. 값이 늘어나는 날 조용히 Bybit로 흐르지 않게 한다.

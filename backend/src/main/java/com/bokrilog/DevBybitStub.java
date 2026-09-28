@@ -41,6 +41,103 @@ final class DevBybitStub {
 
     static final String TRANSACTION_LOG_PATH = "/v5/account/transaction-log";
 
+    /** 공개 spot 상품 정보(Story 2.6). 서명 없이 답한다. */
+    static final String INSTRUMENTS_INFO_PATH = "/v5/market/instruments-info";
+
+    /** 공개 spot 1분봉(Story 2.6). 서명 없이 답한다. */
+    static final String KLINE_PATH = "/v5/market/kline";
+
+    /**
+     * 공개 시세 fixture. <b>symbol이 고른다.</b>
+     *
+     * <p>API Key가 시나리오를 고르는 것과 같은 결정성이다 — 공개 호출에는 키가 없으므로 선택자가
+     * symbol이다. 목록에 없는 symbol은 상품 정보가 빈 목록이고 kline은 제공자 오류다. 모든 candle의
+     * 시가·고가·저가·종가는 같은 값이며 거래량은 {@code 1}이다. 진행 중인 현재 분 candle도 답에
+     * 포함한다 — 실제 제공자처럼 미종료 candle이 섞여 오고, 그것을 버리는 것은 호출자의 몫이다.
+     */
+    enum MarketFixture {
+
+        /** 직접 경로 {@code ASSETUSDT}. 모든 분에 candle이 있다. */
+        DIRECT("BTCUSDT", "BTC", "USDT", "Trading", "65000.25"),
+
+        /** 교차 경로의 첫 leg. {@code ETHUSDT}는 목록에 없으므로 {@code ETHUSDC × USDCUSDT}로 간다. */
+        CROSS_BASE("ETHUSDC", "ETH", "USDC", "Trading", "3000.1"),
+
+        /** 교차 경로의 둘째 leg이자 {@code USDC} 자산의 경로. 1 USD로 고정하지 않는다. */
+        CROSS_QUOTE("USDCUSDT", "USDC", "USDT", "Trading", "0.9998"),
+
+        /** candle 공백. epoch 분이 10의 배수인 candle만 있다. */
+        GAP("GAPUSDT", "GAP", "USDT", "Trading", "2.5"),
+
+        /** 거래 중인 상품이지만 이력이 없다. 거래 가능 심볼만으로 과거 가격을 가정하지 않는다. */
+        NO_HISTORY("NEWUSDT", "NEW", "USDT", "Trading", null),
+
+        /** 상장돼 있지만 {@code Trading}이 아니다. */
+        NOT_TRADING("HALTUSDT", "HALT", "USDT", "Closed", "1"),
+
+        /** 같은 candle이 서로 다른 종가로 두 번 온다. */
+        CONFLICT("DUPUSDT", "DUP", "USDT", "Trading", "4"),
+
+        /** 첫 행이 여섯 칸이다. 모양을 알 수 없는 응답이다. */
+        MALFORMED("BADUSDT", "BAD", "USDT", "Trading", "5"),
+
+        /** kline이 503이다. */
+        OUTAGE("DOWNUSDT", "DOWN", "USDT", "Trading", "6"),
+
+        /** 종가가 0이다. */
+        NON_POSITIVE("ZEROUSDT", "ZERO", "USDT", "Trading", "0"),
+
+        /** kline이 2초 뒤에 답한다. 삭제·제한 경쟁을 재현한다. */
+        SLOW("SLOWUSDT", "SLOW", "USDT", "Trading", "1.5"),
+
+        /** 종가가 {@code 1E-24}다. 작은 수량과 곱하면 표현 범위 아래로 내려간다. */
+        TINY("TINYUSDT", "TINY", "USDT", "Trading", "0.000000000000000000000001"),
+
+        /**
+         * 같은 candle이 두 번 오되 거래량만 다르다. 가격(종가)이 같으므로 모순도 새 revision도 아니다.
+         * 모든 분에 candle이 있다.
+         */
+        VOLUME_ONLY("VOLUSDT", "VOL", "USDT", "Trading", "7"),
+
+        /** 상품 정보가 503이다. 재시도 가능한 제공자 장애다. */
+        INSTRUMENT_OUTAGE("IDOWNUSDT", "IDOWN", "USDT", "Trading", "1"),
+
+        /** 같은 symbol이 서로 다른 상태로 두 번 나열된다. 모순된 답이다. */
+        INSTRUMENT_DUPLICATE("IDUPUSDT", "IDUP", "USDT", "Trading", "1"),
+
+        /** 목록이 비어 있지 않은데 요청한 symbol이 없다. 알 수 없는 답이지 "미상장"이 아니다. */
+        INSTRUMENT_FOREIGN("IFORUSDT", "IFOR", "USDT", "Trading", "1");
+
+        private final String symbol;
+        private final String base;
+        private final String quote;
+        private final String status;
+        private final @Nullable String close;
+
+        MarketFixture(String symbol, String base, String quote, String status, @Nullable String close) {
+            this.symbol = symbol;
+            this.base = base;
+            this.quote = quote;
+            this.status = status;
+            this.close = close;
+        }
+
+        String symbol() {
+            return this.symbol;
+        }
+
+        static @Nullable MarketFixture of(@Nullable String symbol) {
+            for (MarketFixture fixture : values()) {
+                if (fixture.symbol.equals(symbol)) {
+                    return fixture;
+                }
+            }
+            return null;
+        }
+    }
+
+    private static final long MINUTE_MILLIS = 60_000L;
+
     /** 시나리오와 UID를 가르는 문자. */
     private static final char KEY_SEPARATOR = '.';
 
@@ -160,7 +257,13 @@ final class DevBybitStub {
         BAD_MEASURED_TIME("badtime"),
 
         /** 제공자가 자격정보를 거절한다. */
-        AUTH_FAILURE("authfail");
+        AUTH_FAILURE("authfail"),
+
+        /**
+         * 비-USDT 외부 자금흐름을 내는 수집(Story 2.6 e2e). {@code BTC} 입금은 추정 환산되고
+         * {@code HALT} 출금은 상장돼 있지만 거래 중이 아니어서 환산 보류로 남는다.
+         */
+        MARKET_FLOWS("marketflows");
 
         private final String token;
 
@@ -195,6 +298,19 @@ final class DevBybitStub {
     private final AtomicInteger conflictTransferInReads = new AtomicInteger();
     private final AtomicLong lastWalletEnvelopeTime = new AtomicLong();
 
+    /**
+     * 서버 시간 응답의 모양. 서버 시간에는 키도 symbol도 없어 선택자가 없으므로 시험 표면이 이 값을
+     * 바꾼다({@code BybitStubConfiguration}). 개발 스택은 바꾸지 않으며 기본값은 정상 응답이다.
+     */
+    enum ServerTimeMode { NORMAL, TIMEOUT, OUTAGE, MALFORMED }
+
+    private final java.util.concurrent.atomic.AtomicReference<ServerTimeMode> serverTimeMode =
+            new java.util.concurrent.atomic.AtomicReference<>(ServerTimeMode.NORMAL);
+
+    void serverTimeMode(ServerTimeMode mode) {
+        this.serverTimeMode.set(mode);
+    }
+
     DevBybitStub(String reservedIp) {
         this.reservedIp = reservedIp;
     }
@@ -213,8 +329,31 @@ final class DevBybitStub {
      */
     Response handle(String path, Map<String, String> headers, Map<String, String> query) {
         if (SERVER_TIME_PATH.equals(path)) {
+            switch (this.serverTimeMode.get()) {
+                case TIMEOUT -> {
+                    try {
+                        Thread.sleep(3500);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                case OUTAGE -> {
+                    return new Response(503, JSON, "{\"retCode\":10016,\"retMsg\":\"\"}");
+                }
+                case MALFORMED -> {
+                    return ok("{\"timeSecond\":\"soon\",\"timeNano\":\"not-a-time\"}");
+                }
+                case NORMAL -> { }
+            }
             long millis=System.currentTimeMillis();
             return ok("{\"timeSecond\":\""+(millis/1000)+"\",\"timeNano\":\""+(millis*1_000_000L)+"\"}");
+        }
+        // 공개 시세는 키 검사 앞에서 답한다. 실제 제공자도 이 두 경로에 서명을 요구하지 않는다.
+        if (INSTRUMENTS_INFO_PATH.equals(path)) {
+            return instruments(query);
+        }
+        if (KLINE_PATH.equals(path)) {
+            return kline(query);
         }
         String apiKey = header(headers, "X-BAPI-API-KEY");
         if (apiKey == null
@@ -287,6 +426,14 @@ final class DevBybitStub {
             }
             return ok("{\"list\":"+items+"],\"nextPageCursor\":\"\"}");
         }
+        if (scenario==Scenario.MARKET_FLOWS) {
+            long start=Long.parseLong(query.get("startTime"));
+            return "TRANSFER_IN".equals(type)
+                    ? ok("{\"list\":[{\"id\":\"market-btc-in\",\"type\":\"TRANSFER_IN\",\"currency\":\"BTC\","
+                            +"\"cashFlow\":\"0.01\",\"transactionTime\":\""+(start+1)+"\"}],\"nextPageCursor\":\"\"}")
+                    : ok("{\"list\":[{\"id\":\"market-halt-out\",\"type\":\"TRANSFER_OUT\",\"currency\":\"HALT\","
+                            +"\"cashFlow\":\"-2.5\",\"transactionTime\":\""+(start+2)+"\"}],\"nextPageCursor\":\"\"}");
+        }
         if (scenario==Scenario.ID_CONFLICT&&"TRANSFER_IN".equals(type)) {
             int read=conflictTransferInReads.incrementAndGet();
             String flow=read==1?"1.000":"2.000";
@@ -306,7 +453,114 @@ final class DevBybitStub {
                 +eventAt+"\"}],\"nextPageCursor\":\"\"}");
     }
 
-    void resetScenarioState() { conflictTransferInReads.set(0); }
+    /** spot 상품 정보. symbol을 응답에 되돌려 싣지 않는다 — fixture의 값만 나간다. */
+    private static Response instruments(Map<String, String> query) {
+        if (!"spot".equals(query.get("category"))) {
+            return error(10001);
+        }
+        MarketFixture fixture = MarketFixture.of(query.get("symbol"));
+        if (fixture == MarketFixture.INSTRUMENT_OUTAGE) {
+            return new Response(503, JSON, "{\"retCode\":10016,\"retMsg\":\"\"}");
+        }
+        String list;
+        if (fixture == null) {
+            list = "[]";
+        } else if (fixture == MarketFixture.INSTRUMENT_DUPLICATE) {
+            list = "[" + instrument(fixture.symbol, fixture, "Trading") + ","
+                    + instrument(fixture.symbol, fixture, "Closed") + "]";
+        } else if (fixture == MarketFixture.INSTRUMENT_FOREIGN) {
+            list = "[" + instrument(fixture.base + "USDC", fixture, "Trading") + "]";
+        } else {
+            list = "[" + instrument(fixture.symbol, fixture, fixture.status) + "]";
+        }
+        return ok("{\"category\":\"spot\",\"list\":" + list + "}");
+    }
+
+    private static String instrument(String symbol, MarketFixture fixture, String status) {
+        return "{\"symbol\":\"" + symbol + "\",\"baseCoin\":\"" + fixture.base + "\",\"quoteCoin\":\""
+                + fixture.quote + "\",\"innovation\":\"0\",\"status\":\"" + status + "\"}";
+    }
+
+    /** 한 번의 kline 요청이 받을 수 있는 최대 candle 수. 실제 제공자의 상한과 같다. */
+    private static final int MAX_KLINE_LIMIT = 1000;
+
+    /**
+     * spot 1분봉. 최신 candle이 앞에 온다(실제 제공자의 정렬).
+     *
+     * <p>현재 시각보다 뒤의 분은 없고, 진행 중인 현재 분은 있다. 개발·CI 스택에서 이 경로는
+     * 인증 없이 열려 있으므로 요청 크기를 닫는다 — {@code limit}은 1~1000, {@code start <= end},
+     * 그리고 창 전체가 {@code limit} 안에 들어야 한다. 밖이면 오류 envelope이다. 중복 행을 싣는
+     * fixture도 그 상한을 넘지 않는다.
+     */
+    private static Response kline(Map<String, String> query) {
+        MarketFixture fixture = MarketFixture.of(query.get("symbol"));
+        if (!"spot".equals(query.get("category")) || !"1".equals(query.get("interval")) || fixture == null) {
+            return error(10001);
+        }
+        long start;
+        long end;
+        int limit;
+        try {
+            start = Long.parseLong(query.get("start"));
+            end = Long.parseLong(query.get("end"));
+            limit = Integer.parseInt(query.getOrDefault("limit", "200"));
+        } catch (RuntimeException invalid) {
+            return error(10001);
+        }
+        if (limit < 1 || limit > MAX_KLINE_LIMIT || start < 0 || start > end
+                || Math.floorDiv(end, MINUTE_MILLIS) - Math.floorDiv(start + MINUTE_MILLIS - 1, MINUTE_MILLIS) + 1 > limit) {
+            return error(10001);
+        }
+        if (fixture == MarketFixture.OUTAGE) {
+            return new Response(503, JSON, "{\"retCode\":10016,\"retMsg\":\"\"}");
+        }
+        if (fixture == MarketFixture.SLOW) {
+            try {
+                Thread.sleep(2000);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return error(10016);
+            }
+        }
+        long current = Math.floorDiv(System.currentTimeMillis(), MINUTE_MILLIS) * MINUTE_MILLIS;
+        long first = Math.floorDiv(start + MINUTE_MILLIS - 1, MINUTE_MILLIS) * MINUTE_MILLIS;
+        StringBuilder rows = new StringBuilder("[");
+        int count = 0;
+        for (long at = Math.min(Math.floorDiv(end, MINUTE_MILLIS) * MINUTE_MILLIS, current);
+                at >= first && count < limit && fixture.close != null;
+                at -= MINUTE_MILLIS) {
+            if (fixture == MarketFixture.GAP && Math.floorDiv(at, MINUTE_MILLIS) % 10 != 0) {
+                continue;
+            }
+            if (count > 0) {
+                rows.append(',');
+            }
+            if (fixture == MarketFixture.MALFORMED && count == 0) {
+                rows.append("[\"").append(at).append("\",\"5\",\"5\",\"5\",\"5\",\"1\"]");
+            } else {
+                rows.append(candle(at, fixture.close, "1"));
+            }
+            count++;
+            // The duplicate row counts toward the cap like any other row.
+            if ((fixture == MarketFixture.CONFLICT || fixture == MarketFixture.VOLUME_ONLY) && count < limit) {
+                rows.append(',').append(fixture == MarketFixture.CONFLICT
+                        ? candle(at, "4.1", "1") : candle(at, fixture.close, "2"));
+                count++;
+            }
+        }
+        rows.append(']');
+        return ok("{\"symbol\":\"" + fixture.symbol + "\",\"category\":\"spot\",\"list\":" + rows + "}");
+    }
+
+    private static String candle(long startMillis, String close, String volume) {
+        return "[\"" + startMillis + "\",\"" + close + "\",\"" + close + "\",\"" + close + "\",\"" + close
+                + "\",\"" + volume + "\",\"" + close + "\"]";
+    }
+
+    void resetScenarioState() {
+        conflictTransferInReads.set(0);
+        serverTimeMode.set(ServerTimeMode.NORMAL);
+    }
     long lastWalletEnvelopeTime() { return lastWalletEnvelopeTime.get(); }
 
     private Response queryApi(Scenario scenario, String uid) {

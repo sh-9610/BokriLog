@@ -100,7 +100,9 @@ class DevBybitStubConfig {
                         DevBybitStub.ACCOUNT_INFO_PATH,
                         DevBybitStub.WALLET_BALANCE_PATH,
                         DevBybitStub.SERVER_TIME_PATH,
-                        DevBybitStub.TRANSACTION_LOG_PATH)) {
+                        DevBybitStub.TRANSACTION_LOG_PATH,
+                        DevBybitStub.INSTRUMENTS_INFO_PATH,
+                        DevBybitStub.KLINE_PATH)) {
             routes.GET(BASE_PATH + path, request -> respond(stub, path, request));
         }
         return routes.build();

@@ -13,6 +13,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.test.context.DynamicPropertyRegistry;
 
@@ -96,13 +97,31 @@ final class BybitStubConfiguration {
         return Front.REQUESTS.get();
     }
 
+    /** 그 경로로 받은 요청 수. 공개 시세 호출 수를 경로별로 단정하는 창이다(Story 2.6). */
+    static int requestCount(String path) {
+        return Front.PATH_REQUESTS.entrySet().stream()
+                .filter(entry -> entry.getKey().equals(path) || entry.getKey().startsWith(path + "?"))
+                .mapToInt(entry -> entry.getValue().get())
+                .sum();
+    }
+
+    /** 그 경로·symbol로 받은 요청 수. symbol별 병합 구간을 요청 수로 단정한다. */
+    static int requestCount(String path, String symbol) {
+        AtomicInteger count = Front.PATH_REQUESTS.get(path + "?" + symbol);
+        return count == null ? 0 : count.get();
+    }
+
     /** 계수기를 0으로 되돌린다. 시험 하나가 세는 구간을 자기가 정한다. */
     static void resetRequestCount() {
         Front.REQUESTS.set(0);
+        Front.PATH_REQUESTS.clear();
         Front.STUB.resetScenarioState();
     }
 
     static long lastWalletEnvelopeTime() { return Front.STUB.lastWalletEnvelopeTime(); }
+
+    /** 서버 시간 응답의 모양을 바꾼다. {@link #resetRequestCount}가 정상으로 되돌린다. */
+    static void serverTimeMode(DevBybitStub.ServerTimeMode mode) { Front.STUB.serverTimeMode(mode); }
 
     private static String newKey() {
         return Base64.getEncoder().encodeToString(randomBytes(32));
@@ -119,6 +138,10 @@ final class BybitStubConfiguration {
 
         /** 스텁이 받은 요청 수. 시험이 "외부 호출 0건"을 관측하는 값이다. */
         static final AtomicInteger REQUESTS = new AtomicInteger();
+
+        /** 경로(와 symbol 파라미터)별 요청 수. 키는 {@code 경로} 또는 {@code 경로?symbol}이다. */
+        static final Map<String, AtomicInteger> PATH_REQUESTS = new ConcurrentHashMap<>();
+
         static final DevBybitStub STUB = new DevBybitStub(RESERVED_IP);
 
         private final String origin;
@@ -142,7 +165,9 @@ final class BybitStubConfiguration {
                                 DevBybitStub.ACCOUNT_INFO_PATH,
                                 DevBybitStub.WALLET_BALANCE_PATH,
                                 DevBybitStub.SERVER_TIME_PATH,
-                                DevBybitStub.TRANSACTION_LOG_PATH)) {
+                                DevBybitStub.TRANSACTION_LOG_PATH,
+                                DevBybitStub.INSTRUMENTS_INFO_PATH,
+                                DevBybitStub.KLINE_PATH)) {
                     server.createContext(path, exchange -> handle(STUB, path, exchange));
                 }
                 server.setExecutor(null);
@@ -165,8 +190,11 @@ final class BybitStubConfiguration {
                                     headers.put(name, values.get(0));
                                 }
                             });
-            DevBybitStub.Response response =
-                    stub.handle(path, headers, query(exchange.getRequestURI().getRawQuery()));
+            Map<String, String> parameters = query(exchange.getRequestURI().getRawQuery());
+            String symbol = parameters.get("symbol");
+            PATH_REQUESTS.computeIfAbsent(symbol == null ? path : path + "?" + symbol,
+                    ignored -> new AtomicInteger()).incrementAndGet();
+            DevBybitStub.Response response = stub.handle(path, headers, parameters);
             byte[] bytes = response.body().getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", response.contentType());
             exchange.sendResponseHeaders(response.status(), bytes.length);
