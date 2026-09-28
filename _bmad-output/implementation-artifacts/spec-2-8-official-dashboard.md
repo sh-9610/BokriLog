@@ -252,6 +252,11 @@ context:
 - 로딩 skeleton은 만들지 않았다(확인 중에는 제목과 `aria-busy`만). 200%·400% 확대는 해당 CSS 폭으로 검증한다. `UNUSABLE` 생산자는 없다(카피와 Vitest만).
 - 부정합 시험 하나는 replica 역할 세션으로 외래키를 우회해 계산 없는 포인터·다른 계획의 계산을 만든다. Testcontainers 사용자가 superuser라는 사실에 기댄다. 실패 주입 시험은 요청 하나 동안 포인터 테이블 이름을 바꾼다.
 
+**CI에서 드러난 기존 경합 (PR #45 첫 실행, frozen 블록 밖):**
+- `same-origin-integration`이 Story 1.11의 해제 대화상자 e2e에서 실패했다. 이 스토리의 변경과 무관하게, 취소가 응답을 기다리지 않아 바로 다시 연 준비가 서버에서 취소와 겹쳤다. 늦게 끝난 취소가 새 무장과 허가를 지워 최종 확인이 403이 됐다(trace: 취소 182ms, 두 번째 준비는 59ms 뒤 출발).
+- 재실행으로 덮지 않고 `useUnlinking`이 진행 중인 취소가 끝난 뒤에 다음 준비를 보내게 했다. 기다릴 취소가 없으면 전처럼 즉시 보낸다. 회귀 시험은 `SettingsScreen.test.tsx`에 있고 수정을 되돌리면 실패한다. 로컬 스택 병렬 60회에서 확인 거절은 0건이었다.
+- 다른 탭 사이의 같은 경합(서버 쪽 참조 단위 무효화)과 부하 아래 간헐 Vitest 1건은 `deferred-work.md`로 미뤘다.
+
 **실행 결과 (리뷰 patch 반영 후):**
 - 백엔드 `build`(`--no-parallel --max-workers=1`) 통과: 49개 시험 클래스, 722 tests, 실패·skip 0. 그중 `FirstSnapshotTest` 104, `DashboardTrustTest` 30, `PlanPublicationServiceTest` 13, `ModuleBoundaryTest` 20.
 - 프런트엔드 (Node 24): `typecheck`·`lint`·`lint:css`·`format:check`·`build` 통과, Vitest 17개 파일 415/415.

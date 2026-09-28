@@ -254,3 +254,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-8-official-dashboard.md`
   summary: 계획이 없는 랜딩 화면(`NO_PLAN`·`PREPARING`)에서 화면의 `role=status`와 `FirstSnapshotPanel`의 `aria-live` 영역이 함께 있어 화면당 live region이 둘이다.
   evidence: `FirstSnapshotPanel.tsx`의 `aria-live="polite"` 영역은 Story 2.2부터 있었다. 이 스토리는 `READY`에서 그 패널을 숨겨 대시보드 상태의 단일 live region을 맞췄지만, 온보딩 흐름의 알림을 화면 status 하나로 합치는 일은 첫 공식값 패널의 상태 문장 전체를 옮기는 별도 변경이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-8-official-dashboard.md`
+  summary: 로그인 수단 해제의 취소가 서버에서 다음 준비와 겹치면, 늦게 끝난 취소가 새 무장(세션 속성)과 새 허가(`(user, command, target)` 무효화)를 지워 그 최종 확인이 403으로 끝난다. 같은 탭은 이 스토리가 막았고 다른 탭 사이는 여전히 열려 있다.
+  evidence: PR #45의 CI `same-origin-integration`이 `auth-entry.spec.ts`의 해제 대화상자 시험에서 잡았다. trace상 취소 182ms가 두 번째 준비(취소 시작 59ms 뒤 출발)와 겹쳤고 확인이 403이었다. `UnlinkService.abandon`은 허가를 참조가 아니라 `(user, command, target)`으로 무효화하고 세션 속성 제거는 요청 끝에 저장되므로, 서버 쪽 해소는 참조 단위 무효화와 무장 세대 비교를 함께 정해야 한다(Story 1.11 경로, `LinkService.abandon`도 같은 모양).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-8-official-dashboard.md`
+  summary: `InitialInputsCollection.test.tsx`의 "stops following an attempt once its state read is refused (403)"가 Vitest 전체 실행 부하 아래에서 간헐적으로 실패한다.
+  evidence: Story 2.8 검증 중 전체 실행 한 번에서 실패했고 그 파일 단독 5회·전체 2회는 모두 통과했다. Story 2.7이 더한 시험이며 이미 기록된 `OnboardingScreen.test.tsx`의 부하 아래 간헐 실패와 같은 종류다.

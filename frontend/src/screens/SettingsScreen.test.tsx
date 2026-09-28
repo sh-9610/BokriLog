@@ -462,6 +462,51 @@ describe('SettingsScreen', () => {
     expect(screen.getAllByText(authContent.settings.linked)).toHaveLength(2)
   })
 
+  it('해제: 취소가 서버에 닿기 전에 다시 열면 다음 준비는 그 취소가 끝난 뒤에 나간다', async () => {
+    stubSessionRequest(() => authenticated())
+    stubLinkStatusRequest(() => linkedWith('google', 'naver'))
+    stubConnectionStatusRequest(notConnected)
+    stubUnlinkPrepareRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
+    let finishCancel: (response: Response) => void = () => undefined
+    stubUnlinkCancelRequest(
+      'naver',
+      () =>
+        new Promise<Response>((resolve) => {
+          finishCancel = resolve
+        }),
+    )
+    const posts = (): string[] =>
+      getObservedAllowedRequests().filter((entry) => entry.startsWith('POST'))
+
+    render(<SettingsScreen />)
+    await screen.findAllByText(authContent.settings.linked)
+    const unlink = screen.getByRole('button', { name: authContent.settings.unlinkLabels.naver })
+    fireEvent.click(unlink)
+    await screen.findByRole('dialog')
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkDialog.cancel }))
+    await screen.findByText(authContent.notices.unlinkCancelled)
+    await waitFor(() => {
+      expect(posts()).toEqual([`POST ${unlinkPath('naver')}`, `POST ${unlinkCancelPath('naver')}`])
+    })
+
+    /*
+     * 겹치면 늦게 끝난 취소가 두 번째 준비의 무장과 허가를 지워 그 최종 확인이 거부로 끝난다(CI가
+     * 느린 러너에서 잡은 경합). 취소가 끝나기 전에는 두 번째 준비가 나가지 않는다.
+     */
+    fireEvent.click(unlink)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(posts()).toHaveLength(2)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    finishCancel(new Response(null, { status: 204 }))
+    await screen.findByRole('dialog')
+    expect(posts()).toEqual([
+      `POST ${unlinkPath('naver')}`,
+      `POST ${unlinkCancelPath('naver')}`,
+      `POST ${unlinkPath('naver')}`,
+    ])
+  })
+
   it('해제: 대화상자가 열려 있는 동안 배경 조작이 막힌다', async () => {
     stubSessionRequest(() => authenticated())
     stubLinkStatusRequest(() => linkedWith('google', 'naver'))
