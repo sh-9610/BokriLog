@@ -17,6 +17,7 @@ class FirstSnapshotWorker {
     private final SourceConnectionApi sources;
     private final Map<java.util.UUID,SyncJobRepository.Lease> inFlight=new ConcurrentHashMap<>();
     private final Map<java.util.UUID,InitialCollectionRepository.Lease> initialInFlight=new ConcurrentHashMap<>();
+    private final Map<java.util.UUID,CashflowConversionRepository.Lease> conversionInFlight=new ConcurrentHashMap<>();
     FirstSnapshotWorker(SyncJobService service,SourceConnectionApi sources) {
         this.service=service; this.sources=sources;
     }
@@ -27,14 +28,41 @@ class FirstSnapshotWorker {
             Thread.ofVirtual().name("first-snapshot-"+lease.jobId()).start(() -> run(lease));
         });
     }
+    /**
+     * Renews every in-flight lease. Each renewal is isolated: one that throws (a database hiccup, a
+     * row gone mid-renewal) must not skip the renewals after it, or healthy attempts of another kind
+     * would lose their lease for a failure that was not theirs. A lease whose renewal threw is kept —
+     * the next tick tries again, and the lease expiry stays the authority.
+     */
     @Scheduled(fixedDelay=5000)
     void heartbeat() {
-        for (var lease: inFlight.values()) {
-            if (!service.heartbeat(lease)) inFlight.remove(lease.jobId(),lease);
+        renew(inFlight,service::heartbeat,SyncJobRepository.Lease::jobId);
+        renew(initialInFlight,service::heartbeatInitial,InitialCollectionRepository.Lease::jobId);
+        renew(conversionInFlight,service::heartbeatConversion,CashflowConversionRepository.Lease::jobId);
+    }
+    static <L> void renew(Map<java.util.UUID,L> leases,java.util.function.Predicate<L> renewal,
+            java.util.function.Function<L,java.util.UUID> id) {
+        for (L lease: leases.values()) {
+            try {
+                if (!renewal.test(lease)) leases.remove(id.apply(lease),lease);
+            } catch (RuntimeException failure) {
+                // Isolated on purpose; see heartbeat(). Nothing about the failure is logged here.
+            }
         }
-        for (var lease: initialInFlight.values()) {
-            if (!service.heartbeatInitial(lease)) initialInFlight.remove(lease.jobId(),lease);
-        }
+    }
+    /** One conversion claim per tick. Provider calls run on the virtual thread without a transaction. */
+    @Scheduled(fixedDelay=1000)
+    void dispatchCashflowConversion() {
+        service.claimConversion().ifPresent(lease->{
+            conversionInFlight.put(lease.jobId(),lease);
+            Thread.ofVirtual().name("cashflow-conversion-"+lease.jobId()).start(()->{
+                try {
+                    service.runConversion(lease,()->lease.equals(conversionInFlight.get(lease.jobId())));
+                } finally {
+                    conversionInFlight.remove(lease.jobId(),lease);
+                }
+            });
+        });
     }
     @Scheduled(fixedDelay=1000)
     void dispatchInitialInputs() {

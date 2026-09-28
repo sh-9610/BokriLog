@@ -60,6 +60,56 @@ public interface SourceConnectionApi {
     CollectionResult collectInitialInputs(UUID userId, UUID connectionId, Instant t0,
             @Nullable Instant fixedTc, Consumer<Instant> scopeConsumer, Consumer<CollectionPage> pageConsumer);
 
+    /*
+     * Public market facts (Story 2.6).
+     *
+     * These three reads carry no user identifier, no credential and no signature. They are
+     * provider-neutral: the caller sees a symbol, two asset codes, a status word, minute candles and
+     * a content hash, never a provider payload or `retMsg`. Each call is sent once — no automatic
+     * retry — and a transport or schema failure is a closed rejection reason. The caller performs
+     * them outside any database transaction.
+     */
+
+    /** One spot instrument entry exactly as listed. {@code evidenceHash} covers the four fields. */
+    record MarketInstrument(String symbol, String baseAsset, String quoteAsset, String status,
+            String evidenceHash) {}
+
+    /**
+     * One minute candle. Prices are the provider's decimal strings (canonical-decimal shaped, not
+     * yet normalized). {@code evidenceHash} covers the seven provider fields of the row.
+     */
+    record MarketCandle(Instant startAt, String open, String high, String low, String close,
+            String volume, String turnover, String evidenceHash) {}
+
+    sealed interface MarketTimeResult {
+        record Observed(Instant serverTime) implements MarketTimeResult {}
+        record Rejected(SourceRejectionReason reason) implements MarketTimeResult {}
+    }
+
+    sealed interface InstrumentResult {
+        /** Every entry the provider listed for the query. Empty means the symbol is not listed. */
+        record Listed(List<MarketInstrument> instruments) implements InstrumentResult {}
+        record Rejected(SourceRejectionReason reason) implements InstrumentResult {}
+    }
+
+    sealed interface CandleResult {
+        /** Rows as returned, duplicates included, in no promised order. */
+        record Candles(List<MarketCandle> candles) implements CandleResult {}
+        record Rejected(SourceRejectionReason reason) implements CandleResult {}
+    }
+
+    /** Provider server time, the attempt's reference time. */
+    MarketTimeResult marketTime();
+
+    /** Spot Instruments Info for one symbol. */
+    InstrumentResult spotInstrument(String symbol);
+
+    /**
+     * Spot 1-minute klines for {@code [start, end]} (both minute aligned, at most 1000 candles).
+     * An invalid window is rejected without calling the provider.
+     */
+    CandleResult spotMinuteCandles(String symbol, Instant start, Instant end);
+
     /** 저장의 결과. */
     sealed interface StoreOutcome {
 

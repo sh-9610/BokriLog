@@ -86,6 +86,24 @@ class BybitAdapter {
 
     static final long MAX_WINDOW_MILLIS = 7L * 24 * 60 * 60 * 1000;
 
+    /** Public spot Instruments Info (Story 2.6). Unsigned; carries no credential. */
+    static final String INSTRUMENTS_INFO_PATH = "/v5/market/instruments-info";
+
+    /** Public kline (Story 2.6). Only {@code category=spot} and {@code interval=1} are ever asked. */
+    static final String KLINE_PATH = "/v5/market/kline";
+
+    /** The provider's per-request ceiling for kline rows, and this adapter's window ceiling. */
+    static final int MAX_CANDLES_PER_REQUEST = 1000;
+
+    private static final long MINUTE_MILLIS = 60_000L;
+
+    /** Symbols this adapter will put into a query string. Anything else is rejected before a call. */
+    private static final java.util.regex.Pattern MARKET_SYMBOL =
+            java.util.regex.Pattern.compile("[A-Z0-9]{2,64}");
+
+    /** Upper bound on one provider decimal string. Longer values are a schema failure, not a price. */
+    private static final int MAX_MARKET_DECIMAL_CHARS = 128;
+
     /** 셋째 호출의 쿼리. 이 계정 유형 하나만 묻는다. */
     static final String WALLET_BALANCE_QUERY = "accountType=UNIFIED";
 
@@ -441,9 +459,141 @@ class BybitAdapter {
     }
 
     private Call publicCall(String path) {
-        HttpRequest request = HttpRequest.newBuilder().uri(URI.create(this.baseUrl + path))
+        return publicCall(path, "");
+    }
+
+    /** An unsigned GET. No API key, timestamp or signature header is attached. */
+    private Call publicCall(String path, String query) {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(this.baseUrl + path + (query.isEmpty() ? "" : "?" + query)))
                 .timeout(this.requestTimeout).header("Accept", "application/json").GET().build();
         return send(request);
+    }
+
+    /**
+     * Provider server time, fixed once per conversion attempt.
+     *
+     * <p>Like {@link #verify}, the transport rejection is read first so a timeout stays a timeout.
+     * A non-zero {@code retCode} is a provider failure (retryable by the user), a malformed body is
+     * a schema failure.
+     */
+    SourceConnectionApi.MarketTimeResult marketTime() {
+        if (this.baseUrl == null) return rejectedTime(SourceRejectionReason.UNAVAILABLE);
+        Call call = publicCall(SERVER_TIME_PATH, "");
+        if (call.rejection() != null) return rejectedTime(call.rejection());
+        JsonNode result = resultOf(call);
+        if (result == null) return rejectedTime(reasonOf(call, SourceRejectionReason.PROVIDER_UNAVAILABLE));
+        JsonNode nanos = result.get("timeNano");
+        if (nanos == null || !nanos.isString() || !nanos.asString().matches("[0-9]{19}"))
+            return rejectedTime(SourceRejectionReason.RESPONSE_FORMAT);
+        long millis = Long.parseLong(nanos.asString().substring(0, 13));
+        if (millis <= 0) return rejectedTime(SourceRejectionReason.RESPONSE_FORMAT);
+        return new SourceConnectionApi.MarketTimeResult.Observed(Instant.ofEpochMilli(millis));
+    }
+
+    /**
+     * Spot Instruments Info for one symbol.
+     *
+     * <p>The closed shape is: {@code result.category == "spot"}, {@code result.list} an array whose
+     * entries are objects with string {@code symbol}, {@code baseCoin}, {@code quoteCoin} and
+     * {@code status}. Other entry fields are ignored. An empty list is a valid answer — the symbol
+     * is not listed — and deciding whether an entry forms a usable route is the caller's policy.
+     */
+    SourceConnectionApi.InstrumentResult spotInstrument(String symbol) {
+        if (this.baseUrl == null) return rejectedInstrument(SourceRejectionReason.UNAVAILABLE);
+        if (symbol == null || !MARKET_SYMBOL.matcher(symbol).matches())
+            return rejectedInstrument(SourceRejectionReason.INVALID_FORMAT);
+        Call call = publicCall(INSTRUMENTS_INFO_PATH, "category=spot&symbol=" + symbol);
+        if (call.rejection() != null) return rejectedInstrument(call.rejection());
+        JsonNode result = resultOf(call);
+        if (result == null)
+            return rejectedInstrument(reasonOf(call, SourceRejectionReason.PROVIDER_UNAVAILABLE));
+        JsonNode list = result.get("list");
+        if (!"spot".equals(stringField(result, "category")) || list == null || !list.isArray())
+            return rejectedInstrument(SourceRejectionReason.RESPONSE_FORMAT);
+        List<SourceConnectionApi.MarketInstrument> instruments = new ArrayList<>();
+        for (JsonNode item : list) {
+            if (!item.isObject()) return rejectedInstrument(SourceRejectionReason.RESPONSE_FORMAT);
+            String listed = stringField(item, "symbol");
+            String base = stringField(item, "baseCoin");
+            String quote = stringField(item, "quoteCoin");
+            String status = stringField(item, "status");
+            if (listed == null || base == null || quote == null || status == null
+                    || listed.isBlank() || base.isBlank() || quote.isBlank() || status.isBlank())
+                return rejectedInstrument(SourceRejectionReason.RESPONSE_FORMAT);
+            instruments.add(new SourceConnectionApi.MarketInstrument(listed, base, quote, status,
+                    sha256(listed + "|" + base + "|" + quote + "|" + status)));
+        }
+        return new SourceConnectionApi.InstrumentResult.Listed(List.copyOf(instruments));
+    }
+
+    /**
+     * Spot 1-minute klines for {@code [start, end]}.
+     *
+     * <p>The window must be minute aligned and hold at most {@value #MAX_CANDLES_PER_REQUEST}
+     * candles; otherwise nothing is sent. The closed shape is: {@code result.category == "spot"},
+     * {@code result.symbol} equal to the request, {@code result.list} an array of at most
+     * {@value #MAX_CANDLES_PER_REQUEST} rows, each an array of exactly seven strings — minute
+     * aligned start inside the window, then open, high, low, close, volume and turnover as decimal
+     * strings. Duplicate rows are returned as seen; contradiction is the caller's decision.
+     */
+    SourceConnectionApi.CandleResult spotMinuteCandles(String symbol, Instant start, Instant end) {
+        if (this.baseUrl == null) return rejectedCandles(SourceRejectionReason.UNAVAILABLE);
+        if (symbol == null || !MARKET_SYMBOL.matcher(symbol).matches() || start == null || end == null)
+            return rejectedCandles(SourceRejectionReason.INVALID_FORMAT);
+        long from = start.toEpochMilli();
+        long to = end.toEpochMilli();
+        if (from < 0 || from % MINUTE_MILLIS != 0 || to % MINUTE_MILLIS != 0 || to < from
+                || (to - from) / MINUTE_MILLIS + 1 > MAX_CANDLES_PER_REQUEST)
+            return rejectedCandles(SourceRejectionReason.INVALID_FORMAT);
+        Call call = publicCall(KLINE_PATH, "category=spot&symbol=" + symbol + "&interval=1&start=" + from
+                + "&end=" + to + "&limit=" + MAX_CANDLES_PER_REQUEST);
+        if (call.rejection() != null) return rejectedCandles(call.rejection());
+        JsonNode result = resultOf(call);
+        if (result == null) return rejectedCandles(reasonOf(call, SourceRejectionReason.PROVIDER_UNAVAILABLE));
+        JsonNode list = result.get("list");
+        if (!"spot".equals(stringField(result, "category")) || !symbol.equals(stringField(result, "symbol"))
+                || list == null || !list.isArray() || list.size() > MAX_CANDLES_PER_REQUEST)
+            return rejectedCandles(SourceRejectionReason.RESPONSE_FORMAT);
+        List<SourceConnectionApi.MarketCandle> candles = new ArrayList<>();
+        for (JsonNode row : list) {
+            if (!row.isArray() || row.size() != 7) return rejectedCandles(SourceRejectionReason.RESPONSE_FORMAT);
+            String[] fields = new String[7];
+            for (int index = 0; index < 7; index++) {
+                JsonNode value = row.get(index);
+                if (value == null || !value.isString()) return rejectedCandles(SourceRejectionReason.RESPONSE_FORMAT);
+                fields[index] = value.asString();
+            }
+            Instant startAt = parseEpochMillis(fields[0]);
+            if (startAt == null || startAt.toEpochMilli() % MINUTE_MILLIS != 0
+                    || startAt.toEpochMilli() < from || startAt.toEpochMilli() > to)
+                return rejectedCandles(SourceRejectionReason.RESPONSE_FORMAT);
+            for (int index = 1; index < 7; index++) {
+                if (fields[index].length() > MAX_MARKET_DECIMAL_CHARS || !isCanonicalDecimal(fields[index]))
+                    return rejectedCandles(SourceRejectionReason.RESPONSE_FORMAT);
+            }
+            candles.add(new SourceConnectionApi.MarketCandle(startAt, fields[1], fields[2], fields[3],
+                    fields[4], fields[5], fields[6], sha256(String.join("|", fields))));
+        }
+        return new SourceConnectionApi.CandleResult.Candles(List.copyOf(candles));
+    }
+
+    /** A string-typed field, or {@code null}. Numbers are not coerced into strings here. */
+    private static @Nullable String stringField(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        return value != null && value.isString() ? value.asString() : null;
+    }
+
+    private static SourceConnectionApi.MarketTimeResult rejectedTime(SourceRejectionReason reason) {
+        return new SourceConnectionApi.MarketTimeResult.Rejected(reason);
+    }
+
+    private static SourceConnectionApi.InstrumentResult rejectedInstrument(SourceRejectionReason reason) {
+        return new SourceConnectionApi.InstrumentResult.Rejected(reason);
+    }
+
+    private static SourceConnectionApi.CandleResult rejectedCandles(SourceRejectionReason reason) {
+        return new SourceConnectionApi.CandleResult.Rejected(reason);
     }
 
     private static String transactionQuery(String type, Instant start, Instant end, @Nullable String cursor) {

@@ -53,7 +53,8 @@ class CashflowClassificationRepository {
         return byCandidate(user,candidate.get(),CashflowDecisionTable.POLICY_VERSION);
     }
 
-    private Optional<UUID> latestEligibleCandidate(UUID user,UUID intent,UUID portfolio,UUID connection,UUID account) {
+    /** The latest complete, still-consistent candidate of the intent. Story 2.6 re-reads it too. */
+    Optional<UUID> latestEligibleCandidate(UUID user,UUID intent,UUID portfolio,UUID connection,UUID account) {
         return jdbc.sql("SELECT b.candidate_id FROM sync_initial_candidate_bundle b "
                 + "JOIN sync_initial_collection_job j ON j.job_id=b.job_id AND j.status='INPUTS_COMPLETE' "
                 + "WHERE b.user_id=:u AND b.intent_id=:i AND b.portfolio_id=:p AND b.connection_id=:c "

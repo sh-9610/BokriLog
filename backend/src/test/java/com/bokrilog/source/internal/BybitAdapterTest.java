@@ -47,12 +47,16 @@ class BybitAdapterTest {
 
     private String origin;
 
-    private final List<String> paths = new ArrayList<>();
-    private final List<String> requests = new ArrayList<>();
+    // Written by the server thread and read by the test thread, so every recorder is a synchronized list.
+    private final List<String> paths = java.util.Collections.synchronizedList(new ArrayList<>());
+    private final List<String> requests = java.util.Collections.synchronizedList(new ArrayList<>());
     private final java.util.concurrent.atomic.AtomicInteger transactionCalls = new java.util.concurrent.atomic.AtomicInteger();
     private final AtomicLong walletEnvelopeTime = new AtomicLong();
-    private final List<String> decodedCursors = new ArrayList<>();
+    private final List<String> decodedCursors = java.util.Collections.synchronizedList(new ArrayList<>());
     private volatile boolean oversizedPage;
+    /** Which malformed or failing market answer the handler gives (Story 2.6). Empty is the normal answer. */
+    private volatile String marketMode = "";
+    private final List<Boolean> signedRequests = java.util.Collections.synchronizedList(new ArrayList<>());
 
     private final AtomicReference<Duration> delay = new AtomicReference<>(Duration.ZERO);
 
@@ -284,6 +288,132 @@ class BybitAdapterTest {
         assertThat(BybitAdapter.permissionAllowLists()).allSatisfy(list -> assertThat(list).isEmpty());
     }
 
+    // ------------------------------------------------------------------ Story 2.6 public market reads
+
+    private static final java.time.Instant WINDOW_START = java.time.Instant.parse("2026-09-01T10:25:00Z");
+    private static final java.time.Instant WINDOW_END = java.time.Instant.parse("2026-09-01T10:30:00Z");
+
+    @Test
+    void publicMarketReadsAreUnsignedAndUseTheClosedSpotQueries() {
+        BybitAdapter adapter = adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1));
+
+        var time = adapter.marketTime();
+        var instrument = adapter.spotInstrument("BTCUSDT");
+        var candles = adapter.spotMinuteCandles("BTCUSDT", WINDOW_START, WINDOW_END);
+
+        assertThat(time).isInstanceOf(SourceConnectionApi.MarketTimeResult.Observed.class);
+        assertThat(((SourceConnectionApi.MarketTimeResult.Observed) time).serverTime()).isAfter(java.time.Instant.EPOCH);
+        assertThat(((SourceConnectionApi.InstrumentResult.Listed) instrument).instruments()).singleElement()
+                .satisfies(entry -> {
+                    assertThat(entry.symbol()).isEqualTo("BTCUSDT");
+                    assertThat(entry.baseAsset()).isEqualTo("BTC");
+                    assertThat(entry.quoteAsset()).isEqualTo("USDT");
+                    assertThat(entry.status()).isEqualTo("Trading");
+                    assertThat(entry.evidenceHash()).hasSize(64);
+                });
+        var rows = ((SourceConnectionApi.CandleResult.Candles) candles).candles();
+        assertThat(rows).extracting(SourceConnectionApi.MarketCandle::startAt)
+                .containsExactly(WINDOW_START.plusSeconds(60), WINDOW_START);
+        assertThat(rows.get(1).close()).isEqualTo("65000.25");
+        assertThat(rows.get(0).close()).isEqualTo("65000.50");
+        assertThat(rows).allSatisfy(row -> assertThat(row.evidenceHash()).hasSize(64));
+        assertThat(this.paths).containsExactly(BybitAdapter.SERVER_TIME_PATH, BybitAdapter.INSTRUMENTS_INFO_PATH,
+                BybitAdapter.KLINE_PATH);
+        assertThat(List.copyOf(this.signedRequests)).containsOnly(false);
+        assertThat(this.requests.get(1)).endsWith("?category=spot&symbol=BTCUSDT");
+        assertThat(this.requests.get(2)).endsWith("?category=spot&symbol=BTCUSDT&interval=1&start="
+                + WINDOW_START.toEpochMilli() + "&end=" + WINDOW_END.toEpochMilli() + "&limit=1000");
+    }
+
+    @Test
+    void invalidMarketQueriesAreRejectedWithoutACall() {
+        BybitAdapter adapter = adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1));
+        java.time.Instant aligned = WINDOW_START;
+
+        assertThat(candleReason(adapter.spotMinuteCandles("BTCUSDT", aligned.plusMillis(1), WINDOW_END)))
+                .isEqualTo(SourceRejectionReason.INVALID_FORMAT);
+        assertThat(candleReason(adapter.spotMinuteCandles("BTCUSDT", WINDOW_END, aligned)))
+                .isEqualTo(SourceRejectionReason.INVALID_FORMAT);
+        assertThat(candleReason(adapter.spotMinuteCandles("BTCUSDT", aligned, aligned.plusSeconds(60L * 1000))))
+                .isEqualTo(SourceRejectionReason.INVALID_FORMAT);
+        assertThat(candleReason(adapter.spotMinuteCandles("btc&x=1", aligned, WINDOW_END)))
+                .isEqualTo(SourceRejectionReason.INVALID_FORMAT);
+        assertThat(((SourceConnectionApi.InstrumentResult.Rejected) adapter.spotInstrument("BTC USDT")).reason())
+                .isEqualTo(SourceRejectionReason.INVALID_FORMAT);
+        // 1000 candles exactly is the ceiling and is sent.
+        assertThat(adapter.spotMinuteCandles("BTCUSDT", aligned, aligned.plusSeconds(60L * 999)))
+                .isInstanceOf(SourceConnectionApi.CandleResult.Candles.class);
+        assertThat(this.paths).containsExactly(BybitAdapter.KLINE_PATH);
+        BybitAdapter unconfigured = adapter(null, RESERVED_IP, Duration.ofSeconds(1));
+        assertThat(((SourceConnectionApi.MarketTimeResult.Rejected) unconfigured.marketTime()).reason())
+                .isEqualTo(SourceRejectionReason.UNAVAILABLE);
+        assertThat(this.paths).hasSize(1);
+    }
+
+    @Test
+    void marketReadsReportTheTransportRejectionFirstAndNeverRetry() {
+        this.delay.set(Duration.ofMillis(800));
+        BybitAdapter adapter = adapter(this.origin, RESERVED_IP, Duration.ofMillis(150));
+
+        assertThat(((SourceConnectionApi.MarketTimeResult.Rejected) adapter.marketTime()).reason())
+                .isEqualTo(SourceRejectionReason.TIMEOUT);
+        assertThat(((SourceConnectionApi.InstrumentResult.Rejected) adapter.spotInstrument("BTCUSDT")).reason())
+                .isEqualTo(SourceRejectionReason.TIMEOUT);
+        assertThat(candleReason(adapter.spotMinuteCandles("BTCUSDT", WINDOW_START, WINDOW_END)))
+                .isEqualTo(SourceRejectionReason.TIMEOUT);
+        // The single-threaded server drains the three slow requests; a retry would show up as a fourth.
+        this.delay.set(Duration.ZERO);
+        awaitPaths(3);
+
+        this.marketMode = "ratelimit";
+        assertThat(candleReason(adapter.spotMinuteCandles("BTCUSDT", WINDOW_START, WINDOW_END)))
+                .isEqualTo(SourceRejectionReason.RATE_LIMITED);
+        awaitPaths(4);
+    }
+
+    private void awaitPaths(int expected) {
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        try {
+            while (sizeOfPaths() < expected && System.nanoTime() < deadline) Thread.sleep(20);
+            Thread.sleep(300);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        assertThat(sizeOfPaths()).isEqualTo(expected);
+    }
+
+    private int sizeOfPaths() {
+        synchronized (this.paths) {
+            return this.paths.size();
+        }
+    }
+
+    @Test
+    void failedOrUnknownMarketAnswersFoldIntoClosedReasonsWithoutTheProviderText() {
+        BybitAdapter adapter = adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1));
+        this.marketMode = "retcode";
+        var instrument = adapter.spotInstrument("BTCUSDT");
+        assertThat(((SourceConnectionApi.InstrumentResult.Rejected) instrument).reason())
+                .isEqualTo(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        assertThat(instrument.toString()).doesNotContain("raw provider text");
+        assertThat(candleReason(adapter.spotMinuteCandles("BTCUSDT", WINDOW_START, WINDOW_END)))
+                .isEqualTo(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        for (String mode : List.of("missing-status", "not-array")) {
+            this.marketMode = mode;
+            assertThat(((SourceConnectionApi.InstrumentResult.Rejected) adapter.spotInstrument("BTCUSDT")).reason())
+                    .as(mode).isEqualTo(SourceRejectionReason.RESPONSE_FORMAT);
+        }
+        for (String mode : List.of("short-row", "outside", "wrong-symbol", "number", "exponent")) {
+            this.marketMode = mode;
+            assertThat(candleReason(adapter.spotMinuteCandles("BTCUSDT", WINDOW_START, WINDOW_END)))
+                    .as(mode).isEqualTo(SourceRejectionReason.RESPONSE_FORMAT);
+        }
+    }
+
+    private static SourceRejectionReason candleReason(SourceConnectionApi.CandleResult result) {
+        return ((SourceConnectionApi.CandleResult.Rejected) result).reason();
+    }
+
     /**
      * 정상 응답을 내는 최소 제공자.
      *
@@ -303,8 +433,18 @@ class BybitAdapterTest {
             }
         }
         String apiKey = exchange.getRequestHeaders().getFirst("X-BAPI-API-KEY");
+        this.signedRequests.add(apiKey != null || exchange.getRequestHeaders().getFirst("X-BAPI-SIGN") != null);
+        if ("ratelimit".equals(this.marketMode) && path.startsWith("/v5/market/")) {
+            byte[] limited = "{\"retCode\":10006,\"retMsg\":\"raw provider text\"}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(429, limited.length);
+            exchange.getResponseBody().write(limited);
+            exchange.close();
+            return;
+        }
         String body =
                 switch (path) {
+                    case BybitAdapter.INSTRUMENTS_INFO_PATH -> instrumentResponse();
+                    case BybitAdapter.KLINE_PATH -> klineResponse(exchange.getRequestURI().getRawQuery());
                     case BybitAdapter.SERVER_TIME_PATH -> {
                         long now=System.currentTimeMillis();
                         yield result("{\"timeSecond\":\""+(now/1000)+"\",\"timeNano\":\""+(now*1_000_000L)+"\"}");
@@ -352,6 +492,41 @@ class BybitAdapterTest {
         if(cursor!=null) this.decodedCursors.add(cursor);
         if(SPECIAL_CURSOR.equals(cursor)) return result("{\"list\":[],\"nextPageCursor\":\"\"}");
         return result("{\"list\":[],\"nextPageCursor\":\"\"}");
+    }
+
+    private String instrumentResponse() {
+        return switch (this.marketMode) {
+            case "retcode" -> "{\"retCode\":10001,\"retMsg\":\"raw provider text\",\"result\":{},\"time\":1}";
+            case "missing-status" -> result("{\"category\":\"spot\",\"list\":[{\"symbol\":\"BTCUSDT\","
+                    + "\"baseCoin\":\"BTC\",\"quoteCoin\":\"USDT\"}]}");
+            case "not-array" -> result("{\"category\":\"spot\",\"list\":{}}");
+            default -> result("{\"category\":\"spot\",\"list\":[{\"symbol\":\"BTCUSDT\",\"baseCoin\":\"BTC\","
+                    + "\"quoteCoin\":\"USDT\",\"innovation\":\"0\",\"status\":\"Trading\"}]}");
+        };
+    }
+
+    private String klineResponse(String query) {
+        long start = Long.parseLong(parameter(query, "start"));
+        long end = Long.parseLong(parameter(query, "end"));
+        String symbol = "wrong-symbol".equals(this.marketMode) ? "ETHUSDT" : parameter(query, "symbol");
+        String rows = switch (this.marketMode) {
+            case "short-row" -> "[[\"" + start + "\",\"1\",\"1\",\"1\",\"1\",\"1\"]]";
+            case "outside" -> "[[\"" + (end + 60_000) + "\",\"1\",\"1\",\"1\",\"1\",\"1\",\"1\"]]";
+            case "number" -> "[[" + start + ",\"1\",\"1\",\"1\",\"1\",\"1\",\"1\"]]";
+            case "exponent" -> "[[\"" + start + "\",\"1\",\"1\",\"1\",\"1E3\",\"1\",\"1\"]]";
+            default -> "[[\"" + (start + 60_000) + "\",\"65000.3\",\"65001\",\"64999\",\"65000.50\",\"2\",\"130001\"],"
+                    + "[\"" + start + "\",\"65000\",\"65001\",\"64999\",\"65000.25\",\"1\",\"65000.25\"]]";
+        };
+        return "retcode".equals(this.marketMode)
+                ? "{\"retCode\":10002,\"retMsg\":\"raw provider text\",\"result\":{},\"time\":1}"
+                : result("{\"symbol\":\"" + symbol + "\",\"category\":\"spot\",\"list\":" + rows + "}");
+    }
+
+    private static String parameter(String query, String name) {
+        for (String pair : query.split("&")) {
+            if (pair.startsWith(name + "=")) return URLDecoder.decode(pair.substring(name.length() + 1), StandardCharsets.UTF_8);
+        }
+        throw new AssertionError("missing query parameter " + name);
     }
 
     private String walletResponse() {

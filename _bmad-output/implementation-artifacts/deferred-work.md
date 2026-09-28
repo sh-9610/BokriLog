@@ -224,3 +224,24 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-3-plan-condition-preview.md`
   summary: 10분 확인 참조가 만료된 뒤에도 계정 삭제 전까지 확인 행이 보존된다.
   evidence: `plan_condition_confirmation.expires_at`은 확인을 거절하는 데 쓰이지만 만료 행을 정리하는 작업이나 삭제 경로가 없다. 계획 화면을 다시 열지 않는 사용자의 만료 참조는 계속 남으므로 확인 데이터 보존 상한을 정하고 청소 작업을 두는 별도 보존 정책 검토가 필요하다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-6-cashflow-usd-conversion.md`
+  summary: 사건 분 candle이 공유 증거에 있으면 kline을 다시 부르지 않으므로, 제공자 쪽 사건 분 종가 정정은 관측되지 않고 `PRICE_REVISION`은 fallback 분에서만 생긴다.
+  evidence: SPEC AC가 "공유 증거에 사건 분 candle이 있으면 kline을 호출하지 않는다"를 요구하고 `CashflowConversionMarket.resolveCandles`가 그대로 따른다. 통합 시험의 revision 단정도 `sync_market_candle`에 SQL로 새 revision을 넣어 만든다. AC-8의 "더 적합한 승인 공식 가격 → 새 환산 버전"을 실제 경로로 여는 것은 이력 재검증을 소유한 Story 2.12가 캐시 재관측 주기와 함께 정할 일이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-6-cashflow-usd-conversion.md`
+  summary: 환산 기준시각인 Bybit 서버 시간을 로컬(DB) 시계와 비교하는 상한 없이 쓴다.
+  evidence: `BybitAdapter.marketTime`과 `SyncJobService.fixReference`는 `timeNano` 형식만 검사한다. 미래로 틀어진 값이 오면 진행 중인 분 candle이 종료로 판정되고, 사용자 식별자 없는 공유 증거로 저장돼 다른 사용자의 환산에도 재사용된다. 허용 skew 값은 `BYBIT-PRICE-1.0`에 없는 새 시간 경계라 SPEC의 Ask First 대상이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-6-cashflow-usd-conversion.md`
+  summary: 만료된 lease의 재claim에 횟수 상한이 없어, `RuntimeException` 밖의 오류나 JVM 중단으로 죽는 시도가 약 30초마다 영구히 다시 실행된다.
+  evidence: `CashflowConversionRepository.claim()`은 `RUNNING AND lease_until<now()`인 행을 제한 없이 다시 가져가고, 재실행마다 서버 시간·instrument·kline을 다시 부른다. 같은 claim 관용구가 Story 2.4 수집·2.5 판정 작업에도 있어 이 스토리가 만든 결함이 아니다. 시도 횟수 컬럼과 상한은 세 작업이 함께 정할 일이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-6-cashflow-usd-conversion.md`
+  summary: ERD §2.5의 호출 예산(token bucket)·자동 재시도가 없어, 끝난 결과 뒤에도 새 key로 환산을 다시 접수하면 서버 시간·instrument 공개 호출이 사용자 요청 수만큼 반복된다.
+  evidence: SPEC Design Notes가 token bucket과 자동 재시도를 Story 2.4처럼 도입하지 않기로 정했다. 화면은 재시도 가능한 이유에만 버튼을 주지만 API는 settled 시도 뒤의 새 접수를 막지 않는다(AC-8의 새 버전 경로가 그 접수를 쓴다). 공유 reserved IP 한 개로 나가는 공개 호출의 예산은 Bybit 호출 전체를 묶는 별도 라운드가 정할 일이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-6-cashflow-usd-conversion.md`
+  summary: 수집·판정·환산 세 상태 섹션이 GET이 계속 실패해도 QUEUED·RUNNING이면 2초마다 끝없이 폴링한다.
+  evidence: `InitialInputsCollection.tsx`의 세 `setInterval` 폴링은 연속 실패 횟수를 세지 않는다. Story 2.4·2.5의 폴링을 그대로 옮긴 관용구라 세 섹션을 함께 고쳐야 일관된다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-6-cashflow-usd-conversion.md`
+  summary: 수집 섹션의 `start()`가 409를 받으면 거절 문구를 설정한 직후 `refresh()`가 성공하며 그 문구를 지운다.
+  evidence: 같은 결함이 이 스토리의 환산 섹션에도 옮겨 와 리뷰가 잡았고 환산 쪽은 이 스토리에서 고친다. Story 2.4의 수집 `start()`(`setError(copy.collection.ineligible)` 뒤 `await refresh()`)는 이 스토리 범위 밖이라 남긴다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-6-cashflow-usd-conversion.md`
+  summary: Windows Git Bash에서 `verify-same-origin.sh`가 한글 확인 문구를 `curl --data`로 CP949 바이트로 보내 Bybit 연결 확인이 400으로 끝나고 이후 57건이 연쇄 실패한다.
+  evidence: Story 2.6 구현 중 902/959로 끝났고, 로컬 echo 서버로 받은 바이트가 `bfacb0e1…`(기대 UTF-8 `ec97b0…`)였다. 이 스토리의 변경과 무관하며 이미 기록된 "Windows 전용 결함을 CI가 보지 못하는 공백"과 같은 종류다. Linux CI에서는 재현되지 않는다.

@@ -8,8 +8,62 @@
 }
 
 .panel h3,
-.panel p {
+.panel h4,
+.panel p,
+.panel ul,
+.panel dl,
+.panel dd {
   margin: 0;
+}
+
+.liveStatus {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.pending {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.assetList,
+.flowList {
+  display: grid;
+  gap: var(--space-2);
+  padding: 0;
+  list-style: none;
+}
+
+.asset summary {
+  min-height: var(--space-target-min);
+  padding-block: var(--space-2);
+  font-weight: var(--type-label-font-weight);
+  cursor: pointer;
+}
+
+.asset summary:focus-visible {
+  outline: var(--space-focus-width) solid var(--component-sync-control-focus);
+  outline-offset: var(--space-focus-offset);
+}
+
+.flowList {
+  padding-inline-start: var(--space-3);
+  border-inline-start: 1px solid var(--color-border-default);
+}
+
+.facts {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.facts dt {
+  font-weight: var(--type-label-font-weight);
+}
+
+/* Unrounded source quantities can be long; they wrap instead of forcing horizontal scroll. */
+.quantity {
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
 }
 
 .status {

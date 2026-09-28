@@ -45,6 +45,16 @@ class FirstSnapshotController {
     record CashflowClassificationState(UUID jobId,String status,@Nullable String failureCode,
             @Nullable String processedAt,int depositCount,int withdrawalCount,int excludedCount,
             int reviewCount,@Nullable String reasonCode) {}
+    record PendingFlow(String direction,String quantity,String occurredAt,String status,String reasonCode,
+            boolean retryable) {}
+    record PendingAsset(String assetCode,int count,java.util.List<PendingFlow> flows) {}
+    /** The four outcome counts are omitted when the attempt has no result bundle. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record CashflowConversionState(UUID jobId,String status,@Nullable String reasonCode,boolean retryable,
+            @Nullable String processedAt,int flowCount,@Nullable Integer convertedCount,
+            @Nullable Integer estimatedCount,@Nullable Integer conversionRequiredCount,@Nullable Integer reviewCount,
+            boolean calculable,String pricePolicyVersion,String calculationPolicyVersion,
+            java.util.List<PendingAsset> pendingAssets) {}
 
     @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<JobState> start(@RequestHeader(name="Idempotency-Key",required=false)
@@ -127,6 +137,43 @@ class FirstSnapshotController {
         if(state.job()==null) return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(toClassificationState(state.job()));
+    }
+    /**
+     * Story 2.6 event-time USD conversion. Same contract as classification: POST answers 202 or
+     * 409, GET answers 200, 204 (no attempt yet) or 403, and every answer is {@code no-store}.
+     * The body never carries a USD value — only status, counts, policy versions and the held flows.
+     */
+    @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/cashflow-conversion",
+            consumes=MediaType.APPLICATION_JSON_VALUE,produces=MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<CashflowConversionState> convertCashflows(@RequestBody CollectionRequest body,
+            @RequestHeader(name="Idempotency-Key",required=false) @Nullable String key,
+            HttpServletResponse response) throws IOException {
+        UUID user=currentUserId();
+        if(user==null){response.sendError(403);return null;}
+        var job=jobs.admitCashflowConversion(user,body.intentId(),key==null?UUID.randomUUID().toString():key);
+        if(job.isEmpty()){response.sendError(409);return null;}
+        return ResponseEntity.status(HttpStatus.ACCEPTED).cacheControl(CacheControl.noStore())
+                .body(toConversionState(job.get()));
+    }
+    @GetMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/cashflow-conversion",
+            produces=MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<CashflowConversionState> cashflowConversion(@RequestParam UUID intentId,
+            HttpServletResponse response) throws IOException {
+        UUID user=currentUserId();
+        if(user==null){response.sendError(403);return null;}
+        var state=jobs.cashflowConversionState(user,intentId);
+        if(!state.permitted()){response.sendError(403);return null;}
+        if(state.job()==null) return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(toConversionState(state.job()));
+    }
+    private static CashflowConversionState toConversionState(SyncJobApi.ConversionJob job) {
+        return new CashflowConversionState(job.jobId(),job.status(),job.reasonCode(),job.retryable(),
+                job.processedAt()==null?null:job.processedAt().toString(),job.flowCount(),job.convertedCount(),
+                job.estimatedCount(),job.conversionRequiredCount(),job.reviewCount(),job.calculable(),
+                job.pricePolicyVersion(),job.calculationPolicyVersion(),
+                job.pendingAssets().stream().map(asset->new PendingAsset(asset.assetCode(),asset.count(),
+                        asset.flows().stream().map(flow->new PendingFlow(flow.direction(),flow.quantity(),
+                                flow.occurredAt().toString(),flow.status(),flow.reasonCode(),flow.retryable())).toList())).toList());
     }
     private static JobState toState(SyncJobApi.Job job) {
         return new JobState(job.jobId(),job.status(),job.failureReason());
