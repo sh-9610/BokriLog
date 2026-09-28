@@ -11,6 +11,7 @@ import {
   SETTINGS_PATH,
   SIGN_IN_PROVIDERS,
 } from '../content/auth'
+import { calculationEvidenceContent } from '../content/calculationEvidence'
 import { firstSnapshotContent } from '../content/firstSnapshot'
 import { planConditionContent } from '../content/planConditions'
 import {
@@ -23,7 +24,9 @@ import { formatSeoulTime } from '../format/decimal'
 import { navigateTo, replaceLocation } from '../session/navigation'
 import {
   BASIS_AT,
+  calculationEvidenceFixture,
   dashboardFixture,
+  evidenceResultFixture,
   MEASURED_AT,
   NO_PLAN_FIXTURE,
   planResultFixture,
@@ -34,6 +37,7 @@ import {
   getObservedAllowedRequests,
   getObservedSessionRequests,
   getObservedStorageEntries,
+  stubCalculationEvidence,
   stubDashboard,
   stubFirstSnapshotStart,
   stubFirstSnapshotState,
@@ -582,6 +586,90 @@ describe('SignedInScreen', () => {
         formatSeoulTime(BASIS_AT, planResultContent.timeUnavailable),
       ),
     )
+  })
+
+  it('계산 근거: 같은 화면에서 펼치고, 단일 상태 리전이 대시보드 문장 뒤에 근거 읽기 상태를 잇는다', async () => {
+    stubSessionRequest(authenticated)
+    stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture(evidenceResultFixture()))))
+    let release: (response: Response) => void = () => undefined
+    stubCalculationEvidence(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve
+        }),
+    )
+    render(<SignedInScreen />)
+    await screen.findAllByRole('article')
+    const ready = planResultContent.status.ready(
+      formatSeoulTime(BASIS_AT, planResultContent.timeUnavailable),
+    )
+    expect(screen.getByRole('status').textContent).toBe(ready)
+    // A role=status region is atomic by default: this one is not, so the evidence part is read alone.
+    expect(screen.getByRole('status')).toHaveAttribute('aria-atomic', 'false')
+
+    fireEvent.click(screen.getByRole('button', { name: calculationEvidenceContent.open }))
+    expect(screen.getByRole('status').textContent).toBe(
+      `${ready} ${calculationEvidenceContent.status.loading}`,
+    )
+    await act(async () => {
+      release(jsonResponse(calculationEvidenceFixture(evidenceResultFixture())))
+      await Promise.resolve()
+    })
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toBe(
+        `${ready} ${calculationEvidenceContent.status.ready}`,
+      )
+    })
+    // Still one live region on the screen: the evidence region has none of its own.
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(liveRegions()).toHaveLength(1)
+    expect(
+      screen.getByRole('group', { name: calculationEvidenceContent.sections.versions }),
+    ).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/dashboard')
+    expect(getObservedStorageEntries()).toEqual([])
+
+    fireEvent.click(screen.getByRole('button', { name: calculationEvidenceContent.close }))
+    expect(screen.getByRole('status').textContent).toBe(ready)
+  })
+
+  it('계산 근거: 근거 읽기가 403이면 대시보드가 스스로 다시 읽어 금융값을 지우고, 단순 실패는 대시보드를 건드리지 않는다', async () => {
+    stubSessionRequest(authenticated)
+    const dashboards: (() => Promise<Response>)[] = [
+      () => Promise.resolve(jsonResponse(dashboardFixture(evidenceResultFixture()))),
+      () =>
+        Promise.resolve(jsonResponse({ code: 'FORBIDDEN', message: 'x', correlationId: 'c' }, 403)),
+    ]
+    stubDashboard(() => (dashboards.shift() ?? (() => Promise.reject(new Error('extra'))))())
+    const evidences: (() => Promise<Response>)[] = [
+      () => Promise.reject(new Error('network')),
+      () =>
+        Promise.resolve(jsonResponse({ code: 'FORBIDDEN', message: 'x', correlationId: 'c' }, 403)),
+    ]
+    stubCalculationEvidence(() =>
+      (evidences.shift() ?? (() => Promise.reject(new Error('extra'))))(),
+    )
+    render(<SignedInScreen />)
+    await screen.findAllByRole('article')
+    const dashboardReads = (): number =>
+      getObservedAllowedRequests().filter((entry) => entry === `GET ${DASHBOARD_PATH}`).length
+
+    // A plain failure: the dashboard is not asked, and its values stay.
+    fireEvent.click(screen.getByRole('button', { name: calculationEvidenceContent.open }))
+    await screen.findByText(calculationEvidenceContent.failure.retryable)
+    expect(dashboardReads()).toBe(1)
+    expect(screen.getAllByRole('article')).toHaveLength(6)
+
+    // A refusal: the dashboard reads again and its own 403 clears the values.
+    fireEvent.click(screen.getByRole('button', { name: calculationEvidenceContent.retry }))
+    await waitFor(() => {
+      expect(dashboardReads()).toBe(2)
+    })
+    await waitFor(() => {
+      expect(screen.queryByRole('article')).not.toBeInTheDocument()
+    })
+    expect(screen.queryByText(/1,250\.00 USD/)).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(planResultContent.status.denied)
   })
 
   it('다시 불러오는 동안 상태 리전이 그 사실을 알리고 busy로 표시된다', async () => {

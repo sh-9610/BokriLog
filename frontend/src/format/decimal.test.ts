@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatAmount, formatPercent, formatSeoulTime, percentFromRatio } from './decimal'
+import {
+  formatAmount,
+  formatPercent,
+  formatSeoulInstant,
+  formatSeoulTime,
+  percentFromRatio,
+} from './decimal'
 
 describe('DISPLAY-1.0 formatting', () => {
   it.each([
@@ -50,5 +56,35 @@ describe('DISPLAY-1.0 formatting', () => {
     }).format(new Date('2026-09-27T15:00:00Z'))
     expect(formatSeoulTime('2026-09-27T15:00:00Z', 'x')).toBe(seoul)
     expect(formatSeoulTime('not a time', 'fallback')).toBe('fallback')
+  })
+
+  it('shows an instant to the millisecond in Asia/Seoul where two times must be told apart', () => {
+    const parts = new Intl.DateTimeFormat('ko-KR', {
+      timeZone: 'Asia/Seoul',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      fractionalSecondDigits: 3,
+      hourCycle: 'h23',
+    })
+    const at = new Date('2026-09-28T16:41:23.456Z')
+    expect(formatSeoulInstant('2026-09-28T16:41:23.456Z', 'x')).toBe(parts.format(at))
+    // The parts themselves, whatever the ICU punctuation: the Seoul day and hour, the second and the ms.
+    const shown = Object.fromEntries(parts.formatToParts(at).map((part) => [part.type, part.value]))
+    expect(shown).toMatchObject({
+      day: '29',
+      hour: '01',
+      minute: '41',
+      second: '23',
+      fractionalSecond: '456',
+    })
+    // A second apart: the same minute on the dashboard, two different times here.
+    expect(formatSeoulInstant('2026-09-27T00:59:59Z', 'x')).not.toBe(
+      formatSeoulInstant('2026-09-27T01:00:00Z', 'x'),
+    )
+    expect(formatSeoulInstant('not a time', 'fallback')).toBe('fallback')
   })
 })

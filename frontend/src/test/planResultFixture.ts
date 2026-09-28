@@ -174,3 +174,116 @@ export function estimatedUndefinedFixture(): Record<string, unknown> {
     ],
   })
 }
+
+/**
+ * `GET /api/dashboard/evidence`의 응답 fixture(Story 2.9). 서버의 `DashboardController.EvidenceView`와 같은
+ * 모양이며, 주어진 대시보드 결과의 참조·시각·스냅샷·지표 성격에 맞춰 만든다 — 근거는 지금 보이는 묶음과
+ * 일치할 때만 받아들여진다(`parseEvidence`).
+ */
+export function calculationEvidenceFixture(
+  result: Record<string, unknown> = planResultFixture(),
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const metrics = result.metrics as readonly Record<string, unknown>[]
+  const estimated = result.estimatedFlowCount as number
+  return {
+    planId: result.planId,
+    pointerVersion: result.pointerVersion,
+    calculationId: result.calculationId,
+    snapshots: {
+      portfolioSnapshotId: result.portfolioSnapshotId,
+      portfolioSequence: 2,
+      basisPortfolioSnapshotId: result.basisPortfolioSnapshotId,
+      basisSourceSnapshotId: '1e4d3b5f-0c2e-4d9f-b8a7-6e3c2f1d0b94',
+      sourceSnapshotId: '0f3c2a4e-9b1d-4c8e-a7f6-5d2b1e0c9a83',
+    },
+    times: {
+      t0: (result.conditions as Record<string, unknown>).startAt,
+      tc: result.basisAt,
+      measuredAt: result.measuredAt,
+      cashflowVerifiedThrough: result.cashflowVerifiedThrough,
+    },
+    inputs: {
+      connection: {
+        provider: 'BYBIT',
+        connectionId: '6a1f0c2e-3d4b-4e5f-8a9b-0c1d2e3f4a5b',
+        policyVersion: 'bybit-readonly-uta-1.0',
+      },
+      sourceRange: {
+        rangeStart: (result.conditions as Record<string, unknown>).startAt,
+        rangeEnd: result.basisAt,
+        collectionPolicy: 'bybit-readonly-uta-1.0',
+        completenessHash: 'c'.repeat(64),
+      },
+      classification: {
+        classificationId: '7b2e1d3f-4c5a-4b6d-9e8f-1a2b3c4d5e6f',
+        policyVersion: 'BYBIT-CASHFLOW-1.0',
+        inputScopeHash: 'd'.repeat(64),
+      },
+      conversion: {
+        conversionId: '8c3f2e4a-5d6b-4c7e-af90-2b3c4d5e6f7a',
+        pricePolicy: 'BYBIT-PRICE-1.0',
+        resultFingerprint: 'e'.repeat(64),
+      },
+      cashflows: { appliedCount: result.flowCount, estimatedCount: estimated },
+      plan: { planId: result.planId, conditions: result.conditions },
+    },
+    calculation: {
+      calculationId: result.calculationId,
+      calculationPolicy: 'CALC-1.0',
+      calendarPolicy: 'CALENDAR-SEOUL-1.0',
+      displayPolicy: 'DISPLAY-1.0',
+      precisionPolicy: 'DECIMAL128-HALF_EVEN',
+      timeZone: 'Asia/Seoul',
+      implementationVersion: 'bokrilog-calc-1.0.0+big-math-2.3.2',
+      inputHash: 'a'.repeat(64),
+      resultHash: 'b'.repeat(64),
+      createdAt: result.publishedAt,
+    },
+    metrics: metrics.map((metric) => ({
+      metric: metric.metric,
+      nature: metric.nature,
+      ...(metric.unavailableReason === undefined
+        ? {}
+        : { unavailableReason: metric.unavailableReason }),
+      // A defined derived metric of an estimated version names the cause; an undefined one has only its reason.
+      ...(metric.nature === 'ESTIMATED' && metric.unavailableReason === undefined
+        ? { estimatedCause: { evidenceType: 'SPOT_KLINE_CLOSE', flowCount: estimated } }
+        : {}),
+    })),
+    versions: {
+      official: [
+        {
+          pointerVersion: result.pointerVersion,
+          calculationId: result.calculationId,
+          publishedAt: result.publishedAt,
+          current: true,
+        },
+      ],
+      unpublished: [],
+    },
+    ...overrides,
+  }
+}
+
+/** UUID-shaped ids, as a real server sends them — a `plan-1` would be a malformed reference there. */
+export const EVIDENCE_IDS = {
+  plan: '5d1e7c2a-8b3f-4e6a-9c0d-1f2e3a4b5c6d',
+  calculation: '9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b',
+  newerCalculation: '4a5b6c7d-8e9f-4a0b-9c1d-2e3f4a5b6c7d',
+  snapshot: '3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f',
+  basis: '2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e',
+} as const
+
+/** A dashboard result whose ids are UUID-shaped, for the calculation evidence tests. */
+export function evidenceResultFixture(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return planResultFixture({
+    planId: EVIDENCE_IDS.plan,
+    calculationId: EVIDENCE_IDS.calculation,
+    portfolioSnapshotId: EVIDENCE_IDS.snapshot,
+    basisPortfolioSnapshotId: EVIDENCE_IDS.basis,
+    ...overrides,
+  })
+}

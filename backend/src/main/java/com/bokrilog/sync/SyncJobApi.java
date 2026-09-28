@@ -205,6 +205,120 @@ public interface SyncJobApi {
      */
     DashboardRead dashboard(@Nullable UUID userId);
 
+    // -------------------------------------------------------------------- Story 2.9
+
+    /**
+     * The dashboard result a screen shows, named by the three values of its official pointer. The
+     * evidence read only judges whether they are the user's current pointer; nothing is looked up by them.
+     */
+    record EvidenceReference(UUID planId, long pointerVersion, UUID calculationId) {}
+
+    /**
+     * The read-only lineage of the current official result (Story 2.9): which snapshots, times, inputs,
+     * policies and calculation version it came from, how each metric's character was reached, and the
+     * attempts of the same intent that never published. Internal user ids, provider account ids, the
+     * Bybit UID, credentials, raw provider responses and individual cash-flow events are not here.
+     */
+    record CalculationEvidence(UUID planId, long pointerVersion, UUID calculationId, Snapshots snapshots,
+            Times times, Connection connection, SourceRange sourceRange, Classification classification,
+            Conversion conversion, Cashflows cashflows, Plan plan, Calculation calculation,
+            List<MetricImpact> metrics, List<OfficialVersion> officialVersions,
+            List<UnpublishedAttempt> unpublishedAttempts) {
+
+        /**
+         * @param portfolioSnapshotId the official portfolio snapshot the version was calculated on
+         * @param portfolioSequence that snapshot's publication sequence
+         * @param basisPortfolioSnapshotId the plan's basis snapshot (its start value)
+         * @param basisSourceSnapshotId the source snapshot the basis snapshot was composed from (measured at t0)
+         * @param sourceSnapshotId the tc source snapshot the portfolio snapshot was composed from
+         */
+        public record Snapshots(UUID portfolioSnapshotId, long portfolioSequence, UUID basisPortfolioSnapshotId,
+                UUID basisSourceSnapshotId, UUID sourceSnapshotId) {}
+
+        /**
+         * The plan start and the three times of the version, each under its own name. Bybit gives no token
+         * that ties a balance and the cash-flow log to one moment, so the measurement and the cash-flow
+         * verification are two facts, never one "latest" time.
+         */
+        public record Times(Instant t0, Instant tc, Instant measuredAt, Instant cashflowVerifiedThrough) {}
+
+        /**
+         * Where the inputs were collected: the provider, the connection (provenance only) and the connection's
+         * policy version, as the first snapshot recorded it after checking it against the connection's own.
+         */
+        public record Connection(String provider, UUID connectionId, String policyVersion) {}
+
+        /** The collected range: the earliest page start and the latest page end, with the collection policy. */
+        public record SourceRange(Instant rangeStart, Instant rangeEnd, String collectionPolicy,
+                String completenessHash) {}
+
+        public record Classification(UUID classificationId, String policyVersion, String inputScopeHash) {}
+
+        public record Conversion(UUID conversionId, String pricePolicy, String resultFingerprint) {}
+
+        /** How many external cash flows the version applied, and how many of them were estimated. */
+        public record Cashflows(int appliedCount, int estimatedCount) {}
+
+        /** The plan version: its id and its immutable terms (canonical decimal strings). */
+        public record Plan(UUID planId, String principal, Instant startAt, Instant endAt, String period,
+                String targetRate) {}
+
+        public record Calculation(UUID calculationId, String calculationPolicy, String calendarPolicy,
+                String displayPolicy, String precisionPolicy, String timeZone, String implementationVersion,
+                String inputHash, String resultHash, Instant createdAt) {}
+
+        /**
+         * One metric's character and why: an undefined metric's reason code, and — for a defined derived
+         * metric of an estimated version — the estimated cause, derived from the applied flows (not a stored
+         * column). An undefined metric carries its reason and no cause.
+         */
+        public record MetricImpact(String metric, String nature, @Nullable String unavailableReason,
+                @Nullable EstimatedCause estimatedCause) {}
+
+        /** The flows converted with an estimated price and the kind of that price evidence. */
+        public record EstimatedCause(String evidenceType, int flowCount) {}
+
+        /**
+         * One official version: its publication order (the pointer version), the time it became official
+         * and whether it is the current one.
+         */
+        public record OfficialVersion(long pointerVersion, UUID calculationId, Instant publishedAt,
+                boolean current) {}
+
+        /** An attempt of the same intent that published nothing. Read-only; never an official value. */
+        public record UnpublishedAttempt(String status, String reasonCode, Instant finishedAt) {}
+    }
+
+    /** The outcome of one evidence read. Only {@link Found} carries lineage. */
+    sealed interface EvidenceOutcome permits EvidenceOutcome.NotPermitted, EvidenceOutcome.NotFound,
+            EvidenceOutcome.Unavailable, EvidenceOutcome.Found {
+        /** The account's own access refused it before or after the read. */
+        record NotPermitted() implements EvidenceOutcome {}
+        /**
+         * The reference is not the user's current official pointer — another user's, an earlier version,
+         * an unknown or malformed id, a missing value, or no active plan at all. One answer for all of them.
+         */
+        record NotFound() implements EvidenceOutcome {}
+        /** The current pointer's lineage did not agree with itself; nothing is returned in part. */
+        record Unavailable() implements EvidenceOutcome {}
+        record Found(CalculationEvidence evidence) implements EvidenceOutcome {}
+    }
+
+    /**
+     * One evidence read and what it learned about the lineage: {@link BundleConsistency#NOT_READ} when no
+     * lineage was read (refused first, or the reference names no current pointer).
+     */
+    record EvidenceRead(EvidenceOutcome outcome, BundleConsistency consistency) {}
+
+    /**
+     * The calculation evidence of the user's current official result (Story 2.9). The account's own access
+     * is checked, the pointer, the calculation version, its metrics and cash flows, and the collection,
+     * classification and conversion records are read in one read-only {@code REPEATABLE READ} transaction,
+     * and the access is checked again. A {@code null} reference (missing or malformed) is not found. A
+     * failing read throws; nothing is returned in part.
+     */
+    EvidenceRead calculationEvidence(@Nullable UUID userId, @Nullable EvidenceReference reference);
+
     /** portfolio 삭제 뒤, source 삭제 앞에 호출한다. 발행 결과·시도를 먼저 지운다. */
     void eraseSyncData(@Nullable UUID userId);
 }

@@ -56,6 +56,9 @@ export interface PlanResult {
   readonly pointerVersion: number
   readonly publishedAt: string
   readonly calculationId: string
+  /** The official snapshot the version was calculated on. The evidence's failure view names it (Story 2.9). */
+  readonly portfolioSnapshotId: string
+  readonly basisPortfolioSnapshotId: string
   readonly basisAt: string
   readonly measuredAt: string
   readonly cashflowVerifiedThrough: string
@@ -76,11 +79,13 @@ export interface PlanResult {
   readonly metrics: readonly PlanResultMetric[]
 }
 
-function record(value: unknown): Record<string, unknown> | null {
+/** The value as an object, or `null`. The calculation evidence's validator shares these helpers. */
+export function record(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null
 }
 
-function strings(value: unknown, keys: readonly string[]): boolean {
+/** Whether every key of the object holds a string. */
+export function strings(value: unknown, keys: readonly string[]): boolean {
   const row = record(value)
   return row !== null && keys.every((key) => typeof row[key] === 'string')
 }
@@ -150,6 +155,8 @@ export function isPlanResult(value: unknown): value is PlanResult {
       'planStatus',
       'publishedAt',
       'calculationId',
+      'portfolioSnapshotId',
+      'basisPortfolioSnapshotId',
       'basisAt',
       'measuredAt',
       'cashflowVerifiedThrough',

@@ -32,10 +32,18 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p>The path takes no identifier: the scope is the session's internal user id alone. Query parameters
  * are ignored (no parameter is bound), so a request carrying another user's plan, snapshot or
- * calculation id answers exactly what the bare request answers, and every sub-path is the same common
- * 404. 403 when the account's own access refuses the read before or after it (its deletion began or
- * finished); 503 {@code DASHBOARD_UNAVAILABLE} when the pointer's bundle does not agree with itself —
+ * calculation id answers exactly what the bare request answers, and every sub-path but one is the same
+ * common 404. 403 when the account's own access refuses the read before or after it (its deletion began
+ * or finished); 503 {@code DASHBOARD_UNAVAILABLE} when the pointer's bundle does not agree with itself —
  * never a partial bundle. Answers are {@code no-store}.
+ *
+ * <p>The one sub-path is {@code GET /api/dashboard/evidence} (Story 2.9): the calculation evidence of the
+ * result the screen shows. It is the only dashboard surface that receives identifiers, and it only judges
+ * them — the three values of the shown pointer ({@code planId}, {@code pointerVersion},
+ * {@code calculationId}) answer 200 when they are the user's current official pointer, and anything else
+ * (another user's, an earlier version, an unknown, malformed, repeated or missing value, no active plan) is
+ * the same common 404 as a missing route, so nothing can be explored with them. 503
+ * {@code EVIDENCE_UNAVAILABLE} when the current pointer's lineage does not agree with itself.
  *
  * <p>Amounts and ratios are canonical decimal strings. Rounding for display is the client's final step.
  */
@@ -46,6 +54,19 @@ class DashboardController {
     static final String DASHBOARD_UNAVAILABLE="DASHBOARD_UNAVAILABLE";
     static final String MESSAGE_DASHBOARD_UNAVAILABLE=
             "공식 결과를 한 묶음으로 확인하지 못해 보내지 않았습니다. 잠시 후 다시 불러와 주세요.";
+
+    /** The calculation evidence of the shown result (Story 2.9). The dashboard path's predicate covers it. */
+    static final String EVIDENCE_PATH=AuthSecurityConfig.DASHBOARD_PATH+"/evidence";
+    /** The stable machine code of a lineage that does not agree with itself. The client treats it as retryable. */
+    static final String EVIDENCE_UNAVAILABLE="EVIDENCE_UNAVAILABLE";
+    static final String MESSAGE_EVIDENCE_UNAVAILABLE=
+            "계산 근거를 한 묶음으로 확인하지 못해 보내지 않았습니다. 잠시 후 다시 시도해 주세요.";
+
+    /** A canonical UUID (either case). {@link UUID#fromString} alone also accepts shortened groups. */
+    private static final java.util.regex.Pattern UUID_TEXT=java.util.regex.Pattern.compile(
+            "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
+    /** A positive version without a sign, leading zero or exponent, short enough for a {@code long}. */
+    private static final java.util.regex.Pattern VERSION_TEXT=java.util.regex.Pattern.compile("[1-9][0-9]{0,17}");
 
     private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(DashboardController.class);
 
@@ -135,6 +156,171 @@ class DashboardController {
     private static void log(String state,int status,long started,String consistent) {
         LOG.info("dashboard read: state={} status={} latencyMs={} consistent={}",state,status,
                 (System.nanoTime()-started)/1_000_000,consistent);
+    }
+
+    // ------------------------------------------------------------------ calculation evidence (Story 2.9)
+
+    record EvidenceSnapshotsView(UUID portfolioSnapshotId,long portfolioSequence,UUID basisPortfolioSnapshotId,
+            UUID basisSourceSnapshotId,UUID sourceSnapshotId) {}
+    /** Four times under their own names. There is no common snapshot token, and none is invented here. */
+    record EvidenceTimesView(String t0,String tc,String measuredAt,String cashflowVerifiedThrough) {}
+    record EvidenceConnectionView(String provider,UUID connectionId,String policyVersion) {}
+    record EvidenceSourceRangeView(String rangeStart,String rangeEnd,String collectionPolicy,String completenessHash) {}
+    record EvidenceClassificationView(UUID classificationId,String policyVersion,String inputScopeHash) {}
+    record EvidenceConversionView(UUID conversionId,String pricePolicy,String resultFingerprint) {}
+    record EvidenceCashflowsView(int appliedCount,int estimatedCount) {}
+    record EvidencePlanView(UUID planId,ConditionsView conditions) {}
+    record EvidenceInputsView(EvidenceConnectionView connection,EvidenceSourceRangeView sourceRange,
+            EvidenceClassificationView classification,EvidenceConversionView conversion,EvidenceCashflowsView cashflows,
+            EvidencePlanView plan) {}
+    record EvidenceCalculationView(UUID calculationId,String calculationPolicy,String calendarPolicy,
+            String displayPolicy,String precisionPolicy,String timeZone,String implementationVersion,String inputHash,
+            String resultHash,String createdAt) {}
+    record EstimatedCauseView(String evidenceType,int flowCount) {}
+    /** No value: the evidence explains a metric's character; the value itself is the dashboard's. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record MetricImpactView(String metric,String nature,@Nullable String unavailableReason,
+            @Nullable EstimatedCauseView estimatedCause) {}
+    record OfficialVersionView(long pointerVersion,UUID calculationId,String publishedAt,boolean current) {}
+    record UnpublishedAttemptView(String status,String reasonCode,String finishedAt) {}
+    /** Official versions and attempts that never published, in two separate lists. */
+    record EvidenceVersionsView(List<OfficialVersionView> official,List<UnpublishedAttemptView> unpublished) {}
+    /**
+     * The evidence in the screen's order: snapshots → times → input versions → calculation version →
+     * metric impact → versions. The reference repeats the three values the request named.
+     */
+    record EvidenceView(UUID planId,long pointerVersion,UUID calculationId,EvidenceSnapshotsView snapshots,
+            EvidenceTimesView times,EvidenceInputsView inputs,EvidenceCalculationView calculation,
+            List<MetricImpactView> metrics,EvidenceVersionsView versions) {}
+
+    /**
+     * One evidence read, one operational line — like the dashboard's: the outcome, the status answered, the
+     * latency in milliseconds and whether the lineage agreed with itself ({@code unknown} when none was
+     * read). No user, reference, correlation id, amount, time or hash.
+     */
+    @GetMapping(path=EVIDENCE_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
+    ResponseEntity<?> evidence(HttpServletRequest request) {
+        long started=System.nanoTime();
+        SyncJobApi.EvidenceRead read;
+        try {
+            read=jobs.calculationEvidence(currentUserId(),referenceOf(request));
+        } catch (RuntimeException failure) {
+            // The class name at debug only: a message or cause can carry SQL or values.
+            if (LOG.isDebugEnabled()) LOG.debug("calculation evidence read failed: failure={}",failure.getClass().getName());
+            ResponseEntity<ApiErrorHandler.ApiError> failed=error(HttpStatus.INTERNAL_SERVER_ERROR,
+                    ApiErrorHandler.CODE_INTERNAL_ERROR,ApiErrorHandler.MESSAGE_INTERNAL_ERROR,request);
+            logEvidence("ERROR",failed.getStatusCode().value(),started,"unknown");
+            return failed;
+        }
+        ResponseEntity<?> answer=switch (read.outcome()) {
+            case SyncJobApi.EvidenceOutcome.NotPermitted denied ->
+                    error(HttpStatus.FORBIDDEN,ApiErrorHandler.CODE_FORBIDDEN,ApiErrorHandler.MESSAGE_FORBIDDEN,request);
+            // The very body of a missing route: whether anything exists behind the reference stays unsaid.
+            case SyncJobApi.EvidenceOutcome.NotFound notFound ->
+                    error(HttpStatus.NOT_FOUND,ApiErrorHandler.CODE_NOT_FOUND,ApiErrorHandler.MESSAGE_NOT_FOUND,request);
+            case SyncJobApi.EvidenceOutcome.Unavailable unavailable ->
+                    error(HttpStatus.SERVICE_UNAVAILABLE,EVIDENCE_UNAVAILABLE,MESSAGE_EVIDENCE_UNAVAILABLE,request);
+            case SyncJobApi.EvidenceOutcome.Found found ->
+                    ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(evidenceView(found.evidence()));
+        };
+        String state=switch (read.outcome()) {
+            case SyncJobApi.EvidenceOutcome.NotPermitted denied -> "DENIED";
+            case SyncJobApi.EvidenceOutcome.NotFound notFound -> "NOT_FOUND";
+            case SyncJobApi.EvidenceOutcome.Unavailable unavailable -> "INCONSISTENT";
+            case SyncJobApi.EvidenceOutcome.Found found -> "FOUND";
+        };
+        String consistent=switch (read.consistency()) {
+            case CONSISTENT -> "true";
+            case INCONSISTENT -> "false";
+            case NOT_READ -> "unknown";
+        };
+        logEvidence(state,answer.getStatusCode().value(),started,consistent);
+        return answer;
+    }
+
+    private static void logEvidence(String state,int status,long started,String consistent) {
+        LOG.info("calculation evidence read: state={} status={} latencyMs={} consistent={}",state,status,
+                (System.nanoTime()-started)/1_000_000,consistent);
+    }
+
+    /** The common error body, {@code no-store} like every answer of this surface. */
+    private static ResponseEntity<ApiErrorHandler.ApiError> error(HttpStatus status,String code,String message,
+            HttpServletRequest request) {
+        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).cacheControl(CacheControl.noStore())
+                .body(new ApiErrorHandler.ApiError(code,message,correlationOf(request)));
+    }
+
+    /**
+     * The three values of the shown pointer, or {@code null} when any is missing, repeated or malformed, or
+     * the query itself cannot be parsed. A {@code null} is answered like a stale reference — the same 404 —
+     * after the account's own access. Other parameters are ignored.
+     */
+    static SyncJobApi.@Nullable EvidenceReference referenceOf(HttpServletRequest request) {
+        String plan;
+        String version;
+        String calculation;
+        try {
+            plan=single(request,"planId");
+            version=single(request,"pointerVersion");
+            calculation=single(request,"calculationId");
+        } catch (RuntimeException unparsable) {
+            /*
+             * The container parses the query lazily, on the first parameter read, and refuses a malformed
+             * one — an invalid percent escape, or more parameters than it accepts — by throwing (Tomcat 11's
+             * InvalidParameterException, an IllegalStateException). That is a malformed reference like any
+             * other: the same 404 after the account's own access, never a 500.
+             */
+            return null;
+        }
+        if (plan==null || version==null || calculation==null) return null;
+        if (!UUID_TEXT.matcher(plan).matches() || !UUID_TEXT.matcher(calculation).matches()
+                || !VERSION_TEXT.matcher(version).matches())
+            return null;
+        return new SyncJobApi.EvidenceReference(UUID.fromString(plan),Long.parseLong(version),UUID.fromString(calculation));
+    }
+
+    private static @Nullable String single(HttpServletRequest request,String name) {
+        String[] values=request.getParameterValues(name);
+        return values!=null && values.length==1 ? values[0] : null;
+    }
+
+    static EvidenceView evidenceView(SyncJobApi.CalculationEvidence e) {
+        var snapshots=e.snapshots();
+        var times=e.times();
+        var plan=e.plan();
+        var calculation=e.calculation();
+        return new EvidenceView(e.planId(),e.pointerVersion(),e.calculationId(),
+                new EvidenceSnapshotsView(snapshots.portfolioSnapshotId(),snapshots.portfolioSequence(),
+                        snapshots.basisPortfolioSnapshotId(),snapshots.basisSourceSnapshotId(),
+                        snapshots.sourceSnapshotId()),
+                new EvidenceTimesView(times.t0().toString(),times.tc().toString(),times.measuredAt().toString(),
+                        times.cashflowVerifiedThrough().toString()),
+                new EvidenceInputsView(
+                        new EvidenceConnectionView(e.connection().provider(),e.connection().connectionId(),
+                                e.connection().policyVersion()),
+                        new EvidenceSourceRangeView(e.sourceRange().rangeStart().toString(),
+                                e.sourceRange().rangeEnd().toString(),e.sourceRange().collectionPolicy(),
+                                e.sourceRange().completenessHash()),
+                        new EvidenceClassificationView(e.classification().classificationId(),
+                                e.classification().policyVersion(),e.classification().inputScopeHash()),
+                        new EvidenceConversionView(e.conversion().conversionId(),e.conversion().pricePolicy(),
+                                e.conversion().resultFingerprint()),
+                        new EvidenceCashflowsView(e.cashflows().appliedCount(),e.cashflows().estimatedCount()),
+                        new EvidencePlanView(plan.planId(),new ConditionsView(plan.principal(),plan.startAt().toString(),
+                                plan.endAt().toString(),plan.period(),plan.targetRate()))),
+                new EvidenceCalculationView(calculation.calculationId(),calculation.calculationPolicy(),
+                        calculation.calendarPolicy(),calculation.displayPolicy(),calculation.precisionPolicy(),
+                        calculation.timeZone(),calculation.implementationVersion(),calculation.inputHash(),
+                        calculation.resultHash(),calculation.createdAt().toString()),
+                e.metrics().stream().map(m -> new MetricImpactView(m.metric(),m.nature(),m.unavailableReason(),
+                        m.estimatedCause()==null ? null
+                                : new EstimatedCauseView(m.estimatedCause().evidenceType(),m.estimatedCause().flowCount())))
+                        .toList(),
+                new EvidenceVersionsView(
+                        e.officialVersions().stream().map(v -> new OfficialVersionView(v.pointerVersion(),
+                                v.calculationId(),v.publishedAt().toString(),v.current())).toList(),
+                        e.unpublishedAttempts().stream().map(a -> new UnpublishedAttemptView(a.status(),a.reasonCode(),
+                                a.finishedAt().toString())).toList()));
     }
 
     private static String correlationOf(HttpServletRequest request) {

@@ -32,6 +32,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
     @Autowired private SyncJobApi sync;
     @Autowired private PlanConditionApi plans;
     @Autowired private PlatformTransactionManager manager;
+    @org.springframework.boot.test.web.server.LocalServerPort private int serverPort;
 
     @Test
     void repeatedAdmissionPublishesOneOfficialBundle() throws Exception {
@@ -1833,6 +1834,23 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 .containsExactly("PLAN_AMOUNT","PLAN_DIFFERENCE","ADJUSTED_TARGET","REQUIRED_RATE","GOAL_PROGRESS");
         assertThat(found.trust().calculationNature().estimatedFlowCount()).isEqualTo(1);
         assertThat(found.estimatedFlowCount()).isEqualTo(1);
+
+        // Story 2.9 ESTIMATED: the cause is derived from the applied flows — the current value is Bybit's own
+        // measurement and nothing propagates to it; every derived metric names the estimated price evidence
+        // kind and the count, never an individual event (that is Story 2.10's).
+        var evidence=evidenceOf(user);
+        assertThat(evidence.cashflows()).isEqualTo(new SyncJobApi.CalculationEvidence.Cashflows(2,1));
+        assertThat(evidence.conversion().pricePolicy()).isEqualTo("BYBIT-PRICE-1.0");
+        assertThat(evidence.metrics().getFirst())
+                .isEqualTo(new SyncJobApi.CalculationEvidence.MetricImpact("CURRENT_VALUE","OFFICIAL",null,null));
+        assertThat(evidence.metrics().subList(1,6)).extracting(SyncJobApi.CalculationEvidence.MetricImpact::metric)
+                .containsExactly("PLAN_AMOUNT","PLAN_DIFFERENCE","ADJUSTED_TARGET","REQUIRED_RATE","GOAL_PROGRESS");
+        assertThat(evidence.metrics().subList(1,6)).allSatisfy(metric -> {
+            assertThat(metric.nature()).isEqualTo("ESTIMATED");
+            assertThat(metric.unavailableReason()).isNull();
+            assertThat(metric.estimatedCause())
+                    .isEqualTo(new SyncJobApi.CalculationEvidence.EstimatedCause("SPOT_KLINE_CLOSE",1));
+        });
     }
 
     @ParameterizedTest(name = "{0}")
@@ -1902,6 +1920,24 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                                 : reason).containsEntry("nature","OFFICIAL");
             } else {
                 assertThat(row).as((String)row.get("metric")).containsKey("value").doesNotContainKey("unavailableReason");
+            }
+        }
+
+        // Story 2.9 NOT_COMPUTABLE: the evidence links each undefined metric to its reason code, keeps its
+        // character, carries no value at all and invents no estimated cause (no flow here was estimated).
+        var evidence=send("GET",DashboardController.EVIDENCE_PATH+query(fields),cookie);
+        assertThat(evidence.statusCode()).isEqualTo(200);
+        @SuppressWarnings("unchecked")
+        var impacts=(java.util.List<java.util.Map<String,Object>>)topLevelFieldsOf(evidence.body()).get("metrics");
+        assertThat(impacts).extracting(m -> m.get("metric")).containsExactly("CURRENT_VALUE","PLAN_AMOUNT",
+                "PLAN_DIFFERENCE","ADJUSTED_TARGET","REQUIRED_RATE","GOAL_PROGRESS");
+        for (var row : impacts) {
+            assertThat(row).as((String)row.get("metric")).doesNotContainKeys("value","estimatedCause")
+                    .containsEntry("nature","OFFICIAL");
+            if (expectedUnavailable.contains(row.get("metric"))) {
+                assertThat(row).as((String)row.get("metric")).containsEntry("unavailableReason",reason);
+            } else {
+                assertThat(row).as((String)row.get("metric")).doesNotContainKey("unavailableReason");
             }
         }
     }
@@ -2458,6 +2494,9 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         UUID intent=convertedIntent(user,"erase-publication","0.1",base.minusSeconds(3600),
                 new Flow("erase-publication-in","USDT","5",base.plusSeconds(13)));
         assertThat(awaitPublication(publish(user,intent,"erase-publication-001"))).isEqualTo("PUBLISHED");
+        // Story 2.9: the evidence has no table of its own, so the same erasure removes what it is read from.
+        var erasedReference=referenceOf(ready(user));
+        evidenceOf(user);
 
         portfolio.erasePortfolioData(user);
         sync.eraseSyncData(user);
@@ -2476,6 +2515,15 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertThat(dashboardOf(user)).as("the erased user's read").isInstanceOf(SyncJobApi.Dashboard.NoPlan.class);
         assertThat(jdbc().sql("SELECT count(*) FROM plan_definition WHERE user_id=:u").param("u",kept)
                 .query(Integer.class).single()).isEqualTo(1);
+        assertThat(sync.calculationEvidence(user,erasedReference))
+                .isEqualTo(new SyncJobApi.EvidenceRead(new SyncJobApi.EvidenceOutcome.NotFound(),
+                        SyncJobApi.BundleConsistency.NOT_READ));
+        assertThat(evidenceOf(kept).unpublishedAttempts()).as("another user's evidence stays").isEmpty();
+        for (String table : new String[] {"sync_initial_candidate_bundle","sync_initial_page_evidence",
+                "sync_cashflow_classification_bundle","sync_cashflow_conversion_bundle"}) {
+            assertThat(jdbc().sql("SELECT count(*) FROM "+table+" WHERE user_id=:u").param("u",user)
+                    .query(Integer.class).single()).as("evidence source "+table).isZero();
+        }
     }
 
     @Test
@@ -2987,6 +3035,660 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertThat(resultOf(get(AuthSecurityConfig.DASHBOARD_PATH,cookie).body())).containsKey("metrics");
     }
 
+    // ------------------------------------------------------------------------------------------
+    // Story 2.9 calculation evidence: the shown pointer's lineage, tamper, broken lineage, deletion
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * CURRENT: the three values of the shown pointer answer one read-only bundle, in the screen's order —
+     * snapshots, times, input versions, the calculation version, metric impact and versions — each value the
+     * one the stored rows hold. Nothing internal to the account (the user id, the provider account id, the
+     * Bybit UID, credentials) is in the answer, and the one operational line carries none of it either.
+     */
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void theShownResultsEvidenceLinksItsWholeLineageInOneAnswer(org.springframework.boot.test.system.CapturedOutput output)
+            throws Exception {
+        String subject="evidence-official-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"evidence-official","0.1",null);
+        assertThat(awaitPublication(publish(user,intent,"evidence-official-command-001"))).isEqualTo("PUBLISHED");
+        var shown=resultOf(get(AuthSecurityConfig.DASHBOARD_PATH,cookie).body());
+
+        int before=evidenceLogLines(output).size();
+        var answer=send("GET",DashboardController.EVIDENCE_PATH+query(shown),cookie,"X-Request-Id","evidence-probe");
+        assertThat(answer.statusCode()).isEqualTo(200);
+        assertThat(answer.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        var fields=topLevelFieldsOf(answer.body());
+        assertThat(fields.keySet()).as("the screen's order").containsExactly("planId","pointerVersion","calculationId",
+                "snapshots","times","inputs","calculation","metrics","versions");
+        assertThat(fields).containsEntry("planId",shown.get("planId")).containsEntry("pointerVersion",1)
+                .containsEntry("calculationId",shown.get("calculationId"));
+
+        var row=jdbc().sql("SELECT portfolio_snapshot_id::text,portfolio_publication_sequence,basis_portfolio_snapshot_id::text,"
+                + "source_snapshot_id::text,t0,basis_at,current_value_measured_at,cashflow_verified_through,connection_id::text,"
+                + "source_policy_version,candidate_id,classification_id::text,conversion_id::text,classification_policy_version,"
+                + "price_policy_version,input_hash,result_hash,implementation_version,created_at,provider_account_id::text "
+                + "FROM sync_plan_calculation WHERE user_id=:u").param("u",user)
+                .query((rs,n)->new Object[] {rs.getString(1),rs.getLong(2),rs.getString(3),rs.getString(4),
+                        rs.getObject(5,java.time.OffsetDateTime.class).toInstant().toString(),
+                        rs.getObject(6,java.time.OffsetDateTime.class).toInstant().toString(),
+                        rs.getObject(7,java.time.OffsetDateTime.class).toInstant().toString(),
+                        rs.getObject(8,java.time.OffsetDateTime.class).toInstant().toString(),rs.getString(9),
+                        rs.getString(10),rs.getObject(11,UUID.class),rs.getString(12),rs.getString(13),rs.getString(14),
+                        rs.getString(15),rs.getString(16),rs.getString(17),rs.getString(18),
+                        rs.getObject(19,java.time.OffsetDateTime.class).toInstant().toString(),rs.getString(20)})
+                .single();
+        // The basis source snapshot is the first snapshot's: the connection's policy is its record of it.
+        var basisSource=jdbc().sql("SELECT s.source_snapshot_id::text,s.policy_version,c.policy_version,"
+                + "(s.job_id IS NOT NULL) FROM sync_plan_calculation p JOIN sync_source_snapshot s "
+                + "ON s.source_snapshot_id=p.basis_source_snapshot_id JOIN source_connection c "
+                + "ON c.connection_id=s.connection_id WHERE p.user_id=:u").param("u",user)
+                .query((rs,n)->new Object[] {rs.getString(1),rs.getString(2),rs.getString(3),rs.getBoolean(4)}).single();
+        assertThat(basisSource[3]).as("written by the first-snapshot job").isEqualTo(true);
+        assertThat(basisSource[1]).as("the connection's own policy, as the first snapshot recorded it")
+                .isEqualTo(basisSource[2]);
+        assertThat(nested(fields,"snapshots")).isEqualTo(java.util.Map.of("portfolioSnapshotId",row[0],
+                "portfolioSequence",((Long)row[1]).intValue(),"basisPortfolioSnapshotId",row[2],
+                "basisSourceSnapshotId",basisSource[0],"sourceSnapshotId",row[3]));
+        // Four times under their own names; tc and the cash-flow verification are the same stored instant.
+        assertThat(nested(fields,"times")).isEqualTo(java.util.Map.of("t0",row[4],"tc",row[5],"measuredAt",row[6],
+                "cashflowVerifiedThrough",row[7]));
+        var inputs=nested(fields,"inputs");
+        assertThat(inputs.keySet()).containsExactly("connection","sourceRange","classification","conversion","cashflows",
+                "plan");
+        assertThat(nested(inputs,"connection")).isEqualTo(java.util.Map.of("provider","BYBIT","connectionId",row[8],
+                "policyVersion",basisSource[1]));
+        var candidate=jdbc().sql("SELECT b.policy_version,b.completeness_hash,min(e.range_start),max(e.range_end) "
+                + "FROM sync_initial_candidate_bundle b JOIN sync_initial_page_evidence e ON e.job_id=b.job_id "
+                + "WHERE b.candidate_id=:c GROUP BY b.policy_version,b.completeness_hash").param("c",row[10])
+                .query((rs,n)->new String[] {rs.getString(1),rs.getString(2),
+                        rs.getObject(3,java.time.OffsetDateTime.class).toInstant().toString(),
+                        rs.getObject(4,java.time.OffsetDateTime.class).toInstant().toString()}).single();
+        assertThat(nested(inputs,"sourceRange")).isEqualTo(java.util.Map.of("rangeStart",candidate[2],"rangeEnd",candidate[3],
+                "collectionPolicy",candidate[0],"completenessHash",candidate[1]));
+        // The collection covered exactly (t0, tc]: its pages start at t0 and end at tc.
+        assertThat(candidate[2]).isEqualTo(row[4]);
+        assertThat(candidate[3]).isEqualTo(row[5]);
+        var classification=jdbc().sql("SELECT policy_version,input_scope_hash FROM sync_cashflow_classification_bundle "
+                + "WHERE classification_id=:c::uuid").param("c",row[11])
+                .query((rs,n)->new String[] {rs.getString(1),rs.getString(2)}).single();
+        assertThat(classification[0]).isEqualTo(row[13]);
+        assertThat(nested(inputs,"classification")).isEqualTo(java.util.Map.of("classificationId",row[11],
+                "policyVersion",classification[0],"inputScopeHash",classification[1]));
+        String fingerprint=jdbc().sql("SELECT outcome_fingerprint FROM sync_cashflow_conversion_bundle "
+                + "WHERE conversion_id=:c::uuid").param("c",row[12]).query(String.class).single();
+        assertThat(nested(inputs,"conversion")).isEqualTo(java.util.Map.of("conversionId",row[12],"pricePolicy",row[14],
+                "resultFingerprint",fingerprint));
+        assertThat(nested(inputs,"cashflows")).isEqualTo(java.util.Map.of("appliedCount",0,"estimatedCount",0));
+        assertThat(nested(inputs,"plan")).isEqualTo(java.util.Map.of("planId",shown.get("planId"),
+                "conditions",shown.get("conditions")));
+        assertThat(nested(fields,"calculation")).isEqualTo(java.util.Map.of("calculationId",shown.get("calculationId"),
+                "calculationPolicy","CALC-1.0","calendarPolicy","CALENDAR-SEOUL-1.0","displayPolicy","DISPLAY-1.0",
+                "precisionPolicy","DECIMAL128-HALF_EVEN","timeZone","Asia/Seoul","implementationVersion",row[17],
+                "inputHash",row[15],"resultHash",row[16],"createdAt",row[18]));
+        @SuppressWarnings("unchecked")
+        var metrics=(java.util.List<java.util.Map<String,Object>>)fields.get("metrics");
+        assertThat(metrics).extracting(m -> m.get("metric")).containsExactly("CURRENT_VALUE","PLAN_AMOUNT",
+                "PLAN_DIFFERENCE","ADJUSTED_TARGET","REQUIRED_RATE","GOAL_PROGRESS");
+        assertThat(metrics).as("the character only, never the value").allSatisfy(m -> assertThat(m)
+                .isEqualTo(java.util.Map.of("metric",m.get("metric"),"nature","OFFICIAL")));
+        String publishedAt=jdbc().sql("SELECT published_at FROM sync_official_plan_result WHERE user_id=:u").param("u",user)
+                .query(java.time.OffsetDateTime.class).single().toInstant().toString();
+        assertThat(nested(fields,"versions")).isEqualTo(java.util.Map.of(
+                "official",java.util.List.of(java.util.Map.of("pointerVersion",1,"calculationId",shown.get("calculationId"),
+                        "publishedAt",publishedAt,"current",true)),
+                "unpublished",java.util.List.of()));
+
+        // AC-8: nothing that names the account inside BokriLog or at the provider.
+        String externalRef=jdbc().sql("SELECT provider_account_ref FROM source_provider_account WHERE user_id=:u")
+                .param("u",user).query(String.class).single();
+        assertThat(answer.body()).doesNotContain(user.toString()).doesNotContain((String)row[19])
+                .doesNotContain(externalRef);
+        assertThat(answer.body().toLowerCase(java.util.Locale.ROOT)).doesNotContain("userid").doesNotContain("provideraccount")
+                .doesNotContain("secret").doesNotContain("apikey").doesNotContain("credential");
+
+        var lines=evidenceLogLines(output);
+        assertThat(lines.subList(before,lines.size())).singleElement().asString()
+                .matches(".*calculation evidence read: state=FOUND status=200 latencyMs=\\d+ consistent=true$")
+                .doesNotContain(user.toString()).doesNotContain((String)shown.get("calculationId"))
+                .doesNotContain((String)shown.get("planId")).doesNotContain(row[15].toString()).doesNotContain("evidence-probe");
+    }
+
+    /**
+     * UNPUBLISHED: the intent's attempts that ended without publishing — blocked by a restriction that came
+     * while the worker waited, failed by an injected interruption — are listed apart from the one official
+     * version, oldest first, with their status, reason and finish time only. Another intent's attempt is not.
+     */
+    @Test
+    void attemptsThatNeverPublishedAreListedApartFromTheOfficialVersion() throws Exception {
+        String subject="evidence-attempts-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"evidence-attempts","0.1",null);
+        UUID blocked;
+        AutoCloseable lock=holdPlanLock(user);
+        try {
+            blocked=publish(user,intent,"evidence-attempts-command-001");
+            awaitBlockedOnPlanLock();
+            jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) VALUES (:id,'plan-publication')")
+                    .param("id",UUID.randomUUID()).update();
+        } finally {
+            lock.close();
+        }
+        assertThat(awaitPublication(blocked)).isEqualTo("BLOCKED");
+        jdbc().sql("TRUNCATE TABLE operations_restriction").update();
+        jdbc().sql("CREATE FUNCTION fail_evidence_pointer() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+                + "IF NEW.user_id='"+user+"'::uuid THEN RAISE EXCEPTION 'injected pointer failure'; END IF; "
+                + "RETURN NEW; END $$").update();
+        jdbc().sql("CREATE TRIGGER fail_evidence_pointer BEFORE INSERT ON sync_official_plan_result "
+                + "FOR EACH ROW EXECUTE FUNCTION fail_evidence_pointer()").update();
+        UUID failed;
+        try {
+            failed=publish(user,intent,"evidence-attempts-command-002");
+            assertThat(awaitPublication(failed)).isEqualTo("FAILED");
+        } finally {
+            jdbc().sql("DROP TRIGGER fail_evidence_pointer ON sync_official_plan_result").update();
+            jdbc().sql("DROP FUNCTION fail_evidence_pointer()").update();
+        }
+        assertThat(awaitPublication(publish(user,intent,"evidence-attempts-command-003"))).isEqualTo("PUBLISHED");
+        // An attempt of another intent of the same user (a replaced one, say) belongs to another lineage.
+        jdbc().sql("INSERT INTO sync_plan_publication_job(job_id,user_id,portfolio_id,intent_id,membership_id,connection_id,"
+                + "provider_account_id,basis_portfolio_snapshot_id,basis_source_snapshot_id,expected_portfolio_snapshot_id,"
+                + "expected_portfolio_sequence,candidate_id,classification_id,conversion_id,p0_decimal,t0,end_at,period,"
+                + "target_rate,tc,current_value_decimal,current_value_measured_at,flow_count,input_scope_hash,"
+                + "calculation_policy,calendar_policy,idempotency_key,status,failure_code,finished_at) SELECT :id,user_id,"
+                + "portfolio_id,:other,membership_id,connection_id,provider_account_id,basis_portfolio_snapshot_id,"
+                + "basis_source_snapshot_id,expected_portfolio_snapshot_id,expected_portfolio_sequence,candidate_id,"
+                + "classification_id,conversion_id,p0_decimal,t0,end_at,period,target_rate,tc,current_value_decimal,"
+                + "current_value_measured_at,flow_count,input_scope_hash,calculation_policy,calendar_policy,"
+                + "'evidence-attempts-other-intent','FAILED','CALCULATION_INPUT_INVALID',now() "
+                + "FROM sync_plan_publication_job WHERE job_id=:j").param("id",UUID.randomUUID())
+                .param("other",UUID.randomUUID()).param("j",failed).update();
+
+        var evidence=evidenceOf(user);
+        var endings=jdbc().sql("SELECT finished_at FROM sync_plan_publication_job WHERE job_id IN (:b,:f) ORDER BY created_at")
+                .param("b",blocked).param("f",failed)
+                .query((rs,n)->rs.getObject(1,java.time.OffsetDateTime.class).toInstant()).list();
+        assertThat(evidence.unpublishedAttempts()).containsExactly(
+                new SyncJobApi.CalculationEvidence.UnpublishedAttempt("BLOCKED","NOT_PERMITTED",endings.get(0)),
+                new SyncJobApi.CalculationEvidence.UnpublishedAttempt("FAILED","PUBLICATION_INTERRUPTED",endings.get(1)));
+        assertThat(evidence.officialVersions()).singleElement().satisfies(version -> {
+            assertThat(version.current()).isTrue();
+            assertThat(version.pointerVersion()).isEqualTo(1);
+            assertThat(version.calculationId()).isEqualTo(evidence.calculationId());
+        });
+
+        // Over HTTP: two separate lists, and an unpublished row names no attempt, plan, calculation or input.
+        var shown=resultOf(get(AuthSecurityConfig.DASHBOARD_PATH,cookie).body());
+        var body=topLevelFieldsOf(get(DashboardController.EVIDENCE_PATH+query(shown),cookie).body());
+        var versions=nested(body,"versions");
+        assertThat(versions.keySet()).containsExactly("official","unpublished");
+        @SuppressWarnings("unchecked")
+        var unpublished=(java.util.List<java.util.Map<String,Object>>)versions.get("unpublished");
+        assertThat(unpublished).hasSize(2).allSatisfy(attempt ->
+                assertThat(attempt.keySet()).containsExactly("status","reasonCode","finishedAt"));
+        assertThat(unpublished).extracting(attempt -> attempt.get("status")).containsExactly("BLOCKED","FAILED");
+    }
+
+    /**
+     * TAMPER (AC-1): only the three values of the user's current pointer answer. Another user's pointer, a
+     * mix of the two, a version that is not current, unknown ids, malformed, repeated or missing values, and
+     * a user with no plan at all answer one 404 — to the letter the body of a route that does not exist.
+     */
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void aTamperedEvidenceReferenceRevealsNothing(org.springframework.boot.test.system.CapturedOutput output)
+            throws Exception {
+        String subject="evidence-tamper-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"evidence-tamper","0.1",null);
+        assertThat(awaitPublication(publish(user,intent,"evidence-tamper-command-001"))).isEqualTo("PUBLISHED");
+        UUID other=connect(DevBybitStub.Scenario.UTA2);
+        UUID otherIntent=convertedIntent(other,"evidence-tamper-other","0.2",null);
+        assertThat(awaitPublication(publish(other,otherIntent,"evidence-tamper-other-001"))).isEqualTo("PUBLISHED");
+        String emptySubject="evidence-tamper-empty-"+UUID.randomUUID();
+        String emptyCookie=sessionCookieOf(signIn(emptySubject)).orElseThrow();
+        var own=ready(user);
+        var foreign=ready(other);
+        String plan=own.planId().toString();
+        String calc=own.calculationId().toString();
+        String valid=query(own.planId(),own.pointerVersion(),own.calculationId());
+        assertThat(get(DashboardController.EVIDENCE_PATH+valid,cookie).statusCode()).isEqualTo(200);
+        assertThat(get(DashboardController.EVIDENCE_PATH+query(plan.toUpperCase(java.util.Locale.ROOT),"1",
+                calc.toUpperCase(java.util.Locale.ROOT)),cookie).statusCode()).as("the same ids in capitals").isEqualTo(200);
+
+        String notFound=send("GET",AuthSecurityConfig.DASHBOARD_PATH+"/no-such-route",cookie,"X-Request-Id",
+                "evidence-tamper-probe").body();
+        assertThat(topLevelFieldsOf(notFound)).containsEntry("code","NOT_FOUND");
+        int before=evidenceLogLines(output).size();
+        var tampered=java.util.List.of(
+                query(foreign.planId(),foreign.pointerVersion(),foreign.calculationId()),
+                query(own.planId(),1,foreign.calculationId()),
+                query(foreign.planId(),1,own.calculationId()),
+                query(own.planId(),2,own.calculationId()),
+                query(UUID.randomUUID(),1,UUID.randomUUID()),
+                query("not-a-uuid","1",calc),
+                query(plan,"01",calc),
+                query(plan,"0",calc),
+                query(plan,"-1",calc),
+                query(plan,"1.0",calc),
+                query(plan,"1e0",calc),
+                query(plan,"%201",calc),
+                query(plan,"99999999999999999999",calc),
+                query(plan,"1","1-1-1-1-1"),
+                query(plan,"1",calc+"0"),
+                query("","",""),
+                "?pointerVersion=1&calculationId="+calc,
+                "?planId="+plan+"&calculationId="+calc,
+                "?planId="+plan+"&pointerVersion=1",
+                "",
+                valid+"&planId="+plan,
+                valid+"&pointerVersion=1");
+        for (String probe : tampered) {
+            var answer=send("GET",DashboardController.EVIDENCE_PATH+probe,cookie,"X-Request-Id","evidence-tamper-probe");
+            assertThat(answer.statusCode()).as(probe).isEqualTo(404);
+            assertThat(answer.headers().firstValue("Cache-Control").orElse("")).as(probe).contains("no-store");
+            assertThat(answer.body()).as(probe+" answers like a missing route").isEqualTo(notFound);
+        }
+        // A user without any plan, holding a real reference of someone else's current pointer.
+        var empty=send("GET",DashboardController.EVIDENCE_PATH+valid,emptyCookie,"X-Request-Id","evidence-tamper-probe");
+        assertThat(empty.statusCode()).isEqualTo(404);
+        assertThat(empty.body()).isEqualTo(notFound);
+        // A version that is no longer current: the pointer moved on (as Story 2.11 will make it), the old one is stale.
+        jdbc().sql("UPDATE sync_official_plan_result SET pointer_version=2 WHERE plan_id=:p").param("p",own.planId())
+                .update();
+        try {
+            var stale=send("GET",DashboardController.EVIDENCE_PATH+valid,cookie,"X-Request-Id","evidence-tamper-probe");
+            assertThat(stale.statusCode()).isEqualTo(404);
+            assertThat(stale.body()).isEqualTo(notFound);
+            assertThat(get(DashboardController.EVIDENCE_PATH+query(own.planId(),2,own.calculationId()),cookie).statusCode())
+                    .as("the current version").isEqualTo(200);
+        } finally {
+            jdbc().sql("UPDATE sync_official_plan_result SET pointer_version=1 WHERE plan_id=:p").param("p",own.planId())
+                    .update();
+        }
+        var lines=evidenceLogLines(output).subList(before,evidenceLogLines(output).size());
+        assertThat(lines.stream().filter(line -> line.contains("status=404")).toList()).hasSize(tampered.size()+2)
+                .allSatisfy(line -> assertThat(line).contains("state=NOT_FOUND status=404").endsWith("consistent=unknown"));
+        assertThat(get(DashboardController.EVIDENCE_PATH+valid,null).statusCode()).as("unauthenticated").isEqualTo(401);
+        // The other user's evidence is untouched and still their own.
+        assertThat(evidenceOf(other).planId()).isEqualTo(foreign.planId());
+    }
+
+    /**
+     * BROKEN (AC-6): when the current pointer's lineage disagrees with itself — a missing row, a policy or a
+     * link that is not the version's — the answer is 503 {@code EVIDENCE_UNAVAILABLE} with no partial lineage,
+     * and the line says {@code consistent=false}. A break that only the evidence reads does not refuse the
+     * dashboard. Each corruption is undone before the next, and the restored lineage is whole again.
+     */
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void aBrokenLineageReturnsNoPartialEvidenceAndLogsConsistentFalse(
+            org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        String subject="evidence-broken-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        clearMarketEvidence();
+        Instant base=closedTenMinuteBoundary();
+        // One directly normalized flow, so the applied history has a row to re-point.
+        UUID intent=convertedIntent(user,"evidence-broken","0.1",base.minusSeconds(3600),
+                new Flow("evidence-broken-in","USDT","100",base.plusSeconds(21)));
+        UUID job=publish(user,intent,"evidence-broken-command-001");
+        assertThat(awaitPublication(job)).isEqualTo("PUBLISHED");
+        var own=ready(user);
+        var reference=referenceOf(own);
+        String valid=query(own.planId(),own.pointerVersion(),own.calculationId());
+        var ids=jdbc().sql("SELECT classification_policy_version,price_policy_version,source_snapshot_id,candidate_id,"
+                + "classification_id,conversion_id,basis_source_snapshot_id FROM sync_plan_calculation "
+                + "WHERE calculation_id=:c")
+                .param("c",own.calculationId()).query((rs,n)->new Object[] {rs.getString(1),rs.getString(2),
+                        rs.getObject(3,UUID.class),rs.getObject(4,UUID.class),rs.getObject(5,UUID.class),
+                        rs.getObject(6,UUID.class),rs.getObject(7,UUID.class)}).single();
+        String classificationPolicy=(String)ids[0], pricePolicy=(String)ids[1];
+        UUID source=(UUID)ids[2], candidate=(UUID)ids[3], classification=(UUID)ids[4], conversion=(UUID)ids[5];
+        UUID basisSource=(UUID)ids[6];
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_calculation_flow WHERE calculation_id=:c")
+                .param("c",own.calculationId()).query(Integer.class).single()).as("one applied flow").isEqualTo(1);
+        // The collection's earliest pages (one per event type) — the ones whose start is t0.
+        var firstPages=jdbc().sql("SELECT e.evidence_id FROM sync_initial_page_evidence e JOIN sync_initial_candidate_bundle b "
+                + "ON b.job_id=e.job_id WHERE b.candidate_id=:c AND e.range_start=(SELECT min(x.range_start) FROM "
+                + "sync_initial_page_evidence x WHERE x.job_id=b.job_id)").param("c",candidate).query(UUID.class).list();
+        assertThat(firstPages).isNotEmpty();
+        var goal=jdbc().sql("SELECT value_decimal,nature FROM sync_plan_calculation_metric WHERE calculation_id=:c "
+                + "AND metric='GOAL_PROGRESS'").param("c",own.calculationId())
+                .query((rs,n)->new String[] {rs.getString(1),rs.getString(2)}).single();
+        record Corruption(String name,boolean dashboardToo,Runnable corrupt,Runnable restore) {}
+        java.util.function.Consumer<String> replica=sql -> new TransactionTemplate(manager).executeWithoutResult(status -> {
+            jdbc().sql("SET LOCAL session_replication_role = replica").update();
+            jdbc().sql(sql).update();
+        });
+        UUID stranger=UUID.randomUUID();
+        var corruptions=java.util.List.of(
+                new Corruption("the version's classification policy is not its classification's",false,
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET classification_policy_version='BYBIT-CASHFLOW-9.9' "
+                                + "WHERE calculation_id=:c").param("c",own.calculationId()).update(),
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET classification_policy_version=:v "
+                                + "WHERE calculation_id=:c").param("v",classificationPolicy).param("c",own.calculationId())
+                                .update()),
+                new Corruption("the version's price policy is not its conversion's",false,
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET price_policy_version='BYBIT-PRICE-9.9' "
+                                + "WHERE calculation_id=:c").param("c",own.calculationId()).update(),
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET price_policy_version=:v WHERE calculation_id=:c")
+                                .param("v",pricePolicy).param("c",own.calculationId()).update()),
+                new Corruption("the applied cash-flow history does not add up",false,
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET flow_count=flow_count+1 WHERE calculation_id=:c")
+                                .param("c",own.calculationId()).update(),
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET flow_count=flow_count-1 WHERE calculation_id=:c")
+                                .param("c",own.calculationId()).update()),
+                new Corruption("the tc source snapshot was measured at another time",false,
+                        () -> jdbc().sql("UPDATE sync_source_snapshot SET measured_at=measured_at+interval '1 second' "
+                                + "WHERE source_snapshot_id=:s").param("s",source).update(),
+                        () -> jdbc().sql("UPDATE sync_source_snapshot SET measured_at=measured_at-interval '1 second' "
+                                + "WHERE source_snapshot_id=:s").param("s",source).update()),
+                new Corruption("the creating attempt was for another intent",false,
+                        () -> jdbc().sql("UPDATE sync_plan_publication_job SET intent_id=:x WHERE job_id=:j")
+                                .param("x",stranger).param("j",job).update(),
+                        () -> jdbc().sql("UPDATE sync_plan_publication_job SET intent_id=:i WHERE job_id=:j")
+                                .param("i",intent).param("j",job).update()),
+                new Corruption("the candidate is another intent's",false,
+                        () -> jdbc().sql("UPDATE sync_initial_candidate_bundle SET intent_id=:x WHERE candidate_id=:c")
+                                .param("x",stranger).param("c",candidate).update(),
+                        () -> jdbc().sql("UPDATE sync_initial_candidate_bundle SET intent_id=:i WHERE candidate_id=:c")
+                                .param("i",intent).param("c",candidate).update()),
+                new Corruption("the conversion is another intent's",false,
+                        () -> jdbc().sql("UPDATE sync_cashflow_conversion_bundle SET intent_id=:x WHERE conversion_id=:c")
+                                .param("x",stranger).param("c",conversion).update(),
+                        () -> jdbc().sql("UPDATE sync_cashflow_conversion_bundle SET intent_id=:i WHERE conversion_id=:c")
+                                .param("i",intent).param("c",conversion).update()),
+                new Corruption("the basis source snapshot was measured after t0",false,
+                        () -> jdbc().sql("UPDATE sync_source_snapshot SET measured_at=measured_at+interval '1 second' "
+                                + "WHERE source_snapshot_id=:s").param("s",basisSource).update(),
+                        () -> jdbc().sql("UPDATE sync_source_snapshot SET measured_at=measured_at-interval '1 second' "
+                                + "WHERE source_snapshot_id=:s").param("s",basisSource).update()),
+                new Corruption("the collection started after t0",false,
+                        () -> jdbc().sql("UPDATE sync_initial_page_evidence SET range_start=range_start+interval '1 second' "
+                                + "WHERE evidence_id IN (:e)").param("e",firstPages).update(),
+                        () -> jdbc().sql("UPDATE sync_initial_page_evidence SET range_start=range_start-interval '1 second' "
+                                + "WHERE evidence_id IN (:e)").param("e",firstPages).update()),
+                new Corruption("the creating attempt expected another pointer sequence",false,
+                        () -> jdbc().sql("UPDATE sync_plan_publication_job SET expected_portfolio_sequence="
+                                + "expected_portfolio_sequence+1 WHERE job_id=:j").param("j",job).update(),
+                        () -> jdbc().sql("UPDATE sync_plan_publication_job SET expected_portfolio_sequence="
+                                + "expected_portfolio_sequence-1 WHERE job_id=:j").param("j",job).update()),
+                // The foreign keys make these impossible; a replica session skips them to build one.
+                new Corruption("the collection left no page evidence of this user",false,
+                        () -> replica.accept("UPDATE sync_initial_page_evidence SET user_id='"+stranger+"' WHERE job_id="
+                                + "(SELECT job_id FROM sync_initial_candidate_bundle WHERE candidate_id='"+candidate+"')"),
+                        () -> replica.accept("UPDATE sync_initial_page_evidence SET user_id='"+user+"' WHERE job_id="
+                                + "(SELECT job_id FROM sync_initial_candidate_bundle WHERE candidate_id='"+candidate+"')")),
+                new Corruption("the classification is another candidate's",false,
+                        () -> replica.accept("UPDATE sync_cashflow_classification_bundle SET candidate_id='"+stranger
+                                + "' WHERE classification_id='"+classification+"'"),
+                        () -> replica.accept("UPDATE sync_cashflow_classification_bundle SET candidate_id='"+candidate
+                                + "' WHERE classification_id='"+classification+"'")),
+                new Corruption("an applied flow cites another conversion",false,
+                        () -> replica.accept("UPDATE sync_plan_calculation_flow SET conversion_id='"+stranger
+                                + "' WHERE calculation_id='"+own.calculationId()+"'"),
+                        () -> replica.accept("UPDATE sync_plan_calculation_flow SET conversion_id='"+conversion
+                                + "' WHERE calculation_id='"+own.calculationId()+"'")),
+                new Corruption("the version's conversion does not exist",false,
+                        () -> replica.accept("UPDATE sync_plan_calculation SET conversion_id='"+stranger
+                                + "' WHERE calculation_id='"+own.calculationId()+"'"),
+                        () -> replica.accept("UPDATE sync_plan_calculation SET conversion_id='"+conversion
+                                + "' WHERE calculation_id='"+own.calculationId()+"'")),
+                new Corruption("a metric is missing",true,
+                        () -> jdbc().sql("DELETE FROM sync_plan_calculation_metric WHERE calculation_id=:c "
+                                + "AND metric='GOAL_PROGRESS'").param("c",own.calculationId()).update(),
+                        () -> jdbc().sql("INSERT INTO sync_plan_calculation_metric(calculation_id,metric,value_decimal,nature) "
+                                + "VALUES (:c,'GOAL_PROGRESS',:v,:n)").param("c",own.calculationId()).param("v",goal[0])
+                                .param("n",goal[1]).update()));
+        int before=evidenceLogLines(output).size();
+        for (Corruption corruption : corruptions) {
+            corruption.corrupt().run();
+            var refused=send("GET",DashboardController.EVIDENCE_PATH+valid,cookie,"X-Request-Id","evidence-broken");
+            assertThat(refused.statusCode()).as(corruption.name()).isEqualTo(503);
+            assertThat(refused.headers().firstValue("Cache-Control").orElse("")).as(corruption.name()).contains("no-store");
+            assertThat(topLevelFieldsOf(refused.body())).as(corruption.name())
+                    .containsOnlyKeys("code","message","correlationId").containsEntry("code","EVIDENCE_UNAVAILABLE")
+                    .containsEntry("correlationId","evidence-broken");
+            assertThat(refused.body()).as(corruption.name()).doesNotContain(own.calculationId().toString())
+                    .doesNotContain(own.planId().toString()).doesNotContain(own.inputHash());
+            assertThat(sync.calculationEvidence(user,reference)).as(corruption.name()).isEqualTo(new SyncJobApi.EvidenceRead(
+                    new SyncJobApi.EvidenceOutcome.Unavailable(),SyncJobApi.BundleConsistency.INCONSISTENT));
+            if (corruption.dashboardToo()) {
+                assertThat(dashboardOf(user)).as(corruption.name()).isInstanceOf(SyncJobApi.Dashboard.Unavailable.class);
+            } else {
+                assertThat(dashboardOf(user)).as("the dashboard itself: "+corruption.name())
+                        .isInstanceOf(SyncJobApi.Dashboard.Ready.class);
+            }
+            corruption.restore().run();
+            assertThat(sync.calculationEvidence(user,reference).outcome()).as("restored: "+corruption.name())
+                    .isInstanceOf(SyncJobApi.EvidenceOutcome.Found.class);
+        }
+        var lines=evidenceLogLines(output);
+        assertThat(lines.subList(before,lines.size())).hasSize(corruptions.size())
+                .allSatisfy(line -> assertThat(line).contains("state=INCONSISTENT status=503").endsWith("consistent=false"));
+    }
+
+    /**
+     * DELETING (AC-8): the account's own access is decided before and after the read. A deletion that begins
+     * while the lineage is read wins; in progress or finished, nothing comes back, and another user's evidence
+     * stays.
+     */
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void aDeletionOnEitherSideOfTheReadRefusesTheEvidence(org.springframework.boot.test.system.CapturedOutput output)
+            throws Exception {
+        String subject="evidence-deletion-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"evidence-deletion","0.1",null);
+        assertThat(awaitPublication(publish(user,intent,"evidence-deletion-command-001"))).isEqualTo("PUBLISHED");
+        UUID kept=connect(DevBybitStub.Scenario.UTA2);
+        UUID keptIntent=convertedIntent(kept,"evidence-deletion-kept","0.1",null);
+        assertThat(awaitPublication(publish(kept,keptIntent,"evidence-deletion-kept-001"))).isEqualTo("PUBLISHED");
+        var own=ready(user);
+        String valid=query(own.planId(),own.pointerVersion(),own.calculationId());
+
+        // After: the read is past its first check and holds its snapshot when the deletion commits.
+        java.util.concurrent.CompletableFuture<java.net.http.HttpResponse<String>> pending;
+        AutoCloseable lock=holdTableLock("sync_cashflow_classification_bundle");
+        try {
+            pending=java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                try {
+                    return get(DashboardController.EVIDENCE_PATH+valid,cookie);
+                } catch (Exception failure) {
+                    throw new IllegalStateException(failure);
+                }
+            });
+            // Only the evidence read selects these two columns together from that table.
+            awaitBlockedOn("input_scope_hash FROM sync_cashflow_classification_bundle");
+            accountDeletion().beginDeletion(user);
+        } finally {
+            lock.close();
+        }
+        var late=pending.get(20,TimeUnit.SECONDS);
+        assertThat(late.statusCode()).as("the deletion that began during the read wins").isEqualTo(403);
+        assertThat(late.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        assertThat(topLevelFieldsOf(late.body())).containsOnlyKeys("code","message","correlationId")
+                .containsEntry("code","FORBIDDEN");
+        assertThat(late.body()).doesNotContain(own.calculationId().toString()).doesNotContain(own.inputHash());
+        assertThat(evidenceLogLines(output).getLast()).contains("state=DENIED status=403").endsWith("consistent=true");
+
+        // Before: in progress. Nothing was read, so nothing is known about the lineage.
+        var before=get(DashboardController.EVIDENCE_PATH+valid,cookie);
+        assertThat(before.statusCode()).isEqualTo(403);
+        assertThat(evidenceLogLines(output).getLast()).contains("state=DENIED status=403").endsWith("consistent=unknown");
+        assertThat(get(DashboardController.EVIDENCE_PATH+"?planId=malformed",cookie).statusCode())
+                .as("a malformed reference is not a way around the refusal").isEqualTo(403);
+        assertThat(sync.calculationEvidence(user,referenceOf(own)).outcome())
+                .isInstanceOf(SyncJobApi.EvidenceOutcome.NotPermitted.class);
+
+        // Finished: the erasure ran in its order; the session went with it.
+        portfolio.erasePortfolioData(user);
+        sync.eraseSyncData(user);
+        plans.erasePlanData(user);
+        source.eraseSourceData(user);
+        assertThat(accountDeletion().erasePayload(user)).isEqualTo(com.bokrilog.identity.DeletionOutcome.COMPLETED);
+        assertThat(sync.calculationEvidence(user,referenceOf(own)).outcome()).as("DELETED")
+                .isInstanceOf(SyncJobApi.EvidenceOutcome.NotPermitted.class);
+        assertThat(get(DashboardController.EVIDENCE_PATH+valid,cookie).statusCode()).isEqualTo(401);
+
+        assertThat(evidenceOf(kept).planId()).isEqualTo(ready(kept).planId());
+    }
+
+    /**
+     * A read that throws answers the common 500 with nothing of the lineage, and the one line for it says
+     * {@code ERROR} with the status answered and {@code consistent=unknown}. A table only the evidence reads
+     * is hidden for one request, so the read fails inside the lineage — and the dashboard, which does not
+     * read it, still answers.
+     */
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void anEvidenceReadThatFailsAnswersTheCommonErrorAndLogsOneErrorLine(
+            org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        String subject="evidence-error-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"evidence-error","0.1",null);
+        assertThat(awaitPublication(publish(user,intent,"evidence-error-command-001"))).isEqualTo("PUBLISHED");
+        var own=ready(user);
+        String valid=query(own.planId(),own.pointerVersion(),own.calculationId());
+
+        int before=evidenceLogLines(output).size();
+        java.net.http.HttpResponse<String> failed;
+        java.net.http.HttpResponse<String> dashboard;
+        jdbc().sql("ALTER TABLE sync_cashflow_classification_bundle RENAME TO sync_cashflow_classification_bundle_hidden")
+                .update();
+        try {
+            failed=send("GET",DashboardController.EVIDENCE_PATH+valid,cookie,"X-Request-Id","evidence-error-probe");
+            dashboard=get(AuthSecurityConfig.DASHBOARD_PATH,cookie);
+        } finally {
+            jdbc().sql("ALTER TABLE sync_cashflow_classification_bundle_hidden RENAME TO sync_cashflow_classification_bundle")
+                    .update();
+        }
+        assertThat(failed.statusCode()).isEqualTo(500);
+        assertThat(failed.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        assertThat(topLevelFieldsOf(failed.body())).containsOnlyKeys("code","message","correlationId")
+                .containsEntry("code","INTERNAL_ERROR").containsEntry("correlationId","evidence-error-probe");
+        assertThat(failed.body()).doesNotContain(own.calculationId().toString()).doesNotContain(own.inputHash())
+                .doesNotContain("sync_cashflow_classification_bundle");
+        assertThat(dashboard.statusCode()).as("the dashboard does not read that table").isEqualTo(200);
+        var lines=evidenceLogLines(output);
+        assertThat(lines.subList(before,lines.size())).singleElement().asString()
+                .matches(".*calculation evidence read: state=ERROR status=500 latencyMs=\\d+ consistent=unknown$");
+        assertThat(output.getAll()).as("no SQL or relation name reaches the log")
+                .doesNotContain("sync_cashflow_classification_bundle_hidden");
+        // The next read is whole again.
+        assertThat(get(DashboardController.EVIDENCE_PATH+valid,cookie).statusCode()).isEqualTo(200);
+    }
+
+    /**
+     * A query the container cannot parse — an invalid percent escape, or more parameters than it accepts —
+     * is a malformed reference like any other: the same 404 as a missing route, after the account's own
+     * access, so a deleting account still hears 403. Never a 500. Sent over a raw socket: the HTTP client
+     * refuses to build such a URI at all.
+     */
+    @Test
+    void anUnparsableQueryIsTheSame404AndNeverA500() throws Exception {
+        String subject="evidence-unparsable-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"evidence-unparsable","0.1",null);
+        assertThat(awaitPublication(publish(user,intent,"evidence-unparsable-command-001"))).isEqualTo("PUBLISHED");
+        var own=ready(user);
+        String valid=query(own.planId(),own.pointerVersion(),own.calculationId());
+        String notFound=send("GET",AuthSecurityConfig.DASHBOARD_PATH+"/no-such-route",cookie,"X-Request-Id",
+                "evidence-unparsable-probe").body();
+        var tooMany=new StringBuilder(valid);
+        for (int i=0;i<1100;i++) tooMany.append("&x=").append(i);
+        var probes=java.util.List.of(
+                "?planId=%zz&pointerVersion=1&calculationId="+own.calculationId(),
+                valid+"&junk=%",
+                valid+"&junk=%G1",
+                tooMany.toString());
+        for (String probe : probes) {
+            String[] answer=rawGet(DashboardController.EVIDENCE_PATH+probe,cookie,"evidence-unparsable-probe");
+            assertThat(answer[0]).as(shortened(probe)).isEqualTo("404");
+            assertThat(answer[1]).as(shortened(probe)).isEqualTo(notFound);
+        }
+        accountDeletion().beginDeletion(user);
+        for (String probe : probes) {
+            String[] answer=rawGet(DashboardController.EVIDENCE_PATH+probe,cookie,"evidence-unparsable-probe");
+            assertThat(answer[0]).as("deleting: "+shortened(probe)).isEqualTo("403");
+            assertThat(topLevelFieldsOf(answer[1])).containsEntry("code","FORBIDDEN");
+        }
+    }
+
+    private static String shortened(String probe) {
+        return probe.length()>80 ? probe.substring(0,80)+"…" : probe;
+    }
+
+    /**
+     * One GET over a raw socket, the request target sent byte for byte: {@code [status, body]}. HTTP/1.0,
+     * so the answer is never chunked and the connection closes after it.
+     */
+    private String[] rawGet(String target,String cookie,String requestId) throws java.io.IOException {
+        try (var socket=new java.net.Socket("127.0.0.1",serverPort)) {
+            socket.setSoTimeout(20_000);
+            String request="GET "+target+" HTTP/1.0\r\nHost: 127.0.0.1:"+serverPort+"\r\nCookie: "+SESSION_COOKIE_NAME+"="
+                    +cookie+"\r\nX-Request-Id: "+requestId+"\r\nAccept: application/json\r\n\r\n";
+            socket.getOutputStream().write(request.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+            String raw=new String(socket.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
+            int split=raw.indexOf("\r\n\r\n");
+            return new String[] {raw.substring(0,split).split(" ")[1],raw.substring(split+4)};
+        }
+    }
+
+    /** The shown pointer of a dashboard result, as the three values the evidence path takes. */
+    private static SyncJobApi.EvidenceReference referenceOf(SyncJobApi.DashboardResult result) {
+        return new SyncJobApi.EvidenceReference(result.planId(),result.pointerVersion(),result.calculationId());
+    }
+
+    /** The evidence of the user's current result through the service port; fails unless it is found whole. */
+    private SyncJobApi.CalculationEvidence evidenceOf(UUID user) {
+        var read=sync.calculationEvidence(user,referenceOf(ready(user)));
+        assertThat(read.consistency()).isEqualTo(SyncJobApi.BundleConsistency.CONSISTENT);
+        assertThat(read.outcome()).isInstanceOf(SyncJobApi.EvidenceOutcome.Found.class);
+        return ((SyncJobApi.EvidenceOutcome.Found)read.outcome()).evidence();
+    }
+
+    /** The evidence query of a dashboard response's {@code result} object. */
+    private static String query(java.util.Map<String,Object> result) {
+        return query(String.valueOf(result.get("planId")),String.valueOf(result.get("pointerVersion")),
+                String.valueOf(result.get("calculationId")));
+    }
+
+    private static String query(UUID planId,long pointerVersion,UUID calculationId) {
+        return query(planId.toString(),Long.toString(pointerVersion),calculationId.toString());
+    }
+
+    /** The values as they are, unencoded: the probes above send malformed values on purpose. */
+    private static String query(String planId,String pointerVersion,String calculationId) {
+        return "?planId="+planId+"&pointerVersion="+pointerVersion+"&calculationId="+calculationId;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static java.util.Map<String,Object> nested(java.util.Map<String,Object> fields,String name) {
+        return (java.util.Map<String,Object>)fields.get(name);
+    }
+
+    /** The evidence's operational lines captured so far, in order. */
+    private static java.util.List<String> evidenceLogLines(org.springframework.boot.test.system.CapturedOutput output) {
+        return output.getAll().lines().filter(line -> line.contains("calculation evidence read:")).toList();
+    }
+
     /** The dashboard's operational lines captured so far, in order. */
     private static java.util.List<String> dashboardLogLines(org.springframework.boot.test.system.CapturedOutput output) {
         return output.getAll().lines().filter(line -> line.contains("dashboard read:")).toList();
@@ -3070,6 +3772,9 @@ class FirstSnapshotTest extends AuthFlowTestBase {
     private void shiftStart(UUID user,UUID intent,Instant start) {
         var t0=java.time.OffsetDateTime.ofInstant(start,java.time.ZoneOffset.UTC);
         jdbc().sql("UPDATE portfolio_snapshot SET measured_at=:t0 WHERE user_id=:u AND publication_sequence=1")
+                .param("t0",t0).param("u",user).update();
+        // The first snapshot's source moves with it: a published first snapshot and its source share one time.
+        jdbc().sql("UPDATE sync_source_snapshot SET measured_at=:t0 WHERE user_id=:u AND job_id IS NOT NULL")
                 .param("t0",t0).param("u",user).update();
         jdbc().sql("UPDATE plan_condition_intent SET t0=:t0 WHERE intent_id=:i").param("t0",t0).param("i",intent).update();
         jdbc().sql("UPDATE portfolio_source_membership SET started_at=:before WHERE portfolio_id IN "

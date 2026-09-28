@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactElement } from 'react'
 
+import type { EvidenceState } from '../session/useCalculationEvidence'
 import type {
   Dashboard,
   DashboardView,
@@ -19,6 +20,7 @@ import {
 } from '../content/planResult'
 import { formatAmount, formatPercent, formatSeoulTime, percentFromRatio } from '../format/decimal'
 import { bundleOf } from '../session/useDashboard'
+import { CalculationEvidence } from './CalculationEvidence'
 import styles from './PlanResultPanel.module.css'
 
 const RATIOS: readonly MetricName[] = ['REQUIRED_RATE', 'GOAL_PROGRESS']
@@ -350,27 +352,38 @@ function Notice({
  *
  * The next-action block keeps its place in every state that has it, so the reload button a keyboard
  * user pressed stays the focused element when the view changes under it. When the view changes to a
- * state without that block while focus was inside the panel, focus moves to the panel's heading rather
- * than falling to the document body.
+ * state without that block, or to a state without a bundle (which takes the calculation evidence and its
+ * button with it), while focus was inside the panel on something that went away, focus moves to the
+ * panel's heading rather than falling to the document body.
+ *
+ * The calculation evidence (Story 2.9) opens beside the metrics heading, on this same screen, for the
+ * bundle shown here. Its state is its own (`evidence`); the screen's status region says what it did.
  */
-export function PlanResultPanel({ dashboard }: { readonly dashboard: Dashboard }): ReactElement {
+export function PlanResultPanel({
+  dashboard,
+  evidence,
+}: {
+  readonly dashboard: Dashboard
+  readonly evidence: EvidenceState
+}): ReactElement {
   const { view, loading, reload } = dashboard
   const bundle = bundleOf(view)
   const result = bundle?.result ?? null
   const [current, ...rest] = result?.metrics ?? []
   const measured = result === null ? null : seoulOrNull(result.measuredAt)
   const hasNextAction = view.kind !== 'checking' && view.kind !== 'denied'
+  const hasResult = result !== null
   const heading = useRef<HTMLHeadingElement>(null)
   // The element inside the panel that last had focus, until focus leaves the panel for another element.
   const lastFocused = useRef<Element | null>(null)
 
   useEffect(() => {
-    if (hasNextAction) return
+    if (hasNextAction && hasResult) return
     const last = lastFocused.current
     const active = document.activeElement
     const lost = active === null || active === document.body || !active.isConnected
     if (last !== null && !last.isConnected && lost) heading.current?.focus()
-  }, [hasNextAction])
+  }, [hasNextAction, hasResult])
 
   return (
     <section
@@ -407,6 +420,7 @@ export function PlanResultPanel({ dashboard }: { readonly dashboard: Dashboard }
         <section aria-labelledby="plan-result-metrics" className={styles.group}>
           <h3 id="plan-result-metrics">{copy.metricsHeading}</h3>
           <p className={styles.meta}>{copy.metricsIntro}</p>
+          <CalculationEvidence evidence={evidence} result={result} />
           <ul className={styles.metrics}>
             {rest.map((metric) => (
               <li key={metric.metric}>

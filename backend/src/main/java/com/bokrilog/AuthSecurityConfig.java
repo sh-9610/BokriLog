@@ -230,6 +230,11 @@ class AuthSecurityConfig {
      * 버전 판정이 두 곳이 된다. 경로마다 판정 하나를 두고 인가와 CSRF·{@code Origin} 판정이 그 같은
      * 함수({@link #isDashboardPath})를 본다. 하위 경로도 같은 판정에 걸려 인증 없이는 401, 인증되면
      * 대상의 존재와 무관한 같은 404다.
+     *
+     * <p>하위 경로 가운데 하나만 핸들러가 있다 — Story 2.9의 {@code GET /api/dashboard/evidence}
+     * ({@code DashboardController.EVIDENCE_PATH})다. 같은 술어가 이미 덮으므로 판정을 더하지 않는다.
+     * 쿼리로 받은 세 참조가 그 사용자의 현재 공식 포인터가 아니면 없는 경로와 본문이 글자까지 같은
+     * 404이고, 나머지 하위 경로는 그대로 같은 404다.
      */
     static final String DASHBOARD_PATH = "/api/dashboard";
 
