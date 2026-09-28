@@ -1,6 +1,7 @@
 package com.bokrilog.sync.internal;
 
 import com.bokrilog.calculation.PlanCalculator;
+import com.bokrilog.sync.SyncJobApi.CalculationEvidence.UnpublishedAttempt;
 import com.bokrilog.sync.SyncJobApi.DashboardMetric;
 import com.bokrilog.sync.SyncJobApi.PublicationJob;
 import java.sql.ResultSet;
@@ -248,18 +249,28 @@ class PlanPublicationRepository {
             .param("g", lease.generation()).update();
     }
 
+    /** The pinned input columns of an attempt, in {@link Pinned}'s order. */
+    private static final String PINNED_COLUMNS = "job_id,user_id,portfolio_id,intent_id,membership_id,connection_id,"
+            + "provider_account_id,basis_portfolio_snapshot_id,basis_source_snapshot_id,expected_portfolio_snapshot_id,"
+            + "expected_portfolio_sequence,candidate_id,classification_id,conversion_id,p0_decimal,t0,end_at,period,"
+            + "target_rate,tc,current_value_decimal,current_value_measured_at,flow_count,input_scope_hash,"
+            + "calculation_policy,calendar_policy";
+
     Pinned pinned(Lease lease) {
-        return jdbc.sql("SELECT job_id,user_id,portfolio_id,intent_id,membership_id,connection_id,provider_account_id,"
-                + "basis_portfolio_snapshot_id,basis_source_snapshot_id,expected_portfolio_snapshot_id,"
-                + "expected_portfolio_sequence,candidate_id,classification_id,conversion_id,p0_decimal,t0,end_at,period,"
-                + "target_rate,tc,current_value_decimal,current_value_measured_at,flow_count,input_scope_hash,"
-                + "calculation_policy,calendar_policy FROM sync_plan_publication_job WHERE job_id=:j AND user_id=:u")
+        return jdbc.sql("SELECT " + PINNED_COLUMNS + " FROM sync_plan_publication_job WHERE job_id=:j AND user_id=:u")
             .param("j", lease.jobId()).param("u", lease.userId())
-            .query((rs, n) -> new Pinned(uuid(rs, 1), uuid(rs, 2), uuid(rs, 3), uuid(rs, 4), uuid(rs, 5), uuid(rs, 6),
-                    uuid(rs, 7), uuid(rs, 8), uuid(rs, 9), uuid(rs, 10), rs.getLong(11), uuid(rs, 12), uuid(rs, 13),
-                    uuid(rs, 14), rs.getString(15), instant(rs, 16), instant(rs, 17), rs.getString(18), rs.getString(19),
-                    instant(rs, 20), rs.getString(21), instant(rs, 22), rs.getInt(23), rs.getString(24), rs.getString(25),
-                    rs.getString(26))).single();
+            .query((rs, n) -> pinnedOf(rs, 0)).single();
+    }
+
+    /** The {@link #PINNED_COLUMNS} starting after {@code offset} columns of the row. */
+    private static Pinned pinnedOf(ResultSet rs, int offset) throws SQLException {
+        int o = offset;
+        return new Pinned(uuid(rs, o + 1), uuid(rs, o + 2), uuid(rs, o + 3), uuid(rs, o + 4), uuid(rs, o + 5),
+                uuid(rs, o + 6), uuid(rs, o + 7), uuid(rs, o + 8), uuid(rs, o + 9), uuid(rs, o + 10), rs.getLong(o + 11),
+                uuid(rs, o + 12), uuid(rs, o + 13), uuid(rs, o + 14), rs.getString(o + 15), instant(rs, o + 16),
+                instant(rs, o + 17), rs.getString(o + 18), rs.getString(o + 19), instant(rs, o + 20),
+                rs.getString(o + 21), instant(rs, o + 22), rs.getInt(o + 23), rs.getString(o + 24),
+                rs.getString(o + 25), rs.getString(o + 26));
     }
 
     // ---------------------------------------------------------------- publication (caller's transaction)
@@ -417,6 +428,128 @@ class PlanPublicationRepository {
             .param("u", user).param("measured", utc(measuredAt)).param("verified", utc(verifiedThrough))
             .query((rs, n) -> new DashboardTrust.Freshness(rs.getBoolean(1), rs.getBoolean(2), rs.getBoolean(3)))
             .single();
+    }
+
+    // ---------------------------------------------------------------- calculation evidence (Story 2.9)
+
+    /*
+     * The evidence reads below run in the same kind of read-only REPEATABLE READ transaction as the
+     * dashboard's, after the pointer and the version were read there. Each is scoped to the user, and each
+     * reads by the id the calculation version recorded — never "the latest" row of a kind. They read this
+     * module's own tables only, and never a candidate's events, raw provider fields or credentials.
+     */
+
+    /** The lineage columns of a calculation version that the dashboard does not read. */
+    record Lineage(UUID createdByJobId, String provider, UUID providerAccountId, UUID connectionId,
+            UUID membershipId, UUID basisSourceSnapshotId, UUID sourceSnapshotId, UUID candidateId,
+            UUID classificationId, UUID conversionId, String classificationPolicy, String sourcePolicy,
+            String precisionPolicy, String timeZone, Instant createdAt) {}
+
+    Optional<Lineage> lineage(UUID user, UUID calculationId) {
+        return jdbc.sql("SELECT created_by_job_id,provider,provider_account_id,connection_id,membership_id,"
+                + "basis_source_snapshot_id,source_snapshot_id,candidate_id,classification_id,conversion_id,"
+                + "classification_policy_version,source_policy_version,precision_policy,time_zone,created_at "
+                + "FROM sync_plan_calculation WHERE calculation_id=:c AND user_id=:u")
+            .param("c", calculationId).param("u", user)
+            .query((rs, n) -> new Lineage(uuid(rs, 1), rs.getString(2), uuid(rs, 3), uuid(rs, 4), uuid(rs, 5),
+                    uuid(rs, 6), uuid(rs, 7), uuid(rs, 8), uuid(rs, 9), uuid(rs, 10), rs.getString(11),
+                    rs.getString(12), rs.getString(13), rs.getString(14), instant(rs, 15))).optional();
+    }
+
+    /**
+     * The attempt that created a version: its ending, what it published, and the inputs it pinned at
+     * admission — the version must have been calculated from exactly those.
+     */
+    record CreatingAttempt(String status, @Nullable UUID planId, @Nullable UUID calculationId, Pinned pinned) {}
+
+    Optional<CreatingAttempt> creatingAttempt(UUID user, UUID jobId) {
+        return jdbc.sql("SELECT status,plan_id,calculation_id," + PINNED_COLUMNS + " FROM sync_plan_publication_job "
+                + "WHERE job_id=:j AND user_id=:u")
+            .param("j", jobId).param("u", user)
+            .query((rs, n) -> new CreatingAttempt(rs.getString(1), rs.getObject(2, UUID.class),
+                    rs.getObject(3, UUID.class), pinnedOf(rs, 3))).optional();
+    }
+
+    /**
+     * A source snapshot's origin: the complete candidate it was built from ({@code null} for one a
+     * first-snapshot job wrote), its provenance and the source policy version it was written under.
+     */
+    record SourceOrigin(@Nullable UUID candidateId, UUID connectionId, UUID providerAccountId, Instant measuredAt,
+            String policyVersion) {}
+
+    Optional<SourceOrigin> sourceOrigin(UUID user, UUID sourceSnapshotId) {
+        return jdbc.sql("SELECT initial_candidate_id,connection_id,provider_account_id,measured_at,policy_version "
+                + "FROM sync_source_snapshot WHERE source_snapshot_id=:s AND user_id=:u")
+            .param("s", sourceSnapshotId).param("u", user)
+            .query((rs, n) -> new SourceOrigin(rs.getObject(1, UUID.class), uuid(rs, 2), uuid(rs, 3), instant(rs, 4),
+                    rs.getString(5)))
+            .optional();
+    }
+
+    /** The collected range of a candidate: its collection's earliest page start and latest page end. */
+    record CollectionRange(Instant start, Instant end) {}
+
+    /** Empty when the candidate is not the user's or its collection left no page evidence. */
+    Optional<CollectionRange> collectionRange(UUID user, UUID candidateId) {
+        return jdbc.sql("SELECT min(e.range_start),max(e.range_end) FROM sync_initial_candidate_bundle b "
+                + "JOIN sync_initial_page_evidence e ON e.job_id=b.job_id AND e.user_id=b.user_id "
+                + "WHERE b.candidate_id=:c AND b.user_id=:u HAVING count(*)>0")
+            .param("c", candidateId).param("u", user)
+            .query((rs, n) -> new CollectionRange(instant(rs, 1), instant(rs, 2))).optional();
+    }
+
+    /** A classification bundle by its id: its lineage, ending, policy and input range hash. */
+    record ClassificationBundle(UUID candidateId, UUID portfolioId, UUID intentId, UUID connectionId,
+            UUID providerAccountId, String status, String policyVersion, String inputScopeHash) {}
+
+    Optional<ClassificationBundle> classificationBundle(UUID user, UUID classificationId) {
+        return jdbc.sql("SELECT candidate_id,portfolio_id,intent_id,connection_id,provider_account_id,status,"
+                + "policy_version,input_scope_hash FROM sync_cashflow_classification_bundle "
+                + "WHERE classification_id=:c AND user_id=:u")
+            .param("c", classificationId).param("u", user)
+            .query((rs, n) -> new ClassificationBundle(uuid(rs, 1), uuid(rs, 2), uuid(rs, 3), uuid(rs, 4),
+                    uuid(rs, 5), rs.getString(6), rs.getString(7), rs.getString(8))).optional();
+    }
+
+    /** A conversion bundle by its id — the one a version recorded, not the classification's latest. */
+    Optional<Conversion> conversion(UUID user, UUID conversionId) {
+        return jdbc.sql("SELECT conversion_id,classification_id,user_id,intent_id,portfolio_id,connection_id,"
+                + "provider_account_id,status,calculable,outcome_fingerprint,policy_version,flow_count,estimated_count "
+                + "FROM sync_cashflow_conversion_bundle WHERE conversion_id=:c AND user_id=:u")
+            .param("c", conversionId).param("u", user)
+            .query((rs, n) -> new Conversion(uuid(rs, 1), uuid(rs, 2), uuid(rs, 3), uuid(rs, 4), uuid(rs, 5),
+                    uuid(rs, 6), uuid(rs, 7), rs.getString(8), rs.getBoolean(9), rs.getString(10), rs.getString(11),
+                    rs.getInt(12), rs.getInt(13))).optional();
+    }
+
+    /**
+     * What a version's applied cash-flow history adds up to: its rows, the estimated ones, the rows that
+     * cite a conversion other than {@code conversionId}, and the price evidence kinds of the estimated
+     * ones. Counts only — no event, amount or time leaves here.
+     */
+    record AppliedFlowCounts(int count, int estimated, int foreign, List<String> estimatedEvidence) {}
+
+    AppliedFlowCounts appliedFlowCounts(UUID calculationId, UUID conversionId) {
+        int[] counts = jdbc.sql("SELECT count(*),count(*) FILTER (WHERE estimated),"
+                + "count(*) FILTER (WHERE conversion_id<>:conv) FROM sync_plan_calculation_flow WHERE calculation_id=:c")
+            .param("c", calculationId).param("conv", conversionId)
+            .query((rs, n) -> new int[] {rs.getInt(1), rs.getInt(2), rs.getInt(3)}).single();
+        List<String> evidence = jdbc.sql("SELECT DISTINCT evidence_type FROM sync_plan_calculation_flow "
+                + "WHERE calculation_id=:c AND estimated ORDER BY evidence_type")
+            .param("c", calculationId).query(String.class).list();
+        return new AppliedFlowCounts(counts[0], counts[1], counts[2], evidence);
+    }
+
+    /**
+     * The intent's attempts that ended without publishing ({@code FAILED} or {@code BLOCKED}), oldest
+     * first: their status, closed reason and finish time. Neither an id nor any pinned input is read.
+     */
+    List<UnpublishedAttempt> unpublished(UUID user, UUID intentId) {
+        return jdbc.sql("SELECT status,failure_code,finished_at FROM sync_plan_publication_job WHERE user_id=:u "
+                + "AND intent_id=:i AND status IN ('FAILED','BLOCKED') ORDER BY created_at,job_id")
+            .param("u", user).param("i", intentId)
+            .query((rs, n) -> new UnpublishedAttempt(rs.getString(1),
+                    rs.getString(2), instant(rs, 3))).list();
     }
 
     // ---------------------------------------------------------------- erasure

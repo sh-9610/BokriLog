@@ -1,6 +1,8 @@
+import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page } from '@playwright/test'
 
 import { authContent } from '../src/content/auth'
+import { calculationEvidenceContent } from '../src/content/calculationEvidence'
 import { connectionContent } from '../src/content/connection'
 import { entryContent } from '../src/content/entry'
 import { firstSnapshotContent } from '../src/content/firstSnapshot'
@@ -284,8 +286,9 @@ async function expectFirstResult(page: Page, derived: 'OFFICIAL' | 'ESTIMATED'):
 }
 
 /**
- * The keyboard reaches the header and then the dashboard's one control, in reading order, from a fresh
- * load of the landing screen.
+ * The keyboard reaches the header and then the dashboard's two controls, in reading order, from a fresh
+ * load of the landing screen: the calculation evidence button beside the metrics heading (Story 2.9),
+ * then the reload in the next-action section.
  */
 async function expectKeyboardOrder(page: Page): Promise<void> {
   await page.reload()
@@ -295,7 +298,7 @@ async function expectKeyboardOrder(page: Page): Promise<void> {
       .getByRole('region', { name: planResultContent.currentHeading }),
   ).toBeVisible({ timeout: 15_000 })
   const reached: string[] = []
-  for (let step = 0; step < 4; step += 1) {
+  for (let step = 0; step < 5; step += 1) {
     await page.keyboard.press('Tab')
     reached.push(await page.evaluate(() => document.activeElement?.textContent.trim() ?? ''))
   }
@@ -303,12 +306,164 @@ async function expectKeyboardOrder(page: Page): Promise<void> {
     entryContent.skipLink,
     authContent.settings.link,
     authContent.signOut.label,
+    calculationEvidenceContent.open,
     planResultContent.reload,
   ])
-  // The control is a real 44px target.
-  const box = await page.getByRole('button', { name: planResultContent.reload }).boundingBox()
+  // The controls are real 44px targets.
+  for (const name of [calculationEvidenceContent.open, planResultContent.reload]) {
+    const box = await page.getByRole('button', { name }).boundingBox()
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
+  }
+}
+
+/**
+ * Story 2.9: the calculation evidence of the shown result, opened and closed from the keyboard on the same
+ * screen. The API answers the shown pointer only — a reference that is not the current pointer, or none,
+ * is the common 404 — without caching and without anything internal to the account. The region reads
+ * snapshots → times → input versions → calculation version → metric impact → versions, keeps long ids
+ * whole, and has no live region of its own. With the region open, the page does not scroll sideways at 320
+ * and 640 CSS px — the widths that 400% and 200% zoom of a 1280px window come to — and the region itself
+ * fits each of them.
+ */
+async function expectEvidence(page: Page, derived: 'OFFICIAL' | 'ESTIMATED'): Promise<void> {
+  const probe = await page.evaluate(async () => {
+    const shown = (await (
+      await fetch('/api/dashboard', { credentials: 'same-origin', cache: 'no-store' })
+    ).json()) as { result: { planId: string; pointerVersion: number; calculationId: string } }
+    const at = (planId: string, version: number, calculationId: string): string =>
+      `/api/dashboard/evidence?planId=${planId}&pointerVersion=${String(version)}&calculationId=${calculationId}`
+    const { planId, pointerVersion, calculationId } = shown.result
+    const answer = await fetch(at(planId, pointerVersion, calculationId), {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    })
+    const text = await answer.text()
+    const body = JSON.parse(text) as {
+      snapshots: { portfolioSnapshotId: string }
+      times: { measuredAt: string; cashflowVerifiedThrough: string }
+      calculation: { inputHash: string }
+    }
+    const stale = await fetch(at(planId, pointerVersion + 1, calculationId), {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    })
+    const bare = await fetch('/api/dashboard/evidence', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    })
+    return {
+      status: answer.status,
+      cacheControl: answer.headers.get('cache-control') ?? '',
+      keys: Object.keys(JSON.parse(text) as object),
+      text,
+      calculationId,
+      snapshotId: body.snapshots.portfolioSnapshotId,
+      inputHash: body.calculation.inputHash,
+      sameTimes: body.times.measuredAt === body.times.cashflowVerifiedThrough,
+      stale: stale.status,
+      staleCode: ((await stale.json()) as { code?: string }).code ?? '',
+      bare: bare.status,
+    }
+  })
+  expect(probe).toMatchObject({ status: 200, stale: 404, staleCode: 'NOT_FOUND', bare: 404 })
+  expect(probe.cacheControl).toContain('no-store')
+  expect(probe.keys).toEqual([
+    'planId',
+    'pointerVersion',
+    'calculationId',
+    'snapshots',
+    'times',
+    'inputs',
+    'calculation',
+    'metrics',
+    'versions',
+  ])
+  expect(probe.text).not.toMatch(/userId|providerAccount|secret|apiKey|credential/i)
+
+  const panel = page.getByRole('region', { name: planResultContent.heading })
+  const toggle = panel.getByRole('button', { name: calculationEvidenceContent.open })
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await toggle.focus()
+  await page.keyboard.press('Enter')
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  const evidence = panel.getByRole('region', { name: calculationEvidenceContent.heading })
+  await expect(evidence.getByRole('heading', { level: 4 })).toBeFocused()
+  const { sections, times, metrics, versions } = calculationEvidenceContent
+  await expect(evidence.getByRole('heading', { level: 5 })).toHaveText(
+    [
+      sections.snapshots,
+      sections.times,
+      sections.inputs,
+      sections.calculation,
+      sections.metrics,
+      sections.versions,
+    ],
+    { timeout: 15_000 },
+  )
+  // Long ids whole, in the mono style.
+  for (const id of [probe.calculationId, probe.snapshotId, probe.inputHash]) {
+    await expect(evidence.locator('code', { hasText: id }).first()).toHaveText(id)
+  }
+  await expect(evidence).toContainText(times.noCommonSnapshot)
+  await expect(evidence).toContainText(probe.sameTimes ? times.same : times.different)
+  const impact = evidence.getByRole('group', { name: sections.metrics }).getByRole('listitem')
+  await expect(impact).toHaveCount(METRIC_ORDER.length)
+  await expect(impact.nth(0)).toContainText(metrics.currentValueCause)
+  for (const index of [1, 2, 3, 4, 5]) {
+    await expect(impact.nth(index)).toContainText(
+      derived === 'ESTIMATED'
+        ? metrics.estimatedCause(calculationEvidenceContent.evidenceTypes.SPOT_KLINE_CLOSE, 1)
+        : metrics.noEstimatedCause,
+    )
+  }
+  const versionList = evidence.getByRole('group', { name: sections.versions })
+  await expect(versionList).toContainText(versions.current)
+  await expect(versionList.getByText(versions.none, { exact: true })).toBeVisible()
+  await expect(evidence.getByRole('link')).toHaveCount(0)
+  // The screen's one status region says what the evidence read did; the region has none of its own.
+  await expect(page.getByRole('status')).toHaveCount(1)
+  await expect(page.locator('[aria-live]')).toHaveCount(1)
+  await expect(page.getByRole('status')).toContainText(calculationEvidenceContent.status.ready)
+  const evidenceText = await evidence.innerText()
+  expect(evidenceText).not.toMatch(
+    /축하|손실|추천합니다|투자성과|계좌 수익률|스트릭|배지|NaN|undefined/,
+  )
+  expect(page.url()).not.toMatch(/[?&](planId|calculationId|snapshotId)=/)
+  expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0)
+  const axe = await new AxeBuilder({ page })
+    .include('#calculation-evidence')
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+    .analyze()
+  expect(axe.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([])
+  for (const width of [320, 640]) {
+    await page.setViewportSize({ width, height: 800 })
+    const widths = await page.evaluate(() => {
+      const open = document.getElementById('calculation-evidence')
+      return {
+        page: document.documentElement.scrollWidth,
+        viewport: window.innerWidth,
+        region: open === null ? Number.POSITIVE_INFINITY : open.scrollWidth - open.clientWidth,
+      }
+    })
+    expect(widths.page, `${String(width)} CSS px: no horizontal page scroll`).toBeLessThanOrEqual(
+      widths.viewport,
+    )
+    expect(widths.region, `${String(width)} CSS px: the region does not overflow`).toBe(0)
+  }
+
+  await page.setViewportSize({ width: 320, height: 800 })
+  const close = evidence.getByRole('button', { name: calculationEvidenceContent.close })
+  const box = await close.boundingBox()
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
-  expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
+  await close.focus()
+  await page.keyboard.press('Enter')
+  await expect(toggle).toBeFocused()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await expect(panel.getByRole('region', { name: calculationEvidenceContent.heading })).toHaveCount(
+    0,
+  )
+  await expect(page.getByRole('status')).not.toContainText(calculationEvidenceContent.status.ready)
 }
 
 async function expectNoHorizontalScroll(page: Page): Promise<void> {
@@ -360,6 +515,7 @@ test.describe('첫 공식 현재가치', () => {
     await page.setViewportSize({ width: 320, height: 800 })
     await publishAndOpenResult(page)
     await expectFirstResult(page, 'OFFICIAL')
+    await expectEvidence(page, 'OFFICIAL')
     await expectNoHorizontalScroll(page)
     await page.setViewportSize({ width: 320, height: 800 })
     await expectKeyboardOrder(page)
@@ -412,6 +568,7 @@ test.describe('첫 공식 현재가치', () => {
       for (const index of [1, 2, 3, 4, 5]) {
         await expect(cards.nth(index)).toContainText(planResultContent.estimatedEvidence(1))
       }
+      await expectEvidence(estimated, 'ESTIMATED')
       await expectNoHorizontalScroll(estimated)
     } finally {
       await estimatedContext.close()

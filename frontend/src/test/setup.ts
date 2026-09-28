@@ -10,7 +10,7 @@
  *    `stubLogoutRequest`, `stubReauthenticationRequest`, `stubLinkStatusRequest`,
  *    `stubLinkRequest`, `stubUnlinkPrepareRequest`, `stubUnlinkConfirmRequest`,
  *    `stubUnlinkCancelRequest`, `stubConnectionStatusRequest`, `stubConnectionPrepareRequest`,
- *    `stubConnectRequest`, `stubConnectionCancelRequest`).
+ *    `stubConnectRequest`, `stubConnectionCancelRequest`, `stubCalculationEvidence`).
  *    전역 거부는 그대로다. 아래 `responders` 절의 근거를 참고한다.
  */
 
@@ -29,6 +29,7 @@ import {
   unlinkPath,
   type SignInProvider,
 } from '../content/auth'
+import { DASHBOARD_EVIDENCE_PATH } from '../content/calculationEvidence'
 import { BYBIT_CANCEL_PATH, BYBIT_CONNECT_PATH, BYBIT_CONNECTION_PATH } from '../content/connection'
 import { FIRST_SNAPSHOT_PATH } from '../content/firstSnapshot'
 import { DASHBOARD_PATH } from '../content/planResult'
@@ -86,6 +87,26 @@ export function stubPlanConditionState(responder: RequestResponder): void {
  */
 export function stubDashboard(responder: RequestResponder): void {
   responders.set(requestKey('GET', DASHBOARD_PATH), responder)
+}
+
+/**
+ * 쿼리를 싣는 요청에 답하는 함수(Story 2.9). 경로가 같아도 쿼리가 요청마다 다르므로, 시험이 무엇을
+ * 보냈는지 단정할 수 있게 URL 전체를 함께 받는다.
+ */
+export type QueryResponder = (url: string, init?: RequestInit) => Promise<Response>
+
+/** 경로 단위로 연 쿼리 요청. 키는 `"<메서드> <경로>"`이며 쿼리가 없는 같은 경로는 열지 않는다. */
+const queryResponders = new Map<string, QueryResponder>()
+
+/**
+ * 계산 근거 조회 하나를 이 시험 동안만 허용한다(Story 2.9). `stubDashboard`와 같은 모양이다.
+ *
+ * 근거는 지금 보이는 묶음의 공식 포인터 세 값을 쿼리로 보낸다. 그래서 여기는 경로만 보고 열며 응답
+ * 함수가 URL 전체를 받는다. 열지 않은 시험에서 근거 요청이 나가면 전역 거부가 그것을 기록하고
+ * 거절한다 — 사용자가 펼치지 않은 근거를 화면이 몰래 읽지 않는다는 단정이 그 기록이다.
+ */
+export function stubCalculationEvidence(responder: QueryResponder): void {
+  queryResponders.set(requestKey('GET', DASHBOARD_EVIDENCE_PATH), responder)
 }
 
 /**
@@ -309,6 +330,13 @@ globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Respo
     }
     return responder(init)
   }
+  const queryAt = url.indexOf('?')
+  const queryResponder =
+    queryAt < 0 ? undefined : queryResponders.get(requestKey(method, url.slice(0, queryAt)))
+  if (queryResponder !== undefined) {
+    observedAllowedRequests.push(requestKey(method, url))
+    return queryResponder(url, init)
+  }
   return Promise.reject(refuse(`fetch:${method}`, url))
 }
 
@@ -356,6 +384,7 @@ afterEach(() => {
   cleanup()
   // 탈출구는 시험 하나의 범위다. 다음 시험은 다시 전역 거부에서 시작한다.
   responders.clear()
+  queryResponders.clear()
   observedRequests.length = 0
   observedIndexedDbNames.length = 0
   observedSessionRequests.length = 0

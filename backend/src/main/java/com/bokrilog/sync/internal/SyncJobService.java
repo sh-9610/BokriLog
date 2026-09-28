@@ -210,6 +210,10 @@ class SyncJobService implements SyncJobApi {
     public DashboardRead dashboard(@Nullable UUID userId) {
         return publications.dashboard(userId);
     }
+    @Override
+    public EvidenceRead calculationEvidence(@Nullable UUID userId, @Nullable EvidenceReference reference) {
+        return publications.evidence(userId,reference);
+    }
     /**
      * Erases this user's sync rows. The publication rows go first: the official pointer and calculation
      * version cite the candidate, classification and conversion with ON DELETE RESTRICT. Runs after the

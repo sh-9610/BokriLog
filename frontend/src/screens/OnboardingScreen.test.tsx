@@ -11,15 +11,24 @@ import {
   SETTINGS_PATH,
   SIGN_IN_PROVIDERS,
 } from '../content/auth'
+import { calculationEvidenceContent } from '../content/calculationEvidence'
 import { entryContent } from '../content/entry'
 import { DASHBOARD_PATH, METRIC_ORDER, planResultContent } from '../content/planResult'
 import { formatSeoulTime } from '../format/decimal'
 import { navigateTo, replaceLocation } from '../session/navigation'
-import { BASIS_AT, dashboardFixture, NO_PLAN_FIXTURE } from '../test/planResultFixture'
+import {
+  BASIS_AT,
+  calculationEvidenceFixture,
+  dashboardFixture,
+  EVIDENCE_IDS,
+  evidenceResultFixture,
+  NO_PLAN_FIXTURE,
+} from '../test/planResultFixture'
 import {
   getObservedAllowedRequests,
   getObservedSessionRequests,
   getObservedStorageEntries,
+  stubCalculationEvidence,
   stubDashboard,
   stubLogoutRequest,
   stubReauthenticationRequest,
@@ -158,6 +167,35 @@ describe('OnboardingScreen', () => {
       expect(screen.getByRole('status')).toHaveTextContent(planResultContent.status.noPlan)
     })
     expect(screen.queryByRole('article')).not.toBeInTheDocument()
+  })
+
+  it('계산 근거: 첫 로그인 세션의 대시보드에서도 같은 자리에서 펼치고 상태 리전 하나가 그 읽기를 알린다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(jsonResponse({ authenticated: true, destination: 'onboarding' })),
+    )
+    stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture(evidenceResultFixture()))))
+    stubCalculationEvidence(() =>
+      Promise.resolve(jsonResponse(calculationEvidenceFixture(evidenceResultFixture()))),
+    )
+    render(<OnboardingScreen />)
+    await screen.findAllByRole('article')
+
+    fireEvent.click(screen.getByRole('button', { name: calculationEvidenceContent.open }))
+    expect(
+      screen.getByRole('heading', { level: 4, name: calculationEvidenceContent.heading }),
+    ).toHaveFocus()
+    await screen.findByRole('group', { name: calculationEvidenceContent.sections.versions })
+    const ready = planResultContent.status.ready(
+      formatSeoulTime(BASIS_AT, planResultContent.timeUnavailable),
+    )
+    expect(screen.getByRole('status').textContent).toBe(
+      `${ready} ${calculationEvidenceContent.status.ready}`,
+    )
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status')).toHaveAttribute('aria-atomic', 'false')
+    expect(getObservedAllowedRequests()).toContain(
+      `GET /api/dashboard/evidence?planId=${EVIDENCE_IDS.plan}&pointerVersion=1&calculationId=${EVIDENCE_IDS.calculation}`,
+    )
   })
 
   it('설정 화면으로 가는 길을 준다', async () => {

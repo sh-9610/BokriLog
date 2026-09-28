@@ -92,3 +92,36 @@ export function formatSeoulTime(value: string, fallback: string): string {
     return fallback
   }
 }
+
+/** 초·밀리초까지의 서울 시각 형식. 한 번만 만든다 — 계산 근거는 시각 여러 개를 한 번에 그린다. */
+let seoulInstantFormat: Intl.DateTimeFormat | null = null
+
+function seoulInstantFormatter(): Intl.DateTimeFormat {
+  seoulInstantFormat ??= new Intl.DateTimeFormat('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    fractionalSecondDigits: 3,
+    hourCycle: 'h23',
+  })
+  return seoulInstantFormat
+}
+
+/**
+ * UTC instant를 서울 시각으로, 초와 밀리초까지(Story 2.9). 계산 근거의 시각 절처럼 두 시각이 같은지
+ * 다른지를 화면에서 그대로 확인해야 하는 곳에만 쓴다 — 분 단위로 줄이면 서로 다른 두 시각이 같아
+ * 보인다. 읽을 수 없는 값은 `fallback`이다.
+ */
+export function formatSeoulInstant(value: string, fallback: string): string {
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return fallback
+  try {
+    return seoulInstantFormatter().format(date)
+  } catch {
+    return fallback
+  }
+}

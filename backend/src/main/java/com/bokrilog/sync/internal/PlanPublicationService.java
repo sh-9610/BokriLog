@@ -9,10 +9,14 @@ import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.PlanPublicationPort;
 import com.bokrilog.sync.SyncJobApi.BundleConsistency;
+import com.bokrilog.sync.SyncJobApi.CalculationEvidence;
 import com.bokrilog.sync.SyncJobApi.Dashboard;
 import com.bokrilog.sync.SyncJobApi.DashboardMetric;
 import com.bokrilog.sync.SyncJobApi.DashboardRead;
 import com.bokrilog.sync.SyncJobApi.DashboardResult;
+import com.bokrilog.sync.SyncJobApi.EvidenceOutcome;
+import com.bokrilog.sync.SyncJobApi.EvidenceRead;
+import com.bokrilog.sync.SyncJobApi.EvidenceReference;
 import com.bokrilog.sync.SyncJobApi.PublicationAdmission;
 import com.bokrilog.sync.SyncJobApi.PublicationJob;
 import com.bokrilog.sync.SyncJobApi.PublicationState;
@@ -68,7 +72,10 @@ class PlanPublicationService {
     private final PlanPublicationPort plans;
     private final CalculationConformance conformance;
     private final TransactionTemplate transactions;
-    /** The dashboard's one consistent read (Story 2.8): read-only, {@code REPEATABLE READ}. */
+    /**
+     * The dashboard's one consistent read (Story 2.8): read-only, {@code REPEATABLE READ}. The calculation
+     * evidence (Story 2.9) reads its lineage in a transaction of the same kind.
+     */
     private final TransactionTemplate dashboardReads;
 
     PlanPublicationService(PlanPublicationRepository repository, CashflowClassificationRepository classifications,
@@ -605,6 +612,226 @@ class PlanPublicationService {
                 calculation.displayPolicy(), calculation.pricePolicy(), calculation.implementationVersion(),
                 calculation.inputHash(), calculation.resultHash(), calculation.flowCount(),
                 calculation.estimatedFlowCount(), trust, metrics), DashboardTrust.nextAction(trust));
+    }
+
+    // ---------------------------------------------------------------- calculation evidence (Story 2.9)
+
+    /**
+     * The calculation evidence read. Like the dashboard: the account's own access is checked, the lineage
+     * is read in one read-only {@code REPEATABLE READ} transaction, and the access is checked again — a
+     * deletion that began or finished while the lineage was read wins, and nothing of it is returned.
+     *
+     * <p>A {@code null} reference (missing or malformed) names nothing, so nothing is read: it is not found,
+     * exactly like a reference that names another user's plan, an earlier version or no plan at all. The
+     * read reports what it learned about the lineage — consistent, inconsistent, or not read (a refusal or
+     * a reference that is not the current pointer) — and lets a failure propagate.
+     */
+    EvidenceRead evidence(@Nullable UUID userId, @Nullable EvidenceReference reference) {
+        if (userId == null || !readable(userId))
+            return new EvidenceRead(new EvidenceOutcome.NotPermitted(), BundleConsistency.NOT_READ);
+        if (reference == null) return new EvidenceRead(new EvidenceOutcome.NotFound(), BundleConsistency.NOT_READ);
+        EvidenceOutcome outcome = Objects.requireNonNull(dashboardReads.execute(status -> lineage(userId, reference)));
+        BundleConsistency consistency = switch (outcome) {
+            case EvidenceOutcome.Found found -> BundleConsistency.CONSISTENT;
+            case EvidenceOutcome.Unavailable unavailable -> BundleConsistency.INCONSISTENT;
+            case EvidenceOutcome.NotFound notFound -> BundleConsistency.NOT_READ;
+            case EvidenceOutcome.NotPermitted denied -> BundleConsistency.NOT_READ;
+        };
+        // The same decision again, after the read: the lineage is dropped if the deletion won the race.
+        if (!readable(userId)) return new EvidenceRead(new EvidenceOutcome.NotPermitted(), consistency);
+        return new EvidenceRead(outcome, consistency);
+    }
+
+    /**
+     * The lineage, inside the one consistent read. The reference must be the active plan's pointer to the
+     * letter — its plan, its version and its calculation — or it is not found, and nothing else is looked
+     * up by it. From there every row is read by the id the version recorded, and the whole chain must agree
+     * with itself, or nothing of it is returned:
+     *
+     * <ul>
+     *   <li>the version belongs to the plan, its portfolio and its terms, the portfolio pointer cites its
+     *       snapshot, and its metrics are a whole six (the dashboard's own checks);
+     *   <li>its creating attempt published exactly this plan and version, for the plan's intent, from the
+     *       inputs it pinned at admission ({@link #calculatedFromPinned});
+     *   <li>its tc source snapshot was built from its candidate under the candidate's policy, and its basis
+     *       source snapshot is the first snapshot of the same connection, measured at {@code t0};
+     *   <li>the candidate, the classification and the conversion are one lineage — the same candidate, the
+     *       same classification, the policies the version recorded, the same portfolio, intent, connection
+     *       and provider account — the collection covered exactly {@code (t0, tc]}, and the conversion is
+     *       the calculable one the version recorded;
+     *   <li>the applied cash-flow history has the version's counts and cites only its conversion.
+     * </ul>
+     */
+    private EvidenceOutcome lineage(UUID user, EvidenceReference reference) {
+        var plan = plans.activePlan(user).orElse(null);
+        if (plan == null || !plan.planId().equals(reference.planId())) return new EvidenceOutcome.NotFound();
+        var pointer = repository.pointer(user, plan.planId()).orElse(null);
+        if (pointer == null || pointer.version() != reference.pointerVersion()
+                || !pointer.calculationId().equals(reference.calculationId()))
+            return new EvidenceOutcome.NotFound();
+        // The reference is the current official pointer: from here on, a disagreement is a broken lineage.
+        UUID calculationId = pointer.calculationId();
+        var calculation = repository.calculation(user, calculationId).orElse(null);
+        if (calculation == null || !belongs(calculation, plan, pointer)) return new EvidenceOutcome.Unavailable();
+        // The same AD-23 reliance as the dashboard: both pointers advance in one publication transaction.
+        var portfolio = portfolios.officialValue(user).orElse(null);
+        if (portfolio == null || !portfolio.snapshotId().equals(calculation.portfolioSnapshotId())
+                || portfolio.publicationSequence() != calculation.portfolioSequence())
+            return new EvidenceOutcome.Unavailable();
+        List<DashboardMetric> metrics = repository.metrics(calculationId);
+        if (!DashboardTrust.wellFormed(metrics, calculation.estimated())) return new EvidenceOutcome.Unavailable();
+        var lineage = repository.lineage(user, calculationId).orElse(null);
+        if (lineage == null || !"BYBIT".equals(lineage.provider())) return new EvidenceOutcome.Unavailable();
+
+        var attempt = repository.creatingAttempt(user, lineage.createdByJobId()).orElse(null);
+        if (attempt == null || !"PUBLISHED".equals(attempt.status()) || !plan.planId().equals(attempt.planId())
+                || !calculationId.equals(attempt.calculationId())
+                || !calculatedFromPinned(attempt.pinned(), plan.intentId(), calculation, lineage, metrics))
+            return new EvidenceOutcome.Unavailable();
+        var candidate = repository.candidate(user, lineage.candidateId()).orElse(null);
+        if (candidate == null || !candidate.intentId().equals(plan.intentId())
+                || !candidate.portfolioId().equals(calculation.portfolioId())
+                || !candidate.connectionId().equals(lineage.connectionId())
+                || !candidate.providerAccountId().equals(lineage.providerAccountId())
+                || !candidate.t0().equals(calculation.t0()) || !candidate.tc().equals(calculation.basisAt())
+                || !candidate.measuredAt().equals(calculation.measuredAt())
+                || !candidate.policyVersion().equals(lineage.sourcePolicy()))
+            return new EvidenceOutcome.Unavailable();
+        var source = repository.sourceOrigin(user, lineage.sourceSnapshotId()).orElse(null);
+        if (source == null || !lineage.candidateId().equals(source.candidateId())
+                || !source.connectionId().equals(lineage.connectionId())
+                || !source.providerAccountId().equals(lineage.providerAccountId())
+                || !source.measuredAt().equals(calculation.measuredAt())
+                || !source.policyVersion().equals(candidate.policyVersion()))
+            return new EvidenceOutcome.Unavailable();
+        /*
+         * The basis source snapshot is the first snapshot's (a first-snapshot job wrote it, not a candidate):
+         * the same connection and provider account, measured at the plan start. It is also the one sync-owned
+         * record of the connection's policy version — the first-snapshot publication stores it only after
+         * checking it against the connection's own (SyncJobService#publish), so no other module is read here.
+         */
+        var basis = repository.sourceOrigin(user, lineage.basisSourceSnapshotId()).orElse(null);
+        if (basis == null || basis.candidateId() != null || !basis.connectionId().equals(lineage.connectionId())
+                || !basis.providerAccountId().equals(lineage.providerAccountId())
+                || !basis.measuredAt().equals(calculation.t0()))
+            return new EvidenceOutcome.Unavailable();
+        // The collection covered exactly (t0, tc]: its pages start at the plan start and end at the basis.
+        var range = repository.collectionRange(user, lineage.candidateId()).orElse(null);
+        if (range == null || !range.start().equals(calculation.t0()) || !range.end().equals(calculation.basisAt()))
+            return new EvidenceOutcome.Unavailable();
+        var classification = repository.classificationBundle(user, lineage.classificationId()).orElse(null);
+        if (classification == null || !"COMPLETE".equals(classification.status())
+                || !classification.candidateId().equals(lineage.candidateId())
+                || !classification.policyVersion().equals(lineage.classificationPolicy())
+                || !classification.intentId().equals(plan.intentId())
+                || !classification.portfolioId().equals(calculation.portfolioId())
+                || !classification.connectionId().equals(lineage.connectionId())
+                || !classification.providerAccountId().equals(lineage.providerAccountId()))
+            return new EvidenceOutcome.Unavailable();
+        var conversion = repository.conversion(user, lineage.conversionId()).orElse(null);
+        if (conversion == null || !conversion.calculable()
+                || !("CONVERTED".equals(conversion.status()) || "CONVERTED_ESTIMATED".equals(conversion.status()))
+                || !conversion.classificationId().equals(lineage.classificationId())
+                || !conversion.policyVersion().equals(calculation.pricePolicy())
+                || !conversion.intentId().equals(plan.intentId())
+                || !conversion.portfolioId().equals(calculation.portfolioId())
+                || !conversion.connectionId().equals(lineage.connectionId())
+                || !conversion.providerAccountId().equals(lineage.providerAccountId())
+                || conversion.flowCount() != attempt.pinned().flowCount())
+            return new EvidenceOutcome.Unavailable();
+        var flows = repository.appliedFlowCounts(calculationId, lineage.conversionId());
+        if (flows.count() != calculation.flowCount() || flows.estimated() != calculation.estimatedFlowCount()
+                || flows.foreign() != 0)
+            return new EvidenceOutcome.Unavailable();
+        // An estimated flow has one kind of price evidence (V10's CHECK); anything else is not one lineage.
+        String evidenceType = null;
+        if (calculation.estimatedFlowCount() > 0) {
+            if (flows.estimatedEvidence().size() != 1) return new EvidenceOutcome.Unavailable();
+            evidenceType = flows.estimatedEvidence().getFirst();
+        } else if (!flows.estimatedEvidence().isEmpty()) {
+            return new EvidenceOutcome.Unavailable();
+        }
+
+        var evidence = new CalculationEvidence(plan.planId(), pointer.version(), calculationId,
+                new CalculationEvidence.Snapshots(calculation.portfolioSnapshotId(), calculation.portfolioSequence(),
+                        calculation.basisPortfolioSnapshotId(), lineage.basisSourceSnapshotId(),
+                        lineage.sourceSnapshotId()),
+                new CalculationEvidence.Times(calculation.t0(), calculation.basisAt(), calculation.measuredAt(),
+                        calculation.verifiedThrough()),
+                new CalculationEvidence.Connection(lineage.provider(), lineage.connectionId(), basis.policyVersion()),
+                new CalculationEvidence.SourceRange(range.start(), range.end(), candidate.policyVersion(),
+                        candidate.completenessHash()),
+                new CalculationEvidence.Classification(lineage.classificationId(), classification.policyVersion(),
+                        classification.inputScopeHash()),
+                new CalculationEvidence.Conversion(lineage.conversionId(), conversion.policyVersion(),
+                        conversion.fingerprint()),
+                new CalculationEvidence.Cashflows(calculation.flowCount(), calculation.estimatedFlowCount()),
+                new CalculationEvidence.Plan(plan.planId(), notation(calculation.principal()), calculation.t0(),
+                        calculation.endAt(), calculation.period(), notation(calculation.targetRate())),
+                new CalculationEvidence.Calculation(calculationId, calculation.calculationPolicy(),
+                        calculation.calendarPolicy(), calculation.displayPolicy(), lineage.precisionPolicy(),
+                        lineage.timeZone(), calculation.implementationVersion(), calculation.inputHash(),
+                        calculation.resultHash(), lineage.createdAt()),
+                impacts(metrics, calculation.estimatedFlowCount(), evidenceType),
+                // The pointer keeps no history (V10): the one official version is the current one, official
+                // since the pointer was published. Earlier versions arrive with Story 2.11's history.
+                List.of(new CalculationEvidence.OfficialVersion(pointer.version(), calculationId, pointer.publishedAt(),
+                        true)),
+                repository.unpublished(user, plan.intentId()));
+        return new EvidenceOutcome.Found(evidence);
+    }
+
+    /**
+     * Whether the version was calculated from exactly the inputs its attempt pinned at admission: the
+     * intent, portfolio, membership, connection and provider account; the basis snapshots; the candidate,
+     * classification and conversion; the terms, {@code tc}, E(tc) and its measurement time; the policies.
+     *
+     * <p>The portfolio pointer the publication advanced from is the plan's basis snapshot, and the version's
+     * snapshot is the next sequence. That holds for the first publication — the only kind before Story 2.11
+     * (incremental sync) and 2.15 (a following plan), which must revisit it.
+     *
+     * <p>The pinned input scope hash is not recomputed here: it covers the intent's source and portfolio
+     * policy versions, which only the plan module holds and no port exposes.
+     */
+    private static boolean calculatedFromPinned(Pinned pinned, UUID intentId,
+            PlanPublicationRepository.CalculationView calculation, PlanPublicationRepository.Lineage lineage,
+            List<DashboardMetric> metrics) {
+        String currentValue = metrics.getFirst().value();
+        return pinned.intentId().equals(intentId) && pinned.portfolioId().equals(calculation.portfolioId())
+                && pinned.membershipId().equals(lineage.membershipId())
+                && pinned.connectionId().equals(lineage.connectionId())
+                && pinned.providerAccountId().equals(lineage.providerAccountId())
+                && pinned.basisPortfolioSnapshotId().equals(calculation.basisPortfolioSnapshotId())
+                && pinned.basisSourceSnapshotId().equals(lineage.basisSourceSnapshotId())
+                && pinned.expectedPortfolioSnapshotId().equals(calculation.basisPortfolioSnapshotId())
+                && pinned.expectedPortfolioSequence() + 1 == calculation.portfolioSequence()
+                && pinned.candidateId().equals(lineage.candidateId())
+                && pinned.classificationId().equals(lineage.classificationId())
+                && pinned.conversionId().equals(lineage.conversionId())
+                && sameDecimal(pinned.principal(), calculation.principal()) && pinned.t0().equals(calculation.t0())
+                && pinned.endAt().equals(calculation.endAt()) && pinned.period().equals(calculation.period())
+                && sameDecimal(pinned.targetRate(), calculation.targetRate()) && pinned.tc().equals(calculation.basisAt())
+                && currentValue != null && sameDecimal(pinned.currentValue(), currentValue)
+                && pinned.measuredAt().equals(calculation.measuredAt())
+                && pinned.calculationPolicy().equals(calculation.calculationPolicy())
+                && pinned.calendarPolicy().equals(calculation.calendarPolicy());
+    }
+
+    /**
+     * Each metric's character and why. The estimated cause is derived, not stored: a derived metric of a
+     * version with estimated flows is estimated because of those flows and their one price evidence kind.
+     * The current value is Bybit's own measurement, so nothing propagates to it, and an undefined metric has
+     * no value for a flow to have reached — its reason is what explains it. The metrics are already
+     * {@link DashboardTrust#wellFormed}: a derived metric is estimated exactly when the version is.
+     */
+    static List<CalculationEvidence.MetricImpact> impacts(List<DashboardMetric> metrics, int estimatedFlowCount,
+            @Nullable String evidenceType) {
+        return metrics.stream().map(metric -> new CalculationEvidence.MetricImpact(metric.metric(), metric.nature(),
+                metric.unavailableReason(),
+                evidenceType != null && !"CURRENT_VALUE".equals(metric.metric()) && "ESTIMATED".equals(metric.nature())
+                        && metric.unavailableReason() == null
+                        ? new CalculationEvidence.EstimatedCause(evidenceType, estimatedFlowCount) : null))
+                .toList();
     }
 
     /** The version was calculated for this plan, in its portfolio, on its terms. */

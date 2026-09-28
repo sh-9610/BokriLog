@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { EvidenceState } from '../session/useCalculationEvidence'
+
 import { ENTRY_PATH } from '../content/auth'
 import { planConditionContent } from '../content/planConditions'
 import {
@@ -48,8 +50,13 @@ function dashboard(view: DashboardView, loading = false, reload = vi.fn()): Dash
   return { view, loading, reload }
 }
 
+/** The calculation evidence while its region is closed (Story 2.9 has its own panel tests). */
+function closedEvidence(): EvidenceState {
+  return { view: { kind: 'closed' }, open: vi.fn(), close: vi.fn(), retry: vi.fn() }
+}
+
 function renderPanel(view: DashboardView, loading = false): void {
-  render(<PlanResultPanel dashboard={dashboard(view, loading)} />)
+  render(<PlanResultPanel evidence={closedEvidence()} dashboard={dashboard(view, loading)} />)
 }
 
 const NAMES = METRIC_ORDER.map((metric) => copy.metrics[metric].name)
@@ -606,12 +613,16 @@ describe('PlanResultPanel', () => {
 
   it('the reload button reports busy, does not read twice, and stays the same element', () => {
     const reload = vi.fn()
-    const { rerender } = render(<PlanResultPanel dashboard={dashboard(ready(), false, reload)} />)
+    const { rerender } = render(
+      <PlanResultPanel evidence={closedEvidence()} dashboard={dashboard(ready(), false, reload)} />,
+    )
     const button = screen.getByRole('button', { name: copy.reload })
     fireEvent.click(button)
     expect(reload).toHaveBeenCalledTimes(1)
 
-    rerender(<PlanResultPanel dashboard={dashboard(ready(), true, reload)} />)
+    rerender(
+      <PlanResultPanel evidence={closedEvidence()} dashboard={dashboard(ready(), true, reload)} />,
+    )
     expect(button).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByRole('region', { name: copy.heading })).toHaveAttribute('aria-busy', 'true')
     fireEvent.click(button)
@@ -621,6 +632,7 @@ describe('PlanResultPanel', () => {
     button.focus()
     rerender(
       <PlanResultPanel
+        evidence={closedEvidence()}
         dashboard={dashboard(
           { kind: 'lastGood', nextAction: 'NONE', result: parsed(planResultFixture()) },
           false,
@@ -639,10 +651,12 @@ describe('PlanResultPanel', () => {
   ] as const)(
     'moves focus to the heading when the reload button goes away (%s) instead of dropping it to the body',
     (_name, next) => {
-      const { rerender } = render(<PlanResultPanel dashboard={dashboard(ready())} />)
+      const { rerender } = render(
+        <PlanResultPanel evidence={closedEvidence()} dashboard={dashboard(ready())} />,
+      )
       screen.getByRole('button', { name: copy.reload }).focus()
 
-      rerender(<PlanResultPanel dashboard={dashboard(next)} />)
+      rerender(<PlanResultPanel evidence={closedEvidence()} dashboard={dashboard(next)} />)
 
       expect(screen.queryByRole('button', { name: copy.reload })).not.toBeInTheDocument()
       expect(screen.getByRole('heading', { level: 2, name: copy.heading })).toHaveFocus()
@@ -653,7 +667,7 @@ describe('PlanResultPanel', () => {
     const { rerender } = render(
       <>
         <button type="button">outside</button>
-        <PlanResultPanel dashboard={dashboard(ready())} />
+        <PlanResultPanel evidence={closedEvidence()} dashboard={dashboard(ready())} />
       </>,
     )
     const outside = screen.getByRole('button', { name: 'outside' })
@@ -663,7 +677,10 @@ describe('PlanResultPanel', () => {
     rerender(
       <>
         <button type="button">outside</button>
-        <PlanResultPanel dashboard={dashboard({ kind: 'denied', cause: 'refused' })} />
+        <PlanResultPanel
+          evidence={closedEvidence()}
+          dashboard={dashboard({ kind: 'denied', cause: 'refused' })}
+        />
       </>,
     )
 

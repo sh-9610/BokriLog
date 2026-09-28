@@ -1,17 +1,14 @@
 import type { ReactElement } from 'react'
 
+import { DashboardStatusText } from '../components/DashboardStatusText'
 import { FirstSnapshotPanel } from '../components/FirstSnapshotPanel'
 import { PlanResultPanel } from '../components/PlanResultPanel'
 import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
 import { authContent, reauthNoticeKindOf, SETTINGS_PATH } from '../content/auth'
 import { entryContent } from '../content/entry'
-import {
-  dashboardAnnouncement,
-  planPresenceOf,
-  statusBusy,
-  useDashboard,
-} from '../session/useDashboard'
+import { useDashboardEvidence } from '../session/useCalculationEvidence'
+import { planPresenceOf, statusBusy, useDashboard } from '../session/useDashboard'
 import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
@@ -44,6 +41,8 @@ export function OnboardingScreen(): ReactElement {
   const signOut = useSignOut(csrfToken)
   const reauthentication = useReauthentication(csrfToken)
   const dashboard = useDashboard(gate === 'ready')
+  // The calculation evidence of the bundle the dashboard shows (Story 2.9), in its own state.
+  const evidence = useDashboardEvidence(dashboard)
   // Whether the first-snapshot panel leads the dashboard, and how (`planPresenceOf` gives the reasons).
   const presence = planPresenceOf(dashboard.view)
 
@@ -118,12 +117,18 @@ export function OnboardingScreen(): ReactElement {
             requestPending: signOut.pending || reauthentication.pending,
             dashboard,
           })}
+          // The dashboard and the evidence speak in separate parts; a change to one is read alone.
+          aria-atomic="false"
           aria-live="polite"
           className={styles.notice}
           role="status"
         >
           {ready && !signOut.pending ? (
-            <p className={styles.noticeText}>{dashboardAnnouncement(dashboard)}</p>
+            <DashboardStatusText
+              className={styles.noticeText}
+              dashboard={dashboard}
+              evidence={evidence}
+            />
           ) : (
             <p className={styles.noticeText}>
               {liveRegionMessage(gate, signOut.pending, reauthentication.pending)}
@@ -144,7 +149,7 @@ export function OnboardingScreen(): ReactElement {
         {ready && presence !== null ? (
           <FirstSnapshotPanel csrfToken={csrfToken} plan={presence} ready={ready} />
         ) : null}
-        {ready ? <PlanResultPanel dashboard={dashboard} /> : null}
+        {ready ? <PlanResultPanel dashboard={dashboard} evidence={evidence} /> : null}
 
         {ready ? (
           <section aria-labelledby={authContent.onboarding.id} className={styles.section}>

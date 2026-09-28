@@ -1,0 +1,183 @@
+/*
+ * The calculation evidence (Story 2.9): a disclosure button and the read-only region it opens on the same
+ * screen. Everything stacks in one column and wraps; nothing depends on horizontal scrolling at 320px,
+ * 200% or 400% zoom.
+ */
+.evidence {
+  display: grid;
+  gap: var(--space-3);
+  min-inline-size: 0;
+}
+
+.evidence h4,
+.evidence h5,
+.evidence p,
+.evidence ul,
+.evidence dl,
+.evidence dd {
+  margin: 0;
+}
+
+.region {
+  display: grid;
+  gap: var(--space-4);
+  min-inline-size: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-subtle);
+  color: var(--color-ink-primary);
+}
+
+.region[hidden] {
+  display: none;
+}
+
+/* The heading takes focus (tabIndex -1) when the region opens. */
+.heading {
+  font-size: var(--type-section-title-font-size);
+  font-weight: var(--type-section-title-font-weight);
+  line-height: var(--type-section-title-line-height);
+  scroll-margin-block-start: var(--space-4);
+}
+
+/* One of the six parts, in the reading order: snapshots → times → inputs → calculation → metrics → versions. */
+.part {
+  display: grid;
+  gap: var(--space-2);
+  min-inline-size: 0;
+  padding-block-start: var(--space-3);
+  border-block-start: 1px solid var(--color-border-default);
+}
+
+.partTitle {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+.term {
+  font-weight: var(--type-label-font-weight);
+}
+
+.facts {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.facts > div {
+  display: grid;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
+.facts > div > dt {
+  color: var(--color-ink-secondary);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+.facts > div > dd {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * A long machine identifier, whole. The mono token marks it as an identifier (DESIGN.md), and a value
+ * without spaces may break anywhere so it wraps instead of widening the page.
+ */
+.id {
+  font-family: var(--type-mono-font-family);
+  font-size: var(--type-mono-font-size);
+  font-weight: var(--type-mono-font-weight);
+  line-height: var(--type-mono-line-height);
+  overflow-wrap: anywhere;
+}
+
+.number {
+  font-variant-numeric: tabular-nums;
+}
+
+.help {
+  display: block;
+  color: var(--color-ink-secondary);
+  font-size: var(--type-meta-font-size);
+  line-height: var(--type-meta-line-height);
+}
+
+.facts > div > dd > .help {
+  margin-block-start: var(--space-1);
+}
+
+.list {
+  display: grid;
+  gap: var(--space-3);
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: grid;
+  gap: var(--space-2);
+  min-inline-size: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+}
+
+/* A read that ended without the lineage. Text carries the state; the surface only groups it. */
+.notice {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--component-service-notice-border);
+  border-radius: var(--radius-md);
+  background: var(--component-service-notice-background);
+  color: var(--component-service-notice-foreground);
+}
+
+/* The region's controls: a 44px target, text that wraps instead of overflowing at 320px and zoom. */
+.action {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  max-inline-size: 100%;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  color: var(--color-ink-primary);
+  font-family: var(--type-body-font-family);
+  font-size: var(--type-body-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-body-line-height);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+/* While the retry control reads again it stays in place, like the dashboard's reload (PlanResultPanel). */
+.action[aria-disabled='true'] {
+  cursor: wait;
+}
+
+/*
+ * A link reads as a link, not as one of the region's buttons: the primary ink and its underline, with the
+ * same 44px target. Focus is the global `:focus-visible` ring (global.css) — redeclaring it here would
+ * outrank the forced-colors escape.
+ */
+.link {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  max-inline-size: 100%;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  color: var(--color-primary);
+  font-weight: var(--type-label-font-weight);
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
