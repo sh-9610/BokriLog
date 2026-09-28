@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 import { type SignInProvider, type UnlinkNoticeKind } from '../content/auth'
 import { cancelUnlink, confirmUnlink, prepareUnlink } from './unlinkProvider'
@@ -51,6 +51,15 @@ export function useUnlinking(
   const [pending, setPending] = useState(false)
   const [confirming, setConfirming] = useState<SignInProvider | null>(null)
   const [notice, setNotice] = useState<UnlinkNoticeKind | null>(null)
+  /*
+   * 아직 서버에 닿지 않은 취소. 다음 준비는 이것이 끝난 뒤에 나간다.
+   *
+   * 취소는 결과를 기다리지 않고 대화상자를 닫으므로, 바로 다시 열면 두 요청이 서버에서 겹칠 수
+   * 있다. 겹치면 늦게 끝난 취소가 방금 선 무장(세션 속성)과 허가(`(user, command, target)` 무효화)를
+   * 함께 지우고, 그 대화상자의 최종 확인은 소비할 것이 없어 거부로 끝난다 — 사용자는 취소한 적 없는
+   * 조작의 실패를 본다. 같은 탭 안의 순서는 여기서 세운다.
+   */
+  const cancelling = useRef<Promise<void> | null>(null)
 
   return {
     pending,
@@ -66,7 +75,13 @@ export function useUnlinking(
        * 주장하고, 그 문장은 지금 일어나는 일과 무관하다.
        */
       setNotice(null)
-      void prepareUnlink(provider, csrfToken).then(
+      // 기다릴 취소가 없으면 지금 나간다. 한 tick 미루면 그 사이의 두 번째 클릭이 보는 순서가 바뀐다.
+      const previous = cancelling.current
+      const prepared =
+        previous === null
+          ? prepareUnlink(provider, csrfToken)
+          : previous.then(() => prepareUnlink(provider, csrfToken))
+      void prepared.then(
         (outcome) => {
           setPending(false)
           if (outcome === 'armed') {
@@ -126,9 +141,16 @@ export function useUnlinking(
       /*
        * 준비가 만든 무장과 허가를 되돌린다. 결과를 기다리지 않는다 — 대화상자는 이미 닫혔고, 이
        * 요청이 실패해도 사용자가 할 일은 없다(남은 무장은 스스로 만료되고 다음 조작이 버린다).
-       * 그 문장이 참이어야 위 표지의 "바뀐 것은 없습니다"도 참이다.
+       * 그 문장이 참이어야 위 표지의 "바뀐 것은 없습니다"도 참이다. 기다리는 것은 다음 준비
+       * 하나뿐이다(`cancelling`).
        */
-      void cancelUnlink(provider, csrfToken)
+      const request = cancelUnlink(provider, csrfToken)
+      cancelling.current = request
+      void request.finally(() => {
+        if (cancelling.current === request) {
+          cancelling.current = null
+        }
+      })
     },
   }
 }

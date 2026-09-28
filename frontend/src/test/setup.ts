@@ -31,7 +31,7 @@ import {
 } from '../content/auth'
 import { BYBIT_CANCEL_PATH, BYBIT_CONNECT_PATH, BYBIT_CONNECTION_PATH } from '../content/connection'
 import { FIRST_SNAPSHOT_PATH } from '../content/firstSnapshot'
-import { PLAN_RESULT_PATH } from '../content/planResult'
+import { DASHBOARD_PATH } from '../content/planResult'
 
 const observedRequests: string[] = []
 const observedIndexedDbNames: string[] = []
@@ -75,16 +75,17 @@ export function stubPlanConditionState(responder: RequestResponder): void {
 }
 
 /**
- * 활성 계획의 공식 결과 조회 하나를 이 시험 동안만 허용한다(Story 2.7).
+ * 공식 대시보드 조회 하나를 이 시험 동안만 허용한다(Story 2.8).
  *
  * 두 로그인 화면(`/dashboard`·`/onboarding`)이 이 요청을 보낸다 — 첫 로그인 세션은 대시보드에서
- * 온보딩으로 밀려나므로 결과 패널이 두 화면에 있다. 열지 않은 시험에서는 전역 거부가 그 요청을
- * 기록하고 거절한다. 그 거절은 "계획 없음"이 아니라 읽기 실패(`unavailable`)다: 결과 패널을 그리지
- * 않고, 첫 자산 패널은 계획이 있다고도 없다고도 말하지 않는다. "계획 없음" 경로를 보려는 시험은
- * 204를 답하게 연다.
+ * 온보딩으로 밀려나므로 대시보드 패널이 두 화면에 있다. 열지 않은 시험에서는 전역 거부가 그 요청을
+ * 기록하고 거절한다. 그 거절은 "계획 없음"이 아니라 읽기 실패다: 이전 결과가 없으니 `재시도 가능`이고
+ * 금융값이 없다. "계획 없음" 경로를 보려는 시험은 `{state: 'NO_PLAN'}`을 답하게 연다.
+ *
+ * 다시 불러오기가 같은 요청을 다시 보내므로 응답 함수는 부를 때마다 새 `Response`를 돌려줘야 한다.
  */
-export function stubPlanResult(responder: RequestResponder): void {
-  responders.set(requestKey('GET', PLAN_RESULT_PATH), responder)
+export function stubDashboard(responder: RequestResponder): void {
+  responders.set(requestKey('GET', DASHBOARD_PATH), responder)
 }
 
 /**

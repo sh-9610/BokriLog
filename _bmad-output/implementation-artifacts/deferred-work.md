@@ -245,3 +245,18 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-6-cashflow-usd-conversion.md`
   summary: Windows Git Bash에서 `verify-same-origin.sh`가 한글 확인 문구를 `curl --data`로 CP949 바이트로 보내 Bybit 연결 확인이 400으로 끝나고 이후 57건이 연쇄 실패한다.
   evidence: Story 2.6 구현 중 902/959로 끝났고, 로컬 echo 서버로 받은 바이트가 `bfacb0e1…`(기대 UTF-8 `ec97b0…`)였다. 이 스토리의 변경과 무관하며 이미 기록된 "Windows 전용 결함을 CI가 보지 못하는 공백"과 같은 종류다. Linux CI에서는 재현되지 않는다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-8-official-dashboard.md`
+  summary: 대시보드 조회를 포함한 프런트엔드 조회 훅에 요청 시간 상한이 없어, 응답이 끝나지 않으면 진행 중 가드 때문에 다시 불러오기가 페이지를 새로 열 때까지 무시된다.
+  evidence: `useDashboard.ts`의 `fetch`에는 `signal`이 없고 `inFlight`가 settle될 때까지 참으로 남는다. 저장소의 다른 조회 훅(`useFirstSnapshot` 등)도 시간 상한을 쓰지 않는 관용구라, 한 훅만 고치면 동작이 갈린다. 훅 전체에 같은 상한과 실패 문구를 정하는 라운드가 필요하다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-8-official-dashboard.md`
+  summary: 대시보드의 state·cause·nextAction 코드와 지표 순서가 백엔드 문자열 리터럴·SQL `ORDER BY CASE`·`DashboardTrust.METRICS`·프런트엔드 닫힌 맵과 `METRIC_ORDER`에 따로 적혀 있고, 서로 같은지 대조하는 검사가 없다.
+  evidence: 서버가 cause를 하나 바꾸거나 더해도 화면은 안전한 대체 문구로 접을 뿐 어떤 시험도 깨지지 않는다(리뷰가 이름 변경으로 시연했다). 이미 기록된 "계층을 넘나드는 계약 리터럴의 중복을 Docker 없는 검사로 묶는 문제"의 새 사례이며 제공자 이름·내부 경로 집합과 함께 풀 일이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-8-official-dashboard.md`
+  summary: 계획이 없는 랜딩 화면(`NO_PLAN`·`PREPARING`)에서 화면의 `role=status`와 `FirstSnapshotPanel`의 `aria-live` 영역이 함께 있어 화면당 live region이 둘이다.
+  evidence: `FirstSnapshotPanel.tsx`의 `aria-live="polite"` 영역은 Story 2.2부터 있었다. 이 스토리는 `READY`에서 그 패널을 숨겨 대시보드 상태의 단일 live region을 맞췄지만, 온보딩 흐름의 알림을 화면 status 하나로 합치는 일은 첫 공식값 패널의 상태 문장 전체를 옮기는 별도 변경이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-8-official-dashboard.md`
+  summary: 로그인 수단 해제의 취소가 서버에서 다음 준비와 겹치면, 늦게 끝난 취소가 새 무장(세션 속성)과 새 허가(`(user, command, target)` 무효화)를 지워 그 최종 확인이 403으로 끝난다. 같은 탭은 이 스토리가 막았고 다른 탭 사이는 여전히 열려 있다.
+  evidence: PR #45의 CI `same-origin-integration`이 `auth-entry.spec.ts`의 해제 대화상자 시험에서 잡았다. trace상 취소 182ms가 두 번째 준비(취소 시작 59ms 뒤 출발)와 겹쳤고 확인이 403이었다. `UnlinkService.abandon`은 허가를 참조가 아니라 `(user, command, target)`으로 무효화하고 세션 속성 제거는 요청 끝에 저장되므로, 서버 쪽 해소는 참조 단위 무효화와 무장 세대 비교를 함께 정해야 한다(Story 1.11 경로, `LinkService.abandon`도 같은 모양).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-8-official-dashboard.md`
+  summary: `InitialInputsCollection.test.tsx`의 "stops following an attempt once its state read is refused (403)"가 Vitest 전체 실행 부하 아래에서 간헐적으로 실패한다.
+  evidence: Story 2.8 검증 중 전체 실행 한 번에서 실패했고 그 파일 단독 5회·전체 2회는 모두 통과했다. Story 2.7이 더한 시험이며 이미 기록된 `OnboardingScreen.test.tsx`의 부하 아래 간헐 실패와 같은 종류다.

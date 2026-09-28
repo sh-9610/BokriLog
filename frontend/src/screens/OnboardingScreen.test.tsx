@@ -12,15 +12,16 @@ import {
   SIGN_IN_PROVIDERS,
 } from '../content/auth'
 import { entryContent } from '../content/entry'
-import { PLAN_RESULT_PATH, planResultContent } from '../content/planResult'
+import { DASHBOARD_PATH, METRIC_ORDER, planResultContent } from '../content/planResult'
+import { formatSeoulTime } from '../format/decimal'
 import { navigateTo, replaceLocation } from '../session/navigation'
-import { planResultFixture } from '../test/planResultFixture'
+import { BASIS_AT, dashboardFixture, NO_PLAN_FIXTURE } from '../test/planResultFixture'
 import {
   getObservedAllowedRequests,
   getObservedSessionRequests,
   getObservedStorageEntries,
+  stubDashboard,
   stubLogoutRequest,
-  stubPlanResult,
   stubReauthenticationRequest,
   stubSessionRequest,
 } from '../test/setup'
@@ -112,34 +113,51 @@ describe('OnboardingScreen', () => {
     }
   })
 
-  it('첫 로그인 세션도 활성 계획의 공식 결과를 같은 패널로 보고, 결과가 없으면 화면이 그대로다', async () => {
-    // A first-login session is sent here from `/dashboard`, so this landing screen shows the result.
+  it('첫 로그인 세션도 공식 대시보드를 같은 패널·같은 순서로 보고, 계획이 없으면 그렇게 말한다', async () => {
+    // A first-login session is sent here from `/dashboard`, so this landing screen shows the dashboard.
     stubSessionRequest(() =>
       Promise.resolve(jsonResponse({ authenticated: true, destination: 'onboarding' })),
     )
-    stubPlanResult(() => Promise.resolve(jsonResponse(planResultFixture())))
+    stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture())))
     const { unmount } = render(<OnboardingScreen />)
 
     expect(
-      await screen.findByRole('heading', { level: 2, name: planResultContent.heading }),
+      await screen.findByRole('heading', { level: 3, name: planResultContent.currentHeading }),
     ).toBeInTheDocument()
+    expect(screen.getAllByRole('article')).toHaveLength(METRIC_ORDER.length)
+    expect(
+      screen
+        .getAllByRole('heading', { level: 3 })
+        .map((heading) => heading.textContent)
+        .slice(0, 4),
+    ).toEqual([
+      planResultContent.currentHeading,
+      planResultContent.trustHeading,
+      planResultContent.metricsHeading,
+      planResultContent.nextActionHeading,
+    ])
     expect(screen.getAllByRole('status')).toHaveLength(1)
-    expect(screen.getByRole('status')).toHaveTextContent('복리 계획 결과를 표시합니다')
+    // eslint-disable-next-line testing-library/no-node-access -- 역할 없는 aria-live 영역은 역할 조회로 보이지 않는다. 화면의 live region 수는 속성으로 세야 한다.
+    expect(document.querySelectorAll('[role="status"], [aria-live]')).toHaveLength(1)
+    expect(screen.getByRole('status')).toHaveTextContent(
+      planResultContent.status.ready(formatSeoulTime(BASIS_AT, planResultContent.timeUnavailable)),
+    )
+    expect(screen.getAllByText(/1,250\.00 USD/)).toHaveLength(1)
     unmount()
 
     stubSessionRequest(() =>
       Promise.resolve(jsonResponse({ authenticated: true, destination: 'onboarding' })),
     )
-    stubPlanResult(() => Promise.resolve(new Response(null, { status: 204 })))
+    stubDashboard(() => Promise.resolve(jsonResponse(NO_PLAN_FIXTURE)))
     render(<OnboardingScreen />)
     await screen.findByRole('heading', { level: 2, name: authContent.onboarding.heading })
     await waitFor(() => {
-      expect(getObservedAllowedRequests()).toContain(`GET ${PLAN_RESULT_PATH}`)
+      expect(getObservedAllowedRequests()).toContain(`GET ${DASHBOARD_PATH}`)
     })
-    expect(
-      screen.queryByRole('heading', { name: planResultContent.heading }),
-    ).not.toBeInTheDocument()
-    expect(screen.getByRole('status').textContent).toBe('')
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent(planResultContent.status.noPlan)
+    })
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
   })
 
   it('설정 화면으로 가는 길을 준다', async () => {

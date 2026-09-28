@@ -106,31 +106,70 @@ public interface SyncJobApi {
     record PublicationState(boolean permitted, @Nullable PublicationJob job, boolean startable,
             @Nullable String reason) {}
 
+    // -------------------------------------------------------------------- Story 2.8
+
     /** One of the six metrics. {@code value} is a canonical decimal string or absent with a reason. */
-    record PlanResultMetric(String metric, @Nullable String value, String nature,
+    record DashboardMetric(String metric, @Nullable String value, String nature,
             @Nullable String unavailableReason) {}
 
     /**
-     * The active plan's official result, read through its pointer only: the plan terms, the pointer,
-     * the calculation version it cites and that version's six metrics. Nothing is assembled from
-     * another version or from candidates.
+     * One trust axis as the server judged it (Story 2.8 AC-5). Every field is a code or a time; the
+     * screen maps the codes to copy through closed maps and never judges time itself.
      *
-     * @param freshness {@code FRESH}, {@code SYNCING} or {@code STALE} against the database clock
-     *     (SYNC-UX-1.0: both {@code measuredAt} and {@code cashflowVerifiedThrough} within 15 minutes)
+     * @param lastNormalAt the time of the official bundle this axis vouches for: the measurement
+     *     (freshness), the cash-flow verification (input reliability) or the calculation basis (nature)
+     * @param affectedMetrics the metrics this axis's state reaches, in the screen's order
+     * @param nextAction what the axis leaves the user to do: {@code WAIT_FOR_SYNC} (freshness, while a
+     *     job runs) or {@code NONE}. An axis never produces the screen-level {@code CREATE_PLAN} or
+     *     {@code WAIT_FOR_RESULT} — those belong to {@link Dashboard.NoPlan} and {@link Dashboard.Preparing}
      */
-    record PlanResult(UUID planId, String planStatus, String principal, Instant startAt, Instant endAt,
+    record TrustAxis(String state, String cause, Instant lastNormalAt, List<String> affectedMetrics,
+            String nextAction) {}
+
+    /**
+     * The calculation nature axis and the character it never overwrites: "not computable" is its own
+     * state, and an undefined ratio of an estimated plan is still estimated.
+     */
+    record NatureAxis(TrustAxis axis, String character, List<String> unavailableMetrics,
+            int estimatedFlowCount) {}
+
+    /**
+     * The three independent axes. There is no combined score. Freshness is judged by SYNC-UX-1.0 against
+     * the database clock; its two times travel under their own names in the result.
+     */
+    record TrustAxes(TrustAxis freshness, TrustAxis inputReliability, NatureAxis calculationNature) {}
+
+    /**
+     * The active plan's official bundle, read through its pointer in one consistent read: the plan terms,
+     * the pointer, the calculation version it cites, that version's six metrics and the three axes.
+     * Nothing is assembled from another version or from candidate, held or review data.
+     */
+    record DashboardResult(UUID planId, String planStatus, String principal, Instant startAt, Instant endAt,
             String period, String targetRate, long pointerVersion, Instant publishedAt, UUID calculationId,
             UUID portfolioSnapshotId, UUID basisPortfolioSnapshotId, Instant basisAt, Instant measuredAt,
             Instant cashflowVerifiedThrough, String calculationPolicy, String calendarPolicy,
             String displayPolicy, String pricePolicy, String implementationVersion, String inputHash,
-            String resultHash, int flowCount, int estimatedFlowCount, boolean estimated,
-            String inputReliability, String freshness, List<PlanResultMetric> metrics) {}
+            String resultHash, int flowCount, int estimatedFlowCount, TrustAxes trust,
+            List<DashboardMetric> metrics) {}
 
-    sealed interface ActivePlanResult permits ActivePlanResult.NotPermitted, ActivePlanResult.None,
-            ActivePlanResult.Found {
-        record NotPermitted() implements ActivePlanResult {}
-        record None() implements ActivePlanResult {}
-        record Found(PlanResult result) implements ActivePlanResult {}
+    /**
+     * The dashboard read model (Story 2.8). One of five outcomes; only {@link Dashboard.Ready} carries
+     * financial fields. The screen-level next action is a closed set per outcome: {@code CREATE_PLAN}
+     * ({@link Dashboard.NoPlan}), {@code WAIT_FOR_RESULT} ({@link Dashboard.Preparing}), and
+     * {@code WAIT_FOR_SYNC} or {@code NONE} ({@link Dashboard.Ready}).
+     */
+    sealed interface Dashboard permits Dashboard.NotPermitted, Dashboard.Unavailable, Dashboard.NoPlan,
+            Dashboard.Preparing, Dashboard.Ready {
+        /** The account's own access refused it before or after the read (its deletion began or ended). */
+        record NotPermitted() implements Dashboard {}
+        /** The pointer's bundle did not agree with itself; nothing is returned in part. */
+        record Unavailable() implements Dashboard {}
+        /** No active plan and no publication in progress. */
+        record NoPlan(String nextAction) implements Dashboard {}
+        /** No active plan yet, and one of the user's publication attempts is queued or running. */
+        record Preparing(String nextAction) implements Dashboard {}
+        /** The active plan's official bundle. */
+        record Ready(DashboardResult result, String nextAction) implements Dashboard {}
     }
 
     /**
@@ -146,12 +185,25 @@ public interface SyncJobApi {
     /** The intent's latest publication attempt and whether a new one could start now. */
     PublicationState planPublicationState(@Nullable UUID userId, UUID intentId);
 
+    /** Whether a dashboard read found its bundle agreeing with itself, or read no bundle at all. */
+    enum BundleConsistency { CONSISTENT, INCONSISTENT, NOT_READ }
+
     /**
-     * The official result of the user's active plan through its pointer. Only the account's own access
-     * gates this read (it is refused while the account's deletion is in progress); a restriction on a
-     * write command does not hide an existing result.
+     * One dashboard read and what it learned about the bundle. {@code consistency} is
+     * {@link BundleConsistency#NOT_READ} when the account was refused before the read; a bundle read and
+     * then dropped by the second deletion check keeps the consistency it was read with.
      */
-    ActivePlanResult activePlanResult(@Nullable UUID userId);
+    record DashboardRead(Dashboard dashboard, BundleConsistency consistency) {}
+
+    /**
+     * The user's dashboard (Story 2.8): the account's own access is checked, the plan, pointer,
+     * calculation version, metrics and freshness are read in one read-only {@code REPEATABLE READ}
+     * transaction, and the access is checked again. A deletion that began or finished on either side
+     * wins. A restriction on a write command does not hide an existing result. A failing read throws;
+     * nothing is returned in part. The HTTP surface writes the one operational line per read, because it
+     * alone knows the status it answered with.
+     */
+    DashboardRead dashboard(@Nullable UUID userId);
 
     /** portfolio 삭제 뒤, source 삭제 앞에 호출한다. 발행 결과·시도를 먼저 지운다. */
     void eraseSyncData(@Nullable UUID userId);

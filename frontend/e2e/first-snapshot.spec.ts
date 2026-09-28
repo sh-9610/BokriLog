@@ -2,11 +2,14 @@ import { expect, test, type Page } from '@playwright/test'
 
 import { authContent } from '../src/content/auth'
 import { connectionContent } from '../src/content/connection'
+import { entryContent } from '../src/content/entry'
 import { firstSnapshotContent } from '../src/content/firstSnapshot'
 import { planConditionContent } from '../src/content/planConditions'
 import {
   activePlanContent,
   METRIC_ORDER,
+  NEXT_ACTION_FALLBACK,
+  nextActionCopy,
   planPublicationContent,
   planResultContent,
 } from '../src/content/planResult'
@@ -159,40 +162,104 @@ async function publishAndOpenResult(page: Page, landing = '/onboarding'): Promis
 }
 
 /**
- * The dashboard's first official result: six cards in order, each with its nature; the conditions,
- * the three times and the three axes; the title and its disclaimer adjacent; the status region.
+ * The official dashboard (Story 2.8), read from one `GET /api/dashboard` answer. The order is mobile
+ * first: the last normal current value with its measurement time, the three trust axes (with the note
+ * that separates the two times), the other five metrics, the next action, then the plan terms. Six
+ * cards in order, each with its nature; one status region and no other live region; the title and its
+ * disclaimer adjacent; the old 2.7 surface is gone.
  */
-async function expectFirstResult(page: Page, derivedNature: '공식' | '추정'): Promise<void> {
+async function expectFirstResult(page: Page, derived: 'OFFICIAL' | 'ESTIMATED'): Promise<void> {
   const panel = page.getByRole('region', { name: planResultContent.heading })
-  await expect(panel).toBeVisible({ timeout: 15_000 })
-  const cards = panel
-    .getByRole('region', { name: planResultContent.metricsHeading })
-    .getByRole('article')
+  await expect(panel.getByRole('region', { name: planResultContent.currentHeading })).toBeVisible({
+    timeout: 15_000,
+  })
+  /*
+   * The one surface, asked from the page itself (the session cookie is `Secure`, which the browser sends
+   * to this loopback origin): it answers READY without caching, and the 2.7 path is gone. Its codes and
+   * times anchor the assertions below to the content copy instead of to literals.
+   */
+  const probe = await page.evaluate(async () => {
+    const dashboard = await fetch('/api/dashboard', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    })
+    const body = (await dashboard.json()) as {
+      state?: string
+      nextAction?: string
+      result?: {
+        measuredAt: string
+        basisAt: string
+        trust: { freshness: { state: string }; inputReliability: { state: string } }
+      }
+    }
+    const old = await fetch('/api/plans/active', { credentials: 'same-origin', cache: 'no-store' })
+    return {
+      status: dashboard.status,
+      cacheControl: dashboard.headers.get('cache-control') ?? '',
+      state: body.state,
+      nextAction: body.nextAction ?? '',
+      measuredAt: body.result?.measuredAt ?? '',
+      basisAt: body.result?.basisAt ?? '',
+      freshness: body.result?.trust.freshness.state ?? '',
+      reliability: body.result?.trust.inputReliability.state ?? '',
+      old: old.status,
+    }
+  })
+  expect(probe).toMatchObject({ status: 200, state: 'READY', reliability: 'CONFIRMED', old: 404 })
+  expect(probe.cacheControl).toContain('no-store')
+  expect(['NONE', 'WAIT_FOR_SYNC']).toContain(probe.nextAction)
+
+  await expect(panel.getByRole('heading', { level: 3 })).toHaveText([
+    planResultContent.currentHeading,
+    planResultContent.trustHeading,
+    planResultContent.metricsHeading,
+    planResultContent.nextActionHeading,
+    planResultContent.conditionsHeading,
+  ])
+  const trust = panel.getByRole('region', { name: planResultContent.trustHeading })
+  const axes = trust.getByRole('group')
+  await expect(axes).toHaveCount(3)
+  // The times as this page formats them (Asia/Seoul), read from the axes that vouch for them.
+  const measured = await axes
+    .nth(0)
+    .locator(`time[datetime="${probe.measuredAt}"]`)
+    .first()
+    .innerText()
+  const basis = await axes.nth(2).locator(`time[datetime="${probe.basisAt}"]`).first().innerText()
+
+  const cards = panel.getByRole('article')
   await expect(cards).toHaveCount(METRIC_ORDER.length)
   for (const [index, metric] of METRIC_ORDER.entries()) {
     const card = cards.nth(index)
     await expect(card.getByRole('heading')).toHaveText(planResultContent.metrics[metric].name)
     await expect(card).toContainText(
-      `${planResultContent.natureLabel}: ${index === 0 ? '공식' : derivedNature}`,
+      `${planResultContent.natureLabel}: ${planResultContent.natures[index === 0 ? 'OFFICIAL' : derived] ?? ''}`,
     )
   }
   await expect(cards.nth(0)).toContainText('1,234.56 USD')
+  await expect(cards.nth(0)).toContainText(planResultContent.measuredLine(measured))
+  // The current value is shown once: the first-snapshot panel does not repeat it.
+  await expect(page.getByRole('heading', { name: firstSnapshotContent.heading })).toHaveCount(0)
   const conditions = panel.getByRole('region', { name: planResultContent.conditionsHeading })
-  await expect(conditions.getByText('매일')).toBeVisible()
+  await expect(conditions.getByText(planResultContent.periods.DAILY ?? '')).toBeVisible()
   await expect(conditions.getByText('10%')).toBeVisible()
-  const times = panel.getByRole('region', { name: planResultContent.timesHeading })
-  for (const label of [
-    planResultContent.basisAt,
-    planResultContent.measuredAt,
-    planResultContent.verifiedThrough,
-  ]) {
-    await expect(times.getByText(label)).toBeVisible()
+  const { freshness, reliability, nature } = planResultContent.axes
+  await expect(axes.nth(0)).toHaveAccessibleName(
+    `${freshness.name}: ${freshness.states[probe.freshness] ?? ''}`,
+  )
+  await expect(axes.nth(1)).toHaveAccessibleName(
+    `${reliability.name}: ${reliability.states.CONFIRMED ?? ''}`,
+  )
+  await expect(axes.nth(2)).toHaveAccessibleName(`${nature.name}: ${nature.states[derived] ?? ''}`)
+  for (const label of [freshness.lastNormal, freshness.verifiedThrough, freshness.timesNote]) {
+    await expect(axes.nth(0).getByText(label, { exact: true })).toBeVisible()
   }
-  const trust = panel.getByRole('region', { name: planResultContent.trustHeading })
-  await expect(trust.getByText(/^신선도: (최신|동기화 중|최신 아님)$/)).toBeVisible()
-  await expect(trust.getByText('입력 신뢰도: 확인됨')).toBeVisible()
-  await expect(trust.getByText(`계산 성격: ${derivedNature}`)).toBeVisible()
-  await expect(page.getByRole('status')).toContainText('복리 계획 결과를 표시합니다')
+  await expect(
+    panel.getByRole('region', { name: planResultContent.nextActionHeading }),
+  ).toContainText(nextActionCopy(probe.nextAction, measured))
+  await expect(page.getByRole('status')).toHaveCount(1)
+  await expect(page.locator('[aria-live]')).toHaveCount(1)
+  await expect(page.getByRole('status')).toHaveText(planResultContent.status.ready(basis))
   const title = page.getByRole('heading', { level: 1 })
   await expect(title).toHaveText(authContent.pageTitle)
   await expect(title.locator('xpath=following-sibling::*[1]')).toHaveText(authContent.disclaimer)
@@ -200,7 +267,48 @@ async function expectFirstResult(page: Page, derivedNature: '공식' | '추정')
   expect(panelText).not.toMatch(
     /축하|손실|추천합니다|투자성과|계좌 수익률|스트릭|배지|NaN|undefined/,
   )
+  // Every code the server sent had its own copy: no fallback sentence is on the panel.
+  for (const fallback of [
+    planResultContent.axes.unknownState,
+    planResultContent.axes.unknownCause,
+    planResultContent.axes.unknownMetric,
+    planResultContent.unknownReason,
+    planResultContent.unknownPeriod,
+    NEXT_ACTION_FALLBACK,
+    planResultContent.timeUnavailable,
+  ]) {
+    expect(panelText).not.toContain(fallback)
+  }
   expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0)
+  expect(page.url()).not.toMatch(/[?&](planId|calculationId|snapshotId)=/)
+}
+
+/**
+ * The keyboard reaches the header and then the dashboard's one control, in reading order, from a fresh
+ * load of the landing screen.
+ */
+async function expectKeyboardOrder(page: Page): Promise<void> {
+  await page.reload()
+  await expect(
+    page
+      .getByRole('region', { name: planResultContent.heading })
+      .getByRole('region', { name: planResultContent.currentHeading }),
+  ).toBeVisible({ timeout: 15_000 })
+  const reached: string[] = []
+  for (let step = 0; step < 4; step += 1) {
+    await page.keyboard.press('Tab')
+    reached.push(await page.evaluate(() => document.activeElement?.textContent.trim() ?? ''))
+  }
+  expect(reached).toEqual([
+    entryContent.skipLink,
+    authContent.settings.link,
+    authContent.signOut.label,
+    planResultContent.reload,
+  ])
+  // The control is a real 44px target.
+  const box = await page.getByRole('button', { name: planResultContent.reload }).boundingBox()
+  expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
+  expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
 }
 
 async function expectNoHorizontalScroll(page: Page): Promise<void> {
@@ -251,8 +359,10 @@ test.describe('첫 공식 현재가치', () => {
     // the official result from one pointer, every derived metric official (no estimated flow).
     await page.setViewportSize({ width: 320, height: 800 })
     await publishAndOpenResult(page)
-    await expectFirstResult(page, '공식')
+    await expectFirstResult(page, 'OFFICIAL')
     await expectNoHorizontalScroll(page)
+    await page.setViewportSize({ width: 320, height: 800 })
+    await expectKeyboardOrder(page)
     await page.goto(planConditionContent.path)
     await expect(page.getByRole('heading', { name: activePlanContent.heading })).toBeVisible()
     await expect(page.getByRole('link', { name: activePlanContent.dashboardLink })).toBeVisible()
@@ -293,9 +403,10 @@ test.describe('첫 공식 현재가치', () => {
         { timeout: 15_000 },
       )
       await publishAndOpenResult(estimated)
-      await expectFirstResult(estimated, '추정')
+      await expectFirstResult(estimated, 'ESTIMATED')
+      // Six cards: the lead current value, then the five metrics of the same version.
       const cards = estimated
-        .getByRole('region', { name: planResultContent.metricsHeading })
+        .getByRole('region', { name: planResultContent.heading })
         .getByRole('article')
       await expect(cards.nth(0)).not.toContainText('추정 근거')
       for (const index of [1, 2, 3, 4, 5]) {

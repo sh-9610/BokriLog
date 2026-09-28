@@ -1,7 +1,7 @@
 package com.bokrilog.sync.internal;
 
 import com.bokrilog.calculation.PlanCalculator;
-import com.bokrilog.sync.SyncJobApi.PlanResultMetric;
+import com.bokrilog.sync.SyncJobApi.DashboardMetric;
 import com.bokrilog.sync.SyncJobApi.PublicationJob;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -343,61 +343,80 @@ class PlanPublicationRepository {
 
     // ---------------------------------------------------------------- official result (through the pointer)
 
-    record Pointer(UUID calculationId, long version, Instant publishedAt) {}
+    /*
+     * The dashboard reads below run in one read-only REPEATABLE READ transaction the service owns: they
+     * see one snapshot of the database, so the plan, its pointer, the version it cites and that version's
+     * metrics cannot come from two different moments. Nothing here reads candidate, held or review rows.
+     */
+
+    /**
+     * Whether any of the user's publication attempts is queued or running — whatever its intent. With no
+     * active plan this is the dashboard's "result being prepared"; a finished attempt (published, blocked
+     * or failed) does not count.
+     */
+    boolean publicationInProgress(UUID user) {
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_plan_publication_job WHERE user_id=:u "
+                + "AND status IN ('QUEUED','RUNNING'))")
+            .param("u", user).query(Boolean.class).single();
+    }
+
+    record Pointer(UUID portfolioId, UUID calculationId, long version, Instant publishedAt) {}
 
     Optional<Pointer> pointer(UUID user, UUID planId) {
-        return jdbc.sql("SELECT calculation_id,pointer_version,published_at FROM sync_official_plan_result "
+        return jdbc.sql("SELECT portfolio_id,calculation_id,pointer_version,published_at FROM sync_official_plan_result "
                 + "WHERE plan_id=:plan AND user_id=:u")
             .param("plan", planId).param("u", user)
-            .query((rs, n) -> new Pointer(uuid(rs, 1), rs.getLong(2), instant(rs, 3))).optional();
+            .query((rs, n) -> new Pointer(uuid(rs, 1), uuid(rs, 2), rs.getLong(3), instant(rs, 4))).optional();
     }
 
-    record CalculationView(UUID planId, UUID portfolioSnapshotId, UUID basisPortfolioSnapshotId, String principal,
-            Instant t0, Instant endAt, String period, String targetRate, Instant basisAt, Instant measuredAt,
-            Instant verifiedThrough, String calculationPolicy, String calendarPolicy, String displayPolicy,
-            String pricePolicy, String implementationVersion, String inputHash, String resultHash, int flowCount,
-            int estimatedFlowCount, boolean estimated, String inputReliability) {}
+    record CalculationView(UUID planId, UUID portfolioId, UUID portfolioSnapshotId, long portfolioSequence,
+            UUID basisPortfolioSnapshotId, String principal, Instant t0, Instant endAt, String period,
+            String targetRate, Instant basisAt, Instant measuredAt, Instant verifiedThrough, String calculationPolicy,
+            String calendarPolicy, String displayPolicy, String pricePolicy, String implementationVersion,
+            String inputHash, String resultHash, int flowCount, int estimatedFlowCount, boolean estimated,
+            String inputReliability) {}
 
     Optional<CalculationView> calculation(UUID user, UUID calculationId) {
-        return jdbc.sql("SELECT plan_id,portfolio_snapshot_id,basis_portfolio_snapshot_id,p0_decimal,t0,end_at,period,"
-                + "target_rate,basis_at,current_value_measured_at,cashflow_verified_through,calculation_policy,"
-                + "calendar_policy,display_policy,price_policy_version,implementation_version,input_hash,result_hash,"
-                + "flow_count,estimated_flow_count,estimated,input_reliability FROM sync_plan_calculation "
-                + "WHERE calculation_id=:c AND user_id=:u")
+        return jdbc.sql("SELECT plan_id,portfolio_id,portfolio_snapshot_id,portfolio_publication_sequence,"
+                + "basis_portfolio_snapshot_id,p0_decimal,t0,end_at,period,target_rate,basis_at,current_value_measured_at,"
+                + "cashflow_verified_through,calculation_policy,calendar_policy,display_policy,price_policy_version,"
+                + "implementation_version,input_hash,result_hash,flow_count,estimated_flow_count,estimated,"
+                + "input_reliability FROM sync_plan_calculation WHERE calculation_id=:c AND user_id=:u")
             .param("c", calculationId).param("u", user)
-            .query((rs, n) -> new CalculationView(uuid(rs, 1), uuid(rs, 2), uuid(rs, 3), rs.getString(4),
-                    instant(rs, 5), instant(rs, 6), rs.getString(7), rs.getString(8), instant(rs, 9), instant(rs, 10),
-                    instant(rs, 11), rs.getString(12), rs.getString(13), rs.getString(14), rs.getString(15),
-                    rs.getString(16), rs.getString(17), rs.getString(18), rs.getInt(19), rs.getInt(20),
-                    rs.getBoolean(21), rs.getString(22))).optional();
+            .query((rs, n) -> new CalculationView(uuid(rs, 1), uuid(rs, 2), uuid(rs, 3), rs.getLong(4), uuid(rs, 5),
+                    rs.getString(6), instant(rs, 7), instant(rs, 8), rs.getString(9), rs.getString(10), instant(rs, 11),
+                    instant(rs, 12), instant(rs, 13), rs.getString(14), rs.getString(15), rs.getString(16),
+                    rs.getString(17), rs.getString(18), rs.getString(19), rs.getString(20), rs.getInt(21),
+                    rs.getInt(22), rs.getBoolean(23), rs.getString(24))).optional();
     }
 
-    /** The version's six metrics in the screen's order. */
-    List<PlanResultMetric> metrics(UUID calculationId) {
+    /** The version's metrics in the screen's order. The caller checks that exactly the six came back. */
+    List<DashboardMetric> metrics(UUID calculationId) {
         return jdbc.sql("SELECT metric,value_decimal,nature,unavailable_reason FROM sync_plan_calculation_metric "
                 + "WHERE calculation_id=:c ORDER BY CASE metric WHEN 'CURRENT_VALUE' THEN 1 WHEN 'PLAN_AMOUNT' THEN 2 "
-                + "WHEN 'PLAN_DIFFERENCE' THEN 3 WHEN 'ADJUSTED_TARGET' THEN 4 WHEN 'REQUIRED_RATE' THEN 5 ELSE 6 END")
+                + "WHEN 'PLAN_DIFFERENCE' THEN 3 WHEN 'ADJUSTED_TARGET' THEN 4 WHEN 'REQUIRED_RATE' THEN 5 "
+                + "WHEN 'GOAL_PROGRESS' THEN 6 ELSE 7 END,metric")
             .param("c", calculationId)
-            .query((rs, n) -> new PlanResultMetric(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4)))
+            .query((rs, n) -> new DashboardMetric(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4)))
             .list();
     }
 
     /**
-     * SYNC-UX-1.0 freshness against the database clock: syncing while any of the user's attempts is in
-     * progress; fresh when both the measurement and the cash-flow verification are at most 15 minutes old;
-     * otherwise stale.
+     * SYNC-UX-1.0 facts against the database clock: whether any of the user's jobs is in progress, and
+     * whether each of the two times is at most 15 minutes old. The judgment itself is
+     * {@link DashboardTrust}'s; the clock is the database's alone, never the application's or the client's.
      */
-    String freshness(UUID user, Instant measuredAt, Instant verifiedThrough) {
-        return jdbc.sql("SELECT CASE WHEN EXISTS(SELECT 1 FROM sync_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
+    DashboardTrust.Freshness freshness(UUID user, Instant measuredAt, Instant verifiedThrough) {
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
                 + "OR EXISTS(SELECT 1 FROM sync_initial_collection_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
                 + "OR EXISTS(SELECT 1 FROM sync_cashflow_classification_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
                 + "OR EXISTS(SELECT 1 FROM sync_cashflow_conversion_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
-                + "OR EXISTS(SELECT 1 FROM sync_plan_publication_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
-                + "THEN 'SYNCING' WHEN statement_timestamp()-:measured<=interval '15 minutes' "
-                + "AND statement_timestamp()-:verified<=interval '15 minutes' "
-                + "THEN 'FRESH' ELSE 'STALE' END")
+                + "OR EXISTS(SELECT 1 FROM sync_plan_publication_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')),"
+                + "statement_timestamp()-:measured<=interval '15 minutes',"
+                + "statement_timestamp()-:verified<=interval '15 minutes'")
             .param("u", user).param("measured", utc(measuredAt)).param("verified", utc(verifiedThrough))
-            .query(String.class).single();
+            .query((rs, n) -> new DashboardTrust.Freshness(rs.getBoolean(1), rs.getBoolean(2), rs.getBoolean(3)))
+            .single();
     }
 
     // ---------------------------------------------------------------- erasure

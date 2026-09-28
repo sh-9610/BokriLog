@@ -6,9 +6,12 @@ import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
 import { authContent, reauthNoticeKindOf, SETTINGS_PATH } from '../content/auth'
 import { entryContent } from '../content/entry'
-import { planResultContent } from '../content/planResult'
-import { formatSeoulTime } from '../format/decimal'
-import { planPresenceOf, usePlanResult } from '../session/usePlanResult'
+import {
+  dashboardAnnouncement,
+  planPresenceOf,
+  statusBusy,
+  useDashboard,
+} from '../session/useDashboard'
 import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
@@ -33,16 +36,18 @@ const MAIN_ID = 'signed-in-main'
  * 머리말을 지나치려는 사용자가 먼저 만나는 것은 건너뛰기 링크여야 한다. 진행 중임을 말하는 것은
  * 버튼이 아니라 아래 live region이다(화면당 하나). 버튼의 이름은 언제나 동작으로 남는다.
  *
- * 활성 계획의 공식 결과가 있으면(Story 2.7) 결과 패널이 공식 포인터 하나의 응답에서 여섯 지표와
- * 세 신뢰 축을 그리고, 이 화면의 단일 live region이 그 사실을 한 번 알린다. 결과가 없거나 읽지
- * 못하면 패널이 없고 화면은 그 전과 같다. 조정 이력·계산 근거·동기화 조작은 이후 스토리의 범위다.
+ * 공식 대시보드(Story 2.8)가 이 화면의 본문이다. 대시보드 조회 모델 응답 하나에서 `계획 없음`·
+ * `결과 준비 중`·공식 묶음(현재가치 → 세 신뢰 축 → 지표 → 다음 행동)을 그리고, 읽기 실패는
+ * `마지막 정상 결과`·`재시도 가능`으로 구분한다. 상태 변화는 이 화면의 단일 live region이 한 문장으로
+ * 알린다. 조정 이력·계산 근거·동기화 조작은 이후 스토리의 범위다.
  */
 export function SignedInScreen(): ReactElement {
   const { csrfToken, gate } = useSessionGate('dashboard')
   const signOut = useSignOut(csrfToken)
   const reauthentication = useReauthentication(csrfToken)
-  const planResult = usePlanResult(gate === 'ready')
-  const result = planResult.kind === 'loaded' ? planResult.result : null
+  const dashboard = useDashboard(gate === 'ready')
+  // Whether the first-snapshot panel leads the dashboard, and how (`planPresenceOf` gives the reasons).
+  const presence = planPresenceOf(dashboard.view)
 
   if (gate === 'unauthenticated') {
     /*
@@ -112,19 +117,18 @@ export function SignedInScreen(): ReactElement {
             끝나고 다음 행동을 기다리는 자리이므로 `aria-busy`를 세우면 보조기술에 "지금
             바뀌는 중"이라고 잘못 말한다. 확인 중·이동 중·요청 중만 참이다.
           */
-          aria-busy={(!ready && !reauthRequired) || signOut.pending || reauthentication.pending}
+          aria-busy={statusBusy({
+            ready,
+            reauthRequired,
+            requestPending: signOut.pending || reauthentication.pending,
+            dashboard,
+          })}
           aria-live="polite"
           className={styles.notice}
           role="status"
         >
           {ready && !signOut.pending ? (
-            result === null ? null : (
-              <p className={styles.noticeText}>
-                {planResultContent.announce(
-                  formatSeoulTime(result.basisAt, planResultContent.timeUnavailable),
-                )}
-              </p>
-            )
+            <p className={styles.noticeText}>{dashboardAnnouncement(dashboard)}</p>
           ) : (
             <p className={styles.noticeText}>
               {liveRegionMessage(gate, signOut.pending, reauthentication.pending)}
@@ -142,14 +146,10 @@ export function SignedInScreen(): ReactElement {
           />
         ) : null}
 
-        {ready && result !== null ? <PlanResultPanel result={result} /> : null}
-        {ready ? (
-          <FirstSnapshotPanel
-            csrfToken={csrfToken}
-            plan={planPresenceOf(planResult)}
-            ready={ready}
-          />
+        {ready && presence !== null ? (
+          <FirstSnapshotPanel csrfToken={csrfToken} plan={presence} ready={ready} />
         ) : null}
+        {ready ? <PlanResultPanel dashboard={dashboard} /> : null}
         {ready ? (
           <section aria-labelledby={authContent.dashboard.id} className={styles.section}>
             <h2 className={styles.sectionHeading} id={authContent.dashboard.id}>

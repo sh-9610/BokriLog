@@ -207,8 +207,8 @@ class SyncJobService implements SyncJobApi {
         return publications.state(userId,intentId);
     }
     @Override
-    public ActivePlanResult activePlanResult(@Nullable UUID userId) {
-        return publications.activeResult(userId);
+    public DashboardRead dashboard(@Nullable UUID userId) {
+        return publications.dashboard(userId);
     }
     /**
      * Erases this user's sync rows. The publication rows go first: the official pointer and calculation
