@@ -16,16 +16,7 @@ export const firstSnapshotContent = {
   connectionSettings: 'Bybit 연결 설정',
   refresh: '상태 다시 확인',
   unconnected: 'Bybit 연결을 먼저 완료해 주세요.',
-  noPlan: '활성 계획은 아직 없습니다. 아래 계획 조건 확인에서 계획을 시작할 수 있습니다.',
   cannotPlan: '현재가치가 0 이하이므로 이 값으로 계획을 만들 수 없습니다.',
-  /**
-   * 활성 계획이 있을 때. 공식 포인터는 발행과 함께 tc 값으로 전진하므로 이 값은 더 이상 "첫" 값이
-   * 아니다 — 제목과 상태 문장이 그렇게 말하지 않는다.
-   */
-  currentHeading: '공식 현재가치',
-  currentSucceeded: '가장 최근에 발행된 공식 현재가치입니다.',
-  /** 결과를 읽지 못했거나 거절됐을 때. 계획이 있는지 없는지 말하지 않는다. */
-  planUnknown: '활성 계획 상태를 지금 확인하지 못했습니다. 화면을 새로 열어 다시 확인해 주세요.',
   measured: 'Bybit 측정 시각',
   official: '공식 현재가치',
   axes: [

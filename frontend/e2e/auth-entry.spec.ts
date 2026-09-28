@@ -7,6 +7,8 @@ import {
   SIGN_IN_PROVIDERS,
   type SignInProvider,
 } from '../src/content/auth'
+import { firstSnapshotContent } from '../src/content/firstSnapshot'
+import { planResultContent } from '../src/content/planResult'
 
 /**
  * 로그인 진입과 로그인 상태 경로의 실제 Chromium 검증.
@@ -81,6 +83,14 @@ async function signInThroughStub(page: Page, provider: SignInProvider = 'google'
   await page.getByRole('link', { name: authContent.signIn.labels[provider] }).click()
   await page.getByRole('link', { name: STUB_CONSENT.link }).click()
   await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
+  /*
+   * The landing screen settles in two steps (Story 2.8): the dashboard answers first, and only then —
+   * with no plan to show — does the first-snapshot panel mount and read its own state (a new account
+   * has no connection). Waiting for both keeps a test that counts requests from here on counting only
+   * what its own action causes.
+   */
+  await expect(page.getByRole('status')).toHaveText(planResultContent.status.noPlan)
+  await expect(page.getByText(firstSnapshotContent.unconnected)).toBeVisible()
 }
 
 /**

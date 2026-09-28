@@ -8,9 +8,11 @@ import com.bokrilog.operations.OperationalRestrictionApi;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.PlanPublicationPort;
-import com.bokrilog.sync.SyncJobApi.ActivePlanResult;
-import com.bokrilog.sync.SyncJobApi.PlanResult;
-import com.bokrilog.sync.SyncJobApi.PlanResultMetric;
+import com.bokrilog.sync.SyncJobApi.BundleConsistency;
+import com.bokrilog.sync.SyncJobApi.Dashboard;
+import com.bokrilog.sync.SyncJobApi.DashboardMetric;
+import com.bokrilog.sync.SyncJobApi.DashboardRead;
+import com.bokrilog.sync.SyncJobApi.DashboardResult;
 import com.bokrilog.sync.SyncJobApi.PublicationAdmission;
 import com.bokrilog.sync.SyncJobApi.PublicationJob;
 import com.bokrilog.sync.SyncJobApi.PublicationState;
@@ -35,6 +37,7 @@ import org.jspecify.annotations.Nullable;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -65,6 +68,8 @@ class PlanPublicationService {
     private final PlanPublicationPort plans;
     private final CalculationConformance conformance;
     private final TransactionTemplate transactions;
+    /** The dashboard's one consistent read (Story 2.8): read-only, {@code REPEATABLE READ}. */
+    private final TransactionTemplate dashboardReads;
 
     PlanPublicationService(PlanPublicationRepository repository, CashflowClassificationRepository classifications,
             CashflowConversionRepository conversions, SourceConnectionApi sources, PortfolioMembershipApi portfolios,
@@ -80,6 +85,9 @@ class PlanPublicationService {
         this.plans = plans;
         this.conformance = conformance;
         this.transactions = new TransactionTemplate(manager);
+        this.dashboardReads = new TransactionTemplate(manager);
+        this.dashboardReads.setReadOnly(true);
+        this.dashboardReads.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
     }
 
     /** The inputs of one publication, pinned or freshly re-read. The hash decides whether they changed. */
@@ -528,33 +536,94 @@ class PlanPublicationService {
         }
     }
 
-    // ---------------------------------------------------------------- official result
+    // ---------------------------------------------------------------- the dashboard (Story 2.8)
 
     /**
-     * The official result through the pointer. Only the account's own access gates this read: a
-     * restriction on a write command stops new publications, it does not hide an existing result.
+     * The dashboard read. The account's own access is checked, the bundle is read in one read-only
+     * {@code REPEATABLE READ} transaction, and the access is checked again: a deletion that began or
+     * finished while the bundle was read wins, and nothing of it is returned. Only the account's own
+     * access gates this read — a restriction on a write command stops new publications, it does not hide
+     * an existing result.
+     *
+     * <p>No log line here: the HTTP surface writes the one operational line per read with the status it
+     * actually answers. This read reports what it learned about the bundle — consistent, inconsistent, or
+     * not read at all — and lets a failure propagate.
      */
-    ActivePlanResult activeResult(@Nullable UUID userId) {
-        if (userId == null || !readable(userId)) return new ActivePlanResult.NotPermitted();
-        return transactions.execute(status -> {
-            var plan = plans.activePlan(userId).orElse(null);
-            if (plan == null) return new ActivePlanResult.None();
-            var pointer = repository.pointer(userId, plan.planId()).orElse(null);
-            if (pointer == null) return new ActivePlanResult.None();
-            // Everything below is read by the pointer's calculation id; those rows are immutable.
-            var calculation = repository.calculation(userId, pointer.calculationId()).orElse(null);
-            if (calculation == null || !calculation.planId().equals(plan.planId())) return new ActivePlanResult.None();
-            List<PlanResultMetric> metrics = repository.metrics(pointer.calculationId());
-            return new ActivePlanResult.Found(new PlanResult(plan.planId(), "ACTIVE", notation(calculation.principal()),
-                    calculation.t0(), calculation.endAt(), calculation.period(), notation(calculation.targetRate()),
-                    pointer.version(), pointer.publishedAt(), pointer.calculationId(), calculation.portfolioSnapshotId(),
-                    calculation.basisPortfolioSnapshotId(), calculation.basisAt(), calculation.measuredAt(),
-                    calculation.verifiedThrough(), calculation.calculationPolicy(), calculation.calendarPolicy(),
-                    calculation.displayPolicy(), calculation.pricePolicy(), calculation.implementationVersion(),
-                    calculation.inputHash(), calculation.resultHash(), calculation.flowCount(),
-                    calculation.estimatedFlowCount(), calculation.estimated(), calculation.inputReliability(),
-                    repository.freshness(userId, calculation.measuredAt(), calculation.verifiedThrough()), metrics));
-        });
+    DashboardRead dashboard(@Nullable UUID userId) {
+        if (userId == null || !readable(userId))
+            return new DashboardRead(new Dashboard.NotPermitted(), BundleConsistency.NOT_READ);
+        Dashboard bundle = Objects.requireNonNull(dashboardReads.execute(status -> bundle(userId)));
+        BundleConsistency consistency = bundle instanceof Dashboard.Unavailable ? BundleConsistency.INCONSISTENT
+                : BundleConsistency.CONSISTENT;
+        // The same decision again, after the read: the bundle is dropped if the deletion won the race.
+        if (!readable(userId)) return new DashboardRead(new Dashboard.NotPermitted(), consistency);
+        return new DashboardRead(bundle, consistency);
+    }
+
+    /**
+     * The bundle, inside the one consistent read. With no active plan, a publication in progress is
+     * "being prepared" and anything else is "no plan". With one, everything is read by the pointer's
+     * calculation id, and the bundle must agree with itself — the version belongs to the plan, its
+     * portfolio and its terms, the portfolio pointer cites the version's snapshot, and its metrics are a
+     * whole six — or nothing of it is returned.
+     */
+    private Dashboard bundle(UUID user) {
+        var plan = plans.activePlan(user).orElse(null);
+        if (plan == null) {
+            return repository.publicationInProgress(user) ? new Dashboard.Preparing(DashboardTrust.WAIT_FOR_RESULT)
+                    : new Dashboard.NoPlan(DashboardTrust.CREATE_PLAN);
+        }
+        // Active plans and their pointers are published atomically: a plan without one is inconsistent.
+        var pointer = repository.pointer(user, plan.planId()).orElse(null);
+        if (pointer == null) return new Dashboard.Unavailable();
+        var calculation = repository.calculation(user, pointer.calculationId()).orElse(null);
+        if (calculation == null || !belongs(calculation, plan, pointer)) return new Dashboard.Unavailable();
+        /*
+         * The portfolio pointer must cite the version's own snapshot. This relies on AD-23: the portfolio
+         * pointer and the plan's official pointer advance together, in one publication transaction, so a
+         * difference means the two pointers came from different moments. A later story that advances one
+         * without the other (Story 2.11's incremental sync, for instance) must revisit this check.
+         */
+        var portfolio = portfolios.officialValue(user).orElse(null);
+        if (portfolio == null || !portfolio.snapshotId().equals(calculation.portfolioSnapshotId())
+                || portfolio.publicationSequence() != calculation.portfolioSequence())
+            return new Dashboard.Unavailable();
+        List<DashboardMetric> metrics = repository.metrics(pointer.calculationId());
+        if (!DashboardTrust.wellFormed(metrics, calculation.estimated())) return new Dashboard.Unavailable();
+        // The axes fail closed: a reliability this story does not know is not shown as anything.
+        var trust = DashboardTrust.judge(new DashboardTrust.Input(
+                repository.freshness(user, calculation.measuredAt(), calculation.verifiedThrough()),
+                calculation.inputReliability(), calculation.estimated(), calculation.estimatedFlowCount(),
+                calculation.measuredAt(), calculation.verifiedThrough(), calculation.basisAt(), metrics))
+                .orElse(null);
+        if (trust == null) return new Dashboard.Unavailable();
+        return new Dashboard.Ready(new DashboardResult(plan.planId(), "ACTIVE", notation(calculation.principal()),
+                calculation.t0(), calculation.endAt(), calculation.period(), notation(calculation.targetRate()),
+                pointer.version(), pointer.publishedAt(), pointer.calculationId(), calculation.portfolioSnapshotId(),
+                calculation.basisPortfolioSnapshotId(), calculation.basisAt(), calculation.measuredAt(),
+                calculation.verifiedThrough(), calculation.calculationPolicy(), calculation.calendarPolicy(),
+                calculation.displayPolicy(), calculation.pricePolicy(), calculation.implementationVersion(),
+                calculation.inputHash(), calculation.resultHash(), calculation.flowCount(),
+                calculation.estimatedFlowCount(), trust, metrics), DashboardTrust.nextAction(trust));
+    }
+
+    /** The version was calculated for this plan, in its portfolio, on its terms. */
+    private static boolean belongs(PlanPublicationRepository.CalculationView calculation,
+            PlanPublicationPort.ActivePlan plan, PlanPublicationRepository.Pointer pointer) {
+        return calculation.planId().equals(plan.planId()) && calculation.portfolioId().equals(pointer.portfolioId())
+                && calculation.portfolioId().equals(plan.portfolioId()) && calculation.t0().equals(plan.startAt())
+                && calculation.endAt().equals(plan.endAt()) && calculation.period().equals(plan.period())
+                && sameDecimal(calculation.principal(), plan.principal())
+                && sameDecimal(calculation.targetRate(), plan.targetRate());
+    }
+
+    /** The same number in any plain notation ({@code "1250"} and {@code "1250.00"}). */
+    private static boolean sameDecimal(String left, String right) {
+        try {
+            return new java.math.BigDecimal(left).compareTo(new java.math.BigDecimal(right)) == 0;
+        } catch (NumberFormatException invalid) {
+            return false;
+        }
     }
 
     void erase(UUID userId) {

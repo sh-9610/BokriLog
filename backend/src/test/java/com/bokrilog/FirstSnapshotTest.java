@@ -1772,13 +1772,11 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertReproducible((UUID)calc[0]);
 
         // The official result through the pointer, and the active plan everywhere else.
-        var result=sync.activePlanResult(user);
-        assertThat(result).isInstanceOf(SyncJobApi.ActivePlanResult.Found.class);
-        var found=((SyncJobApi.ActivePlanResult.Found)result).result();
+        var found=ready(user);
         assertThat(found.planId()).isEqualTo(plan);
         assertThat(found.calculationId()).isEqualTo(calc[0]);
-        assertThat(found.freshness()).isEqualTo("FRESH");
-        assertThat(found.metrics()).extracting(SyncJobApi.PlanResultMetric::metric).containsExactly("CURRENT_VALUE",
+        assertThat(found.trust().freshness().state()).isEqualTo("FRESH");
+        assertThat(found.metrics()).extracting(SyncJobApi.DashboardMetric::metric).containsExactly("CURRENT_VALUE",
                 "PLAN_AMOUNT","PLAN_DIFFERENCE","ADJUSTED_TARGET","REQUIRED_RATE","GOAL_PROGRESS");
         assertThat(found.metrics().getFirst().value()).isEqualTo(candidate[3]);
         var state=plans.state(user);
@@ -1827,8 +1825,13 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 .param("c",calc).query(String.class).list())
                 .containsExactly("1|est-usdt-in|100|false|DIRECT_NORMALIZATION","2|est-btc-in|650.0025|true|SPOT_KLINE_CLOSE");
         assertReproducible(calc);
-        var found=((SyncJobApi.ActivePlanResult.Found)sync.activePlanResult(user)).result();
-        assertThat(found.estimated()).isTrue();
+        var found=ready(user);
+        assertThat(found.trust().calculationNature().character()).isEqualTo("ESTIMATED");
+        assertThat(found.trust().calculationNature().axis().state()).isEqualTo("ESTIMATED");
+        assertThat(found.trust().calculationNature().axis().cause()).isEqualTo("ESTIMATED_CASHFLOW_PRICE");
+        assertThat(found.trust().calculationNature().axis().affectedMetrics()).as("every derived metric")
+                .containsExactly("PLAN_AMOUNT","PLAN_DIFFERENCE","ADJUSTED_TARGET","REQUIRED_RATE","GOAL_PROGRESS");
+        assertThat(found.trust().calculationNature().estimatedFlowCount()).isEqualTo(1);
         assertThat(found.estimatedFlowCount()).isEqualTo(1);
     }
 
@@ -1870,7 +1873,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
 
         // Through HTTP: "not computable" is its own state and never overwrites the character; an undefined
         // metric carries no value key at all (never a zero or a null to be mistaken for one) and its reason.
-        var fields=topLevelFieldsOf(get(AuthSecurityConfig.ACTIVE_PLAN_PATH,cookie).body());
+        var fields=resultOf(get(AuthSecurityConfig.DASHBOARD_PATH,cookie).body());
         @SuppressWarnings("unchecked")
         var trust=(java.util.Map<String,java.util.Map<String,Object>>)fields.get("trust");
         var expectedUnavailable=reason.equals("TARGET_NOT_POSITIVE") ? java.util.List.of("REQUIRED_RATE","GOAL_PROGRESS")
@@ -1878,6 +1881,18 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertThat(trust.get("calculationNature")).containsEntry("state","NOT_COMPUTABLE")
                 .containsEntry("character","OFFICIAL").containsEntry("unavailableMetrics",expectedUnavailable);
         assertThat(trust.get("inputReliability")).containsEntry("state",reliability);
+        // Story 2.8 AC-5: a review reaches the target and the ratios it left undefined; the nature axis
+        // reaches the undefined metrics. Each axis names its own cause.
+        if (reason.equals("TARGET_NOT_POSITIVE")) {
+            assertThat(trust.get("inputReliability")).containsEntry("cause","TARGET_NOT_POSITIVE")
+                    .containsEntry("affectedMetrics",java.util.List.of("ADJUSTED_TARGET","REQUIRED_RATE","GOAL_PROGRESS"))
+                    .containsEntry("nextAction","NONE");
+        } else {
+            assertThat(trust.get("inputReliability")).containsEntry("cause","INPUTS_VERIFIED")
+                    .containsEntry("affectedMetrics",java.util.List.of());
+        }
+        assertThat(trust.get("calculationNature")).containsEntry("cause","METRIC_UNDEFINED")
+                .containsEntry("affectedMetrics",expectedUnavailable);
         @SuppressWarnings("unchecked")
         var metrics=(java.util.List<java.util.Map<String,Object>>)fields.get("metrics");
         for (var row : metrics) {
@@ -1907,6 +1922,8 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertThat(state.job().jobId()).isEqualTo(job);
         assertThat(sync.admitPlanPublication(user,intent,"publish-range-command-002"))
                 .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("CALCULATION_RANGE_EXCEEDED"));
+        // Story 2.8: a finished attempt is not "being prepared" — the dashboard has no plan to show.
+        assertThat(dashboardOf(user)).isEqualTo(new SyncJobApi.Dashboard.NoPlan("CREATE_PLAN"));
     }
 
     @Test
@@ -2165,7 +2182,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         // publications, it does not hide an existing result.
         assertThat(jdbc().sql("SELECT count(*) FROM sync_official_plan_result WHERE user_id=:u").param("u",kept)
                 .query(Integer.class).single()).isEqualTo(1);
-        assertThat(sync.activePlanResult(kept)).isInstanceOf(SyncJobApi.ActivePlanResult.Found.class);
+        assertThat(dashboardOf(kept)).isInstanceOf(SyncJobApi.Dashboard.Ready.class);
     }
 
     /**
@@ -2208,6 +2225,8 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 .param("p",current[0]).query(UUID.class).single()).as("only the holder moved it").isEqualTo(moved);
         assertThat(jdbc().sql("SELECT status FROM plan_condition_intent WHERE intent_id=:i").param("i",intent)
                 .query(String.class).single()).isEqualTo("OPEN");
+        // Story 2.8: a blocked attempt is finished, not "being prepared".
+        assertThat(dashboardOf(user)).isEqualTo(new SyncJobApi.Dashboard.NoPlan("CREATE_PLAN"));
     }
 
     /** The plan's end arrives while the publication waits: judged by the database clock, with its own code. */
@@ -2310,26 +2329,30 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 .isEqualTo(claimed+1);
     }
 
-    /** SYNC-UX-1.0 against the database clock: each time alone can make the result stale; any job syncs it. */
+    /**
+     * SYNC-UX-1.0 against the database clock: each time alone can make the result stale; any job syncs it.
+     * Story 2.8: the axis names which time is outside the window, reaches all six metrics unless fresh,
+     * vouches for the measurement, and asks the screen to wait only while a job runs.
+     */
     @Test
     void freshnessFollowsBothTimesAndAnyJobInProgress() throws Exception {
         Instant base=closedTenMinuteBoundary();
         UUID user=connect(DevBybitStub.Scenario.UTA2);
         UUID intent=convertedIntent(user,"publish-freshness","0.1",base.minusSeconds(3600));
         assertThat(awaitPublication(publish(user,intent,"publish-freshness-command-001"))).isEqualTo("PUBLISHED");
-        assertThat(freshnessOf(user)).isEqualTo("FRESH");
+        assertFreshness(user,"FRESH","BOTH_WITHIN_WINDOW","NONE");
         jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now()-interval '16 minutes' "
                 + "WHERE user_id=:u").param("u",user).update();
-        assertThat(freshnessOf(user)).as("measurement older than 15 minutes").isEqualTo("STALE");
+        assertFreshness(user,"STALE","MEASUREMENT_OUTDATED","NONE");
         jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now(),basis_at=now()-interval '16 minutes',"
                 + "cashflow_verified_through=now()-interval '16 minutes' WHERE user_id=:u").param("u",user).update();
-        assertThat(freshnessOf(user)).as("cash-flow verification older than 15 minutes").isEqualTo("STALE");
+        assertFreshness(user,"STALE","CASHFLOW_VERIFICATION_OUTDATED","NONE");
         jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now()-interval '16 minutes' "
                 + "WHERE user_id=:u").param("u",user).update();
-        assertThat(freshnessOf(user)).as("both older").isEqualTo("STALE");
+        assertFreshness(user,"STALE","BOTH_OUTDATED","NONE");
         jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now(),basis_at=now(),"
                 + "cashflow_verified_through=now() WHERE user_id=:u").param("u",user).update();
-        assertThat(freshnessOf(user)).isEqualTo("FRESH");
+        assertFreshness(user,"FRESH","BOTH_WITHIN_WINDOW","NONE");
         // A job in progress: RUNNING under a lease no worker will take over, so it stays in progress.
         UUID probe=UUID.randomUUID();
         jdbc().sql("INSERT INTO sync_job(job_id,user_id,connection_id,provider_account_id,idempotency_key,status,"
@@ -2337,17 +2360,47 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 + "'freshness-probe','RUNNING',1,now()+interval '1 hour',now() FROM source_connection WHERE user_id=:u")
                 .param("j",probe).param("u",user).update();
         try {
-            assertThat(freshnessOf(user)).isEqualTo("SYNCING");
+            // Syncing wins over stale, and the official values stay.
+            jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now()-interval '16 minutes' "
+                    + "WHERE user_id=:u").param("u",user).update();
+            assertFreshness(user,"SYNCING","JOB_IN_PROGRESS","WAIT_FOR_SYNC");
         } finally {
             jdbc().sql("DELETE FROM sync_job WHERE job_id=:j").param("j",probe).update();
         }
-        assertThat(freshnessOf(user)).isEqualTo("FRESH");
+        assertFreshness(user,"STALE","MEASUREMENT_OUTDATED","NONE");
     }
 
-    private String freshnessOf(UUID user) {
-        var result=sync.activePlanResult(user);
-        assertThat(result).isInstanceOf(SyncJobApi.ActivePlanResult.Found.class);
-        return ((SyncJobApi.ActivePlanResult.Found)result).result().freshness();
+    private void assertFreshness(UUID user,String state,String cause,String nextAction) {
+        var dashboard=(SyncJobApi.Dashboard.Ready)dashboardOf(user);
+        var freshness=dashboard.result().trust().freshness();
+        assertThat(freshness.state()).as(cause).isEqualTo(state);
+        assertThat(freshness.cause()).isEqualTo(cause);
+        assertThat(freshness.lastNormalAt()).isEqualTo(dashboard.result().measuredAt());
+        assertThat(freshness.affectedMetrics()).hasSize(state.equals("FRESH") ? 0 : 6);
+        assertThat(freshness.nextAction()).isEqualTo(nextAction);
+        assertThat(dashboard.nextAction()).as("the screen's next action").isEqualTo(nextAction);
+        // Freshness is independent of the other two axes.
+        assertThat(dashboard.result().trust().inputReliability().state()).isEqualTo("CONFIRMED");
+    }
+
+    /** The dashboard read's outcome for the user (the service port; it writes no log line). */
+    private SyncJobApi.Dashboard dashboardOf(@org.jspecify.annotations.Nullable UUID user) {
+        return sync.dashboard(user).dashboard();
+    }
+
+    /** The dashboard's official bundle; fails unless the read is {@code READY}. */
+    private SyncJobApi.DashboardResult ready(UUID user) {
+        var dashboard=dashboardOf(user);
+        assertThat(dashboard).isInstanceOf(SyncJobApi.Dashboard.Ready.class);
+        return ((SyncJobApi.Dashboard.Ready)dashboard).result();
+    }
+
+    /** The {@code result} object of a {@code READY} dashboard response body. */
+    @SuppressWarnings("unchecked")
+    private static java.util.Map<String,Object> resultOf(String body) {
+        var fields=topLevelFieldsOf(body);
+        assertThat(fields).containsEntry("state","READY");
+        return (java.util.Map<String,Object>)fields.get("result");
     }
 
     /**
@@ -2380,7 +2433,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 .isEqualTo("1234.56|0.1|1250");
         assertThat(jdbc().sql("SELECT p0_decimal||'|'||target_rate FROM sync_plan_calculation WHERE user_id=:u")
                 .param("u",user).query(String.class).single()).isEqualTo("1234.56|0.1");
-        var result=topLevelFieldsOf(get(AuthSecurityConfig.ACTIVE_PLAN_PATH,cookie).body());
+        var result=resultOf(get(AuthSecurityConfig.DASHBOARD_PATH,cookie).body());
         @SuppressWarnings("unchecked")
         var conditions=(java.util.Map<String,Object>)result.get("conditions");
         assertThat(conditions).containsEntry("principal","1234.56").containsEntry("targetRate","0.1");
@@ -2419,7 +2472,8 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_calculation_metric m LEFT JOIN sync_plan_calculation c "
                 + "ON c.calculation_id=m.calculation_id WHERE c.calculation_id IS NULL").query(Integer.class).single()).isZero();
         assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_calculation_flow").query(Integer.class).single()).isZero();
-        assertThat(sync.activePlanResult(kept)).isInstanceOf(SyncJobApi.ActivePlanResult.Found.class);
+        assertThat(dashboardOf(kept)).isInstanceOf(SyncJobApi.Dashboard.Ready.class);
+        assertThat(dashboardOf(user)).as("the erased user's read").isInstanceOf(SyncJobApi.Dashboard.NoPlan.class);
         assertThat(jdbc().sql("SELECT count(*) FROM plan_definition WHERE user_id=:u").param("u",kept)
                 .query(Integer.class).single()).isEqualTo(1);
     }
@@ -2436,10 +2490,14 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         String csrf=csrfTokenOf(cookie);
         String body="{\"intentId\":\""+intent+"\"}";
 
-        assertThat(get(AuthSecurityConfig.ACTIVE_PLAN_PATH,null).statusCode()).as("unauthenticated").isEqualTo(401);
-        var none=get(AuthSecurityConfig.ACTIVE_PLAN_PATH,cookie);
-        assertThat(none.statusCode()).isEqualTo(204);
+        assertThat(get(AuthSecurityConfig.DASHBOARD_PATH,null).statusCode()).as("unauthenticated").isEqualTo(401);
+        // Story 2.8 replaced the 2.7 surface: the old path is gone, not a second way to the result.
+        assertThat(get("/api/plans/active",cookie).statusCode()).isEqualTo(404);
+        var none=get(AuthSecurityConfig.DASHBOARD_PATH,cookie);
+        assertThat(none.statusCode()).isEqualTo(200);
         assertThat(none.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        assertThat(topLevelFieldsOf(none.body())).as("no plan, no financial field")
+                .isEqualTo(java.util.Map.of("state","NO_PLAN","nextAction","CREATE_PLAN"));
         // No attempt yet: a readable state that says a start would be admitted.
         var empty=get(path+"?intentId="+intent,cookie);
         assertThat(empty.statusCode()).isEqualTo(200);
@@ -2493,10 +2551,12 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                     .containsKeys("message","correlationId");
         }
 
-        var result=get(AuthSecurityConfig.ACTIVE_PLAN_PATH,cookie);
+        var result=get(AuthSecurityConfig.DASHBOARD_PATH,cookie);
         assertThat(result.statusCode()).isEqualTo(200);
         assertThat(result.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
-        var fields=topLevelFieldsOf(result.body());
+        assertThat(topLevelFieldsOf(result.body())).containsOnlyKeys("state","nextAction","result")
+                .containsEntry("nextAction","NONE");
+        var fields=resultOf(result.body());
         assertThat(fields).containsKeys("planId","conditions","basisAt","measuredAt","cashflowVerifiedThrough",
                 "trust","metrics","policies","pointerVersion");
         @SuppressWarnings("unchecked")
@@ -2506,10 +2566,21 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertThat(metrics).allSatisfy(m -> assertThat(m.get("value")).isInstanceOf(String.class));
         @SuppressWarnings("unchecked")
         var trust=(java.util.Map<String,java.util.Map<String,Object>>)fields.get("trust");
-        assertThat(trust.get("freshness")).containsEntry("state","FRESH").containsKeys("measuredAt",
-                "cashflowVerifiedThrough").doesNotContainKey("lastNormalAt");
-        assertThat(trust.get("inputReliability")).containsEntry("state","CONFIRMED");
-        assertThat(trust.get("calculationNature")).containsEntry("state","OFFICIAL");
+        // Story 2.8 AC-5: each axis names its last normal time — the one time of the bundle it vouches for.
+        assertThat(trust.get("freshness")).containsEntry("state","FRESH").containsEntry("cause","BOTH_WITHIN_WINDOW")
+                .containsEntry("lastNormalAt",fields.get("measuredAt"))
+                .containsEntry("measuredAt",fields.get("measuredAt"))
+                .containsEntry("cashflowVerifiedThrough",fields.get("cashflowVerifiedThrough"))
+                .containsEntry("affectedMetrics",java.util.List.of()).containsEntry("nextAction","NONE");
+        assertThat(trust.get("inputReliability")).containsEntry("state","CONFIRMED")
+                .containsEntry("cause","INPUTS_VERIFIED")
+                .containsEntry("lastNormalAt",fields.get("cashflowVerifiedThrough"))
+                .containsEntry("affectedMetrics",java.util.List.of()).containsEntry("nextAction","NONE");
+        assertThat(trust.get("calculationNature")).containsEntry("state","OFFICIAL").containsEntry("character","OFFICIAL")
+                .containsEntry("cause","NO_ESTIMATED_INPUT").containsEntry("lastNormalAt",fields.get("basisAt"))
+                .containsEntry("affectedMetrics",java.util.List.of()).containsEntry("nextAction","NONE");
+        assertThat(trust).as("three independent axes, no combined score")
+                .containsOnlyKeys("freshness","inputReliability","calculationNature");
 
         var conflict=sendJson("POST",path,body,cookie,"Origin",OidcStubConfiguration.PUBLIC_BASE_URL,
                 AuthSecurityConfig.CSRF_HEADER_NAME,csrf,"Idempotency-Key","http-publication-002");
@@ -2534,11 +2605,411 @@ class FirstSnapshotTest extends AuthFlowTestBase {
             jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) VALUES (:id,:c)")
                     .param("id",UUID.randomUUID()).param("c",command).update();
         }
-        assertThat(get(AuthSecurityConfig.ACTIVE_PLAN_PATH,cookie).statusCode()).isEqualTo(200);
+        assertThat(get(AuthSecurityConfig.DASHBOARD_PATH,cookie).statusCode()).isEqualTo(200);
         // The account's own access does: while its deletion is in progress the result is refused.
         accountDeletion().beginDeletion(user);
-        assertThat(get(AuthSecurityConfig.ACTIVE_PLAN_PATH,cookie).statusCode()).isEqualTo(403);
+        var refused=get(AuthSecurityConfig.DASHBOARD_PATH,cookie);
+        assertThat(refused.statusCode()).isEqualTo(403);
+        assertThat(topLevelFieldsOf(refused.body())).containsOnlyKeys("code","message","correlationId");
         assertThat(get(path+"?intentId="+intent,cookie).statusCode()).isEqualTo(403);
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Story 2.8 official dashboard: one consistent read, three states, tamper, consistency, deletion
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * NO_PLAN, PREPARING and READY from the one surface. The publication is held on the plan lock after its
+     * claim, so the dashboard reads "being prepared" while the attempt runs and no plan exists yet.
+     */
+    @Test
+    void theDashboardAnswersNoPlanThenPreparingThenTheReadyBundle() throws Exception {
+        String subject="dashboard-states-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"dashboard-states","0.1",null);
+        assertThat(topLevelFieldsOf(get(AuthSecurityConfig.DASHBOARD_PATH,cookie).body()))
+                .isEqualTo(java.util.Map.of("state","NO_PLAN","nextAction","CREATE_PLAN"));
+
+        UUID job;
+        AutoCloseable lock=holdPlanLock(user);
+        try {
+            job=publish(user,intent,"dashboard-states-command-001");
+            awaitBlockedOnPlanLock();
+            var preparing=get(AuthSecurityConfig.DASHBOARD_PATH,cookie);
+            assertThat(preparing.statusCode()).isEqualTo(200);
+            assertThat(preparing.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+            assertThat(topLevelFieldsOf(preparing.body())).as("no financial field while it is prepared")
+                    .isEqualTo(java.util.Map.of("state","PREPARING","nextAction","WAIT_FOR_RESULT"));
+        } finally {
+            lock.close();
+        }
+        assertThat(awaitPublication(job)).isEqualTo("PUBLISHED");
+        var ready=get(AuthSecurityConfig.DASHBOARD_PATH,cookie);
+        assertThat(ready.statusCode()).isEqualTo(200);
+        assertThat(ready.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        var result=resultOf(ready.body());
+        assertThat(result).containsEntry("pointerVersion",1)
+                .containsEntry("calculationId",jdbc().sql("SELECT calculation_id::text FROM sync_official_plan_result "
+                        + "WHERE user_id=:u").param("u",user).query(String.class).single());
+    }
+
+    /**
+     * AC-1: the path takes no identifier. Another user's plan, snapshot or calculation id in the query
+     * changes nothing — the answer is the bare request's answer to the letter — and every sub-path, with
+     * this user's id, another user's or none that exists, is the same common 404.
+     */
+    @Test
+    void aTamperedQueryOrSubPathRevealsNothingAboutAnyPlan() throws Exception {
+        String subject="dashboard-tamper-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"dashboard-tamper","0.1",null);
+        assertThat(awaitPublication(publish(user,intent,"dashboard-tamper-command-001"))).isEqualTo("PUBLISHED");
+        UUID other=connect(DevBybitStub.Scenario.UTA2);
+        UUID otherIntent=convertedIntent(other,"dashboard-tamper-other","0.2",null);
+        assertThat(awaitPublication(publish(other,otherIntent,"dashboard-tamper-other-001"))).isEqualTo("PUBLISHED");
+        var foreign=jdbc().sql("SELECT plan_id::text,calculation_id::text,portfolio_snapshot_id::text FROM "
+                + "sync_plan_calculation WHERE user_id=:u").param("u",other)
+                .query((rs,n)->new String[] {rs.getString(1),rs.getString(2),rs.getString(3)}).single();
+        String ownPlan=jdbc().sql("SELECT plan_id::text FROM plan_definition WHERE user_id=:u").param("u",user)
+                .query(String.class).single();
+
+        String bare=get(AuthSecurityConfig.DASHBOARD_PATH,cookie).body();
+        assertThat(resultOf(bare)).containsEntry("planId",ownPlan);
+        for (String query : new String[] {"?planId="+foreign[0],"?calculationId="+foreign[1],"?snapshotId="+foreign[2],
+                "?portfolioSnapshotId="+foreign[2],"?userId="+other,
+                "?planId="+foreign[0]+"&calculationId="+foreign[1]+"&snapshotId="+foreign[2],"?planId="+ownPlan}) {
+            var tampered=get(AuthSecurityConfig.DASHBOARD_PATH+query,cookie);
+            assertThat(tampered.statusCode()).as(query).isEqualTo(200);
+            assertThat(tampered.body()).as(query).isEqualTo(bare);
+        }
+        String notFound=null;
+        for (String sub : new String[] {"/"+foreign[0],"/"+ownPlan,"/"+UUID.randomUUID(),"/"+foreign[1]+"/metrics","/"}) {
+            var probe=send("GET",AuthSecurityConfig.DASHBOARD_PATH+sub,cookie,"X-Request-Id","dashboard-tamper-probe");
+            assertThat(probe.statusCode()).as(sub).isEqualTo(404);
+            assertThat(topLevelFieldsOf(probe.body())).as(sub).containsEntry("code","NOT_FOUND");
+            if (notFound==null) notFound=probe.body();
+            assertThat(probe.body()).as(sub+" is the same answer whether or not the target exists").isEqualTo(notFound);
+            assertThat(get(AuthSecurityConfig.DASHBOARD_PATH+sub,null).statusCode()).as("unauthenticated "+sub)
+                    .isEqualTo(401);
+        }
+        // The other user's result is untouched and still their own.
+        assertThat(ready(other).planId().toString()).isEqualTo(foreign[0]);
+    }
+
+    /**
+     * AC-2: a pointer whose bundle does not agree with itself answers 503 {@code DASHBOARD_UNAVAILABLE} and no
+     * metric at all; the operational line says {@code consistent=false}. Each corruption is undone before
+     * the next, and the restored bundle is ready again — the refusal is the bundle's, not the account's.
+     */
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void anInconsistentBundleReturnsNoMetricAndLogsConsistentFalse(
+            org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        String subject="dashboard-inconsistent-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"dashboard-inconsistent","0.1",null);
+        assertThat(awaitPublication(publish(user,intent,"dashboard-inconsistent-command-001"))).isEqualTo("PUBLISHED");
+        UUID kept=connect(DevBybitStub.Scenario.UTA2);
+        UUID keptIntent=convertedIntent(kept,"dashboard-inconsistent-kept","0.1",null);
+        assertThat(awaitPublication(publish(kept,keptIntent,"dashboard-inconsistent-kept-001"))).isEqualTo("PUBLISHED");
+        var ids=jdbc().sql("SELECT c.calculation_id,c.plan_id,c.portfolio_id,c.basis_portfolio_snapshot_id,"
+                + "c.portfolio_snapshot_id FROM sync_plan_calculation c WHERE c.user_id=:u").param("u",user)
+                .query((rs,n)->new UUID[] {rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),rs.getObject(3,UUID.class),
+                        rs.getObject(4,UUID.class),rs.getObject(5,UUID.class)}).single();
+        UUID calc=ids[0], plan=ids[1], portfolioId=ids[2], basis=ids[3], current=ids[4];
+        String amount=jdbc().sql("SELECT value_decimal FROM sync_plan_calculation_metric WHERE calculation_id=:c "
+                + "AND metric='CURRENT_VALUE'").param("c",calc).query(String.class).single();
+        var goal=jdbc().sql("SELECT value_decimal,nature FROM sync_plan_calculation_metric WHERE calculation_id=:c "
+                + "AND metric='GOAL_PROGRESS'").param("c",calc).query((rs,n)->new String[] {rs.getString(1),rs.getString(2)})
+                .single();
+        var pointer=jdbc().sql("SELECT pointer_version,published_at FROM sync_official_plan_result WHERE plan_id=:p")
+                .param("p",plan).query((rs,n)->new Object[] {rs.getLong(1),rs.getObject(2,java.time.OffsetDateTime.class)})
+                .single();
+        var terms=jdbc().sql("SELECT period,p0_decimal FROM sync_plan_calculation WHERE calculation_id=:c")
+                .param("c",calc).query((rs,n)->new String[] {rs.getString(1),rs.getString(2)}).single();
+        record Corruption(String name,Runnable corrupt,Runnable restore) {}
+        var corruptions=java.util.List.of(
+                new Corruption("a metric is missing",
+                        () -> jdbc().sql("DELETE FROM sync_plan_calculation_metric WHERE calculation_id=:c "
+                                + "AND metric='GOAL_PROGRESS'").param("c",calc).update(),
+                        () -> jdbc().sql("INSERT INTO sync_plan_calculation_metric(calculation_id,metric,value_decimal,nature) "
+                                + "VALUES (:c,'GOAL_PROGRESS',:v,:n)").param("c",calc).param("v",goal[0]).param("n",goal[1])
+                                .update()),
+                new Corruption("the portfolio pointer cites another snapshot",
+                        () -> jdbc().sql("UPDATE portfolio_current_snapshot SET portfolio_snapshot_id=:s,publication_sequence=1 "
+                                + "WHERE portfolio_id=:p").param("s",basis).param("p",portfolioId).update(),
+                        () -> jdbc().sql("UPDATE portfolio_current_snapshot SET portfolio_snapshot_id=:s,publication_sequence=2 "
+                                + "WHERE portfolio_id=:p").param("s",current).param("p",portfolioId).update()),
+                new Corruption("the version belongs to another portfolio",
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET portfolio_id=:p WHERE calculation_id=:c")
+                                .param("p",UUID.randomUUID()).param("c",calc).update(),
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET portfolio_id=:p WHERE calculation_id=:c")
+                                .param("p",portfolioId).param("c",calc).update()),
+                new Corruption("the version was calculated at another target rate",
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET target_rate='0.2' WHERE calculation_id=:c")
+                                .param("c",calc).update(),
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET target_rate='0.1' WHERE calculation_id=:c")
+                                .param("c",calc).update()),
+                new Corruption("the version was calculated from another start",
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET t0=t0-interval '1 minute' WHERE calculation_id=:c")
+                                .param("c",calc).update(),
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET t0=t0+interval '1 minute' WHERE calculation_id=:c")
+                                .param("c",calc).update()),
+                new Corruption("the version was calculated to another end",
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET end_at=end_at+interval '1 day' WHERE calculation_id=:c")
+                                .param("c",calc).update(),
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET end_at=end_at-interval '1 day' WHERE calculation_id=:c")
+                                .param("c",calc).update()),
+                new Corruption("the version was calculated with another period",
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET period='WEEKLY' WHERE calculation_id=:c")
+                                .param("c",calc).update(),
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET period=:p WHERE calculation_id=:c")
+                                .param("p",terms[0]).param("c",calc).update()),
+                new Corruption("the version was calculated from another principal",
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET p0_decimal='1234.57' WHERE calculation_id=:c")
+                                .param("c",calc).update(),
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET p0_decimal=:p WHERE calculation_id=:c")
+                                .param("p",terms[1]).param("c",calc).update()),
+                // The pointer's composite key pins the version's plan; a replica session skips it to break that.
+                new Corruption("the version belongs to another plan",
+                        () -> new TransactionTemplate(manager).executeWithoutResult(status -> {
+                            jdbc().sql("SET LOCAL session_replication_role = replica").update();
+                            jdbc().sql("UPDATE sync_plan_calculation SET plan_id=:x WHERE calculation_id=:c")
+                                    .param("x",UUID.randomUUID()).param("c",calc).update();
+                        }),
+                        () -> new TransactionTemplate(manager).executeWithoutResult(status -> {
+                            jdbc().sql("SET LOCAL session_replication_role = replica").update();
+                            jdbc().sql("UPDATE sync_plan_calculation SET plan_id=:p WHERE calculation_id=:c")
+                                    .param("p",plan).param("c",calc).update();
+                        })),
+                new Corruption("the active plan has no pointer",
+                        () -> jdbc().sql("DELETE FROM sync_official_plan_result WHERE plan_id=:p").param("p",plan).update(),
+                        () -> jdbc().sql("INSERT INTO sync_official_plan_result(plan_id,user_id,portfolio_id,calculation_id,"
+                                + "pointer_version,published_at) VALUES (:p,:u,:portfolio,:c,:v,:at)").param("p",plan)
+                                .param("u",user).param("portfolio",portfolioId).param("c",calc).param("v",pointer[0])
+                                .param("at",pointer[1]).update()),
+                // The foreign keys make a dangling pointer impossible; a replica session skips them to build one.
+                new Corruption("the pointer's calculation does not exist",
+                        () -> new TransactionTemplate(manager).executeWithoutResult(status -> {
+                            jdbc().sql("SET LOCAL session_replication_role = replica").update();
+                            jdbc().sql("UPDATE sync_official_plan_result SET calculation_id=:x WHERE plan_id=:p")
+                                    .param("x",UUID.randomUUID()).param("p",plan).update();
+                        }),
+                        () -> jdbc().sql("UPDATE sync_official_plan_result SET calculation_id=:c WHERE plan_id=:p")
+                                .param("c",calc).param("p",plan).update()));
+        for (Corruption corruption : corruptions) {
+            corruption.corrupt().run();
+            var refused=send("GET",AuthSecurityConfig.DASHBOARD_PATH,cookie,"X-Request-Id","dashboard-inconsistent");
+            assertThat(refused.statusCode()).as(corruption.name()).isEqualTo(503);
+            assertThat(refused.headers().firstValue("Cache-Control").orElse("")).as(corruption.name()).contains("no-store");
+            assertThat(topLevelFieldsOf(refused.body())).as(corruption.name())
+                    .containsOnlyKeys("code","message","correlationId").containsEntry("code","DASHBOARD_UNAVAILABLE")
+                    .containsEntry("correlationId","dashboard-inconsistent");
+            assertThat(refused.body()).as(corruption.name()).doesNotContain(amount).doesNotContain(calc.toString())
+                    .doesNotContain(plan.toString());
+            assertThat(dashboardOf(user)).as(corruption.name()).isInstanceOf(SyncJobApi.Dashboard.Unavailable.class);
+            corruption.restore().run();
+            assertThat(dashboardOf(user)).as("restored: "+corruption.name())
+                    .isInstanceOf(SyncJobApi.Dashboard.Ready.class);
+        }
+        // One line per HTTP read (the service port writes none), each inconsistent with the status it answered.
+        var lines=dashboardLogLines(output);
+        assertThat(lines).hasSize(corruptions.size())
+                .allSatisfy(line -> assertThat(line).contains("state=INCONSISTENT status=503").endsWith("consistent=false"));
+        assertThat(ready(kept).trust().freshness().state()).as("another user's result").isEqualTo("FRESH");
+    }
+
+    /**
+     * AC-13: the account's own access is decided before and after the read. A deletion that begins while the
+     * bundle is being read wins — the read waits on a table lock after its snapshot was taken, the deletion
+     * commits meanwhile, and the bundle already read is dropped. In progress or finished, nothing financial
+     * comes back, and another user's result stays.
+     */
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void aDeletionOnEitherSideOfTheReadRefusesTheDashboard(org.springframework.boot.test.system.CapturedOutput output)
+            throws Exception {
+        String subject="dashboard-deletion-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"dashboard-deletion","0.1",null);
+        assertThat(awaitPublication(publish(user,intent,"dashboard-deletion-command-001"))).isEqualTo("PUBLISHED");
+        UUID kept=connect(DevBybitStub.Scenario.UTA2);
+        UUID keptIntent=convertedIntent(kept,"dashboard-deletion-kept","0.1",null);
+        assertThat(awaitPublication(publish(kept,keptIntent,"dashboard-deletion-kept-001"))).isEqualTo("PUBLISHED");
+        String amount=ready(user).metrics().getFirst().value();
+
+        // After: the read is past its first check and holds its snapshot when the deletion commits.
+        java.util.concurrent.CompletableFuture<java.net.http.HttpResponse<String>> pending;
+        AutoCloseable lock=holdTableLock("sync_official_plan_result");
+        try {
+            pending=java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                try {
+                    return get(AuthSecurityConfig.DASHBOARD_PATH,cookie);
+                } catch (Exception failure) {
+                    throw new IllegalStateException(failure);
+                }
+            });
+            awaitBlockedOn("FROM sync_official_plan_result");
+            accountDeletion().beginDeletion(user);
+        } finally {
+            lock.close();
+        }
+        var late=pending.get(20,TimeUnit.SECONDS);
+        assertThat(late.statusCode()).as("the deletion that began during the read wins").isEqualTo(403);
+        assertThat(topLevelFieldsOf(late.body())).containsOnlyKeys("code","message","correlationId");
+        assertThat(late.body()).doesNotContain(amount);
+        assertThat(dashboardLogLines(output).getLast()).contains("state=DENIED status=403").contains("consistent=true");
+
+        // Before: in progress. Nothing was read, so nothing is known about the bundle's consistency.
+        var before=get(AuthSecurityConfig.DASHBOARD_PATH,cookie);
+        assertThat(before.statusCode()).isEqualTo(403);
+        assertThat(before.body()).doesNotContain(amount);
+        assertThat(dashboardLogLines(output).getLast()).contains("state=DENIED status=403")
+                .endsWith("consistent=unknown");
+        assertThat(dashboardOf(user)).isInstanceOf(SyncJobApi.Dashboard.NotPermitted.class);
+
+        // Finished: the erasure ran in its order and the account is DELETED; its session went with it.
+        portfolio.erasePortfolioData(user);
+        sync.eraseSyncData(user);
+        plans.erasePlanData(user);
+        source.eraseSourceData(user);
+        assertThat(accountDeletion().erasePayload(user))
+                .isEqualTo(com.bokrilog.identity.DeletionOutcome.COMPLETED);
+        assertThat(dashboardOf(user)).as("DELETED").isInstanceOf(SyncJobApi.Dashboard.NotPermitted.class);
+        // The erasure removed the account's session rows, so the cookie no longer authenticates: the
+        // security filter answers before any read, with the common unauthenticated error.
+        var after=get(AuthSecurityConfig.DASHBOARD_PATH,cookie);
+        assertThat(after.statusCode()).isEqualTo(401);
+        assertThat(topLevelFieldsOf(after.body())).containsOnlyKeys("code","message","correlationId")
+                .containsEntry("code","UNAUTHENTICATED");
+
+        assertThat(ready(kept).metrics()).hasSize(6);
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_official_plan_result WHERE user_id=:u").param("u",kept)
+                .query(Integer.class).single()).isEqualTo(1);
+    }
+
+    /**
+     * AC-12: one operational line per read, written where the answered status is known, and only the
+     * outcome, that status, the latency and whether the bundle agreed with itself — never the user, a
+     * correlation id, an amount, a time or a calculation input.
+     */
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void eachDashboardReadLogsOneLineWithoutUserAmountsOrTimes(org.springframework.boot.test.system.CapturedOutput output)
+            throws Exception {
+        String subject="dashboard-log-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"dashboard-log","0.1",null);
+        assertThat(awaitPublication(publish(user,intent,"dashboard-log-command-001"))).isEqualTo("PUBLISHED");
+        String emptySubject="dashboard-log-empty-"+UUID.randomUUID();
+        String emptyCookie=sessionCookieOf(signIn(emptySubject)).orElseThrow();
+        UUID empty=userIdOf(OidcStubConfiguration.issuer(),emptySubject).orElseThrow();
+        String deletingSubject="dashboard-log-deleting-"+UUID.randomUUID();
+        String deletingCookie=sessionCookieOf(signIn(deletingSubject)).orElseThrow();
+        UUID deleting=userIdOf(OidcStubConfiguration.issuer(),deletingSubject).orElseThrow();
+        accountDeletion().beginDeletion(deleting);
+        var result=ready(user);
+
+        int before=dashboardLogLines(output).size();
+        String[] ids={"dashboard-log-probe-1","dashboard-log-probe-2","dashboard-log-probe-3"};
+        assertThat(send("GET",AuthSecurityConfig.DASHBOARD_PATH,emptyCookie,"X-Request-Id",ids[0]).statusCode())
+                .isEqualTo(200);
+        assertThat(send("GET",AuthSecurityConfig.DASHBOARD_PATH,cookie,"X-Request-Id",ids[1]).statusCode())
+                .isEqualTo(200);
+        assertThat(send("GET",AuthSecurityConfig.DASHBOARD_PATH,deletingCookie,"X-Request-Id",ids[2]).statusCode())
+                .isEqualTo(403);
+        var lines=dashboardLogLines(output);
+        assertThat(lines).hasSize(before+3);
+        var mine=lines.subList(before,lines.size());
+        assertThat(mine.get(0)).contains("state=NO_PLAN status=200").endsWith("consistent=true");
+        assertThat(mine.get(1)).contains("state=READY status=200").endsWith("consistent=true");
+        assertThat(mine.get(2)).contains("state=DENIED status=403").endsWith("consistent=unknown");
+        var forbidden=new java.util.ArrayList<String>(java.util.List.of(user.toString(),empty.toString(),
+                deleting.toString(),result.planId().toString(),result.calculationId().toString(),
+                result.portfolioSnapshotId().toString(),result.inputHash(),result.resultHash(),result.principal(),
+                result.measuredAt().toString(),result.basisAt().toString(),ids[0],ids[1],ids[2]));
+        // Short values such as "0" would match the status code itself; every amount of this plan is longer.
+        result.metrics().forEach(metric -> {
+            if (metric.value()!=null && metric.value().length()>=4) forbidden.add(metric.value());
+        });
+        for (String line : mine) {
+            assertThat(line).matches(".*dashboard read: state=[A-Z_]+ status=\\d{3} latencyMs=\\d+ consistent=(true|false|unknown)$");
+            for (String value : forbidden) assertThat(line).as(value).doesNotContain(value);
+        }
+    }
+
+    /**
+     * A read that throws answers the common 500 with no financial field, and the one line for it says
+     * {@code ERROR} with the status actually answered and {@code consistent=unknown}. The pointer's table is
+     * hidden for one request, so the repository read fails inside the consistent read.
+     */
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void aReadThatFailsAnswersTheCommonErrorAndLogsOneErrorLine(org.springframework.boot.test.system.CapturedOutput output)
+            throws Exception {
+        String subject="dashboard-error-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"dashboard-error","0.1",null);
+        assertThat(awaitPublication(publish(user,intent,"dashboard-error-command-001"))).isEqualTo("PUBLISHED");
+        String amount=ready(user).metrics().getFirst().value();
+
+        int before=dashboardLogLines(output).size();
+        java.net.http.HttpResponse<String> failed;
+        jdbc().sql("ALTER TABLE sync_official_plan_result RENAME TO sync_official_plan_result_hidden").update();
+        try {
+            failed=send("GET",AuthSecurityConfig.DASHBOARD_PATH,cookie,"X-Request-Id","dashboard-error-probe");
+        } finally {
+            jdbc().sql("ALTER TABLE sync_official_plan_result_hidden RENAME TO sync_official_plan_result").update();
+        }
+        assertThat(failed.statusCode()).isEqualTo(500);
+        assertThat(failed.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        assertThat(topLevelFieldsOf(failed.body())).containsOnlyKeys("code","message","correlationId")
+                .containsEntry("code","INTERNAL_ERROR").containsEntry("correlationId","dashboard-error-probe");
+        assertThat(failed.body()).doesNotContain(amount).doesNotContain("sync_official_plan_result");
+        var lines=dashboardLogLines(output);
+        assertThat(lines.subList(before,lines.size())).singleElement().asString()
+                .contains("state=ERROR status=500").endsWith("consistent=unknown");
+        assertThat(output.getAll()).as("no SQL or relation name reaches the log")
+                .doesNotContain("sync_official_plan_result_hidden");
+        // The next read is whole again.
+        assertThat(resultOf(get(AuthSecurityConfig.DASHBOARD_PATH,cookie).body())).containsKey("metrics");
+    }
+
+    /** The dashboard's operational lines captured so far, in order. */
+    private static java.util.List<String> dashboardLogLines(org.springframework.boot.test.system.CapturedOutput output) {
+        return output.getAll().lines().filter(line -> line.contains("dashboard read:")).toList();
+    }
+
+    /** Holds an {@code ACCESS EXCLUSIVE} lock on {@code table} in a transaction of its own until closed. */
+    private AutoCloseable holdTableLock(String table) throws InterruptedException {
+        var acquired=new CountDownLatch(1);
+        var release=new CountDownLatch(1);
+        Thread holder=Thread.ofVirtual().start(() -> new TransactionTemplate(manager).executeWithoutResult(status -> {
+            jdbc().sql("LOCK TABLE "+table+" IN ACCESS EXCLUSIVE MODE").update();
+            acquired.countDown();
+            try {
+                if (!release.await(20,TimeUnit.SECONDS)) throw new IllegalStateException("table lock never released");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }));
+        assertThat(acquired.await(5,TimeUnit.SECONDS)).isTrue();
+        return () -> {
+            release.countDown();
+            holder.join(10_000);
+        };
     }
 
     /** Collects, classifies and converts; {@code start} moves t0 back so the flows fall inside (t0, tc]. */

@@ -223,12 +223,15 @@ class AuthSecurityConfig {
     static final String PLAN_CONDITIONS_PATH = "/api/plans/conditions";
 
     /**
-     * 활성 계획의 공식 결과(Story 2.7). 공식 포인터 하나에서 읽은 묶음만 나간다.
+     * 공식 대시보드(Story 2.8). 활성 계획의 공식 포인터가 가리키는 한 묶음과 세 신뢰 축, 또는
+     * {@code NO_PLAN}·{@code PREPARING} 상태만 나간다.
      *
-     * <p>{@link #PLAN_CONDITIONS_PATH}와 같은 {@code /api/plans} 아래지만 접두사를 넓혀 한 판정으로
-     * 묶지 않는다. 경로마다 판정 하나를 두고 인가와 CSRF·{@code Origin} 판정이 그 같은 함수를 본다.
+     * <p>Story 2.7의 {@code /api/plans/active}를 대체한다. 그 경로는 없어졌다 — 두 표면을 두면 삭제·캐시·
+     * 버전 판정이 두 곳이 된다. 경로마다 판정 하나를 두고 인가와 CSRF·{@code Origin} 판정이 그 같은
+     * 함수({@link #isDashboardPath})를 본다. 하위 경로도 같은 판정에 걸려 인증 없이는 401, 인증되면
+     * 대상의 존재와 무관한 같은 404다.
      */
-    static final String ACTIVE_PLAN_PATH = "/api/plans/active";
+    static final String DASHBOARD_PATH = "/api/dashboard";
 
     /** Bybit 연결 표면의 경로. 이 계층에서 그 경로를 정의하는 상수는 이것 하나다. */
     static final String BYBIT_CONNECTION_PATH = CONNECTIONS_BASE_URI + "/bybit";
@@ -1183,7 +1186,7 @@ class AuthSecurityConfig {
          * 갈린 상태 자체가 이 함수가 하나로 유지되는 이유와 부딪힌다.
          */
         return isConnectionsPath(uri) || isSnapshotPath(uri) || isPlanConditionsPath(uri)
-                || isActivePlanPath(uri);
+                || isDashboardPath(uri);
     }
 
     /**
@@ -1199,7 +1202,7 @@ class AuthSecurityConfig {
      */
     static boolean requiresAuthentication(HttpServletRequest request) {
         return isConnectionsPath(request.getRequestURI()) || isSnapshotPath(request.getRequestURI())
-                || isPlanConditionsPath(request.getRequestURI()) || isActivePlanPath(request.getRequestURI());
+                || isPlanConditionsPath(request.getRequestURI()) || isDashboardPath(request.getRequestURI());
     }
 
     /**
@@ -1217,8 +1220,8 @@ class AuthSecurityConfig {
         return uri.equals(PLAN_CONDITIONS_PATH) || uri.startsWith(PLAN_CONDITIONS_PATH + "/");
     }
 
-    private static boolean isActivePlanPath(String uri) {
-        return uri.equals(ACTIVE_PLAN_PATH) || uri.startsWith(ACTIVE_PLAN_PATH + "/");
+    private static boolean isDashboardPath(String uri) {
+        return uri.equals(DASHBOARD_PATH) || uri.startsWith(DASHBOARD_PATH + "/");
     }
 
     private static boolean isConnectionsPath(String uri) {

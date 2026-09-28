@@ -6,9 +6,12 @@ import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
 import { authContent, reauthNoticeKindOf, SETTINGS_PATH } from '../content/auth'
 import { entryContent } from '../content/entry'
-import { planResultContent } from '../content/planResult'
-import { formatSeoulTime } from '../format/decimal'
-import { planPresenceOf, usePlanResult } from '../session/usePlanResult'
+import {
+  dashboardAnnouncement,
+  planPresenceOf,
+  statusBusy,
+  useDashboard,
+} from '../session/useDashboard'
 import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
@@ -33,16 +36,16 @@ const MAIN_ID = 'onboarding-main'
  * 버튼의 이름은 언제나 동작으로 남는다.
  *
  * 첫 로그인 세션의 확정 목적지가 이 화면이다. 그 세션이 `/dashboard`를 열어도 이 화면으로
- * 밀려나므로(`useSessionGate`), 활성 계획의 공식 결과(Story 2.7)도 대시보드와 같은 패널로 여기
- * 그린다 — 결과 응답 하나에서 그리고 화면의 단일 live region이 한 번 알린다. 결과가 없으면 화면은
- * 그 전과 같다.
+ * 밀려나므로(`useSessionGate`), 공식 대시보드(Story 2.8)도 대시보드 화면과 같은 패널·같은 순서로 여기
+ * 그린다 — 조회 모델 응답 하나에서 그리고 화면의 단일 live region이 상태 변화를 한 문장으로 알린다.
  */
 export function OnboardingScreen(): ReactElement {
   const { csrfToken, gate } = useSessionGate('onboarding')
   const signOut = useSignOut(csrfToken)
   const reauthentication = useReauthentication(csrfToken)
-  const planResult = usePlanResult(gate === 'ready')
-  const result = planResult.kind === 'loaded' ? planResult.result : null
+  const dashboard = useDashboard(gate === 'ready')
+  // Whether the first-snapshot panel leads the dashboard, and how (`planPresenceOf` gives the reasons).
+  const presence = planPresenceOf(dashboard.view)
 
   if (gate === 'unauthenticated') {
     /*
@@ -109,19 +112,18 @@ export function OnboardingScreen(): ReactElement {
             끝나고 다음 행동을 기다리는 자리이므로 `aria-busy`를 세우면 보조기술에 "지금
             바뀌는 중"이라고 잘못 말한다. 확인 중·이동 중·요청 중만 참이다.
           */
-          aria-busy={(!ready && !reauthRequired) || signOut.pending || reauthentication.pending}
+          aria-busy={statusBusy({
+            ready,
+            reauthRequired,
+            requestPending: signOut.pending || reauthentication.pending,
+            dashboard,
+          })}
           aria-live="polite"
           className={styles.notice}
           role="status"
         >
           {ready && !signOut.pending ? (
-            result === null ? null : (
-              <p className={styles.noticeText}>
-                {planResultContent.announce(
-                  formatSeoulTime(result.basisAt, planResultContent.timeUnavailable),
-                )}
-              </p>
-            )
+            <p className={styles.noticeText}>{dashboardAnnouncement(dashboard)}</p>
           ) : (
             <p className={styles.noticeText}>
               {liveRegionMessage(gate, signOut.pending, reauthentication.pending)}
@@ -139,14 +141,10 @@ export function OnboardingScreen(): ReactElement {
           />
         ) : null}
 
-        {ready && result !== null ? <PlanResultPanel result={result} /> : null}
-        {ready ? (
-          <FirstSnapshotPanel
-            csrfToken={csrfToken}
-            plan={planPresenceOf(planResult)}
-            ready={ready}
-          />
+        {ready && presence !== null ? (
+          <FirstSnapshotPanel csrfToken={csrfToken} plan={presence} ready={ready} />
         ) : null}
+        {ready ? <PlanResultPanel dashboard={dashboard} /> : null}
 
         {ready ? (
           <section aria-labelledby={authContent.onboarding.id} className={styles.section}>

@@ -13,17 +13,31 @@ import {
 } from '../content/auth'
 import { firstSnapshotContent } from '../content/firstSnapshot'
 import { planConditionContent } from '../content/planConditions'
-import { METRIC_ORDER, PLAN_RESULT_PATH, planResultContent } from '../content/planResult'
+import {
+  DASHBOARD_PATH,
+  METRIC_ORDER,
+  planPublicationContent,
+  planResultContent,
+} from '../content/planResult'
+import { formatSeoulTime } from '../format/decimal'
 import { navigateTo, replaceLocation } from '../session/navigation'
-import { planResultFixture } from '../test/planResultFixture'
+import {
+  BASIS_AT,
+  dashboardFixture,
+  MEASURED_AT,
+  NO_PLAN_FIXTURE,
+  planResultFixture,
+  PREPARING_FIXTURE,
+  trustFixture,
+} from '../test/planResultFixture'
 import {
   getObservedAllowedRequests,
   getObservedSessionRequests,
   getObservedStorageEntries,
+  stubDashboard,
   stubFirstSnapshotStart,
   stubFirstSnapshotState,
   stubLogoutRequest,
-  stubPlanResult,
   stubReauthenticationRequest,
   stubSessionRequest,
 } from '../test/setup'
@@ -112,8 +126,8 @@ describe('SignedInScreen', () => {
 
   it('첫 공식값과 제공자 측정 시각, 세 신뢰 축을 표시한다', async () => {
     stubSessionRequest(authenticated)
-    // 활성 계획이 없다고 서버가 답한 경로다. 그때만 "계획 없음" 문장과 임시 세 축이 보인다.
-    stubPlanResult(() => Promise.resolve(new Response(null, { status: 204 })))
+    // 활성 계획이 없다고 서버가 답한 경로다. 그때만 첫 값의 임시 세 축이 보인다.
+    stubDashboard(() => Promise.resolve(jsonResponse(NO_PLAN_FIXTURE)))
     stubFirstSnapshotState(() =>
       Promise.resolve(
         jsonResponse({
@@ -137,6 +151,8 @@ describe('SignedInScreen', () => {
 
   it('표시 반올림 뒤 음수 영은 0.00으로 표시한다', async () => {
     stubSessionRequest(authenticated)
+    // The first-snapshot panel leads only a dashboard that answered without a bundle.
+    stubDashboard(() => Promise.resolve(jsonResponse(NO_PLAN_FIXTURE)))
     stubFirstSnapshotState(() =>
       Promise.resolve(
         jsonResponse({
@@ -154,6 +170,8 @@ describe('SignedInScreen', () => {
 
   it('운영 제한 상태를 연결 해제와 구분하고 금융값을 숨긴다', async () => {
     stubSessionRequest(authenticated)
+    // The first-snapshot panel leads only a dashboard that answered without a bundle.
+    stubDashboard(() => Promise.resolve(jsonResponse(NO_PLAN_FIXTURE)))
     stubFirstSnapshotState(() =>
       Promise.resolve(jsonResponse({ connected: true, restricted: true })),
     )
@@ -165,6 +183,8 @@ describe('SignedInScreen', () => {
 
   it('첫 확인을 202로 접수하고 진행 중 중복 조작을 막는다', async () => {
     stubSessionRequest(authenticated)
+    // The first-snapshot panel leads only a dashboard that answered without a bundle.
+    stubDashboard(() => Promise.resolve(jsonResponse(NO_PLAN_FIXTURE)))
     stubFirstSnapshotState(() =>
       Promise.resolve(jsonResponse({ connected: true, restricted: false })),
     )
@@ -257,155 +277,363 @@ describe('SignedInScreen', () => {
     expect(screen.queryByRole('link', { name: authContent.settings.link })).not.toBeInTheDocument()
   })
 
-  it('공식 결과가 없으면 금융값을 담지 않는다', async () => {
+  it('공식 결과를 읽지 못하면 금융값을 담지 않는다', async () => {
     stubSessionRequest(authenticated)
 
     render(<SignedInScreen />)
     await screen.findByRole('heading', { level: 2, name: authContent.dashboard.heading })
 
+    // 대시보드 조회가 열리지 않은 경로다: 이전 결과가 없는 읽기 실패이므로 `재시도 가능`이다.
+    expect(await screen.findByText(planResultContent.retryableLabel)).toBeInTheDocument()
     const rendered = document.body.textContent
-
-    // 결과 응답이 없는 경로다(Story 2.7 이후에도). 지표·비율·통화 표기가 없고 빈 카드로 위장하지도 않는다.
+    // 지표·비율·통화 표기가 없고 빈 카드로 위장하지도 않는다.
     expect(rendered).not.toMatch(/\d+(\.\d+)?\s*%/)
     expect(rendered).not.toContain('USDT')
     expect(rendered).not.toContain('$')
-    expect(
-      screen.queryByRole('heading', { name: planResultContent.heading }),
-    ).not.toBeInTheDocument()
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
   })
 
   /*
-   * Story 2.7: 활성 계획의 공식 결과. 결과 응답 하나에서 패널 전체를 그린다.
+   * Story 2.8: 공식 대시보드. 조회 모델 응답 하나에서 화면 전체를 그린다.
    */
 
-  it('결과: 공식 포인터 응답 하나에서 여섯 지표와 세 축을 그리고 단일 상태 리전이 한 번 알린다', async () => {
-    stubSessionRequest(authenticated)
-    stubPlanResult(() => Promise.resolve(jsonResponse(planResultFixture())))
+  function firstSnapshotLoaded(decimal = '1250', measuredAt = '2026-09-27T00:59:59Z'): void {
     stubFirstSnapshotState(() =>
       Promise.resolve(
         jsonResponse({
           connected: true,
           restricted: false,
           job: { jobId: 'job-1', status: 'SUCCEEDED' },
-          decimal: '1250',
+          decimal,
           currency: 'USD',
-          measuredAt: '2026-09-27T00:59:59Z',
+          measuredAt,
         }),
       ),
     )
+  }
+
+  /** Every `role=status` and `aria-live` element of the screen. */
+  function liveRegions(): Element[] {
+    // eslint-disable-next-line testing-library/no-node-access -- 역할 없는 aria-live 영역은 역할 조회로 보이지 않는다. 화면의 live region 수는 속성으로 세야 한다.
+    return [...document.querySelectorAll('[role="status"], [aria-live]')]
+  }
+
+  it('대시보드: 응답 하나에서 현재가치 → 세 축 → 지표 → 다음 행동 순서로 그리고 단일 상태 리전이 알린다', async () => {
+    stubSessionRequest(authenticated)
+    stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture())))
+    firstSnapshotLoaded()
 
     render(<SignedInScreen />)
 
     expect(
-      await screen.findByRole('heading', { level: 2, name: planResultContent.heading }),
+      await screen.findByRole('heading', { level: 3, name: planResultContent.currentHeading }),
     ).toBeInTheDocument()
     for (const metric of METRIC_ORDER) {
       expect(
         screen.getByRole('heading', { level: 4, name: planResultContent.metrics[metric].name }),
       ).toBeInTheDocument()
     }
-    const statuses = screen.getAllByRole('status')
-    expect(statuses).toHaveLength(1)
-    expect(statuses[0]).toHaveTextContent('복리 계획 결과를 표시합니다')
-    expect(getObservedAllowedRequests()).toContain(`GET ${PLAN_RESULT_PATH}`)
-    // The pointer now shows the plan's current value: the panel no longer calls it the first value,
-    // no longer claims there is no plan, and its provisional axes give way.
-    expect(await screen.findByText(firstSnapshotContent.currentSucceeded)).toBeInTheDocument()
-    expect(
-      screen.getByRole('heading', { level: 2, name: firstSnapshotContent.currentHeading }),
-    ).toBeInTheDocument()
+    const order = screen.getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent)
+    expect(order.slice(0, 4)).toEqual([
+      planResultContent.currentHeading,
+      planResultContent.trustHeading,
+      planResultContent.metricsHeading,
+      planResultContent.nextActionHeading,
+    ])
+    // One status region, and no other live region: the first-snapshot panel steps aside.
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(liveRegions()).toHaveLength(1)
+    expect(screen.getByRole('status')).toHaveTextContent(
+      planResultContent.status.ready(formatSeoulTime(BASIS_AT, planResultContent.timeUnavailable)),
+    )
+    expect(getObservedAllowedRequests()).toContain(`GET ${DASHBOARD_PATH}`)
+    // The current value appears once, from the dashboard response.
+    expect(screen.getAllByText(/1,250\.00 USD/)).toHaveLength(1)
     expect(
       screen.queryByRole('heading', { name: firstSnapshotContent.heading }),
     ).not.toBeInTheDocument()
-    expect(screen.queryByText(firstSnapshotContent.succeeded)).not.toBeInTheDocument()
-    expect(screen.getAllByText(/1,250\.00 USD/)).toHaveLength(2)
-    expect(screen.queryByText(firstSnapshotContent.noPlan)).not.toBeInTheDocument()
+    expect(getObservedAllowedRequests()).not.toContain(`GET /api/snapshots/first`)
     expect(screen.queryByText(/계산 성격 · 계산 불가/)).not.toBeInTheDocument()
     // The title and its disclaimer stay adjacent above the result.
     const title = screen.getByRole('heading', { level: 1 })
     expect(title.nextElementSibling?.textContent).toBe(authContent.disclaimer)
+    expect(getObservedStorageEntries()).toEqual([])
   })
 
-  it('결과: 없음(204)·거절(403)·읽기 실패는 기존 화면을 바꾸지 않는다', async () => {
-    for (const answer of [
-      () => Promise.resolve(new Response(null, { status: 204 })),
-      () => Promise.resolve(new Response('{}', { status: 403 })),
-      () => Promise.reject(new Error('network')),
-      () => Promise.resolve(jsonResponse({ planId: 'partial' })),
-    ]) {
-      stubSessionRequest(authenticated)
-      stubPlanResult(answer)
-      const { unmount } = render(<SignedInScreen />)
-      await screen.findByRole('heading', { level: 2, name: authContent.dashboard.heading })
-      await waitFor(() => {
-        expect(getObservedAllowedRequests()).toContain(`GET ${PLAN_RESULT_PATH}`)
-      })
-      expect(
-        screen.queryByRole('heading', { name: planResultContent.heading }),
-      ).not.toBeInTheDocument()
-      expect(screen.getAllByRole('status')).toHaveLength(1)
-      expect(screen.getByRole('status').textContent).toBe('')
-      unmount()
-    }
-  })
-
-  /*
-   * 거절·읽기 실패는 "계획 없음"이 아니다. 서버가 없다고 답했을 때(204)만 그 문장과 계획 조건
-   * 링크를 보이고, 그 밖에는 계획이 있다고도 없다고도 말하지 않는다.
-   */
-  it.each([
-    ['refused (403)', () => Promise.resolve(new Response('{}', { status: 403 }))],
-    ['a failed read', () => Promise.reject(new Error('network'))],
-    ['a malformed body', () => Promise.resolve(jsonResponse({ planId: 'partial' }))],
-  ])('결과: %s는 계획 없음으로 말하지 않고 중립 문장을 보인다', async (_name, answer) => {
+  it('대시보드: 계획 없음은 문장과 계획 조건 링크를 화면에 한 번만 보인다', async () => {
     stubSessionRequest(authenticated)
-    stubPlanResult(answer)
-    stubFirstSnapshotState(() =>
-      Promise.resolve(
-        jsonResponse({
-          connected: true,
-          restricted: false,
-          job: { jobId: 'job-1', status: 'SUCCEEDED' },
-          decimal: '1234.56',
-          currency: 'USD',
-          measuredAt: '2026-09-25T00:00:00Z',
-        }),
-      ),
-    )
+    stubDashboard(() => Promise.resolve(jsonResponse(NO_PLAN_FIXTURE)))
+    firstSnapshotLoaded('1234.56', '2026-09-25T00:00:00Z')
     render(<SignedInScreen />)
 
-    expect(await screen.findByText(firstSnapshotContent.planUnknown)).toBeInTheDocument()
-    expect(screen.queryByText(firstSnapshotContent.noPlan)).not.toBeInTheDocument()
+    expect(await screen.findByText(firstSnapshotContent.succeeded)).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent(planResultContent.status.noPlan)
+    })
+    expect(screen.getAllByText(new RegExp(planResultContent.noPlanLabel))).toHaveLength(1)
+    const links = screen.getAllByRole('link', { name: planConditionContent.openConditions })
+    expect(links).toHaveLength(1)
+    expect(links[0]).toHaveAttribute('href', planConditionContent.path)
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
+    // The first value leads, then the plan's next action.
+    const first = screen.getByRole('heading', { level: 2, name: firstSnapshotContent.heading })
+    const dashboard = screen.getByRole('heading', { level: 2, name: planResultContent.heading })
+    expect(first.compareDocumentPosition(dashboard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('대시보드: 결과 준비 중은 계획 없음과 구분되고 계획 조건 링크를 보이지 않는다', async () => {
+    stubSessionRequest(authenticated)
+    stubDashboard(() => Promise.resolve(jsonResponse(PREPARING_FIXTURE)))
+    firstSnapshotLoaded('1234.56', '2026-09-25T00:00:00Z')
+    render(<SignedInScreen />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent(planResultContent.status.preparing)
+    })
+    // The first value leads while the plan is prepared.
+    expect(
+      await screen.findByRole('heading', { level: 2, name: firstSnapshotContent.heading }),
+    ).toBeInTheDocument()
+    expect(await screen.findByText(/1,234\.56 USD/)).toBeInTheDocument()
+    expect(screen.queryByText(new RegExp(planResultContent.noPlanLabel))).not.toBeInTheDocument()
     expect(
       screen.queryByRole('link', { name: planConditionContent.openConditions }),
     ).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: planResultContent.reload })).toBeInTheDocument()
+  })
+
+  it.each([
+    ['a failed read', () => Promise.reject(new Error('network'))],
+    [
+      'an inconsistent bundle (503)',
+      () =>
+        Promise.resolve(
+          jsonResponse({ code: 'DASHBOARD_UNAVAILABLE', message: 'x', correlationId: 'c' }, 503),
+        ),
+    ],
+    ['a malformed body', () => Promise.resolve(jsonResponse({ planId: 'partial' }))],
+  ])('대시보드: %s는 계획 없음으로 말하지 않고 재시도 가능으로 둔다', async (_name, answer) => {
+    stubSessionRequest(authenticated)
+    stubDashboard(answer)
+    firstSnapshotLoaded('1234.56', '2026-09-25T00:00:00Z')
+    render(<SignedInScreen />)
+
+    expect(await screen.findByText(planResultContent.retryableLabel)).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(planResultContent.status.retryable)
+    expect(screen.queryByText(new RegExp(planResultContent.noPlanLabel))).not.toBeInTheDocument()
+    // Nothing financial: the first-snapshot panel is not mounted, so its amount never appears.
+    await new Promise((settle) => setTimeout(settle, 20))
+    expect(document.body.textContent).not.toContain('1,234.56')
+    expect(document.body.textContent).not.toMatch(/\d\s*USD/)
+    expect(
+      screen.queryByRole('heading', { name: firstSnapshotContent.heading }),
+    ).not.toBeInTheDocument()
+    expect(getObservedAllowedRequests()).not.toContain('GET /api/snapshots/first')
+    expect(
+      screen.queryByRole('link', { name: planConditionContent.openConditions }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
     expect(screen.queryByText(/계산 성격 · 계산 불가/)).not.toBeInTheDocument()
   })
 
-  it('결과: 서버가 활성 계획이 없다고 답하면(204) 계획 없음 문장과 계획 조건 링크를 보인다', async () => {
+  it('AC-8: 다시 불러오기가 실패하면 같은 값이 마지막 정상 결과로 남고 0이나 부분 값이 나오지 않는다', async () => {
     stubSessionRequest(authenticated)
-    stubPlanResult(() => Promise.resolve(new Response(null, { status: 204 })))
-    stubFirstSnapshotState(() =>
-      Promise.resolve(
-        jsonResponse({
-          connected: true,
-          restricted: false,
-          job: { jobId: 'job-1', status: 'SUCCEEDED' },
-          decimal: '1234.56',
-          currency: 'USD',
-          measuredAt: '2026-09-25T00:00:00Z',
-        }),
-      ),
-    )
+    const queue: (() => Promise<Response>)[] = [
+      () => Promise.resolve(jsonResponse(dashboardFixture())),
+      () => Promise.reject(new Error('network')),
+    ]
+    stubDashboard(() => (queue.shift() ?? (() => Promise.reject(new Error('extra'))))())
     render(<SignedInScreen />)
 
-    expect(await screen.findByText(firstSnapshotContent.noPlan)).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: planConditionContent.openConditions })).toHaveAttribute(
-      'href',
-      planConditionContent.path,
+    const before = await screen.findAllByRole('article')
+    const values = before.map((card) => card.textContent)
+    const reload = screen.getByRole('button', { name: planResultContent.reload })
+    reload.focus()
+    fireEvent.click(reload)
+
+    expect(await screen.findByText(planResultContent.lastGoodLabel)).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(planResultContent.status.lastGood)
+    const after = screen.getAllByRole('article')
+    expect(after.map((card) => card.textContent)).toEqual(values)
+    expect(document.body.textContent).not.toMatch(/(^|[^\d,.])0\.00 USD/)
+    // The reload button is the same element and keeps the keyboard focus.
+    expect(screen.getByRole('button', { name: planResultContent.reload })).toBe(reload)
+    expect(reload).toHaveFocus()
+  })
+
+  it('AC-13: 403이면 보이던 금융값이 화면과 메모리에서 사라진다', async () => {
+    stubSessionRequest(authenticated)
+    const queue: (() => Promise<Response>)[] = [
+      () => Promise.resolve(jsonResponse(dashboardFixture())),
+      () =>
+        Promise.resolve(jsonResponse({ code: 'FORBIDDEN', message: 'x', correlationId: 'c' }, 403)),
+    ]
+    stubDashboard(() => (queue.shift() ?? (() => Promise.reject(new Error('extra'))))())
+    render(<SignedInScreen />)
+
+    expect(await screen.findAllByRole('article')).toHaveLength(6)
+    fireEvent.click(screen.getByRole('button', { name: planResultContent.reload }))
+
+    expect(await screen.findByText(planResultContent.deniedHelp)).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(planResultContent.status.denied)
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/USD|%/)
+    // The first-snapshot panel does not bring a value back either.
+    expect(
+      screen.queryByRole('heading', { name: firstSnapshotContent.heading }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('AC-9: 버전이 뒤로 간 응답은 화면을 바꾸지 않고 재시도 가능으로 둔다', async () => {
+    stubSessionRequest(authenticated)
+    const queue: (() => Promise<Response>)[] = [
+      () =>
+        Promise.resolve(
+          jsonResponse(dashboardFixture(planResultFixture({ pointerVersion: 2 }), 'WAIT_FOR_SYNC')),
+        ),
+      () =>
+        Promise.resolve(
+          jsonResponse(
+            dashboardFixture(
+              planResultFixture({
+                pointerVersion: 1,
+                calculationId: 'calculation-0',
+                metrics: [
+                  { metric: 'CURRENT_VALUE', value: '999', nature: 'OFFICIAL' },
+                  { metric: 'PLAN_AMOUNT', value: '1', nature: 'OFFICIAL' },
+                  { metric: 'PLAN_DIFFERENCE', value: '1', nature: 'OFFICIAL' },
+                  { metric: 'ADJUSTED_TARGET', value: '1', nature: 'OFFICIAL' },
+                  { metric: 'REQUIRED_RATE', value: '1', nature: 'OFFICIAL' },
+                  { metric: 'GOAL_PROGRESS', value: '1', nature: 'OFFICIAL' },
+                ],
+              }),
+            ),
+          ),
+        ),
+    ]
+    stubDashboard(() => (queue.shift() ?? (() => Promise.reject(new Error('extra'))))())
+    render(<SignedInScreen />)
+
+    expect(await screen.findByText('1,250.00 USD')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: planResultContent.reload }))
+
+    expect(await screen.findByText(planResultContent.retryableLabel)).toBeInTheDocument()
+    expect(screen.queryByText(planResultContent.lastGoodLabel)).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(planResultContent.status.versionConflict)
+    expect(
+      screen.getByText(
+        planResultContent.versionConflictHelp(
+          formatSeoulTime(MEASURED_AT, planResultContent.timeUnavailable),
+        ),
+      ),
+    ).toBeInTheDocument()
+    // The shown bundle is kept, not swapped: the old values stay, the conflicting ones never appear.
+    expect(screen.getByText('1,250.00 USD')).toBeInTheDocument()
+    expect(screen.queryByText('999.00 USD')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: planResultContent.reload })).toBeInTheDocument()
+  })
+
+  it('AC-13: 401이면 금융값을 지우고 세션 만료 문장과 진입 화면으로 가는 문서 링크를 준다', async () => {
+    stubSessionRequest(authenticated)
+    const queue: (() => Promise<Response>)[] = [
+      () => Promise.resolve(jsonResponse(dashboardFixture())),
+      () =>
+        Promise.resolve(
+          jsonResponse({ code: 'UNAUTHENTICATED', message: 'x', correlationId: 'c' }, 401),
+        ),
+    ]
+    stubDashboard(() => (queue.shift() ?? (() => Promise.reject(new Error('extra'))))())
+    render(<SignedInScreen />)
+
+    expect(await screen.findAllByRole('article')).toHaveLength(6)
+    // A keyboard user on the reload button: focus it, then activate it.
+    const reload = screen.getByRole('button', { name: planResultContent.reload })
+    reload.focus()
+    fireEvent.click(reload)
+
+    const link = await screen.findByRole('link', { name: planResultContent.signInLink })
+    expect(link).toHaveAttribute('href', '/')
+    expect(screen.getByRole('status')).toHaveTextContent(planResultContent.status.signedOut)
+    expect(planResultContent.status.signedOut).toBe(planPublicationContent.sessionError)
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/USD|%/)
+    // Focus that was on the vanished reload button moves to the dashboard heading.
+    expect(screen.getByRole('heading', { level: 2, name: planResultContent.heading })).toHaveFocus()
+  })
+
+  it('입력 신뢰도가 검토 필요인 결과는 상태 리전이 그 사실을 같은 문장에서 먼저 알린다', async () => {
+    stubSessionRequest(authenticated)
+    const review = planResultFixture({
+      trust: trustFixture({
+        inputReliability: {
+          state: 'REVIEW_REQUIRED',
+          cause: 'TARGET_NOT_POSITIVE',
+          affectedMetrics: ['ADJUSTED_TARGET'],
+        },
+      }),
+    })
+    stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture(review))))
+    render(<SignedInScreen />)
+
+    await screen.findAllByRole('article')
+    expect(screen.getByRole('status')).toHaveTextContent(
+      planResultContent.status.readyWithReliability(
+        planResultContent.axes.reliability.states.REVIEW_REQUIRED ?? 'missing copy',
+        formatSeoulTime(BASIS_AT, planResultContent.timeUnavailable),
+      ),
     )
-    expect(screen.getByText(firstSnapshotContent.succeeded)).toBeInTheDocument()
-    expect(screen.queryByText(firstSnapshotContent.planUnknown)).not.toBeInTheDocument()
+  })
+
+  it('다시 불러오는 동안 상태 리전이 그 사실을 알리고 busy로 표시된다', async () => {
+    stubSessionRequest(authenticated)
+    let release: (response: Response) => void = () => undefined
+    const queue: (() => Promise<Response>)[] = [
+      () => Promise.resolve(jsonResponse(dashboardFixture())),
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve
+        }),
+    ]
+    stubDashboard(() => (queue.shift() ?? (() => Promise.reject(new Error('extra'))))())
+    render(<SignedInScreen />)
+
+    await screen.findAllByRole('article')
+    expect(screen.getByRole('status')).toHaveAttribute('aria-busy', 'false')
+    fireEvent.click(screen.getByRole('button', { name: planResultContent.reload }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent(planResultContent.status.reloading)
+    })
+    expect(screen.getByRole('status')).toHaveAttribute('aria-busy', 'true')
+    expect(screen.getByRole('region', { name: planResultContent.heading })).toHaveAttribute(
+      'aria-busy',
+      'true',
+    )
+    // The values stay while the read is in flight.
+    expect(screen.getAllByRole('article')).toHaveLength(6)
+
+    await act(async () => {
+      release(jsonResponse(dashboardFixture()))
+      await Promise.resolve()
+    })
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveAttribute('aria-busy', 'false')
+    })
+    expect(screen.getByRole('status')).toHaveTextContent(
+      planResultContent.status.ready(formatSeoulTime(BASIS_AT, planResultContent.timeUnavailable)),
+    )
+  })
+
+  it('AC-10: 대시보드에 투자 추천·성과·축하·공포·스트릭·배지 문구가 없다', async () => {
+    stubSessionRequest(authenticated)
+    stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture())))
+    render(<SignedInScreen />)
+
+    await screen.findAllByRole('article')
+    const text = document.body.textContent.replace(authContent.disclaimer, '')
+    expect(text).not.toMatch(
+      /축하|손실|추천합니다|투자성과|계좌 수익률|스트릭|배지|달성하세요|놓치지|서두르/,
+    )
   })
 
   it('미인증으로 이 경로에 직접 들어오면 인증 화면으로 되돌린다', async () => {

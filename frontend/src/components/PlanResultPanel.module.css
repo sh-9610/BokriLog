@@ -18,6 +18,11 @@
   margin: 0;
 }
 
+/* The heading takes focus (tabIndex -1) when the control a keyboard user was on disappears. */
+.heading {
+  scroll-margin-block-start: var(--space-4);
+}
+
 .group {
   display: grid;
   gap: var(--space-3);
@@ -45,6 +50,24 @@
   display: block;
 }
 
+/*
+ * A state that is not the plain ready bundle: the last normal result kept after a failure, a read that
+ * can be retried, or a refusal. Text carries the state; the surface only groups it.
+ */
+.notice {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--component-service-notice-border);
+  border-radius: var(--radius-md);
+  background: var(--component-service-notice-background);
+  color: var(--component-service-notice-foreground);
+}
+
+.noticeName {
+  font-weight: var(--type-label-font-weight);
+}
+
 /* Three independent axes, never merged into one score. They stack at narrow widths and zoom. */
 .axes {
   display: grid;
@@ -55,16 +78,21 @@
 }
 
 .axis {
-  display: grid;
-  gap: var(--space-2);
   padding: var(--space-3);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
   background: var(--color-surface-subtle);
 }
 
+.axis > div {
+  display: grid;
+  gap: var(--space-2);
+}
+
 .axisName {
+  font-size: var(--type-label-font-size);
   font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
 }
 
 .metrics {
@@ -75,18 +103,23 @@
   list-style: none;
 }
 
+.metrics li {
+  display: grid;
+}
+
 .card {
   display: grid;
+  gap: var(--space-2);
+  align-content: start;
   padding: var(--space-4);
   border: 1px solid var(--component-metric-card-border);
   border-radius: var(--component-metric-card-radius);
   background: var(--component-metric-card-background);
 }
 
-.card article {
-  display: grid;
-  gap: var(--space-2);
-  align-content: start;
+/* The last normal current value leads the screen. Its card has the same parts as the other five. */
+.lead .card {
+  border-color: var(--color-border-strong);
 }
 
 .metricName {
@@ -117,4 +150,29 @@
   color: var(--color-ink-secondary);
   font-size: var(--type-meta-font-size);
   line-height: var(--type-meta-line-height);
+}
+
+/* The next action's controls: a 44px target, text that wraps instead of overflowing at 320px and zoom. */
+.action {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  max-inline-size: 100%;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  color: var(--color-ink-primary);
+  font-family: var(--type-body-font-family);
+  font-size: var(--type-body-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-body-line-height);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.action[aria-disabled='true'] {
+  cursor: wait;
 }

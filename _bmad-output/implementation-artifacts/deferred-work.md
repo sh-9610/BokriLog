@@ -245,3 +245,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-6-cashflow-usd-conversion.md`
   summary: Windows Git Bash에서 `verify-same-origin.sh`가 한글 확인 문구를 `curl --data`로 CP949 바이트로 보내 Bybit 연결 확인이 400으로 끝나고 이후 57건이 연쇄 실패한다.
   evidence: Story 2.6 구현 중 902/959로 끝났고, 로컬 echo 서버로 받은 바이트가 `bfacb0e1…`(기대 UTF-8 `ec97b0…`)였다. 이 스토리의 변경과 무관하며 이미 기록된 "Windows 전용 결함을 CI가 보지 못하는 공백"과 같은 종류다. Linux CI에서는 재현되지 않는다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-8-official-dashboard.md`
+  summary: 대시보드 조회를 포함한 프런트엔드 조회 훅에 요청 시간 상한이 없어, 응답이 끝나지 않으면 진행 중 가드 때문에 다시 불러오기가 페이지를 새로 열 때까지 무시된다.
+  evidence: `useDashboard.ts`의 `fetch`에는 `signal`이 없고 `inFlight`가 settle될 때까지 참으로 남는다. 저장소의 다른 조회 훅(`useFirstSnapshot` 등)도 시간 상한을 쓰지 않는 관용구라, 한 훅만 고치면 동작이 갈린다. 훅 전체에 같은 상한과 실패 문구를 정하는 라운드가 필요하다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-8-official-dashboard.md`
+  summary: 대시보드의 state·cause·nextAction 코드와 지표 순서가 백엔드 문자열 리터럴·SQL `ORDER BY CASE`·`DashboardTrust.METRICS`·프런트엔드 닫힌 맵과 `METRIC_ORDER`에 따로 적혀 있고, 서로 같은지 대조하는 검사가 없다.
+  evidence: 서버가 cause를 하나 바꾸거나 더해도 화면은 안전한 대체 문구로 접을 뿐 어떤 시험도 깨지지 않는다(리뷰가 이름 변경으로 시연했다). 이미 기록된 "계층을 넘나드는 계약 리터럴의 중복을 Docker 없는 검사로 묶는 문제"의 새 사례이며 제공자 이름·내부 경로 집합과 함께 풀 일이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-8-official-dashboard.md`
+  summary: 계획이 없는 랜딩 화면(`NO_PLAN`·`PREPARING`)에서 화면의 `role=status`와 `FirstSnapshotPanel`의 `aria-live` 영역이 함께 있어 화면당 live region이 둘이다.
+  evidence: `FirstSnapshotPanel.tsx`의 `aria-live="polite"` 영역은 Story 2.2부터 있었다. 이 스토리는 `READY`에서 그 패널을 숨겨 대시보드 상태의 단일 live region을 맞췄지만, 온보딩 흐름의 알림을 화면 status 하나로 합치는 일은 첫 공식값 패널의 상태 문장 전체를 옮기는 별도 변경이다.
