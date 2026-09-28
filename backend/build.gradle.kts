@@ -100,6 +100,19 @@ dependencies {
      */
     implementation("org.springframework.boot:spring-boot-starter-session-jdbc")
 
+    /*
+     * CALC-1.0의 거듭제곱(`spec-2-7-first-plan-publication.md`가 승인).
+     *
+     * `(1 + r)^periods`의 지수는 부분 주기라 정수가 아니다. JDK `BigDecimal.pow`는 정수 지수만
+     * 받으므로 비정수 지수를 `MathContext(34, HALF_EVEN)`으로 계산하는 버전 고정 구현이 필요하고,
+     * ERD-1.0.0 §3.1이 그 구현으로 이 라이브러리를 지정했다. 버전을 올리면 같은 입력의 결과가
+     * 마지막 자리에서 달라질 수 있으므로 범위 표기 없이 고정하고, 올릴 때는 계산 구현 버전
+     * (`PlanCalculator.IMPLEMENTATION_VERSION`)을 함께 올린다.
+     *
+     * 쓰는 곳은 `calculation` 모듈 하나다. 전이 의존이 없다.
+     */
+    implementation("ch.obermuhlner:big-math:2.3.2")
+
     // 드라이버는 컴파일 시점에 참조하지 않는다. 코드가 JDBC 표준 밖으로 나가지 못하게 한다.
     runtimeOnly("org.postgresql:postgresql")
 

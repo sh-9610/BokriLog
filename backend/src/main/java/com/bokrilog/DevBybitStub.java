@@ -263,7 +263,14 @@ final class DevBybitStub {
          * 비-USDT 외부 자금흐름을 내는 수집(Story 2.6 e2e). {@code BTC} 입금은 추정 환산되고
          * {@code HALT} 출금은 상장돼 있지만 거래 중이 아니어서 환산 보류로 남는다.
          */
-        MARKET_FLOWS("marketflows");
+        MARKET_FLOWS("marketflows"),
+
+        /**
+         * 계산 가능한 추정 환산 하나를 내는 수집(Story 2.7 e2e). {@code BTC} 입금 하나뿐이라 사건 분이
+         * 닫히면 환산 묶음이 {@code CONVERTED_ESTIMATED}로 계산 가능해지고, 최초 발행의 다섯 지표가
+         * {@code 추정}이 된다. 현재가치는 그대로 공식이다.
+         */
+        BTC_DEPOSIT("btcdeposit");
 
         private final String token;
 
@@ -433,6 +440,11 @@ final class DevBybitStub {
                             +"\"cashFlow\":\"0.01\",\"transactionTime\":\""+(start+1)+"\"}],\"nextPageCursor\":\"\"}")
                     : ok("{\"list\":[{\"id\":\"market-halt-out\",\"type\":\"TRANSFER_OUT\",\"currency\":\"HALT\","
                             +"\"cashFlow\":\"-2.5\",\"transactionTime\":\""+(start+2)+"\"}],\"nextPageCursor\":\"\"}");
+        }
+        if (scenario==Scenario.BTC_DEPOSIT&&"TRANSFER_IN".equals(type)) {
+            long start=Long.parseLong(query.get("startTime"));
+            return ok("{\"list\":[{\"id\":\"btc-deposit-in\",\"type\":\"TRANSFER_IN\",\"currency\":\"BTC\","
+                    +"\"cashFlow\":\"0.01\",\"transactionTime\":\""+(start+1)+"\"}],\"nextPageCursor\":\"\"}");
         }
         if (scenario==Scenario.ID_CONFLICT&&"TRANSFER_IN".equals(type)) {
             int read=conflictTransferInReads.incrementAndGet();

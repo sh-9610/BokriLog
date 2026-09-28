@@ -155,10 +155,81 @@ class PlanConditionRepository {
         jdbc.sql("UPDATE plan_condition_confirmation SET consumed_at=now() WHERE confirmation_hash=:h")
             .param("h",hash).update();
     }
+    /**
+     * Erases this user's plans, intents, confirmations and idempotency rows. Plans go first: they
+     * reference their intent immediately, while the intent's reference back to its plan is deferred
+     * to the end of this transaction, by which time both are gone.
+     */
     void erase(UUID userId) {
+        jdbc.sql("DELETE FROM plan_definition WHERE user_id=:u").param("u",userId).update();
         jdbc.sql("DELETE FROM plan_condition_idempotency WHERE user_id=:u").param("u",userId).update();
         jdbc.sql("DELETE FROM plan_condition_confirmation WHERE user_id=:u").param("u",userId).update();
         jdbc.sql("DELETE FROM plan_condition_intent WHERE user_id=:u").param("u",userId).update();
+    }
+
+    // ------------------------------------------------------------------ Story 2.7 active plan
+
+    /** The user's active plan, if any. MVP has one portfolio per user and one active plan per portfolio. */
+    Optional<ActivePlan> activePlan(UUID userId) {
+        return jdbc.sql("SELECT plan_id,status,p0_decimal,t0,end_at,period,target_rate,basis_portfolio_snapshot_id,"
+                + "intent_id,created_at,portfolio_id FROM plan_definition WHERE user_id=:u AND status='ACTIVE' "
+                + "ORDER BY created_at,plan_id LIMIT 1")
+            .param("u",userId).query((rs,n)->new ActivePlan(rs.getObject(1,UUID.class),rs.getString(2),
+                rs.getString(3),instant(rs,4),instant(rs,5),Period.valueOf(rs.getString(6)),rs.getString(7),
+                rs.getObject(8,UUID.class),rs.getObject(9,UUID.class),instant(rs,10),rs.getObject(11,UUID.class)))
+            .optional();
+    }
+    record ActivePlan(UUID planId, String status, String p0, Instant t0, Instant endAt, Period period,
+            String rate, UUID basisSnapshotId, UUID intentId, Instant createdAt, UUID portfolioId) {}
+
+    boolean activePlanForPortfolio(UUID portfolioId) {
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM plan_definition WHERE portfolio_id=:p AND status='ACTIVE')")
+            .param("p",portfolioId).query(Boolean.class).single();
+    }
+
+    /** The intent's immutable terms. {@code forUpdate} locks the row until the caller's transaction ends. */
+    Optional<IntentTerms> intentTerms(UUID userId, UUID intentId, boolean forUpdate) {
+        return jdbc.sql("SELECT intent_id,portfolio_id,portfolio_snapshot_id,membership_id,connection_id,"
+                + "provider_account_id,source_snapshot_id,p0_decimal,t0,end_at,period,target_rate,"
+                + "source_policy_version,portfolio_policy_version,calendar_policy,calculation_policy,status "
+                + "FROM plan_condition_intent WHERE user_id=:u AND intent_id=:i" + (forUpdate ? " FOR UPDATE" : ""))
+            .param("u",userId).param("i",intentId)
+            .query((rs,n)->new IntentTerms(rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),
+                rs.getObject(3,UUID.class),rs.getObject(4,UUID.class),rs.getObject(5,UUID.class),
+                rs.getObject(6,UUID.class),rs.getObject(7,UUID.class),rs.getString(8),instant(rs,9),
+                instant(rs,10),Period.valueOf(rs.getString(11)),rs.getString(12),rs.getString(13),
+                rs.getString(14),rs.getString(15),rs.getString(16),rs.getString(17))).optional();
+    }
+    record IntentTerms(UUID intentId, UUID portfolioId, UUID snapshotId, UUID membershipId, UUID connectionId,
+            UUID providerAccountId, UUID sourceSnapshotId, String p0, Instant t0, Instant endAt, Period period,
+            String rate, String sourcePolicyVersion, String portfolioPolicyVersion, String calendarPolicy,
+            String calculationPolicy, String status) {}
+
+    /** The database's current time. Expiry inside the publishing transaction is judged against it. */
+    Instant databaseNow() {
+        return jdbc.sql("SELECT statement_timestamp()").query(OffsetDateTime.class).single().toInstant();
+    }
+
+    int insertPlan(UUID planId, UUID userId, IntentTerms terms) {
+        return jdbc.sql("INSERT INTO plan_definition(plan_id,user_id,portfolio_id,intent_id,basis_portfolio_snapshot_id,"
+                + "membership_id,connection_id,provider_account_id,basis_source_snapshot_id,p0_decimal,t0,end_at,period,"
+                + "target_rate,source_policy_version,portfolio_policy_version,calendar_policy,calculation_policy,status) "
+                + "VALUES (:id,:u,:p,:i,:s,:m,:c,:a,:ss,:p0,:t0,:end,:period,:rate,:sourcePolicy,:portfolioPolicy,"
+                + ":calendar,:calc,'ACTIVE')")
+            .param("id",planId).param("u",userId).param("p",terms.portfolioId()).param("i",terms.intentId())
+            .param("s",terms.snapshotId()).param("m",terms.membershipId()).param("c",terms.connectionId())
+            .param("a",terms.providerAccountId()).param("ss",terms.sourceSnapshotId()).param("p0",terms.p0())
+            .param("t0",utc(terms.t0())).param("end",utc(terms.endAt())).param("period",terms.period().name())
+            .param("rate",terms.rate()).param("sourcePolicy",terms.sourcePolicyVersion())
+            .param("portfolioPolicy",terms.portfolioPolicyVersion()).param("calendar",terms.calendarPolicy())
+            .param("calc",terms.calculationPolicy()).update();
+    }
+
+    /** OPEN → CONSUMED, once, by the plan it became. */
+    int consumeIntent(UUID userId, UUID intentId, UUID planId) {
+        return jdbc.sql("UPDATE plan_condition_intent SET status='CONSUMED',consumed_at=now(),consumed_by_plan_id=:plan "
+                + "WHERE user_id=:u AND intent_id=:i AND status='OPEN'")
+            .param("plan",planId).param("u",userId).param("i",intentId).update();
     }
 
     private static OffsetDateTime utc(Instant instant) { return OffsetDateTime.ofInstant(instant,ZoneOffset.UTC); }

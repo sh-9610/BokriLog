@@ -26,9 +26,33 @@ public interface PortfolioMembershipApi {
             UUID connectionId, UUID providerAccountId, UUID sourceSnapshotId,
             String decimal, Instant measuredAt, String policyVersion) {}
 
-    /** 공식 portfolio 값만 화면과 후속 계산에 제공한다. */
+    /**
+     * 공식 portfolio 값만 화면과 후속 계산에 제공한다.
+     *
+     * @param publicationSequence 이 값을 가리키는 현재 포인터의 순번. 다음 발행이 CAS 기대값으로 쓴다
+     */
     record OfficialValue(String decimal, String currency, Instant measuredAt,
-            Instant composedAt, Instant publishedAt, UUID snapshotId) {}
+            Instant composedAt, Instant publishedAt, UUID snapshotId, long publicationSequence) {}
+
+    /** 새 공식 snapshot의 구성 요소 하나. MVP는 정확히 하나다. */
+    record CandidateComponent(UUID userId, UUID portfolioId, UUID membershipId,
+            UUID connectionId, UUID providerAccountId, UUID sourceSnapshotId,
+            String decimal, Instant measuredAt, String policyVersion) {}
+
+    /**
+     * {@link #publishNext}의 결과. 거절 둘은 원인이 달라 호출자가 다른 이유 코드로 끝낸다 — membership
+     * 구성이 바뀐 것과, 그사이 포인터가 다른 값으로 움직인 것은 사용자에게 다른 다음 행동이다.
+     */
+    sealed interface NextPublication
+            permits PublishedSnapshot, NextPublication.MembershipChanged, NextPublication.PointerMoved {
+        /** membership이 그 측정 시각을 덮는 활성 USD 구간이 아니다. 아무것도 쓰지 않았다. */
+        record MembershipChanged() implements NextPublication {}
+        /** 포인터가 기대한 snapshot·순번이 아니다. 아무것도 쓰지 않았다. */
+        record PointerMoved() implements NextPublication {}
+    }
+
+    /** 발행된 새 공식 snapshot. */
+    record PublishedSnapshot(UUID snapshotId, long publicationSequence) implements NextPublication {}
 
     /** The immutable first officially published snapshot and its source provenance. */
     record FirstOfficialSnapshot(UUID portfolioId, UUID snapshotId, String decimal,
@@ -42,6 +66,20 @@ public interface PortfolioMembershipApi {
 
     /** sync의 outer REQUIRED 트랜잭션에 참여한다. 첫 공식값만 CAS로 발행한다. */
     boolean publishFirst(FirstComponent component);
+
+    /**
+     * 후보 component로 새 공식 snapshot을 만들고 portfolio 포인터를 한 칸 전진시킨다(Story 2.7).
+     *
+     * <p><b>호출자 트랜잭션 전용이다.</b> 실제 트랜잭션이 없으면 {@link IllegalStateException}을
+     * 던진다 — 스스로 경계를 열면 "계획·계산·포인터가 한 묶음으로만 발행된다"가 이 모듈에서 깨진다.
+     *
+     * <p>포인터는 {@code publication_sequence = expectedSequence + 1} CAS로만 움직인다. membership이 그
+     * 측정 시각을 {@code [started_at, ended_at)}로 덮는 활성 USD 구간이 아니면
+     * {@link NextPublication.MembershipChanged}, 기대한 snapshot과 순번이 현재가 아니면
+     * {@link NextPublication.PointerMoved}이고 둘 다 아무것도 쓰지 않는다. 거절을 받은 호출자는
+     * 트랜잭션을 되돌린다.
+     */
+    NextPublication publishNext(CandidateComponent component, UUID expectedSnapshotId, long expectedSequence);
 
     Optional<OfficialValue> officialValue(@Nullable UUID userId);
 

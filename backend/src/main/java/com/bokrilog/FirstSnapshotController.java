@@ -166,6 +166,82 @@ class FirstSnapshotController {
         if(state.job()==null) return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(toConversionState(state.job()));
     }
+    /** Story 2.7 publication attempt. The plan id appears only after it published. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record PublicationJobState(UUID jobId,String status,@Nullable String failureCode,boolean retryable,
+            @Nullable UUID planId,String createdAt,@Nullable String finishedAt) {}
+
+    /**
+     * The intent's publication state. {@code startable} is judged by the admission's own readiness, so
+     * the screen offers a start exactly when the admission would accept one; {@code reason} is the
+     * admission's refusal code when it would not (and no attempt is in progress).
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record PublicationView(@Nullable PublicationJobState job,boolean startable,@Nullable String reason) {}
+
+    /**
+     * 409 reasons → safe messages. A closed map: every refusal code the publication admission can return
+     * has a sentence here, and only the stable code travels as the machine value.
+     */
+    static final java.util.Map<String,String> PUBLICATION_REFUSALS=java.util.Map.of(
+            "IDEMPOTENCY_CONFLICT","같은 요청 키가 다른 계획 조건에 이미 쓰였습니다. 새로 요청해 주세요.",
+            "ACTIVE_PLAN_EXISTS",PlanConditionController.MESSAGE_ACTIVE_PLAN_EXISTS,
+            "PLAN_CONDITIONS_REQUIRED","저장된 계획 조건을 쓸 수 없습니다. 계획 조건을 다시 확인해 주세요.",
+            "PLAN_PERIOD_ENDED","계획 종료 시각이 지나 이 조건으로는 계획을 만들 수 없습니다. 새 조건을 정해 주세요.",
+            "INPUTS_NOT_READY","계산에 쓸 입력이 준비되지 않았습니다. 수집·판정·환산을 먼저 완료해 주세요.",
+            "CALCULATION_POLICY_UNVERIFIED","계산 정책의 고정 예제를 확인하지 못해 발행을 받지 않았습니다. 서비스 상태를 확인한 뒤 다시 시도해 주세요.",
+            "CALCULATION_RANGE_EXCEEDED","같은 입력의 계산이 허용 범위를 벗어났습니다. 계획 조건을 다시 정해 주세요.",
+            "CALCULATION_INPUT_INVALID","같은 입력의 계산 형식을 확인할 수 없었습니다. 입력을 다시 준비해 주세요.");
+
+    /** The one refusal that is the request's own fault: this command requires the caller's key. */
+    static final String IDEMPOTENCY_KEY_REQUIRED="IDEMPOTENCY_KEY_REQUIRED";
+    static final String MESSAGE_IDEMPOTENCY_KEY_REQUIRED="요청 키가 없거나 형식이 맞지 않아 발행을 받지 않았습니다. 화면을 새로 열어 다시 시도해 주세요.";
+
+    /**
+     * Story 2.7 first publication. POST answers 202 with the attempt, 403 when the account or
+     * restriction state does not permit it, 422 without a valid {@code Idempotency-Key} (the command
+     * creates an immutable plan, so no key is invented for the caller), or 409 with a stable code in the
+     * common error shape. GET answers 200 with the latest attempt (if any) and whether a new one would
+     * start, or 403 when the account itself is not readable. Every answer is {@code no-store}.
+     */
+    @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/plan-publication",
+            consumes=MediaType.APPLICATION_JSON_VALUE,produces=MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<?> publishPlan(@RequestBody CollectionRequest body,
+            @RequestHeader(name="Idempotency-Key",required=false) @Nullable String key,
+            jakarta.servlet.http.HttpServletRequest request,HttpServletResponse response) throws IOException {
+        UUID user=currentUserId();
+        if(user==null){response.sendError(403);return null;}
+        var admission=jobs.admitPlanPublication(user,body.intentId(),key);
+        if(admission instanceof SyncJobApi.PublicationAdmission.Accepted accepted)
+            return ResponseEntity.status(HttpStatus.ACCEPTED).cacheControl(CacheControl.noStore())
+                    .body(toPublicationState(accepted.job()));
+        String code=((SyncJobApi.PublicationAdmission.Refused)admission).code();
+        String correlation=ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER));
+        if(IDEMPOTENCY_KEY_REQUIRED.equals(code))
+            return ResponseEntity.status(422).contentType(MediaType.APPLICATION_JSON)
+                    .cacheControl(CacheControl.noStore())
+                    .body(new ApiErrorHandler.ApiError(code,MESSAGE_IDEMPOTENCY_KEY_REQUIRED,correlation));
+        String message=PUBLICATION_REFUSALS.get(code);
+        if(message==null){response.sendError(403);return null;}
+        return ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)
+                .cacheControl(CacheControl.noStore())
+                .body(new ApiErrorHandler.ApiError(code,message,correlation));
+    }
+    @GetMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/plan-publication",
+            produces=MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<PublicationView> planPublication(@RequestParam UUID intentId,
+            HttpServletResponse response) throws IOException {
+        UUID user=currentUserId();
+        if(user==null){response.sendError(403);return null;}
+        var state=jobs.planPublicationState(user,intentId);
+        if(!state.permitted()){response.sendError(403);return null;}
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new PublicationView(
+                state.job()==null?null:toPublicationState(state.job()),state.startable(),state.reason()));
+    }
+    private static PublicationJobState toPublicationState(SyncJobApi.PublicationJob job) {
+        return new PublicationJobState(job.jobId(),job.status(),job.failureCode(),job.retryable(),job.planId(),
+                job.createdAt().toString(),job.finishedAt()==null?null:job.finishedAt().toString());
+    }
     private static CashflowConversionState toConversionState(SyncJobApi.ConversionJob job) {
         return new CashflowConversionState(job.jobId(),job.status(),job.reasonCode(),job.retryable(),
                 job.processedAt()==null?null:job.processedAt().toString(),job.flowCount(),job.convertedCount(),

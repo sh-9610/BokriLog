@@ -2,6 +2,7 @@ package com.bokrilog;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.bokrilog.calculation.PlanCalculator;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.plan.PlanConditionApi;
 import com.bokrilog.source.SourceConnectionApi;
@@ -1293,12 +1294,21 @@ class FirstSnapshotTest extends AuthFlowTestBase {
     }
 
     private UUID initialIntent(UUID user,String prefix) throws Exception {
+        return initialIntent(user,prefix,"0.1");
+    }
+
+    private UUID initialIntent(UUID user,String prefix,String rate) throws Exception {
         UUID firstJob=sync.admit(user,prefix+"-seed").orElseThrow().jobId();
         assertThat(await(user,firstJob)).isEqualTo("SUCCEEDED");
+        return confirmIntent(user,prefix,rate);
+    }
+
+    /** Previews and confirms daily conditions ending 30 days after the first official snapshot. */
+    private UUID confirmIntent(UUID user,String prefix,String rate) {
         var snapshot=plans.state(user).snapshot();
         String end=LocalDateTime.ofInstant(snapshot.measuredAt(),ZoneId.of("Asia/Seoul"))
                 .plusDays(30).withSecond(0).withNano(0).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
-        var preview=plans.preview(user,prefix+"-session",new PlanConditionApi.PreviewInput(end,"DAILY","0.1"))
+        var preview=plans.preview(user,prefix+"-session",new PlanConditionApi.PreviewInput(end,"DAILY",rate))
                 .orElseThrow();
         return plans.confirm(user,prefix+"-session",preview.confirmationRef(),prefix+"-confirm-001")
                 .intent().intentId();
@@ -1683,6 +1693,1059 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 .param("u",user).query(Integer.class).single()).isZero();
         assertThat(source.snapshotConnection(other)).isPresent();
         assertThat(sync.job(user,job)).isEmpty();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Story 2.7 first plan calculation and atomic publication
+    // ------------------------------------------------------------------------------------------
+
+    @Test
+    void theFirstPublicationCommitsPlanSnapshotCalculationAndBothPointersTogether() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"publish-official","0.1",null);
+        // A preview reviewed before the publication; confirming it afterwards must be refused.
+        String end=LocalDateTime.ofInstant(plans.state(user).snapshot().measuredAt(),ZoneId.of("Asia/Seoul"))
+                .plusDays(20).withSecond(0).withNano(0).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        var lateReview=plans.preview(user,"publish-official-session",
+                new PlanConditionApi.PreviewInput(end,"WEEKLY","0.2")).orElseThrow();
+        UUID firstSnapshot=sync.state(user).orElseThrow().officialValue().snapshotId();
+
+        var accepted=sync.admitPlanPublication(user,intent,"publish-official-command-001");
+        assertThat(accepted).isInstanceOf(SyncJobApi.PublicationAdmission.Accepted.class);
+        UUID job=((SyncJobApi.PublicationAdmission.Accepted)accepted).job().jobId();
+        var replay=sync.admitPlanPublication(user,intent,"publish-official-command-001");
+        assertThat(((SyncJobApi.PublicationAdmission.Accepted)replay).job().jobId()).as("same key, same intent")
+                .isEqualTo(job);
+        assertThat(awaitPublication(job)).isEqualTo("PUBLISHED");
+
+        UUID plan=jdbc().sql("SELECT plan_id FROM plan_definition WHERE user_id=:u AND status='ACTIVE'")
+                .param("u",user).query(UUID.class).single();
+        assertThat(jdbc().sql("SELECT status||'|'||consumed_by_plan_id::text||'|'||(consumed_at IS NOT NULL) "
+                + "FROM plan_condition_intent WHERE intent_id=:i").param("i",intent).query(String.class).single())
+                .isEqualTo("CONSUMED|"+plan+"|true");
+        var candidate=jdbc().sql("SELECT candidate_id,tc,measured_at,equity_decimal FROM sync_initial_candidate_bundle "
+                + "WHERE user_id=:u").param("u",user).query((rs,n)->new Object[] {rs.getObject(1,UUID.class),
+                rs.getObject(2,java.time.OffsetDateTime.class).toInstant(),
+                rs.getObject(3,java.time.OffsetDateTime.class).toInstant(),rs.getString(4)}).single();
+        UUID source=jdbc().sql("SELECT source_snapshot_id FROM sync_source_snapshot WHERE initial_candidate_id=:c "
+                + "AND job_id IS NULL").param("c",candidate[0]).query(UUID.class).single();
+        // The portfolio pointer advanced by exactly one to the new tc snapshot built from that source.
+        assertThat(jdbc().sql("SELECT c.publication_sequence||'|'||s.amount_decimal||'|'||comp.source_snapshot_id::text "
+                + "FROM portfolio_current_snapshot c JOIN portfolio_snapshot s ON s.portfolio_snapshot_id=c.portfolio_snapshot_id "
+                + "JOIN portfolio_snapshot_component comp ON comp.portfolio_snapshot_id=s.portfolio_snapshot_id "
+                + "WHERE s.user_id=:u").param("u",user).query(String.class).single())
+                .isEqualTo("2|"+candidate[3]+"|"+source);
+        assertThat(jdbc().sql("SELECT count(*) FROM portfolio_snapshot WHERE user_id=:u").param("u",user)
+                .query(Integer.class).single()).isEqualTo(2);
+        var official=sync.state(user).orElseThrow().officialValue();
+        assertThat(official.publicationSequence()).as("GET /api/snapshots/first follows the pointer").isEqualTo(2);
+        assertThat(official.measuredAt()).isEqualTo(candidate[2]);
+
+        var calc=jdbc().sql("SELECT calculation_id,plan_id,basis_at,cashflow_verified_through,current_value_measured_at,"
+                + "basis_portfolio_snapshot_id,portfolio_snapshot_id,source_snapshot_id,estimated,input_reliability,"
+                + "calculation_policy||'|'||calendar_policy||'|'||display_policy||'|'||precision_policy||'|'||time_zone,"
+                + "implementation_version,flow_count FROM sync_plan_calculation WHERE user_id=:u").param("u",user)
+                .query((rs,n)->new Object[] {rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),
+                        rs.getObject(3,java.time.OffsetDateTime.class).toInstant(),
+                        rs.getObject(4,java.time.OffsetDateTime.class).toInstant(),
+                        rs.getObject(5,java.time.OffsetDateTime.class).toInstant(),rs.getObject(6,UUID.class),
+                        rs.getObject(7,UUID.class),rs.getObject(8,UUID.class),rs.getBoolean(9),rs.getString(10),
+                        rs.getString(11),rs.getString(12),rs.getInt(13)}).single();
+        assertThat(calc[1]).isEqualTo(plan);
+        assertThat(calc[2]).as("tc").isEqualTo(candidate[1]);
+        assertThat(calc[3]).as("cashflow_verified_through = tc").isEqualTo(candidate[1]);
+        assertThat(calc[4]).as("E(tc) measured_at kept separately").isEqualTo(candidate[2]);
+        assertThat(calc[5]).as("basis snapshot is the first official snapshot").isEqualTo(firstSnapshot);
+        assertThat(calc[6]).isEqualTo(official.snapshotId());
+        assertThat(calc[7]).isEqualTo(source);
+        assertThat(calc[8]).isEqualTo(false);
+        assertThat(calc[9]).isEqualTo("CONFIRMED");
+        assertThat(calc[10]).isEqualTo("CALC-1.0|CALENDAR-SEOUL-1.0|DISPLAY-1.0|DECIMAL128-HALF_EVEN|Asia/Seoul");
+        assertThat(calc[11]).isEqualTo(PlanCalculator.IMPLEMENTATION_VERSION);
+        assertThat(calc[12]).isEqualTo(0);
+        assertThat(jdbc().sql("SELECT metric||'|'||nature||'|'||(value_decimal IS NOT NULL) FROM sync_plan_calculation_metric "
+                + "WHERE calculation_id=:c ORDER BY metric").param("c",calc[0]).query(String.class).list())
+                .containsExactly("ADJUSTED_TARGET|OFFICIAL|true","CURRENT_VALUE|OFFICIAL|true","GOAL_PROGRESS|OFFICIAL|true",
+                        "PLAN_AMOUNT|OFFICIAL|true","PLAN_DIFFERENCE|OFFICIAL|true","REQUIRED_RATE|OFFICIAL|true");
+        assertThat(jdbc().sql("SELECT pointer_version||'|'||calculation_id::text FROM sync_official_plan_result "
+                + "WHERE plan_id=:p").param("p",plan).query(String.class).single()).isEqualTo("1|"+calc[0]);
+        assertReproducible((UUID)calc[0]);
+
+        // The official result through the pointer, and the active plan everywhere else.
+        var result=sync.activePlanResult(user);
+        assertThat(result).isInstanceOf(SyncJobApi.ActivePlanResult.Found.class);
+        var found=((SyncJobApi.ActivePlanResult.Found)result).result();
+        assertThat(found.planId()).isEqualTo(plan);
+        assertThat(found.calculationId()).isEqualTo(calc[0]);
+        assertThat(found.freshness()).isEqualTo("FRESH");
+        assertThat(found.metrics()).extracting(SyncJobApi.PlanResultMetric::metric).containsExactly("CURRENT_VALUE",
+                "PLAN_AMOUNT","PLAN_DIFFERENCE","ADJUSTED_TARGET","REQUIRED_RATE","GOAL_PROGRESS");
+        assertThat(found.metrics().getFirst().value()).isEqualTo(candidate[3]);
+        var state=plans.state(user);
+        assertThat(state.eligible()).isFalse();
+        assertThat(state.reason()).isEqualTo(PlanConditionApi.ACTIVE_PLAN_EXISTS);
+        assertThat(state.activePlan().planId()).isEqualTo(plan);
+        assertThat(plans.preview(user,"publish-official-session",new PlanConditionApi.PreviewInput(end,"DAILY","0.1")))
+                .isEmpty();
+        var confirmed=plans.confirm(user,"publish-official-session",lateReview.confirmationRef(),
+                "publish-official-confirm-late");
+        assertThat(confirmed.accepted()).isFalse();
+        assertThat(confirmed.reason()).isEqualTo(PlanConditionApi.ACTIVE_PLAN_EXISTS);
+        assertThat(sync.admitPlanPublication(user,intent,"publish-official-command-002"))
+                .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("ACTIVE_PLAN_EXISTS"));
+        assertThat(sync.admitPlanPublication(user,UUID.randomUUID(),"publish-official-command-001"))
+                .as("same key, another intent").isEqualTo(new SyncJobApi.PublicationAdmission.Refused("IDEMPOTENCY_CONFLICT"));
+        assertThat(jdbc().sql("SELECT count(*) FROM plan_definition WHERE user_id=:u").param("u",user)
+                .query(Integer.class).single()).isEqualTo(1);
+        assertThat(jdbc().sql("SELECT count(*) FROM plan_condition_intent WHERE user_id=:u AND status='OPEN'")
+                .param("u",user).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT to_regclass('active_plan') IS NULL").query(Boolean.class).single()).isTrue();
+    }
+
+    @Test
+    void anEstimatedFlowMakesEveryDependentMetricEstimatedAndLinksTheAppliedHistory() throws Exception {
+        clearMarketEvidence();
+        Instant base=closedTenMinuteBoundary();
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"publish-estimated","0.1",base.minusSeconds(3600),
+                new Flow("est-usdt-in","USDT","100",base.plusSeconds(5)),new Flow("est-btc-in","BTC","0.01",base.plusSeconds(9)));
+        UUID job=publish(user,intent,"publish-estimated-command-001");
+        assertThat(awaitPublication(job)).isEqualTo("PUBLISHED");
+
+        UUID calc=jdbc().sql("SELECT calculation_id FROM sync_plan_calculation WHERE user_id=:u").param("u",user)
+                .query(UUID.class).single();
+        assertThat(jdbc().sql("SELECT metric||'|'||nature FROM sync_plan_calculation_metric WHERE calculation_id=:c "
+                + "ORDER BY metric").param("c",calc).query(String.class).list()).containsExactly("ADJUSTED_TARGET|ESTIMATED",
+                        "CURRENT_VALUE|OFFICIAL","GOAL_PROGRESS|ESTIMATED","PLAN_AMOUNT|ESTIMATED",
+                        "PLAN_DIFFERENCE|ESTIMATED","REQUIRED_RATE|ESTIMATED");
+        assertThat(jdbc().sql("SELECT estimated||'|'||flow_count||'|'||estimated_flow_count||'|'||price_policy_version "
+                + "FROM sync_plan_calculation WHERE calculation_id=:c").param("c",calc).query(String.class).single())
+                .isEqualTo("true|2|1|BYBIT-PRICE-1.0");
+        assertThat(jdbc().sql("SELECT f.sequence||'|'||f.source_id||'|'||f.usd_value||'|'||f.estimated||'|'||f.evidence_type "
+                + "FROM sync_plan_calculation_flow f JOIN sync_calculable_cashflow c ON c.conversion_id=f.conversion_id "
+                + "AND c.source_event_id=f.source_event_id WHERE f.calculation_id=:c ORDER BY f.sequence")
+                .param("c",calc).query(String.class).list())
+                .containsExactly("1|est-usdt-in|100|false|DIRECT_NORMALIZATION","2|est-btc-in|650.0025|true|SPOT_KLINE_CLOSE");
+        assertReproducible(calc);
+        var found=((SyncJobApi.ActivePlanResult.Found)sync.activePlanResult(user)).result();
+        assertThat(found.estimated()).isTrue();
+        assertThat(found.estimatedFlowCount()).isEqualTo(1);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({"CURRENT_VALUE_NOT_POSITIVE,REQUIRED_RATE,CONFIRMED", "TARGET_NOT_POSITIVE,REQUIRED_RATE,REVIEW_REQUIRED",
+        "GOAL_PROFIT_NOT_POSITIVE,GOAL_PROGRESS,CONFIRMED"})
+    void undefinedRatiosArePublishedWithTheirReasonAndNeverAsZero(String reason, String metric, String reliability)
+            throws Exception {
+        clearMarketEvidence();
+        Instant base=closedTenMinuteBoundary();
+        String subject="publication-undefined-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        String prefix="publish-"+reason.toLowerCase(java.util.Locale.ROOT).replace('_','-');
+        UUID intent=switch (reason) {
+            case "CURRENT_VALUE_NOT_POSITIVE" -> convertedIntent(user,prefix,"0.1",null,"0");
+            case "TARGET_NOT_POSITIVE" -> convertedIntent(user,prefix,"0.1",base.minusSeconds(3600),
+                    new Flow(prefix+"-out","USDT","-5000",base.plusSeconds(7)));
+            default -> convertedIntent(user,prefix,"0",null);
+        };
+        UUID job=publish(user,intent,prefix+"-command-001");
+        assertThat(awaitPublication(job)).isEqualTo("PUBLISHED");
+        UUID calc=jdbc().sql("SELECT calculation_id FROM sync_plan_calculation WHERE user_id=:u").param("u",user)
+                .query(UUID.class).single();
+        assertThat(jdbc().sql("SELECT (value_decimal IS NULL)||'|'||unavailable_reason FROM sync_plan_calculation_metric "
+                + "WHERE calculation_id=:c AND metric=:m").param("c",calc).param("m",metric).query(String.class).single())
+                .isEqualTo("true|"+reason);
+        if (reason.equals("TARGET_NOT_POSITIVE")) {
+            assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_calculation_metric WHERE calculation_id=:c "
+                    + "AND unavailable_reason='TARGET_NOT_POSITIVE'").param("c",calc).query(Integer.class).single())
+                    .as("both target-based ratios").isEqualTo(2);
+        }
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_calculation_metric WHERE calculation_id=:c "
+                + "AND metric IN ('CURRENT_VALUE','PLAN_AMOUNT','PLAN_DIFFERENCE','ADJUSTED_TARGET') AND value_decimal IS NOT NULL")
+                .param("c",calc).query(Integer.class).single()).as("amounts are kept").isEqualTo(4);
+        assertThat(jdbc().sql("SELECT input_reliability FROM sync_plan_calculation WHERE calculation_id=:c").param("c",calc)
+                .query(String.class).single()).isEqualTo(reliability);
+
+        // Through HTTP: "not computable" is its own state and never overwrites the character; an undefined
+        // metric carries no value key at all (never a zero or a null to be mistaken for one) and its reason.
+        var fields=topLevelFieldsOf(get(AuthSecurityConfig.ACTIVE_PLAN_PATH,cookie).body());
+        @SuppressWarnings("unchecked")
+        var trust=(java.util.Map<String,java.util.Map<String,Object>>)fields.get("trust");
+        var expectedUnavailable=reason.equals("TARGET_NOT_POSITIVE") ? java.util.List.of("REQUIRED_RATE","GOAL_PROGRESS")
+                : java.util.List.of(metric);
+        assertThat(trust.get("calculationNature")).containsEntry("state","NOT_COMPUTABLE")
+                .containsEntry("character","OFFICIAL").containsEntry("unavailableMetrics",expectedUnavailable);
+        assertThat(trust.get("inputReliability")).containsEntry("state",reliability);
+        @SuppressWarnings("unchecked")
+        var metrics=(java.util.List<java.util.Map<String,Object>>)fields.get("metrics");
+        for (var row : metrics) {
+            if (expectedUnavailable.contains(row.get("metric"))) {
+                assertThat(row).as((String)row.get("metric")).doesNotContainKey("value")
+                        .containsEntry("unavailableReason",reason.equals("TARGET_NOT_POSITIVE") ? "TARGET_NOT_POSITIVE"
+                                : reason).containsEntry("nature","OFFICIAL");
+            } else {
+                assertThat(row).as((String)row.get("metric")).containsKey("value").doesNotContainKey("unavailableReason");
+            }
+        }
+    }
+
+    @Test
+    void anOutOfRangeCalculationPublishesNothing() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"publish-range","0.1",null,"1000000000000000000000000");
+        UUID job=publish(user,intent,"publish-range-command-001");
+        assertThat(awaitPublication(job)).isEqualTo("FAILED");
+        assertThat(jdbc().sql("SELECT failure_code FROM sync_plan_publication_job WHERE job_id=:j").param("j",job)
+                .query(String.class).single()).isEqualTo("CALCULATION_RANGE_EXCEEDED");
+        assertNothingPublished(user,intent);
+        // The pure calculation fails the same way on the same inputs: no new attempt is offered or taken.
+        var state=sync.planPublicationState(user,intent);
+        assertThat(state.startable()).isFalse();
+        assertThat(state.reason()).isEqualTo("CALCULATION_RANGE_EXCEEDED");
+        assertThat(state.job().jobId()).isEqualTo(job);
+        assertThat(sync.admitPlanPublication(user,intent,"publish-range-command-002"))
+                .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("CALCULATION_RANGE_EXCEEDED"));
+    }
+
+    @Test
+    void ineligibleLineagesAndIntentsAreRefusedWithoutAnAttempt() throws Exception {
+        clearMarketEvidence();
+        Instant base=closedTenMinuteBoundary();
+        UUID unconverted=connect(DevBybitStub.Scenario.UTA2);
+        UUID unconvertedIntent=initialIntent(unconverted,"refuse-unconverted");
+        UUID collection=sync.admitInitialInputs(unconverted,unconvertedIntent,"refuse-unconverted-inputs-001")
+                .orElseThrow().jobId();
+        assertThat(awaitInitial(unconverted,collection)).isEqualTo("INPUTS_COMPLETE");
+        assertThat(sync.admitPlanPublication(unconverted,unconvertedIntent,"refuse-unconverted-command-001"))
+                .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("INPUTS_NOT_READY"));
+        UUID reviewed=connect(DevBybitStub.Scenario.UTA2);
+        UUID reviewedIntent=reviewedIntent(reviewed,"refuse-reviewed");
+        assertThat(sync.admitPlanPublication(reviewed,reviewedIntent,"refuse-reviewed-command-001"))
+                .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("INPUTS_NOT_READY"));
+        UUID held=connect(DevBybitStub.Scenario.UTA2);
+        UUID heldIntent=initialIntent(held,"refuse-held");
+        shiftStart(held,heldIntent,base.minusSeconds(3600));
+        UUID heldCollection=sync.admitInitialInputs(held,heldIntent,"refuse-held-inputs-001").orElseThrow().jobId();
+        assertThat(awaitInitial(held,heldCollection)).isEqualTo("INPUTS_COMPLETE");
+        injectFlows(held,heldCollection,new Flow("refuse-held-halt","HALT","1",base.plusSeconds(3)));
+        UUID heldClassification=sync.admitCashflowClassification(held,heldIntent,"refuse-held-classification-001")
+                .orElseThrow().jobId();
+        assertThat(awaitClassification(heldClassification)).isEqualTo("COMPLETE");
+        UUID heldConversion=sync.admitCashflowConversion(held,heldIntent,"refuse-held-conversion-001").orElseThrow().jobId();
+        assertThat(awaitConversion(heldConversion)).isEqualTo("CONVERSION_REQUIRED");
+        assertThat(sync.admitPlanPublication(held,heldIntent,"refuse-held-command-001"))
+                .as("a conversion-required bundle is not calculable")
+                .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("INPUTS_NOT_READY"));
+
+        UUID owner=connect(DevBybitStub.Scenario.UTA2);
+        UUID ownerIntent=convertedIntent(owner,"refuse-owner","0.1",null);
+        assertThat(sync.admitPlanPublication(held,ownerIntent,"refuse-foreign-command-001")).as("another user's intent")
+                .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("PLAN_CONDITIONS_REQUIRED"));
+        // Another user's intent is readable as "not startable" — never that user's attempt, never a 403.
+        assertThat(sync.planPublicationState(held,ownerIntent))
+                .isEqualTo(new SyncJobApi.PublicationState(true,null,false,"PLAN_CONDITIONS_REQUIRED"));
+        assertThat(sync.planPublicationState(owner,ownerIntent))
+                .isEqualTo(new SyncJobApi.PublicationState(true,null,true,null));
+        assertThat(sync.admitPlanPublication(owner,ownerIntent,"short")).isEqualTo(
+                new SyncJobApi.PublicationAdmission.Refused("IDEMPOTENCY_KEY_REQUIRED"));
+        assertThat(sync.admitPlanPublication(owner,ownerIntent,null)).as("no key is invented for the caller")
+                .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("IDEMPOTENCY_KEY_REQUIRED"));
+        jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) VALUES (:id,'plan-publication')")
+                .param("id",UUID.randomUUID()).update();
+        assertThat(sync.admitPlanPublication(owner,ownerIntent,"refuse-restricted-command-001"))
+                .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("NOT_PERMITTED"));
+        assertThat(sync.planPublicationState(owner,ownerIntent))
+                .isEqualTo(new SyncJobApi.PublicationState(true,null,false,"NOT_PERMITTED"));
+        jdbc().sql("TRUNCATE TABLE operations_restriction").update();
+        // The plan period ended (T <= the database clock): its own code, not "conditions required".
+        jdbc().sql("UPDATE plan_condition_intent SET end_at=now()-interval '1 second' WHERE intent_id=:i")
+                .param("i",ownerIntent).update();
+        assertThat(sync.admitPlanPublication(owner,ownerIntent,"refuse-ended-command-001"))
+                .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("PLAN_PERIOD_ENDED"));
+        assertThat(sync.planPublicationState(owner,ownerIntent))
+                .isEqualTo(new SyncJobApi.PublicationState(true,null,false,"PLAN_PERIOD_ENDED"));
+        // t0 >= tc: a candidate whose cut-off does not come after the plan start is not an input.
+        UUID ordered=connect(DevBybitStub.Scenario.UTA2);
+        UUID orderedIntent=convertedIntent(ordered,"refuse-ordered","0.1",null);
+        UUID orderedCandidate=jdbc().sql("SELECT candidate_id FROM sync_initial_candidate_bundle WHERE user_id=:u")
+                .param("u",ordered).query(UUID.class).single();
+        jdbc().sql("UPDATE sync_initial_candidate_bundle SET tc=t0 WHERE candidate_id=:c").param("c",orderedCandidate)
+                .update();
+        refreshCandidateHash(orderedCandidate);
+        assertThat(sync.admitPlanPublication(ordered,orderedIntent,"refuse-ordered-command-001"))
+                .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("INPUTS_NOT_READY"));
+        UUID deleting=connect(DevBybitStub.Scenario.UTA2);
+        UUID deletingIntent=convertedIntent(deleting,"refuse-deleting","0.1",null);
+        accountDeletion().beginDeletion(deleting);
+        assertThat(sync.admitPlanPublication(deleting,deletingIntent,"refuse-deleting-command-001"))
+                .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("NOT_PERMITTED"));
+        assertThat(sync.planPublicationState(deleting,deletingIntent).permitted()).as("deletion in progress").isFalse();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_publication_job").query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM plan_definition").query(Integer.class).single()).isZero();
+    }
+
+    @Test
+    void twoTabsConvergeOnOneAttemptAndTheIndexKeepsOneActivePlanPerPortfolio() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"publish-race","0.1",null);
+        var pool=Executors.newFixedThreadPool(2);
+        var ready=new CountDownLatch(2);
+        var start=new CountDownLatch(1);
+        UUID job;
+        AutoCloseable lock=holdPlanLock(user);
+        try {
+            var first=pool.submit(()->{ ready.countDown(); start.await();
+                return sync.admitPlanPublication(user,intent,"publish-race-tab-first-001"); });
+            var second=pool.submit(()->{ ready.countDown(); start.await();
+                return sync.admitPlanPublication(user,intent,"publish-race-tab-second-001"); });
+            assertThat(ready.await(5,TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            var a=(SyncJobApi.PublicationAdmission.Accepted)first.get(10,TimeUnit.SECONDS);
+            var b=(SyncJobApi.PublicationAdmission.Accepted)second.get(10,TimeUnit.SECONDS);
+            assertThat(b.job().jobId()).isEqualTo(a.job().jobId());
+            job=a.job().jobId();
+        } finally {
+            lock.close();
+            pool.shutdownNow();
+        }
+        assertThat(awaitPublication(job)).isEqualTo("PUBLISHED");
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_publication_job WHERE user_id=:u").param("u",user)
+                .query(Integer.class).single()).isEqualTo(1);
+        // The conditional unique index, not the application's check, is the last word.
+        var plan=jdbc().sql("SELECT portfolio_id,intent_id FROM plan_definition WHERE user_id=:u").param("u",user)
+                .query((rs,n)->new UUID[] {rs.getObject(1,UUID.class),rs.getObject(2,UUID.class)}).single();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc().sql("INSERT INTO plan_definition(plan_id,"
+                + "user_id,portfolio_id,intent_id,basis_portfolio_snapshot_id,membership_id,connection_id,provider_account_id,"
+                + "basis_source_snapshot_id,p0_decimal,t0,end_at,period,target_rate,source_policy_version,"
+                + "portfolio_policy_version,calendar_policy,calculation_policy,status) SELECT gen_random_uuid(),user_id,"
+                + "portfolio_id,:other,basis_portfolio_snapshot_id,membership_id,connection_id,provider_account_id,"
+                + "basis_source_snapshot_id,p0_decimal,t0,end_at,period,target_rate,source_policy_version,"
+                + "portfolio_policy_version,calendar_policy,calculation_policy,'ACTIVE' FROM plan_definition "
+                + "WHERE portfolio_id=:p").param("other",plan[1]).param("p",plan[0]).update())
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThat(jdbc().sql("SELECT count(*) FROM plan_definition WHERE portfolio_id=:p AND status='ACTIVE'")
+                .param("p",plan[0]).query(Integer.class).single()).isEqualTo(1);
+    }
+
+    /** A failure injected at any write of the publishing transaction leaves no new row and moves no pointer. */
+    @ParameterizedTest(name = "{0} {1}")
+    @CsvSource({"plan_definition,INSERT","plan_condition_intent,UPDATE","sync_source_snapshot,INSERT",
+        "portfolio_snapshot,INSERT","portfolio_snapshot_component,INSERT","portfolio_current_snapshot,UPDATE",
+        "sync_plan_calculation,INSERT","sync_plan_calculation_metric,INSERT","sync_plan_calculation_flow,INSERT",
+        "sync_official_plan_result,INSERT"})
+    void aFailureAtAnyPublicationStepRollsEverythingBack(String table, String event) throws Exception {
+        clearMarketEvidence();
+        Instant base=closedTenMinuteBoundary();
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        String prefix="publish-fail-"+table.replace('_','-');
+        UUID intent=convertedIntent(user,prefix,"0.1",base.minusSeconds(3600),
+                new Flow(prefix+"-in","USDT","100",base.plusSeconds(11)));
+        // The trigger fires only for this test user's rows: the tables are shared with every other test and
+        // with the workers of other cached contexts, whose writes must not fail because of this test.
+        jdbc().sql("CREATE FUNCTION fail_publication_step() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+                + "IF "+ownedBy(table,user)+" THEN RAISE EXCEPTION 'injected publication failure detail'; END IF; "
+                + "RETURN NEW; END $$").update();
+        jdbc().sql("CREATE TRIGGER fail_publication_step BEFORE "+event+" ON "+table
+                + " FOR EACH ROW EXECUTE FUNCTION fail_publication_step()").update();
+        UUID job;
+        try {
+            job=publish(user,intent,prefix+"-command-001");
+            assertThat(awaitPublication(job)).isEqualTo("FAILED");
+        } finally {
+            jdbc().sql("DROP TRIGGER fail_publication_step ON "+table).update();
+            jdbc().sql("DROP FUNCTION fail_publication_step()").update();
+        }
+        assertThat(jdbc().sql("SELECT failure_code FROM sync_plan_publication_job WHERE job_id=:j").param("j",job)
+                .query(String.class).single()).isEqualTo("PUBLICATION_INTERRUPTED");
+        var interrupted=sync.planPublicationState(user,intent);
+        assertThat(interrupted.job().retryable()).isTrue();
+        assertThat(interrupted.startable()).as("an interruption is offered a new attempt").isTrue();
+        assertNothingPublished(user,intent);
+        // Nothing was consumed, so a new attempt publishes once the failure is gone.
+        UUID retry=publish(user,intent,prefix+"-command-002");
+        assertThat(awaitPublication(retry)).isEqualTo("PUBLISHED");
+    }
+
+    /** The trigger condition that selects this user's row of {@code table} (a UUID literal, never user input). */
+    private static String ownedBy(String table,UUID user) {
+        String id="'"+user+"'::uuid";
+        return switch (table) {
+            case "portfolio_current_snapshot" ->
+                    "NEW.portfolio_id IN (SELECT portfolio_id FROM portfolio WHERE user_id="+id+")";
+            case "sync_plan_calculation_metric","sync_plan_calculation_flow" ->
+                    "EXISTS(SELECT 1 FROM sync_plan_calculation c WHERE c.calculation_id=NEW.calculation_id "
+                            + "AND c.user_id="+id+")";
+            default -> "NEW.user_id="+id;
+        };
+    }
+
+    /** A worker that lost its fence while waiting to publish writes nothing, not even an ending. */
+    @Test
+    void aStaleFencedWorkerCannotPublish() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"publish-stale","0.1",null);
+        UUID job;
+        long claimed;
+        AutoCloseable lock=holdPlanLock(user);
+        try {
+            job=publish(user,intent,"publish-stale-command-001");
+            awaitBlockedOnPlanLock();
+            claimed=jdbc().sql("SELECT fencing_generation FROM sync_plan_publication_job WHERE job_id=:j").param("j",job)
+                    .query(Long.class).single();
+            jdbc().sql("UPDATE sync_plan_publication_job SET fencing_generation=fencing_generation+1 WHERE job_id=:j")
+                    .param("j",job).update();
+        } finally {
+            lock.close();
+        }
+        Thread.sleep(2500);
+        assertThat(jdbc().sql("SELECT status||'|'||fencing_generation||'|'||(finished_at IS NULL) FROM "
+                + "sync_plan_publication_job WHERE job_id=:j").param("j",job).query(String.class).single())
+                .isEqualTo("RUNNING|"+(claimed+1)+"|true");
+        assertNothingPublished(user,intent);
+    }
+
+    /**
+     * Deletion, restriction or a membership change while the worker waits wins over the late publication,
+     * and each ends with its own closed reason.
+     */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({"DELETION,,", "RESTRICTION,BLOCKED,NOT_PERMITTED", "MEMBERSHIP_ENDED,BLOCKED,MEMBERSHIP_CHANGED",
+        "INTENT_REPLACED,BLOCKED,PLAN_CONDITIONS_CHANGED"})
+    void aChangeDuringThePublicationRollsItBack(String change, String status, String code) throws Exception {
+        UUID kept=connect(DevBybitStub.Scenario.UTA2);
+        UUID keptIntent=convertedIntent(kept,"publish-kept-"+change.toLowerCase(java.util.Locale.ROOT),"0.1",null);
+        assertThat(awaitPublication(publish(kept,keptIntent,"publish-kept-command-"+change.toLowerCase(java.util.Locale.ROOT))))
+                .isEqualTo("PUBLISHED");
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        String prefix="publish-change-"+change.toLowerCase(java.util.Locale.ROOT).replace('_','-');
+        UUID intent=convertedIntent(user,prefix,"0.1",null);
+        UUID job;
+        AutoCloseable lock=holdPlanLock(user);
+        try {
+            job=publish(user,intent,prefix+"-command-001");
+            awaitBlockedOnPlanLock();
+            switch (change) {
+                case "DELETION" -> {
+                    accountDeletion().beginDeletion(user);
+                    portfolio.erasePortfolioData(user);
+                    sync.eraseSyncData(user);
+                    plans.erasePlanData(user);
+                    source.eraseSourceData(user);
+                }
+                case "RESTRICTION" -> jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) "
+                        + "VALUES (:id,'plan-publication')").param("id",UUID.randomUUID()).update();
+                case "MEMBERSHIP_ENDED" -> jdbc().sql("UPDATE portfolio_source_membership SET ended_at=now() "
+                        + "WHERE portfolio_id IN (SELECT portfolio_id FROM portfolio WHERE user_id=:u)")
+                        .param("u",user).update();
+                default -> jdbc().sql("UPDATE plan_condition_intent SET status='REPLACED' WHERE intent_id=:i")
+                        .param("i",intent).update();
+            }
+        } finally {
+            lock.close();
+        }
+        if (change.equals("DELETION")) {
+            Thread.sleep(2500);
+            for (String table : new String[] {"plan_definition","plan_condition_intent","portfolio_snapshot",
+                    "sync_plan_calculation","sync_official_plan_result","sync_plan_publication_job","sync_source_snapshot",
+                    "sync_calculable_cashflow","sync_initial_candidate_bundle"}) {
+                assertThat(jdbc().sql("SELECT count(*) FROM "+table+" WHERE user_id=:u").param("u",user)
+                        .query(Integer.class).single()).as(table).isZero();
+            }
+            assertThat(sync.admitPlanPublication(user,intent,prefix+"-command-002"))
+                    .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("NOT_PERMITTED"));
+        } else {
+            assertThat(awaitPublication(job)).isEqualTo(status);
+            assertThat(jdbc().sql("SELECT failure_code FROM sync_plan_publication_job WHERE job_id=:j").param("j",job)
+                    .query(String.class).single()).as("closed reason").isEqualTo(code);
+            assertNothingPublished(user,intent);
+        }
+        // Another user's publication is untouched, and still readable: a command restriction stops new
+        // publications, it does not hide an existing result.
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_official_plan_result WHERE user_id=:u").param("u",kept)
+                .query(Integer.class).single()).isEqualTo(1);
+        assertThat(sync.activePlanResult(kept)).isInstanceOf(SyncJobApi.ActivePlanResult.Found.class);
+    }
+
+    /**
+     * The portfolio pointer moves between the publication's read and its CAS: the publication waits on
+     * the portfolio row lock, and the holder advances the pointer before letting it go. The attempt ends
+     * with {@code POINTER_CONFLICT} — not {@code MEMBERSHIP_CHANGED}, which is a different cause.
+     */
+    @Test
+    void aPointerThatMovesBeforeItsCasEndsThePublicationWithPointerConflict() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"publish-pointer","0.1",null);
+        var current=jdbc().sql("SELECT c.portfolio_id,c.portfolio_snapshot_id FROM portfolio_current_snapshot c "
+                + "JOIN portfolio p ON p.portfolio_id=c.portfolio_id WHERE p.user_id=:u").param("u",user)
+                .query((rs,n)->new UUID[] {rs.getObject(1,UUID.class),rs.getObject(2,UUID.class)}).single();
+        UUID moved=UUID.randomUUID();
+        UUID job;
+        AutoCloseable portfolioLock=holdRowLock("SELECT portfolio_id FROM portfolio WHERE portfolio_id=:id FOR UPDATE",
+                current[0],() -> {
+                    jdbc().sql("INSERT INTO portfolio_snapshot(portfolio_snapshot_id,portfolio_id,user_id,amount_decimal,"
+                            + "base_currency,measured_at,publication_sequence) SELECT :m,portfolio_id,user_id,amount_decimal,"
+                            + "'USD',measured_at,2 FROM portfolio_snapshot WHERE portfolio_snapshot_id=:s")
+                            .param("m",moved).param("s",current[1]).update();
+                    jdbc().sql("UPDATE portfolio_current_snapshot SET portfolio_snapshot_id=:m,publication_sequence=2 "
+                            + "WHERE portfolio_id=:p").param("m",moved).param("p",current[0]).update();
+                });
+        try {
+            job=publish(user,intent,"publish-pointer-command-001");
+            awaitBlockedOn("FOR UPDATE OF p,m");
+        } finally {
+            portfolioLock.close();
+        }
+        assertThat(awaitPublication(job)).isEqualTo("BLOCKED");
+        assertThat(jdbc().sql("SELECT failure_code FROM sync_plan_publication_job WHERE job_id=:j").param("j",job)
+                .query(String.class).single()).isEqualTo("POINTER_CONFLICT");
+        for (String table : new String[] {"plan_definition","sync_plan_calculation","sync_official_plan_result"}) {
+            assertThat(jdbc().sql("SELECT count(*) FROM "+table+" WHERE user_id=:u").param("u",user)
+                    .query(Integer.class).single()).as(table).isZero();
+        }
+        assertThat(jdbc().sql("SELECT portfolio_snapshot_id FROM portfolio_current_snapshot WHERE portfolio_id=:p")
+                .param("p",current[0]).query(UUID.class).single()).as("only the holder moved it").isEqualTo(moved);
+        assertThat(jdbc().sql("SELECT status FROM plan_condition_intent WHERE intent_id=:i").param("i",intent)
+                .query(String.class).single()).isEqualTo("OPEN");
+    }
+
+    /** The plan's end arrives while the publication waits: judged by the database clock, with its own code. */
+    @Test
+    void aPlanPeriodThatEndsWhileThePublicationWaitsEndsItWithPlanPeriodEnded() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"publish-period","0.1",null);
+        UUID job;
+        AutoCloseable lock=holdPlanLock(user);
+        try {
+            job=publish(user,intent,"publish-period-command-001");
+            awaitBlockedOnPlanLock();
+            jdbc().sql("UPDATE plan_condition_intent SET end_at=clock_timestamp()+interval '300 milliseconds' "
+                    + "WHERE intent_id=:i").param("i",intent).update();
+            Thread.sleep(800);
+        } finally {
+            lock.close();
+        }
+        assertThat(awaitPublication(job)).isEqualTo("BLOCKED");
+        assertThat(jdbc().sql("SELECT failure_code FROM sync_plan_publication_job WHERE job_id=:j").param("j",job)
+                .query(String.class).single()).isEqualTo("PLAN_PERIOD_ENDED");
+        assertNothingPublished(user,intent);
+    }
+
+    /** An input beyond CALC-1.0's input limits (an E with 19 decimals) is refused by the calculator. */
+    @Test
+    void anInputBeyondTheCalculationLimitsFailsWithCalculationInputInvalid() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"publish-invalid","0.1",null,"1250.0000000000000000001");
+        UUID job=publish(user,intent,"publish-invalid-command-001");
+        assertThat(awaitPublication(job)).isEqualTo("FAILED");
+        assertThat(jdbc().sql("SELECT failure_code FROM sync_plan_publication_job WHERE job_id=:j").param("j",job)
+                .query(String.class).single()).isEqualTo("CALCULATION_INPUT_INVALID");
+        assertNothingPublished(user,intent);
+    }
+
+    /**
+     * The publishing transaction holds its attempt row for its whole length, and the heartbeat runs on the
+     * scheduler thread that dispatches every other job. A heartbeat that waited for that row would stall
+     * all of them; it skips the locked row instead, and another user's first snapshot still completes.
+     */
+    @Test
+    void aLockedAttemptRowNeverStallsTheSchedulerThatDispatchesEveryOtherJob() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"publish-heartbeat","0.1",null);
+        UUID other=connect(DevBybitStub.Scenario.UTA2);
+        UUID job;
+        AutoCloseable planLock=holdPlanLock(user);
+        try {
+            job=publish(user,intent,"publish-heartbeat-command-001");
+            awaitBlockedOnPlanLock();
+            AutoCloseable rowLock=holdRowLock("SELECT job_id FROM sync_plan_publication_job WHERE job_id=:id FOR UPDATE",
+                    job,() -> {});
+            try {
+                // Long enough for at least one heartbeat (every five seconds) to meet the held row.
+                Thread.sleep(6000);
+                UUID otherJob=sync.admit(other,"publish-heartbeat-other-001").orElseThrow().jobId();
+                assertThat(await(other,otherJob)).isEqualTo("SUCCEEDED");
+            } finally {
+                rowLock.close();
+            }
+        } finally {
+            planLock.close();
+        }
+        assertThat(awaitPublication(job)).as("the skipped renewal kept the lease").isEqualTo("PUBLISHED");
+    }
+
+    /**
+     * A lease that expires while the publishing transaction waits cannot publish: lease checks compare with
+     * the statement's time, not the transaction's start. The expired attempt is reclaimed with a new fence,
+     * and only that holder publishes.
+     */
+    @Test
+    void aLeaseThatExpiresWhileThePublicationWaitsCannotPublish() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"publish-expired","0.1",null);
+        UUID job;
+        long claimed;
+        AutoCloseable planLock=holdPlanLock(user);
+        try {
+            job=publish(user,intent,"publish-expired-command-001");
+            awaitBlockedOnPlanLock();
+            claimed=jdbc().sql("SELECT fencing_generation FROM sync_plan_publication_job WHERE job_id=:j")
+                    .param("j",job).query(Long.class).single();
+            // The held row keeps the heartbeat from renewing; the lease ends a second after it is taken.
+            AutoCloseable rowLock=holdRowLock("SELECT job_id FROM sync_plan_publication_job WHERE job_id=:id FOR UPDATE",
+                    job,() -> jdbc().sql("UPDATE sync_plan_publication_job SET lease_until=clock_timestamp()"
+                            + "+interval '1 second' WHERE job_id=:j").param("j",job).update());
+            try {
+                Thread.sleep(2500);
+            } finally {
+                rowLock.close();
+            }
+        } finally {
+            planLock.close();
+        }
+        assertThat(awaitPublication(job)).isEqualTo("PUBLISHED");
+        assertThat(jdbc().sql("SELECT fencing_generation FROM sync_plan_publication_job WHERE job_id=:j")
+                .param("j",job).query(Long.class).single()).as("published by the reclaiming holder, not the expired one")
+                .isEqualTo(claimed+1);
+    }
+
+    /** SYNC-UX-1.0 against the database clock: each time alone can make the result stale; any job syncs it. */
+    @Test
+    void freshnessFollowsBothTimesAndAnyJobInProgress() throws Exception {
+        Instant base=closedTenMinuteBoundary();
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"publish-freshness","0.1",base.minusSeconds(3600));
+        assertThat(awaitPublication(publish(user,intent,"publish-freshness-command-001"))).isEqualTo("PUBLISHED");
+        assertThat(freshnessOf(user)).isEqualTo("FRESH");
+        jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now()-interval '16 minutes' "
+                + "WHERE user_id=:u").param("u",user).update();
+        assertThat(freshnessOf(user)).as("measurement older than 15 minutes").isEqualTo("STALE");
+        jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now(),basis_at=now()-interval '16 minutes',"
+                + "cashflow_verified_through=now()-interval '16 minutes' WHERE user_id=:u").param("u",user).update();
+        assertThat(freshnessOf(user)).as("cash-flow verification older than 15 minutes").isEqualTo("STALE");
+        jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now()-interval '16 minutes' "
+                + "WHERE user_id=:u").param("u",user).update();
+        assertThat(freshnessOf(user)).as("both older").isEqualTo("STALE");
+        jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now(),basis_at=now(),"
+                + "cashflow_verified_through=now() WHERE user_id=:u").param("u",user).update();
+        assertThat(freshnessOf(user)).isEqualTo("FRESH");
+        // A job in progress: RUNNING under a lease no worker will take over, so it stays in progress.
+        UUID probe=UUID.randomUUID();
+        jdbc().sql("INSERT INTO sync_job(job_id,user_id,connection_id,provider_account_id,idempotency_key,status,"
+                + "fencing_generation,lease_until,heartbeat_at) SELECT :j,user_id,connection_id,provider_account_id,"
+                + "'freshness-probe','RUNNING',1,now()+interval '1 hour',now() FROM source_connection WHERE user_id=:u")
+                .param("j",probe).param("u",user).update();
+        try {
+            assertThat(freshnessOf(user)).isEqualTo("SYNCING");
+        } finally {
+            jdbc().sql("DELETE FROM sync_job WHERE job_id=:j").param("j",probe).update();
+        }
+        assertThat(freshnessOf(user)).isEqualTo("FRESH");
+    }
+
+    private String freshnessOf(UUID user) {
+        var result=sync.activePlanResult(user);
+        assertThat(result).isInstanceOf(SyncJobApi.ActivePlanResult.Found.class);
+        return ((SyncJobApi.ActivePlanResult.Found)result).result().freshness();
+    }
+
+    /**
+     * A provider notation with trailing zeros (Bybit may send {@code "1250.00"}) is kept as provenance on the
+     * first snapshot and the intent, but the attempt, the calculation version and every view carry the
+     * lossless canonical notation — a client that accepts canonical decimals only must not lose the result.
+     */
+    @Test
+    void aTrailingZeroNotationIsPublishedAndServedCanonically() throws Exception {
+        String subject="publication-notation-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID seed=sync.admit(user,"publication-notation-seed").orElseThrow().jobId();
+        assertThat(await(user,seed)).isEqualTo("SUCCEEDED");
+        for (String sql : new String[] {"UPDATE portfolio_snapshot SET amount_decimal='1234.5600' WHERE user_id=:u",
+                "UPDATE portfolio_snapshot_component SET amount_decimal='1234.5600' WHERE user_id=:u",
+                "UPDATE sync_source_snapshot SET equity_decimal='1234.5600' WHERE user_id=:u"}) {
+            jdbc().sql(sql).param("u",user).update();
+        }
+        UUID intent=confirmIntent(user,"publication-notation","0.1");
+        assertThat(jdbc().sql("SELECT p0_decimal FROM plan_condition_intent WHERE intent_id=:i").param("i",intent)
+                .query(String.class).single()).as("provenance keeps the provider notation").isEqualTo("1234.5600");
+        convert(user,intent,"publication-notation",null,"1250.00");
+        UUID job=publish(user,intent,"publication-notation-command-001");
+        assertThat(awaitPublication(job)).isEqualTo("PUBLISHED");
+
+        assertThat(jdbc().sql("SELECT p0_decimal||'|'||target_rate||'|'||current_value_decimal FROM "
+                + "sync_plan_publication_job WHERE job_id=:j").param("j",job).query(String.class).single())
+                .isEqualTo("1234.56|0.1|1250");
+        assertThat(jdbc().sql("SELECT p0_decimal||'|'||target_rate FROM sync_plan_calculation WHERE user_id=:u")
+                .param("u",user).query(String.class).single()).isEqualTo("1234.56|0.1");
+        var result=topLevelFieldsOf(get(AuthSecurityConfig.ACTIVE_PLAN_PATH,cookie).body());
+        @SuppressWarnings("unchecked")
+        var conditions=(java.util.Map<String,Object>)result.get("conditions");
+        assertThat(conditions).containsEntry("principal","1234.56").containsEntry("targetRate","0.1");
+        @SuppressWarnings("unchecked")
+        var metrics=(java.util.List<java.util.Map<String,Object>>)result.get("metrics");
+        assertThat(metrics.getFirst()).containsEntry("metric","CURRENT_VALUE").containsEntry("value","1250");
+        var state=topLevelFieldsOf(get(AuthSecurityConfig.PLAN_CONDITIONS_PATH,cookie).body());
+        @SuppressWarnings("unchecked")
+        var active=(java.util.Map<String,Object>)state.get("activePlan");
+        assertThat(active).containsEntry("decimal","1234.56").containsEntry("targetRate","0.1")
+                .containsKey("startAt").doesNotContainKey("measuredAt");
+    }
+
+    @Test
+    void erasureRemovesTheUsersPublicationAndKeepsOtherUsers() throws Exception {
+        clearMarketEvidence();
+        Instant base=closedTenMinuteBoundary();
+        UUID kept=connect(DevBybitStub.Scenario.UTA2);
+        UUID keptIntent=convertedIntent(kept,"erase-publication-kept","0.1",null);
+        assertThat(awaitPublication(publish(kept,keptIntent,"erase-publication-kept-001"))).isEqualTo("PUBLISHED");
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"erase-publication","0.1",base.minusSeconds(3600),
+                new Flow("erase-publication-in","USDT","5",base.plusSeconds(13)));
+        assertThat(awaitPublication(publish(user,intent,"erase-publication-001"))).isEqualTo("PUBLISHED");
+
+        portfolio.erasePortfolioData(user);
+        sync.eraseSyncData(user);
+        plans.erasePlanData(user);
+        source.eraseSourceData(user);
+        for (String table : new String[] {"plan_definition","plan_condition_intent","plan_condition_confirmation",
+                "portfolio_snapshot","sync_plan_calculation","sync_official_plan_result","sync_plan_publication_job",
+                "sync_source_snapshot","sync_calculable_cashflow"}) {
+            assertThat(jdbc().sql("SELECT count(*) FROM "+table+" WHERE user_id=:u").param("u",user)
+                    .query(Integer.class).single()).as(table).isZero();
+        }
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_calculation_metric m LEFT JOIN sync_plan_calculation c "
+                + "ON c.calculation_id=m.calculation_id WHERE c.calculation_id IS NULL").query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_calculation_flow").query(Integer.class).single()).isZero();
+        assertThat(sync.activePlanResult(kept)).isInstanceOf(SyncJobApi.ActivePlanResult.Found.class);
+        assertThat(jdbc().sql("SELECT count(*) FROM plan_definition WHERE user_id=:u").param("u",kept)
+                .query(Integer.class).single()).isEqualTo(1);
+    }
+
+    @Test
+    void publicationAndResultHttpUseAcceptedConflictAndNoStore() throws Exception {
+        String subject="publication-http-"+UUID.randomUUID();
+        var login=signIn(subject);
+        String cookie=sessionCookieOf(login).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"publication-http","0.1",null);
+        String path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/plan-publication";
+        String csrf=csrfTokenOf(cookie);
+        String body="{\"intentId\":\""+intent+"\"}";
+
+        assertThat(get(AuthSecurityConfig.ACTIVE_PLAN_PATH,null).statusCode()).as("unauthenticated").isEqualTo(401);
+        var none=get(AuthSecurityConfig.ACTIVE_PLAN_PATH,cookie);
+        assertThat(none.statusCode()).isEqualTo(204);
+        assertThat(none.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        // No attempt yet: a readable state that says a start would be admitted.
+        var empty=get(path+"?intentId="+intent,cookie);
+        assertThat(empty.statusCode()).isEqualTo(200);
+        assertThat(empty.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        assertThat(topLevelFieldsOf(empty.body())).containsEntry("startable",true).doesNotContainKeys("job","reason");
+        // Another (unknown) intent is not startable, with the admission's reason — not a 403.
+        var foreign=get(path+"?intentId="+UUID.randomUUID(),cookie);
+        assertThat(foreign.statusCode()).isEqualTo(200);
+        assertThat(topLevelFieldsOf(foreign.body())).containsEntry("startable",false)
+                .containsEntry("reason","PLAN_CONDITIONS_REQUIRED").doesNotContainKey("job");
+        // A preview reviewed in this session before the publication; its confirmation comes afterwards.
+        String end=LocalDateTime.ofInstant(plans.state(user).snapshot().measuredAt(),ZoneId.of("Asia/Seoul"))
+                .plusDays(20).withSecond(0).withNano(0).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        var reviewed=sendJson("POST",AuthSecurityConfig.PLAN_CONDITIONS_PATH+"/preview",
+                "{\"endAtSeoul\":\""+end+"\",\"period\":\"WEEKLY\",\"targetRate\":\"0.2\"}",cookie,
+                "Origin",OidcStubConfiguration.PUBLIC_BASE_URL,AuthSecurityConfig.CSRF_HEADER_NAME,csrf);
+        assertThat(reviewed.statusCode()).isEqualTo(200);
+        String reviewedRef=(String)topLevelFieldsOf(reviewed.body()).get("confirmationRef");
+
+        assertThat(sendJson("POST",path,body,cookie,"Idempotency-Key","http-publication-001").statusCode())
+                .as("no CSRF token or Origin").isEqualTo(403);
+        // The command creates an immutable plan: no key is invented for the caller.
+        var keyless=sendJson("POST",path,body,cookie,"Origin",OidcStubConfiguration.PUBLIC_BASE_URL,
+                AuthSecurityConfig.CSRF_HEADER_NAME,csrf);
+        assertThat(keyless.statusCode()).isEqualTo(422);
+        assertThat(topLevelFieldsOf(keyless.body())).containsEntry("code","IDEMPOTENCY_KEY_REQUIRED")
+                .containsKeys("message","correlationId");
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_publication_job WHERE user_id=:u").param("u",user)
+                .query(Integer.class).single()).isZero();
+        var started=sendJson("POST",path,body,cookie,"Origin",OidcStubConfiguration.PUBLIC_BASE_URL,
+                AuthSecurityConfig.CSRF_HEADER_NAME,csrf,"Idempotency-Key","http-publication-001");
+        assertThat(started.statusCode()).isEqualTo(202);
+        assertThat(started.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        UUID job=UUID.fromString((String)topLevelFieldsOf(started.body()).get("jobId"));
+        assertThat(awaitPublication(job)).isEqualTo("PUBLISHED");
+        var done=get(path+"?intentId="+intent,cookie);
+        assertThat(done.statusCode()).isEqualTo(200);
+        var doneFields=topLevelFieldsOf(done.body());
+        assertThat(doneFields).containsEntry("startable",false).containsEntry("reason","ACTIVE_PLAN_EXISTS");
+        @SuppressWarnings("unchecked")
+        var doneJob=(java.util.Map<String,Object>)doneFields.get("job");
+        assertThat(doneJob).containsEntry("status","PUBLISHED").containsKey("planId");
+
+        // Confirming the earlier preview, or any reference at all, now answers the actual state.
+        for (String ref : new String[] {reviewedRef,"unknown-reference-"+UUID.randomUUID()}) {
+            var late=sendJson("POST",AuthSecurityConfig.PLAN_CONDITIONS_PATH+"/confirm",
+                    "{\"confirmationRef\":\""+ref+"\"}",cookie,"Origin",OidcStubConfiguration.PUBLIC_BASE_URL,
+                    AuthSecurityConfig.CSRF_HEADER_NAME,csrf,"Idempotency-Key","http-late-confirm-"+UUID.randomUUID());
+            assertThat(late.statusCode()).as(ref).isEqualTo(409);
+            assertThat(topLevelFieldsOf(late.body())).containsEntry("code","ACTIVE_PLAN_EXISTS")
+                    .containsKeys("message","correlationId");
+        }
+
+        var result=get(AuthSecurityConfig.ACTIVE_PLAN_PATH,cookie);
+        assertThat(result.statusCode()).isEqualTo(200);
+        assertThat(result.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        var fields=topLevelFieldsOf(result.body());
+        assertThat(fields).containsKeys("planId","conditions","basisAt","measuredAt","cashflowVerifiedThrough",
+                "trust","metrics","policies","pointerVersion");
+        @SuppressWarnings("unchecked")
+        var metrics=(java.util.List<java.util.Map<String,Object>>)fields.get("metrics");
+        assertThat(metrics).extracting(m -> m.get("metric")).containsExactly("CURRENT_VALUE","PLAN_AMOUNT",
+                "PLAN_DIFFERENCE","ADJUSTED_TARGET","REQUIRED_RATE","GOAL_PROGRESS");
+        assertThat(metrics).allSatisfy(m -> assertThat(m.get("value")).isInstanceOf(String.class));
+        @SuppressWarnings("unchecked")
+        var trust=(java.util.Map<String,java.util.Map<String,Object>>)fields.get("trust");
+        assertThat(trust.get("freshness")).containsEntry("state","FRESH").containsKeys("measuredAt",
+                "cashflowVerifiedThrough").doesNotContainKey("lastNormalAt");
+        assertThat(trust.get("inputReliability")).containsEntry("state","CONFIRMED");
+        assertThat(trust.get("calculationNature")).containsEntry("state","OFFICIAL");
+
+        var conflict=sendJson("POST",path,body,cookie,"Origin",OidcStubConfiguration.PUBLIC_BASE_URL,
+                AuthSecurityConfig.CSRF_HEADER_NAME,csrf,"Idempotency-Key","http-publication-002");
+        assertThat(conflict.statusCode()).isEqualTo(409);
+        assertThat(topLevelFieldsOf(conflict.body())).containsEntry("code","ACTIVE_PLAN_EXISTS").containsKeys("message",
+                "correlationId");
+        var conditions=topLevelFieldsOf(get(AuthSecurityConfig.PLAN_CONDITIONS_PATH,cookie).body());
+        assertThat(conditions).containsEntry("reason","ACTIVE_PLAN_EXISTS");
+        @SuppressWarnings("unchecked")
+        var active=(java.util.Map<String,Object>)conditions.get("activePlan");
+        assertThat(active).containsEntry("planId",doneJob.get("planId"));
+        var preview=sendJson("POST",AuthSecurityConfig.PLAN_CONDITIONS_PATH+"/preview",
+                "{\"endAtSeoul\":\"2099-01-01T00:00\",\"period\":\"DAILY\",\"targetRate\":\"0.1\"}",cookie,
+                "Origin",OidcStubConfiguration.PUBLIC_BASE_URL,AuthSecurityConfig.CSRF_HEADER_NAME,csrf);
+        assertThat(preview.statusCode()).isEqualTo(409);
+        assertThat(topLevelFieldsOf(preview.body())).containsEntry("code","ACTIVE_PLAN_EXISTS");
+        assertThat(topLevelFieldsOf(get(path+"?intentId="+UUID.randomUUID(),cookie).body()))
+                .containsEntry("startable",false).containsEntry("reason","ACTIVE_PLAN_EXISTS");
+
+        // Restrictions on write commands stop new work; they do not hide the published result.
+        for (String command : new String[] {"plan-publication","first-snapshot","initial-source-event-collection"}) {
+            jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) VALUES (:id,:c)")
+                    .param("id",UUID.randomUUID()).param("c",command).update();
+        }
+        assertThat(get(AuthSecurityConfig.ACTIVE_PLAN_PATH,cookie).statusCode()).isEqualTo(200);
+        // The account's own access does: while its deletion is in progress the result is refused.
+        accountDeletion().beginDeletion(user);
+        assertThat(get(AuthSecurityConfig.ACTIVE_PLAN_PATH,cookie).statusCode()).isEqualTo(403);
+        assertThat(get(path+"?intentId="+intent,cookie).statusCode()).isEqualTo(403);
+    }
+
+    /** Collects, classifies and converts; {@code start} moves t0 back so the flows fall inside (t0, tc]. */
+    private UUID convertedIntent(UUID user,String prefix,String rate,@org.jspecify.annotations.Nullable Instant start,
+            Flow... flows) throws Exception {
+        return convertedIntent(user,prefix,rate,start,null,flows);
+    }
+
+    private UUID convertedIntent(UUID user,String prefix,String rate,@org.jspecify.annotations.Nullable Instant start,
+            @org.jspecify.annotations.Nullable String equity,Flow... flows) throws Exception {
+        return convert(user,initialIntent(user,prefix,rate),prefix,start,equity,flows);
+    }
+
+    /** Collects, classifies and converts the inputs of an intent that already exists. */
+    private UUID convert(UUID user,UUID intent,String prefix,@org.jspecify.annotations.Nullable Instant start,
+            @org.jspecify.annotations.Nullable String equity,Flow... flows) throws Exception {
+        if (start!=null) shiftStart(user,intent,start);
+        UUID collection=sync.admitInitialInputs(user,intent,prefix+"-inputs-001").orElseThrow().jobId();
+        assertThat(awaitInitial(user,collection)).isEqualTo("INPUTS_COMPLETE");
+        if (flows.length>0 || equity!=null) {
+            UUID candidate=injectFlows(user,collection,flows);
+            if (equity!=null) {
+                jdbc().sql("UPDATE sync_initial_candidate_bundle SET equity_decimal=:e WHERE candidate_id=:c")
+                        .param("e",equity).param("c",candidate).update();
+                refreshCandidateHash(candidate);
+            }
+        }
+        UUID classification=sync.admitCashflowClassification(user,intent,prefix+"-classification-001").orElseThrow().jobId();
+        assertThat(awaitClassification(classification)).isEqualTo("COMPLETE");
+        UUID conversion=sync.admitCashflowConversion(user,intent,prefix+"-conversion-001").orElseThrow().jobId();
+        assertThat(awaitConversion(conversion)).isIn("CONVERTED","CONVERTED_ESTIMATED");
+        return intent;
+    }
+
+    private UUID convertedIntent(UUID user,String prefix,String rate,@org.jspecify.annotations.Nullable Instant start,
+            String equity) throws Exception {
+        return convertedIntent(user,prefix,rate,start,equity,new Flow[0]);
+    }
+
+    /** Places the flows on the collected candidate and recomputes its completeness hash. */
+    private UUID injectFlows(UUID user,UUID collection,Flow... flows) {
+        var bundle=jdbc().sql("SELECT candidate_id,provider_account_id,connection_id FROM sync_initial_candidate_bundle "
+                + "WHERE job_id=:j").param("j",collection).query((rs,n)->new UUID[] {rs.getObject(1,UUID.class),
+                rs.getObject(2,UUID.class),rs.getObject(3,UUID.class)}).single();
+        for (Flow flow : flows) {
+            insertCandidateEvent(user,bundle[1],bundle[2],collection,bundle[0],flow.sourceId(),
+                    flow.cashFlow().startsWith("-") ? "TRANSFER_OUT" : "TRANSFER_IN",flow.currency(),flow.cashFlow(),
+                    flow.at(),sha256Hex(user+"|"+flow.sourceId()));
+        }
+        refreshCandidateHash(bundle[0]);
+        return bundle[0];
+    }
+
+    /**
+     * Moves the plan start (the first official snapshot's measured time and the intent's t0) back, before
+     * collection starts, so injected flows on long-closed minutes fall inside (t0, tc].
+     */
+    private void shiftStart(UUID user,UUID intent,Instant start) {
+        var t0=java.time.OffsetDateTime.ofInstant(start,java.time.ZoneOffset.UTC);
+        jdbc().sql("UPDATE portfolio_snapshot SET measured_at=:t0 WHERE user_id=:u AND publication_sequence=1")
+                .param("t0",t0).param("u",user).update();
+        jdbc().sql("UPDATE plan_condition_intent SET t0=:t0 WHERE intent_id=:i").param("t0",t0).param("i",intent).update();
+        jdbc().sql("UPDATE portfolio_source_membership SET started_at=:before WHERE portfolio_id IN "
+                + "(SELECT portfolio_id FROM portfolio WHERE user_id=:u)")
+                .param("before",t0.minusMinutes(1)).param("u",user).update();
+    }
+
+    private UUID publish(UUID user,UUID intent,String key) {
+        var admission=sync.admitPlanPublication(user,intent,key);
+        assertThat(admission).as("admission").isInstanceOf(SyncJobApi.PublicationAdmission.Accepted.class);
+        return ((SyncJobApi.PublicationAdmission.Accepted)admission).job().jobId();
+    }
+
+    private String awaitPublication(UUID job) throws InterruptedException {
+        for (int i=0;i<150;i++) {
+            String status=jdbc().sql("SELECT status FROM sync_plan_publication_job WHERE job_id=:j")
+                    .param("j",job).query(String.class).single();
+            if (!status.equals("QUEUED")&&!status.equals("RUNNING")) return status;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("plan publication did not finish");
+    }
+
+    /** No plan, calculation, pointer or tc snapshot; the portfolio pointer is still the first; the intent is open. */
+    private void assertNothingPublished(UUID user,UUID intent) {
+        for (String table : new String[] {"plan_definition","sync_plan_calculation","sync_official_plan_result"}) {
+            assertThat(jdbc().sql("SELECT count(*) FROM "+table+" WHERE user_id=:u").param("u",user)
+                    .query(Integer.class).single()).as(table).isZero();
+        }
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_source_snapshot WHERE user_id=:u AND initial_candidate_id IS NOT NULL")
+                .param("u",user).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM portfolio_snapshot WHERE user_id=:u").param("u",user)
+                .query(Integer.class).single()).isEqualTo(1);
+        assertThat(jdbc().sql("SELECT c.publication_sequence FROM portfolio_current_snapshot c JOIN portfolio p "
+                + "ON p.portfolio_id=c.portfolio_id WHERE p.user_id=:u").param("u",user).query(Long.class).single())
+                .isEqualTo(1L);
+        assertThat(jdbc().sql("SELECT status||'|'||(consumed_at IS NULL)||'|'||(consumed_by_plan_id IS NULL) "
+                + "FROM plan_condition_intent WHERE intent_id=:i").param("i",intent).query(String.class).single())
+                .isIn("OPEN|true|true","REPLACED|true|true");
+    }
+
+    /** The stored version is what the pure calculator produces again from the stored inputs. */
+    private void assertReproducible(UUID calculation) {
+        var row=jdbc().sql("SELECT p0_decimal,t0,end_at,period,target_rate,basis_at,conversion_id,provider_account_id,"
+                + "input_hash,result_hash,created_by_job_id FROM sync_plan_calculation WHERE calculation_id=:c")
+                .param("c",calculation).query((rs,n)->new Object[] {rs.getString(1),
+                        rs.getObject(2,java.time.OffsetDateTime.class).toInstant(),
+                        rs.getObject(3,java.time.OffsetDateTime.class).toInstant(),rs.getString(4),rs.getString(5),
+                        rs.getObject(6,java.time.OffsetDateTime.class).toInstant(),rs.getObject(7,UUID.class),
+                        rs.getObject(8,UUID.class),rs.getString(9),rs.getString(10),rs.getObject(11,UUID.class)}).single();
+        String current=jdbc().sql("SELECT current_value_decimal FROM sync_plan_publication_job WHERE job_id=:j")
+                .param("j",row[10]).query(String.class).single();
+        var flows=jdbc().sql("SELECT occurred_at,source_id,usd_value,estimated FROM sync_calculable_cashflow "
+                + "WHERE conversion_id=:c").param("c",row[6]).query((rs,n)->new PlanCalculator.Cashflow(
+                        rs.getObject(1,java.time.OffsetDateTime.class).toInstant(),row[7].toString(),rs.getString(2),
+                        rs.getString(3),rs.getBoolean(4))).list();
+        var again=PlanCalculator.calculate(new PlanCalculator.Input((String)row[0],(Instant)row[1],(Instant)row[2],
+                PlanCalculator.Period.valueOf((String)row[3]),(String)row[4],current,(Instant)row[5],
+                flows.reversed(),PlanCalculator.CALCULATION_POLICY,PlanCalculator.CALENDAR_POLICY));
+        assertThat(again).isInstanceOf(PlanCalculator.Result.Calculated.class);
+        assertThat(again.inputHash()).isEqualTo(row[8]);
+        assertThat(((PlanCalculator.Result.Calculated)again).resultHash()).isEqualTo(row[9]);
+        for (var metric : ((PlanCalculator.Result.Calculated)again).metrics()) {
+            assertThat(jdbc().sql("SELECT COALESCE(value_decimal,'-')||'|'||nature||'|'||COALESCE(unavailable_reason,'-') "
+                    + "FROM sync_plan_calculation_metric WHERE calculation_id=:c AND metric=:m").param("c",calculation)
+                    .param("m",metric.metric().name()).query(String.class).single())
+                    .isEqualTo((metric.value()==null?"-":metric.value())+"|"+metric.nature()+"|"
+                            +(metric.unavailableReason()==null?"-":metric.unavailableReason()));
+        }
+    }
+
+    /**
+     * Holds the user's plan write lock (the first lock the publishing transaction takes) until closed, so
+     * a test can change the world while the worker waits between its calculation and its commit.
+     */
+    private AutoCloseable holdPlanLock(UUID user) throws InterruptedException {
+        var acquired=new CountDownLatch(1);
+        var release=new CountDownLatch(1);
+        Thread holder=Thread.ofVirtual().start(() -> new TransactionTemplate(manager).executeWithoutResult(status -> {
+            jdbc().sql("WITH l AS MATERIALIZED (SELECT pg_advisory_xact_lock(hashtextextended(:u,0))) SELECT 1 FROM l")
+                    .param("u",user.toString()).query(Integer.class).single();
+            acquired.countDown();
+            try {
+                if (!release.await(20,TimeUnit.SECONDS)) throw new IllegalStateException("plan lock never released");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }));
+        assertThat(acquired.await(5,TimeUnit.SECONDS)).isTrue();
+        return () -> {
+            release.countDown();
+            holder.join(10_000);
+        };
+    }
+
+    /**
+     * Holds a row lock ({@code lockSql} binds {@code :id}) in a transaction of its own until closed, and runs
+     * {@code whileHeld} in that transaction right after taking the lock. What {@code whileHeld} writes
+     * becomes visible to everyone else only when the lock is released.
+     */
+    private AutoCloseable holdRowLock(String lockSql,UUID id,Runnable whileHeld) throws InterruptedException {
+        var acquired=new CountDownLatch(1);
+        var release=new CountDownLatch(1);
+        var failure=new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread holder=Thread.ofVirtual().start(() -> {
+            try {
+                new TransactionTemplate(manager).executeWithoutResult(status -> {
+                    jdbc().sql(lockSql).param("id",id).query(UUID.class).list();
+                    whileHeld.run();
+                    acquired.countDown();
+                    try {
+                        if (!release.await(30,TimeUnit.SECONDS)) throw new IllegalStateException("row lock never released");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+            } catch (RuntimeException | Error unexpected) {
+                failure.set(unexpected);
+                acquired.countDown();
+            }
+        });
+        assertThat(acquired.await(5,TimeUnit.SECONDS)).isTrue();
+        assertThat(failure.get()).as("row lock holder").isNull();
+        return () -> {
+            release.countDown();
+            holder.join(10_000);
+            assertThat(failure.get()).as("row lock holder").isNull();
+        };
+    }
+
+    /** Waits until some backend waits for a lock while running a statement that contains {@code fragment}. */
+    private void awaitBlockedOn(String fragment) throws InterruptedException {
+        for (int i=0;i<200;i++) {
+            if (jdbc().sql("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE :q")
+                    .param("q","%"+fragment+"%").query(Integer.class).single()>0) return;
+            Thread.sleep(50);
+        }
+        throw new AssertionError("no statement ever waited on a lock: "+fragment);
+    }
+
+    private void awaitBlockedOnPlanLock() throws InterruptedException {
+        for (int i=0;i<150;i++) {
+            if (jdbc().sql("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND NOT granted")
+                    .query(Integer.class).single()>0) return;
+            Thread.sleep(50);
+        }
+        throw new AssertionError("the publication never reached the plan lock");
     }
 
     private UUID connect(DevBybitStub.Scenario scenario) {

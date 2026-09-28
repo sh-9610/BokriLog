@@ -11,7 +11,8 @@
  *
  * <p>여기에는 HTTP 표면이 없다({@code identity}·{@code source}와 같은 배치).
  *
- * <p>불변 snapshot·current pointer·발행 순번은 아직 없다. Story 2.2 이후가 자기 계약과 함께
- * 들인다 — 이 스토리가 만드는 것은 그 값들이 올라설 귀속 하나다.
+ * <p>불변 snapshot과 portfolio별 current pointer·발행 순번도 이 모듈이 소유한다(Story 2.2가 첫
+ * 공식값을, Story 2.7이 {@code publication_sequence + 1} CAS 전진을 들였다). 쓰기 command는 모두
+ * 호출자의 트랜잭션에 참여할 뿐 스스로 경계를 열지 않는다.
  */
 package com.bokrilog.portfolio;

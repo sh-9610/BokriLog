@@ -4,6 +4,12 @@ import { authContent } from '../src/content/auth'
 import { connectionContent } from '../src/content/connection'
 import { firstSnapshotContent } from '../src/content/firstSnapshot'
 import { planConditionContent } from '../src/content/planConditions'
+import {
+  activePlanContent,
+  METRIC_ORDER,
+  planPublicationContent,
+  planResultContent,
+} from '../src/content/planResult'
 
 const injectedOrigin = process.env.PLAYWRIGHT_BASE_URL?.trim() ?? ''
 const STUB_CONSENT = '동의하고 계속하기'
@@ -36,7 +42,9 @@ async function connectAndSavePlan(
   await page.goto('/settings')
   await expect(page.getByRole('heading', { name: connectionContent.heading })).toBeVisible()
   await page.getByRole('button', { name: connectionContent.start }).click()
-  const uid = `snapshot${String(Date.now())}`
+  // A random suffix: parallel local workers started in the same millisecond must not share a
+  // Bybit UID (the second connection would be refused as an account another user already holds).
+  const uid = `snapshot${String(Date.now())}${Math.random().toString(36).slice(2, 8)}`
   const key = `${scenario}.${uid}`
   const secret = `s-${Math.random().toString(36).slice(2)}-${String(Date.now())}`
   await page.getByLabel(connectionContent.form.apiKeyLabel).fill(key)
@@ -128,6 +136,73 @@ async function startConversionByKeyboard(page: Page) {
   return conversion
 }
 
+/**
+ * Starts the first publication from the keyboard and follows its result link to the dashboard. Every
+ * session in this suite is a first login, whose landing screen is the onboarding screen: the session
+ * gate sends it there from `/dashboard`, and that screen shows the same result panel. The assertion
+ * names that one destination — accepting either path would hide a gate that stopped redirecting.
+ */
+async function publishAndOpenResult(page: Page, landing = '/onboarding'): Promise<void> {
+  const publication = page.getByRole('region', { name: planPublicationContent.heading })
+  const start = publication.getByRole('button', { name: planPublicationContent.start })
+  await expect(start).toBeVisible({ timeout: 15_000 })
+  await start.focus()
+  await page.keyboard.press('Enter')
+  await expect(publication.getByRole('status')).toContainText(planPublicationContent.published, {
+    timeout: 15_000,
+  })
+  const link = publication.getByRole('link', { name: planPublicationContent.dashboardLink })
+  await expect(link).toHaveAttribute('href', '/dashboard')
+  await link.focus()
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(new RegExp(`${landing}$`))
+}
+
+/**
+ * The dashboard's first official result: six cards in order, each with its nature; the conditions,
+ * the three times and the three axes; the title and its disclaimer adjacent; the status region.
+ */
+async function expectFirstResult(page: Page, derivedNature: '공식' | '추정'): Promise<void> {
+  const panel = page.getByRole('region', { name: planResultContent.heading })
+  await expect(panel).toBeVisible({ timeout: 15_000 })
+  const cards = panel
+    .getByRole('region', { name: planResultContent.metricsHeading })
+    .getByRole('article')
+  await expect(cards).toHaveCount(METRIC_ORDER.length)
+  for (const [index, metric] of METRIC_ORDER.entries()) {
+    const card = cards.nth(index)
+    await expect(card.getByRole('heading')).toHaveText(planResultContent.metrics[metric].name)
+    await expect(card).toContainText(
+      `${planResultContent.natureLabel}: ${index === 0 ? '공식' : derivedNature}`,
+    )
+  }
+  await expect(cards.nth(0)).toContainText('1,234.56 USD')
+  const conditions = panel.getByRole('region', { name: planResultContent.conditionsHeading })
+  await expect(conditions.getByText('매일')).toBeVisible()
+  await expect(conditions.getByText('10%')).toBeVisible()
+  const times = panel.getByRole('region', { name: planResultContent.timesHeading })
+  for (const label of [
+    planResultContent.basisAt,
+    planResultContent.measuredAt,
+    planResultContent.verifiedThrough,
+  ]) {
+    await expect(times.getByText(label)).toBeVisible()
+  }
+  const trust = panel.getByRole('region', { name: planResultContent.trustHeading })
+  await expect(trust.getByText(/^신선도: (최신|동기화 중|최신 아님)$/)).toBeVisible()
+  await expect(trust.getByText('입력 신뢰도: 확인됨')).toBeVisible()
+  await expect(trust.getByText(`계산 성격: ${derivedNature}`)).toBeVisible()
+  await expect(page.getByRole('status')).toContainText('복리 계획 결과를 표시합니다')
+  const title = page.getByRole('heading', { level: 1 })
+  await expect(title).toHaveText(authContent.pageTitle)
+  await expect(title.locator('xpath=following-sibling::*[1]')).toHaveText(authContent.disclaimer)
+  const panelText = await panel.innerText()
+  expect(panelText).not.toMatch(
+    /축하|손실|추천합니다|투자성과|계좌 수익률|스트릭|배지|NaN|undefined/,
+  )
+  expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0)
+}
+
 async function expectNoHorizontalScroll(page: Page): Promise<void> {
   for (const [zoom, width] of [
     ['320px', 320],
@@ -148,6 +223,8 @@ test.describe('첫 공식 현재가치', () => {
   test.skip(injectedOrigin === '', 'PLAYWRIGHT_BASE_URL의 동일 출처 스텁이 필요하다.')
 
   test('연결 후 비동기 첫 확인을 접수하고 측정 시각과 세 신뢰 축을 보여 준다', async ({ page }) => {
+    // The chain now runs through the first publication and its result.
+    test.setTimeout(90_000)
     await connectAndSavePlan(page, 'uta2')
     await collectAndClassify(page, /입금 사건: 0 · 출금 사건: 0 · 제외 사건: 0 · 검토 필요: 0/)
 
@@ -169,22 +246,65 @@ test.describe('첫 공식 현재가치', () => {
     const convertedText = await conversion.innerText()
     expect(convertedText).not.toMatch(/\d\s*USD|USD\s*\d|수익률|목표 달성률|계산에서 제외/)
     await expectNoHorizontalScroll(page)
+
+    // Story 2.7: the calculable conversion admits the first publication; the dashboard then shows
+    // the official result from one pointer, every derived metric official (no estimated flow).
+    await page.setViewportSize({ width: 320, height: 800 })
+    await publishAndOpenResult(page)
+    await expectFirstResult(page, '공식')
+    await expectNoHorizontalScroll(page)
+    await page.goto(planConditionContent.path)
+    await expect(page.getByRole('heading', { name: activePlanContent.heading })).toBeVisible()
+    await expect(page.getByRole('link', { name: activePlanContent.dashboardLink })).toBeVisible()
+    await expect(page.getByLabel(planConditionContent.endAt)).toHaveCount(0)
   })
 
-  test('비-USDT 흐름의 추정 환산과 보류 목록을 키보드와 확대 환경에서 확인한다', async ({
+  test('비-USDT 흐름의 추정 환산과 보류 목록을 확인하고, 추정 환산만 있는 계획을 발행해 다섯 지표를 추정으로 보여 준다', async ({
     page,
+    browser,
+    baseURL,
   }) => {
     // The stub's flows sit just after t0, so their event minute must close before prices exist.
+    // Both users below need that wait; they share one so the serial CI suite waits once, not twice.
     test.setTimeout(180_000)
-    const { snapshotSeenAt } = await connectAndSavePlan(page, 'marketflows')
+    await connectAndSavePlan(page, 'marketflows')
     await collectAndClassify(page, /입금 사건: 1 · 출금 사건: 1 · 제외 사건: 0 · 검토 필요: 0/)
+    // Story 2.7: a second user whose only flow is one BTC deposit — calculable once estimated.
+    // Its context is closed whatever happens, so a failing assertion never leaks a browser context.
+    const estimatedContext = await browser.newContext({ baseURL })
+    try {
+      const estimated = await estimatedContext.newPage()
+      const { snapshotSeenAt } = await connectAndSavePlan(estimated, 'btcdeposit')
+      await collectAndClassify(
+        estimated,
+        /입금 사건: 1 · 출금 사건: 0 · 제외 사건: 0 · 검토 필요: 0/,
+      )
 
-    // Wait until the minute that holds t0 has closed on the stack's clock (with a margin for skew),
-    // so the BTC candle exists and the run is deterministic rather than "not closed yet".
-    const closed = Math.floor(snapshotSeenAt / MINUTE_MS) * MINUTE_MS + MINUTE_MS + 5_000
-    await expect
-      .poll(() => Date.now(), { timeout: 2 * MINUTE_MS, intervals: [1_000] })
-      .toBeGreaterThanOrEqual(closed)
+      // Wait until the minute that holds the later t0 has closed on the stack's clock (with a margin
+      // for skew), so every BTC candle exists and the run is deterministic rather than "not closed yet".
+      const closed = Math.floor(snapshotSeenAt / MINUTE_MS) * MINUTE_MS + MINUTE_MS + 5_000
+      await expect
+        .poll(() => Date.now(), { timeout: 2 * MINUTE_MS, intervals: [1_000] })
+        .toBeGreaterThanOrEqual(closed)
+
+      const estimatedConversion = await startConversionByKeyboard(estimated)
+      await expect(estimatedConversion.getByRole('status')).toContainText(
+        planConditionContent.conversion.estimated,
+        { timeout: 15_000 },
+      )
+      await publishAndOpenResult(estimated)
+      await expectFirstResult(estimated, '추정')
+      const cards = estimated
+        .getByRole('region', { name: planResultContent.metricsHeading })
+        .getByRole('article')
+      await expect(cards.nth(0)).not.toContainText('추정 근거')
+      for (const index of [1, 2, 3, 4, 5]) {
+        await expect(cards.nth(index)).toContainText(planResultContent.estimatedEvidence(1))
+      }
+      await expectNoHorizontalScroll(estimated)
+    } finally {
+      await estimatedContext.close()
+    }
 
     const conversion = await startConversionByKeyboard(page)
     const conversionStatus = conversion.getByRole('status')

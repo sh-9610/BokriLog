@@ -6,6 +6,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
  * {@link PortfolioMembershipApi} 구현. {@code internal}의 package-private 클래스다.
@@ -36,12 +37,41 @@ class PortfolioMembershipService implements PortfolioMembershipApi {
                 component.measuredAt()) || this.repository.hasOfficial(component.portfolioId())) return false;
         UUID snapshotId=UUID.randomUUID();
         this.repository.insertSnapshot(snapshotId,component.portfolioId(),component.userId(),
-                component.decimal(),component.measuredAt());
+                component.decimal(),component.measuredAt(),1);
         this.repository.insertComponent(snapshotId,component.membershipId(),
                 component.sourceSnapshotId(),component.portfolioId(),component.userId(),
                 component.connectionId(),component.providerAccountId(),component.decimal(),
                 component.policyVersion());
         return this.repository.pointFirst(component.portfolioId(),snapshotId)==1;
+    }
+
+    /**
+     * 순서가 계약이다: membership 자격을 잠그고, 포인터 행을 잠가 기대값과 대조한 <b>뒤에만</b>
+     * snapshot·component를 쓰고 포인터를 CAS로 전진시킨다. 기대값이 틀리면 아무것도 쓰지 않는다.
+     */
+    @Override
+    public NextPublication publishNext(CandidateComponent component, UUID expectedSnapshotId,
+            long expectedSequence) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("publishNext joins the caller's transaction");
+        if (!this.repository.lockEligible(component.userId(),component.portfolioId(),
+                component.membershipId(),component.connectionId(),component.providerAccountId(),
+                component.measuredAt())) return new NextPublication.MembershipChanged();
+        var pointer=this.repository.lockPointer(component.portfolioId(),component.userId()).orElse(null);
+        if (pointer==null || !pointer.snapshotId().equals(expectedSnapshotId)
+                || pointer.sequence()!=expectedSequence) return new NextPublication.PointerMoved();
+        UUID snapshotId=UUID.randomUUID();
+        long next=Math.addExact(expectedSequence,1);
+        this.repository.insertSnapshot(snapshotId,component.portfolioId(),component.userId(),
+                component.decimal(),component.measuredAt(),next);
+        this.repository.insertComponent(snapshotId,component.membershipId(),
+                component.sourceSnapshotId(),component.portfolioId(),component.userId(),
+                component.connectionId(),component.providerAccountId(),component.decimal(),
+                component.policyVersion());
+        if (this.repository.advancePointer(component.portfolioId(),expectedSnapshotId,expectedSequence,
+                snapshotId,next)!=1)
+            throw new IllegalStateException("portfolio pointer moved under its row lock");
+        return new PublishedSnapshot(snapshotId,next);
     }
 
     @Override

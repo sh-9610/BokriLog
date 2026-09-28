@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 import { CSRF_HEADER } from '../content/auth'
 import { planConditionContent as copy } from '../content/planConditions'
 import styles from './InitialInputsCollection.module.css'
+import { PlanPublicationSection } from './PlanPublicationSection'
 
 type CollectionStatus =
   'QUEUED' | 'RUNNING' | 'INPUTS_COMPLETE' | 'NEEDS_REVIEW' | 'RETRY_REQUIRED' | 'CANCELLED'
@@ -277,9 +278,19 @@ function eventTime(value: string): string {
 function CashflowConversionSection({
   csrfToken,
   intentId,
+  lineage,
+  onCalculable,
 }: {
   readonly csrfToken: string | null
   readonly intentId: string
+  /** The classification this section converts. Its "calculable" is about this lineage only. */
+  readonly lineage: string
+  /**
+   * Told whether this lineage's current result is a calculable bundle, so the publication sibling can
+   * appear. The report names the lineage: a flag set for one classification never carries over to the
+   * next one.
+   */
+  readonly onCalculable: (lineage: string, calculable: boolean) => void
 }): ReactElement {
   const [job, setJob] = useState<ConversionJob | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -287,6 +298,18 @@ function CashflowConversionSection({
   const [error, setError] = useState<string | null>(null)
   const key = useRef<string | null>(null)
   const live = useRef(true)
+  const calculableNow =
+    job !== null &&
+    (job.status === 'CONVERTED' || job.status === 'CONVERTED_ESTIMATED') &&
+    job.calculable
+
+  useEffect(() => {
+    onCalculable(lineage, calculableNow)
+    // An unmounted (or remounted) conversion section no longer vouches for a calculable result.
+    return () => {
+      onCalculable(lineage, false)
+    }
+  }, [calculableNow, lineage, onCalculable])
 
   const read = useCallback(async (): Promise<ConversionJob | null> => {
     const response = await fetch(
@@ -608,6 +631,11 @@ export function InitialInputsCollection({
   const [jobIntentId, setJobIntentId] = useState<string | null>(null)
   const [loadedIntentId, setLoadedIntentId] = useState<string | null>(null)
   const [errorIntentId, setErrorIntentId] = useState<string | null>(null)
+  /** The classification whose conversion is calculable now, if any. Never inherited by the next one. */
+  const [calculableLineage, setCalculableLineage] = useState<string | null>(null)
+  const reportCalculable = useCallback((lineage: string, calculable: boolean): void => {
+    setCalculableLineage((current) => (calculable ? lineage : current === lineage ? null : current))
+  }, [])
 
   const readCollectionState = useCallback(async (): Promise<CollectionResponse> => {
     const response = await fetch(
@@ -918,7 +946,24 @@ export function InitialInputsCollection({
         <CashflowConversionSection
           csrfToken={csrfToken}
           intentId={intentId}
-          key={currentClassification.jobId}
+          /* Sibling keys must differ: a key shared with the publication section is unsupported. */
+          key={`conversion-${currentClassification.jobId}`}
+          lineage={currentClassification.jobId}
+          onCalculable={reportCalculable}
+        />
+      ) : null}
+      {/*
+        The publication is a sibling of the conversion section, never inside it: that section keeps
+        exactly one status region, and its no-amount contract stays scoped to it. It appears only for
+        the lineage whose conversion reported "calculable" — never on another lineage's stale report.
+      */}
+      {currentJob?.status === 'INPUTS_COMPLETE' &&
+      currentClassification?.status === 'COMPLETE' &&
+      calculableLineage === currentClassification.jobId ? (
+        <PlanPublicationSection
+          csrfToken={csrfToken}
+          intentId={intentId}
+          key={`publication-${currentClassification.jobId}`}
         />
       ) : null}
       <div className={styles.actions}>

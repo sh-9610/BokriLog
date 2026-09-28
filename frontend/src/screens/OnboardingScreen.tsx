@@ -1,10 +1,14 @@
 import type { ReactElement } from 'react'
 
 import { FirstSnapshotPanel } from '../components/FirstSnapshotPanel'
+import { PlanResultPanel } from '../components/PlanResultPanel'
 import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
 import { authContent, reauthNoticeKindOf, SETTINGS_PATH } from '../content/auth'
 import { entryContent } from '../content/entry'
+import { planResultContent } from '../content/planResult'
+import { formatSeoulTime } from '../format/decimal'
+import { planPresenceOf, usePlanResult } from '../session/usePlanResult'
 import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
@@ -28,12 +32,17 @@ const MAIN_ID = 'onboarding-main'
  * 나갈 방법이 없다. 진행 중임을 말하는 것은 버튼이 아니라 아래 live region이다(화면당 하나).
  * 버튼의 이름은 언제나 동작으로 남는다.
  *
- * 이 화면에는 아직 계좌·계획·금융 데이터가 없다. Bybit 연결과 복리 계획은 Epic 2의 범위다.
+ * 첫 로그인 세션의 확정 목적지가 이 화면이다. 그 세션이 `/dashboard`를 열어도 이 화면으로
+ * 밀려나므로(`useSessionGate`), 활성 계획의 공식 결과(Story 2.7)도 대시보드와 같은 패널로 여기
+ * 그린다 — 결과 응답 하나에서 그리고 화면의 단일 live region이 한 번 알린다. 결과가 없으면 화면은
+ * 그 전과 같다.
  */
 export function OnboardingScreen(): ReactElement {
   const { csrfToken, gate } = useSessionGate('onboarding')
   const signOut = useSignOut(csrfToken)
   const reauthentication = useReauthentication(csrfToken)
+  const planResult = usePlanResult(gate === 'ready')
+  const result = planResult.kind === 'loaded' ? planResult.result : null
 
   if (gate === 'unauthenticated') {
     /*
@@ -105,7 +114,15 @@ export function OnboardingScreen(): ReactElement {
           className={styles.notice}
           role="status"
         >
-          {ready && !signOut.pending ? null : (
+          {ready && !signOut.pending ? (
+            result === null ? null : (
+              <p className={styles.noticeText}>
+                {planResultContent.announce(
+                  formatSeoulTime(result.basisAt, planResultContent.timeUnavailable),
+                )}
+              </p>
+            )
+          ) : (
             <p className={styles.noticeText}>
               {liveRegionMessage(gate, signOut.pending, reauthentication.pending)}
             </p>
@@ -122,7 +139,14 @@ export function OnboardingScreen(): ReactElement {
           />
         ) : null}
 
-        {ready ? <FirstSnapshotPanel csrfToken={csrfToken} ready={ready} /> : null}
+        {ready && result !== null ? <PlanResultPanel result={result} /> : null}
+        {ready ? (
+          <FirstSnapshotPanel
+            csrfToken={csrfToken}
+            plan={planPresenceOf(planResult)}
+            ready={ready}
+          />
+        ) : null}
 
         {ready ? (
           <section aria-labelledby={authContent.onboarding.id} className={styles.section}>

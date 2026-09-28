@@ -31,6 +31,7 @@ import {
 } from '../content/auth'
 import { BYBIT_CANCEL_PATH, BYBIT_CONNECT_PATH, BYBIT_CONNECTION_PATH } from '../content/connection'
 import { FIRST_SNAPSHOT_PATH } from '../content/firstSnapshot'
+import { PLAN_RESULT_PATH } from '../content/planResult'
 
 const observedRequests: string[] = []
 const observedIndexedDbNames: string[] = []
@@ -71,6 +72,19 @@ export function stubFirstSnapshotStart(responder: RequestResponder): void {
 }
 export function stubPlanConditionState(responder: RequestResponder): void {
   responders.set(requestKey('GET', '/api/plans/conditions'), responder)
+}
+
+/**
+ * 활성 계획의 공식 결과 조회 하나를 이 시험 동안만 허용한다(Story 2.7).
+ *
+ * 두 로그인 화면(`/dashboard`·`/onboarding`)이 이 요청을 보낸다 — 첫 로그인 세션은 대시보드에서
+ * 온보딩으로 밀려나므로 결과 패널이 두 화면에 있다. 열지 않은 시험에서는 전역 거부가 그 요청을
+ * 기록하고 거절한다. 그 거절은 "계획 없음"이 아니라 읽기 실패(`unavailable`)다: 결과 패널을 그리지
+ * 않고, 첫 자산 패널은 계획이 있다고도 없다고도 말하지 않는다. "계획 없음" 경로를 보려는 시험은
+ * 204를 답하게 연다.
+ */
+export function stubPlanResult(responder: RequestResponder): void {
+  responders.set(requestKey('GET', PLAN_RESULT_PATH), responder)
 }
 
 /**
