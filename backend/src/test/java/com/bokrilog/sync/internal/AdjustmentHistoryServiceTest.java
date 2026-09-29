@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -22,6 +23,7 @@ import com.bokrilog.sync.SyncJobApi.AdjustmentRead;
 import com.bokrilog.sync.SyncJobApi.BundleConsistency;
 import com.bokrilog.sync.internal.AdjustmentHistoryRepository.ChainLink;
 import com.bokrilog.sync.internal.AdjustmentHistoryRepository.ClassificationCounts;
+import com.bokrilog.sync.internal.AdjustmentHistoryRepository.ConversionLink;
 import com.bokrilog.sync.internal.AdjustmentHistoryRepository.EarlierFlow;
 import com.bokrilog.sync.internal.AdjustmentHistoryRepository.PageRow;
 import com.bokrilog.sync.internal.AdjustmentHistoryRepository.Totals;
@@ -66,8 +68,9 @@ class AdjustmentHistoryServiceTest {
     private final PortfolioMembershipApi portfolios = mock(PortfolioMembershipApi.class);
     private final AccountAccessApi accounts = mock(AccountAccessApi.class);
     private final PlanPublicationPort plans = mock(PlanPublicationPort.class);
+    private final OfficialVersionHead heads = mock(OfficialVersionHead.class);
     private final AdjustmentHistoryService service = new AdjustmentHistoryService(publications, history, portfolios,
-            accounts, plans, mock(PlatformTransactionManager.class));
+            accounts, plans, heads, mock(PlatformTransactionManager.class));
 
     private static AdjustmentQuery query(AdjustmentDirection direction, String cursor) {
         return new AdjustmentQuery(PLAN, 1, CALCULATION, direction, cursor);
@@ -83,7 +86,7 @@ class AdjustmentHistoryServiceTest {
         return new PageRow(sequence, event(sequence), "adj-" + sequence, TC.minusSeconds(100 - sequence), usd,
                 usd.startsWith("-") ? "TRANSFER_OUT" : "TRANSFER_IN", "USDT", usd, "EXTERNAL_TRANSFER_IN",
                 "BYBIT-CASHFLOW-1.0", "BYBIT-PRICE-1.0", "DIRECT_NORMALIZATION", false, "1", "DIRECT",
-                TC.minusSeconds(10), usd);
+                TC.minusSeconds(10), usd, CONVERSION, CLASSIFICATION);
     }
 
     private static UUID event(int sequence) {
@@ -106,7 +109,7 @@ class AdjustmentHistoryServiceTest {
         when(publications.lineage(USER, CALCULATION)).thenReturn(Optional.of(new PlanPublicationRepository.Lineage(
                 UUID.randomUUID(), "BYBIT", ACCOUNT, CONNECTION, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
                 CANDIDATE, CLASSIFICATION, CONVERSION, "BYBIT-CASHFLOW-1.0", "bybit-readonly-uta-1.0",
-                "DECIMAL128-HALF_EVEN", "Asia/Seoul", PUBLISHED)));
+                "DECIMAL128-HALF_EVEN", "Asia/Seoul", PUBLISHED, "INITIAL", T0, TC, null)));
         when(publications.classificationBundle(USER, CLASSIFICATION)).thenReturn(Optional.of(
                 classificationBundle(CANDIDATE, PORTFOLIO, INTENT, CONNECTION, ACCOUNT, "COMPLETE", "BYBIT-CASHFLOW-1.0")));
         when(history.classificationCounts(USER, CLASSIFICATION))
@@ -114,12 +117,132 @@ class AdjustmentHistoryServiceTest {
         when(publications.conversion(USER, CONVERSION)).thenReturn(Optional.of(conversionOf(CLASSIFICATION, INTENT,
                 PORTFOLIO, CONNECTION, ACCOUNT, "BYBIT-PRICE-1.0", flows, 0)));
         when(history.totals(eq(USER), eq(CALCULATION), any(AdjustmentDirection.class)))
-                .thenReturn(new Totals(flows, 0, 0, 0, flows, flows == 0 ? 0 : 1, flows, flows, flows + ".000"));
-        when(history.chain(USER, CLASSIFICATION, CONVERSION, AdjustmentHistoryService.MAX_CHAIN))
-                .thenReturn(List.of(new ChainLink(CONVERSION, null, null, TC, flows)));
-        when(history.earlierCoverage(eq(CALCULATION), anyList())).thenReturn(0);
-        when(history.legs(eq(CONVERSION), anyList())).thenReturn(Map.of());
+                .thenReturn(totalsOf(flows, 0, 0, 0, flows, flows == 0 ? 0 : 1, flows, flows, flows + ".000"));
+        // The head the evidence judges too holds (OfficialVersionHead has its own tests through the evidence).
+        when(heads.judge(any(), any(), any(), any(), any())).thenReturn(new OfficialVersionHead.Head(List.of(), null));
+        // The conversion continues no earlier one: there is no chain to walk and no coverage to count.
+        links(Map.of(CONVERSION, new ConversionLink(CLASSIFICATION, null)));
+        when(history.earlierCoverage(eq(CALCULATION), anyMap())).thenReturn(Map.of());
+        when(history.legs(eq(CALCULATION), anyList())).thenReturn(Map.of());
         when(history.earlierFlows(anyList(), anyList())).thenReturn(Map.of());
+        when(history.rowConversions(USER, CALCULATION)).thenReturn(List.of(
+                new AdjustmentHistoryRepository.RowConversion(CONVERSION, CLASSIFICATION, flows)));
+        when(publications.exclusions(eq(CALCULATION), eq(CLASSIFICATION), any(), any()))
+                .thenReturn(new PlanPublicationRepository.Exclusions(2, 2, 0, 0, 0));
+    }
+
+    private void links(Map<UUID, ConversionLink> links) {
+        when(history.conversionLinks(eq(USER), anyList())).thenReturn(links);
+    }
+
+    /**
+     * Totals whose rows all cite the version's own conversion — the first calculation's shape. An incremental
+     * world overrides them.
+     */
+    private static Totals totalsOf(int total, int broken, int disordered, int estimated, int inbound, int first,
+            int last, int selected, String sum) {
+        return new Totals(total, broken, disordered, estimated, inbound, first, last, selected, sum, total, inbound,
+                estimated);
+    }
+
+    private static final UUID PREVIOUS = UUID.fromString("00000000-0000-0000-0000-00000000000e");
+    private static final UUID CARRIED_CONVERSION = UUID.fromString("00000000-0000-0000-0000-00000000000f");
+    private static final UUID CARRIED_CLASSIFICATION = UUID.fromString("00000000-0000-0000-0000-000000000010");
+
+    /**
+     * An incremental version (Story 2.11) of {@code own + carried} rows: {@code carried} of them cite the
+     * previous version's conversion, the latest lineage has {@code own} flows, and one exclusion was carried.
+     */
+    private void incrementalWorld(int own, int carried) {
+        world(own + carried);
+        when(publications.lineage(USER, CALCULATION)).thenReturn(Optional.of(new PlanPublicationRepository.Lineage(
+                UUID.randomUUID(), "BYBIT", ACCOUNT, CONNECTION, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                CANDIDATE, CLASSIFICATION, CONVERSION, "BYBIT-CASHFLOW-1.0", "bybit-readonly-uta-1.0",
+                "DECIMAL128-HALF_EVEN", "Asia/Seoul", PUBLISHED, "NORMAL", TC.minusSeconds(600), T0, PREVIOUS)));
+        when(history.classificationCounts(USER, CLASSIFICATION))
+                .thenReturn(Optional.of(new ClassificationCounts(own, 0, 2, 0, 2)));
+        when(publications.conversion(USER, CONVERSION)).thenReturn(Optional.of(conversionOf(CLASSIFICATION, INTENT,
+                PORTFOLIO, CONNECTION, ACCOUNT, "BYBIT-PRICE-1.0", own, 0)));
+        int total = own + carried;
+        when(history.totals(eq(USER), eq(CALCULATION), any(AdjustmentDirection.class))).thenReturn(new Totals(total, 0,
+                0, 0, total, total == 0 ? 0 : 1, total, total, Integer.toString(total), own, own, 0));
+        when(publications.carried(eq(CALCULATION), eq(CONVERSION), eq(PREVIOUS), any()))
+                .thenReturn(new PlanPublicationRepository.Carried(carried, 0, 0, carried));
+        when(publications.exclusions(eq(CALCULATION), eq(CLASSIFICATION), eq(PREVIOUS), any()))
+                .thenReturn(new PlanPublicationRepository.Exclusions(3, 2, 0, 0, 1));
+        when(history.rowConversions(USER, CALCULATION)).thenReturn(List.of(
+                new AdjustmentHistoryRepository.RowConversion(CONVERSION, CLASSIFICATION, own),
+                new AdjustmentHistoryRepository.RowConversion(CARRIED_CONVERSION, CARRIED_CLASSIFICATION, carried)));
+        links(Map.of(CONVERSION, new ConversionLink(CLASSIFICATION, null),
+                CARRIED_CONVERSION, new ConversionLink(CARRIED_CLASSIFICATION, null)));
+    }
+
+    @Test
+    void anIncrementalVersionListsItsCarriedRowsWithTheirOwnLineageAndCountsEveryExclusion() {
+        incrementalWorld(2, 3);
+        when(history.page(eq(USER), eq(CALCULATION), any(AdjustmentDirection.class), anyInt(), anyInt()))
+                .thenReturn(List.of(carriedRow(1), carriedRow(2), carriedRow(3), row(4, "1"), row(5, "1")));
+        var page = found(query(AdjustmentDirection.ALL, null));
+        assertThat(page.rows()).hasSize(5);
+        assertThat(page.summary()).as("every exclusion of the verified range").isEqualTo(
+                new AdjustmentHistory.Summary(5, "5", 3));
+        assertThat(page.rows().getFirst().references().conversionId()).as("a carried row keeps its own conversion")
+                .isEqualTo(CARRIED_CONVERSION);
+        assertThat(page.rows().getFirst().references().classificationId()).isEqualTo(CARRIED_CLASSIFICATION);
+        assertThat(page.rows().getLast().references().conversionId()).isEqualTo(CONVERSION);
+    }
+
+    private static PageRow carriedRow(int sequence) {
+        return new PageRow(sequence, event(sequence), "adj-" + sequence, TC.minusSeconds(100 - sequence), "1",
+                "TRANSFER_IN", "USDT", "1", "EXTERNAL_TRANSFER_IN", "BYBIT-CASHFLOW-1.0", "BYBIT-PRICE-1.0",
+                "DIRECT_NORMALIZATION", false, "1", "DIRECT", TC.minusSeconds(10), "1", CARRIED_CONVERSION,
+                CARRIED_CLASSIFICATION);
+    }
+
+    @Test
+    void anIncrementalVersionWhoseCarriedPartDisagreesIsUnavailable() {
+        record Break(String name, Consumer<AdjustmentHistoryServiceTest> apply) {}
+        var breaks = List.of(
+                new Break("a carried row missing from the previous version", t -> when(t.publications.carried(
+                        eq(CALCULATION), eq(CONVERSION), eq(PREVIOUS), any()))
+                        .thenReturn(new PlanPublicationRepository.Carried(3, 0, 1, 3))),
+                new Break("a carried row after the collection start", t -> when(t.publications.carried(
+                        eq(CALCULATION), eq(CONVERSION), eq(PREVIOUS), any()))
+                        .thenReturn(new PlanPublicationRepository.Carried(3, 1, 0, 3))),
+                new Break("a previous row that was not carried", t -> when(t.publications.carried(
+                        eq(CALCULATION), eq(CONVERSION), eq(PREVIOUS), any()))
+                        .thenReturn(new PlanPublicationRepository.Carried(3, 0, 0, 4))),
+                new Break("latest counts that reach the carried rows", t -> when(t.history.totals(eq(USER),
+                        eq(CALCULATION), any())).thenReturn(new Totals(5, 0, 0, 0, 5, 1, 5, 5, "5", 5, 5, 0))),
+                new Break("a carried exclusion the previous version lacks", t -> when(t.publications.exclusions(
+                        eq(CALCULATION), eq(CLASSIFICATION), eq(PREVIOUS), any()))
+                        .thenReturn(new PlanPublicationRepository.Exclusions(3, 2, 0, 1, 1))),
+                new Break("a carried exclusion after the start", t -> when(t.publications.exclusions(
+                        eq(CALCULATION), eq(CLASSIFICATION), eq(PREVIOUS), any()))
+                        .thenReturn(new PlanPublicationRepository.Exclusions(3, 2, 1, 0, 1))),
+                new Break("a previous exclusion that was not carried", t -> when(t.publications.exclusions(
+                        eq(CALCULATION), eq(CLASSIFICATION), eq(PREVIOUS), any()))
+                        .thenReturn(new PlanPublicationRepository.Exclusions(3, 2, 0, 0, 2))),
+                new Break("a carried row's broken conversion chain", t -> {
+                    t.links(Map.of(CONVERSION, new ConversionLink(CLASSIFICATION, null),
+                            CARRIED_CONVERSION, new ConversionLink(CARRIED_CLASSIFICATION, EARLIER)));
+                    when(t.history.chain(USER, CARRIED_CLASSIFICATION, CARRIED_CONVERSION,
+                            AdjustmentHistoryService.MAX_CHAIN))
+                            .thenReturn(List.of(new ChainLink(CARRIED_CONVERSION, EARLIER, "PRICE_REVISION", T0, 3)));
+                }),
+                new Break("a carried row's conversion of another classification", t -> t.links(Map.of(
+                        CONVERSION, new ConversionLink(CLASSIFICATION, null),
+                        CARRIED_CONVERSION, new ConversionLink(CLASSIFICATION, null)))),
+                new Break("a carried row's conversion that is not there", t -> t.links(Map.of(
+                        CONVERSION, new ConversionLink(CLASSIFICATION, null)))),
+                new Break("the head the evidence judges does not hold", t -> when(t.heads.judge(any(), any(), any(),
+                        any(), any())).thenReturn(null)));
+        for (Break each : breaks) {
+            incrementalWorld(2, 3);
+            pageOf(5);
+            each.apply().accept(this);
+            assertUnavailable(each.name());
+        }
     }
 
     private static PlanPublicationRepository.ClassificationBundle classificationBundle(UUID candidate, UUID portfolio,
@@ -156,7 +279,10 @@ class AdjustmentHistoryServiceTest {
         when(t.publications.conversion(USER, CONVERSION)).thenReturn(Optional.of(conversion));
     }
 
+    /** A conversion that continues an earlier one, with the chain its walk returns. */
     private static void chain(AdjustmentHistoryServiceTest t, ChainLink... links) {
+        t.links(Map.of(CONVERSION, new ConversionLink(CLASSIFICATION,
+                links[0].previousId() != null ? links[0].previousId() : EARLIER)));
         when(t.history.chain(USER, CLASSIFICATION, CONVERSION, AdjustmentHistoryService.MAX_CHAIN))
                 .thenReturn(List.of(links));
     }
@@ -229,17 +355,17 @@ class AdjustmentHistoryServiceTest {
         record Break(String name, Consumer<AdjustmentHistoryServiceTest> apply) {}
         UUID other = UUID.randomUUID();
         var breaks = new java.util.ArrayList<Break>(List.of(
-                new Break("a broken row", t -> totals(t, new Totals(3, 1, 0, 0, 3, 1, 3, 3, "3"))),
-                new Break("a row out of order", t -> totals(t, new Totals(3, 0, 1, 0, 3, 1, 3, 3, "3"))),
-                new Break("another count", t -> totals(t, new Totals(2, 0, 0, 0, 2, 1, 2, 2, "2"))),
-                new Break("a gap in the sequence", t -> totals(t, new Totals(3, 0, 0, 0, 3, 1, 4, 3, "3"))),
+                new Break("a broken row", t -> totals(t, totalsOf(3, 1, 0, 0, 3, 1, 3, 3, "3"))),
+                new Break("a row out of order", t -> totals(t, totalsOf(3, 0, 1, 0, 3, 1, 3, 3, "3"))),
+                new Break("another count", t -> totals(t, totalsOf(2, 0, 0, 0, 2, 1, 2, 2, "2"))),
+                new Break("a gap in the sequence", t -> totals(t, totalsOf(3, 0, 0, 0, 3, 1, 4, 3, "3"))),
                 new Break("a sequence that does not start at 1",
-                        t -> totals(t, new Totals(3, 0, 0, 0, 3, 2, 3, 3, "3"))),
-                new Break("another estimated count", t -> totals(t, new Totals(3, 0, 0, 1, 3, 1, 3, 3, "3"))),
+                        t -> totals(t, totalsOf(3, 0, 0, 0, 3, 2, 3, 3, "3"))),
+                new Break("another estimated count", t -> totals(t, totalsOf(3, 0, 0, 1, 3, 1, 3, 3, "3"))),
                 new Break("directions that are not the classification's",
-                        t -> totals(t, new Totals(3, 0, 0, 0, 2, 1, 3, 3, "3"))),
+                        t -> totals(t, totalsOf(3, 0, 0, 0, 2, 1, 3, 3, "3"))),
                 new Break("a total that is not a plain decimal",
-                        t -> totals(t, new Totals(3, 0, 0, 0, 3, 1, 3, 3, "3e0"))),
+                        t -> totals(t, totalsOf(3, 0, 0, 0, 3, 1, 3, 3, "3e0"))),
                 new Break("a review-required event", t -> counts(t, new ClassificationCounts(3, 0, 2, 1, 2))),
                 new Break("another deposit and withdrawal count",
                         t -> counts(t, new ClassificationCounts(2, 0, 2, 0, 2))),
@@ -311,8 +437,13 @@ class AdjustmentHistoryServiceTest {
                 new Break("an earlier version that lacks an applied event", t -> {
                     chain(t, new ChainLink(CONVERSION, EARLIER, "PRICE_REVISION", TC, 3),
                             new ChainLink(EARLIER, null, null, T0, 3));
-                    when(t.history.earlierCoverage(eq(CALCULATION), anyList())).thenReturn(2);
-                })));
+                    when(t.history.earlierCoverage(eq(CALCULATION), anyMap())).thenReturn(Map.of(CONVERSION, 2));
+                }),
+                new Break("the version's conversion is not there", t -> t.links(Map.of())),
+                new Break("the version's conversion of another classification", t -> t.links(Map.of(CONVERSION,
+                        new ConversionLink(UUID.randomUUID(), null)))),
+                new Break("the head the evidence judges does not hold", t -> when(t.heads.judge(any(), any(), any(),
+                        any(), any())).thenReturn(null))));
         // The walk returns at most MAX_CHAIN links: a chain that still has a predecessor there is not one lineage.
         var tooLong = new java.util.ArrayList<ChainLink>();
         for (int depth = 0; depth < AdjustmentHistoryService.MAX_CHAIN; depth++) {
@@ -346,11 +477,10 @@ class AdjustmentHistoryServiceTest {
         world(1);
         when(history.page(eq(USER), eq(CALCULATION), any(), anyInt(), anyInt())).thenReturn(List.of(row(1, "10")));
         Instant earlierAt = TC.minusSeconds(60), earliestAt = TC.minusSeconds(120);
-        when(history.chain(USER, CLASSIFICATION, CONVERSION, AdjustmentHistoryService.MAX_CHAIN)).thenReturn(List.of(
-                new ChainLink(CONVERSION, EARLIER, "PRICE_REVISION", TC, 1),
+        chain(this, new ChainLink(CONVERSION, EARLIER, "PRICE_REVISION", TC, 1),
                 new ChainLink(EARLIER, EARLIEST, "EVIDENCE_CHANGE", earlierAt, 1),
-                new ChainLink(EARLIEST, null, null, earliestAt, 1)));
-        when(history.earlierCoverage(eq(CALCULATION), anyList())).thenReturn(2);
+                new ChainLink(EARLIEST, null, null, earliestAt, 1));
+        when(history.earlierCoverage(eq(CALCULATION), anyMap())).thenReturn(Map.of(CONVERSION, 2));
 
         // The same value in every earlier version (in another notation): no marker, no list.
         when(history.earlierFlows(anyList(), anyList())).thenReturn(Map.of(

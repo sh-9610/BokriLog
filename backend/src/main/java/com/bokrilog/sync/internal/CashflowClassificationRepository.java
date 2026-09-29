@@ -100,10 +100,29 @@ class CashflowClassificationRepository {
             .query((rs,n)->new ClassificationJob(rs.getObject(1,UUID.class),rs.getString(2),rs.getString(3),
                 instantOrNull(rs,4),rs.getInt(5),rs.getInt(6),rs.getInt(7),rs.getInt(8),rs.getString(9))).optional();
     }
+    /**
+     * A plan sync's classification stage row (Story 2.11), inserted already {@code RUNNING} under fence 1
+     * with its sync job's lease, for the candidate the job's collection completed. The other methods of this
+     * class then run on it unchanged; the stage dispatcher never claims it.
+     */
+    Lease insertForSync(UUID id, UUID syncJobId, UUID user, UUID portfolio, UUID intent, UUID connection,
+            UUID account, UUID candidate) {
+        jdbc.sql("INSERT INTO sync_cashflow_classification_job(job_id,user_id,portfolio_id,intent_id,connection_id,"
+                + "provider_account_id,candidate_id,policy_version,idempotency_key,status,fencing_generation,lease_until,"
+                + "last_checked_at,plan_sync_job_id) SELECT :j,:u,:p,:i,:c,:a,:candidate,:policy,:key,'RUNNING',1,"
+                + "s.lease_until,now(),s.job_id FROM sync_plan_sync_job s WHERE s.job_id=:s AND s.status='RUNNING'")
+            .param("j",id).param("u",user).param("p",portfolio).param("i",intent).param("c",connection)
+            .param("a",account).param("candidate",candidate).param("policy",CashflowDecisionTable.POLICY_VERSION)
+            .param("key","plan-sync:"+syncJobId+":classification").param("s",syncJobId).update();
+        return new Lease(id,user,portfolio,intent,connection,account,candidate,CashflowDecisionTable.POLICY_VERSION,1);
+    }
+
+    /** Claims a Story 2.5 attempt. A plan sync's stage row (Story 2.11) belongs to its job and is never claimed. */
     Optional<Lease> claim() {
         return jdbc.sql("UPDATE sync_cashflow_classification_job SET status='RUNNING',fencing_generation=fencing_generation+1,"
                 + "lease_until=now()+interval '30 seconds',last_checked_at=now() WHERE job_id=(SELECT job_id "
-                + "FROM sync_cashflow_classification_job WHERE status='QUEUED' OR (status='RUNNING' AND lease_until<now()) "
+                + "FROM sync_cashflow_classification_job WHERE plan_sync_job_id IS NULL AND "
+                + "(status='QUEUED' OR (status='RUNNING' AND lease_until<now())) "
                 + "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING job_id,user_id,portfolio_id,intent_id,"
                 + "connection_id,provider_account_id,candidate_id,policy_version,fencing_generation")
             .query((rs,n)->new Lease(rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),rs.getObject(3,UUID.class),

@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.jspecify.annotations.Nullable;
 import org.springframework.test.context.DynamicPropertyRegistry;
 
 /**
@@ -122,6 +123,19 @@ final class BybitStubConfiguration {
 
     /** 서버 시간 응답의 모양을 바꾼다. {@link #resetRequestCount}가 정상으로 되돌린다. */
     static void serverTimeMode(DevBybitStub.ServerTimeMode mode) { Front.STUB.serverTimeMode(mode); }
+
+    /** {@code ABSOLUTE} 시나리오가 그 UID에 낼 사건(Story 2.11). 앞서 정한 것을 바꾼다. */
+    static void absoluteEvents(String uid, java.util.List<DevBybitStub.AbsoluteEvent> events) {
+        Front.STUB.absoluteEvents(uid, events);
+    }
+
+    /** {@code ABSOLUTE} 시나리오가 그 UID에 낼 지갑 {@code totalEquity}. */
+    static void absoluteEquity(String uid, String equity) { Front.STUB.absoluteEquity(uid, equity); }
+
+    /** {@code ABSOLUTE} 시나리오가 그 UID에 이제부터 낼 실패. {@code null}이면 정상으로 돌아간다. */
+    static void absoluteFailure(String uid, DevBybitStub.@Nullable AbsoluteFailure failure) {
+        Front.STUB.absoluteFailure(uid, failure);
+    }
 
     private static String newKey() {
         return Base64.getEncoder().encodeToString(randomBytes(32));

@@ -228,6 +228,13 @@ export function calculationEvidenceFixture(
       cashflows: { appliedCount: result.flowCount, estimatedCount: estimated },
       plan: { planId: result.planId, conditions: result.conditions },
     },
+    // The first calculation (Story 2.11): collected from t0 and carried nothing.
+    collection: {
+      mode: 'INITIAL',
+      rangeStart: (result.conditions as Record<string, unknown>).startAt,
+      lastExtendedVerificationAt: result.basisAt,
+      inherited: null,
+    },
     calculation: {
       calculationId: result.calculationId,
       calculationPolicy: 'CALC-1.0',
@@ -257,9 +264,11 @@ export function calculationEvidenceFixture(
           pointerVersion: result.pointerVersion,
           calculationId: result.calculationId,
           publishedAt: result.publishedAt,
+          supersededAt: null,
           current: true,
         },
       ],
+      officialCount: 1,
       unpublished: [],
     },
     ...overrides,

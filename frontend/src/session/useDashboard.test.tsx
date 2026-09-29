@@ -1,15 +1,21 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
-import { DASHBOARD_PATH } from '../content/planResult'
+import { DASHBOARD_PATH, METRIC_ORDER, planResultContent } from '../content/planResult'
 import {
   dashboardFixture,
   NO_PLAN_FIXTURE,
   planResultFixture,
   PREPARING_FIXTURE,
+  trustFixture,
 } from '../test/planResultFixture'
 import { getObservedAllowedRequests, getObservedStorageEntries, stubDashboard } from '../test/setup'
-import { useDashboard, type DashboardView } from './useDashboard'
+import {
+  dashboardAnnouncement,
+  parseDashboard,
+  useDashboard,
+  type DashboardView,
+} from './useDashboard'
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -281,5 +287,113 @@ describe('useDashboard', () => {
     await settledView(result, 'READY')
     expect(getObservedStorageEntries()).toEqual([])
     expect(window.location.search).toBe('')
+  })
+
+  it('Story 2.11: a ready result may ask for a sync or for the long-gap review, and for nothing the other states ask for', () => {
+    const stale = planResultFixture({
+      trust: trustFixture({
+        freshness: {
+          state: 'STALE',
+          cause: 'MEASUREMENT_OUTDATED',
+          affectedMetrics: [...METRIC_ORDER],
+          nextAction: 'SYNC_NOW',
+        },
+      }),
+    })
+    expect(parseDashboard({ state: 'READY', nextAction: 'SYNC_NOW', result: stale })).toMatchObject(
+      {
+        state: 'READY',
+        nextAction: 'SYNC_NOW',
+      },
+    )
+    const gap = planResultFixture({
+      trust: trustFixture({
+        freshness: {
+          state: 'STALE',
+          cause: 'LONG_GAP_CHOICE_REQUIRED',
+          affectedMetrics: [...METRIC_ORDER],
+          nextAction: 'REVIEW_LONG_GAP',
+        },
+      }),
+    })
+    expect(
+      parseDashboard({ state: 'READY', nextAction: 'REVIEW_LONG_GAP', result: gap }),
+    ).toMatchObject({ state: 'READY', nextAction: 'REVIEW_LONG_GAP' })
+    for (const other of ['CREATE_PLAN', 'WAIT_FOR_RESULT', 'SYNC_LATER']) {
+      expect(parseDashboard({ state: 'READY', nextAction: other, result: stale })).toBeNull()
+    }
+    expect(parseDashboard({ state: 'NO_PLAN', nextAction: 'SYNC_NOW' })).toBeNull()
+  })
+
+  it('a quiet read does not say "reloading", and a quiet read asked for meanwhile runs once after it', async () => {
+    const first = deferred()
+    const second = deferred()
+    answers(
+      () => Promise.resolve(json(dashboardFixture())),
+      () => first.promise,
+      () => second.promise,
+    )
+    const { result } = renderHook(() => useDashboard(true))
+    await settledView(result, 'READY')
+    const settledSentence = dashboardAnnouncement(result.current)
+
+    act(() => {
+      result.current.reload({ quiet: true })
+    })
+    expect(result.current.loading).toBe(true)
+    expect(result.current.quiet).toBe(true)
+    expect(dashboardAnnouncement(result.current)).toBe(settledSentence)
+    expect(dashboardAnnouncement(result.current)).not.toBe(planResultContent.status.reloading)
+    // Asked for while the first is out: queued, not lost, and not a second read at once.
+    act(() => {
+      result.current.reload({ quiet: true })
+      result.current.reload({ quiet: true })
+    })
+    expect(reads()).toBe(2)
+
+    await act(async () => {
+      first.resolve(json(versioned(2, 'calc-2')))
+      await first.promise
+    })
+    await waitFor(() => {
+      expect(reads()).toBe(3)
+    })
+    expect(result.current.quiet).toBe(true)
+    await act(async () => {
+      second.resolve(json(versioned(3, 'calc-3')))
+      await second.promise
+    })
+    const view = await settledView(result, 'READY')
+    expect(view.kind === 'READY' ? view.result.pointerVersion : 0).toBe(3)
+    await new Promise((settle) => setTimeout(settle, 30))
+    expect(reads()).toBe(3)
+  })
+
+  it('P14: a reload the user asks for while a quiet read is out makes that read say "reloading"', async () => {
+    const quietRead = deferred()
+    answers(
+      () => Promise.resolve(json(dashboardFixture())),
+      () => quietRead.promise,
+    )
+    const { result } = renderHook(() => useDashboard(true))
+    await settledView(result, 'READY')
+    act(() => {
+      result.current.reload({ quiet: true })
+    })
+    expect(dashboardAnnouncement(result.current)).not.toBe(planResultContent.status.reloading)
+
+    act(() => {
+      result.current.reload()
+    })
+    // The press is not dropped in silence: the read out now answers the user, and it says so.
+    expect(result.current.quiet).toBe(false)
+    expect(dashboardAnnouncement(result.current)).toBe(planResultContent.status.reloading)
+    expect(reads()).toBe(2)
+    await act(async () => {
+      quietRead.resolve(json(dashboardFixture()))
+      await quietRead.promise
+    })
+    await settledView(result, 'READY')
+    expect(reads()).toBe(2)
   })
 })

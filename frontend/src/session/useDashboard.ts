@@ -200,13 +200,14 @@ export type DashboardResponse =
   | { readonly state: 'READY'; readonly nextAction: string; readonly result: PlanResult }
 
 /**
- * The screen-level next actions each state may carry (Story 2.8's closed set). A pair outside these is
- * not an answer this screen understands.
+ * The screen-level next actions each state may carry (Story 2.8's closed set, and Story 2.11's
+ * `SYNC_NOW` and `REVIEW_LONG_GAP` for a ready result). A pair outside these is not an answer this screen
+ * understands.
  */
 const NEXT_ACTIONS: Readonly<Record<DashboardResponse['state'], readonly string[]>> = {
   NO_PLAN: ['CREATE_PLAN'],
   PREPARING: ['WAIT_FOR_RESULT'],
-  READY: ['NONE', 'WAIT_FOR_SYNC'],
+  READY: ['NONE', 'WAIT_FOR_SYNC', 'SYNC_NOW', 'REVIEW_LONG_GAP'],
 }
 
 /**
@@ -264,12 +265,27 @@ export type DashboardView =
   | { readonly kind: 'retryable'; readonly kept: Accepted | null }
   | { readonly kind: 'denied'; readonly cause: 'refused' | 'signedOut' }
 
+/** How a read is asked for. A quiet read (Story 2.11) swaps the bundle without saying "reloading". */
+export interface ReloadOptions {
+  readonly quiet?: boolean
+}
+
 export interface Dashboard {
   readonly view: DashboardView
   /** A read is in flight. The screen marks the result container and its status region busy. */
   readonly loading: boolean
-  /** Reads again. Ignored while a read is in flight. There is no polling: only the user reloads. */
-  readonly reload: () => void
+  /**
+   * The read in flight was asked for quietly: the incremental sync's own reads (after an admission and after
+   * a job ends) must not make the dashboard's sentence waver into "reloading".
+   */
+  readonly quiet?: boolean
+  /**
+   * Reads again. A plain reload while a read is in flight joins it — only the user reloads, and there is no
+   * polling — and a quiet read it joins stops being quiet, so the user's press is answered with "reloading". A
+   * quiet reload asked for while a read is in flight runs once after it, so the answer the sync waited for is
+   * never lost to an earlier read.
+   */
+  readonly reload: (options?: ReloadOptions) => void
 }
 
 /**
@@ -292,6 +308,11 @@ export function useDashboard(ready: boolean): Dashboard {
   const sequence = useRef(0)
   const inFlight = useRef(false)
   const accepted = useRef<Accepted | null>(null)
+  const [quiet, setQuiet] = useState(false)
+  // Whether the read in flight was asked for quietly (the callbacks' own copy of `quiet`).
+  const quietRead = useRef(false)
+  // A quiet read asked for while another was in flight: it runs right after that one settles.
+  const queued = useRef(false)
 
   // Adjusting state to a changed prop during render (React's documented pattern, not an effect): the
   // bundle leaves the view the moment the session stops being ready, and a new read starts as loading.
@@ -318,6 +339,13 @@ export function useDashboard(ready: boolean): Dashboard {
       inFlight.current = false
       setView(next)
       setSettled(request)
+      if (queued.current) {
+        queued.current = false
+        inFlight.current = true
+        quietRead.current = true
+        setQuiet(true)
+        setRequest((current) => current + 1)
+      }
     }
     const read = async (): Promise<void> => {
       try {
@@ -363,13 +391,25 @@ export function useDashboard(ready: boolean): Dashboard {
     }
   }, [ready, request])
 
-  const reload = useCallback((): void => {
-    if (inFlight.current) return
+  const reload = useCallback((options?: ReloadOptions): void => {
+    if (inFlight.current) {
+      if (options?.quiet === true) {
+        queued.current = true
+      } else if (quietRead.current) {
+        // The user asked while a quiet read was out: that read is theirs now, and it says "reloading".
+        quietRead.current = false
+        setQuiet(false)
+      }
+      return
+    }
     inFlight.current = true
+    quietRead.current = options?.quiet === true
+    setQuiet(options?.quiet === true)
     setRequest((current) => current + 1)
   }, [])
 
-  return { view, loading: ready && settled !== request, reload }
+  const loading = ready && settled !== request
+  return { view, loading, quiet: loading && quiet, reload }
 }
 
 /** The bundle a view shows, if any: ready, kept after a failure, or kept unswapped after a conflict. */
@@ -382,7 +422,9 @@ export function bundleOf(view: DashboardView): Accepted | null {
 /** The single sentence the screen's status region reads for the dashboard. */
 export function dashboardAnnouncement(dashboard: Dashboard): string {
   const { view } = dashboard
-  if (dashboard.loading && view.kind !== 'checking') return copy.status.reloading
+  // A quiet read keeps the sentence of the bundle it may replace; the new bundle then speaks for itself.
+  if (dashboard.loading && !dashboard.quiet && view.kind !== 'checking')
+    return copy.status.reloading
   switch (view.kind) {
     case 'checking':
       return copy.status.checking

@@ -346,7 +346,7 @@ class BybitAdapter {
         if (tc==null) {
             Call timeCall = publicCall(SERVER_TIME_PATH);
             JsonNode timeResult = resultOf(timeCall);
-            if (timeResult == null) return rejectedCollection(reasonOf(timeCall, SourceRejectionReason.PROVIDER_UNAVAILABLE));
+            if (timeResult == null) return rejectedCollection(failureOf(timeCall, SourceRejectionReason.PROVIDER_UNAVAILABLE));
             try {
                 JsonNode nanos = timeResult.get("timeNano");
                 if (nanos == null || !nanos.isString() || !nanos.asString().matches("[0-9]{19}"))
@@ -362,7 +362,7 @@ class BybitAdapter {
 
         Call keyCall = call(credentials, QUERY_API_PATH, "");
         JsonNode keyFacts = resultOf(keyCall);
-        if (keyFacts == null) return rejectedCollection(reasonOf(keyCall, SourceRejectionReason.AUTHENTICATION_REJECTED));
+        if (keyFacts == null) return rejectedCollection(failureOf(keyCall, SourceRejectionReason.AUTHENTICATION_REJECTED));
         SourceRejectionReason keyVerdict = judgeKey(keyFacts);
         if (keyVerdict != null) return rejectedCollection(keyVerdict);
         String accountRef = text(keyFacts, "userID");
@@ -371,13 +371,13 @@ class BybitAdapter {
 
         Call accountCall = call(credentials, ACCOUNT_INFO_PATH, "");
         JsonNode account = resultOf(accountCall);
-        if (account == null) return rejectedCollection(reasonOf(accountCall, SourceRejectionReason.AUTHENTICATION_REJECTED));
+        if (account == null) return rejectedCollection(failureOf(accountCall, SourceRejectionReason.AUTHENTICATION_REJECTED));
         if (!isSupportedAccountMode(account)) return rejectedCollection(SourceRejectionReason.UNSUPPORTED_ACCOUNT_MODE);
 
         Instant receivedAt = Instant.now(this.clock);
         Call walletCall = call(credentials, WALLET_BALANCE_PATH, WALLET_BALANCE_QUERY);
         JsonNode wallet = resultOf(walletCall);
-        if (wallet == null) return rejectedCollection(reasonOf(walletCall, SourceRejectionReason.WALLET_UNAVAILABLE));
+        if (wallet == null) return rejectedCollection(failureOf(walletCall, SourceRejectionReason.WALLET_UNAVAILABLE));
         if (!hasUsableUnifiedEquity(wallet)) return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
         JsonNode envelopeTime = walletCall.body().get("time");
         if (envelopeTime == null || !envelopeTime.isIntegralNumber() || envelopeTime.asLong() <= 0)
@@ -400,7 +400,7 @@ class BybitAdapter {
                     Call pageCall = call(credentials, TRANSACTION_LOG_PATH, query);
                     Instant pageReceivedAt = Instant.now(this.clock);
                     JsonNode page = resultOf(pageCall);
-                    if (page == null) return rejectedCollection(reasonOf(pageCall, SourceRejectionReason.PROVIDER_UNAVAILABLE));
+                    if (page == null) return rejectedCollection(failureOf(pageCall, SourceRejectionReason.PROVIDER_UNAVAILABLE));
                     JsonNode list = page.get("list");
                     JsonNode next = page.get("nextPageCursor");
                     if (list == null || !list.isArray() || next == null || !next.isString())
@@ -847,6 +847,23 @@ class BybitAdapter {
         }
         JsonNode result = body.get("result");
         return result != null && result.isObject() ? result : null;
+    }
+
+    /**
+     * 수집 경로의 거절 이유. 제공자 사정인 전송 거절(시간초과·429·5xx)만 먼저 읽고, 그 밖은 예전처럼
+     * {@link #reasonOf}가 호출 자리의 기본값으로 정한다.
+     *
+     * <p>{@link #readEquity}와 {@link #verify}는 전송 거절을 그대로 옮긴다. 수집 경로는 본문부터 읽어 429가
+     * "자격정보 거절"로 뭉개졌고, 증분 동기화(Story 2.11)의 닫힌 표는 그 둘에 다른 다음 행동을 준다 — 제공자
+     * 사정이면 다시 동기화를 권하고, 자격정보 거절이면 권하지 않는다. 파싱할 수 없는 본문(JSON 아님)은 여기서
+     * 형식 거절로 올리지 않는다: 그러면 Story 2.4의 최초 수집이 재시도 대신 검토로 끝나 결과가 바뀐다.
+     */
+    private static SourceRejectionReason failureOf(Call call, SourceRejectionReason fallback) {
+        SourceRejectionReason transport = call.rejection();
+        if (transport == SourceRejectionReason.TIMEOUT || transport == SourceRejectionReason.RATE_LIMITED
+                || transport == SourceRejectionReason.PROVIDER_UNAVAILABLE)
+            return transport;
+        return reasonOf(call, fallback);
     }
 
     /**

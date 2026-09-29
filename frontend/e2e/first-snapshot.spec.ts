@@ -16,6 +16,7 @@ import {
   planPublicationContent,
   planResultContent,
 } from '../src/content/planResult'
+import { planSyncContent } from '../src/content/planSync'
 
 const injectedOrigin = process.env.PLAYWRIGHT_BASE_URL?.trim() ?? ''
 const STUB_CONSENT = '동의하고 계속하기'
@@ -287,9 +288,10 @@ async function expectFirstResult(page: Page, derived: 'OFFICIAL' | 'ESTIMATED'):
 }
 
 /**
- * The keyboard reaches the header and then the dashboard's three controls, in reading order, from a fresh
+ * The keyboard reaches the header and then the dashboard's four controls, in reading order, from a fresh
  * load of the landing screen: the calculation evidence button beside the metrics heading (Story 2.9), the
- * adjustment history button right after it (Story 2.10), then the reload in the next-action section.
+ * adjustment history button right after it (Story 2.10), then the manual sync (Story 2.11) and the reload in
+ * the next-action section.
  */
 async function expectKeyboardOrder(page: Page): Promise<void> {
   await page.reload()
@@ -299,7 +301,7 @@ async function expectKeyboardOrder(page: Page): Promise<void> {
       .getByRole('region', { name: planResultContent.currentHeading }),
   ).toBeVisible({ timeout: 15_000 })
   const reached: string[] = []
-  for (let step = 0; step < 6; step += 1) {
+  for (let step = 0; step < 7; step += 1) {
     await page.keyboard.press('Tab')
     reached.push(await page.evaluate(() => document.activeElement?.textContent.trim() ?? ''))
   }
@@ -309,18 +311,176 @@ async function expectKeyboardOrder(page: Page): Promise<void> {
     authContent.signOut.label,
     calculationEvidenceContent.open,
     adjustmentHistoryContent.open,
+    planSyncContent.button,
     planResultContent.reload,
   ])
   // The controls are real 44px targets.
   for (const name of [
     calculationEvidenceContent.open,
     adjustmentHistoryContent.open,
+    planSyncContent.button,
     planResultContent.reload,
   ]) {
     const box = await page.getByRole('button', { name }).boundingBox()
     expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
     expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
   }
+}
+
+/**
+ * Story 2.11: the manual sync of the active plan, from the keyboard at 320 CSS px. The press says
+ * `동기화 중` within the second the screen promises, keeps the button's name, holds focus on it and blocks a
+ * second request; the end swaps the whole bundle to the next official version at once and moves focus to the
+ * result heading. The attempt, the dashboard and the evidence agree on the new version: a NORMAL collection
+ * with its overlap start, the previous version kept as history. Right after, the server names the cooldown:
+ * the line says its seconds, a press starts nothing, and the button opens again once the seconds pass.
+ */
+async function expectManualSync(page: Page): Promise<void> {
+  await page.setViewportSize({ width: 320, height: 800 })
+  const panel = page.getByRole('region', { name: planResultContent.heading })
+  const next = panel.getByRole('region', { name: planResultContent.nextActionHeading })
+  const control = next.getByRole('button', { name: planSyncContent.button })
+  await expect(control).toHaveAttribute('aria-disabled', 'false')
+  await expect(next.getByText(planSyncContent.lateEvents)).toBeVisible()
+  const before = await page.evaluate(async () => {
+    const shown = (await (
+      await fetch('/api/dashboard', { credentials: 'same-origin', cache: 'no-store' })
+    ).json()) as { result: { pointerVersion: number } }
+    return shown.result.pointerVersion
+  })
+
+  await control.focus()
+  await page.keyboard.press('Enter')
+  await expect(next.getByText(planSyncContent.syncing, { exact: true })).toBeVisible({
+    timeout: 1_000,
+  })
+  await expect(control).toBeFocused()
+  await expect(control).toHaveAccessibleName(planSyncContent.button)
+  await expect(page.getByRole('status')).toContainText(planSyncContent.status.syncing)
+
+  await expect(page.getByRole('status')).toContainText(planSyncContent.status.published, {
+    timeout: 30_000,
+  })
+  await expect(
+    panel.getByRole('heading', { level: 2, name: planResultContent.heading }),
+  ).toBeFocused()
+  await expect(page.getByRole('status')).toHaveCount(1)
+  await expect(page.locator('[aria-live]')).toHaveCount(1)
+
+  const probe = await page.evaluate(async () => {
+    const read = async (
+      path: string,
+    ): Promise<{ status: number; cache: string; body: unknown }> => {
+      const answer = await fetch(path, { credentials: 'same-origin', cache: 'no-store' })
+      return {
+        status: answer.status,
+        cache: answer.headers.get('cache-control') ?? '',
+        body: (await answer.json()) as unknown,
+      }
+    }
+    const dashboard = (await read('/api/dashboard')).body as {
+      result: { planId: string; pointerVersion: number; calculationId: string }
+    }
+    const sync = await read('/api/dashboard/sync')
+    const job = (sync.body as { job?: Record<string, unknown> }).job ?? {}
+    const { planId, pointerVersion, calculationId } = dashboard.result
+    const evidence = (
+      await read(
+        `/api/dashboard/evidence?planId=${planId}&pointerVersion=${String(pointerVersion)}&calculationId=${calculationId}`,
+      )
+    ).body as {
+      collection: {
+        mode: string
+        rangeStart: string
+        inherited: { previousPointerVersion: number; flowCount: number } | null
+      }
+      times: { t0: string }
+      versions: {
+        official: { current: boolean; supersededAt: string | null }[]
+        officialCount: number
+      }
+    }
+    return {
+      pointerVersion,
+      syncStatus: sync.status,
+      syncCache: sync.cache,
+      job: {
+        trigger: job.trigger,
+        status: job.status,
+        mode: job.mode,
+        pointerVersion: job.pointerVersion,
+      },
+      jobId: job.jobId,
+      jobKeys: Object.keys(job),
+      mode: evidence.collection.mode,
+      startsAtT0: evidence.collection.rangeStart === evidence.times.t0,
+      inherited: evidence.collection.inherited,
+      officialCount: evidence.versions.officialCount,
+      current: evidence.versions.official.map((version) => version.current),
+      superseded: evidence.versions.official.map((version) => version.supersededAt !== null),
+    }
+  })
+  expect(probe).toMatchObject({
+    pointerVersion: before + 1,
+    syncStatus: 200,
+    job: { trigger: 'MANUAL', status: 'PUBLISHED', mode: 'NORMAL', pointerVersion: before + 1 },
+    mode: 'NORMAL',
+    // A plan this young overlaps back to its own start: the collection begins at t0.
+    startsAtT0: true,
+    inherited: { previousPointerVersion: before, flowCount: 0 },
+    officialCount: before + 1,
+    current: [true, false],
+    superseded: [false, true],
+  })
+  expect(probe.syncCache).toContain('no-store')
+  // The attempt carries codes and times and its own id only.
+  expect(probe.jobKeys).toEqual([
+    'jobId',
+    'trigger',
+    'status',
+    'stage',
+    'mode',
+    'failureCode',
+    'retryable',
+    'createdAt',
+    'finishedAt',
+    'pointerVersion',
+  ])
+
+  // Right after: the attempt's last state read carried the server's cooldown. The button is unavailable
+  // under its own name, the line says the seconds, and a press starts nothing while focus stays on it.
+  const cooldown = new RegExp(
+    planSyncContent.cooldown(99).replace(/\./g, '\\.').replace('99', '\\d+'),
+  )
+  await expect(next.getByText(cooldown)).toBeVisible({ timeout: 5_000 })
+  await expect(control).toHaveAttribute('aria-disabled', 'true')
+  await expect(control).toHaveAccessibleDescription(cooldown)
+  await control.focus()
+  await page.keyboard.press('Enter')
+  await expect(control).toBeFocused()
+  const latest = await page.evaluate(async () => {
+    const sync = (await (
+      await fetch('/api/dashboard/sync', { credentials: 'same-origin', cache: 'no-store' })
+    ).json()) as { job?: { jobId: string } }
+    return sync.job?.jobId ?? ''
+  })
+  expect(latest, 'the press during the cooldown started no attempt').toBe(probe.jobId)
+
+  const text = await next.innerText()
+  expect(text).not.toMatch(/실시간|정확|축하|손실|스트릭|배지|NaN|undefined/)
+  const axe = await new AxeBuilder({ page })
+    .include('[aria-labelledby="plan-result-next"]')
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+    .analyze()
+  expect(axe.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([])
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  )
+  expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0)
+  expect(page.url()).not.toMatch(/[?&](planId|calculationId|snapshotId|jobId)=/)
+  // The cooldown ends on its own: the button opens again without a reload (the server decides the press).
+  await expect(control).toHaveAttribute('aria-disabled', 'false', { timeout: 35_000 })
+  await expect(next.getByText(cooldown)).toHaveCount(0)
 }
 
 /**
@@ -381,6 +541,7 @@ async function expectEvidence(page: Page, derived: 'OFFICIAL' | 'ESTIMATED'): Pr
     'snapshots',
     'times',
     'inputs',
+    'collection',
     'calculation',
     'metrics',
     'versions',
@@ -718,8 +879,8 @@ test.describe('첫 공식 현재가치', () => {
   test.skip(injectedOrigin === '', 'PLAYWRIGHT_BASE_URL의 동일 출처 스텁이 필요하다.')
 
   test('연결 후 비동기 첫 확인을 접수하고 측정 시각과 세 신뢰 축을 보여 준다', async ({ page }) => {
-    // The chain now runs through the first publication and its result.
-    test.setTimeout(90_000)
+    // The chain now runs through the first publication, its result and one manual sync.
+    test.setTimeout(150_000)
     await connectAndSavePlan(page, 'uta2')
     await collectAndClassify(page, /입금 사건: 0 · 출금 사건: 0 · 제외 사건: 0 · 검토 필요: 0/)
 
@@ -751,6 +912,7 @@ test.describe('첫 공식 현재가치', () => {
     await expectNoHorizontalScroll(page)
     await page.setViewportSize({ width: 320, height: 800 })
     await expectKeyboardOrder(page)
+    await expectManualSync(page)
     await page.goto(planConditionContent.path)
     await expect(page.getByRole('heading', { name: activePlanContent.heading })).toBeVisible()
     await expect(page.getByRole('link', { name: activePlanContent.dashboardLink })).toBeVisible()

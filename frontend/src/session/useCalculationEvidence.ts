@@ -21,7 +21,26 @@ export interface OfficialVersion {
   readonly pointerVersion: number
   readonly calculationId: string
   readonly publishedAt: string
+  /** When the next version replaced it (Story 2.11); `null` for the current one. */
+  readonly supersededAt: string | null
   readonly current: boolean
+}
+
+/**
+ * How the version's cash flows were verified (Story 2.11): `INITIAL` collected `(t0, tc]` whole; `NORMAL`
+ * and `EXTENDED` collected `(rangeStart, tc]` and carried the previous official version's flows at or before
+ * `rangeStart`.
+ */
+export interface EvidenceCollection {
+  readonly mode: 'INITIAL' | 'NORMAL' | 'EXTENDED'
+  readonly rangeStart: string
+  readonly lastExtendedVerificationAt: string
+  readonly inherited: {
+    readonly previousCalculationId: string
+    readonly previousPointerVersion: number
+    readonly flowCount: number
+    readonly through: string
+  } | null
 }
 
 /** An attempt of the same intent that published nothing. Never an official value. */
@@ -87,6 +106,7 @@ export interface CalculationEvidence {
       }
     }
   }
+  readonly collection: EvidenceCollection
   readonly calculation: {
     readonly calculationId: string
     readonly calculationPolicy: string
@@ -101,7 +121,10 @@ export interface CalculationEvidence {
   }
   readonly metrics: readonly EvidenceMetric[]
   readonly versions: {
+    /** The current version and at most ten earlier ones, newest first. */
     readonly official: readonly OfficialVersion[]
+    /** How many official versions the plan has had. */
+    readonly officialCount: number
     readonly unpublished: readonly UnpublishedAttempt[]
   }
 }
@@ -153,8 +176,62 @@ function isOfficialVersion(value: unknown): boolean {
     typeof row.calculationId === 'string' &&
     isInstant(row.publishedAt) &&
     Number.isInteger(row.pointerVersion) &&
-    typeof row.current === 'boolean'
+    (row.pointerVersion as number) >= 1 &&
+    typeof row.current === 'boolean' &&
+    // The current version has no end; an earlier one ended when the next began.
+    (row.current ? row.supersededAt === null : isInstant(row.supersededAt))
   )
+}
+
+/**
+ * The collection block agrees with the version (Story 2.11). The first calculation collected from `t0` and
+ * carried nothing, and its collection was its extended verification (at `tc`). An incremental one is the
+ * second official version or a later one: it collected from its start — at or after `t0`, before `tc` — and
+ * carried at most the version's flows from the version just before the shown one, up to that start. The last
+ * extended verification is never before `t0` nor after `tc`. Its range is the collected range the evidence
+ * names; `INITIAL` keeps Story 2.9's exact `(t0, tc]`.
+ */
+function isCollection(value: unknown, shown: PlanResult, rangeStart: unknown): boolean {
+  const row = record(value)
+  if (row === null || !isInstant(row.rangeStart) || !isInstant(row.lastExtendedVerificationAt))
+    return false
+  if (row.rangeStart !== rangeStart) return false
+  const extended = Date.parse(row.lastExtendedVerificationAt as string)
+  if (extended < Date.parse(shown.conditions.startAt) || extended > Date.parse(shown.basisAt))
+    return false
+  if (row.mode === 'INITIAL')
+    return (
+      row.inherited === null &&
+      row.rangeStart === shown.conditions.startAt &&
+      row.lastExtendedVerificationAt === shown.basisAt
+    )
+  if (row.mode !== 'NORMAL' && row.mode !== 'EXTENDED') return false
+  if (shown.pointerVersion < 2) return false
+  const inherited = record(row.inherited)
+  const start = Date.parse(row.rangeStart as string)
+  return (
+    inherited !== null &&
+    typeof inherited.previousCalculationId === 'string' &&
+    inherited.previousPointerVersion === shown.pointerVersion - 1 &&
+    count(inherited.flowCount) &&
+    inherited.flowCount <= shown.flowCount &&
+    inherited.through === row.rangeStart &&
+    start >= Date.parse(shown.conditions.startAt) &&
+    start < Date.parse(shown.basisAt)
+  )
+}
+
+/** The official versions the evidence lists at most: the current one and ten earlier ones. */
+const OFFICIAL_VERSIONS_LISTED = 11
+
+/** Strictly newest first: each listed version's order is below the one before it. */
+function newestFirst(versions: readonly unknown[]): boolean {
+  return versions.every((version, index) => {
+    if (index === 0) return true
+    const before = record(versions[index - 1])?.pointerVersion
+    const here = record(version)?.pointerVersion
+    return typeof before === 'number' && typeof here === 'number' && here < before
+  })
 }
 
 function isUnpublished(value: unknown): boolean {
@@ -170,7 +247,9 @@ function isUnpublished(value: unknown): boolean {
 /**
  * A `GET /api/dashboard/evidence` body, or `null` when it is not the whole lineage of the shown bundle. The
  * three reference values must be the shown pointer's; the snapshots, the times and the plan terms the shown
- * bundle's; the collected range exactly `(t0, tc]`; the one current official version that pointer; and the
+ * bundle's; the collected range exactly `(start, tc]` with the collection block that names the start (`t0` for
+ * the first calculation, Story 2.11's overlap start for a later one); the one current official version that
+ * pointer; and the
  * metric impact the shown metrics'. Every instant is in the server's format. Anything else — a missing
  * section, a malformed field, another bundle's lineage — is dropped whole, never rendered in part.
  */
@@ -225,8 +304,8 @@ export function parseEvidence(value: unknown, shown: PlanResult): CalculationEvi
     times.cashflowVerifiedThrough === shown.cashflowVerifiedThrough &&
     strings(inputs.connection, ['provider', 'connectionId', 'policyVersion']) &&
     strings(range, ['collectionPolicy', 'completenessHash']) &&
-    // The collection covered exactly (t0, tc].
-    range.rangeStart === times.t0 &&
+    // The collection covered exactly (start, tc]; the start is t0 for the first calculation.
+    isCollection(row.collection, shown, range.rangeStart) &&
     range.rangeEnd === times.tc &&
     isInstant(range.rangeStart) &&
     isInstant(range.rangeEnd) &&
@@ -261,7 +340,12 @@ export function parseEvidence(value: unknown, shown: PlanResult): CalculationEvi
     metrics.length === METRIC_ORDER.length &&
     metrics.every((metric, index) => isImpact(metric, shown, index, shown.estimatedFlowCount)) &&
     official.length > 0 &&
+    // The current version and at most ten earlier ones, never more than the plan has had.
+    official.length <= OFFICIAL_VERSIONS_LISTED &&
     official.every(isOfficialVersion) &&
+    newestFirst(official) &&
+    count(versions?.officialCount) &&
+    versions.officialCount >= official.length &&
     unpublished.every(isUnpublished)
   if (!whole) return null
   const evidence = row as unknown as CalculationEvidence

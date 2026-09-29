@@ -164,6 +164,19 @@ export const planResultContent = {
           '외부 자금흐름 확인이 15분보다 오래됐습니다. 기존 공식 값은 그대로 유지됩니다.',
         BOTH_OUTDATED:
           '현재가치 측정과 외부 자금흐름 확인이 모두 15분보다 오래됐습니다. 기존 공식 값은 그대로 유지됩니다.',
+        // Story 2.11: why a result is not fresh although the user can ask for a sync.
+        SYNC_RESTRICTED:
+          '운영 제한으로 동기화가 멈춰 있습니다. 기존 공식 값은 그대로 유지되며 자동으로 다시 시작하지 않습니다.',
+        PLAN_PERIOD_ENDED:
+          '계획 종료 시각이 지나 더 동기화하지 않습니다. 기존 공식 값은 그대로 유지됩니다.',
+        LONG_GAP_CHOICE_REQUIRED:
+          '장기 미동기화·선택 필요: 30일 넘게 외부 자금흐름을 확인하지 않아 자동으로 동기화하지 않습니다. 기존 공식 값은 읽기 전용으로 유지됩니다.',
+        LAST_SYNC_FAILED:
+          '마지막 동기화 시도를 마치지 못했습니다. 기존 공식 값은 그대로 유지됩니다.',
+        LAST_SYNC_REVIEW_REQUIRED:
+          '마지막 동기화 시도에서 입력 검토가 필요해 새 결과를 발행하지 않았습니다. 기존 공식 값은 그대로 유지됩니다.',
+        LAST_SYNC_BLOCKED:
+          '마지막 동기화 시도를 진행할 수 없어 새 결과를 발행하지 않았습니다. 기존 공식 값은 그대로 유지됩니다.',
       } as Record<string, string>,
       lastNormal: '마지막 정상 시각 (현재가치 측정 시각)',
       verifiedThrough: '외부 자금흐름 확인 시각',
@@ -182,6 +195,8 @@ export const planResultContent = {
       causes: {
         INPUTS_VERIFIED: '수집 완전성, 외부 자금흐름 판정과 사건 시점 환산을 확인한 입력입니다.',
         TARGET_NOT_POSITIVE: '조정 최종 목표가 0 이하라 계획 입력을 검토해야 합니다.',
+        LATEST_INPUTS_REVIEW_REQUIRED:
+          '최근 동기화에서 수집·판정·환산한 입력을 확인하지 못해 검토가 필요합니다. 마지막 정상 결과를 그대로 둡니다.',
       } as Record<string, string>,
       lastNormal: '마지막 정상 시각 (외부 자금흐름 확인 시각)',
     },
@@ -233,10 +248,11 @@ export function copyFor(
 export const NEXT_ACTION_FALLBACK = '다시 불러와 상태를 확인해 주세요.'
 
 /**
- * 화면 단위 다음 행동 코드 → 문장(Story 2.8의 닫힌 집합: `CREATE_PLAN`·`WAIT_FOR_RESULT`·
- * `WAIT_FOR_SYNC`·`NONE`). 동기화 조작은 Story 2.11이 코드를 더한다. 그전까지 `최신 아님`의 다음
- * 행동은 `NONE`이고, 자동 복구나 이후 기능을 약속하지 않는다. `NONE`의 승인 문장은 화면에 한 번,
- * 다음 행동 섹션에만 나온다.
+ * 화면 단위 다음 행동 코드 → 문장(닫힌 집합: Story 2.8의 `CREATE_PLAN`·`WAIT_FOR_RESULT`·
+ * `WAIT_FOR_SYNC`·`NONE`, Story 2.11의 `SYNC_NOW`·`REVIEW_LONG_GAP`). 자동 복구나 없는 기능을
+ * 약속하지 않는다 — 장기 미동기화의 두 선택은 설명만 하고 조작을 두지 않는다. `NONE`은 할 수 있는 것이
+ * 없다고 단정하지 않는다: 같은 섹션에 수동 동기화 조작이 있으므로(Story 2.11) 표시된 값이 무엇인지만 말한다.
+ * 그 문장은 화면에 한 번, 다음 행동 섹션에만 나온다.
  *
  * @param measured 서울 시각으로 쓴 현재가치 측정 시각. 결과가 없거나 시각을 표시할 수 없으면 `null`이다.
  */
@@ -244,10 +260,16 @@ export function nextActionCopy(code: string, measured: string | null): string {
   switch (code) {
     case 'NONE':
       return measured === null
-        ? '지금 이 화면에서 새로 확인할 수 없습니다. 표시된 값은 마지막 정상 결과입니다.'
-        : `지금 이 화면에서 새로 확인할 수 없습니다. 표시된 값은 ${measured}의 마지막 정상 결과입니다.`
+        ? '표시된 값은 마지막 정상 결과입니다.'
+        : `표시된 값은 ${measured}에 측정한 마지막 정상 결과입니다.`
     case 'WAIT_FOR_SYNC':
-      return '동기화 작업이 진행 중입니다. 작업이 끝난 뒤 다시 불러와 확인해 주세요. 그전까지 표시된 값은 바뀌지 않습니다.'
+      return '동기화 작업이 진행 중입니다. 작업이 끝나면 결과가 한 번에 바뀝니다. 그전까지 표시된 값은 바뀌지 않습니다.'
+    case 'SYNC_NOW':
+      return measured === null
+        ? '수동 동기화로 최신 Bybit 값을 다시 확인할 수 있습니다. 그전까지 표시된 값은 마지막 정상 결과입니다.'
+        : `수동 동기화로 최신 Bybit 값을 다시 확인할 수 있습니다. 그전까지 표시된 값은 ${measured}의 마지막 정상 결과입니다.`
+    case 'REVIEW_LONG_GAP':
+      return '30일 넘게 동기화하지 않아 자동으로 동기화하지 않습니다. 아래 장기 미동기화 안내에서 두 선택의 차이를 확인해 주세요.'
     case 'WAIT_FOR_RESULT':
       return '발행이 끝난 뒤 다시 불러와 결과를 확인해 주세요.'
     case 'CREATE_PLAN':
@@ -259,16 +281,21 @@ export function nextActionCopy(code: string, measured: string | null): string {
 }
 
 /**
- * 축 하나의 다음 행동 코드 → 짧은 문장. 축은 `WAIT_FOR_SYNC`(신선도, 작업 진행 중)와 `NONE`만
- * 만든다. 시각을 담지 않는다 — 축마다 자기 마지막 정상 시각이 따로 있고, 측정 시각을 되풀이하면 두
+ * 축 하나의 다음 행동 코드 → 짧은 문장. 축의 다음 행동은 신선도의 `WAIT_FOR_SYNC`(작업 진행 중)·
+ * `SYNC_NOW`·`REVIEW_LONG_GAP`(Story 2.11)과 `NONE`이다. `NONE`은 조치가 없다고 단정하지 않고 그 축에 따로
+ * 안내할 원인이 없다는 사실만 말한다. 시각을 담지 않는다 — 축마다 자기 마지막 정상 시각이 따로 있고, 측정 시각을 되풀이하면 두
  * 기준이 한 묶음에 섞여 읽힌다.
  */
 export function axisActionCopy(code: string): string {
   switch (code) {
     case 'NONE':
-      return '지금 할 수 있는 조치가 없습니다.'
+      return '이 축에서 따로 안내할 원인은 없습니다.'
     case 'WAIT_FOR_SYNC':
-      return '동기화 작업이 끝난 뒤 다시 불러와 확인해 주세요.'
+      return '동기화 작업이 끝나면 결과가 한 번에 바뀝니다.'
+    case 'SYNC_NOW':
+      return '다음 행동의 수동 동기화로 다시 확인할 수 있습니다.'
+    case 'REVIEW_LONG_GAP':
+      return '다음 행동의 장기 미동기화 안내를 확인해 주세요.'
     default:
       return NEXT_ACTION_FALLBACK
   }

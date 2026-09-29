@@ -1,0 +1,97 @@
+/*
+ * The sync control (DESIGN.md sync-control, EXPERIENCE sync-control). The button is the one primary control
+ * of the screen: an explicit user action only. Its place does not move while a sync runs — the state line
+ * under it says what is happening, in text, never by colour alone. No animation: a static label is the
+ * progress indicator, so reduced motion needs nothing removed.
+ */
+.control {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  max-inline-size: 100%;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--component-sync-control-background);
+  border-radius: var(--component-sync-control-radius);
+  background: var(--component-sync-control-background);
+  color: var(--component-sync-control-foreground);
+  font-family: var(--type-body-font-family);
+  font-size: var(--type-body-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-body-line-height);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.button:focus-visible {
+  outline: var(--space-focus-width) solid var(--component-sync-control-focus);
+  outline-offset: var(--space-focus-offset);
+}
+
+/* Not available now: the name stays the action, the state line below says why. */
+.button[aria-disabled='true'] {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-subtle);
+  color: var(--color-ink-secondary);
+  cursor: not-allowed;
+}
+
+.state {
+  font-weight: var(--type-label-font-weight);
+}
+
+.meta,
+.help {
+  color: var(--color-ink-secondary);
+  font-size: var(--type-meta-font-size);
+  line-height: var(--type-meta-line-height);
+}
+
+.control p,
+.control h4,
+.control ul,
+.control dl,
+.control dd {
+  margin: 0;
+}
+
+/* The error summary and the long-gap explanation. Text carries the state; the surface only groups it. */
+.summary {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--component-service-notice-border);
+  border-radius: var(--radius-md);
+  background: var(--component-service-notice-background);
+  color: var(--component-service-notice-foreground);
+  scroll-margin-block-start: var(--space-4);
+}
+
+.summaryTitle {
+  font-weight: var(--type-label-font-weight);
+}
+
+.facts {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.facts dt {
+  font-weight: var(--type-label-font-weight);
+}
+
+.facts dd {
+  overflow-wrap: anywhere;
+}
+
+.choices {
+  display: grid;
+  gap: var(--space-2);
+  padding-inline-start: var(--space-5);
+}

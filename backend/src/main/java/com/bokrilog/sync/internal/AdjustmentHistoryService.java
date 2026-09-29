@@ -15,6 +15,7 @@ import com.bokrilog.sync.internal.AdjustmentHistoryRepository.EarlierFlow;
 import com.bokrilog.sync.internal.AdjustmentHistoryRepository.PageRow;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -57,12 +58,14 @@ class AdjustmentHistoryService {
     private final PortfolioMembershipApi portfolios;
     private final AccountAccessApi accounts;
     private final PlanPublicationPort plans;
+    private final OfficialVersionHead heads;
     private final TransactionTemplate reads;
 
     AdjustmentHistoryService(PlanPublicationRepository publications, AdjustmentHistoryRepository history,
             PortfolioMembershipApi portfolios, AccountAccessApi accounts, PlanPublicationPort plans,
-            PlatformTransactionManager manager) {
+            OfficialVersionHead heads, PlatformTransactionManager manager) {
         this.publications = publications;
+        this.heads = heads;
         this.history = history;
         this.portfolios = portfolios;
         this.accounts = accounts;
@@ -107,17 +110,28 @@ class AdjustmentHistoryService {
      *
      * <ul>
      *   <li>it belongs to the plan and its terms, and the portfolio pointer cites its snapshot (the
-     *       dashboard's AD-23 reliance: both pointers advance in one publication);
-     *   <li>its classification is the COMPLETE one of its candidate under its policy, with nothing held for
-     *       review and an excluded count its excluded events agree with, and its conversion is that
+     *       dashboard's AD-23 reliance: both pointers advance in one publication, the incremental sync's too);
+     *   <li>its head holds as the calculation evidence judges it ({@link OfficialVersionHead}): the pointer's
+     *       history, and for an incremental version the sync attempt that published it with the mode, start and
+     *       extended verification the rules require, and the previous official version — so one version is
+     *       unavailable to both reads or to neither;
+     *   <li>its latest classification is the COMPLETE one of its candidate under its policy, with nothing held
+     *       for review and an excluded count its excluded events agree with, and its latest conversion is that
      *       classification's calculable one under its price policy, both of its intent, portfolio, connection
-     *       and provider account, with the version's counts;
-     *   <li>every applied row holds ({@link AdjustmentHistoryRepository#totals}), the rows are the version's
-     *       count, numbered {@code 1..n} in {@code (event time, source id)} order, and their directions are
-     *       the classification's deposits and withdrawals;
-     *   <li>the conversion chain behind the version's conversion ends where it should, and every earlier
-     *       version in it carries every applied event.
+     *       and provider account, with the counts of the rows that cite them;
+     *   <li>every applied row holds by its own lineage ({@link AdjustmentHistoryRepository#totals}), the rows
+     *       are the version's count, numbered {@code 1..n} in {@code (event time, source id)} order, the rows
+     *       citing the latest conversion have the latest classification's deposits and withdrawals, and — for an
+     *       incremental version (Story 2.11) — the carried rows are exactly the previous official version's rows
+     *       at or before the collection start;
+     *   <li>the exclusions are the latest classification's excluded events and, for an incremental version, the
+     *       previous version's exclusions at or before the start, to the letter;
+     *   <li>the conversion chain behind each conversion the rows cite ends where it should, and every earlier
+     *       version in it carries every event that cites it.
      * </ul>
+     *
+     * <p>The previous version's own lineage is not walked again: its bundles were judged whole when it was
+     * published. Every row's lineage is still judged here.
      */
     private AdjustmentOutcome page(UUID user, AdjustmentQuery query, int after) {
         var plan = plans.activePlan(user).orElse(null);
@@ -136,7 +150,8 @@ class AdjustmentHistoryService {
                 || portfolio.publicationSequence() != calculation.portfolioSequence())
             return new AdjustmentOutcome.Unavailable();
         var lineage = publications.lineage(user, calculationId).orElse(null);
-        if (lineage == null) return new AdjustmentOutcome.Unavailable();
+        if (lineage == null || heads.judge(user, plan, pointer, calculation, lineage) == null)
+            return new AdjustmentOutcome.Unavailable();
         var classification = publications.classificationBundle(user, lineage.classificationId()).orElse(null);
         var counts = history.classificationCounts(user, lineage.classificationId()).orElse(null);
         if (classification == null || counts == null || !"COMPLETE".equals(classification.status())
@@ -146,7 +161,7 @@ class AdjustmentHistoryService {
                 || !classification.portfolioId().equals(calculation.portfolioId())
                 || !classification.connectionId().equals(lineage.connectionId())
                 || !classification.providerAccountId().equals(lineage.providerAccountId())
-                || counts.review() != 0 || counts.deposits() + counts.withdrawals() != calculation.flowCount()
+                || counts.review() != 0
                 // The excluded count shown is the classification's own record, and its events must say the same.
                 || counts.excluded() != counts.excludedEvents())
             return new AdjustmentOutcome.Unavailable();
@@ -158,43 +173,87 @@ class AdjustmentHistoryService {
                 || !conversion.intentId().equals(plan.intentId())
                 || !conversion.portfolioId().equals(calculation.portfolioId())
                 || !conversion.connectionId().equals(lineage.connectionId())
-                || !conversion.providerAccountId().equals(lineage.providerAccountId())
-                || conversion.flowCount() != calculation.flowCount()
-                || conversion.estimatedCount() != calculation.estimatedFlowCount())
+                || !conversion.providerAccountId().equals(lineage.providerAccountId()))
             return new AdjustmentOutcome.Unavailable();
 
         var totals = history.totals(user, calculationId, query.direction());
         if (totals.total() != calculation.flowCount() || totals.broken() != 0 || totals.disordered() != 0
                 || totals.estimated() != calculation.estimatedFlowCount()
                 || (totals.total() > 0 && (totals.firstSequence() != 1 || totals.lastSequence() != totals.total()))
-                || totals.inbound() != counts.deposits() || totals.total() - totals.inbound() != counts.withdrawals())
+                // The latest lineage's counts reach only the rows that cite it (Story 2.11).
+                || totals.own() != counts.deposits() + counts.withdrawals() || totals.own() != conversion.flowCount()
+                || totals.ownEstimated() != conversion.estimatedCount()
+                || totals.ownInbound() != counts.deposits() || totals.own() - totals.ownInbound() != counts.withdrawals())
             return new AdjustmentOutcome.Unavailable();
         String net = PlanPublicationService.notation(totals.selectedSum());
         if (!canonical(net)) return new AdjustmentOutcome.Unavailable();
 
-        List<EarlierVersion> earlier = earlierVersions(user, lineage.classificationId(), lineage.conversionId(),
-                conversion.flowCount());
-        if (earlier == null) return new AdjustmentOutcome.Unavailable();
-        List<UUID> earlierIds = earlier.stream().map(EarlierVersion::conversionId).toList();
-        if (history.earlierCoverage(calculationId, earlierIds) != totals.total() * earlierIds.size())
+        // What an incremental version carried is the previous version's rows and exclusions at or before its start.
+        UUID previous = lineage.previousCalculationId();
+        var exclusions = publications.exclusions(calculationId, lineage.classificationId(), previous,
+                lineage.collectionRangeStart());
+        if (exclusions.own() != counts.excludedEvents() || exclusions.carriedBeyondStart() != 0
+                || exclusions.carriedUnmatched() != 0)
             return new AdjustmentOutcome.Unavailable();
+        if (previous == null) {
+            if (totals.own() != totals.total() || exclusions.own() != exclusions.total())
+                return new AdjustmentOutcome.Unavailable();
+        } else {
+            var carried = publications.carried(calculationId, lineage.conversionId(), previous,
+                    lineage.collectionRangeStart());
+            if (carried.rows() != totals.total() - totals.own() || carried.beyondStart() != 0 || carried.unmatched() != 0
+                    || carried.rows() != carried.previousAtOrBeforeStart()
+                    || exclusions.total() - exclusions.own() != exclusions.previousAtOrBeforeStart())
+                return new AdjustmentOutcome.Unavailable();
+        }
+
+        /*
+         * The conversion chain of every conversion the rows cite: the latest one and each carried row's own. Their
+         * links are read at once; only a conversion that continues an earlier one has a chain to walk (an
+         * incremental sync's conversion never does), and the coverage of every chain is counted in one query.
+         */
+        List<AdjustmentHistoryRepository.RowConversion> cited = history.rowConversions(user, calculationId);
+        Map<UUID, AdjustmentHistoryRepository.ConversionLink> links = history.conversionLinks(user,
+                cited.stream().map(AdjustmentHistoryRepository.RowConversion::conversionId).toList());
+        Map<UUID, List<EarlierVersion>> earlierByConversion = new HashMap<>();
+        Map<UUID, List<UUID>> chains = new HashMap<>();
+        List<UUID> earlierIds = new ArrayList<>();
+        for (var row : cited) {
+            var link = links.get(row.conversionId());
+            if (link == null || !link.classificationId().equals(row.classificationId()))
+                return new AdjustmentOutcome.Unavailable();
+            List<EarlierVersion> earlier = link.previousId() == null ? List.of()
+                    : earlierVersions(user, row.classificationId(), row.conversionId());
+            if (earlier == null) return new AdjustmentOutcome.Unavailable();
+            earlierByConversion.put(row.conversionId(), earlier);
+            if (earlier.isEmpty()) continue;
+            List<UUID> ids = earlier.stream().map(EarlierVersion::conversionId).toList();
+            chains.put(row.conversionId(), ids);
+            earlierIds.addAll(ids);
+        }
+        Map<UUID, Integer> coverage = history.earlierCoverage(calculationId, chains);
+        for (var row : cited) {
+            List<UUID> ids = chains.getOrDefault(row.conversionId(), List.of());
+            if (coverage.getOrDefault(row.conversionId(), 0) != row.rows() * ids.size())
+                return new AdjustmentOutcome.Unavailable();
+        }
 
         List<PageRow> fetched = history.page(user, calculationId, query.direction(), after, PAGE_SIZE + 1);
         List<PageRow> rows = fetched.size() > PAGE_SIZE ? fetched.subList(0, PAGE_SIZE) : fetched;
         List<UUID> events = rows.stream().map(PageRow::sourceEventId).toList();
-        var legs = history.legs(lineage.conversionId(), events);
+        var legs = history.legs(calculationId, events);
         var earlierFlows = history.earlierFlows(earlierIds, events);
         List<AdjustmentHistory.Adjustment> adjustments = new ArrayList<>();
         for (PageRow row : rows) {
-            adjustments.add(adjustment(row, lineage, calculationId, legs.getOrDefault(row.sourceEventId(), List.of()),
-                    earlier, earlierFlows));
+            adjustments.add(adjustment(row, calculationId, legs.getOrDefault(row.sourceEventId(), List.of()),
+                    earlierByConversion.getOrDefault(row.conversionId(), List.of()), earlierFlows));
         }
         String next = fetched.size() > PAGE_SIZE
                 ? AdjustmentCursor.encode(user, query, rows.getLast().sequence()) : null;
         return new AdjustmentOutcome.Found(new AdjustmentHistory(plan.planId(), pointer.version(), calculationId,
                 query.direction(), pointer.publishedAt(),
                 new AdjustmentHistory.Coverage(calculation.t0(), calculation.verifiedThrough()),
-                new AdjustmentHistory.Summary(totals.selected(), net, counts.excluded()), List.copyOf(adjustments),
+                new AdjustmentHistory.Summary(totals.selected(), net, exclusions.total()), List.copyOf(adjustments),
                 next));
     }
 
@@ -209,12 +268,12 @@ class AdjustmentHistoryService {
      * The earlier conversion versions behind {@code current}, newest first, or {@code null} when the chain is
      * not one lineage: a link that points outside this user and classification, a chain that does not end
      * within {@link #MAX_CHAIN} links (the current one included), a link without its reason, or a version with
-     * another flow count.
+     * another flow count than the current one.
      */
-    private @Nullable List<EarlierVersion> earlierVersions(UUID user, UUID classificationId, UUID current,
-            int flowCount) {
+    private @Nullable List<EarlierVersion> earlierVersions(UUID user, UUID classificationId, UUID current) {
         List<ChainLink> chain = history.chain(user, classificationId, current, MAX_CHAIN);
         if (chain.isEmpty() || !chain.getFirst().conversionId().equals(current)) return null;
+        int flowCount = chain.getFirst().flowCount();
         List<EarlierVersion> earlier = new ArrayList<>();
         for (int index = 1; index < chain.size(); index++) {
             ChainLink replaced = chain.get(index);
@@ -232,12 +291,13 @@ class AdjustmentHistoryService {
     }
 
     /**
-     * One row. The change marker stands when the version's conversion continues earlier ones and in at least
+     * One row. The change marker stands when the row's own conversion continues earlier ones and in at least
      * one of them this event had another value (or none); only then are the earlier versions listed, newest
-     * first, each as it was stored.
+     * first, each as it was stored. The references are the row's own lineage: a carried row cites the
+     * classification and conversion that first applied it.
      */
-    private static AdjustmentHistory.Adjustment adjustment(PageRow row, PlanPublicationRepository.Lineage lineage,
-            UUID calculationId, List<AdjustmentHistory.PriceLeg> legs, List<EarlierVersion> earlier,
+    private static AdjustmentHistory.Adjustment adjustment(PageRow row, UUID calculationId,
+            List<AdjustmentHistory.PriceLeg> legs, List<EarlierVersion> earlier,
             Map<UUID, Map<UUID, EarlierFlow>> earlierFlows) {
         List<AdjustmentHistory.Revision> revisions = new ArrayList<>();
         boolean changed = false;
@@ -258,8 +318,8 @@ class AdjustmentHistoryService {
                 new AdjustmentHistory.Price(row.pricePolicy(), row.evidenceType(), row.estimated(),
                         PlanPublicationService.notation(row.unitPrice()), row.routeId(), List.copyOf(legs)),
                 row.discoveredAt(),
-                new AdjustmentHistory.References(row.sourceEventId(), row.sourceId(), lineage.classificationId(),
-                        lineage.conversionId(), calculationId),
+                new AdjustmentHistory.References(row.sourceEventId(), row.sourceId(), row.classificationId(),
+                        row.conversionId(), calculationId),
                 changed, changed ? List.copyOf(revisions) : List.of());
     }
 

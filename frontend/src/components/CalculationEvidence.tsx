@@ -234,6 +234,7 @@ function Inputs({ evidence }: { readonly evidence: Evidence }): ReactElement {
           },
         ]}
       />
+      <Collection evidence={evidence} />
       <p className={styles.term}>{copy.inputs.classification}</p>
       <Facts
         facts={[
@@ -300,6 +301,54 @@ function Inputs({ evidence }: { readonly evidence: Evidence }): ReactElement {
         ]}
       />
     </Part>
+  )
+}
+
+/**
+ * How the version's cash flows were verified (Story 2.11): the mode, where the collection started, the last
+ * extended verification and — for a version after the first — what it carried from the previous official
+ * version and up to which boundary.
+ */
+function Collection({ evidence }: { readonly evidence: Evidence }): ReactElement {
+  const { mode, rangeStart, lastExtendedVerificationAt, inherited } = evidence.collection
+  return (
+    <>
+      <p className={styles.term}>{copy.collection.heading}</p>
+      <Facts
+        facts={[
+          {
+            label: copy.collection.mode,
+            value: lookup(copy.collection.modes, mode, copy.collection.unknownMode),
+            help: lookup(copy.collection.modeHelp, mode, copy.collection.unknownMode),
+          },
+          { label: copy.collection.rangeStart, value: <Time value={rangeStart} /> },
+          {
+            label: copy.collection.lastExtended,
+            value: <Time value={lastExtendedVerificationAt} />,
+            help: copy.collection.lastExtendedHelp,
+          },
+          inherited === null
+            ? { label: copy.collection.inherited, value: copy.collection.noInherited }
+            : {
+                label: copy.collection.inherited,
+                value: copy.collection.inheritedCount(
+                  inherited.flowCount,
+                  inherited.previousPointerVersion,
+                ),
+                help: copy.collection.inheritedHelp,
+              },
+          ...(inherited === null
+            ? []
+            : [
+                { label: copy.collection.through, value: <Time value={inherited.through} /> },
+                {
+                  label: copy.collection.previousCalculation,
+                  value: <Id value={inherited.previousCalculationId} />,
+                },
+              ]),
+        ]}
+      />
+    </>
   )
 }
 
@@ -402,10 +451,11 @@ function attemptReason(code: string): string {
  * no earlier version or attempt has a screen of its own.
  */
 function Versions({ evidence }: { readonly evidence: Evidence }): ReactElement {
-  const { official, unpublished } = evidence.versions
+  const { official, officialCount, unpublished } = evidence.versions
   return (
     <Part id="versions" title={copy.sections.versions}>
       <p className={styles.term}>{copy.versions.official}</p>
+      <p className={styles.help}>{copy.versions.officialCount(officialCount, official.length)}</p>
       <ul className={styles.list}>
         {official.map((version) => (
           <li
@@ -418,7 +468,14 @@ function Versions({ evidence }: { readonly evidence: Evidence }): ReactElement {
                 { label: copy.versions.effectiveFrom, value: <Time value={version.publishedAt} /> },
                 {
                   label: copy.versions.effectiveUntil,
-                  value: version.current ? copy.versions.current : copy.versions.earlier,
+                  value:
+                    version.current || version.supersededAt === null ? (
+                      copy.versions.current
+                    ) : (
+                      <>
+                        <Time value={version.supersededAt} /> {copy.versions.earlier}
+                      </>
+                    ),
                 },
                 { label: copy.versions.calculationId, value: <Id value={version.calculationId} /> },
               ]}

@@ -13,6 +13,13 @@ import org.springframework.stereotype.Component;
 @Component
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 class FirstSnapshotWorker {
+    /**
+     * The pause between two claims of one kind, in milliseconds: one second, unless configured. The durable
+     * rows are the authority either way; a shorter pause only claims sooner (the plan sync tests use it).
+     */
+    static final String DISPATCH_DELAY="${bokrilog.sync.worker.dispatch-delay-ms:1000}";
+    /** The pause between two lease renewals, in milliseconds: five seconds (a lease lasts thirty), unless configured. */
+    static final String HEARTBEAT_DELAY="${bokrilog.sync.worker.heartbeat-delay-ms:5000}";
     private final SyncJobService service;
     private final SourceConnectionApi sources;
     private final PlanPublicationService publications;
@@ -20,10 +27,13 @@ class FirstSnapshotWorker {
     private final Map<java.util.UUID,InitialCollectionRepository.Lease> initialInFlight=new ConcurrentHashMap<>();
     private final Map<java.util.UUID,CashflowConversionRepository.Lease> conversionInFlight=new ConcurrentHashMap<>();
     private final Map<java.util.UUID,PlanPublicationRepository.Lease> publicationInFlight=new ConcurrentHashMap<>();
-    FirstSnapshotWorker(SyncJobService service,SourceConnectionApi sources,PlanPublicationService publications) {
-        this.service=service; this.sources=sources; this.publications=publications;
+    private final Map<java.util.UUID,PlanSyncRepository.Lease> syncInFlight=new ConcurrentHashMap<>();
+    private final PlanSyncService syncs;
+    FirstSnapshotWorker(SyncJobService service,SourceConnectionApi sources,PlanPublicationService publications,
+            PlanSyncService syncs) {
+        this.service=service; this.sources=sources; this.publications=publications; this.syncs=syncs;
     }
-    @Scheduled(fixedDelay=1000)
+    @Scheduled(fixedDelayString=DISPATCH_DELAY)
     void dispatch() {
         service.claim().ifPresent(lease -> {
             inFlight.put(lease.jobId(),lease);
@@ -36,12 +46,14 @@ class FirstSnapshotWorker {
      * would lose their lease for a failure that was not theirs. A lease whose renewal threw is kept —
      * the next tick tries again, and the lease expiry stays the authority.
      */
-    @Scheduled(fixedDelay=5000)
+    @Scheduled(fixedDelayString=HEARTBEAT_DELAY)
     void heartbeat() {
         renew(inFlight,service::heartbeat,SyncJobRepository.Lease::jobId);
         renew(initialInFlight,service::heartbeatInitial,InitialCollectionRepository.Lease::jobId);
         renew(conversionInFlight,service::heartbeatConversion,CashflowConversionRepository.Lease::jobId);
         renew(publicationInFlight,publications::heartbeat,PlanPublicationRepository.Lease::jobId);
+        // A plan sync's renewal also renews its running stage rows (Story 2.11).
+        renew(syncInFlight,syncs::heartbeat,PlanSyncRepository.Lease::jobId);
     }
     static <L> void renew(Map<java.util.UUID,L> leases,java.util.function.Predicate<L> renewal,
             java.util.function.Function<L,java.util.UUID> id) {
@@ -54,7 +66,7 @@ class FirstSnapshotWorker {
         }
     }
     /** One conversion claim per tick. Provider calls run on the virtual thread without a transaction. */
-    @Scheduled(fixedDelay=1000)
+    @Scheduled(fixedDelayString=DISPATCH_DELAY)
     void dispatchCashflowConversion() {
         service.claimConversion().ifPresent(lease->{
             conversionInFlight.put(lease.jobId(),lease);
@@ -71,7 +83,7 @@ class FirstSnapshotWorker {
      * One first-publication claim per tick (Story 2.7). The pure calculation runs on the virtual thread
      * between the input read and the publishing transaction; no transaction spans it.
      */
-    @Scheduled(fixedDelay=1000)
+    @Scheduled(fixedDelayString=DISPATCH_DELAY)
     void dispatchPlanPublication() {
         publications.claim().ifPresent(lease->{
             publicationInFlight.put(lease.jobId(),lease);
@@ -84,14 +96,34 @@ class FirstSnapshotWorker {
             });
         });
     }
-    @Scheduled(fixedDelay=1000)
+    /**
+     * The incremental plan sync (Story 2.11). Expired leases end first, as interrupted: a lost job is never
+     * continued. Then one claim per tick, and never more than {@link PlanSyncService#MAX_CONCURRENT} running
+     * here at once. Provider calls and the pure calculation run on the virtual thread without a transaction.
+     */
+    @Scheduled(fixedDelayString=DISPATCH_DELAY)
+    void dispatchPlanSync() {
+        syncs.expireLost();
+        if (syncInFlight.size()>=PlanSyncService.MAX_CONCURRENT) return;
+        syncs.claim().ifPresent(lease->{
+            syncInFlight.put(lease.jobId(),lease);
+            Thread.ofVirtual().name("plan-sync-"+lease.jobId()).start(()->{
+                try {
+                    syncs.run(lease,()->lease.equals(syncInFlight.get(lease.jobId())));
+                } finally {
+                    syncInFlight.remove(lease.jobId(),lease);
+                }
+            });
+        });
+    }
+    @Scheduled(fixedDelayString=DISPATCH_DELAY)
     void dispatchInitialInputs() {
         service.claimInitial().ifPresent(lease->{
             initialInFlight.put(lease.jobId(),lease);
             Thread.ofVirtual().name("initial-inputs-"+lease.jobId()).start(()->runInitial(lease));
         });
     }
-    @Scheduled(fixedDelay=1000)
+    @Scheduled(fixedDelayString=DISPATCH_DELAY)
     void dispatchCashflowClassification() {
         service.claimClassification().ifPresent(lease ->
                 Thread.ofVirtual().name("cashflow-classification-"+lease.jobId())

@@ -231,12 +231,14 @@ class AuthSecurityConfig {
      * 함수({@link #isDashboardPath})를 본다. 하위 경로도 같은 판정에 걸려 인증 없이는 401, 인증되면
      * 대상의 존재와 무관한 같은 404다.
      *
-     * <p>하위 경로 가운데 둘만 핸들러가 있다 — Story 2.9의 {@code GET /api/dashboard/evidence}
-     * ({@code DashboardController.EVIDENCE_PATH})와 Story 2.10의 {@code GET /api/dashboard/adjustments}
-     * ({@code DashboardController.ADJUSTMENTS_PATH})다. 같은 술어가 이미 덮으므로 판정을 더하지 않는다.
-     * 쿼리로 받은 세 참조가 그 사용자의 현재 공식 포인터가 아니면 — 조정 이력은 cursor가 그 사용자·참조·
-     * 필터의 것이 아니어도 — 없는 경로와 본문이 글자까지 같은 404이고, 나머지 하위 경로는 그대로 같은
-     * 404다. 둘 다 읽기 전용 {@code GET}이라 CSRF 판정이 닿지 않는다.
+     * <p>하위 경로 가운데 셋만 핸들러가 있다 — Story 2.9의 {@code GET /api/dashboard/evidence}
+     * ({@code DashboardController.EVIDENCE_PATH}), Story 2.10의 {@code GET /api/dashboard/adjustments}
+     * ({@code DashboardController.ADJUSTMENTS_PATH}), Story 2.11의 {@code POST}·{@code GET
+     * /api/dashboard/sync}({@code DashboardController.SYNC_PATH})다. 같은 술어가 이미 덮으므로 판정을 더하지
+     * 않는다. 앞의 둘은 쿼리로 받은 세 참조가 그 사용자의 현재 공식 포인터가 아니면 — 조정 이력은 cursor가
+     * 그 사용자·참조·필터의 것이 아니어도 — 없는 경로와 본문이 글자까지 같은 404이고, 나머지 하위 경로는
+     * 그대로 같은 404다. 읽기 전용 {@code GET}에는 CSRF 판정이 닿지 않고, 동기화 접수 {@code POST}는 이
+     * 술어 덕분에 세션 귀속 CSRF 토큰과 동일 출처 {@code Origin}을 요구받는다.
      */
     static final String DASHBOARD_PATH = "/api/dashboard";
 
@@ -1227,7 +1229,10 @@ class AuthSecurityConfig {
         return uri.equals(PLAN_CONDITIONS_PATH) || uri.startsWith(PLAN_CONDITIONS_PATH + "/");
     }
 
-    /** The dashboard and every sub-path — the evidence (Story 2.9) and the adjustment history (Story 2.10) too. */
+    /**
+     * The dashboard and every sub-path — the evidence (Story 2.9), the adjustment history (Story 2.10) and the
+     * incremental sync (Story 2.11) too.
+     */
     private static boolean isDashboardPath(String uri) {
         return uri.equals(DASHBOARD_PATH) || uri.startsWith(DASHBOARD_PATH + "/");
     }

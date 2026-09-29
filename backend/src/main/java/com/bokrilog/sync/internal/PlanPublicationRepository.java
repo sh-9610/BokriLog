@@ -286,13 +286,28 @@ class PlanPublicationRepository {
             .param("received", utc(candidate.receivedAt())).param("policy", candidate.policyVersion()).update();
     }
 
+    /**
+     * How a version's cash flows were verified (Story 2.11): {@code INITIAL} collected {@code (t0, tc]} whole;
+     * {@code NORMAL} and {@code EXTENDED} collected {@code (rangeStart, tc]} and carried the previous version's
+     * flows at or before {@code rangeStart}. {@code lastExtendedAt} is the plan's last extended verification as
+     * of this version.
+     */
+    record Collection(String mode, Instant rangeStart, Instant lastExtendedAt, @Nullable UUID previousCalculationId) {
+        /** The first calculation: it verified from {@code t0}, so its extended verification is its {@code tc}. */
+        static Collection initial(Instant t0, Instant tc) {
+            return new Collection("INITIAL", t0, tc, null);
+        }
+    }
+
     record CalculationRow(UUID calculationId, UUID jobId, UUID planId, Pinned pinned, UUID portfolioSnapshotId,
             long portfolioSequence, UUID sourceSnapshotId, String classificationPolicy, String pricePolicy,
-            String sourcePolicy, PlanCalculator.Result.Calculated result, int flowCount, int estimatedFlowCount) {}
+            String sourcePolicy, PlanCalculator.Result.Calculated result, int flowCount, int estimatedFlowCount,
+            Collection collection) {}
 
     void insertCalculation(CalculationRow row) {
         Pinned p = row.pinned();
         PlanCalculator.Result.Calculated r = row.result();
+        Collection collection = row.collection();
         jdbc.sql("INSERT INTO sync_plan_calculation(calculation_id,created_by_job_id,user_id,plan_id,portfolio_id,provider,"
                 + "provider_account_id,connection_id,membership_id,basis_portfolio_snapshot_id,basis_source_snapshot_id,"
                 + "portfolio_snapshot_id,portfolio_publication_sequence,source_snapshot_id,candidate_id,classification_id,"
@@ -300,10 +315,14 @@ class PlanPublicationRepository {
                 + "calendar_policy,display_policy,precision_policy,time_zone,implementation_version,p0_decimal,t0,end_at,"
                 + "period,target_rate,basis_at,current_value_measured_at,cashflow_verified_through,adjusted_principal,"
                 + "periods_elapsed,periods_total,periods_remaining,flow_count,estimated_flow_count,estimated,"
-                + "input_reliability,input_hash,result_hash) VALUES (:id,:job,:u,:plan,:p,'BYBIT',:a,:c,:m,:bs,:bss,:ps,"
-                + ":pseq,:ss,:cand,:cls,:conv,:clsPolicy,:pricePolicy,:sourcePolicy,:calc,:calendar,:display,:precision,"
-                + ":zone,:impl,:p0,:t0,:end,:period,:rate,:tc,:measured,:verified,:ap,:elapsed,:total,:remaining,:flows,"
-                + ":estimatedFlows,:estimated,:reliability,:inputHash,:resultHash)")
+                + "input_reliability,input_hash,result_hash,collection_mode,collection_range_start,"
+                + "last_extended_verification_at,previous_calculation_id) VALUES (:id,:job,:u,:plan,:p,'BYBIT',:a,:c,:m,"
+                + ":bs,:bss,:ps,:pseq,:ss,:cand,:cls,:conv,:clsPolicy,:pricePolicy,:sourcePolicy,:calc,:calendar,:display,"
+                + ":precision,:zone,:impl,:p0,:t0,:end,:period,:rate,:tc,:measured,:verified,:ap,:elapsed,:total,"
+                + ":remaining,:flows,:estimatedFlows,:estimated,:reliability,:inputHash,:resultHash,:mode,:rangeStart,"
+                + ":lastExtended,:previous)")
+            .param("mode", collection.mode()).param("rangeStart", utc(collection.rangeStart()))
+            .param("lastExtended", utc(collection.lastExtendedAt())).param("previous", collection.previousCalculationId())
             .param("id", row.calculationId()).param("job", row.jobId()).param("u", p.userId()).param("plan", row.planId())
             .param("p", p.portfolioId()).param("a", p.providerAccountId()).param("c", p.connectionId())
             .param("m", p.membershipId()).param("bs", p.basisPortfolioSnapshotId())
@@ -344,12 +363,31 @@ class PlanPublicationRepository {
 
     /**
      * The plan's first pointer: an expected-version CAS against "no pointer yet" (version 0). A second
-     * writer for the same plan inserts nothing and the caller rolls its publication back.
+     * writer for the same plan inserts nothing and the caller rolls its publication back. The first official
+     * version is recorded in the pointer's history in the same transaction (Story 2.11), with the pointer's
+     * own publication time.
      */
     int pointFirst(UUID planId, UUID user, UUID portfolioId, UUID calculationId) {
-        return jdbc.sql("INSERT INTO sync_official_plan_result(plan_id,user_id,portfolio_id,calculation_id,pointer_version) "
-                + "VALUES (:plan,:u,:p,:calc,1) ON CONFLICT (plan_id) DO NOTHING")
-            .param("plan", planId).param("u", user).param("p", portfolioId).param("calc", calculationId).update();
+        Optional<OffsetDateTime> published = jdbc.sql("INSERT INTO sync_official_plan_result(plan_id,user_id,portfolio_id,"
+                + "calculation_id,pointer_version) VALUES (:plan,:u,:p,:calc,1) ON CONFLICT (plan_id) DO NOTHING "
+                + "RETURNING published_at")
+            .param("plan", planId).param("u", user).param("p", portfolioId).param("calc", calculationId)
+            .query(OffsetDateTime.class).optional();
+        if (published.isEmpty()) return 0;
+        return jdbc.sql("INSERT INTO sync_official_plan_result_history(plan_id,pointer_version,user_id,calculation_id,"
+                + "published_at) VALUES (:plan,1,:u,:calc,:at)")
+            .param("plan", planId).param("u", user).param("calc", calculationId).param("at", published.get()).update();
+    }
+
+    /**
+     * The source events the classification excluded, recorded as this version's exclusions (Story 2.11).
+     * Each cites the classification event it came from. Returns how many were written.
+     */
+    int insertExclusions(UUID calculationId, UUID classificationId) {
+        return jdbc.sql("INSERT INTO sync_plan_calculation_exclusion(calculation_id,classification_id,source_event_id,"
+                + "occurred_at) SELECT :calc,classification_id,source_event_id,occurred_at "
+                + "FROM sync_cashflow_classification_event WHERE classification_id=:cls AND verdict='EXCLUDED'")
+            .param("calc", calculationId).param("cls", classificationId).update();
     }
 
     // ---------------------------------------------------------------- official result (through the pointer)
@@ -413,21 +451,36 @@ class PlanPublicationRepository {
     }
 
     /**
-     * SYNC-UX-1.0 facts against the database clock: whether any of the user's jobs is in progress, and
-     * whether each of the two times is at most 15 minutes old. The judgment itself is
-     * {@link DashboardTrust}'s; the clock is the database's alone, never the application's or the client's.
+     * SYNC-UX-1.0 facts against the database clock: whether any of the user's jobs is in progress — a plan
+     * sync included (Story 2.11) — whether each of the two times is at most 15 minutes old, whether the plan
+     * period ended, whether more than thirty days went unverified, and the last sync attempt of the current
+     * version: the most recently finished one among those admitted since the pointer became official. The
+     * judgment itself is {@link DashboardTrust}'s; the clock is the database's alone, never the application's
+     * or the client's. {@code restricted} comes from the operations module and is passed through.
      */
-    DashboardTrust.Freshness freshness(UUID user, Instant measuredAt, Instant verifiedThrough) {
-        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
+    DashboardTrust.Freshness freshness(UUID user, UUID planId, Instant measuredAt, Instant verifiedThrough,
+            Instant endAt, Instant pointerPublishedAt, boolean restricted) {
+        var facts = jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
                 + "OR EXISTS(SELECT 1 FROM sync_initial_collection_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
                 + "OR EXISTS(SELECT 1 FROM sync_cashflow_classification_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
                 + "OR EXISTS(SELECT 1 FROM sync_cashflow_conversion_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
-                + "OR EXISTS(SELECT 1 FROM sync_plan_publication_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')),"
+                + "OR EXISTS(SELECT 1 FROM sync_plan_publication_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
+                + "OR EXISTS(SELECT 1 FROM sync_plan_sync_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')),"
                 + "statement_timestamp()-:measured<=interval '15 minutes',"
-                + "statement_timestamp()-:verified<=interval '15 minutes'")
+                + "statement_timestamp()-:verified<=interval '15 minutes',"
+                + "statement_timestamp()>=:end,statement_timestamp()-:verified>interval '30 days'")
             .param("u", user).param("measured", utc(measuredAt)).param("verified", utc(verifiedThrough))
-            .query((rs, n) -> new DashboardTrust.Freshness(rs.getBoolean(1), rs.getBoolean(2), rs.getBoolean(3)))
+            .param("end", utc(endAt))
+            .query((rs, n) -> new boolean[] {rs.getBoolean(1), rs.getBoolean(2), rs.getBoolean(3), rs.getBoolean(4),
+                    rs.getBoolean(5)})
             .single();
+        DashboardTrust.LastAttempt last = jdbc.sql("SELECT status,failure_code,retryable FROM sync_plan_sync_job "
+                + "WHERE user_id=:u AND plan_id=:p AND created_at>=:published AND finished_at IS NOT NULL "
+                + "AND status<>'PUBLISHED' ORDER BY finished_at DESC,job_id DESC LIMIT 1")
+            .param("u", user).param("p", planId).param("published", utc(pointerPublishedAt))
+            .query((rs, n) -> new DashboardTrust.LastAttempt(rs.getString(1), rs.getString(2), rs.getBoolean(3)))
+            .optional().orElse(null);
+        return new DashboardTrust.Freshness(facts[0], facts[1], facts[2], restricted, facts[3], facts[4], last);
     }
 
     // ---------------------------------------------------------------- calculation evidence (Story 2.9)
@@ -439,21 +492,121 @@ class PlanPublicationRepository {
      * module's own tables only, and never a candidate's events, raw provider fields or credentials.
      */
 
-    /** The lineage columns of a calculation version that the dashboard does not read. */
+    /**
+     * The lineage columns of a calculation version that the dashboard does not read. The candidate, the
+     * classification and the conversion are the version's <em>latest</em> lineage: for an incremental version
+     * (Story 2.11) they cover {@code (collectionRangeStart, tc]}, and the flows at or before that start are
+     * carried from {@code previousCalculationId} with their own lineage.
+     */
     record Lineage(UUID createdByJobId, String provider, UUID providerAccountId, UUID connectionId,
             UUID membershipId, UUID basisSourceSnapshotId, UUID sourceSnapshotId, UUID candidateId,
             UUID classificationId, UUID conversionId, String classificationPolicy, String sourcePolicy,
-            String precisionPolicy, String timeZone, Instant createdAt) {}
+            String precisionPolicy, String timeZone, Instant createdAt, String collectionMode,
+            Instant collectionRangeStart, Instant lastExtendedAt, @Nullable UUID previousCalculationId) {
+        boolean initial() {
+            return "INITIAL".equals(this.collectionMode);
+        }
+    }
 
     Optional<Lineage> lineage(UUID user, UUID calculationId) {
         return jdbc.sql("SELECT created_by_job_id,provider,provider_account_id,connection_id,membership_id,"
                 + "basis_source_snapshot_id,source_snapshot_id,candidate_id,classification_id,conversion_id,"
-                + "classification_policy_version,source_policy_version,precision_policy,time_zone,created_at "
+                + "classification_policy_version,source_policy_version,precision_policy,time_zone,created_at,"
+                + "collection_mode,collection_range_start,last_extended_verification_at,previous_calculation_id "
                 + "FROM sync_plan_calculation WHERE calculation_id=:c AND user_id=:u")
             .param("c", calculationId).param("u", user)
             .query((rs, n) -> new Lineage(uuid(rs, 1), rs.getString(2), uuid(rs, 3), uuid(rs, 4), uuid(rs, 5),
                     uuid(rs, 6), uuid(rs, 7), uuid(rs, 8), uuid(rs, 9), uuid(rs, 10), rs.getString(11),
-                    rs.getString(12), rs.getString(13), rs.getString(14), instant(rs, 15))).optional();
+                    rs.getString(12), rs.getString(13), rs.getString(14), instant(rs, 15), rs.getString(16),
+                    instant(rs, 17), instant(rs, 18), rs.getObject(19, UUID.class))).optional();
+    }
+
+    /**
+     * The sync attempt that created an incremental version (Story 2.11): its ending, what it published and the
+     * basis, range and lineage it recorded. The version must be exactly what it recorded.
+     */
+    record CreatingSync(String status, UUID planId, @Nullable UUID calculationId, @Nullable Long publishedPointerVersion,
+            UUID basisCalculationId, long basisPointerVersion, @Nullable String mode, @Nullable Instant tc,
+            @Nullable Instant rangeStart, @Nullable UUID candidateId, @Nullable UUID classificationId,
+            @Nullable UUID conversionId, UUID membershipId, UUID connectionId, UUID providerAccountId,
+            UUID intentId, UUID portfolioId) {}
+
+    Optional<CreatingSync> creatingSync(UUID user, UUID jobId) {
+        return jdbc.sql("SELECT status,plan_id,calculation_id,published_pointer_version,basis_calculation_id,"
+                + "basis_pointer_version,mode,tc,range_start,candidate_id,classification_id,conversion_id,membership_id,"
+                + "connection_id,provider_account_id,intent_id,portfolio_id FROM sync_plan_sync_job "
+                + "WHERE job_id=:j AND user_id=:u")
+            .param("j", jobId).param("u", user)
+            .query((rs, n) -> new CreatingSync(rs.getString(1), uuid(rs, 2), rs.getObject(3, UUID.class),
+                    rs.getObject(4, Long.class), uuid(rs, 5), rs.getLong(6), rs.getString(7), instantOrNull(rs, 8),
+                    instantOrNull(rs, 9), rs.getObject(10, UUID.class), rs.getObject(11, UUID.class),
+                    rs.getObject(12, UUID.class), uuid(rs, 13), uuid(rs, 14), uuid(rs, 15), uuid(rs, 16),
+                    uuid(rs, 17))).optional();
+    }
+
+    /**
+     * One official version of a plan as the pointer's history recorded it (Story 2.11).
+     *
+     * @param supersededAt when the next version replaced it; {@code null} for the current one
+     */
+    record HistoryEntry(long pointerVersion, UUID calculationId, Instant publishedAt, @Nullable Instant supersededAt) {}
+
+    /** The plan's official versions, newest first, at most {@code limit} of them. */
+    List<HistoryEntry> history(UUID user, UUID planId, int limit) {
+        return jdbc.sql("SELECT pointer_version,calculation_id,published_at,superseded_at FROM "
+                + "sync_official_plan_result_history WHERE plan_id=:p AND user_id=:u ORDER BY pointer_version DESC LIMIT :l")
+            .param("p", planId).param("u", user).param("l", limit)
+            .query((rs, n) -> new HistoryEntry(rs.getLong(1), uuid(rs, 2), instant(rs, 3), instantOrNull(rs, 4))).list();
+    }
+
+    /** How many official versions the plan has had. */
+    int historyCount(UUID user, UUID planId) {
+        return jdbc.sql("SELECT count(*) FROM sync_official_plan_result_history WHERE plan_id=:p AND user_id=:u")
+            .param("p", planId).param("u", user).query(Integer.class).single();
+    }
+
+    /**
+     * What an incremental version carried (Story 2.11): the applied rows citing a conversion other than its
+     * own, how many of them are not at or before the collection start, how many have no identical row in the
+     * previous version, and how many rows the previous version had at or before that start. The carried rows
+     * are whole exactly when the first three agree with the fourth and the middle two are zero.
+     */
+    record Carried(int rows, int beyondStart, int unmatched, int previousAtOrBeforeStart) {}
+
+    Carried carried(UUID calculationId, UUID conversionId, UUID previousCalculationId, Instant rangeStart) {
+        return jdbc.sql("SELECT count(*) FILTER (WHERE pf.conversion_id<>:conv),"
+                + "count(*) FILTER (WHERE pf.conversion_id<>:conv AND pf.occurred_at>:start),"
+                + "count(*) FILTER (WHERE pf.conversion_id<>:conv AND NOT EXISTS (SELECT 1 FROM sync_plan_calculation_flow pp "
+                + "WHERE pp.calculation_id=:prev AND pp.source_event_id=pf.source_event_id AND pp.conversion_id=pf.conversion_id "
+                + "AND pp.source_id=pf.source_id AND pp.occurred_at=pf.occurred_at AND pp.usd_value::numeric=pf.usd_value::numeric "
+                + "AND pp.estimated=pf.estimated AND pp.evidence_type=pf.evidence_type AND pp.provider_account_id=pf.provider_account_id)),"
+                + "(SELECT count(*) FROM sync_plan_calculation_flow pp WHERE pp.calculation_id=:prev AND pp.occurred_at<=:start) "
+                + "FROM sync_plan_calculation_flow pf WHERE pf.calculation_id=:c")
+            .param("c", calculationId).param("conv", conversionId).param("prev", previousCalculationId)
+            .param("start", utc(rangeStart))
+            .query((rs, n) -> new Carried(rs.getInt(1), rs.getInt(2), rs.getInt(3), rs.getInt(4))).single();
+    }
+
+    /**
+     * A version's exclusions (Story 2.11): all of them, those citing its own classification, those that do not
+     * but sit after its collection start, those that do not and have no identical exclusion in the previous
+     * version, and the previous version's exclusions at or before that start.
+     */
+    record Exclusions(int total, int own, int carriedBeyondStart, int carriedUnmatched, int previousAtOrBeforeStart) {}
+
+    Exclusions exclusions(UUID calculationId, UUID classificationId, @Nullable UUID previousCalculationId,
+            Instant rangeStart) {
+        return jdbc.sql("SELECT count(*),count(*) FILTER (WHERE x.classification_id=:cls),"
+                + "count(*) FILTER (WHERE x.classification_id<>:cls AND x.occurred_at>:start),"
+                + "count(*) FILTER (WHERE x.classification_id<>:cls AND NOT EXISTS (SELECT 1 FROM "
+                + "sync_plan_calculation_exclusion px WHERE px.calculation_id=:prev AND px.source_event_id=x.source_event_id "
+                + "AND px.classification_id=x.classification_id AND px.occurred_at=x.occurred_at)),"
+                + "(SELECT count(*) FROM sync_plan_calculation_exclusion px WHERE px.calculation_id=:prev "
+                + "AND px.occurred_at<=:start) FROM sync_plan_calculation_exclusion x WHERE x.calculation_id=:c")
+            .param("c", calculationId).param("cls", classificationId).param("prev", previousCalculationId)
+            .param("start", utc(rangeStart))
+            .query((rs, n) -> new Exclusions(rs.getInt(1), rs.getInt(2), rs.getInt(3), rs.getInt(4), rs.getInt(5)))
+            .single();
     }
 
     /**
@@ -555,13 +708,18 @@ class PlanPublicationRepository {
     // ---------------------------------------------------------------- erasure
 
     /**
-     * Erases this user's pointers, attempts, calculation versions (with their metrics and cash-flow
-     * history) and tc source snapshots. Runs before the rest of the sync erasure: these rows cite the
-     * candidate, classification and conversion evidence with ON DELETE RESTRICT.
+     * Erases this user's pointers and their history, attempts, calculation versions (with their metrics,
+     * cash-flow history and exclusions) and tc source snapshots — the incremental versions' too. Runs before
+     * the rest of the sync erasure: these rows cite the candidate, classification and conversion evidence with
+     * ON DELETE RESTRICT.
      */
     void erase(UUID user) {
         jdbc.sql("DELETE FROM sync_official_plan_result WHERE user_id=:u").param("u", user).update();
+        // The pointer's history (Story 2.11) cites the versions with ON DELETE RESTRICT: it goes before them.
+        jdbc.sql("DELETE FROM sync_official_plan_result_history WHERE user_id=:u").param("u", user).update();
         jdbc.sql("DELETE FROM sync_plan_publication_job WHERE user_id=:u").param("u", user).update();
+        // One statement for every version: the previous-version reference is NO ACTION, checked at its end.
+        // The exclusions and flows go with their versions (ON DELETE CASCADE).
         jdbc.sql("DELETE FROM sync_plan_calculation WHERE user_id=:u").param("u", user).update();
         jdbc.sql("DELETE FROM sync_source_snapshot WHERE user_id=:u AND initial_candidate_id IS NOT NULL")
             .param("u", user).update();

@@ -220,10 +220,31 @@ public interface SyncJobApi {
      * Bybit UID, credentials, raw provider responses and individual cash-flow events are not here.
      */
     record CalculationEvidence(UUID planId, long pointerVersion, UUID calculationId, Snapshots snapshots,
-            Times times, Connection connection, SourceRange sourceRange, Classification classification,
-            Conversion conversion, Cashflows cashflows, Plan plan, Calculation calculation,
-            List<MetricImpact> metrics, List<OfficialVersion> officialVersions,
-            List<UnpublishedAttempt> unpublishedAttempts) {
+            Times times, Connection connection, SourceRange sourceRange, Collection collection,
+            Classification classification, Conversion conversion, Cashflows cashflows, Plan plan,
+            Calculation calculation, List<MetricImpact> metrics, List<OfficialVersion> officialVersions,
+            int officialVersionCount, List<UnpublishedAttempt> unpublishedAttempts) {
+
+        /**
+         * How the version's cash flows were verified (Story 2.11). {@code INITIAL}: the first calculation
+         * collected {@code (t0, tc]} whole. {@code NORMAL} or {@code EXTENDED}: an incremental sync collected
+         * {@code (rangeStart, tc]} — the safe overlap of 24 hours, or 7 days for the periodic extended check —
+         * and carried the previous official version's flows at or before {@code rangeStart}.
+         *
+         * @param lastExtendedVerificationAt the plan's last extended verification as of this version
+         * @param inherited what was carried; {@code null} for the first calculation
+         */
+        public record Collection(String mode, Instant rangeStart, Instant lastExtendedVerificationAt,
+                @Nullable Inherited inherited) {}
+
+        /**
+         * The flows an incremental version carried from the previous official version, each citing its own
+         * original conversion.
+         *
+         * @param through the boundary: every carried flow occurred at or before it (the collection start)
+         */
+        public record Inherited(UUID previousCalculationId, long previousPointerVersion, int flowCount,
+                Instant through) {}
 
         /**
          * @param portfolioSnapshotId the official portfolio snapshot the version was calculated on
@@ -279,11 +300,13 @@ public interface SyncJobApi {
         public record EstimatedCause(String evidenceType, int flowCount) {}
 
         /**
-         * One official version: its publication order (the pointer version), the time it became official
-         * and whether it is the current one.
+         * One official version as the pointer's history recorded it (Story 2.11): its publication order (the
+         * pointer version), when it became official, when the next one replaced it ({@code null} for the
+         * current one) and whether it is the current one. The evidence lists the current version and at most
+         * ten earlier ones, newest first; {@link CalculationEvidence#officialVersionCount} is the total.
          */
         public record OfficialVersion(long pointerVersion, UUID calculationId, Instant publishedAt,
-                boolean current) {}
+                @Nullable Instant supersededAt, boolean current) {}
 
         /** An attempt of the same intent that published nothing. Read-only; never an official value. */
         public record UnpublishedAttempt(String status, String reasonCode, Instant finishedAt) {}
@@ -395,8 +418,10 @@ public interface SyncJobApi {
          * An earlier conversion version of the event. It was never used by an official calculation, and it is
          * shown as it was stored — never rewritten.
          *
-         * <p>"Never used officially" holds while a plan has one official version (before Story 2.11): Stories
-         * 2.11, 2.12 and 2.15 must revisit it once earlier official versions exist.
+         * <p>"Never used officially" still holds with several official versions (Story 2.11): a version cites
+         * each flow's own, final conversion — a carried flow keeps the one the earlier version applied — and a
+         * conversion that a later one replaced within its classification was never published. Story 2.12's
+         * corrections, which re-convert applied flows, must revisit it.
          *
          * @param usdValue the value it had, or {@code null} when it had none (not converted then)
          * @param changeReason why the next version replaced it
@@ -433,6 +458,68 @@ public interface SyncJobApi {
      * failing read throws; nothing is returned in part.
      */
     AdjustmentRead adjustmentHistory(@Nullable UUID userId, @Nullable AdjustmentQuery query);
+
+    // -------------------------------------------------------------------- Story 2.11
+
+    /** What asked for a sync: entering the dashboard, the tab becoming visible again, or the user's button. */
+    enum SyncTrigger { DASHBOARD_ENTRY, TAB_REACTIVATION, MANUAL }
+
+    /**
+     * One incremental sync attempt as the screen may see it: codes and times only — no financial value, no id
+     * other than the attempt's own, no credential.
+     *
+     * @param stage the last stage it reached: {@code ADMITTED}, {@code REFERENCE_TIME}, {@code COLLECTION},
+     *     {@code CLASSIFICATION}, {@code CONVERSION}, {@code CALCULATION} or {@code PUBLICATION}
+     * @param mode {@code NORMAL} or {@code EXTENDED} once the reference time is fixed, else {@code null}
+     * @param retryable whether a new attempt can help, from the closed table (never per attempt)
+     * @param pointerVersion the official version it published, only when it published
+     */
+    record SyncJob(UUID jobId, String trigger, String status, String stage, @Nullable String mode,
+            @Nullable String failureCode, boolean retryable, Instant createdAt, @Nullable Instant finishedAt,
+            @Nullable Long pointerVersion) {}
+
+    /**
+     * Whether the user's button would start a sync now, and why not.
+     *
+     * @param reason when not available: {@code NO_ACTIVE_PLAN}, {@code SYNC_RESTRICTED}, {@code SOURCE_CHANGED} (the
+     *     active connection or membership is not the official version's), {@code PLAN_PERIOD_ENDED},
+     *     {@code IN_PROGRESS}, {@code COOLDOWN} or {@code LONG_GAP}
+     * @param retryAfterSeconds the whole seconds left of the cooldown, only with {@code COOLDOWN}
+     */
+    record ManualSync(boolean available, @Nullable String reason, @Nullable Integer retryAfterSeconds) {}
+
+    /** The sync state for the screen: the plan's latest attempt (or the one in progress) and the button. */
+    record SyncState(@Nullable SyncJob job, ManualSync manual) {}
+
+    /**
+     * The answer to one admission.
+     *
+     * @param outcome {@code ADMITTED} (a new attempt), {@code IN_PROGRESS} (the attempt already in progress),
+     *     {@code RECENTLY_SYNCED} (entry or reactivation within five minutes), {@code COOLDOWN} (a button press
+     *     within thirty seconds), {@code LONG_GAP} (more than thirty days unverified: a choice is needed first)
+     *     or {@code NOT_AVAILABLE}
+     * @param reason with {@code NOT_AVAILABLE}: {@code NO_ACTIVE_PLAN}, {@code SYNC_RESTRICTED},
+     *     {@code SOURCE_CHANGED} or {@code PLAN_PERIOD_ENDED}
+     */
+    record SyncAnswer(String outcome, @Nullable String reason, @Nullable SyncJob job, ManualSync manual) {}
+
+    sealed interface SyncAdmission permits SyncAdmission.NotPermitted, SyncAdmission.Answered {
+        /** The account's own access refused it (its deletion is in progress). */
+        record NotPermitted() implements SyncAdmission {}
+        record Answered(SyncAnswer answer) implements SyncAdmission {}
+    }
+
+    /**
+     * Admits an incremental sync of the user's active plan (Story 2.11), judged against the database clock
+     * and never calling the provider: the account, the restrictions, the active plan and its pointer, the
+     * connection and membership of the official version, the plan period, an attempt in progress, the thirty-day
+     * gap and the trigger's timing rule — in that order. One attempt in progress per active plan; a racing
+     * second admission answers with the winner's reference.
+     */
+    SyncAdmission admitPlanSync(@Nullable UUID userId, SyncTrigger trigger);
+
+    /** The sync state, or empty when the account's own access refuses it. */
+    Optional<SyncState> planSyncState(@Nullable UUID userId);
 
     /** portfolio 삭제 뒤, source 삭제 앞에 호출한다. 발행 결과·시도를 먼저 지운다. */
     void eraseSyncData(@Nullable UUID userId);

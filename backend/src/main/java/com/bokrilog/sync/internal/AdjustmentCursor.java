@@ -29,8 +29,10 @@ final class AdjustmentCursor {
     /**
      * The ordering the sequence realizes: the version's {@code sequence}, which is the calculation's own
      * {@code (event time, provider account, source id)} order. One conversion version per event within a
-     * calculation version, so the third key of the approved order never ties. That premise holds while a plan
-     * has one official version (before Story 2.11); Stories 2.11, 2.12 and 2.15 must revisit it.
+     * calculation version — the flow table's key is {@code (calculation, source event)} — so the third key of
+     * the approved order never ties. That still holds with several official versions (Story 2.11): a carried
+     * flow keeps its one original conversion, and the digest carries the pointer version, so a cursor never
+     * crosses versions. Stories 2.12 and 2.15 must revisit it.
      */
     static final String ORDER_POLICY = "ADJUSTMENT-ORDER-1.0";
 

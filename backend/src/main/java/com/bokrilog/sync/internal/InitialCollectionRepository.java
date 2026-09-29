@@ -73,17 +73,39 @@ class InitialCollectionRepository {
             .param("j",id).param("u",user).param("p",portfolio).param("i",intent).param("c",connection)
             .param("a",account).param("k",key).param("t0",utc(t0)).update();
     }
+    /**
+     * Claims the oldest queued or lease-expired attempt of Story 2.4. A plan sync's stage row (Story 2.11)
+     * is never claimed here: it belongs to its sync job, whose own lease and fence it follows.
+     */
     Optional<Lease> claim() {
         return jdbc.sql("UPDATE sync_initial_collection_job SET status='RUNNING',fencing_generation=fencing_generation+1,"
                 + "lease_until=now()+interval '30 seconds',heartbeat_at=now(),last_checked_at=now() "
-                + "WHERE job_id=(SELECT job_id FROM sync_initial_collection_job WHERE status='QUEUED' OR "
-                + "(status='RUNNING' AND lease_until<now()) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) "
+                + "WHERE job_id=(SELECT job_id FROM sync_initial_collection_job WHERE plan_sync_job_id IS NULL AND "
+                + "(status='QUEUED' OR (status='RUNNING' AND lease_until<now())) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) "
                 + "RETURNING job_id,user_id,portfolio_id,intent_id,connection_id,provider_account_id,t0,tc,fencing_generation")
             .query((rs,n)->new Lease(rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),
                 rs.getObject(3,UUID.class),rs.getObject(4,UUID.class),rs.getObject(5,UUID.class),
                 rs.getObject(6,UUID.class),rs.getObject(7,OffsetDateTime.class).toInstant(),
                 rs.getObject(8,OffsetDateTime.class)==null?null:rs.getObject(8,OffsetDateTime.class).toInstant(),
                 rs.getLong(9))).optional();
+    }
+
+    /**
+     * A plan sync's collection stage row (Story 2.11), inserted already {@code RUNNING} under fence 1 with
+     * its sync job's lease, and with the range fixed: {@code t0} is the collection's start and {@code tc} the
+     * job's reference time. The other methods of this class then run on it unchanged. The caller holds the
+     * sync job's row lock; the job's heartbeat renews this lease.
+     */
+    Lease insertForSync(UUID id, UUID syncJobId, UUID user, UUID portfolio, UUID intent, UUID connection,
+            UUID account, Instant start, Instant tc) {
+        jdbc.sql("INSERT INTO sync_initial_collection_job(job_id,user_id,portfolio_id,intent_id,connection_id,"
+                + "provider_account_id,idempotency_key,status,t0,tc,fencing_generation,lease_until,heartbeat_at,"
+                + "last_checked_at,plan_sync_job_id) SELECT :j,:u,:p,:i,:c,:a,:k,'RUNNING',:t0,:tc,1,s.lease_until,now(),"
+                + "now(),s.job_id FROM sync_plan_sync_job s WHERE s.job_id=:s AND s.status='RUNNING'")
+            .param("j",id).param("u",user).param("p",portfolio).param("i",intent).param("c",connection)
+            .param("a",account).param("k","plan-sync:"+syncJobId+":collection").param("t0",utc(start))
+            .param("tc",utc(tc)).param("s",syncJobId).update();
+        return new Lease(id,user,portfolio,intent,connection,account,start,tc,1);
     }
     boolean fixScope(Lease l, Instant tc) {
         int updated=jdbc.sql("UPDATE sync_initial_collection_job SET tc=:tc,last_checked_at=now() WHERE job_id=:j "

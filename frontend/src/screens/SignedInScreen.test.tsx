@@ -21,6 +21,7 @@ import {
   planPublicationContent,
   planResultContent,
 } from '../content/planResult'
+import { planSyncContent } from '../content/planSync'
 import { formatSeoulTime } from '../format/decimal'
 import { navigateTo, replaceLocation } from '../session/navigation'
 import {
@@ -48,6 +49,7 @@ import {
   stubLogoutRequest,
   stubReauthenticationRequest,
   stubSessionRequest,
+  stubSyncAdmission,
 } from '../test/setup'
 import { SignedInScreen } from './SignedInScreen'
 
@@ -687,6 +689,67 @@ describe('SignedInScreen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: adjustmentHistoryContent.close }))
     expect(screen.getByRole('status').textContent).toBe(ready)
+  })
+
+  it('동기화: 진입은 한 번 자동으로 묻고, 수동 동기화는 즉시 동기화 중을 넷째 문장으로 알리며 서버의 답을 그대로 옮긴다', async () => {
+    stubSessionRequest(authenticated)
+    stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture())))
+    const triggers: string[] = []
+    const tokens: (string | null)[] = []
+    let release: (response: Response) => void = () => undefined
+    stubSyncAdmission((init) => {
+      const body = typeof init?.body === 'string' ? init.body : '{}'
+      triggers.push((JSON.parse(body) as { trigger: string }).trigger)
+      tokens.push(new Headers(init?.headers).get(CSRF_HEADER))
+      if (triggers.length === 1)
+        return Promise.resolve(
+          jsonResponse({ outcome: 'RECENTLY_SYNCED', manual: { available: true } }),
+        )
+      return new Promise<Response>((resolve) => {
+        release = resolve
+      })
+    })
+    render(<SignedInScreen />)
+    await screen.findAllByRole('article')
+    await waitFor(() => {
+      expect(triggers).toEqual(['DASHBOARD_ENTRY'])
+    })
+    const ready = planResultContent.status.ready(
+      formatSeoulTime(BASIS_AT, planResultContent.timeUnavailable),
+    )
+    // An automatic trigger that started nothing adds nothing to the status region.
+    expect(screen.getByRole('status').textContent).toBe(ready)
+
+    const control = screen.getByRole('button', { name: planSyncContent.button })
+    fireEvent.click(control)
+    // At once, before any answer: the fourth element of the one status region.
+    expect(screen.getByRole('status').textContent).toBe(
+      `${ready} ${planSyncContent.status.syncing}`,
+    )
+    expect(control).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText(planSyncContent.syncing)).toBeInTheDocument()
+    fireEvent.click(control)
+    expect(triggers).toEqual(['DASHBOARD_ENTRY', 'MANUAL'])
+    expect(tokens).toEqual([CSRF_TOKEN, CSRF_TOKEN])
+
+    await act(async () => {
+      release(
+        jsonResponse({ outcome: 'LONG_GAP', manual: { available: false, reason: 'LONG_GAP' } }),
+      )
+      await Promise.resolve()
+    })
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toBe(
+        `${ready} ${planSyncContent.status.longGap}`,
+      )
+    })
+    expect(
+      screen.getByRole('region', { name: planSyncContent.longGap.heading }),
+    ).toBeInTheDocument()
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(liveRegions()).toHaveLength(1)
+    expect(window.location.search).toBe('')
+    expect(getObservedStorageEntries()).toEqual([])
   })
 
   it('계산 근거: 근거 읽기가 403이면 대시보드가 스스로 다시 읽어 금융값을 지우고, 단순 실패는 대시보드를 건드리지 않는다', async () => {

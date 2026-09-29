@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { AdjustmentHistoryState } from '../session/useAdjustmentHistory'
 import type { EvidenceState } from '../session/useCalculationEvidence'
+import type { DashboardSync, SyncFocus } from '../session/useDashboardSync'
 
 import { ENTRY_PATH } from '../content/auth'
 import { planConditionContent } from '../content/planConditions'
@@ -13,6 +14,7 @@ import {
   NEXT_ACTION_FALLBACK,
   nextActionCopy,
 } from '../content/planResult'
+import { planSyncContent } from '../content/planSync'
 import { formatSeoulTime } from '../format/decimal'
 import {
   isPlanResult,
@@ -865,6 +867,75 @@ describe('PlanResultPanel', () => {
       expect(supersedes(newer, shown)).toBe(true)
       expect(supersedes(otherPlan, shown)).toBe(true)
       expect(supersedes(older, null)).toBe(true)
+    })
+  })
+  describe('the manual sync control (Story 2.11)', () => {
+    function syncState(focus: SyncFocus | null = null): DashboardSync {
+      return { phase: { kind: 'idle' }, manual: { available: true }, focus, requestManual: vi.fn() }
+    }
+
+    function showWithSync(view: DashboardView, sync: DashboardSync): (next: DashboardSync) => void {
+      const { rerender } = render(
+        <PlanResultPanel
+          adjustments={closedAdjustments()}
+          dashboard={dashboard(view)}
+          evidence={closedEvidence()}
+          sync={sync}
+        />,
+      )
+      return (next) => {
+        rerender(
+          <PlanResultPanel
+            adjustments={closedAdjustments()}
+            dashboard={dashboard(view)}
+            evidence={closedEvidence()}
+            sync={next}
+          />,
+        )
+      }
+    }
+
+    it('AC-7: sits in the next-action section before the reload button, beside the last normal time', () => {
+      showWithSync(ready(planResultFixture(), 'SYNC_NOW'), syncState())
+      const section = nextAction()
+      expect(
+        within(section)
+          .getAllByRole('button')
+          .map((control) => control.textContent),
+      ).toEqual([planSyncContent.button, copy.reload])
+      expect(within(section).getByText(nextActionCopy('SYNC_NOW', MEASURED))).toBeInTheDocument()
+      expect(within(section).getByText(planSyncContent.lastNormal(MEASURED))).toBeInTheDocument()
+    })
+
+    const WITHOUT_BUNDLE: readonly { readonly name: string; readonly view: DashboardView }[] = [
+      { name: 'no plan', view: { kind: 'NO_PLAN', nextAction: 'CREATE_PLAN' } },
+      {
+        name: 'a publication being prepared',
+        view: { kind: 'PREPARING', nextAction: 'WAIT_FOR_RESULT' },
+      },
+    ]
+
+    it.each(WITHOUT_BUNDLE)('is absent without a bundle ($name)', ({ view }) => {
+      showWithSync(view, syncState())
+      expect(screen.queryByRole('button', { name: planSyncContent.button })).toBeNull()
+    })
+
+    it('AC-9: a sync the user started that published moves focus to the result heading once', () => {
+      const update = showWithSync(ready(), syncState())
+      expect(document.body).toHaveFocus()
+      update(syncState({ target: 'heading', token: 1 }))
+      expect(screen.getByRole('heading', { level: 2, name: copy.heading })).toHaveFocus()
+      // The same token again does not move focus back from where the user went.
+      screen.getByRole('button', { name: copy.reload }).focus()
+      update(syncState({ target: 'heading', token: 1 }))
+      expect(screen.getByRole('button', { name: copy.reload })).toHaveFocus()
+    })
+
+    it('AC-1: a result whose next action is REVIEW_LONG_GAP explains the two choices', () => {
+      showWithSync(ready(planResultFixture(), 'REVIEW_LONG_GAP'), syncState())
+      expect(
+        within(nextAction()).getByRole('region', { name: planSyncContent.longGap.heading }),
+      ).toBeInTheDocument()
     })
   })
 })

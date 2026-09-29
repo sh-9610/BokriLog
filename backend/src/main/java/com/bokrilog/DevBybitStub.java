@@ -277,7 +277,16 @@ final class DevBybitStub {
          * 다섯(`-2.5 USDT`, 네 번째마다)이며 앞의 둘은 같은 밀리초라 `source_id` 순서가 그 둘을 가른다.
          * 전부 직접 정규화라 시세 호출 없이 환산되고, 한 페이지(20행)를 넘어 `더 보기`가 생긴다.
          */
-        ADJUSTMENTS("adjustments");
+        ADJUSTMENTS("adjustments"),
+
+        /**
+         * 절대 시각에 놓인 사건을 내는 수집(Story 2.11). 사건과 그 시각, 지갑 현재가치는 시험이 UID마다 정한다
+         * ({@link DevBybitStub#absoluteEvents}·{@link DevBybitStub#absoluteEquity}). 요청 창
+         * {@code [startTime, endTime]} 안의 사건만 내고, 같은 {@code id}는 언제 다시 물어도 같은 내용이다 — 그래서
+         * 최초 수집과 증분 동기화의 겹친 구간이 같은 사건을 두 번 관측해도 {@code PROVIDER_ID_CONFLICT}가 되지
+         * 않는다. 아무것도 정하지 않은 UID는 사건 0건이고 현재가치는 정상 기본값이다.
+         */
+        ABSOLUTE("absolute");
 
         private final String token;
 
@@ -312,11 +321,80 @@ final class DevBybitStub {
     private final AtomicInteger conflictTransferInReads = new AtomicInteger();
     private final AtomicLong lastWalletEnvelopeTime = new AtomicLong();
 
+    /** One Transaction Log event of {@link Scenario#ABSOLUTE}, at its own absolute time. */
+    record AbsoluteEvent(String id, String type, String currency, String cashFlow, long transactionTime) {}
+
+    private final Map<String, java.util.List<AbsoluteEvent>> absoluteEvents = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, String> absoluteEquity = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The events {@link Scenario#ABSOLUTE} returns for this UID, replacing any before. */
+    void absoluteEvents(String uid, java.util.List<AbsoluteEvent> events) {
+        this.absoluteEvents.put(uid, java.util.List.copyOf(events));
+    }
+
+    /** The wallet {@code totalEquity} {@link Scenario#ABSOLUTE} returns for this UID. */
+    void absoluteEquity(String uid, String equity) {
+        this.absoluteEquity.put(uid, equity);
+    }
+
+    /**
+     * A failure {@link Scenario#ABSOLUTE} starts answering with for this UID, so a connection that collected once
+     * can fail the next time: {@code AUTH} (the key is refused), {@code RATE_LIMIT} (429 on the key query),
+     * {@code ACCOUNT_RATE_LIMIT} (429 on the account query), {@code ACCOUNT_TIMEOUT} (the account query answers
+     * after the adapter's request timeout), {@code LOG_OUTAGE} (the Transaction Log answers a provider error),
+     * {@code MALFORMED_LOG} (its list is not a list), {@code NOT_JSON_LOG} (its body is not JSON at all) or
+     * {@code SLOW_LOG} (each of its pages answers after a while, well within the timeout). {@code null} clears it.
+     */
+    enum AbsoluteFailure { AUTH, RATE_LIMIT, ACCOUNT_RATE_LIMIT, ACCOUNT_TIMEOUT, LOG_OUTAGE, MALFORMED_LOG, NOT_JSON_LOG,
+        SLOW_LOG }
+
+    private final Map<String, AbsoluteFailure> absoluteFailure = new java.util.concurrent.ConcurrentHashMap<>();
+
+    void absoluteFailure(String uid, @Nullable AbsoluteFailure failure) {
+        if (failure == null) this.absoluteFailure.remove(uid);
+        else this.absoluteFailure.put(uid, failure);
+    }
+
+    private @Nullable Response absoluteFailureOf(String uid, String path) {
+        AbsoluteFailure failure = this.absoluteFailure.get(uid);
+        if (failure == null) return null;
+        return switch (failure) {
+            case AUTH -> QUERY_API_PATH.equals(path) ? error(10003) : null;
+            case RATE_LIMIT -> QUERY_API_PATH.equals(path) ? new Response(429, JSON, "{\"retCode\":10006,\"retMsg\":\"\"}")
+                    : null;
+            case ACCOUNT_RATE_LIMIT -> ACCOUNT_INFO_PATH.equals(path)
+                    ? new Response(429, JSON, "{\"retCode\":10006,\"retMsg\":\"\"}") : null;
+            case ACCOUNT_TIMEOUT -> ACCOUNT_INFO_PATH.equals(path) ? pause(3200) : null;
+            case LOG_OUTAGE -> TRANSACTION_LOG_PATH.equals(path) ? error(10016) : null;
+            case MALFORMED_LOG -> TRANSACTION_LOG_PATH.equals(path)
+                    ? ok("{\"list\":\"fixture-payload-must-not-escape\",\"nextPageCursor\":\"\"}") : null;
+            case NOT_JSON_LOG -> TRANSACTION_LOG_PATH.equals(path) ? new Response(200, TEXT, "not json") : null;
+            case SLOW_LOG -> TRANSACTION_LOG_PATH.equals(path) ? pause(1200) : null;
+        };
+    }
+
+    /** Waits, then lets the request be answered as usual ({@code null}). */
+    private static @Nullable Response pause(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return error(10016);
+        }
+        return null;
+    }
+
     /**
      * 서버 시간 응답의 모양. 서버 시간에는 키도 symbol도 없어 선택자가 없으므로 시험 표면이 이 값을
      * 바꾼다({@code BybitStubConfiguration}). 개발 스택은 바꾸지 않으며 기본값은 정상 응답이다.
      */
-    enum ServerTimeMode { NORMAL, TIMEOUT, OUTAGE, MALFORMED }
+    enum ServerTimeMode {
+        NORMAL, TIMEOUT, OUTAGE, MALFORMED,
+        /** A well-formed time two days in the past (Story 2.11: a reference time before the last verification). */
+        PAST,
+        /** A well-formed time forty days ahead (Story 2.11: a reference time past the plan's end). */
+        FUTURE
+    }
 
     private final java.util.concurrent.atomic.AtomicReference<ServerTimeMode> serverTimeMode =
             new java.util.concurrent.atomic.AtomicReference<>(ServerTimeMode.NORMAL);
@@ -358,6 +436,12 @@ final class DevBybitStub {
                     return ok("{\"timeSecond\":\"soon\",\"timeNano\":\"not-a-time\"}");
                 }
                 case NORMAL -> { }
+                case PAST, FUTURE -> {
+                    long shifted = System.currentTimeMillis()
+                            + (this.serverTimeMode.get() == ServerTimeMode.PAST ? -2L : 40L) * 86_400_000L;
+                    return ok("{\"timeSecond\":\"" + (shifted / 1000) + "\",\"timeNano\":\"" + (shifted * 1_000_000L)
+                            + "\"}");
+                }
             }
             long millis=System.currentTimeMillis();
             return ok("{\"timeSecond\":\""+(millis/1000)+"\",\"timeNano\":\""+(millis*1_000_000L)+"\"}");
@@ -397,11 +481,16 @@ final class DevBybitStub {
                 return error(10016);
             }
         }
+        if (scenario == Scenario.ABSOLUTE) {
+            Response failed = absoluteFailureOf(uid, path);
+            if (failed != null) return failed;
+        }
         return switch (path) {
             case QUERY_API_PATH -> queryApi(scenario, uid);
             case ACCOUNT_INFO_PATH -> accountInfo(scenario);
-            case WALLET_BALANCE_PATH -> walletBalance(scenario, query);
-            case TRANSACTION_LOG_PATH -> transactionLog(scenario, query);
+            case WALLET_BALANCE_PATH -> walletBalance(scenario, uid, query);
+            case TRANSACTION_LOG_PATH -> scenario == Scenario.ABSOLUTE ? absoluteLog(uid, query)
+                    : transactionLog(scenario, query);
             default -> new Response(404, JSON, "{\"retCode\":10001,\"retMsg\":\"\",\"result\":{}}");
         };
     }
@@ -499,6 +588,37 @@ final class DevBybitStub {
                     .append(start+Math.max(1,i-1)).append("\"}");
         }
         return ok("{\"list\":"+items+"],\"nextPageCursor\":\"\"}");
+    }
+
+    /**
+     * {@link Scenario#ABSOLUTE}: the UID's events of the requested type inside {@code [startTime, endTime]},
+     * oldest first, on one page (the fixtures stay under the 50-row limit).
+     */
+    private Response absoluteLog(String uid, Map<String, String> query) {
+        String type = query.get("type");
+        if (!"UNIFIED".equals(query.get("accountType"))
+                || !("TRANSFER_IN".equals(type) || "TRANSFER_OUT".equals(type))) return error(10001);
+        long start;
+        long end;
+        try {
+            start = Long.parseLong(query.get("startTime"));
+            end = Long.parseLong(query.get("endTime"));
+        } catch (RuntimeException invalid) {
+            return error(10001);
+        }
+        StringBuilder items = new StringBuilder("[");
+        this.absoluteEvents.getOrDefault(uid, java.util.List.of()).stream()
+                .filter(event -> event.type().equals(type) && event.transactionTime() >= start
+                        && event.transactionTime() <= end)
+                .sorted(java.util.Comparator.comparingLong(AbsoluteEvent::transactionTime))
+                .forEach(event -> {
+                    if (items.length() > 1) items.append(',');
+                    items.append("{\"id\":\"").append(event.id()).append("\",\"type\":\"").append(event.type())
+                            .append("\",\"currency\":\"").append(event.currency()).append("\",\"cashFlow\":\"")
+                            .append(event.cashFlow()).append("\",\"transactionTime\":\"")
+                            .append(event.transactionTime()).append("\"}");
+                });
+        return ok("{\"list\":" + items + "],\"nextPageCursor\":\"\"}");
     }
 
     private static Response eventPage(String id,String type,String flow,Map<String,String> query,String timeKind) {
@@ -616,6 +736,8 @@ final class DevBybitStub {
     void resetScenarioState() {
         conflictTransferInReads.set(0);
         serverTimeMode.set(ServerTimeMode.NORMAL);
+        // The absolute fixtures are per UID (a new one in every test) and stay: a test resets the counters
+        // between the calls it counts without losing the events it placed.
     }
     long lastWalletEnvelopeTime() { return lastWalletEnvelopeTime.get(); }
 
@@ -653,7 +775,7 @@ final class DevBybitStub {
         return ok("{\"unifiedMarginStatus\":" + mode + ",\"marginMode\":\"REGULAR_MARGIN\"}");
     }
 
-    private Response walletBalance(Scenario scenario, Map<String, String> query) {
+    private Response walletBalance(Scenario scenario, String uid, Map<String, String> query) {
         if (!"UNIFIED".equals(query.get("accountType"))) {
             // 어댑터는 이 값 하나만 묻는다. 다른 값이 오면 흐름이 계약을 벗어났다는 뜻이다.
             return error(10001);
@@ -663,6 +785,11 @@ final class DevBybitStub {
         }
         long envelopeTime=System.currentTimeMillis();
         lastWalletEnvelopeTime.set(scenario==Scenario.BAD_MEASURED_TIME?0:envelopeTime);
+        String equity = scenario == Scenario.ABSOLUTE ? this.absoluteEquity.get(uid) : null;
+        if (equity != null) {
+            return ok("{\"list\":[{\"accountType\":\"UNIFIED\",\"totalEquity\":\"" + equity
+                    + "\",\"accountIMRate\":\"0\"}]}", envelopeTime);
+        }
         return scenario == Scenario.BAD_MEASURED_TIME
                 ? new Response(200, JSON, "{\"retCode\":0,\"result\":{\"list\":" + walletList(scenario) + "},\"time\":0}")
                 : ok("{\"list\":" + walletList(scenario) + "}",envelopeTime);

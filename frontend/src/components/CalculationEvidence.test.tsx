@@ -187,6 +187,78 @@ describe('CalculationEvidence', () => {
     expect(screen.getByTestId('announcement')).toHaveTextContent(copy.status.ready)
   })
 
+  it('Story 2.11: a later version shows its mode, start, what it carried up to where, and the earlier version it replaced', async () => {
+    const result = evidenceResultFixture({ pointerVersion: 2, flowCount: 2 })
+    const evidence = calculationEvidenceFixture(result)
+    const inputs = evidence.inputs as Record<string, unknown>
+    const start = '2026-09-26T01:00:00Z'
+    answers(() =>
+      Promise.resolve(
+        json({
+          ...evidence,
+          inputs: {
+            ...inputs,
+            sourceRange: { ...(inputs.sourceRange as object), rangeStart: start },
+          },
+          collection: {
+            mode: 'NORMAL',
+            rangeStart: start,
+            lastExtendedVerificationAt: '2026-09-26T00:30:00Z',
+            inherited: {
+              previousCalculationId: EVIDENCE_IDS.newerCalculation,
+              previousPointerVersion: 1,
+              flowCount: 1,
+              through: start,
+            },
+          },
+          versions: {
+            official: [
+              {
+                pointerVersion: 2,
+                calculationId: EVIDENCE_IDS.calculation,
+                publishedAt: '2026-09-27T01:00:01Z',
+                supersededAt: null,
+                current: true,
+              },
+              {
+                pointerVersion: 1,
+                calculationId: EVIDENCE_IDS.newerCalculation,
+                publishedAt: '2026-09-26T01:00:01Z',
+                supersededAt: '2026-09-27T01:00:01Z',
+                current: false,
+              },
+            ],
+            officialCount: 2,
+            unpublished: [],
+          },
+        }),
+      ),
+    )
+    render(<Harness view={ready(result)} />)
+    await openEvidence()
+
+    const inputsPart = part(copy.sections.inputs)
+    expect(within(inputsPart).getByText(copy.collection.heading)).toBeInTheDocument()
+    expect(within(inputsPart).getByText(copy.collection.modes.NORMAL)).toBeInTheDocument()
+    expect(within(inputsPart).getByText(copy.collection.modeHelp.NORMAL)).toBeInTheDocument()
+    expect(within(inputsPart).getByText(copy.collection.inheritedCount(1, 1))).toBeInTheDocument()
+    expect(within(inputsPart).getByText(copy.collection.through)).toBeInTheDocument()
+    expect(within(inputsPart).getByText(EVIDENCE_IDS.newerCalculation)).toBeInTheDocument()
+    // The start and the boundary are the same instant, shown as times.
+    // eslint-disable-next-line testing-library/no-node-access -- 시각은 datetime 속성으로만 가려 낼 수 있다.
+    expect(inputsPart.querySelectorAll(`time[datetime="${start}"]`).length).toBeGreaterThanOrEqual(
+      3,
+    )
+
+    const versions = part(copy.sections.versions)
+    expect(within(versions).getByText(copy.versions.officialCount(2, 2))).toBeInTheDocument()
+    expect(within(versions).getByText(copy.versions.current)).toBeInTheDocument()
+    expect(within(versions).getByText(copy.versions.earlier, { exact: false })).toBeInTheDocument()
+    // The earlier version ended when this one began.
+    // eslint-disable-next-line testing-library/no-node-access -- 시각은 datetime 속성으로만 가려 낼 수 있다.
+    expect(versions.querySelectorAll('time[datetime="2026-09-27T01:00:01Z"]')).toHaveLength(2)
+  })
+
   it('sends exactly the three values of the shown pointer, URL-encoded, and nothing else', async () => {
     const { urls, inits } = answers(evidenceOk)
     render(<Harness view={ready()} />)
@@ -399,9 +471,11 @@ describe('CalculationEvidence', () => {
             pointerVersion: 1,
             calculationId: EVIDENCE_IDS.calculation,
             publishedAt: '2026-09-27T01:00:01Z',
+            supersededAt: null,
             current: true,
           },
         ],
+        officialCount: 1,
         unpublished: [
           { status: 'BLOCKED', reasonCode: 'NOT_PERMITTED', finishedAt: '2026-09-27T00:40:00Z' },
           {
@@ -732,18 +806,183 @@ describe('CalculationEvidence', () => {
     }
 
     function officialVersions(...versions: Record<string, unknown>[]): Record<string, unknown> {
-      return { ...base(), versions: { official: versions, unpublished: [] } }
+      return {
+        ...base(),
+        versions: { official: versions, officialCount: versions.length, unpublished: [] },
+      }
     }
 
     const current = {
       pointerVersion: 1,
       calculationId: EVIDENCE_IDS.calculation,
       publishedAt: '2026-09-27T01:00:01Z',
+      supersededAt: null,
       current: true,
     }
 
     it('accepts the fixture', () => {
       expect(parseEvidence(base(), shown)).not.toBeNull()
+    })
+
+    /** Story 2.11: the plan's second official version, as the dashboard shows it. */
+    const shownV2 = parsed(evidenceResultFixture({ pointerVersion: 2 }))
+    const currentV2 = { ...current, pointerVersion: 2 }
+    const earlier = {
+      pointerVersion: 1,
+      calculationId: EVIDENCE_IDS.newerCalculation,
+      publishedAt: '2026-09-26T01:00:01Z',
+      supersededAt: '2026-09-27T01:00:01Z',
+      current: false,
+    }
+
+    /**
+     * Its evidence: collected from its overlap start and carried the flows before it from version 1; its range
+     * is that start, and its version history names the earlier version with its end.
+     */
+    function incremental(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      const evidence = calculationEvidenceFixture(evidenceResultFixture({ pointerVersion: 2 }))
+      const inputs = evidence.inputs as Record<string, unknown>
+      const start = '2026-09-26T01:00:00Z'
+      return {
+        ...evidence,
+        inputs: {
+          ...inputs,
+          sourceRange: { ...(inputs.sourceRange as object), rangeStart: start },
+        },
+        collection: {
+          mode: 'NORMAL',
+          rangeStart: start,
+          lastExtendedVerificationAt: '2026-09-26T00:30:00Z',
+          inherited: {
+            previousCalculationId: EVIDENCE_IDS.newerCalculation,
+            previousPointerVersion: 1,
+            flowCount: 0,
+            through: start,
+          },
+        },
+        versions: { official: [currentV2, earlier], officialCount: 2, unpublished: [] },
+        ...overrides,
+      }
+    }
+
+    function withCollection(fields: Record<string, unknown>): Record<string, unknown> {
+      const evidence = incremental()
+      return { ...evidence, collection: { ...(evidence.collection as object), ...fields } }
+    }
+
+    function withVersions(
+      official: readonly unknown[],
+      officialCount: number,
+    ): Record<string, unknown> {
+      return incremental({ versions: { official, officialCount, unpublished: [] } })
+    }
+
+    it('accepts a later version that collected from its overlap start and carried the flows before it', () => {
+      expect(parseEvidence(incremental(), shownV2)).not.toBeNull()
+      // The list is the current version and the most recent earlier ones: fewer than the plan has had.
+      expect(parseEvidence(withVersions([currentV2, earlier], 12), shownV2)).not.toBeNull()
+    })
+
+    it.each([
+      ['an incremental mode that carried nothing', { inherited: null }],
+      ['an unknown mode', { mode: 'CATCH_UP' }],
+      ['a start that is not the collected range', { rangeStart: '2026-09-26T02:00:00Z' }],
+      [
+        'an extended verification before t0',
+        { lastExtendedVerificationAt: '2026-09-24T23:59:59Z' },
+      ],
+      ['an extended verification after tc', { lastExtendedVerificationAt: '2026-09-27T01:00:01Z' }],
+    ])('rejects %s', (_name, collection) => {
+      expect(parseEvidence(withCollection(collection), shownV2)).toBeNull()
+    })
+
+    it.each([
+      ['a boundary other than the start', { through: '2026-09-26T00:00:00Z' }],
+      ['a previous version that is not the one before', { previousPointerVersion: 3 }],
+      ['more carried flows than the version applied', { flowCount: 99 }],
+    ])('rejects an inheritance with %s', (_name, inherited) => {
+      const evidence = incremental()
+      const collection = evidence.collection as Record<string, unknown>
+      expect(
+        parseEvidence(
+          {
+            ...evidence,
+            collection: {
+              ...collection,
+              inherited: { ...(collection.inherited as object), ...inherited },
+            },
+          },
+          shownV2,
+        ),
+      ).toBeNull()
+    })
+
+    it('rejects an incremental first version: the first official version is always the first calculation', () => {
+      const evidence = incremental()
+      expect(
+        parseEvidence(
+          calculationEvidenceFixture(evidenceResultFixture(), {
+            inputs: evidence.inputs,
+            collection: evidence.collection,
+          }),
+          shown,
+        ),
+      ).toBeNull()
+    })
+
+    it.each([
+      ['versions out of order', [earlier, currentV2], 2],
+      ['two versions of the same order', [currentV2, { ...earlier, pointerVersion: 2 }], 2],
+      ['a version order below one', [currentV2, { ...earlier, pointerVersion: 0 }], 2],
+      ['more versions than the plan has had', [currentV2, earlier], 1],
+      ['an earlier version without its end', [currentV2, { ...earlier, supersededAt: null }], 2],
+    ])('rejects a version history with %s', (_name, official, officialCount) => {
+      expect(parseEvidence(withVersions(official, officialCount), shownV2)).toBeNull()
+    })
+
+    it('lists the current version and at most ten earlier ones', () => {
+      const shownV12 = parsed(evidenceResultFixture({ pointerVersion: 12 }))
+      const history = Array.from({ length: 12 }, (_, index) => {
+        const order = 12 - index
+        return {
+          pointerVersion: order,
+          calculationId: order === 12 ? EVIDENCE_IDS.calculation : EVIDENCE_IDS.newerCalculation,
+          publishedAt: '2026-09-26T01:00:01Z',
+          supersededAt: order === 12 ? null : '2026-09-27T01:00:01Z',
+          current: order === 12,
+        }
+      })
+      const at = (official: readonly unknown[]): Record<string, unknown> =>
+        calculationEvidenceFixture(evidenceResultFixture({ pointerVersion: 12 }), {
+          inputs: incremental().inputs,
+          collection: {
+            ...(incremental().collection as object),
+            inherited: {
+              previousCalculationId: EVIDENCE_IDS.newerCalculation,
+              previousPointerVersion: 11,
+              flowCount: 0,
+              through: '2026-09-26T01:00:00Z',
+            },
+          },
+          versions: { official, officialCount: 12, unpublished: [] },
+        })
+      expect(parseEvidence(at(history.slice(0, 11)), shownV12)).not.toBeNull()
+      expect(parseEvidence(at(history), shownV12)).toBeNull()
+    })
+
+    it('rejects a first version whose collection did not start at t0, or whose extended verification is not its tc', () => {
+      const evidence = base()
+      for (const collection of [
+        { rangeStart: '2026-09-26T01:00:00Z' },
+        { lastExtendedVerificationAt: '2026-09-26T00:30:00Z' },
+      ]) {
+        expect(
+          parseEvidence(
+            { ...evidence, collection: { ...(evidence.collection as object), ...collection } },
+            shown,
+          ),
+        ).toBeNull()
+      }
     })
 
     it.each([
@@ -793,6 +1032,7 @@ describe('CalculationEvidence', () => {
           ...base(),
           versions: {
             official: [current],
+            officialCount: 1,
             unpublished: [
               { status: 'PUBLISHED', reasonCode: 'X', finishedAt: '2026-09-27T00:50:00Z' },
             ],
@@ -805,6 +1045,7 @@ describe('CalculationEvidence', () => {
           ...base(),
           versions: {
             official: [current],
+            officialCount: 1,
             unpublished: [{ status: 'FAILED', reasonCode: 'X', finishedAt: 'later' }],
           },
         },

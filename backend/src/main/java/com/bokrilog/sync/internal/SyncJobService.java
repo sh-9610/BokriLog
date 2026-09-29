@@ -42,12 +42,13 @@ class SyncJobService implements SyncJobApi {
     private final CashflowConversionMarket market;
     private final PlanPublicationService publications;
     private final AdjustmentHistoryService adjustments;
+    private final PlanSyncService planSyncs;
 
     SyncJobService(SyncJobRepository jobs, InitialCollectionRepository initialJobs,
             CashflowClassificationRepository classifications, CashflowConversionRepository conversions,
             SourceConnectionApi sources, PortfolioMembershipApi portfolios, AccountAccessApi accounts,
             OperationalRestrictionApi restrictions, InitialInputsPlanPort plans, PlatformTransactionManager manager,
-            PlanPublicationService publications, AdjustmentHistoryService adjustments) {
+            PlanPublicationService publications, AdjustmentHistoryService adjustments, PlanSyncService planSyncs) {
         this.jobs=jobs; this.initialJobs=initialJobs; this.classifications=classifications;
         this.conversions=conversions;
         this.sources=sources; this.portfolios=portfolios;
@@ -56,6 +57,7 @@ class SyncJobService implements SyncJobApi {
         this.market=new CashflowConversionMarket(sources,conversions,this.transactions);
         this.publications=publications;
         this.adjustments=adjustments;
+        this.planSyncs=planSyncs;
     }
     boolean eligible(UUID userId) {
         return accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)==AccessDecision.ALLOWED
@@ -220,15 +222,25 @@ class SyncJobService implements SyncJobApi {
     public AdjustmentRead adjustmentHistory(@Nullable UUID userId, @Nullable AdjustmentQuery query) {
         return adjustments.read(userId,query);
     }
+    @Override
+    public SyncAdmission admitPlanSync(@Nullable UUID userId, SyncTrigger trigger) {
+        return planSyncs.admit(userId,trigger);
+    }
+    @Override
+    public Optional<SyncState> planSyncState(@Nullable UUID userId) {
+        return planSyncs.state(userId);
+    }
     /**
-     * Erases this user's sync rows. The publication rows go first: the official pointer and calculation
-     * version cite the candidate, classification and conversion with ON DELETE RESTRICT. Runs after the
-     * portfolio erasure, whose snapshot components cite the source snapshots.
+     * Erases this user's sync rows. The publication rows go first: the official pointer, its history and
+     * the calculation versions cite the candidate, classification and conversion with ON DELETE RESTRICT.
+     * The plan sync jobs follow (Story 2.11), taking their stage rows with them, and then the stage
+     * erasures. Runs after the portfolio erasure, whose snapshot components cite the source snapshots.
      */
     @Override
     public void eraseSyncData(@Nullable UUID userId) {
         if (userId!=null) transactions.executeWithoutResult(status -> {
             publications.erase(userId);
+            planSyncs.erase(userId);
             conversions.erase(userId);
             classifications.erase(userId);
             initialJobs.erase(userId);

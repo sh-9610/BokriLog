@@ -142,6 +142,34 @@ export const calculationEvidenceContent = {
     plan: '계획 버전',
     planId: '계획 ID',
   },
+  /**
+   * 수집 방식(Story 2.11). 첫 계산은 계획 시작부터 전부 수집했고, 이후 버전은 마지막 확인 시각 앞의 안전
+   * 중첩(24시간, 주기적 확장 검증은 7일)부터 수집하고 그 앞의 흐름은 이전 공식 버전에서 이어받았다.
+   */
+  collection: {
+    heading: '수집 방식',
+    mode: '수집 모드',
+    modes: { INITIAL: '최초 수집', NORMAL: '일반 동기화', EXTENDED: '확장 검증 동기화' },
+    modeHelp: {
+      INITIAL: '계획 시작 시각부터 계산 기준 시각까지 입출금 기록을 모두 수집했습니다.',
+      NORMAL:
+        '직전 확인 시각보다 24시간 앞에서부터 계산 기준 시각까지 다시 수집해 늦게 보인 입출금을 확인했습니다.',
+      EXTENDED:
+        '마지막 확장 검증 뒤 7일이 지나 직전 확인 시각보다 7일 앞에서부터 계산 기준 시각까지 다시 수집했습니다.',
+    },
+    unknownMode: '확인할 수 없는 수집 모드',
+    rangeStart: '수집 시작점',
+    lastExtended: '마지막 확장 검증 시각',
+    lastExtendedHelp: '7일 중첩으로 입출금 기록을 다시 확인한 마지막 시각입니다.',
+    inherited: '이어받은 흐름',
+    noInherited: '없습니다. 첫 계산이라 이전 공식 버전이 없습니다.',
+    inheritedCount: (count: number, version: number) =>
+      `발행 순서 ${String(version)}의 공식 버전에서 ${String(count)}건을 원래 환산 그대로 이어받았습니다.`,
+    inheritedHelp:
+      '수집 시작점 이전의 입출금은 다시 수집하지 않고 이전 공식 버전이 반영한 값을 그대로 씁니다.',
+    through: '이어받은 경계',
+    previousCalculation: '이전 공식 버전의 계산 ID',
+  },
   calculation: {
     calculationId: '계산 ID',
     calculationPolicy: '계산 정책',
@@ -187,7 +215,12 @@ export const calculationEvidenceContent = {
     effectiveFrom: '적용 시작',
     effectiveUntil: '적용 끝',
     current: '현재 공식 버전입니다.',
-    earlier: '이전 공식 버전입니다.',
+    earlier: '까지 적용된 이전 공식 버전입니다.',
+    /** 현재 버전과 최근의 이전 버전을 최대 열 개까지 보인다(Story 2.11). */
+    officialCount: (total: number, shown: number) =>
+      total === shown
+        ? `공식 버전 ${String(total)}개를 최신부터 보입니다.`
+        : `공식 버전 ${String(total)}개 가운데 최근 ${String(shown)}개를 최신부터 보입니다.`,
     calculationId: '계산 ID',
     unpublished: '발행되지 않은 시도',
     unpublishedHelp:

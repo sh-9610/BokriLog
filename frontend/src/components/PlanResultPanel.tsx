@@ -9,6 +9,7 @@ import type {
   PlanResultMetric,
   TrustAxis,
 } from '../session/useDashboard'
+import type { DashboardSync } from '../session/useDashboardSync'
 
 import { ENTRY_PATH } from '../content/auth'
 import { planConditionContent } from '../content/planConditions'
@@ -24,6 +25,7 @@ import { bundleOf } from '../session/useDashboard'
 import { AdjustmentHistory } from './AdjustmentHistory'
 import { CalculationEvidence } from './CalculationEvidence'
 import styles from './PlanResultPanel.module.css'
+import { SyncControl } from './SyncControl'
 
 const RATIOS: readonly MetricName[] = ['REQUIRED_RATE', 'GOAL_PROGRESS']
 
@@ -361,15 +363,22 @@ function Notice({
  * The calculation evidence (Story 2.9) opens beside the metrics heading, on this same screen, for the
  * bundle shown here, and the adjustment history (Story 2.10) opens right after it. Their states are their
  * own (`evidence`, `adjustments`); the screen's status region says what they did.
+ *
+ * With a bundle on screen, the next-action section carries the manual sync control (Story 2.11) before the
+ * reload button. Its state is its own (`sync`). When a sync the user started publishes, focus moves to this
+ * panel's heading once the new bundle is asked for; any other end moves it to the control's error summary.
  */
 export function PlanResultPanel({
   dashboard,
   evidence,
   adjustments,
+  sync,
 }: {
   readonly dashboard: Dashboard
   readonly evidence: EvidenceState
   readonly adjustments: AdjustmentHistoryState
+  /** The incremental sync (Story 2.11). Without it the panel shows no sync control. */
+  readonly sync?: DashboardSync
 }): ReactElement {
   const { view, loading, reload } = dashboard
   const bundle = bundleOf(view)
@@ -389,6 +398,16 @@ export function PlanResultPanel({
     const lost = active === null || active === document.body || !active.isConnected
     if (last !== null && !last.isConnected && lost) heading.current?.focus()
   }, [hasNextAction, hasResult])
+
+  // A sync the user started published: the heading of the result takes focus (Story 2.11, AC-9).
+  const focusToken = sync?.focus?.token ?? 0
+  const focusTarget = sync?.focus?.target ?? null
+  const handledFocus = useRef(focusToken)
+  useEffect(() => {
+    if (focusToken === handledFocus.current) return
+    handledFocus.current = focusToken
+    if (focusTarget === 'heading') heading.current?.focus()
+  }, [focusTarget, focusToken])
 
   return (
     <section
@@ -441,6 +460,13 @@ export function PlanResultPanel({
         <section aria-labelledby="plan-result-next" className={styles.group}>
           <h3 id="plan-result-next">{copy.nextActionHeading}</h3>
           <p>{nextActionCopy(nextActionOf(view), measured)}</p>
+          {sync !== undefined && bundle !== null ? (
+            <SyncControl
+              longGap={bundle.nextAction === 'REVIEW_LONG_GAP'}
+              measured={measured}
+              sync={sync}
+            />
+          ) : null}
           {view.kind === 'NO_PLAN' ? (
             <a className={styles.action} href={planConditionContent.path}>
               {planConditionContent.openConditions}

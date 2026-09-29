@@ -50,15 +50,15 @@ class DashboardTrustTest {
             + "ESTIMATED_CASHFLOW_PRICE,PLAN_AMOUNT PLAN_DIFFERENCE ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,WAIT_FOR_SYNC",
         "SYNCING,REVIEW_REQUIRED,NOT_COMPUTABLE,JOB_IN_PROGRESS,WAIT_FOR_SYNC,TARGET_NOT_POSITIVE,"
             + "ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,METRIC_UNDEFINED,REQUIRED_RATE GOAL_PROGRESS,WAIT_FOR_SYNC",
-        "STALE,CONFIRMED,OFFICIAL,BOTH_OUTDATED,NONE,INPUTS_VERIFIED,-,NO_ESTIMATED_INPUT,-,NONE",
-        "STALE,CONFIRMED,ESTIMATED,BOTH_OUTDATED,NONE,INPUTS_VERIFIED,-,ESTIMATED_CASHFLOW_PRICE,"
-            + "PLAN_AMOUNT PLAN_DIFFERENCE ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,NONE",
-        "STALE,CONFIRMED,NOT_COMPUTABLE,BOTH_OUTDATED,NONE,INPUTS_VERIFIED,-,METRIC_UNDEFINED,REQUIRED_RATE,NONE",
-        "STALE,REVIEW_REQUIRED,OFFICIAL,BOTH_OUTDATED,NONE,TARGET_NOT_POSITIVE,ADJUSTED_TARGET,NO_ESTIMATED_INPUT,-,NONE",
-        "STALE,REVIEW_REQUIRED,ESTIMATED,BOTH_OUTDATED,NONE,TARGET_NOT_POSITIVE,ADJUSTED_TARGET,"
-            + "ESTIMATED_CASHFLOW_PRICE,PLAN_AMOUNT PLAN_DIFFERENCE ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,NONE",
-        "STALE,REVIEW_REQUIRED,NOT_COMPUTABLE,BOTH_OUTDATED,NONE,TARGET_NOT_POSITIVE,"
-            + "ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,METRIC_UNDEFINED,REQUIRED_RATE GOAL_PROGRESS,NONE",
+        "STALE,CONFIRMED,OFFICIAL,BOTH_OUTDATED,SYNC_NOW,INPUTS_VERIFIED,-,NO_ESTIMATED_INPUT,-,SYNC_NOW",
+        "STALE,CONFIRMED,ESTIMATED,BOTH_OUTDATED,SYNC_NOW,INPUTS_VERIFIED,-,ESTIMATED_CASHFLOW_PRICE,"
+            + "PLAN_AMOUNT PLAN_DIFFERENCE ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,SYNC_NOW",
+        "STALE,CONFIRMED,NOT_COMPUTABLE,BOTH_OUTDATED,SYNC_NOW,INPUTS_VERIFIED,-,METRIC_UNDEFINED,REQUIRED_RATE,SYNC_NOW",
+        "STALE,REVIEW_REQUIRED,OFFICIAL,BOTH_OUTDATED,SYNC_NOW,TARGET_NOT_POSITIVE,ADJUSTED_TARGET,NO_ESTIMATED_INPUT,-,SYNC_NOW",
+        "STALE,REVIEW_REQUIRED,ESTIMATED,BOTH_OUTDATED,SYNC_NOW,TARGET_NOT_POSITIVE,ADJUSTED_TARGET,"
+            + "ESTIMATED_CASHFLOW_PRICE,PLAN_AMOUNT PLAN_DIFFERENCE ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,SYNC_NOW",
+        "STALE,REVIEW_REQUIRED,NOT_COMPUTABLE,BOTH_OUTDATED,SYNC_NOW,TARGET_NOT_POSITIVE,"
+            + "ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,METRIC_UNDEFINED,REQUIRED_RATE GOAL_PROGRESS,SYNC_NOW",
     })
     void eachAxisIsJudgedOnItsOwn(String freshness, String input, String nature, String freshnessCause,
             String freshnessAction, String inputCause, String inputAffected, String natureCause, String natureAffected,
@@ -103,6 +103,54 @@ class DashboardTrustTest {
                 .orElseThrow().freshness();
         assertThat(axis.state()).isEqualTo(state);
         assertThat(axis.cause()).isEqualTo(cause);
+    }
+
+    /**
+     * Story 2.11: a stale cause in its order — in progress, restriction, period end, long gap, the last attempt,
+     * then the fifteen-minute rule — each with its next action, and a fresh measurement does not hide the last
+     * attempt's failure. The official values' last normal time never moves.
+     */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({
+        "in progress beats everything,true,true,true,true,FAILED,SYNC_INTERRUPTED,true,SYNCING,JOB_IN_PROGRESS,WAIT_FOR_SYNC",
+        "restriction,false,true,true,true,FAILED,SYNC_INTERRUPTED,true,STALE,SYNC_RESTRICTED,NONE",
+        "period ended,false,false,true,true,FAILED,SYNC_INTERRUPTED,true,STALE,PLAN_PERIOD_ENDED,NONE",
+        "long gap,false,false,false,true,FAILED,SYNC_INTERRUPTED,true,STALE,LONG_GAP_CHOICE_REQUIRED,REVIEW_LONG_GAP",
+        "a retryable failure,false,false,false,false,FAILED,SOURCE_UNAVAILABLE,true,STALE,LAST_SYNC_FAILED,SYNC_NOW",
+        "a failure no new attempt helps,false,false,false,false,FAILED,SOURCE_REJECTED,false,STALE,LAST_SYNC_FAILED,NONE",
+        "a review,false,false,false,false,REVIEW_REQUIRED,APPLIED_FLOW_CHANGED,false,STALE,LAST_SYNC_REVIEW_REQUIRED,NONE",
+        "a retryable block,false,false,false,false,BLOCKED,POINTER_CONFLICT,true,STALE,LAST_SYNC_BLOCKED,SYNC_NOW",
+        "a block,false,false,false,false,BLOCKED,PLAN_CHANGED,false,STALE,LAST_SYNC_BLOCKED,NONE",
+        "no attempt,false,false,false,false,,,false,FRESH,BOTH_WITHIN_WINDOW,NONE"})
+    void aStaleCauseFollowsTheSyncOrder(String name, boolean syncing, boolean restricted, boolean periodEnded,
+            boolean longGap, String status, String code, boolean retryable, String state, String cause, String action) {
+        var last = status == null ? null : new DashboardTrust.LastAttempt(status, code, retryable);
+        var trust = DashboardTrust.judge(new DashboardTrust.Input(new DashboardTrust.Freshness(syncing, true, true,
+                restricted, periodEnded, longGap, last), "CONFIRMED", false, 0, MEASURED, VERIFIED, BASIS,
+                metrics("CONFIRMED", "OFFICIAL"))).orElseThrow();
+        assertThat(trust.freshness().state()).as(name).isEqualTo(state);
+        assertThat(trust.freshness().cause()).as(name).isEqualTo(cause);
+        assertThat(trust.freshness().nextAction()).as(name).isEqualTo(action);
+        assertThat(trust.freshness().lastNormalAt()).isEqualTo(MEASURED);
+        assertThat(DashboardTrust.nextAction(trust)).as("the screen's action is the freshness axis's").isEqualTo(action);
+    }
+
+    /** A last attempt that needed a review of its latest inputs makes the input reliability "review required". */
+    @Test
+    void theLastAttemptsReviewIsTheInputReliabilitysCause() {
+        var trust = DashboardTrust.judge(new DashboardTrust.Input(new DashboardTrust.Freshness(false, true, true, false,
+                false, false, new DashboardTrust.LastAttempt("REVIEW_REQUIRED", "COLLECTION_REVIEW_REQUIRED", false)),
+                "CONFIRMED", false, 0, MEASURED, VERIFIED, BASIS, metrics("CONFIRMED", "OFFICIAL"))).orElseThrow();
+        assertThat(trust.inputReliability().state()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(trust.inputReliability().cause()).isEqualTo("LATEST_INPUTS_REVIEW_REQUIRED");
+        assertThat(trust.inputReliability().affectedMetrics()).isEqualTo(SIX);
+        assertThat(trust.inputReliability().lastNormalAt()).isEqualTo(VERIFIED);
+        assertThat(trust.inputReliability().nextAction()).isEqualTo("NONE");
+        // A failure is not a review: the reliability stays the version's own.
+        var failed = DashboardTrust.judge(new DashboardTrust.Input(new DashboardTrust.Freshness(false, true, true, false,
+                false, false, new DashboardTrust.LastAttempt("FAILED", "SOURCE_UNAVAILABLE", true)),
+                "CONFIRMED", false, 0, MEASURED, VERIFIED, BASIS, metrics("CONFIRMED", "OFFICIAL"))).orElseThrow();
+        assertThat(failed.inputReliability().state()).isEqualTo("CONFIRMED");
     }
 
     /** A running job wins over stale times: the official values stay while it runs. */

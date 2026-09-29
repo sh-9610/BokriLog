@@ -11,7 +11,7 @@
  *    `stubLinkRequest`, `stubUnlinkPrepareRequest`, `stubUnlinkConfirmRequest`,
  *    `stubUnlinkCancelRequest`, `stubConnectionStatusRequest`, `stubConnectionPrepareRequest`,
  *    `stubConnectRequest`, `stubConnectionCancelRequest`, `stubCalculationEvidence`,
- *    `stubAdjustmentHistory`).
+ *    `stubAdjustmentHistory`, `stubSyncAdmission`, `stubSyncState`).
  *    전역 거부는 그대로다. 아래 `responders` 절의 근거를 참고한다.
  */
 
@@ -35,6 +35,7 @@ import { DASHBOARD_EVIDENCE_PATH } from '../content/calculationEvidence'
 import { BYBIT_CANCEL_PATH, BYBIT_CONNECT_PATH, BYBIT_CONNECTION_PATH } from '../content/connection'
 import { FIRST_SNAPSHOT_PATH } from '../content/firstSnapshot'
 import { DASHBOARD_PATH } from '../content/planResult'
+import { DASHBOARD_SYNC_PATH } from '../content/planSync'
 
 const observedRequests: string[] = []
 const observedIndexedDbNames: string[] = []
@@ -120,6 +121,23 @@ export function stubCalculationEvidence(responder: QueryResponder): void {
  */
 export function stubAdjustmentHistory(responder: QueryResponder): void {
   queryResponders.set(requestKey('GET', DASHBOARD_ADJUSTMENTS_PATH), responder)
+}
+
+/**
+ * 동기화 접수(`POST /api/dashboard/sync`) 하나를 이 시험 동안만 허용한다(Story 2.11).
+ *
+ * 두 로그인 화면은 대시보드가 처음 `READY`를 받으면 진입 동기화를 요청한다. 열지 않은 시험에서는 전역 거부가
+ * 그 요청을 기록하고 거절하며, 자동 요청의 실패는 화면에 아무 말도 하지 않는다 — 그래서 이 스토리 전의 화면
+ * 시험은 그대로 통과하고, 동기화를 보려는 시험만 이 요청을 연다. 응답 함수는 요청 본문(`trigger`)을 `init`으로
+ * 받는다.
+ */
+export function stubSyncAdmission(responder: RequestResponder): void {
+  responders.set(requestKey('POST', DASHBOARD_SYNC_PATH), responder)
+}
+
+/** 동기화 상태 조회(`GET /api/dashboard/sync`) 하나를 이 시험 동안만 허용한다(Story 2.11). */
+export function stubSyncState(responder: RequestResponder): void {
+  responders.set(requestKey('GET', DASHBOARD_SYNC_PATH), responder)
 }
 
 /**

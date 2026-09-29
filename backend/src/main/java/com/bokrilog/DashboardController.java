@@ -17,6 +17,8 @@ import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -50,6 +52,11 @@ import org.springframework.web.bind.annotation.RestController;
  * or one that is malformed, is the same 404; source event, classification and conversion ids are never
  * taken. 503 {@code ADJUSTMENT_HISTORY_UNAVAILABLE} when any applied row of the version disagrees with its
  * lineage — never a partial list.
+ *
+ * <p>A third sub-path, {@code /api/dashboard/sync} (Story 2.11), admits and reports the active plan's
+ * incremental sync: {@code POST} with {@code {trigger}} (the one state-changing request of this surface, so
+ * the dashboard predicate's CSRF and {@code Origin} checks reach it) and {@code GET} for the attempt and the
+ * button's availability. It takes no identifier either, and it carries no financial value.
  *
  * <p>Amounts and ratios are canonical decimal strings. Rounding for display is the client's final step.
  */
@@ -194,17 +201,31 @@ class DashboardController {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record MetricImpactView(String metric,String nature,@Nullable String unavailableReason,
             @Nullable EstimatedCauseView estimatedCause) {}
-    record OfficialVersionView(long pointerVersion,UUID calculationId,String publishedAt,boolean current) {}
+    /** {@code supersededAt} is {@code null} for the current version and is sent as such. */
+    record OfficialVersionView(long pointerVersion,UUID calculationId,String publishedAt,@Nullable String supersededAt,
+            boolean current) {}
     record UnpublishedAttemptView(String status,String reasonCode,String finishedAt) {}
-    /** Official versions and attempts that never published, in two separate lists. */
-    record EvidenceVersionsView(List<OfficialVersionView> official,List<UnpublishedAttemptView> unpublished) {}
+    /**
+     * Official versions (the current one and at most ten earlier, newest first, with the total) and attempts that
+     * never published, in two separate lists.
+     */
+    record EvidenceVersionsView(List<OfficialVersionView> official,int officialCount,
+            List<UnpublishedAttemptView> unpublished) {}
+    /** What an incremental version carried from the previous official version (Story 2.11). */
+    record EvidenceInheritedView(UUID previousCalculationId,long previousPointerVersion,int flowCount,String through) {}
+    /**
+     * How the version's cash flows were verified: {@code INITIAL}, {@code NORMAL} or {@code EXTENDED}, the
+     * collection start, the last extended verification, and what was carried ({@code null} for the first).
+     */
+    record EvidenceCollectionView(String mode,String rangeStart,String lastExtendedVerificationAt,
+            @Nullable EvidenceInheritedView inherited) {}
     /**
      * The evidence in the screen's order: snapshots → times → input versions → calculation version →
      * metric impact → versions. The reference repeats the three values the request named.
      */
     record EvidenceView(UUID planId,long pointerVersion,UUID calculationId,EvidenceSnapshotsView snapshots,
-            EvidenceTimesView times,EvidenceInputsView inputs,EvidenceCalculationView calculation,
-            List<MetricImpactView> metrics,EvidenceVersionsView versions) {}
+            EvidenceTimesView times,EvidenceInputsView inputs,EvidenceCollectionView collection,
+            EvidenceCalculationView calculation,List<MetricImpactView> metrics,EvidenceVersionsView versions) {}
 
     /**
      * One evidence read, one operational line — like the dashboard's: the outcome, the status answered, the
@@ -321,6 +342,12 @@ class DashboardController {
                         new EvidenceCashflowsView(e.cashflows().appliedCount(),e.cashflows().estimatedCount()),
                         new EvidencePlanView(plan.planId(),new ConditionsView(plan.principal(),plan.startAt().toString(),
                                 plan.endAt().toString(),plan.period(),plan.targetRate()))),
+                new EvidenceCollectionView(e.collection().mode(),e.collection().rangeStart().toString(),
+                        e.collection().lastExtendedVerificationAt().toString(),
+                        e.collection().inherited()==null ? null : new EvidenceInheritedView(
+                                e.collection().inherited().previousCalculationId(),
+                                e.collection().inherited().previousPointerVersion(),e.collection().inherited().flowCount(),
+                                e.collection().inherited().through().toString())),
                 new EvidenceCalculationView(calculation.calculationId(),calculation.calculationPolicy(),
                         calculation.calendarPolicy(),calculation.displayPolicy(),calculation.precisionPolicy(),
                         calculation.timeZone(),calculation.implementationVersion(),calculation.inputHash(),
@@ -331,7 +358,9 @@ class DashboardController {
                         .toList(),
                 new EvidenceVersionsView(
                         e.officialVersions().stream().map(v -> new OfficialVersionView(v.pointerVersion(),
-                                v.calculationId(),v.publishedAt().toString(),v.current())).toList(),
+                                v.calculationId(),v.publishedAt().toString(),
+                                v.supersededAt()==null ? null : v.supersededAt().toString(),v.current())).toList(),
+                        e.officialVersionCount(),
                         e.unpublishedAttempts().stream().map(a -> new UnpublishedAttemptView(a.status(),a.reasonCode(),
                                 a.finishedAt().toString())).toList()));
     }
@@ -473,6 +502,86 @@ class DashboardController {
                                 v.discoveredAt().toString())).toList()))
                         .toList(),
                 h.nextCursor());
+    }
+
+    // ------------------------------------------------------------------ incremental sync (Story 2.11)
+
+    /** The incremental sync of the active plan. The dashboard path's predicate covers it: auth, CSRF, Origin. */
+    static final String SYNC_PATH=AuthSecurityConfig.DASHBOARD_PATH+"/sync";
+
+    /** The one refusal that is the request's own fault: the body's trigger is missing or not one of the three. */
+    static final String SYNC_TRIGGER_REQUIRED="SYNC_TRIGGER_REQUIRED";
+    static final String MESSAGE_SYNC_TRIGGER_REQUIRED="동기화 요청의 형식이 맞지 않아 받지 않았습니다. 화면을 새로 열어 다시 시도해 주세요.";
+
+    /** The request body. Only {@code trigger} is read; anything else in it is ignored. */
+    record SyncRequest(@Nullable String trigger) {}
+
+    /** One attempt: codes and times, and the attempt's own id — no financial value, no other id. */
+    record SyncJobView(UUID jobId,String trigger,String status,String stage,@Nullable String mode,
+            @Nullable String failureCode,boolean retryable,String createdAt,@Nullable String finishedAt,
+            @Nullable Long pointerVersion) {}
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record ManualSyncView(boolean available,@Nullable String reason,@Nullable Integer retryAfterSeconds) {}
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record SyncAnswerView(String outcome,@Nullable String reason,@Nullable SyncJobView job,ManualSyncView manual) {}
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record SyncStateView(@Nullable SyncJobView job,ManualSyncView manual) {}
+
+    /**
+     * Admits an incremental sync (Story 2.11). The body is {@code {"trigger": "DASHBOARD_ENTRY" |
+     * "TAB_REACTIVATION" | "MANUAL"}}. 202 with the new attempt ({@code ADMITTED}); 200 with the outcome that
+     * admitted nothing — {@code IN_PROGRESS}, {@code RECENTLY_SYNCED}, {@code COOLDOWN}, {@code LONG_GAP} or
+     * {@code NOT_AVAILABLE} with its reason — and the existing reference; 400 {@code SYNC_TRIGGER_REQUIRED} when
+     * the trigger is missing or unknown; 403 when the account's own access refuses it. Never calls the provider.
+     * Every answer is {@code no-store}. The service writes the admission's operational line.
+     */
+    @PostMapping(path=SYNC_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<?> sync(@RequestBody(required=false) @Nullable SyncRequest body,HttpServletRequest request,
+            HttpServletResponse response) throws IOException {
+        UUID user=currentUserId();
+        if (user==null) { response.sendError(403); return null; }
+        SyncJobApi.SyncTrigger trigger=triggerOf(body==null ? null : body.trigger());
+        if (trigger==null)
+            return error(HttpStatus.BAD_REQUEST,SYNC_TRIGGER_REQUIRED,MESSAGE_SYNC_TRIGGER_REQUIRED,request);
+        var admission=jobs.admitPlanSync(user,trigger);
+        if (!(admission instanceof SyncJobApi.SyncAdmission.Answered answered))
+            return error(HttpStatus.FORBIDDEN,ApiErrorHandler.CODE_FORBIDDEN,ApiErrorHandler.MESSAGE_FORBIDDEN,request);
+        var answer=answered.answer();
+        HttpStatus status="ADMITTED".equals(answer.outcome()) ? HttpStatus.ACCEPTED : HttpStatus.OK;
+        return ResponseEntity.status(status).cacheControl(CacheControl.noStore())
+                .body(new SyncAnswerView(answer.outcome(),answer.reason(),jobView(answer.job()),manualView(answer.manual())));
+    }
+
+    /**
+     * The sync state for the screen: the active plan's attempt in progress or its latest one, and whether the
+     * button would start one now. 200, or 403 when the account's own access refuses it. {@code no-store}.
+     */
+    @GetMapping(path=SYNC_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
+    ResponseEntity<?> syncState(HttpServletRequest request) {
+        var state=jobs.planSyncState(currentUserId()).orElse(null);
+        if (state==null)
+            return error(HttpStatus.FORBIDDEN,ApiErrorHandler.CODE_FORBIDDEN,ApiErrorHandler.MESSAGE_FORBIDDEN,request);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(new SyncStateView(jobView(state.job()),manualView(state.manual())));
+    }
+
+    /** Exactly one of the three trigger names, or {@code null}. */
+    static SyncJobApi.@Nullable SyncTrigger triggerOf(@Nullable String value) {
+        if (value==null) return null;
+        for (SyncJobApi.SyncTrigger trigger : SyncJobApi.SyncTrigger.values())
+            if (trigger.name().equals(value)) return trigger;
+        return null;
+    }
+
+    private static @Nullable SyncJobView jobView(SyncJobApi.@Nullable SyncJob job) {
+        if (job==null) return null;
+        return new SyncJobView(job.jobId(),job.trigger(),job.status(),job.stage(),job.mode(),job.failureCode(),
+                job.retryable(),job.createdAt().toString(),job.finishedAt()==null ? null : job.finishedAt().toString(),
+                job.pointerVersion());
+    }
+
+    private static ManualSyncView manualView(SyncJobApi.ManualSync manual) {
+        return new ManualSyncView(manual.available(),manual.reason(),manual.retryAfterSeconds());
     }
 
     private static String correlationOf(HttpServletRequest request) {

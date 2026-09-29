@@ -2368,7 +2368,8 @@ class FirstSnapshotTest extends AuthFlowTestBase {
     /**
      * SYNC-UX-1.0 against the database clock: each time alone can make the result stale; any job syncs it.
      * Story 2.8: the axis names which time is outside the window, reaches all six metrics unless fresh,
-     * vouches for the measurement, and asks the screen to wait only while a job runs.
+     * vouches for the measurement, and asks the screen to wait only while a job runs. Story 2.11: a stale
+     * result offers the sync ({@code SYNC_NOW}); a fresh one offers nothing.
      */
     @Test
     void freshnessFollowsBothTimesAndAnyJobInProgress() throws Exception {
@@ -2379,15 +2380,18 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertFreshness(user,"FRESH","BOTH_WITHIN_WINDOW","NONE");
         jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now()-interval '16 minutes' "
                 + "WHERE user_id=:u").param("u",user).update();
-        assertFreshness(user,"STALE","MEASUREMENT_OUTDATED","NONE");
+        assertFreshness(user,"STALE","MEASUREMENT_OUTDATED","SYNC_NOW");
+        // The first version's extended verification is its tc (V11): the two move together.
         jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now(),basis_at=now()-interval '16 minutes',"
-                + "cashflow_verified_through=now()-interval '16 minutes' WHERE user_id=:u").param("u",user).update();
-        assertFreshness(user,"STALE","CASHFLOW_VERIFICATION_OUTDATED","NONE");
+                + "cashflow_verified_through=now()-interval '16 minutes',"
+                + "last_extended_verification_at=now()-interval '16 minutes' WHERE user_id=:u").param("u",user).update();
+        assertFreshness(user,"STALE","CASHFLOW_VERIFICATION_OUTDATED","SYNC_NOW");
         jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now()-interval '16 minutes' "
                 + "WHERE user_id=:u").param("u",user).update();
-        assertFreshness(user,"STALE","BOTH_OUTDATED","NONE");
+        assertFreshness(user,"STALE","BOTH_OUTDATED","SYNC_NOW");
         jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now(),basis_at=now(),"
-                + "cashflow_verified_through=now() WHERE user_id=:u").param("u",user).update();
+                + "cashflow_verified_through=now(),last_extended_verification_at=now() WHERE user_id=:u")
+                .param("u",user).update();
         assertFreshness(user,"FRESH","BOTH_WITHIN_WINDOW","NONE");
         // A job in progress: RUNNING under a lease no worker will take over, so it stays in progress.
         UUID probe=UUID.randomUUID();
@@ -2403,7 +2407,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         } finally {
             jdbc().sql("DELETE FROM sync_job WHERE job_id=:j").param("j",probe).update();
         }
-        assertFreshness(user,"STALE","MEASUREMENT_OUTDATED","NONE");
+        assertFreshness(user,"STALE","MEASUREMENT_OUTDATED","SYNC_NOW");
     }
 
     private void assertFreshness(UUID user,String state,String cause,String nextAction) {
@@ -2823,9 +2827,12 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                         () -> jdbc().sql("UPDATE sync_plan_calculation SET target_rate='0.1' WHERE calculation_id=:c")
                                 .param("c",calc).update()),
                 new Corruption("the version was calculated from another start",
-                        () -> jdbc().sql("UPDATE sync_plan_calculation SET t0=t0-interval '1 minute' WHERE calculation_id=:c")
+                        // The first version's collection starts at its t0 (V11): the two move together.
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET t0=t0-interval '1 minute',"
+                                + "collection_range_start=collection_range_start-interval '1 minute' WHERE calculation_id=:c")
                                 .param("c",calc).update(),
-                        () -> jdbc().sql("UPDATE sync_plan_calculation SET t0=t0+interval '1 minute' WHERE calculation_id=:c")
+                        () -> jdbc().sql("UPDATE sync_plan_calculation SET t0=t0+interval '1 minute',"
+                                + "collection_range_start=collection_range_start+interval '1 minute' WHERE calculation_id=:c")
                                 .param("c",calc).update()),
                 new Corruption("the version was calculated to another end",
                         () -> jdbc().sql("UPDATE sync_plan_calculation SET end_at=end_at+interval '1 day' WHERE calculation_id=:c")
@@ -3081,7 +3088,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertThat(answer.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
         var fields=topLevelFieldsOf(answer.body());
         assertThat(fields.keySet()).as("the screen's order").containsExactly("planId","pointerVersion","calculationId",
-                "snapshots","times","inputs","calculation","metrics","versions");
+                "snapshots","times","inputs","collection","calculation","metrics","versions");
         assertThat(fields).containsEntry("planId",shown.get("planId")).containsEntry("pointerVersion",1)
                 .containsEntry("calculationId",shown.get("calculationId"));
 
@@ -3130,6 +3137,11 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         // The collection covered exactly (t0, tc]: its pages start at t0 and end at tc.
         assertThat(candidate[2]).isEqualTo(row[4]);
         assertThat(candidate[3]).isEqualTo(row[5]);
+        // Story 2.11: the first version is INITIAL — collected from t0, its extended verification is tc, nothing carried.
+        var collection=nested(fields,"collection");
+        assertThat(collection).containsEntry("mode","INITIAL").containsEntry("rangeStart",row[4])
+                .containsEntry("lastExtendedVerificationAt",row[5]);
+        assertThat(collection.get("inherited")).isNull();
         var classification=jdbc().sql("SELECT policy_version,input_scope_hash FROM sync_cashflow_classification_bundle "
                 + "WHERE classification_id=:c::uuid").param("c",row[11])
                 .query((rs,n)->new String[] {rs.getString(1),rs.getString(2)}).single();
@@ -3155,10 +3167,12 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 .isEqualTo(java.util.Map.of("metric",m.get("metric"),"nature","OFFICIAL")));
         String publishedAt=jdbc().sql("SELECT published_at FROM sync_official_plan_result WHERE user_id=:u").param("u",user)
                 .query(java.time.OffsetDateTime.class).single().toInstant().toString();
-        assertThat(nested(fields,"versions")).isEqualTo(java.util.Map.of(
-                "official",java.util.List.of(java.util.Map.of("pointerVersion",1,"calculationId",shown.get("calculationId"),
-                        "publishedAt",publishedAt,"current",true)),
-                "unpublished",java.util.List.of()));
+        // Story 2.11: the one official version is still current (no end), and the count says how many exist.
+        var official=new java.util.HashMap<String,Object>(java.util.Map.of("pointerVersion",1,
+                "calculationId",shown.get("calculationId"),"publishedAt",publishedAt,"current",true));
+        official.put("supersededAt",null);
+        assertThat(nested(fields,"versions")).isEqualTo(java.util.Map.of("official",java.util.List.of(official),
+                "officialCount",1,"unpublished",java.util.List.of()));
 
         // AC-8: nothing that names the account inside BokriLog or at the provider.
         String externalRef=jdbc().sql("SELECT provider_account_ref FROM source_provider_account WHERE user_id=:u")
@@ -3244,7 +3258,8 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         var shown=resultOf(get(AuthSecurityConfig.DASHBOARD_PATH,cookie).body());
         var body=topLevelFieldsOf(get(DashboardController.EVIDENCE_PATH+query(shown),cookie).body());
         var versions=nested(body,"versions");
-        assertThat(versions.keySet()).containsExactly("official","unpublished");
+        assertThat(versions.keySet()).containsExactly("official","officialCount","unpublished");
+        assertThat(versions).containsEntry("officialCount",1);
         @SuppressWarnings("unchecked")
         var unpublished=(java.util.List<java.util.Map<String,Object>>)versions.get("unpublished");
         assertThat(unpublished).hasSize(2).allSatisfy(attempt ->
@@ -3318,9 +3333,12 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         var empty=send("GET",DashboardController.EVIDENCE_PATH+valid,emptyCookie,"X-Request-Id","evidence-tamper-probe");
         assertThat(empty.statusCode()).isEqualTo(404);
         assertThat(empty.body()).isEqualTo(notFound);
-        // A version that is no longer current: the pointer moved on (as Story 2.11 will make it), the old one is stale.
+        // A version that is no longer current: the pointer moved on (as Story 2.11 makes it), the old one is stale.
+        // The history moves with it, so the lineage still agrees with itself.
         jdbc().sql("UPDATE sync_official_plan_result SET pointer_version=2 WHERE plan_id=:p").param("p",own.planId())
                 .update();
+        jdbc().sql("UPDATE sync_official_plan_result_history SET pointer_version=2 WHERE plan_id=:p")
+                .param("p",own.planId()).update();
         try {
             var stale=send("GET",DashboardController.EVIDENCE_PATH+valid,cookie,"X-Request-Id","evidence-tamper-probe");
             assertThat(stale.statusCode()).isEqualTo(404);
@@ -3330,6 +3348,8 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         } finally {
             jdbc().sql("UPDATE sync_official_plan_result SET pointer_version=1 WHERE plan_id=:p").param("p",own.planId())
                     .update();
+            jdbc().sql("UPDATE sync_official_plan_result_history SET pointer_version=1 WHERE plan_id=:p")
+                    .param("p",own.planId()).update();
         }
         var lines=evidenceLogLines(output).subList(before,evidenceLogLines(output).size());
         assertThat(lines.stream().filter(line -> line.contains("status=404")).toList()).hasSize(tampered.size()+2)
@@ -4008,9 +4028,12 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         var empty=send("GET",path+valid,emptyCookie,"X-Request-Id","adjustments-tamper-probe");
         assertThat(empty.statusCode()).isEqualTo(404);
         assertThat(empty.body()).isEqualTo(notFound);
-        // A version that is no longer current, and a cursor made for the version before.
+        // A version that is no longer current, and a cursor made for the version before. The history moves with
+        // the pointer, so the lineage still agrees with itself (Story 2.11).
         jdbc().sql("UPDATE sync_official_plan_result SET pointer_version=2 WHERE plan_id=:p").param("p",own.planId())
                 .update();
+        jdbc().sql("UPDATE sync_official_plan_result_history SET pointer_version=2 WHERE plan_id=:p")
+                .param("p",own.planId()).update();
         try {
             for (String stale : new String[] {valid,query(own.planId(),2,own.calculationId())+"&cursor="+cursor}) {
                 var answer=send("GET",path+stale,cookie,"X-Request-Id","adjustments-tamper-probe");
@@ -4022,6 +4045,8 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         } finally {
             jdbc().sql("UPDATE sync_official_plan_result SET pointer_version=1 WHERE plan_id=:p").param("p",own.planId())
                     .update();
+            jdbc().sql("UPDATE sync_official_plan_result_history SET pointer_version=1 WHERE plan_id=:p")
+                    .param("p",own.planId()).update();
         }
         // A query the container cannot parse, sent byte for byte.
         var unparsable=java.util.List.of("?planId=%zz&pointerVersion=1&calculationId="+calc,valid+"&cursor=%",

@@ -10,6 +10,7 @@ import { entryContent } from '../content/entry'
 import { useDashboardAdjustments } from '../session/useAdjustmentHistory'
 import { useDashboardEvidence } from '../session/useCalculationEvidence'
 import { planPresenceOf, statusBusy, useDashboard } from '../session/useDashboard'
+import { useDashboardSync } from '../session/useDashboardSync'
 import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
@@ -46,6 +47,8 @@ export function OnboardingScreen(): ReactElement {
   const evidence = useDashboardEvidence(dashboard)
   // The adjustment history of the same bundle (Story 2.10), in its own state.
   const adjustments = useDashboardAdjustments(dashboard)
+  // The active plan's incremental sync (Story 2.11): entry, reactivation and the manual control.
+  const sync = useDashboardSync(dashboard, csrfToken)
   // Whether the first-snapshot panel leads the dashboard, and how (`planPresenceOf` gives the reasons).
   const presence = planPresenceOf(dashboard.view)
 
@@ -132,6 +135,7 @@ export function OnboardingScreen(): ReactElement {
               className={styles.noticeText}
               dashboard={dashboard}
               evidence={evidence}
+              sync={sync}
             />
           ) : (
             <p className={styles.noticeText}>
@@ -154,7 +158,12 @@ export function OnboardingScreen(): ReactElement {
           <FirstSnapshotPanel csrfToken={csrfToken} plan={presence} ready={ready} />
         ) : null}
         {ready ? (
-          <PlanResultPanel adjustments={adjustments} dashboard={dashboard} evidence={evidence} />
+          <PlanResultPanel
+            adjustments={adjustments}
+            dashboard={dashboard}
+            evidence={evidence}
+            sync={sync}
+          />
         ) : null}
 
         {ready ? (

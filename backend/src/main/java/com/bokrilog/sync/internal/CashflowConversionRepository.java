@@ -213,11 +213,85 @@ class CashflowConversionRepository {
             .param("u", user).param("c", classificationId).query(UUID.class).optional();
     }
 
+    // ---------------------------------------------------------------- a plan sync's stage (Story 2.11)
+
+    /**
+     * The COMPLETE classification by its id — the one a plan sync's own classification stage produced, not
+     * the intent's latest. Partial or review-required bundles never qualify. The sync job pins this one
+     * classification; {@link #eligibleClassification} would follow whichever came last.
+     */
+    Optional<Classification> completeClassification(UUID user, UUID classificationId) {
+        return jdbc.sql("SELECT b.classification_id,b.candidate_id,b.input_scope_hash,b.policy_version,"
+                + "b.deposit_count+b.withdrawal_count FROM sync_cashflow_classification_bundle b "
+                + "JOIN sync_cashflow_classification_job j ON j.job_id=b.job_id AND j.status='COMPLETE' "
+                + "WHERE b.classification_id=:c AND b.user_id=:u AND b.status='COMPLETE' AND b.review_count=0 "
+                + "AND b.policy_version=:policy")
+            .param("c", classificationId).param("u", user).param("policy", CashflowDecisionTable.POLICY_VERSION)
+            .query((rs, n) -> new Classification(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class),
+                    rs.getString(3), rs.getString(4), rs.getInt(5))).optional();
+    }
+
+    /**
+     * A plan sync's conversion stage row, inserted already {@code RUNNING} under fence 1 with its sync job's
+     * lease, for exactly {@code classification}. Its inputs are copied from that classification in the
+     * caller's transaction, as {@link #admit} copies them. The stage dispatcher never claims it.
+     *
+     * @return the stage lease, or empty when the classification's flows do not add up to its own count
+     */
+    Optional<Lease> insertForSync(UUID id, UUID syncJobId, UUID user, UUID portfolio, UUID intent, UUID connection,
+            UUID account, Classification classification) {
+        List<Input> inputs = classificationInputs(user, classification.classificationId());
+        if (inputs.size() != classification.flowCount()) return Optional.empty();
+        String scope = inputHash(classification, inputs);
+        int inserted = jdbc.sql("INSERT INTO sync_cashflow_conversion_job(job_id,user_id,portfolio_id,intent_id,"
+                + "connection_id,provider_account_id,classification_id,input_scope_hash,flow_count,policy_version,"
+                + "calculation_policy_version,idempotency_key,status,fencing_generation,lease_until,heartbeat_at,"
+                + "last_checked_at,plan_sync_job_id) SELECT :j,:u,:p,:i,:c,:a,:classification,:hash,:count,:policy,"
+                + ":calc,:key,'RUNNING',1,s.lease_until,now(),now(),s.job_id FROM sync_plan_sync_job s "
+                + "WHERE s.job_id=:s AND s.status='RUNNING'")
+            .param("j", id).param("u", user).param("p", portfolio).param("i", intent).param("c", connection)
+            .param("a", account).param("classification", classification.classificationId()).param("hash", scope)
+            .param("count", inputs.size()).param("policy", PriceConversionPolicy.POLICY_VERSION)
+            .param("calc", PriceConversionPolicy.CALCULATION_POLICY_VERSION)
+            .param("key", "plan-sync:" + syncJobId + ":conversion").param("s", syncJobId).update();
+        if (inserted != 1) return Optional.empty();
+        for (Input in : inputs) {
+            jdbc.sql("INSERT INTO sync_cashflow_conversion_input(job_id,source_event_id,source_id,source_revision,"
+                    + "semantic_hash,provenance_connection_id,classification_verdict,classification_rule_id,"
+                    + "classification_policy_version,asset_code,signed_quantity,occurred_at) VALUES (:j,:event,"
+                    + ":source,:revision,:hash,:connection,:verdict,:rule,:policy,:asset,:quantity,:occurred)")
+                .param("j", id).param("event", in.sourceEventId()).param("source", in.sourceId())
+                .param("revision", in.sourceRevision()).param("hash", in.semanticHash())
+                .param("connection", in.provenanceConnectionId()).param("verdict", in.verdict())
+                .param("rule", in.ruleId()).param("policy", in.classificationPolicy())
+                .param("asset", in.assetCode()).param("quantity", in.signedQuantity())
+                .param("occurred", utc(in.occurredAt())).update();
+        }
+        return Optional.of(new Lease(id, user, portfolio, intent, connection, account,
+                classification.classificationId(), scope, PriceConversionPolicy.POLICY_VERSION, null, 1));
+    }
+
+    /**
+     * {@link #inputsStillValid} for a pinned classification: the stage row's classification is still COMPLETE,
+     * and both its flows and the stage's fixed copy hash to the scope hash. Whether it is the intent's latest
+     * does not matter here — the sync job, not the intent, decides which classification it converts.
+     */
+    boolean pinnedInputsStillValid(Lease lease) {
+        Optional<Classification> pinned = completeClassification(lease.userId(), lease.classificationId());
+        if (pinned.isEmpty()) return false;
+        List<Input> source = classificationInputs(lease.userId(), lease.classificationId());
+        if (source.size() != pinned.get().flowCount()) return false;
+        if (!inputHash(pinned.get(), source).equals(lease.inputScopeHash())) return false;
+        return inputHash(pinned.get(), storedInputs(lease)).equals(lease.inputScopeHash());
+    }
+
+    /** Claims a Story 2.6 attempt. A plan sync's stage row (Story 2.11) belongs to its job and is never claimed. */
     Optional<Lease> claim() {
         return jdbc.sql("UPDATE sync_cashflow_conversion_job SET status='RUNNING',"
                 + "fencing_generation=fencing_generation+1,lease_until=now()+interval '30 seconds',"
                 + "heartbeat_at=now(),last_checked_at=now() WHERE job_id=(SELECT job_id FROM "
-                + "sync_cashflow_conversion_job WHERE status='QUEUED' OR (status='RUNNING' AND lease_until<now()) "
+                + "sync_cashflow_conversion_job WHERE plan_sync_job_id IS NULL AND "
+                + "(status='QUEUED' OR (status='RUNNING' AND lease_until<now())) "
                 + "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING job_id,user_id,portfolio_id,"
                 + "intent_id,connection_id,provider_account_id,classification_id,input_scope_hash,policy_version,"
                 + "reference_time,fencing_generation")

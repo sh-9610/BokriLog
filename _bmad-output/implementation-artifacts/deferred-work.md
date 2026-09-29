@@ -263,3 +263,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-10-cashflow-adjustment-history.md`
   summary: `AdjustmentHistory.module.css`가 `CalculationEvidence.module.css`의 `.action`(44×44 최소 조작 영역)·`.id`(mono 전체값 줄바꿈)·`.facts`·`.notice` 규칙을 거의 그대로 옮겨 44×44 규칙의 다섯 번째 사본이 됐다.
   evidence: Story 2.10 리뷰가 두 파일의 규칙이 같은 토큰 조합으로 반복된다고 짚었다. Story 1.11이 네 번째 사본을 기록했고 공통 규칙을 한 곳으로 모으는 일은 여러 화면 CSS 모듈을 함께 바꾸는 별도 정리다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-11-incremental-plan-sync.md`
+  summary: 실제 Bybit의 rate limit·IP 거부는 HTTP 200 + `retCode`로 오는데 `retCode` 표가 비어 있어, 증분 동기화의 query-api·account/info 단계에서 그 응답이 `AUTHENTICATION_REJECTED` → `SOURCE_REJECTED`(재시도 불가, "키를 받지 않았습니다")로 안내된다.
+  evidence: Story 2.11 리뷰가 `BybitAdapter.failureOf`의 기본값 경로를 짚었다. 스텁의 `RATE_LIMIT`은 전송 계층 429라 Bybit가 보내지 않는 모양이다. `retCode` 표는 Story 2.1부터 의도적으로 비어 있고 실연동 API 스파이크가 채울 자리이므로, Bybit 연결 정책·실연동 게이트에서 표와 대응을 함께 정해야 한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-11-incremental-plan-sync.md`
+  summary: 성공한 동기화마다(값이 그대로여도) 새 source/portfolio snapshot, 반영 흐름·제외 사건 전체를 복사한 계산 버전, 24시간 중첩의 후보·판정·환산 묶음이 쌓이고, `sync_plan_sync_job`과 단계 행은 정리되지 않는다. 보존 기간·압축 정책이 없다.
+  evidence: Story 2.11 리뷰가 짚었다. AC-6이 성공마다 새 계산 버전을 요구하고, 버전마다 흐름을 복사하는 것은 V10부터의 방식이다. 자동 진입은 5분, 수동은 30초 간격으로 버전을 더할 수 있어 활성 사용자의 행 수가 버전 수 × 흐름 수로 자란다. 보존·압축은 추가 전용 기록 계약(AD-6)과 삭제 정책을 함께 다루는 운영 스토리의 몫이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-11-incremental-plan-sync.md`
+  summary: `SyncControl.module.css`가 44×44 최소 조작 영역 규칙의 여섯 번째 사본을 더했다.
+  evidence: Story 2.11 리뷰가 짚었다. Story 1.11·2.10이 네 번째·다섯 번째 사본을 기록했고, 공통 규칙을 한 곳으로 모으는 일은 여러 화면 CSS 모듈을 함께 바꾸는 별도 정리다.
