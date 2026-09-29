@@ -270,7 +270,14 @@ final class DevBybitStub {
          * 닫히면 환산 묶음이 {@code CONVERTED_ESTIMATED}로 계산 가능해지고, 최초 발행의 다섯 지표가
          * {@code 추정}이 된다. 현재가치는 그대로 공식이다.
          */
-        BTC_DEPOSIT("btcdeposit");
+        BTC_DEPOSIT("btcdeposit"),
+
+        /**
+         * 발행 가능한 USDT 입출금 스물셋을 내는 수집(Story 2.10 e2e). 입금 열여덟(`10.005 USDT`)과 출금
+         * 다섯(`-2.5 USDT`, 네 번째마다)이며 앞의 둘은 같은 밀리초라 `source_id` 순서가 그 둘을 가른다.
+         * 전부 직접 정규화라 시세 호출 없이 환산되고, 한 페이지(20행)를 넘어 `더 보기`가 생긴다.
+         */
+        ADJUSTMENTS("adjustments");
 
         private final String token;
 
@@ -446,6 +453,11 @@ final class DevBybitStub {
             return ok("{\"list\":[{\"id\":\"btc-deposit-in\",\"type\":\"TRANSFER_IN\",\"currency\":\"BTC\","
                     +"\"cashFlow\":\"0.01\",\"transactionTime\":\""+(start+1)+"\"}],\"nextPageCursor\":\"\"}");
         }
+        if (scenario==Scenario.ADJUSTMENTS) {
+            String end=query.get("endTime");
+            return adjustmentsPage(type,Long.parseLong(query.get("startTime")),
+                    end==null?Long.MAX_VALUE:Long.parseLong(end));
+        }
         if (scenario==Scenario.ID_CONFLICT&&"TRANSFER_IN".equals(type)) {
             int read=conflictTransferInReads.incrementAndGet();
             String flow=read==1?"1.000":"2.000";
@@ -455,6 +467,38 @@ final class DevBybitStub {
                     +(start+1)+"\"}],\"nextPageCursor\":\"\"}");
         }
         return ok("{\"list\":[],\"nextPageCursor\":\"\"}");
+    }
+
+    /**
+     * How many flows {@link Scenario#ADJUSTMENTS} emits. The e2e does not read this constant: it hard-codes the
+     * counts and totals that follow from it (23 rows, 18 deposits, 5 withdrawals), so a change here changes both.
+     */
+    static final int ADJUSTMENT_FLOWS = 23;
+
+    /**
+     * {@link Scenario#ADJUSTMENTS}: {@code adjustment-01}…{@code adjustment-23}, every fourth a withdrawal of
+     * {@code -2.5 USDT} and the rest deposits of {@code 10.005 USDT}. The first two share one millisecond
+     * ({@code start+1}); flow {@code i} otherwise sits at {@code start+i-1}, so the calculation's order is
+     * the numbering. One page per type: both lists are well under the 50-row limit.
+     *
+     * <p>The rows are emitted only when all of them fit inside the request's {@code [startTime, endTime]}
+     * window; a window too short for them gets none, so the same ids never come back at other times in a window
+     * they do not fit (that would be an id conflict). Each fitting window places them relative to its own start:
+     * the scenario models one collection window, as the e2e's range of a few seconds gives.
+     */
+    private static Response adjustmentsPage(String type,long start,long end) {
+        StringBuilder items=new StringBuilder("[");
+        if (start+Math.max(1,ADJUSTMENT_FLOWS-1)>end) return ok("{\"list\":[],\"nextPageCursor\":\"\"}");
+        for (int i=1;i<=ADJUSTMENT_FLOWS;i++) {
+            boolean withdrawal=i%4==0;
+            if (withdrawal!="TRANSFER_OUT".equals(type)) continue;
+            if (items.length()>1) items.append(',');
+            items.append("{\"id\":\"adjustment-").append(String.format(Locale.ROOT,"%02d",i))
+                    .append("\",\"type\":\"").append(type).append("\",\"currency\":\"USDT\",\"cashFlow\":\"")
+                    .append(withdrawal?"-2.5":"10.005").append("\",\"transactionTime\":\"")
+                    .append(start+Math.max(1,i-1)).append("\"}");
+        }
+        return ok("{\"list\":"+items+"],\"nextPageCursor\":\"\"}");
     }
 
     private static Response eventPage(String id,String type,String flow,Map<String,String> query,String timeKind) {

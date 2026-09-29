@@ -7,6 +7,7 @@ import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
 import { authContent, reauthNoticeKindOf, SETTINGS_PATH } from '../content/auth'
 import { entryContent } from '../content/entry'
+import { useDashboardAdjustments } from '../session/useAdjustmentHistory'
 import { useDashboardEvidence } from '../session/useCalculationEvidence'
 import { planPresenceOf, statusBusy, useDashboard } from '../session/useDashboard'
 import { useReauthentication } from '../session/useReauthentication'
@@ -43,6 +44,8 @@ export function OnboardingScreen(): ReactElement {
   const dashboard = useDashboard(gate === 'ready')
   // The calculation evidence of the bundle the dashboard shows (Story 2.9), in its own state.
   const evidence = useDashboardEvidence(dashboard)
+  // The adjustment history of the same bundle (Story 2.10), in its own state.
+  const adjustments = useDashboardAdjustments(dashboard)
   // Whether the first-snapshot panel leads the dashboard, and how (`planPresenceOf` gives the reasons).
   const presence = planPresenceOf(dashboard.view)
 
@@ -117,7 +120,7 @@ export function OnboardingScreen(): ReactElement {
             requestPending: signOut.pending || reauthentication.pending,
             dashboard,
           })}
-          // The dashboard and the evidence speak in separate parts; a change to one is read alone.
+          // The dashboard, the evidence and the history speak in separate parts; a change to one is read alone.
           aria-atomic="false"
           aria-live="polite"
           className={styles.notice}
@@ -125,6 +128,7 @@ export function OnboardingScreen(): ReactElement {
         >
           {ready && !signOut.pending ? (
             <DashboardStatusText
+              adjustments={adjustments}
               className={styles.noticeText}
               dashboard={dashboard}
               evidence={evidence}
@@ -149,7 +153,9 @@ export function OnboardingScreen(): ReactElement {
         {ready && presence !== null ? (
           <FirstSnapshotPanel csrfToken={csrfToken} plan={presence} ready={ready} />
         ) : null}
-        {ready ? <PlanResultPanel dashboard={dashboard} evidence={evidence} /> : null}
+        {ready ? (
+          <PlanResultPanel adjustments={adjustments} dashboard={dashboard} evidence={evidence} />
+        ) : null}
 
         {ready ? (
           <section aria-labelledby={authContent.onboarding.id} className={styles.section}>

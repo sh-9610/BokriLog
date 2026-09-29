@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page } from '@playwright/test'
 
+import { adjustmentHistoryContent } from '../src/content/adjustmentHistory'
 import { authContent } from '../src/content/auth'
 import { calculationEvidenceContent } from '../src/content/calculationEvidence'
 import { connectionContent } from '../src/content/connection'
@@ -286,9 +287,9 @@ async function expectFirstResult(page: Page, derived: 'OFFICIAL' | 'ESTIMATED'):
 }
 
 /**
- * The keyboard reaches the header and then the dashboard's two controls, in reading order, from a fresh
- * load of the landing screen: the calculation evidence button beside the metrics heading (Story 2.9),
- * then the reload in the next-action section.
+ * The keyboard reaches the header and then the dashboard's three controls, in reading order, from a fresh
+ * load of the landing screen: the calculation evidence button beside the metrics heading (Story 2.9), the
+ * adjustment history button right after it (Story 2.10), then the reload in the next-action section.
  */
 async function expectKeyboardOrder(page: Page): Promise<void> {
   await page.reload()
@@ -298,7 +299,7 @@ async function expectKeyboardOrder(page: Page): Promise<void> {
       .getByRole('region', { name: planResultContent.currentHeading }),
   ).toBeVisible({ timeout: 15_000 })
   const reached: string[] = []
-  for (let step = 0; step < 5; step += 1) {
+  for (let step = 0; step < 6; step += 1) {
     await page.keyboard.press('Tab')
     reached.push(await page.evaluate(() => document.activeElement?.textContent.trim() ?? ''))
   }
@@ -307,10 +308,15 @@ async function expectKeyboardOrder(page: Page): Promise<void> {
     authContent.settings.link,
     authContent.signOut.label,
     calculationEvidenceContent.open,
+    adjustmentHistoryContent.open,
     planResultContent.reload,
   ])
   // The controls are real 44px targets.
-  for (const name of [calculationEvidenceContent.open, planResultContent.reload]) {
+  for (const name of [
+    calculationEvidenceContent.open,
+    adjustmentHistoryContent.open,
+    planResultContent.reload,
+  ]) {
     const box = await page.getByRole('button', { name }).boundingBox()
     expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
     expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
@@ -466,6 +472,232 @@ async function expectEvidence(page: Page, derived: 'OFFICIAL' | 'ESTIMATED'): Pr
   await expect(page.getByRole('status')).not.toContainText(calculationEvidenceContent.status.ready)
 }
 
+/**
+ * Story 2.10: the adjustment history of the shown result, from the keyboard on the same screen. The stub's
+ * `adjustments` scenario gives 23 USDT flows — deposits of 10.005 and, every fourth, withdrawals of -2.5 —
+ * so the history reads twenty rows, then `더 보기` brings the last three. The API answers the shown pointer
+ * only, never caches and carries nothing internal to the account; the region reads description → summary →
+ * filter → rows, filters by type, opens a row's lineage, and does not scroll sideways at 320 and 640 CSS px.
+ */
+async function expectAdjustments(page: Page): Promise<void> {
+  const probe = await page.evaluate(async () => {
+    const shown = (await (
+      await fetch('/api/dashboard', { credentials: 'same-origin', cache: 'no-store' })
+    ).json()) as { result: { planId: string; pointerVersion: number; calculationId: string } }
+    const at = (version: number, extra = ''): string =>
+      `/api/dashboard/adjustments?planId=${shown.result.planId}&pointerVersion=${String(version)}&calculationId=${shown.result.calculationId}${extra}`
+    const answer = await fetch(at(shown.result.pointerVersion), {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    })
+    const text = await answer.text()
+    const body = JSON.parse(text) as {
+      summary: { count: number; netUsdValue: string; excludedCount: number }
+      rows: unknown[]
+      nextCursor: string | null
+    }
+    const next = await fetch(
+      at(shown.result.pointerVersion, `&cursor=${encodeURIComponent(body.nextCursor ?? '')}`),
+      { credentials: 'same-origin', cache: 'no-store' },
+    )
+    const nextBody = (await next.json()) as { rows: unknown[]; nextCursor: string | null }
+    const otherFilter = await fetch(
+      at(
+        shown.result.pointerVersion,
+        `&direction=IN&cursor=${encodeURIComponent(body.nextCursor ?? '')}`,
+      ),
+      { credentials: 'same-origin', cache: 'no-store' },
+    )
+    const stale = await fetch(at(shown.result.pointerVersion + 1), {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    })
+    return {
+      status: answer.status,
+      cacheControl: answer.headers.get('cache-control') ?? '',
+      keys: Object.keys(JSON.parse(text) as object),
+      text,
+      summary: body.summary,
+      rows: body.rows.length,
+      hasNext: body.nextCursor !== null,
+      nextRows: nextBody.rows.length,
+      nextCursor: nextBody.nextCursor,
+      otherFilter: otherFilter.status,
+      stale: stale.status,
+      staleCode: ((await stale.json()) as { code?: string }).code ?? '',
+    }
+  })
+  expect(probe).toMatchObject({
+    status: 200,
+    rows: 20,
+    hasNext: true,
+    nextRows: 3,
+    nextCursor: null,
+    otherFilter: 404,
+    stale: 404,
+    staleCode: 'NOT_FOUND',
+  })
+  expect(probe.summary).toEqual({ count: 23, netUsdValue: '167.59', excludedCount: 0 })
+  expect(probe.cacheControl).toContain('no-store')
+  expect(probe.keys).toEqual([
+    'planId',
+    'pointerVersion',
+    'calculationId',
+    'direction',
+    'appliedAt',
+    'coverage',
+    'summary',
+    'rows',
+    'nextCursor',
+  ])
+  expect(probe.text).not.toMatch(/userId|providerAccount|secret|apiKey|credential|semantic/i)
+
+  const copy = adjustmentHistoryContent
+  const panel = page.getByRole('region', { name: planResultContent.heading })
+  const toggle = panel.getByRole('button', { name: copy.open })
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await toggle.focus()
+  await page.keyboard.press('Enter')
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  const history = panel.getByRole('region', { name: copy.heading })
+  await expect(history.getByRole('heading', { level: 4 })).toBeFocused()
+  const list = history.getByRole('list', { name: copy.list })
+  await expect(list.getByRole('listitem')).toHaveCount(20, { timeout: 15_000 })
+  const summary = history.getByRole('group', { name: copy.summary.heading })
+  await expect(summary).toContainText('167.59 USD')
+  await expect(summary).toContainText(copy.summary.countValue(23))
+  await expect(history).toContainText(copy.term)
+  // The excluded count stands apart from the filtered summary (the stub excludes nothing).
+  await expect(history).toContainText(copy.excluded.text(0))
+  await expect(summary).not.toContainText(copy.excluded.text(0))
+  // The first two flows share one millisecond and one type: their sequences tell them apart, and their
+  // Bybit transaction ids keep the source-id order.
+  const first = list.getByRole('listitem').nth(0)
+  const second = list.getByRole('listitem').nth(1)
+  await expect(first.getByRole('heading', { level: 5 })).toContainText(copy.filter.options.IN)
+  await expect(first.getByRole('heading', { level: 5 })).toContainText(copy.row.title(1))
+  await expect(second.getByRole('heading', { level: 5 })).toContainText(copy.row.title(2))
+  const instant = async (row: typeof first): Promise<string> =>
+    (await row.getByRole('heading', { level: 5 }).locator('time').getAttribute('datetime')) ?? ''
+  expect(await instant(first)).toBe(await instant(second))
+  await expect(first).toContainText('10.005 USDT')
+  await expect(first).toContainText('10.01 USD')
+  for (const [row, id] of [
+    [first, 'adjustment-01'],
+    [second, 'adjustment-02'],
+  ] as const) {
+    const open = row.getByRole('button', {
+      name: new RegExp(`^${copy.row.title(row === first ? 1 : 2)} `),
+    })
+    await open.focus()
+    await page.keyboard.press('Enter')
+    await expect(open).toHaveAttribute('aria-expanded', 'true')
+    await expect(row.locator('code', { hasText: id })).toHaveText(id)
+  }
+
+  // From 768px the same row is laid out across it — still one list and no horizontal scroll.
+  await page.setViewportSize({ width: 1024, height: 800 })
+  const wide = await page.evaluate(() => {
+    const open = document.getElementById('adjustment-history')
+    const facts = open?.querySelector('li dl')
+    const columns =
+      facts === null || facts === undefined ? '' : getComputedStyle(facts).gridTemplateColumns
+    return {
+      page: document.documentElement.scrollWidth,
+      viewport: window.innerWidth,
+      region: open === null ? Number.POSITIVE_INFINITY : open.scrollWidth - open.clientWidth,
+      columns: columns.split(' ').filter((part) => part !== '').length,
+      lists: open?.querySelectorAll('ol[aria-labelledby]').length ?? 0,
+    }
+  })
+  expect(wide.page, '1024 CSS px: no horizontal page scroll').toBeLessThanOrEqual(wide.viewport)
+  expect(wide.region, '1024 CSS px: the region does not overflow').toBe(0)
+  expect(wide.columns, '1024 CSS px: a row lays its facts across').toBeGreaterThan(1)
+  expect(wide.lists, 'one DOM list at every width').toBe(1)
+  await page.setViewportSize({ width: 320, height: 800 })
+  const narrow = await page.evaluate(() => {
+    const facts = document.getElementById('adjustment-history')?.querySelector('li dl')
+    return facts === null || facts === undefined
+      ? 0
+      : getComputedStyle(facts)
+          .gridTemplateColumns.split(' ')
+          .filter((part) => part !== '').length
+  })
+  expect(narrow, '320 CSS px: a row is one card column').toBe(1)
+
+  // 더 보기 from the keyboard: the next page is appended and focus moves to its first row.
+  const more = history.getByRole('button', { name: copy.more })
+  await more.focus()
+  await page.keyboard.press('Enter')
+  await expect(list.getByRole('listitem')).toHaveCount(23, { timeout: 15_000 })
+  await expect(list.getByRole('listitem').nth(20).getByRole('heading', { level: 5 })).toBeFocused()
+  await expect(history.getByRole('button', { name: copy.more })).toHaveCount(0)
+
+  // The filter from the keyboard: arrows move through the radios, each reading its first page again.
+  const all = history.getByRole('radio', { name: copy.filter.options.ALL })
+  await all.focus()
+  await page.keyboard.press('ArrowRight')
+  await expect(history.getByRole('radio', { name: copy.filter.options.IN })).toBeChecked()
+  await expect(list.getByRole('listitem')).toHaveCount(18, { timeout: 15_000 })
+  await expect(summary).toContainText('180.09 USD')
+  await page.keyboard.press('ArrowRight')
+  await expect(history.getByRole('radio', { name: copy.filter.options.OUT })).toBeChecked()
+  await expect(list.getByRole('listitem')).toHaveCount(5, { timeout: 15_000 })
+  await expect(summary).toContainText('-12.50 USD')
+
+  // A row's lineage from its own toggle, named by its time and type.
+  const withdrawal = list.getByRole('listitem').nth(0)
+  const detail = withdrawal.getByRole('button', { name: new RegExp(copy.filter.options.OUT) })
+  await detail.focus()
+  await page.keyboard.press('Enter')
+  await expect(detail).toHaveAttribute('aria-expanded', 'true')
+  await expect(withdrawal).toContainText('adjustment-04')
+  await expect(withdrawal).toContainText(copy.evidenceTypes.DIRECT_NORMALIZATION)
+  await expect(withdrawal.locator('code', { hasText: 'adjustment-04' })).toHaveText('adjustment-04')
+
+  // One status region for the screen, which says what the history read did; the region has none.
+  await expect(page.getByRole('status')).toHaveCount(1)
+  await expect(page.locator('[aria-live]')).toHaveCount(1)
+  await expect(page.getByRole('status')).toContainText(copy.status.ready(5, 5))
+  const historyText = await history.innerText()
+  expect(historyText).not.toMatch(
+    /축하|손실|추천합니다|투자성과|계좌 수익률|스트릭|배지|NaN|undefined/,
+  )
+  expect(page.url()).not.toMatch(/[?&](planId|calculationId|cursor|direction)=/)
+  expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0)
+  const axe = await new AxeBuilder({ page })
+    .include('#adjustment-history')
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+    .analyze()
+  expect(axe.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([])
+  for (const width of [320, 640]) {
+    await page.setViewportSize({ width, height: 800 })
+    const widths = await page.evaluate(() => {
+      const open = document.getElementById('adjustment-history')
+      return {
+        page: document.documentElement.scrollWidth,
+        viewport: window.innerWidth,
+        region: open === null ? Number.POSITIVE_INFINITY : open.scrollWidth - open.clientWidth,
+      }
+    })
+    expect(widths.page, `${String(width)} CSS px: no horizontal page scroll`).toBeLessThanOrEqual(
+      widths.viewport,
+    )
+    expect(widths.region, `${String(width)} CSS px: the region does not overflow`).toBe(0)
+  }
+  // The row controls are real 44px targets.
+  const box = await detail.boundingBox()
+  expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
+
+  await page.setViewportSize({ width: 320, height: 800 })
+  const close = history.getByRole('button', { name: copy.close })
+  await close.focus()
+  await page.keyboard.press('Enter')
+  await expect(toggle).toBeFocused()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await expect(panel.getByRole('region', { name: copy.heading })).toHaveCount(0)
+}
+
 async function expectNoHorizontalScroll(page: Page): Promise<void> {
   for (const [zoom, width] of [
     ['320px', 320],
@@ -523,6 +755,24 @@ test.describe('첫 공식 현재가치', () => {
     await expect(page.getByRole('heading', { name: activePlanContent.heading })).toBeVisible()
     await expect(page.getByRole('link', { name: activePlanContent.dashboardLink })).toBeVisible()
     await expect(page.getByLabel(planConditionContent.endAt)).toHaveCount(0)
+  })
+
+  test('조정 이력: 반영된 입출금 스물셋을 키보드로 펼쳐 페이지·필터·상세를 같은 화면에서 확인한다', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000)
+    await connectAndSavePlan(page, 'adjustments')
+    await collectAndClassify(page, /입금 사건: 18 · 출금 사건: 5 · 제외 사건: 0 · 검토 필요: 0/)
+    const conversion = await startConversionByKeyboard(page)
+    await expect(conversion.getByRole('status')).toContainText(
+      planConditionContent.conversion.converted,
+      { timeout: 15_000 },
+    )
+    await page.setViewportSize({ width: 320, height: 800 })
+    await publishAndOpenResult(page)
+    await expectFirstResult(page, 'OFFICIAL')
+    await expectAdjustments(page)
+    await expectNoHorizontalScroll(page)
   })
 
   test('비-USDT 흐름의 추정 환산과 보류 목록을 확인하고, 추정 환산만 있는 계획을 발행해 다섯 지표를 추정으로 보여 준다', async ({

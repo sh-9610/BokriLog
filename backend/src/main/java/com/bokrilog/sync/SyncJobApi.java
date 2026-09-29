@@ -319,6 +319,121 @@ public interface SyncJobApi {
      */
     EvidenceRead calculationEvidence(@Nullable UUID userId, @Nullable EvidenceReference reference);
 
+    // -------------------------------------------------------------------- Story 2.10
+
+    /** Which applied flows a history page lists: all of them, the deposits, or the withdrawals. */
+    enum AdjustmentDirection { ALL, IN, OUT }
+
+    /**
+     * One page of the adjustment history a screen asks for: the three values of the shown pointer (as the
+     * evidence takes them), the direction filter, and the opaque cursor of the page before — {@code null}
+     * for the first page. The cursor travels exactly as the client sent it: only sync can judge it, and a
+     * cursor that is malformed or was made for another scope names nothing.
+     */
+    record AdjustmentQuery(UUID planId, long pointerVersion, UUID calculationId, AdjustmentDirection direction,
+            @Nullable String cursor) {}
+
+    /**
+     * The external cash flows the current official calculation version applied (Story 2.10), one page in the
+     * version's own order, each with its lineage: the source event, its classification, its event-time USD
+     * conversion (price legs included) and the calculation that applied it. Only the version's applied rows
+     * are here — never an excluded, held, review-required or other attempt's event — and the summary covers
+     * the whole filtered range, summed exactly from the stored values. Internal user ids, provider account
+     * ids, the Bybit UID, credentials, raw provider responses, wallet addresses and transaction hashes are not
+     * here.
+     *
+     * @param appliedAt when the version became official (the pointer's publication time)
+     * @param nextCursor the opaque cursor of the next page, or {@code null} on the last one
+     */
+    record AdjustmentHistory(UUID planId, long pointerVersion, UUID calculationId, AdjustmentDirection direction,
+            Instant appliedAt, Coverage coverage, Summary summary, List<Adjustment> rows,
+            @Nullable String nextCursor) {
+
+        /** The verified cash-flow range of the version: {@code (t0, cashflowVerifiedThrough]}. */
+        public record Coverage(Instant from, Instant through) {}
+
+        /**
+         * @param count the applied flows in the filtered range
+         * @param netUsdValue their signed USD values added exactly, never rounded (canonical decimal string)
+         * @param excludedCount the source events the classification excluded, apart from every row and total
+         */
+        public record Summary(int count, String netUsdValue, int excludedCount) {}
+
+        /**
+         * One applied flow, in the reading order: event → classification → price → discovery and application.
+         *
+         * @param sequence its place in the version's order, which realizes {@code (event time, provider
+         *     account, source id)}
+         * @param direction {@code IN} (external deposit) or {@code OUT} (external withdrawal)
+         * @param signedQuantity the unrounded source quantity, signed by the direction
+         * @param usdValue the signed USD value the version applied, unrounded
+         * @param discoveredAt when BokriLog first observed the source event
+         * @param changed whether the current conversion continues an earlier one in which this event's value
+         *     was different
+         * @param revisions the earlier conversion versions of this event, newest first; empty unless changed
+         */
+        public record Adjustment(int sequence, Instant occurredAt, String direction, String asset,
+                String signedQuantity, String usdValue, Classification classification, Price price,
+                Instant discoveredAt, References references, boolean changed, List<Revision> revisions) {}
+
+        /** @param transactionType the Bybit transaction log type the event came with */
+        public record Classification(String transactionType, String ruleId, String policyVersion) {}
+
+        /** @param unitPrice the USD price of one unit, unrounded */
+        public record Price(String policyVersion, String evidenceType, boolean estimated, String unitPrice,
+                String routeId, List<PriceLeg> legs) {}
+
+        /** One leg of a spot route: the closed one-minute candle whose close was used, and how it was chosen. */
+        public record PriceLeg(String symbol, Instant candleStartAt, Instant candleEndAt, String closePrice,
+                String selectionRule, int lagMinutes) {}
+
+        /** @param sourceId the Bybit transaction log id — the key to match the exchange's own record */
+        public record References(UUID sourceEventId, String sourceId, UUID classificationId, UUID conversionId,
+                UUID calculationId) {}
+
+        /**
+         * An earlier conversion version of the event. It was never used by an official calculation, and it is
+         * shown as it was stored — never rewritten.
+         *
+         * <p>"Never used officially" holds while a plan has one official version (before Story 2.11): Stories
+         * 2.11, 2.12 and 2.15 must revisit it once earlier official versions exist.
+         *
+         * @param usdValue the value it had, or {@code null} when it had none (not converted then)
+         * @param changeReason why the next version replaced it
+         * @param discoveredAt when the change was found: the next version's processing time
+         */
+        public record Revision(UUID conversionId, Instant processedAt, String status, @Nullable String reasonCode,
+                @Nullable String usdValue, String changeReason, Instant discoveredAt) {}
+    }
+
+    /** The outcome of one adjustment history read. Only {@link Found} carries rows. */
+    sealed interface AdjustmentOutcome permits AdjustmentOutcome.NotPermitted, AdjustmentOutcome.NotFound,
+            AdjustmentOutcome.Unavailable, AdjustmentOutcome.Found {
+        /** The account's own access refused it before or after the read. */
+        record NotPermitted() implements AdjustmentOutcome {}
+        /**
+         * The reference is not the user's current official pointer, or the cursor is not one made for this
+         * user, reference and filter — one answer for every such case, like the evidence's.
+         */
+        record NotFound() implements AdjustmentOutcome {}
+        /** The version's applied history did not agree with its lineage; no partial list is returned. */
+        record Unavailable() implements AdjustmentOutcome {}
+        record Found(AdjustmentHistory history) implements AdjustmentOutcome {}
+    }
+
+    /** One adjustment history read and what it learned about the lineage of the whole version. */
+    record AdjustmentRead(AdjustmentOutcome outcome, BundleConsistency consistency) {}
+
+    /**
+     * One page of the adjustment history of the user's current official result (Story 2.10). The account's own
+     * access is checked, the cursor is judged against this user, reference and filter, the version's whole
+     * applied history is checked against its lineage and the page is read in one read-only
+     * {@code REPEATABLE READ} transaction, and the access is checked again. A {@code null} query (missing,
+     * repeated or malformed values) is not found. Nothing is recalculated, reclassified or reconverted. A
+     * failing read throws; nothing is returned in part.
+     */
+    AdjustmentRead adjustmentHistory(@Nullable UUID userId, @Nullable AdjustmentQuery query);
+
     /** portfolio 삭제 뒤, source 삭제 앞에 호출한다. 발행 결과·시도를 먼저 지운다. */
     void eraseSyncData(@Nullable UUID userId);
 }

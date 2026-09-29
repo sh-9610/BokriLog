@@ -2488,7 +2488,9 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         clearMarketEvidence();
         Instant base=closedTenMinuteBoundary();
         UUID kept=connect(DevBybitStub.Scenario.UTA2);
-        UUID keptIntent=convertedIntent(kept,"erase-publication-kept","0.1",null);
+        // The kept user has an applied flow of its own, so the erasure's reach is visible in the shared table.
+        UUID keptIntent=convertedIntent(kept,"erase-publication-kept","0.1",base.minusSeconds(3600),
+                new Flow("erase-publication-kept-in","USDT","7",base.plusSeconds(11)));
         assertThat(awaitPublication(publish(kept,keptIntent,"erase-publication-kept-001"))).isEqualTo("PUBLISHED");
         UUID user=connect(DevBybitStub.Scenario.UTA2);
         UUID intent=convertedIntent(user,"erase-publication","0.1",base.minusSeconds(3600),
@@ -2497,6 +2499,10 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         // Story 2.9: the evidence has no table of its own, so the same erasure removes what it is read from.
         var erasedReference=referenceOf(ready(user));
         evidenceOf(user);
+        // Story 2.10: neither has the adjustment history.
+        var erasedResult=ready(user);
+        UUID erasedCalculation=erasedResult.calculationId();
+        assertThat(historyOf(user,SyncJobApi.AdjustmentDirection.ALL,null).rows()).hasSize(1);
 
         portfolio.erasePortfolioData(user);
         sync.eraseSyncData(user);
@@ -2510,7 +2516,19 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         }
         assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_calculation_metric m LEFT JOIN sync_plan_calculation c "
                 + "ON c.calculation_id=m.calculation_id WHERE c.calculation_id IS NULL").query(Integer.class).single()).isZero();
-        assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_calculation_flow").query(Integer.class).single()).isZero();
+        // The erased user's applied history went with its version; the kept user's stays.
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_calculation_flow WHERE calculation_id=:c")
+                .param("c",erasedCalculation).query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_calculation_flow f LEFT JOIN sync_plan_calculation c "
+                + "ON c.calculation_id=f.calculation_id WHERE c.calculation_id IS NULL").query(Integer.class).single()).isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_plan_calculation_flow f JOIN sync_plan_calculation c "
+                + "ON c.calculation_id=f.calculation_id WHERE c.user_id=:u").param("u",kept).query(Integer.class).single())
+                .isEqualTo(1);
+        assertThat(sync.adjustmentHistory(user,adjustmentQuery(erasedResult,SyncJobApi.AdjustmentDirection.ALL,null)))
+                .isEqualTo(new SyncJobApi.AdjustmentRead(new SyncJobApi.AdjustmentOutcome.NotFound(),
+                        SyncJobApi.BundleConsistency.NOT_READ));
+        assertThat(historyOf(kept,SyncJobApi.AdjustmentDirection.ALL,null).rows()).singleElement()
+                .satisfies(row -> assertThat(row.references().sourceId()).isEqualTo("erase-publication-kept-in"));
         assertThat(dashboardOf(kept)).isInstanceOf(SyncJobApi.Dashboard.Ready.class);
         assertThat(dashboardOf(user)).as("the erased user's read").isInstanceOf(SyncJobApi.Dashboard.NoPlan.class);
         assertThat(jdbc().sql("SELECT count(*) FROM plan_definition WHERE user_id=:u").param("u",kept)
@@ -3628,6 +3646,797 @@ class FirstSnapshotTest extends AuthFlowTestBase {
             assertThat(answer[0]).as("deleting: "+shortened(probe)).isEqualTo("403");
             assertThat(topLevelFieldsOf(answer[1])).containsEntry("code","FORBIDDEN");
         }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Story 2.10 adjustment history
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * CURRENT / PAGED / SAME_TIME / FILTER / EXCLUDED: the version's applied flows come in its own order, twenty
+     * a page, and the next page continues exactly where the first stopped — two flows of one instant sit on the
+     * page boundary and keep their source-id order. Each row carries its event, classification, price (legs
+     * included) and references as stored; the summary covers the whole filtered range, summed exactly; the
+     * excluded events are counted apart and never listed. Nothing internal to the account is in the answer, and
+     * each read writes one operational line with none of it either.
+     */
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void theAdjustmentHistoryPagesTheAppliedFlowsInTheVersionsOrderWithTheirLineage(
+            org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        String subject="adjustments-current-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        clearMarketEvidence();
+        Instant base=closedTenMinuteBoundary();
+        var flows=new java.util.ArrayList<Flow>();
+        var usd=new java.util.LinkedHashMap<String,java.math.BigDecimal>();
+        for (int i=1;i<=25;i++) {
+            String id=String.format(java.util.Locale.ROOT,"adj-current-%02d",i);
+            // Flows 20 and 21 share one instant, and the first page ends between them.
+            Instant at=base.plusSeconds(i==21 ? 20 : i);
+            Flow flow=i==5 ? new Flow(id,"BTC","0.01",at) : i%4==0 ? new Flow(id,"USDT","-1.25",at)
+                    : new Flow(id,"USDT",i<=3 ? "0.005" : "10.25",at);
+            flows.add(flow);
+            usd.put(id,i==5 ? new java.math.BigDecimal("650.0025") : new java.math.BigDecimal(flow.cashFlow()));
+        }
+        UUID intent=convertedIntentWithExcluded(user,"adjustments-current",base.minusSeconds(3600),
+                java.util.List.of(new Excluded("adj-current-fee","FEE","USDT","-0.1",base.plusSeconds(30)),
+                        new Excluded("adj-current-trade","TRADE","USDT","5",base.plusSeconds(31))),
+                flows.toArray(Flow[]::new));
+        assertThat(awaitPublication(publish(user,intent,"adjustments-current-command-001"))).isEqualTo("PUBLISHED");
+        var shown=ready(user);
+        var version=jdbc().sql("SELECT classification_id,conversion_id,t0,cashflow_verified_through "
+                + "FROM sync_plan_calculation WHERE calculation_id=:c").param("c",shown.calculationId())
+                .query((rs,n)->new Object[] {rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),
+                        rs.getObject(3,java.time.OffsetDateTime.class).toInstant(),
+                        rs.getObject(4,java.time.OffsetDateTime.class).toInstant()}).single();
+        UUID classification=(UUID)version[0], conversion=(UUID)version[1];
+        Instant publishedAt=jdbc().sql("SELECT published_at FROM sync_official_plan_result WHERE plan_id=:p")
+                .param("p",shown.planId()).query(java.time.OffsetDateTime.class).single().toInstant();
+
+        var first=historyOf(user,SyncJobApi.AdjustmentDirection.ALL,null);
+        assertThat(first.planId()).isEqualTo(shown.planId());
+        assertThat(first.pointerVersion()).isEqualTo(shown.pointerVersion());
+        assertThat(first.calculationId()).isEqualTo(shown.calculationId());
+        assertThat(first.direction()).isEqualTo(SyncJobApi.AdjustmentDirection.ALL);
+        assertThat(first.appliedAt()).as("when the version became official").isEqualTo(publishedAt);
+        assertThat(first.coverage()).isEqualTo(new SyncJobApi.AdjustmentHistory.Coverage((Instant)version[2],
+                (Instant)version[3]));
+        // The whole range, exactly; the two excluded events apart from it.
+        assertThat(first.summary()).isEqualTo(new SyncJobApi.AdjustmentHistory.Summary(25,exactSum(usd.values()),2));
+        assertThat(first.rows()).extracting(SyncJobApi.AdjustmentHistory.Adjustment::sequence)
+                .containsExactlyElementsOf(java.util.stream.IntStream.rangeClosed(1,20).boxed().toList());
+        assertThat(first.nextCursor()).isNotNull();
+
+        var second=historyOf(user,SyncJobApi.AdjustmentDirection.ALL,first.nextCursor());
+        assertThat(second.rows()).extracting(SyncJobApi.AdjustmentHistory.Adjustment::sequence)
+                .containsExactly(21,22,23,24,25);
+        assertThat(second.nextCursor()).as("the last page").isNull();
+        assertThat(second.summary()).as("every page carries the whole range's summary").isEqualTo(first.summary());
+        // SAME_TIME across the page boundary: one instant, source-id order.
+        assertThat(second.rows().getFirst().occurredAt()).isEqualTo(first.rows().getLast().occurredAt());
+        assertThat(first.rows().getLast().references().sourceId()).isEqualTo("adj-current-20");
+        assertThat(second.rows().getFirst().references().sourceId()).isEqualTo("adj-current-21");
+        // No duplicate, no gap, and no excluded event, over both pages.
+        var listed=java.util.stream.Stream.concat(first.rows().stream(),second.rows().stream())
+                .map(row -> row.references().sourceId()).toList();
+        assertThat(listed).containsExactlyElementsOf(usd.keySet());
+
+        // One estimated deposit, with its leg, and one directly normalized withdrawal — each as stored.
+        var btc=first.rows().get(4);
+        assertThat(btc).isEqualTo(new SyncJobApi.AdjustmentHistory.Adjustment(5,base.plusSeconds(5),"IN","BTC","0.01",
+                "650.0025",new SyncJobApi.AdjustmentHistory.Classification("TRANSFER_IN","EXTERNAL_TRANSFER_IN",
+                        "BYBIT-CASHFLOW-1.0"),
+                new SyncJobApi.AdjustmentHistory.Price("BYBIT-PRICE-1.0","SPOT_KLINE_CLOSE",true,"65000.25",
+                        "SPOT_ASSET_USDT",java.util.List.of(new SyncJobApi.AdjustmentHistory.PriceLeg("BTCUSDT",base,
+                                base.plusSeconds(60),"65000.25","EVENT_MINUTE",0))),
+                firstObservedAt(user,"adj-current-05"),new SyncJobApi.AdjustmentHistory.References(
+                        eventIdOf(user,"adj-current-05"),"adj-current-05",classification,conversion,shown.calculationId()),
+                false,java.util.List.of()));
+        var withdrawal=first.rows().get(3);
+        assertThat(withdrawal).isEqualTo(new SyncJobApi.AdjustmentHistory.Adjustment(4,base.plusSeconds(4),"OUT","USDT",
+                "-1.25","-1.25",new SyncJobApi.AdjustmentHistory.Classification("TRANSFER_OUT","EXTERNAL_TRANSFER_OUT",
+                        "BYBIT-CASHFLOW-1.0"),
+                new SyncJobApi.AdjustmentHistory.Price("BYBIT-PRICE-1.0","DIRECT_NORMALIZATION",false,"1","DIRECT",
+                        java.util.List.of()),
+                firstObservedAt(user,"adj-current-04"),new SyncJobApi.AdjustmentHistory.References(
+                        eventIdOf(user,"adj-current-04"),"adj-current-04",classification,conversion,shown.calculationId()),
+                false,java.util.List.of()));
+        assertThat(first.rows().getFirst().usdValue()).as("unrounded").isEqualTo("0.005");
+
+        // FILTER: the direction's rows and the direction's own exact summary.
+        var inbound=historyOf(user,SyncJobApi.AdjustmentDirection.IN,null);
+        assertThat(inbound.summary()).isEqualTo(new SyncJobApi.AdjustmentHistory.Summary(19,exactSum(usd.values()
+                .stream().filter(value -> value.signum()>0).toList()),2));
+        assertThat(inbound.rows()).hasSize(19).allSatisfy(row -> assertThat(row.direction()).isEqualTo("IN"));
+        assertThat(inbound.nextCursor()).isNull();
+        var outbound=historyOf(user,SyncJobApi.AdjustmentDirection.OUT,null);
+        assertThat(outbound.summary()).isEqualTo(new SyncJobApi.AdjustmentHistory.Summary(6,"-7.5",2));
+        assertThat(outbound.rows()).extracting(SyncJobApi.AdjustmentHistory.Adjustment::sequence)
+                .containsExactly(4,8,12,16,20,24);
+        // A cursor made for one filter names nothing under another.
+        assertThat(sync.adjustmentHistory(user,adjustmentQuery(shown,SyncJobApi.AdjustmentDirection.IN,
+                first.nextCursor()))).isEqualTo(new SyncJobApi.AdjustmentRead(new SyncJobApi.AdjustmentOutcome.NotFound(),
+                        SyncJobApi.BundleConsistency.NOT_READ));
+
+        // Over HTTP: the same page, the documented order, no-store, and nothing internal to the account.
+        int before=adjustmentLogLines(output).size();
+        var answer=send("GET",adjustmentsPath(shown,""),cookie,"X-Request-Id","adjustments-probe");
+        assertThat(answer.statusCode()).isEqualTo(200);
+        assertThat(answer.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        var fields=topLevelFieldsOf(answer.body());
+        assertThat(fields.keySet()).containsExactly("planId","pointerVersion","calculationId","direction","appliedAt",
+                "coverage","summary","rows","nextCursor");
+        assertThat(fields).containsEntry("direction","ALL").containsEntry("nextCursor",first.nextCursor())
+                .containsEntry("appliedAt",publishedAt.toString());
+        assertThat(nested(fields,"summary")).isEqualTo(java.util.Map.of("count",25,"netUsdValue",
+                exactSum(usd.values()),"excludedCount",2));
+        @SuppressWarnings("unchecked")
+        var rows=(java.util.List<java.util.Map<String,Object>>)fields.get("rows");
+        assertThat(rows).hasSize(20);
+        assertThat(rows.get(4).keySet()).as("the reading order").containsExactly("sequence","occurredAt","direction",
+                "asset","signedQuantity","usdValue","classification","price","discoveredAt","refs","changed","revisions");
+        assertThat(rows.get(4)).containsEntry("signedQuantity","0.01").containsEntry("usdValue","650.0025")
+                .containsEntry("changed",false).containsEntry("revisions",java.util.List.of());
+        // The nested contract the screen validates (`isLeg`): exactly these keys, in this order.
+        var price=nested(rows.get(4),"price");
+        assertThat(price.keySet()).containsExactly("policyVersion","evidenceType","estimated","unitPrice","routeId","legs");
+        @SuppressWarnings("unchecked")
+        var legs=(java.util.List<java.util.Map<String,Object>>)price.get("legs");
+        assertThat(legs).singleElement().satisfies(leg -> {
+            assertThat(leg.keySet()).containsExactly("symbol","candleStartAt","candleEndAt","closePrice","selectionRule",
+                    "lagMinutes");
+            assertThat(leg).isEqualTo(java.util.Map.of("symbol","BTCUSDT","candleStartAt",base.toString(),
+                    "candleEndAt",base.plusSeconds(60).toString(),"closePrice","65000.25","selectionRule","EVENT_MINUTE",
+                    "lagMinutes",0));
+        });
+        assertThat(nested(rows.get(4),"classification").keySet()).containsExactly("transactionType","ruleId",
+                "policyVersion");
+        assertThat(nested(rows.get(4),"refs").keySet()).containsExactly("sourceEventId","sourceId","classificationId",
+                "conversionId","calculationId");
+        var last=topLevelFieldsOf(get(adjustmentsPath(shown,"&cursor="+first.nextCursor()),cookie).body());
+        assertThat(last).containsEntry("nextCursor",null);
+        assertThat((java.util.List<?>)last.get("rows")).hasSize(5);
+        var filtered=topLevelFieldsOf(get(adjustmentsPath(shown,"&direction=OUT"),cookie).body());
+        assertThat(filtered).containsEntry("direction","OUT");
+        assertThat(nested(filtered,"summary")).containsEntry("count",6).containsEntry("netUsdValue","-7.5");
+        String externalRef=jdbc().sql("SELECT provider_account_ref FROM source_provider_account WHERE user_id=:u")
+                .param("u",user).query(String.class).single();
+        String providerAccount=jdbc().sql("SELECT provider_account_id::text FROM sync_plan_calculation WHERE user_id=:u")
+                .param("u",user).query(String.class).single();
+        for (String body : new String[] {answer.body(),topLevelFieldsOf(answer.body()).toString()}) {
+            assertThat(body).doesNotContain(user.toString()).doesNotContain(providerAccount).doesNotContain(externalRef)
+                    .doesNotContain("adj-current-fee").doesNotContain("adj-current-trade");
+            assertThat(body.toLowerCase(java.util.Locale.ROOT)).doesNotContain("userid").doesNotContain("provideraccount")
+                    .doesNotContain("secret").doesNotContain("apikey").doesNotContain("credential")
+                    .doesNotContain("semantic").doesNotContain("cursorhash").doesNotContain("address")
+                    .doesNotContain("txhash");
+        }
+        var lines=adjustmentLogLines(output);
+        assertThat(lines.subList(before,lines.size())).hasSize(3).allSatisfy(line -> assertThat(line)
+                .matches(".*adjustment history read: state=FOUND status=200 latencyMs=\\d+ consistent=true$")
+                .doesNotContain(user.toString()).doesNotContain(shown.calculationId().toString())
+                .doesNotContain(shown.planId().toString()).doesNotContain(first.nextCursor())
+                .doesNotContain("adjustments-probe"));
+    }
+
+    /**
+     * AC-4 exact totals and EMPTY: three deposits of 0.005 add up to 0.015 exactly — the sum of stored values,
+     * never of display-rounded ones (each would show as 0.01). A version with no applied flow lists nothing,
+     * with a zero summary and its verified range, under every filter.
+     */
+    @Test
+    void anAdjustmentTotalIsTheExactSumOfTheStoredValuesAndAnEmptyHistorySaysSo() throws Exception {
+        clearMarketEvidence();
+        Instant base=closedTenMinuteBoundary();
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"adjustments-exact","0.1",base.minusSeconds(3600),
+                new Flow("exact-1","USDT","0.005",base.plusSeconds(3)),new Flow("exact-2","USDT","0.005",base.plusSeconds(4)),
+                new Flow("exact-3","USDT","0.005",base.plusSeconds(5)));
+        assertThat(awaitPublication(publish(user,intent,"adjustments-exact-command-001"))).isEqualTo("PUBLISHED");
+        var history=historyOf(user,SyncJobApi.AdjustmentDirection.ALL,null);
+        assertThat(history.summary()).isEqualTo(new SyncJobApi.AdjustmentHistory.Summary(3,"0.015",0));
+        assertThat(history.rows()).extracting(SyncJobApi.AdjustmentHistory.Adjustment::usdValue)
+                .containsExactly("0.005","0.005","0.005");
+        assertThat(historyOf(user,SyncJobApi.AdjustmentDirection.OUT,null).summary())
+                .isEqualTo(new SyncJobApi.AdjustmentHistory.Summary(0,"0",0));
+
+        UUID empty=connect(DevBybitStub.Scenario.UTA2);
+        UUID emptyIntent=convertedIntent(empty,"adjustments-empty","0.1",null);
+        assertThat(awaitPublication(publish(empty,emptyIntent,"adjustments-empty-command-001"))).isEqualTo("PUBLISHED");
+        var times=jdbc().sql("SELECT t0,cashflow_verified_through FROM sync_plan_calculation WHERE user_id=:u")
+                .param("u",empty).query((rs,n)->new Instant[] {rs.getObject(1,java.time.OffsetDateTime.class).toInstant(),
+                        rs.getObject(2,java.time.OffsetDateTime.class).toInstant()}).single();
+        for (var direction : SyncJobApi.AdjustmentDirection.values()) {
+            var none=historyOf(empty,direction,null);
+            assertThat(none.rows()).as(direction.name()).isEmpty();
+            assertThat(none.nextCursor()).isNull();
+            assertThat(none.summary()).isEqualTo(new SyncJobApi.AdjustmentHistory.Summary(0,"0",0));
+            assertThat(none.coverage()).isEqualTo(new SyncJobApi.AdjustmentHistory.Coverage(times[0],times[1]));
+        }
+    }
+
+    /**
+     * REVISED (AC-6): the current conversion continues an earlier one after a price revision. The changed flow
+     * is marked and lists the earlier version — its own processing time and status, the value it had, why and
+     * when it was replaced — and that earlier version is kept exactly as it was stored. A flow whose value did
+     * not change carries no marker and no list.
+     */
+    @Test
+    void aConversionThatContinuesAnEarlierOneMarksTheChangedFlowAndListsTheEarlierVersion() throws Exception {
+        clearMarketEvidence();
+        Instant base=closedTenMinuteBoundary();
+        String subject="adjustments-revised-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        UUID intent=convertedIntent(user,"adjustments-revised","0.1",base.minusSeconds(3600),
+                new Flow("revised-btc-in","BTC","0.01",base.plusSeconds(7)),
+                new Flow("revised-usdt-in","USDT","40",base.plusSeconds(8)));
+        UUID earlier=jdbc().sql("SELECT conversion_id FROM sync_cashflow_conversion_job WHERE user_id=:u")
+                .param("u",user).query(UUID.class).single();
+        jdbc().sql("INSERT INTO sync_market_candle(candle_id,provider,category,symbol,interval_code,start_at,end_at,"
+                + "revision,close_price,evidence_hash,policy_version,observed_at,request_start_at,request_end_at) SELECT :id,"
+                + "provider,category,symbol,interval_code,start_at,end_at,2,'65010',:hash,policy_version,observed_at,"
+                + "request_start_at,request_end_at FROM sync_market_candle "
+                + "WHERE symbol='BTCUSDT' AND start_at=:start AND revision=1")
+            .param("id",UUID.randomUUID()).param("hash","e".repeat(64))
+            .param("start",java.time.OffsetDateTime.ofInstant(base,java.time.ZoneOffset.UTC)).update();
+        UUID revisedJob=sync.admitCashflowConversion(user,intent,"adjustments-revised-conversion-002").orElseThrow().jobId();
+        assertThat(awaitConversion(revisedJob)).isEqualTo("CONVERTED_ESTIMATED");
+        UUID current=conversionIdOf(revisedJob);
+        assertThat(jdbc().sql("SELECT previous_conversion_id::text||'|'||change_reason FROM sync_cashflow_conversion_bundle "
+                + "WHERE conversion_id=:c").param("c",current).query(String.class).single())
+                .isEqualTo(earlier+"|PRICE_REVISION");
+        assertThat(awaitPublication(publish(user,intent,"adjustments-revised-command-001"))).isEqualTo("PUBLISHED");
+        Instant earlierProcessed=processedAtOf(earlier), currentProcessed=processedAtOf(current);
+
+        var history=historyOf(user,SyncJobApi.AdjustmentDirection.ALL,null);
+        assertThat(history.rows()).hasSize(2);
+        var btc=history.rows().getFirst();
+        assertThat(btc.references().conversionId()).as("the version's own conversion").isEqualTo(current);
+        assertThat(btc.usdValue()).isEqualTo("650.1");
+        assertThat(btc.price().legs()).singleElement().satisfies(leg -> assertThat(leg.closePrice()).isEqualTo("65010"));
+        assertThat(btc.changed()).isTrue();
+        assertThat(btc.revisions()).containsExactly(new SyncJobApi.AdjustmentHistory.Revision(earlier,earlierProcessed,
+                "CONVERTED_ESTIMATED",null,"650.0025","PRICE_REVISION",currentProcessed));
+        var usdt=history.rows().getLast();
+        assertThat(usdt.changed()).as("the same value in both versions").isFalse();
+        assertThat(usdt.revisions()).isEmpty();
+        // Over HTTP: the earlier version with exactly the keys the screen validates (`isRevision`), a missing
+        // reason as null.
+        @SuppressWarnings("unchecked")
+        var rows=(java.util.List<java.util.Map<String,Object>>)topLevelFieldsOf(get(adjustmentsPath(ready(user),""),
+                cookie).body()).get("rows");
+        @SuppressWarnings("unchecked")
+        var revisions=(java.util.List<java.util.Map<String,Object>>)rows.getFirst().get("revisions");
+        assertThat(revisions).singleElement().satisfies(revision -> {
+            assertThat(revision.keySet()).containsExactly("conversionId","processedAt","status","reasonCode","usdValue",
+                    "changeReason","discoveredAt");
+            assertThat(revision).containsEntry("conversionId",earlier.toString()).containsEntry("reasonCode",null)
+                    .containsEntry("usdValue","650.0025").containsEntry("changeReason","PRICE_REVISION")
+                    .containsEntry("processedAt",earlierProcessed.toString())
+                    .containsEntry("discoveredAt",currentProcessed.toString());
+        });
+        assertThat(rows.getFirst()).containsEntry("changed",true);
+        assertThat(rows.getLast()).containsEntry("changed",false).containsEntry("revisions",java.util.List.of());
+        // Append-only: the earlier version's rows are untouched.
+        assertThat(calculableUsd(earlier,"revised-btc-in")).isEqualTo("650.0025");
+        assertThat(jdbc().sql("SELECT close_price FROM sync_cashflow_conversion_leg l JOIN sync_cashflow_conversion_flow f "
+                + "ON f.conversion_id=l.conversion_id AND f.source_event_id=l.source_event_id WHERE l.conversion_id=:c "
+                + "AND f.source_id='revised-btc-in'").param("c",earlier).query(String.class).single()).isEqualTo("65000.25");
+        evidenceOf(user);
+    }
+
+    /**
+     * TAMPER (AC-1·AC-4): only the user's current pointer, with a cursor made for this user, reference and
+     * filter, answers. Another user's pointer or cursor, a stale version, a cursor for another filter or
+     * version, an edited, empty, extended or repeated cursor, a repeated or unknown direction, and a query the
+     * container cannot parse all answer one 404 — to the letter the body of a route that does not exist.
+     * Unknown parameters are ignored and change nothing.
+     */
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void aTamperedAdjustmentReferenceOrCursorRevealsNothing(org.springframework.boot.test.system.CapturedOutput output)
+            throws Exception {
+        String subject="adjustments-tamper-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        Instant base=closedTenMinuteBoundary();
+        UUID intent=convertedIntent(user,"adjustments-tamper","0.1",base.minusSeconds(3600),usdtFlows("tamper",21,base));
+        assertThat(awaitPublication(publish(user,intent,"adjustments-tamper-command-001"))).isEqualTo("PUBLISHED");
+        UUID other=connect(DevBybitStub.Scenario.UTA2);
+        UUID otherIntent=convertedIntent(other,"adjustments-tamper-other","0.2",base.minusSeconds(3600),
+                usdtFlows("tamper-other",21,base));
+        assertThat(awaitPublication(publish(other,otherIntent,"adjustments-tamper-other-001"))).isEqualTo("PUBLISHED");
+        String emptyCookie=sessionCookieOf(signIn("adjustments-tamper-empty-"+UUID.randomUUID())).orElseThrow();
+        var own=ready(user);
+        var foreign=ready(other);
+        String plan=own.planId().toString();
+        String calc=own.calculationId().toString();
+        String valid=query(own.planId(),own.pointerVersion(),own.calculationId());
+        String cursor=historyOf(user,SyncJobApi.AdjustmentDirection.ALL,null).nextCursor();
+        String foreignCursor=historyOf(other,SyncJobApi.AdjustmentDirection.ALL,null).nextCursor();
+        assertThat(cursor).isNotNull();
+        assertThat(foreignCursor).isNotNull();
+        String edited=cursor.substring(0,10)+(cursor.charAt(10)=='A' ? 'B' : 'A')+cursor.substring(11);
+        String path=DashboardController.ADJUSTMENTS_PATH;
+        for (String accepted : new String[] {valid,valid+"&cursor="+cursor,valid+"&direction=ALL",valid+"&direction=IN",
+                valid+"&direction=OUT",query(plan.toUpperCase(java.util.Locale.ROOT),"1",calc.toUpperCase(java.util.Locale.ROOT))}) {
+            assertThat(get(path+accepted,cookie).statusCode()).as(accepted).isEqualTo(200);
+        }
+        // Unknown parameters — an event, classification or conversion id among them — change nothing.
+        assertThat(get(path+valid+"&sourceEventId="+UUID.randomUUID()+"&conversionId="+UUID.randomUUID()
+                + "&classificationId="+UUID.randomUUID()+"&page=9",cookie).body()).isEqualTo(get(path+valid,cookie).body());
+
+        String notFound=send("GET",AuthSecurityConfig.DASHBOARD_PATH+"/no-such-route",cookie,"X-Request-Id",
+                "adjustments-tamper-probe").body();
+        int before=adjustmentLogLines(output).size();
+        var tampered=java.util.List.of(
+                query(foreign.planId(),foreign.pointerVersion(),foreign.calculationId()),
+                query(own.planId(),1,foreign.calculationId()),
+                query(foreign.planId(),1,own.calculationId()),
+                query(own.planId(),2,own.calculationId()),
+                query(UUID.randomUUID(),1,UUID.randomUUID()),
+                query("not-a-uuid","1",calc),
+                query(plan,"01",calc),
+                "?planId="+plan+"&pointerVersion=1",
+                "",
+                valid+"&cursor="+foreignCursor,
+                valid+"&direction=IN&cursor="+cursor,
+                valid+"&direction=OUT&cursor="+cursor,
+                valid+"&cursor="+edited,
+                valid+"&cursor=",
+                valid+"&cursor=garbage",
+                valid+"&cursor="+cursor+"A",
+                valid+"&cursor="+cursor+"&cursor="+cursor,
+                valid+"&direction=ALL&direction=ALL",
+                valid+"&direction=in",
+                valid+"&direction=BOTH",
+                valid+"&direction=",
+                valid+"&planId="+plan);
+        for (String probe : tampered) {
+            var answer=send("GET",path+probe,cookie,"X-Request-Id","adjustments-tamper-probe");
+            assertThat(answer.statusCode()).as(probe).isEqualTo(404);
+            assertThat(answer.headers().firstValue("Cache-Control").orElse("")).as(probe).contains("no-store");
+            assertThat(answer.body()).as(probe+" answers like a missing route").isEqualTo(notFound);
+        }
+        // A user without any plan, holding someone else's real reference.
+        var empty=send("GET",path+valid,emptyCookie,"X-Request-Id","adjustments-tamper-probe");
+        assertThat(empty.statusCode()).isEqualTo(404);
+        assertThat(empty.body()).isEqualTo(notFound);
+        // A version that is no longer current, and a cursor made for the version before.
+        jdbc().sql("UPDATE sync_official_plan_result SET pointer_version=2 WHERE plan_id=:p").param("p",own.planId())
+                .update();
+        try {
+            for (String stale : new String[] {valid,query(own.planId(),2,own.calculationId())+"&cursor="+cursor}) {
+                var answer=send("GET",path+stale,cookie,"X-Request-Id","adjustments-tamper-probe");
+                assertThat(answer.statusCode()).as(stale).isEqualTo(404);
+                assertThat(answer.body()).isEqualTo(notFound);
+            }
+            assertThat(get(path+query(own.planId(),2,own.calculationId()),cookie).statusCode()).as("the current version")
+                    .isEqualTo(200);
+        } finally {
+            jdbc().sql("UPDATE sync_official_plan_result SET pointer_version=1 WHERE plan_id=:p").param("p",own.planId())
+                    .update();
+        }
+        // A query the container cannot parse, sent byte for byte.
+        var unparsable=java.util.List.of("?planId=%zz&pointerVersion=1&calculationId="+calc,valid+"&cursor=%",
+                valid+"&direction=%G1");
+        for (String probe : unparsable) {
+            String[] answer=rawGet(path+probe,cookie,"adjustments-tamper-probe");
+            assertThat(answer[0]).as(probe).isEqualTo("404");
+            assertThat(answer[1]).as(probe).isEqualTo(notFound);
+        }
+        var lines=adjustmentLogLines(output).subList(before,adjustmentLogLines(output).size());
+        assertThat(lines.stream().filter(line -> line.contains("status=404")).toList())
+                .hasSize(tampered.size()+1+2+unparsable.size())
+                .allSatisfy(line -> assertThat(line).contains("state=NOT_FOUND status=404").endsWith("consistent=unknown"));
+        assertThat(get(path+valid,null).statusCode()).as("unauthenticated").isEqualTo(401);
+        // The other user's history is untouched and still their own.
+        assertThat(historyOf(other,SyncJobApi.AdjustmentDirection.ALL,null).planId()).isEqualTo(foreign.planId());
+    }
+
+    /**
+     * BROKEN (AC-2): when any applied row disagrees with its lineage — a missing link, another source id, time,
+     * asset, quantity or USD value, a classification that is not an external flow or not of the direction, a
+     * price whose route and legs disagree, a row out of order or out of count, a conversion chain that leads
+     * nowhere — the answer is 503 {@code ADJUSTMENT_HISTORY_UNAVAILABLE} with no partial list, whichever page
+     * is asked for, and the line says {@code consistent=false}. The dashboard does not read these and answers.
+     */
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void aBrokenAdjustmentLineageReturnsNoPartialListAndLogsConsistentFalse(
+            org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        String subject="adjustments-broken-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        clearMarketEvidence();
+        Instant base=closedTenMinuteBoundary();
+        UUID intent=convertedIntent(user,"adjustments-broken","0.1",base.minusSeconds(3600),
+                new Flow("broken-usdt-in","USDT","100",base.plusSeconds(21)),
+                new Flow("broken-btc-in","BTC","0.01",base.plusSeconds(23)),
+                new Flow("broken-usdt-out","USDT","-3",base.plusSeconds(25)),
+                // The stub's ETH has no USDT market: its price takes the two-leg ETHUSDC × USDCUSDT route.
+                new Flow("broken-eth-in","ETH","2",base.plusSeconds(27)));
+        assertThat(awaitPublication(publish(user,intent,"adjustments-broken-command-001"))).isEqualTo("PUBLISHED");
+        var own=ready(user);
+        var reference=adjustmentQuery(own,SyncJobApi.AdjustmentDirection.ALL,null);
+        var ids=jdbc().sql("SELECT candidate_id,classification_id,conversion_id,provider_account_id FROM sync_plan_calculation "
+                + "WHERE calculation_id=:c").param("c",own.calculationId())
+                .query((rs,n)->new UUID[] {rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),rs.getObject(3,UUID.class),
+                        rs.getObject(4,UUID.class)})
+                .single();
+        UUID candidate=ids[0], classification=ids[1], conversion=ids[2], account=ids[3];
+        UUID deposit=eventIdOf(user,"broken-usdt-in"), estimated=eventIdOf(user,"broken-btc-in");
+        UUID crossed=eventIdOf(user,"broken-eth-in");
+        UUID calc=own.calculationId();
+        // Whole before any corruption: the two-leg route holds with its two legs, numbered from zero.
+        var whole=historyOf(user,SyncJobApi.AdjustmentDirection.ALL,null);
+        assertThat(whole.rows()).hasSize(4);
+        assertThat(whole.rows().getLast().price().routeId()).isEqualTo("SPOT_ASSET_USDC_USDCUSDT");
+        assertThat(whole.rows().getLast().price().legs()).extracting(SyncJobApi.AdjustmentHistory.PriceLeg::symbol)
+                .containsExactly("ETHUSDC","USDCUSDT");
+        String semantic=jdbc().sql("SELECT semantic_hash FROM sync_cashflow_conversion_flow WHERE conversion_id=:c "
+                + "AND source_event_id=:e").param("c",conversion).param("e",deposit).query(String.class).single();
+        java.util.function.BiFunction<UUID,String,String> moveEvent=(target,shift) ->
+                "UPDATE sync_plan_calculation_flow SET occurred_at=occurred_at"+shift+" WHERE calculation_id='"+calc
+                        + "' AND source_event_id='"+target+"'; UPDATE sync_calculable_cashflow SET occurred_at=occurred_at"
+                        + shift+" WHERE conversion_id='"+conversion+"' AND source_event_id='"+target
+                        + "'; UPDATE sync_cashflow_conversion_flow SET occurred_at=occurred_at"+shift+" WHERE conversion_id='"
+                        + conversion+"' AND source_event_id='"+target+"'; UPDATE sync_cashflow_classification_event "
+                        + "SET occurred_at=occurred_at"+shift+" WHERE classification_id='"+classification
+                        + "' AND source_event_id='"+target+"'; UPDATE sync_initial_source_event SET transaction_time="
+                        + "transaction_time"+shift+" WHERE event_id='"+target+"'";
+        java.util.function.Consumer<String> replica=sql -> new TransactionTemplate(manager).executeWithoutResult(status -> {
+            jdbc().sql("SET LOCAL session_replication_role = replica").update();
+            jdbc().sql(sql).update();
+        });
+        // One statement at a time: a corruption may be a few statements in a row.
+        java.util.function.Consumer<String> plain=sql -> {
+            for (String statement : sql.split("; ")) jdbc().sql(statement).update();
+        };
+        UUID stranger=UUID.randomUUID();
+        record Corruption(String name,String corrupt,String restore,boolean withoutForeignKeys) {}
+        String event="event_id='"+deposit+"'";
+        var corruptions=java.util.List.of(
+                new Corruption("the source event carries another cash flow",
+                        "UPDATE sync_initial_source_event SET cash_flow='999' WHERE "+event,
+                        "UPDATE sync_initial_source_event SET cash_flow='100' WHERE "+event,false),
+                new Corruption("the source event is of another asset",
+                        "UPDATE sync_initial_source_event SET currency='USDC' WHERE "+event,
+                        "UPDATE sync_initial_source_event SET currency='USDT' WHERE "+event,false),
+                new Corruption("the source event happened at another time",
+                        "UPDATE sync_initial_source_event SET transaction_time=transaction_time+interval '1 millisecond' "
+                                + "WHERE "+event,
+                        "UPDATE sync_initial_source_event SET transaction_time=transaction_time-interval '1 millisecond' "
+                                + "WHERE "+event,false),
+                new Corruption("the source event is another Bybit record",
+                        "UPDATE sync_initial_source_event SET source_id='broken-usdt-in-x' WHERE "+event,
+                        "UPDATE sync_initial_source_event SET source_id='broken-usdt-in' WHERE "+event,false),
+                new Corruption("the source event is of the other Bybit type",
+                        "UPDATE sync_initial_source_event SET event_type='TRANSFER_OUT' WHERE "+event,
+                        "UPDATE sync_initial_source_event SET event_type='TRANSFER_IN' WHERE "+event,false),
+                new Corruption("the classification excluded the event",
+                        "UPDATE sync_cashflow_classification_event SET verdict='EXCLUDED',signed_amount=NULL "
+                                + "WHERE classification_id='"+classification+"' AND source_event_id='"+deposit+"'",
+                        "UPDATE sync_cashflow_classification_event SET verdict='EXTERNAL_IN',signed_amount='100' "
+                                + "WHERE classification_id='"+classification+"' AND source_event_id='"+deposit+"'",false),
+                new Corruption("the calculable row carries another USD value",
+                        "UPDATE sync_calculable_cashflow SET usd_value='100.5' WHERE conversion_id='"+conversion
+                                + "' AND source_event_id='"+deposit+"'",
+                        "UPDATE sync_calculable_cashflow SET usd_value='100' WHERE conversion_id='"+conversion
+                                + "' AND source_event_id='"+deposit+"'",false),
+                new Corruption("the conversion flow carries another USD value",
+                        "UPDATE sync_cashflow_conversion_flow SET usd_value='99' WHERE conversion_id='"+conversion
+                                + "' AND source_event_id='"+deposit+"'",
+                        "UPDATE sync_cashflow_conversion_flow SET usd_value='100' WHERE conversion_id='"+conversion
+                                + "' AND source_event_id='"+deposit+"'",false),
+                new Corruption("a directly normalized flow names a spot route",
+                        "UPDATE sync_cashflow_conversion_flow SET route_id='SPOT_ASSET_USDT' WHERE conversion_id='"
+                                + conversion+"' AND source_event_id='"+deposit+"'",
+                        "UPDATE sync_cashflow_conversion_flow SET route_id='DIRECT' WHERE conversion_id='"+conversion
+                                + "' AND source_event_id='"+deposit+"'",false),
+                new Corruption("an estimated flow's legs are not numbered from zero",
+                        "UPDATE sync_cashflow_conversion_leg SET leg_index=1 WHERE conversion_id='"+conversion
+                                + "' AND source_event_id='"+estimated+"'",
+                        "UPDATE sync_cashflow_conversion_leg SET leg_index=0 WHERE conversion_id='"+conversion
+                                + "' AND source_event_id='"+estimated+"'",false),
+                new Corruption("the version counts another flow",
+                        "UPDATE sync_plan_calculation SET flow_count=flow_count+1 WHERE calculation_id='"+calc+"'",
+                        "UPDATE sync_plan_calculation SET flow_count=flow_count-1 WHERE calculation_id='"+calc+"'",false),
+                new Corruption("two applied rows are out of the version's order",
+                        "UPDATE sync_plan_calculation_flow SET sequence=CASE sequence WHEN 1 THEN 1000 ELSE sequence END "
+                                + "WHERE calculation_id='"+calc+"'; UPDATE sync_plan_calculation_flow SET sequence=1 "
+                                + "WHERE calculation_id='"+calc+"' AND sequence=2; UPDATE sync_plan_calculation_flow "
+                                + "SET sequence=2 WHERE calculation_id='"+calc+"' AND sequence=1000",
+                        "UPDATE sync_plan_calculation_flow SET sequence=1000 WHERE calculation_id='"+calc+"' AND sequence=1; "
+                                + "UPDATE sync_plan_calculation_flow SET sequence=1 WHERE calculation_id='"+calc
+                                + "' AND sequence=2; UPDATE sync_plan_calculation_flow SET sequence=2 WHERE calculation_id='"
+                                + calc+"' AND sequence=1000",false),
+                new Corruption("the applied rows skip a sequence",
+                        "UPDATE sync_plan_calculation_flow SET sequence=9 WHERE calculation_id='"+calc+"' AND sequence=3",
+                        "UPDATE sync_plan_calculation_flow SET sequence=3 WHERE calculation_id='"+calc+"' AND sequence=9",false),
+                new Corruption("the classification held an event for review",
+                        "UPDATE sync_cashflow_classification_bundle SET review_count=1 WHERE classification_id='"
+                                + classification+"'",
+                        "UPDATE sync_cashflow_classification_bundle SET review_count=0 WHERE classification_id='"
+                                + classification+"'",false),
+                new Corruption("an event is not the candidate's",
+                        "DELETE FROM sync_initial_candidate_event WHERE candidate_id='"+candidate+"' AND "+event,
+                        "INSERT INTO sync_initial_candidate_event(candidate_id,event_id) VALUES ('"+candidate+"','"
+                                + deposit+"')",false),
+                new Corruption("an applied row cites another conversion",
+                        "UPDATE sync_plan_calculation_flow SET conversion_id='"+stranger+"' WHERE calculation_id='"+calc
+                                + "' AND source_event_id='"+deposit+"'",
+                        "UPDATE sync_plan_calculation_flow SET conversion_id='"+conversion+"' WHERE calculation_id='"
+                                + calc+"' AND source_event_id='"+deposit+"'",true),
+                new Corruption("the conversion continues a version that does not exist",
+                        "UPDATE sync_cashflow_conversion_bundle SET previous_conversion_id='"+stranger
+                                + "',change_reason='EVIDENCE_CHANGE' WHERE conversion_id='"+conversion+"'",
+                        "UPDATE sync_cashflow_conversion_bundle SET previous_conversion_id=NULL,change_reason=NULL "
+                                + "WHERE conversion_id='"+conversion+"'",true),
+                // Every link moved together, so only the (t0, cashflowVerifiedThrough] bound decides.
+                new Corruption("an applied event lies after the verified range",
+                        moveEvent.apply(crossed,"+interval '1 day'"),moveEvent.apply(crossed,"-interval '1 day'"),false),
+                new Corruption("an applied event lies at or before t0",
+                        moveEvent.apply(deposit,"-interval '2 hours'"),moveEvent.apply(deposit,"+interval '2 hours'"),false),
+                new Corruption("the conversion flow carries another semantic hash",
+                        "UPDATE sync_cashflow_conversion_flow SET semantic_hash='"+"f".repeat(64)+"' WHERE conversion_id='"
+                                + conversion+"' AND source_event_id='"+deposit+"'",
+                        "UPDATE sync_cashflow_conversion_flow SET semantic_hash='"+semantic+"' WHERE conversion_id='"
+                                + conversion+"' AND source_event_id='"+deposit+"'",false),
+                // Every table ties the estimated flag to the evidence kind by a CHECK, so both move together here.
+                new Corruption("an applied row is estimated where its conversion is not",
+                        "UPDATE sync_plan_calculation_flow SET estimated=true,evidence_type='SPOT_KLINE_CLOSE' "
+                                + "WHERE calculation_id='"+calc+"' AND source_event_id='"+deposit+"'",
+                        "UPDATE sync_plan_calculation_flow SET estimated=false,evidence_type='DIRECT_NORMALIZATION' "
+                                + "WHERE calculation_id='"+calc+"' AND source_event_id='"+deposit+"'",false),
+                new Corruption("the conversion flow cites another classification rule",
+                        "UPDATE sync_cashflow_conversion_flow SET classification_rule_id='SOME_OTHER_RULE' "
+                                + "WHERE conversion_id='"+conversion+"' AND source_event_id='"+deposit+"'",
+                        "UPDATE sync_cashflow_conversion_flow SET classification_rule_id='EXTERNAL_TRANSFER_IN' "
+                                + "WHERE conversion_id='"+conversion+"' AND source_event_id='"+deposit+"'",false),
+                new Corruption("the conversion flow cites another classification policy",
+                        "UPDATE sync_cashflow_conversion_flow SET classification_policy_version='BYBIT-CASHFLOW-9.9' "
+                                + "WHERE conversion_id='"+conversion+"' AND source_event_id='"+deposit+"'",
+                        "UPDATE sync_cashflow_conversion_flow SET classification_policy_version='BYBIT-CASHFLOW-1.0' "
+                                + "WHERE conversion_id='"+conversion+"' AND source_event_id='"+deposit+"'",false),
+                new Corruption("the calculable row cites another price policy",
+                        "UPDATE sync_calculable_cashflow SET price_policy_version='BYBIT-PRICE-9.9' WHERE conversion_id='"
+                                + conversion+"' AND source_event_id='"+deposit+"'",
+                        "UPDATE sync_calculable_cashflow SET price_policy_version='BYBIT-PRICE-1.0' WHERE conversion_id='"
+                                + conversion+"' AND source_event_id='"+deposit+"'",false),
+                new Corruption("an applied row names another provider account",
+                        "UPDATE sync_plan_calculation_flow SET provider_account_id='"+stranger+"' WHERE calculation_id='"
+                                + calc+"' AND source_event_id='"+deposit+"'",
+                        "UPDATE sync_plan_calculation_flow SET provider_account_id='"+account+"' WHERE calculation_id='"
+                                + calc+"' AND source_event_id='"+deposit+"'",false),
+                new Corruption("the source event is of another provider account",
+                        "UPDATE sync_initial_source_event SET provider_account_id='"+stranger+"' WHERE "+event,
+                        "UPDATE sync_initial_source_event SET provider_account_id='"+account+"' WHERE "+event,false),
+                new Corruption("the calculable row carries another quantity than its conversion flow",
+                        "UPDATE sync_calculable_cashflow SET signed_quantity='101' WHERE conversion_id='"+conversion
+                                + "' AND source_event_id='"+deposit+"'",
+                        "UPDATE sync_calculable_cashflow SET signed_quantity='100' WHERE conversion_id='"+conversion
+                                + "' AND source_event_id='"+deposit+"'",false),
+                new Corruption("a two-leg price names the one-leg route",
+                        "UPDATE sync_cashflow_conversion_flow SET route_id='SPOT_ASSET_USDT' WHERE conversion_id='"
+                                + conversion+"' AND source_event_id='"+crossed+"'",
+                        "UPDATE sync_cashflow_conversion_flow SET route_id='SPOT_ASSET_USDC_USDCUSDT' WHERE conversion_id='"
+                                + conversion+"' AND source_event_id='"+crossed+"'",false),
+                new Corruption("the classification's excluded count is not its events'",
+                        "UPDATE sync_cashflow_classification_bundle SET excluded_count=excluded_count+1 "
+                                + "WHERE classification_id='"+classification+"'",
+                        "UPDATE sync_cashflow_classification_bundle SET excluded_count=excluded_count-1 "
+                                + "WHERE classification_id='"+classification+"'",false));
+        int before=adjustmentLogLines(output).size();
+        int requests=0;
+        for (Corruption corruption : corruptions) {
+            (corruption.withoutForeignKeys() ? replica : plain).accept(corruption.corrupt());
+            for (String extra : new String[] {"","&direction=OUT"}) {
+                var refused=send("GET",adjustmentsPath(own,extra),cookie,"X-Request-Id","adjustments-broken");
+                requests++;
+                assertThat(refused.statusCode()).as(corruption.name()).isEqualTo(503);
+                assertThat(refused.headers().firstValue("Cache-Control").orElse("")).as(corruption.name())
+                        .contains("no-store");
+                assertThat(topLevelFieldsOf(refused.body())).as(corruption.name())
+                        .containsOnlyKeys("code","message","correlationId")
+                        .containsEntry("code","ADJUSTMENT_HISTORY_UNAVAILABLE").containsEntry("correlationId","adjustments-broken");
+                assertThat(refused.body()).as(corruption.name()).doesNotContain(own.calculationId().toString())
+                        .doesNotContain("broken-usdt-in").doesNotContain("broken-btc-in");
+            }
+            assertThat(sync.adjustmentHistory(user,reference)).as(corruption.name()).isEqualTo(new SyncJobApi.AdjustmentRead(
+                    new SyncJobApi.AdjustmentOutcome.Unavailable(),SyncJobApi.BundleConsistency.INCONSISTENT));
+            assertThat(dashboardOf(user)).as("the dashboard itself: "+corruption.name())
+                    .isInstanceOf(SyncJobApi.Dashboard.Ready.class);
+            (corruption.withoutForeignKeys() ? replica : plain).accept(corruption.restore());
+            assertThat(sync.adjustmentHistory(user,reference).outcome()).as("restored: "+corruption.name())
+                    .isInstanceOf(SyncJobApi.AdjustmentOutcome.Found.class);
+        }
+        var lines=adjustmentLogLines(output);
+        assertThat(lines.subList(before,lines.size())).hasSize(requests)
+                .allSatisfy(line -> assertThat(line).contains("state=INCONSISTENT status=503").endsWith("consistent=false"));
+    }
+
+    /**
+     * DELETING (AC-9) and a failing read. A read that throws answers the common 500 and one {@code ERROR} line,
+     * and the dashboard, which does not read that table, still answers. The account's own access is decided
+     * before and after the read: a deletion that begins while the history is read wins; in progress or
+     * finished, nothing comes back; another user's history stays.
+     */
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void aDeletionOnEitherSideOfTheAdjustmentReadRefusesItAndAFailingReadAnswersTheCommonError(
+            org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        String subject="adjustments-deletion-"+UUID.randomUUID();
+        String cookie=sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID user=userIdOf(OidcStubConfiguration.issuer(),subject).orElseThrow();
+        store(user,DevBybitStub.Scenario.UTA2);
+        Instant base=closedTenMinuteBoundary();
+        UUID intent=convertedIntent(user,"adjustments-deletion","0.1",base.minusSeconds(3600),
+                new Flow("deletion-in","USDT","12",base.plusSeconds(14)));
+        assertThat(awaitPublication(publish(user,intent,"adjustments-deletion-command-001"))).isEqualTo("PUBLISHED");
+        UUID kept=connect(DevBybitStub.Scenario.UTA2);
+        UUID keptIntent=convertedIntent(kept,"adjustments-deletion-kept","0.1",base.minusSeconds(3600),
+                new Flow("deletion-kept-in","USDT","9",base.plusSeconds(15)));
+        assertThat(awaitPublication(publish(kept,keptIntent,"adjustments-deletion-kept-001"))).isEqualTo("PUBLISHED");
+        var own=ready(user);
+        String path=adjustmentsPath(own,"");
+
+        // A read that throws: a table only the history reads is hidden for one request.
+        int before=adjustmentLogLines(output).size();
+        java.net.http.HttpResponse<String> failed;
+        java.net.http.HttpResponse<String> dashboard;
+        jdbc().sql("ALTER TABLE sync_initial_candidate_event RENAME TO sync_initial_candidate_event_hidden").update();
+        try {
+            failed=send("GET",path,cookie,"X-Request-Id","adjustments-error-probe");
+            dashboard=get(AuthSecurityConfig.DASHBOARD_PATH,cookie);
+        } finally {
+            jdbc().sql("ALTER TABLE sync_initial_candidate_event_hidden RENAME TO sync_initial_candidate_event").update();
+        }
+        assertThat(failed.statusCode()).isEqualTo(500);
+        assertThat(failed.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        assertThat(topLevelFieldsOf(failed.body())).containsOnlyKeys("code","message","correlationId")
+                .containsEntry("code","INTERNAL_ERROR").containsEntry("correlationId","adjustments-error-probe");
+        assertThat(failed.body()).doesNotContain("deletion-in").doesNotContain("sync_initial_candidate_event");
+        assertThat(dashboard.statusCode()).as("the dashboard does not read that table").isEqualTo(200);
+        assertThat(adjustmentLogLines(output).subList(before,adjustmentLogLines(output).size())).singleElement()
+                .asString().matches(".*adjustment history read: state=ERROR status=500 latencyMs=\\d+ consistent=unknown$");
+        assertThat(output.getAll()).doesNotContain("sync_initial_candidate_event_hidden");
+        assertThat(get(path,cookie).statusCode()).as("whole again").isEqualTo(200);
+
+        // After: the read is past its first check and holds its snapshot when the deletion commits.
+        java.util.concurrent.CompletableFuture<java.net.http.HttpResponse<String>> pending;
+        AutoCloseable lock=holdTableLock("sync_initial_candidate_event");
+        try {
+            pending=java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                try {
+                    return get(path,cookie);
+                } catch (Exception failure) {
+                    throw new IllegalStateException(failure);
+                }
+            });
+            // The history's aggregate is the one statement that begins so (pg_stat_activity keeps only the
+            // first kilobyte of a statement, so the fragment must come early).
+            awaitBlockedOn("count(*) FILTER (WHERE NOT r.ok)");
+            accountDeletion().beginDeletion(user);
+        } finally {
+            lock.close();
+        }
+        var late=pending.get(20,TimeUnit.SECONDS);
+        assertThat(late.statusCode()).as("the deletion that began during the read wins").isEqualTo(403);
+        assertThat(late.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        assertThat(topLevelFieldsOf(late.body())).containsOnlyKeys("code","message","correlationId")
+                .containsEntry("code","FORBIDDEN");
+        assertThat(late.body()).doesNotContain("deletion-in").doesNotContain(own.calculationId().toString());
+        assertThat(adjustmentLogLines(output).getLast()).contains("state=DENIED status=403").endsWith("consistent=true");
+
+        // Before: in progress. Nothing was read.
+        assertThat(get(path,cookie).statusCode()).isEqualTo(403);
+        assertThat(adjustmentLogLines(output).getLast()).contains("state=DENIED status=403").endsWith("consistent=unknown");
+        assertThat(get(DashboardController.ADJUSTMENTS_PATH+"?planId=malformed",cookie).statusCode())
+                .as("a malformed reference is not a way around the refusal").isEqualTo(403);
+        assertThat(get(path+"&cursor=garbage",cookie).statusCode()).as("nor is a malformed cursor").isEqualTo(403);
+
+        // Finished: the erasure ran in its order; the session went with it.
+        portfolio.erasePortfolioData(user);
+        sync.eraseSyncData(user);
+        plans.erasePlanData(user);
+        source.eraseSourceData(user);
+        assertThat(accountDeletion().erasePayload(user)).isEqualTo(com.bokrilog.identity.DeletionOutcome.COMPLETED);
+        assertThat(sync.adjustmentHistory(user,adjustmentQuery(own,SyncJobApi.AdjustmentDirection.ALL,null)).outcome())
+                .as("DELETED").isInstanceOf(SyncJobApi.AdjustmentOutcome.NotPermitted.class);
+        assertThat(get(path,cookie).statusCode()).isEqualTo(401);
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_source_event WHERE user_id=:u").param("u",user)
+                .query(Integer.class).single()).as("the history's source events").isZero();
+
+        var keptHistory=historyOf(kept,SyncJobApi.AdjustmentDirection.ALL,null);
+        assertThat(keptHistory.rows()).singleElement()
+                .satisfies(row -> assertThat(row.references().sourceId()).isEqualTo("deletion-kept-in"));
+    }
+
+    /** The page query of a shown result through the service port. */
+    private static SyncJobApi.AdjustmentQuery adjustmentQuery(SyncJobApi.DashboardResult shown,
+            SyncJobApi.AdjustmentDirection direction,@org.jspecify.annotations.Nullable String cursor) {
+        return new SyncJobApi.AdjustmentQuery(shown.planId(),shown.pointerVersion(),shown.calculationId(),direction,cursor);
+    }
+
+    /** One page of the user's current history through the service port; fails unless it is found whole. */
+    private SyncJobApi.AdjustmentHistory historyOf(UUID user,SyncJobApi.AdjustmentDirection direction,
+            @org.jspecify.annotations.Nullable String cursor) {
+        var read=sync.adjustmentHistory(user,adjustmentQuery(ready(user),direction,cursor));
+        assertThat(read.consistency()).isEqualTo(SyncJobApi.BundleConsistency.CONSISTENT);
+        assertThat(read.outcome()).isInstanceOf(SyncJobApi.AdjustmentOutcome.Found.class);
+        return ((SyncJobApi.AdjustmentOutcome.Found)read.outcome()).history();
+    }
+
+    /** The history path of a shown result, with {@code extra} parameters after the three reference values. */
+    private static String adjustmentsPath(SyncJobApi.DashboardResult shown,String extra) {
+        return DashboardController.ADJUSTMENTS_PATH+query(shown.planId(),shown.pointerVersion(),shown.calculationId())
+                +extra;
+    }
+
+    /** The history's operational lines captured so far, in order. */
+    private static java.util.List<String> adjustmentLogLines(org.springframework.boot.test.system.CapturedOutput output) {
+        return output.getAll().lines().filter(line -> line.contains("adjustment history read:")).toList();
+    }
+
+    /** The exact sum in canonical notation. */
+    private static String exactSum(java.util.Collection<java.math.BigDecimal> values) {
+        java.math.BigDecimal sum=values.stream().reduce(java.math.BigDecimal.ZERO,java.math.BigDecimal::add);
+        return sum.signum()==0 ? "0" : sum.stripTrailingZeros().toPlainString();
+    }
+
+    /** {@code count} directly normalized deposits of {@code 1 USDT}, a second apart. */
+    private static Flow[] usdtFlows(String prefix,int count,Instant base) {
+        return java.util.stream.IntStream.rangeClosed(1,count).mapToObj(i -> new Flow(
+                String.format(java.util.Locale.ROOT,"%s-%02d",prefix,i),"USDT","1",base.plusSeconds(i))).toArray(Flow[]::new);
+    }
+
+    private UUID eventIdOf(UUID user,String sourceId) {
+        return jdbc().sql("SELECT event_id FROM sync_initial_source_event WHERE user_id=:u AND source_id=:s")
+                .param("u",user).param("s",sourceId).query(UUID.class).single();
+    }
+
+    private Instant firstObservedAt(UUID user,String sourceId) {
+        return jdbc().sql("SELECT first_observed_at FROM sync_initial_source_event WHERE user_id=:u AND source_id=:s")
+                .param("u",user).param("s",sourceId).query(java.time.OffsetDateTime.class).single().toInstant();
+    }
+
+    private Instant processedAtOf(UUID conversion) {
+        return jdbc().sql("SELECT processed_at FROM sync_cashflow_conversion_bundle WHERE conversion_id=:c")
+                .param("c",conversion).query(java.time.OffsetDateTime.class).single().toInstant();
+    }
+
+    /** A source event the classification excludes, placed on the candidate beside the external flows. */
+    private record Excluded(String sourceId,String type,String currency,String cashFlow,Instant at) {}
+
+    /** Collects, places the flows and the excluded events on the candidate, classifies and converts. */
+    private UUID convertedIntentWithExcluded(UUID user,String prefix,Instant start,java.util.List<Excluded> excluded,
+            Flow... flows) throws Exception {
+        UUID intent=initialIntent(user,prefix,"0.1");
+        shiftStart(user,intent,start);
+        UUID collection=sync.admitInitialInputs(user,intent,prefix+"-inputs-001").orElseThrow().jobId();
+        assertThat(awaitInitial(user,collection)).isEqualTo("INPUTS_COMPLETE");
+        UUID candidate=injectFlows(user,collection,flows);
+        var bundle=jdbc().sql("SELECT provider_account_id,connection_id FROM sync_initial_candidate_bundle "
+                + "WHERE candidate_id=:c").param("c",candidate)
+                .query((rs,n)->new UUID[] {rs.getObject(1,UUID.class),rs.getObject(2,UUID.class)}).single();
+        for (Excluded event : excluded) {
+            insertCandidateEvent(user,bundle[0],bundle[1],collection,candidate,event.sourceId(),event.type(),
+                    event.currency(),event.cashFlow(),event.at(),sha256Hex(user+"|"+event.sourceId()));
+        }
+        refreshCandidateHash(candidate);
+        UUID classification=sync.admitCashflowClassification(user,intent,prefix+"-classification-001").orElseThrow().jobId();
+        assertThat(awaitClassification(classification)).isEqualTo("COMPLETE");
+        UUID conversion=sync.admitCashflowConversion(user,intent,prefix+"-conversion-001").orElseThrow().jobId();
+        assertThat(awaitConversion(conversion)).isIn("CONVERTED","CONVERTED_ESTIMATED");
+        return intent;
     }
 
     private static String shortened(String probe) {

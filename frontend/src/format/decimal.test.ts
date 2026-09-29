@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   formatAmount,
   formatPercent,
+  formatQuantity,
   formatSeoulInstant,
   formatSeoulTime,
   percentFromRatio,
@@ -21,6 +22,22 @@ describe('DISPLAY-1.0 formatting', () => {
     ['1234.5600', '1,234.56'],
   ])('rounds the amount %s HALF_UP to %s', (value, shown) => {
     expect(formatAmount(value)).toBe(shown)
+  })
+
+  it.each([
+    ['0.00012', '0.00012'],
+    ['-0.00012', '-0.00012'],
+    ['65000.25', '65,000.25'],
+    ['-1234567.000000000000000000000001', '-1,234,567.000000000000000000000001'],
+    ['10.005', '10.005'],
+    ['0', '0'],
+  ])('shows the quantity %s unrounded as %s (Story 2.10)', (value, shown) => {
+    expect(formatQuantity(value)).toBe(shown)
+  })
+
+  it('leaves a quantity it cannot read untouched', () => {
+    expect(formatQuantity('1e5')).toBe('1e5')
+    expect(formatQuantity('')).toBe('')
   })
 
   it.each([

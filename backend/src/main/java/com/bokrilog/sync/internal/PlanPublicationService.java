@@ -483,7 +483,7 @@ class PlanPublicationService {
     }
 
     /** The lossless canonical notation, or the raw text when it is not a plain decimal (the calculator refuses it). */
-    private static String notation(String raw) {
+    static String notation(String raw) {
         String canonical = PlanCalculator.plainDecimal(raw);
         return canonical == null ? raw : canonical;
     }
@@ -834,8 +834,11 @@ class PlanPublicationService {
                 .toList();
     }
 
-    /** The version was calculated for this plan, in its portfolio, on its terms. */
-    private static boolean belongs(PlanPublicationRepository.CalculationView calculation,
+    /**
+     * The version was calculated for this plan, in its portfolio, on its terms. The adjustment history
+     * (Story 2.10) judges the version it lists by the same rule.
+     */
+    static boolean belongs(PlanPublicationRepository.CalculationView calculation,
             PlanPublicationPort.ActivePlan plan, PlanPublicationRepository.Pointer pointer) {
         return calculation.planId().equals(plan.planId()) && calculation.portfolioId().equals(pointer.portfolioId())
                 && calculation.portfolioId().equals(plan.portfolioId()) && calculation.t0().equals(plan.startAt())

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { adjustmentHistoryContent } from '../content/adjustmentHistory'
 import {
   authContent,
   authorizePath,
@@ -17,6 +18,8 @@ import { DASHBOARD_PATH, METRIC_ORDER, planResultContent } from '../content/plan
 import { formatSeoulTime } from '../format/decimal'
 import { navigateTo, replaceLocation } from '../session/navigation'
 import {
+  adjustmentPageFixture,
+  adjustmentRowFixture,
   BASIS_AT,
   calculationEvidenceFixture,
   dashboardFixture,
@@ -28,6 +31,7 @@ import {
   getObservedAllowedRequests,
   getObservedSessionRequests,
   getObservedStorageEntries,
+  stubAdjustmentHistory,
   stubCalculationEvidence,
   stubDashboard,
   stubLogoutRequest,
@@ -196,6 +200,62 @@ describe('OnboardingScreen', () => {
     expect(getObservedAllowedRequests()).toContain(
       `GET /api/dashboard/evidence?planId=${EVIDENCE_IDS.plan}&pointerVersion=1&calculationId=${EVIDENCE_IDS.calculation}`,
     )
+  })
+
+  it('조정 이력: 첫 로그인 세션의 대시보드에서도 같은 패널에서 펼치고 이력 문장은 단일 상태 리전의 세 번째 요소다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(jsonResponse({ authenticated: true, destination: 'onboarding' })),
+    )
+    const result = evidenceResultFixture({ flowCount: 1 })
+    stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture(result))))
+    stubCalculationEvidence(() => Promise.resolve(jsonResponse(calculationEvidenceFixture(result))))
+    stubAdjustmentHistory(() =>
+      Promise.resolve(
+        jsonResponse(
+          adjustmentPageFixture(result, {
+            rows: [adjustmentRowFixture(1, EVIDENCE_IDS.calculation)],
+          }),
+        ),
+      ),
+    )
+    render(<OnboardingScreen />)
+    await screen.findAllByRole('article')
+    const ready = planResultContent.status.ready(
+      formatSeoulTime(BASIS_AT, planResultContent.timeUnavailable),
+    )
+
+    // The toggle is on the panel, beside the evidence's.
+    const panel = screen.getByRole('region', { name: planResultContent.heading })
+    expect(panel).toContainElement(
+      screen.getByRole('button', { name: adjustmentHistoryContent.open }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: calculationEvidenceContent.open }))
+    await screen.findByRole('group', { name: calculationEvidenceContent.sections.versions })
+    fireEvent.click(screen.getByRole('button', { name: adjustmentHistoryContent.open }))
+    expect(
+      screen.getByRole('heading', { level: 4, name: adjustmentHistoryContent.heading }),
+    ).toHaveFocus()
+    await screen.findByRole('list', { name: adjustmentHistoryContent.list })
+
+    // Three parts of the one status region: the dashboard's, the evidence's, then the history's.
+    const status = screen.getByRole('status')
+    await waitFor(() => {
+      expect(status.textContent).toBe(
+        `${ready} ${calculationEvidenceContent.status.ready} ${adjustmentHistoryContent.status.ready(1, 1)}`,
+      )
+    })
+    // eslint-disable-next-line testing-library/no-node-access -- 상태 리전 안의 문장 요소를 순서대로 읽는다.
+    expect([...status.querySelectorAll('span')].map((part) => part.textContent)).toEqual([
+      ready,
+      calculationEvidenceContent.status.ready,
+      adjustmentHistoryContent.status.ready(1, 1),
+    ])
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(status).toHaveAttribute('aria-atomic', 'false')
+    expect(getObservedAllowedRequests()).toContain(
+      `GET /api/dashboard/adjustments?planId=${EVIDENCE_IDS.plan}&pointerVersion=1&calculationId=${EVIDENCE_IDS.calculation}&direction=ALL`,
+    )
+    expect(getObservedStorageEntries()).toEqual([])
   })
 
   it('설정 화면으로 가는 길을 준다', async () => {

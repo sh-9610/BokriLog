@@ -287,3 +287,136 @@ export function evidenceResultFixture(
     ...overrides,
   })
 }
+
+/** UUID-shaped ids the adjustment history fixtures cite. */
+export const ADJUSTMENT_IDS = {
+  classification: '7b2e1d3f-4c5a-4b6d-9e8f-1a2b3c4d5e6f',
+  conversion: '8c3f2e4a-5d6b-4c7e-af90-2b3c4d5e6f7a',
+  earlierConversion: '6d7e8f90-1a2b-4c3d-9e4f-5a6b7c8d9e0f',
+} as const
+
+/** The event time of the fixture row with this sequence: one second apart, in order. */
+export function adjustmentTime(sequence: number): string {
+  return new Date(Date.parse('2026-09-26T00:00:00Z') + sequence * 1000)
+    .toISOString()
+    .replace('.000Z', 'Z')
+}
+
+/**
+ * One row of `GET /api/dashboard/adjustments` (Story 2.10), the server's `AdjustmentRowView`: a directly
+ * normalized deposit of `10.25 USDT` by default, citing the given calculation. Values are canonical decimal
+ * strings before display rounding.
+ */
+export function adjustmentRowFixture(
+  sequence: number,
+  calculationId: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const id = String(sequence).padStart(2, '0')
+  return {
+    sequence,
+    occurredAt: adjustmentTime(sequence),
+    direction: 'IN',
+    asset: 'USDT',
+    signedQuantity: '10.25',
+    usdValue: '10.25',
+    classification: {
+      transactionType: 'TRANSFER_IN',
+      ruleId: 'EXTERNAL_TRANSFER_IN',
+      policyVersion: 'BYBIT-CASHFLOW-1.0',
+    },
+    price: {
+      policyVersion: 'BYBIT-PRICE-1.0',
+      evidenceType: 'DIRECT_NORMALIZATION',
+      estimated: false,
+      unitPrice: '1',
+      routeId: 'DIRECT',
+      legs: [],
+    },
+    discoveredAt: '2026-09-27T00:59:30Z',
+    refs: {
+      sourceEventId: `0a1b2c3d-4e5f-4a6b-8c7d-0000000000${id}`,
+      sourceId: `adj-${id}`,
+      classificationId: ADJUSTMENT_IDS.classification,
+      conversionId: ADJUSTMENT_IDS.conversion,
+      calculationId,
+    },
+    changed: false,
+    revisions: [],
+    ...overrides,
+  }
+}
+
+/** A withdrawal row of `-2.5 USDT`. */
+export function adjustmentWithdrawalFixture(
+  sequence: number,
+  calculationId: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return adjustmentRowFixture(sequence, calculationId, {
+    direction: 'OUT',
+    signedQuantity: '-2.5',
+    usdValue: '-2.5',
+    classification: {
+      transactionType: 'TRANSFER_OUT',
+      ruleId: 'EXTERNAL_TRANSFER_OUT',
+      policyVersion: 'BYBIT-CASHFLOW-1.0',
+    },
+    ...overrides,
+  })
+}
+
+/**
+ * The exact sum of canonical decimal strings, in canonical notation — the way the server adds the stored
+ * values (never through `number`). `"0.005" × 3` is `"0.015"`.
+ */
+export function exactDecimalSum(values: readonly string[]): string {
+  const scale = Math.max(0, ...values.map((value) => value.split('.')[1]?.length ?? 0))
+  const total = values.reduce((sum, value) => {
+    const negative = value.startsWith('-')
+    const [whole = '0', fraction = ''] = (negative ? value.slice(1) : value).split('.')
+    const units = BigInt(`${whole}${fraction.padEnd(scale, '0')}`)
+    return sum + (negative ? -units : units)
+  }, 0n)
+  const negative = total < 0n
+  const digits = (negative ? -total : total).toString().padStart(scale + 1, '0')
+  const whole = digits.slice(0, digits.length - scale)
+  const fraction = digits.slice(digits.length - scale).replace(/0+$/, '')
+  const shown = fraction === '' ? whole : `${whole}.${fraction}`
+  return negative && shown !== '0' ? `-${shown}` : shown
+}
+
+/**
+ * One page of `GET /api/dashboard/adjustments`, the server's `AdjustmentHistoryView`, made for the given
+ * dashboard result: its reference, publication time and verified range. Without a summary of its own, the
+ * summary is the rows' count and the exact sum of their USD values, with nothing excluded — so a fixture
+ * never contradicts itself.
+ */
+export function adjustmentPageFixture(
+  result: Record<string, unknown>,
+  page: {
+    readonly direction?: string
+    readonly rows: readonly Record<string, unknown>[]
+    readonly nextCursor?: string | null
+    readonly summary?: Record<string, unknown>
+  },
+): Record<string, unknown> {
+  return {
+    planId: result.planId,
+    pointerVersion: result.pointerVersion,
+    calculationId: result.calculationId,
+    direction: page.direction ?? 'ALL',
+    appliedAt: result.publishedAt,
+    coverage: {
+      from: (result.conditions as Record<string, unknown>).startAt,
+      through: result.cashflowVerifiedThrough,
+    },
+    summary: page.summary ?? {
+      count: page.rows.length,
+      netUsdValue: exactDecimalSum(page.rows.map((row) => row.usdValue as string)),
+      excludedCount: 0,
+    },
+    rows: page.rows,
+    nextCursor: page.nextCursor ?? null,
+  }
+}

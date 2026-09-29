@@ -260,3 +260,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-8-official-dashboard.md`
   summary: `InitialInputsCollection.test.tsx`의 "stops following an attempt once its state read is refused (403)"가 Vitest 전체 실행 부하 아래에서 간헐적으로 실패한다.
   evidence: Story 2.8 검증 중 전체 실행 한 번에서 실패했고 그 파일 단독 5회·전체 2회는 모두 통과했다. Story 2.7이 더한 시험이며 이미 기록된 `OnboardingScreen.test.tsx`의 부하 아래 간헐 실패와 같은 종류다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-10-cashflow-adjustment-history.md`
+  summary: `AdjustmentHistory.module.css`가 `CalculationEvidence.module.css`의 `.action`(44×44 최소 조작 영역)·`.id`(mono 전체값 줄바꿈)·`.facts`·`.notice` 규칙을 거의 그대로 옮겨 44×44 규칙의 다섯 번째 사본이 됐다.
+  evidence: Story 2.10 리뷰가 두 파일의 규칙이 같은 토큰 조합으로 반복된다고 짚었다. Story 1.11이 네 번째 사본을 기록했고 공통 규칙을 한 곳으로 모으는 일은 여러 화면 CSS 모듈을 함께 바꾸는 별도 정리다.

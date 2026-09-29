@@ -52,6 +52,18 @@ export function formatAmount(decimal: string): string {
 }
 
 /**
+ * 원수량·단가·종가. **반올림하지 않는다**(Story 2.10) — DISPLAY-1.0의 두 자리는 USD 금액의 규칙이고, 원수량을
+ * 두 자리로 줄이면 `0.00012 BTC`가 `0.00`이 된다. 정수부에 자리 구분 쉼표만 넣고 소수부와 부호는 받은 그대로
+ * 둔다. 예: `"-0.00012"` → `"-0.00012"`, `"65000.25"` → `"65,000.25"`. 모양이 틀린 값은 그대로 돌려준다.
+ */
+export function formatQuantity(decimal: string): string {
+  const parts = DECIMAL.exec(decimal)
+  if (parts === null) return decimal
+  const units = (parts[2] ?? '0').replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  return `${parts[1] ?? ''}${units}${parts[3] === undefined ? '' : `.${parts[3]}`}`
+}
+
+/**
  * 비율을 퍼센트로. 소수점을 두 자리 옮긴 뒤 같은 규칙으로 반올림한다.
  * 예: `"0.083582089552238805970149"` → `"8.36%"`, `"-0.2"` → `"-20.00%"`, `"12.5"` → `"1,250.00%"`.
  */
