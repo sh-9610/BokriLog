@@ -1,0 +1,263 @@
+/*
+ * The adjustment history (Story 2.10): a disclosure button and the read-only region it opens on the same
+ * screen. One DOM list serves every width: at 320px each row is a card with its own title, and from 768px
+ * the same facts are laid out across the row. Everything wraps; nothing depends on horizontal scrolling at
+ * 320px, 200% or 400% zoom.
+ */
+.history {
+  display: grid;
+  gap: var(--space-3);
+  min-inline-size: 0;
+}
+
+.history h4,
+.history h5,
+.history p,
+.history ol,
+.history dl,
+.history dd,
+.history fieldset,
+.history legend {
+  margin: 0;
+}
+
+.region {
+  display: grid;
+  gap: var(--space-4);
+  min-inline-size: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-subtle);
+  color: var(--color-ink-primary);
+}
+
+.region[hidden] {
+  display: none;
+}
+
+/* The heading takes focus (tabIndex -1) when the region opens. */
+.heading {
+  font-size: var(--type-section-title-font-size);
+  font-weight: var(--type-section-title-font-weight);
+  line-height: var(--type-section-title-line-height);
+  scroll-margin-block-start: var(--space-4);
+}
+
+.part {
+  display: grid;
+  gap: var(--space-2);
+  min-inline-size: 0;
+}
+
+.term {
+  font-weight: var(--type-label-font-weight);
+}
+
+.help {
+  display: block;
+  color: var(--color-ink-secondary);
+  font-size: var(--type-meta-font-size);
+  line-height: var(--type-meta-line-height);
+}
+
+.facts {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.facts > div,
+.rowFacts > div {
+  display: grid;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
+.facts > div > dt,
+.rowFacts > div > dt {
+  color: var(--component-history-row-meta);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+.facts > div > dd,
+.rowFacts > div > dd {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.facts > div > dd > .help {
+  margin-block-start: var(--space-1);
+}
+
+/* A long identifier or code, whole, in the mono style; a value without spaces may break anywhere. */
+.id {
+  font-family: var(--type-mono-font-family);
+  font-size: var(--type-mono-font-size);
+  font-weight: var(--type-mono-font-weight);
+  line-height: var(--type-mono-line-height);
+  overflow-wrap: anywhere;
+}
+
+.number {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* The filter: a named group of radios, each a whole 44px target with its label. */
+.filter {
+  display: grid;
+  gap: var(--space-2);
+  min-inline-size: 0;
+  padding: 0;
+  border: 0;
+}
+
+.options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding-inline: var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  cursor: pointer;
+}
+
+.radio {
+  margin: 0;
+  accent-color: var(--color-primary);
+}
+
+.rows,
+.list {
+  display: grid;
+  gap: var(--space-3);
+  padding: 0;
+  list-style: none;
+}
+
+/* One row: a card at 320px, with the history-row tokens. */
+.row {
+  min-inline-size: 0;
+}
+
+.card {
+  display: grid;
+  gap: var(--space-3);
+  min-inline-size: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--component-history-row-divider);
+  border-radius: var(--radius-md);
+  background: var(--component-history-row-background);
+}
+
+/* The row's title takes focus (tabIndex -1) when `더 보기` brings it. */
+.rowTitle {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  overflow-wrap: anywhere;
+  scroll-margin-block-start: var(--space-4);
+}
+
+.rowFacts {
+  display: grid;
+  gap: var(--space-2);
+}
+
+/* The change marker is a sentence, never a colour alone. */
+.changed {
+  font-weight: var(--type-label-font-weight);
+}
+
+.detail {
+  display: grid;
+  gap: var(--space-2);
+  min-inline-size: 0;
+  padding-block-start: var(--space-3);
+  border-block-start: 1px solid var(--component-history-row-divider);
+}
+
+.detail[hidden] {
+  display: none;
+}
+
+.item {
+  display: grid;
+  gap: var(--space-2);
+  min-inline-size: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-subtle);
+}
+
+/* A read that ended without its page, or a refusal. Text carries the state; the surface only groups it. */
+.notice {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--component-service-notice-border);
+  border-radius: var(--radius-md);
+  background: var(--component-service-notice-background);
+  color: var(--component-service-notice-foreground);
+}
+
+/* The region's controls: a 44px target, text that wraps instead of overflowing at 320px and zoom. */
+.action {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  max-inline-size: 100%;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  color: var(--color-ink-primary);
+  font-family: var(--type-body-font-family);
+  font-size: var(--type-body-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-body-line-height);
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+/* While a control reads again it stays in place, like the dashboard's reload (PlanResultPanel). */
+.action[aria-disabled='true'] {
+  cursor: wait;
+}
+
+/* A link reads as a link, with the same 44px target. Focus is the global `:focus-visible` ring. */
+.link {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  max-inline-size: 100%;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  color: var(--color-primary);
+  font-weight: var(--type-label-font-weight);
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+
+/* From 768px the same facts of a row are laid out across it; the DOM and the reading order stay. */
+@media (min-width: 768px) {
+  .rowFacts {
+    grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+    column-gap: var(--space-4);
+  }
+}

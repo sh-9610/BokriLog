@@ -7,6 +7,7 @@ import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
 import { authContent, reauthNoticeKindOf, SETTINGS_PATH } from '../content/auth'
 import { entryContent } from '../content/entry'
+import { useDashboardAdjustments } from '../session/useAdjustmentHistory'
 import { useDashboardEvidence } from '../session/useCalculationEvidence'
 import { planPresenceOf, statusBusy, useDashboard } from '../session/useDashboard'
 import { useReauthentication } from '../session/useReauthentication'
@@ -37,7 +38,8 @@ const MAIN_ID = 'signed-in-main'
  * `결과 준비 중`·공식 묶음(현재가치 → 세 신뢰 축 → 지표 → 다음 행동)을 그리고, 읽기 실패는
  * `마지막 정상 결과`·`재시도 가능`으로 구분한다. 상태 변화는 이 화면의 단일 live region이 한 문장으로
  * 알린다. 계산 근거(Story 2.9)는 같은 패널 안에서 펼치고, 그 읽기 상태도 같은 live region이 대시보드
- * 문장 뒤에 이어 말한다. 조정 이력·동기화 조작은 이후 스토리의 범위다.
+ * 문장 뒤에 이어 말한다. 조정 이력(Story 2.10)도 같은 패널 안에서 펼치고, 그 읽기 상태는 근거 문장 뒤에
+ * 이어 말한다. 동기화 조작은 이후 스토리의 범위다.
  */
 export function SignedInScreen(): ReactElement {
   const { csrfToken, gate } = useSessionGate('dashboard')
@@ -46,6 +48,8 @@ export function SignedInScreen(): ReactElement {
   const dashboard = useDashboard(gate === 'ready')
   // The calculation evidence of the bundle the dashboard shows (Story 2.9), in its own state.
   const evidence = useDashboardEvidence(dashboard)
+  // The adjustment history of the same bundle (Story 2.10), in its own state.
+  const adjustments = useDashboardAdjustments(dashboard)
   // Whether the first-snapshot panel leads the dashboard, and how (`planPresenceOf` gives the reasons).
   const presence = planPresenceOf(dashboard.view)
 
@@ -123,7 +127,7 @@ export function SignedInScreen(): ReactElement {
             requestPending: signOut.pending || reauthentication.pending,
             dashboard,
           })}
-          // The dashboard and the evidence speak in separate parts; a change to one is read alone.
+          // The dashboard, the evidence and the history speak in separate parts; a change to one is read alone.
           aria-atomic="false"
           aria-live="polite"
           className={styles.notice}
@@ -131,6 +135,7 @@ export function SignedInScreen(): ReactElement {
         >
           {ready && !signOut.pending ? (
             <DashboardStatusText
+              adjustments={adjustments}
               className={styles.noticeText}
               dashboard={dashboard}
               evidence={evidence}
@@ -155,7 +160,9 @@ export function SignedInScreen(): ReactElement {
         {ready && presence !== null ? (
           <FirstSnapshotPanel csrfToken={csrfToken} plan={presence} ready={ready} />
         ) : null}
-        {ready ? <PlanResultPanel dashboard={dashboard} evidence={evidence} /> : null}
+        {ready ? (
+          <PlanResultPanel adjustments={adjustments} dashboard={dashboard} evidence={evidence} />
+        ) : null}
         {ready ? (
           <section aria-labelledby={authContent.dashboard.id} className={styles.section}>
             <h2 className={styles.sectionHeading} id={authContent.dashboard.id}>

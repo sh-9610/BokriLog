@@ -9,6 +9,7 @@ import {
   evidencePath,
 } from '../content/calculationEvidence'
 import { METRIC_ORDER, planPublicationContent, planResultContent } from '../content/planResult'
+import { useDashboardAdjustments } from '../session/useAdjustmentHistory'
 import {
   evidenceAnnouncement,
   parseEvidence,
@@ -71,10 +72,11 @@ function Harness({
 }): ReactElement {
   const dashboard = { view, loading: false, reload }
   const evidence = useDashboardEvidence(dashboard)
+  const adjustments = useDashboardAdjustments(dashboard)
   return (
     <>
       <p data-testid="announcement">{evidenceAnnouncement(evidence.view) ?? ''}</p>
-      <PlanResultPanel dashboard={dashboard} evidence={evidence} />
+      <PlanResultPanel adjustments={adjustments} dashboard={dashboard} evidence={evidence} />
     </>
   )
 }
@@ -501,8 +503,11 @@ describe('CalculationEvidence', () => {
       expect(retry).toHaveAttribute('aria-disabled', 'true')
       expect(retry).toHaveFocus()
       await screen.findByRole('group', { name: copy.sections.versions })
-      // The retry control is gone with the failure: focus moves to the region's title, not the body.
-      expect(screen.getByRole('heading', { level: 4, name: copy.heading })).toHaveFocus()
+      // The retry control is gone with the failure: focus moves to the region's title, not the body. The
+      // move is the region's passive effect after the commit that removed the control, so it is awaited.
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { level: 4, name: copy.heading })).toHaveFocus()
+      })
       expect(cards().map((card) => card.textContent)).toEqual(before)
       // A plain failure never asks the dashboard for anything.
       expect(reload).not.toHaveBeenCalled()

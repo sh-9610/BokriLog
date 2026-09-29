@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactElement } from 'react'
 
+import type { AdjustmentHistoryState } from '../session/useAdjustmentHistory'
 import type { EvidenceState } from '../session/useCalculationEvidence'
 import type {
   Dashboard,
@@ -20,6 +21,7 @@ import {
 } from '../content/planResult'
 import { formatAmount, formatPercent, formatSeoulTime, percentFromRatio } from '../format/decimal'
 import { bundleOf } from '../session/useDashboard'
+import { AdjustmentHistory } from './AdjustmentHistory'
 import { CalculationEvidence } from './CalculationEvidence'
 import styles from './PlanResultPanel.module.css'
 
@@ -357,14 +359,17 @@ function Notice({
  * panel's heading rather than falling to the document body.
  *
  * The calculation evidence (Story 2.9) opens beside the metrics heading, on this same screen, for the
- * bundle shown here. Its state is its own (`evidence`); the screen's status region says what it did.
+ * bundle shown here, and the adjustment history (Story 2.10) opens right after it. Their states are their
+ * own (`evidence`, `adjustments`); the screen's status region says what they did.
  */
 export function PlanResultPanel({
   dashboard,
   evidence,
+  adjustments,
 }: {
   readonly dashboard: Dashboard
   readonly evidence: EvidenceState
+  readonly adjustments: AdjustmentHistoryState
 }): ReactElement {
   const { view, loading, reload } = dashboard
   const bundle = bundleOf(view)
@@ -421,6 +426,7 @@ export function PlanResultPanel({
           <h3 id="plan-result-metrics">{copy.metricsHeading}</h3>
           <p className={styles.meta}>{copy.metricsIntro}</p>
           <CalculationEvidence evidence={evidence} result={result} />
+          <AdjustmentHistory history={adjustments} result={result} />
           <ul className={styles.metrics}>
             {rest.map((metric) => (
               <li key={metric.metric}>

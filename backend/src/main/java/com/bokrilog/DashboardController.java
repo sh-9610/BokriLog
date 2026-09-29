@@ -37,13 +37,19 @@ import org.springframework.web.bind.annotation.RestController;
  * or finished); 503 {@code DASHBOARD_UNAVAILABLE} when the pointer's bundle does not agree with itself —
  * never a partial bundle. Answers are {@code no-store}.
  *
- * <p>The one sub-path is {@code GET /api/dashboard/evidence} (Story 2.9): the calculation evidence of the
- * result the screen shows. It is the only dashboard surface that receives identifiers, and it only judges
- * them — the three values of the shown pointer ({@code planId}, {@code pointerVersion},
+ * <p>Two sub-paths have handlers, and they are the only dashboard surfaces that receive identifiers — they
+ * only judge them. {@code GET /api/dashboard/evidence} (Story 2.9) is the calculation evidence of the result
+ * the screen shows: the three values of the shown pointer ({@code planId}, {@code pointerVersion},
  * {@code calculationId}) answer 200 when they are the user's current official pointer, and anything else
  * (another user's, an earlier version, an unknown, malformed, repeated or missing value, no active plan) is
  * the same common 404 as a missing route, so nothing can be explored with them. 503
  * {@code EVIDENCE_UNAVAILABLE} when the current pointer's lineage does not agree with itself.
+ * {@code GET /api/dashboard/adjustments} (Story 2.10) is the same pointer's applied cash-flow history, one
+ * page at a time: the same three values, plus an optional {@code direction} ({@code ALL}, {@code IN},
+ * {@code OUT}) and an optional opaque {@code cursor}. A cursor made for another user, reference or filter,
+ * or one that is malformed, is the same 404; source event, classification and conversion ids are never
+ * taken. 503 {@code ADJUSTMENT_HISTORY_UNAVAILABLE} when any applied row of the version disagrees with its
+ * lineage — never a partial list.
  *
  * <p>Amounts and ratios are canonical decimal strings. Rounding for display is the client's final step.
  */
@@ -61,6 +67,13 @@ class DashboardController {
     static final String EVIDENCE_UNAVAILABLE="EVIDENCE_UNAVAILABLE";
     static final String MESSAGE_EVIDENCE_UNAVAILABLE=
             "계산 근거를 한 묶음으로 확인하지 못해 보내지 않았습니다. 잠시 후 다시 시도해 주세요.";
+
+    /** The adjustment history of the shown result (Story 2.10). The dashboard path's predicate covers it too. */
+    static final String ADJUSTMENTS_PATH=AuthSecurityConfig.DASHBOARD_PATH+"/adjustments";
+    /** The stable machine code of an applied history that does not agree with its lineage. Retryable for the client. */
+    static final String ADJUSTMENT_HISTORY_UNAVAILABLE="ADJUSTMENT_HISTORY_UNAVAILABLE";
+    static final String MESSAGE_ADJUSTMENT_HISTORY_UNAVAILABLE=
+            "조정 이력을 한 묶음으로 확인하지 못해 보내지 않았습니다. 잠시 후 다시 시도해 주세요.";
 
     /** A canonical UUID (either case). {@link UUID#fromString} alone also accepts shortened groups. */
     private static final java.util.regex.Pattern UUID_TEXT=java.util.regex.Pattern.compile(
@@ -321,6 +334,145 @@ class DashboardController {
                                 v.calculationId(),v.publishedAt().toString(),v.current())).toList(),
                         e.unpublishedAttempts().stream().map(a -> new UnpublishedAttemptView(a.status(),a.reasonCode(),
                                 a.finishedAt().toString())).toList()));
+    }
+
+    // ------------------------------------------------------------------ adjustment history (Story 2.10)
+
+    /** The verified cash-flow range of the version, {@code (t0, cashflowVerifiedThrough]}. */
+    record AdjustmentCoverageView(String from,String through) {}
+    /** Counted over the whole filtered range; the net is the exact sum of the stored values, never rounded. */
+    record AdjustmentSummaryView(int count,String netUsdValue,int excludedCount) {}
+    record AdjustmentClassificationView(String transactionType,String ruleId,String policyVersion) {}
+    record AdjustmentLegView(String symbol,String candleStartAt,String candleEndAt,String closePrice,
+            String selectionRule,int lagMinutes) {}
+    record AdjustmentPriceView(String policyVersion,String evidenceType,boolean estimated,String unitPrice,
+            String routeId,List<AdjustmentLegView> legs) {}
+    record AdjustmentRefsView(UUID sourceEventId,String sourceId,UUID classificationId,UUID conversionId,
+            UUID calculationId) {}
+    /** An earlier conversion version as it was stored. {@code reasonCode} and {@code usdValue} may be null. */
+    record AdjustmentRevisionView(UUID conversionId,String processedAt,String status,@Nullable String reasonCode,
+            @Nullable String usdValue,String changeReason,String discoveredAt) {}
+    /** One applied flow in the reading order: event → classification → price → discovery → references. */
+    record AdjustmentRowView(int sequence,String occurredAt,String direction,String asset,String signedQuantity,
+            String usdValue,AdjustmentClassificationView classification,AdjustmentPriceView price,String discoveredAt,
+            AdjustmentRefsView refs,boolean changed,List<AdjustmentRevisionView> revisions) {}
+    /** One page. {@code nextCursor} is {@code null} on the last page and is sent as such. */
+    record AdjustmentHistoryView(UUID planId,long pointerVersion,UUID calculationId,String direction,
+            String appliedAt,AdjustmentCoverageView coverage,AdjustmentSummaryView summary,List<AdjustmentRowView> rows,
+            @Nullable String nextCursor) {}
+
+    /**
+     * One adjustment history read, one operational line — like the evidence's: the outcome, the status
+     * answered, the latency in milliseconds and whether the version's applied history agreed with its lineage
+     * ({@code unknown} when none was read). No user, reference, cursor, correlation id, amount, time or event.
+     */
+    @GetMapping(path=ADJUSTMENTS_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
+    ResponseEntity<?> adjustments(HttpServletRequest request) {
+        long started=System.nanoTime();
+        SyncJobApi.AdjustmentRead read;
+        try {
+            read=jobs.adjustmentHistory(currentUserId(),adjustmentQueryOf(request));
+        } catch (RuntimeException failure) {
+            // The class name at debug only: a message or cause can carry SQL or values.
+            if (LOG.isDebugEnabled()) LOG.debug("adjustment history read failed: failure={}",failure.getClass().getName());
+            ResponseEntity<ApiErrorHandler.ApiError> failed=error(HttpStatus.INTERNAL_SERVER_ERROR,
+                    ApiErrorHandler.CODE_INTERNAL_ERROR,ApiErrorHandler.MESSAGE_INTERNAL_ERROR,request);
+            logAdjustments("ERROR",failed.getStatusCode().value(),started,"unknown");
+            return failed;
+        }
+        ResponseEntity<?> answer=switch (read.outcome()) {
+            case SyncJobApi.AdjustmentOutcome.NotPermitted denied ->
+                    error(HttpStatus.FORBIDDEN,ApiErrorHandler.CODE_FORBIDDEN,ApiErrorHandler.MESSAGE_FORBIDDEN,request);
+            // The very body of a missing route: whether anything exists behind the reference or cursor stays unsaid.
+            case SyncJobApi.AdjustmentOutcome.NotFound notFound ->
+                    error(HttpStatus.NOT_FOUND,ApiErrorHandler.CODE_NOT_FOUND,ApiErrorHandler.MESSAGE_NOT_FOUND,request);
+            case SyncJobApi.AdjustmentOutcome.Unavailable unavailable ->
+                    error(HttpStatus.SERVICE_UNAVAILABLE,ADJUSTMENT_HISTORY_UNAVAILABLE,
+                            MESSAGE_ADJUSTMENT_HISTORY_UNAVAILABLE,request);
+            case SyncJobApi.AdjustmentOutcome.Found found ->
+                    ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(adjustmentsView(found.history()));
+        };
+        String state=switch (read.outcome()) {
+            case SyncJobApi.AdjustmentOutcome.NotPermitted denied -> "DENIED";
+            case SyncJobApi.AdjustmentOutcome.NotFound notFound -> "NOT_FOUND";
+            case SyncJobApi.AdjustmentOutcome.Unavailable unavailable -> "INCONSISTENT";
+            case SyncJobApi.AdjustmentOutcome.Found found -> "FOUND";
+        };
+        String consistent=switch (read.consistency()) {
+            case CONSISTENT -> "true";
+            case INCONSISTENT -> "false";
+            case NOT_READ -> "unknown";
+        };
+        logAdjustments(state,answer.getStatusCode().value(),started,consistent);
+        return answer;
+    }
+
+    private static void logAdjustments(String state,int status,long started,String consistent) {
+        LOG.info("adjustment history read: state={} status={} latencyMs={} consistent={}",state,status,
+                (System.nanoTime()-started)/1_000_000,consistent);
+    }
+
+    /**
+     * The page the screen asks for, or {@code null} when it names nothing: any of the three reference values
+     * missing, repeated or malformed; a {@code direction} that is repeated or not exactly {@code ALL},
+     * {@code IN} or {@code OUT} (absent means {@code ALL}); a repeated {@code cursor}; or a query the container
+     * cannot parse. A {@code null} is answered like a stale reference — the same 404 — after the account's own
+     * access. The cursor itself is passed as sent: only sync can judge it. Other parameters are ignored.
+     */
+    static SyncJobApi.@Nullable AdjustmentQuery adjustmentQueryOf(HttpServletRequest request) {
+        SyncJobApi.EvidenceReference reference=referenceOf(request);
+        if (reference==null) return null;
+        String[] directions;
+        String[] cursors;
+        try {
+            directions=request.getParameterValues("direction");
+            cursors=request.getParameterValues("cursor");
+        } catch (RuntimeException unparsable) {
+            return null;
+        }
+        SyncJobApi.AdjustmentDirection direction;
+        if (directions==null) {
+            direction=SyncJobApi.AdjustmentDirection.ALL;
+        } else if (directions.length!=1) {
+            return null;
+        } else {
+            direction=switch (directions[0]) {
+                case "ALL" -> SyncJobApi.AdjustmentDirection.ALL;
+                case "IN" -> SyncJobApi.AdjustmentDirection.IN;
+                case "OUT" -> SyncJobApi.AdjustmentDirection.OUT;
+                default -> null;
+            };
+            if (direction==null) return null;
+        }
+        if (cursors!=null && cursors.length!=1) return null;
+        return new SyncJobApi.AdjustmentQuery(reference.planId(),reference.pointerVersion(),reference.calculationId(),
+                direction,cursors==null ? null : cursors[0]);
+    }
+
+    static AdjustmentHistoryView adjustmentsView(SyncJobApi.AdjustmentHistory h) {
+        return new AdjustmentHistoryView(h.planId(),h.pointerVersion(),h.calculationId(),h.direction().name(),
+                h.appliedAt().toString(),
+                new AdjustmentCoverageView(h.coverage().from().toString(),h.coverage().through().toString()),
+                new AdjustmentSummaryView(h.summary().count(),h.summary().netUsdValue(),h.summary().excludedCount()),
+                h.rows().stream().map(r -> new AdjustmentRowView(r.sequence(),r.occurredAt().toString(),r.direction(),
+                        r.asset(),r.signedQuantity(),r.usdValue(),
+                        new AdjustmentClassificationView(r.classification().transactionType(),r.classification().ruleId(),
+                                r.classification().policyVersion()),
+                        new AdjustmentPriceView(r.price().policyVersion(),r.price().evidenceType(),r.price().estimated(),
+                                r.price().unitPrice(),r.price().routeId(),
+                                r.price().legs().stream().map(l -> new AdjustmentLegView(l.symbol(),
+                                        l.candleStartAt().toString(),l.candleEndAt().toString(),l.closePrice(),
+                                        l.selectionRule(),l.lagMinutes())).toList()),
+                        r.discoveredAt().toString(),
+                        new AdjustmentRefsView(r.references().sourceEventId(),r.references().sourceId(),
+                                r.references().classificationId(),r.references().conversionId(),
+                                r.references().calculationId()),
+                        r.changed(),
+                        r.revisions().stream().map(v -> new AdjustmentRevisionView(v.conversionId(),
+                                v.processedAt().toString(),v.status(),v.reasonCode(),v.usdValue(),v.changeReason(),
+                                v.discoveredAt().toString())).toList()))
+                        .toList(),
+                h.nextCursor());
     }
 
     private static String correlationOf(HttpServletRequest request) {

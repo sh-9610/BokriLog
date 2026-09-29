@@ -10,7 +10,8 @@
  *    `stubLogoutRequest`, `stubReauthenticationRequest`, `stubLinkStatusRequest`,
  *    `stubLinkRequest`, `stubUnlinkPrepareRequest`, `stubUnlinkConfirmRequest`,
  *    `stubUnlinkCancelRequest`, `stubConnectionStatusRequest`, `stubConnectionPrepareRequest`,
- *    `stubConnectRequest`, `stubConnectionCancelRequest`, `stubCalculationEvidence`).
+ *    `stubConnectRequest`, `stubConnectionCancelRequest`, `stubCalculationEvidence`,
+ *    `stubAdjustmentHistory`).
  *    전역 거부는 그대로다. 아래 `responders` 절의 근거를 참고한다.
  */
 
@@ -18,6 +19,7 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach } from 'vitest'
 
+import { DASHBOARD_ADJUSTMENTS_PATH } from '../content/adjustmentHistory'
 import {
   LINK_BASE_PATH,
   linkPath,
@@ -107,6 +109,17 @@ const queryResponders = new Map<string, QueryResponder>()
  */
 export function stubCalculationEvidence(responder: QueryResponder): void {
   queryResponders.set(requestKey('GET', DASHBOARD_EVIDENCE_PATH), responder)
+}
+
+/**
+ * 조정 이력 조회 하나를 이 시험 동안만 허용한다(Story 2.10). 근거와 같은 모양이다.
+ *
+ * 이력은 지금 보이는 묶음의 공식 포인터 세 값과 유형 필터, 다음 페이지면 cursor를 쿼리로 보낸다. 그래서
+ * 경로만 보고 열며 응답 함수가 URL 전체를 받는다. 열지 않은 시험에서 이력 요청이 나가면 전역 거부가 그것을
+ * 기록하고 거절한다 — 사용자가 펼치지 않은 이력을 화면이 몰래 읽지 않는다는 단정이 그 기록이다.
+ */
+export function stubAdjustmentHistory(responder: QueryResponder): void {
+  queryResponders.set(requestKey('GET', DASHBOARD_ADJUSTMENTS_PATH), responder)
 }
 
 /**

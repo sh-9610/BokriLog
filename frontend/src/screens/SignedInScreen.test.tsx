@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { adjustmentHistoryContent } from '../content/adjustmentHistory'
 import {
   authContent,
   authorizePath,
@@ -23,6 +24,8 @@ import {
 import { formatSeoulTime } from '../format/decimal'
 import { navigateTo, replaceLocation } from '../session/navigation'
 import {
+  adjustmentPageFixture,
+  adjustmentRowFixture,
   BASIS_AT,
   calculationEvidenceFixture,
   dashboardFixture,
@@ -37,6 +40,7 @@ import {
   getObservedAllowedRequests,
   getObservedSessionRequests,
   getObservedStorageEntries,
+  stubAdjustmentHistory,
   stubCalculationEvidence,
   stubDashboard,
   stubFirstSnapshotStart,
@@ -630,6 +634,58 @@ describe('SignedInScreen', () => {
     expect(getObservedStorageEntries()).toEqual([])
 
     fireEvent.click(screen.getByRole('button', { name: calculationEvidenceContent.close }))
+    expect(screen.getByRole('status').textContent).toBe(ready)
+  })
+
+  it('조정 이력: 같은 화면에서 펼치고, 단일 상태 리전이 대시보드·근거 문장과 따로 이력 읽기 상태를 잇는다', async () => {
+    stubSessionRequest(authenticated)
+    const result = evidenceResultFixture({ flowCount: 1 })
+    stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture(result))))
+    let release: (response: Response) => void = () => undefined
+    stubAdjustmentHistory(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve
+        }),
+    )
+    render(<SignedInScreen />)
+    await screen.findAllByRole('article')
+    const ready = planResultContent.status.ready(
+      formatSeoulTime(BASIS_AT, planResultContent.timeUnavailable),
+    )
+    expect(screen.getByRole('status').textContent).toBe(ready)
+
+    fireEvent.click(screen.getByRole('button', { name: adjustmentHistoryContent.open }))
+    expect(screen.getByRole('status').textContent).toBe(
+      `${ready} ${adjustmentHistoryContent.status.loading}`,
+    )
+    await act(async () => {
+      release(
+        jsonResponse(
+          adjustmentPageFixture(result, {
+            rows: [adjustmentRowFixture(1, result.calculationId as string)],
+            summary: { count: 1, netUsdValue: '10.25', excludedCount: 0 },
+          }),
+        ),
+      )
+      await Promise.resolve()
+    })
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toBe(
+        `${ready} ${adjustmentHistoryContent.status.ready(1, 1)}`,
+      )
+    })
+    // The parts are separate elements of one status region, and there is still only one live region.
+    // eslint-disable-next-line testing-library/no-node-access -- 상태 리전 안의 문장 요소를 센다.
+    expect(screen.getByRole('status').querySelectorAll('span')).toHaveLength(2)
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(liveRegions()).toHaveLength(1)
+    expect(screen.getByRole('list', { name: adjustmentHistoryContent.list })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/dashboard')
+    expect(window.location.search).toBe('')
+    expect(getObservedStorageEntries()).toEqual([])
+
+    fireEvent.click(screen.getByRole('button', { name: adjustmentHistoryContent.close }))
     expect(screen.getByRole('status').textContent).toBe(ready)
   })
 

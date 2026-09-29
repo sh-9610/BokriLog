@@ -41,12 +41,13 @@ class SyncJobService implements SyncJobApi {
     private final TransactionTemplate transactions;
     private final CashflowConversionMarket market;
     private final PlanPublicationService publications;
+    private final AdjustmentHistoryService adjustments;
 
     SyncJobService(SyncJobRepository jobs, InitialCollectionRepository initialJobs,
             CashflowClassificationRepository classifications, CashflowConversionRepository conversions,
             SourceConnectionApi sources, PortfolioMembershipApi portfolios, AccountAccessApi accounts,
             OperationalRestrictionApi restrictions, InitialInputsPlanPort plans, PlatformTransactionManager manager,
-            PlanPublicationService publications) {
+            PlanPublicationService publications, AdjustmentHistoryService adjustments) {
         this.jobs=jobs; this.initialJobs=initialJobs; this.classifications=classifications;
         this.conversions=conversions;
         this.sources=sources; this.portfolios=portfolios;
@@ -54,6 +55,7 @@ class SyncJobService implements SyncJobApi {
         this.transactions=new TransactionTemplate(manager);
         this.market=new CashflowConversionMarket(sources,conversions,this.transactions);
         this.publications=publications;
+        this.adjustments=adjustments;
     }
     boolean eligible(UUID userId) {
         return accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)==AccessDecision.ALLOWED
@@ -213,6 +215,10 @@ class SyncJobService implements SyncJobApi {
     @Override
     public EvidenceRead calculationEvidence(@Nullable UUID userId, @Nullable EvidenceReference reference) {
         return publications.evidence(userId,reference);
+    }
+    @Override
+    public AdjustmentRead adjustmentHistory(@Nullable UUID userId, @Nullable AdjustmentQuery query) {
+        return adjustments.read(userId,query);
     }
     /**
      * Erases this user's sync rows. The publication rows go first: the official pointer and calculation
