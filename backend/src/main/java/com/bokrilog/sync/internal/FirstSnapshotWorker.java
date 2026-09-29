@@ -20,8 +20,11 @@ class FirstSnapshotWorker {
     private final Map<java.util.UUID,InitialCollectionRepository.Lease> initialInFlight=new ConcurrentHashMap<>();
     private final Map<java.util.UUID,CashflowConversionRepository.Lease> conversionInFlight=new ConcurrentHashMap<>();
     private final Map<java.util.UUID,PlanPublicationRepository.Lease> publicationInFlight=new ConcurrentHashMap<>();
-    FirstSnapshotWorker(SyncJobService service,SourceConnectionApi sources,PlanPublicationService publications) {
-        this.service=service; this.sources=sources; this.publications=publications;
+    private final Map<java.util.UUID,PlanSyncRepository.Lease> planSyncInFlight=new ConcurrentHashMap<>();
+    private final PlanSyncService planSyncs;
+    FirstSnapshotWorker(SyncJobService service,SourceConnectionApi sources,PlanPublicationService publications,
+            PlanSyncService planSyncs) {
+        this.service=service; this.sources=sources; this.publications=publications; this.planSyncs=planSyncs;
     }
     @Scheduled(fixedDelay=1000)
     void dispatch() {
@@ -42,6 +45,7 @@ class FirstSnapshotWorker {
         renew(initialInFlight,service::heartbeatInitial,InitialCollectionRepository.Lease::jobId);
         renew(conversionInFlight,service::heartbeatConversion,CashflowConversionRepository.Lease::jobId);
         renew(publicationInFlight,publications::heartbeat,PlanPublicationRepository.Lease::jobId);
+        renew(planSyncInFlight,planSyncs::heartbeat,PlanSyncRepository.Lease::jobId);
     }
     static <L> void renew(Map<java.util.UUID,L> leases,java.util.function.Predicate<L> renewal,
             java.util.function.Function<L,java.util.UUID> id) {
@@ -80,6 +84,24 @@ class FirstSnapshotWorker {
                     publications.run(lease,()->lease.equals(publicationInFlight.get(lease.jobId())));
                 } finally {
                     publicationInFlight.remove(lease.jobId(),lease);
+                }
+            });
+        });
+    }
+    /**
+     * One incremental sync claim per tick (Story 2.11). The attempt runs its stages on the virtual thread; provider
+     * calls and the pure calculation run between short transactions, and its heartbeat also renews the leases of
+     * the stage rows it owns.
+     */
+    @Scheduled(fixedDelay=1000)
+    void dispatchPlanSync() {
+        planSyncs.claim().ifPresent(lease->{
+            planSyncInFlight.put(lease.jobId(),lease);
+            Thread.ofVirtual().name("plan-sync-"+lease.jobId()).start(()->{
+                try {
+                    planSyncs.run(lease,()->lease.equals(planSyncInFlight.get(lease.jobId())));
+                } finally {
+                    planSyncInFlight.remove(lease.jobId(),lease);
                 }
             });
         });

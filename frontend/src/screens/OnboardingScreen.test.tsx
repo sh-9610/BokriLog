@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { adjustmentHistoryContent } from '../content/adjustmentHistory'
@@ -15,6 +15,7 @@ import {
 import { calculationEvidenceContent } from '../content/calculationEvidence'
 import { entryContent } from '../content/entry'
 import { DASHBOARD_PATH, METRIC_ORDER, planResultContent } from '../content/planResult'
+import { DASHBOARD_SYNC_PATH, planSyncContent } from '../content/planSync'
 import { formatSeoulTime } from '../format/decimal'
 import { navigateTo, replaceLocation } from '../session/navigation'
 import {
@@ -34,6 +35,7 @@ import {
   stubAdjustmentHistory,
   stubCalculationEvidence,
   stubDashboard,
+  stubDashboardSync,
   stubLogoutRequest,
   stubReauthenticationRequest,
   stubSessionRequest,
@@ -55,6 +57,9 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
     headers: { 'Content-Type': 'application/json' },
   })
 }
+
+/** The admission's answer to an automatic trigger within 5 minutes of the last one (Story 2.11). */
+const NOT_DUE = { outcome: 'NOT_DUE', job: null, retryAfterSeconds: 240 }
 
 /** bfcache 복원 신호. `persisted`는 읽기 전용이라 생성 후 정의한다. */
 function pageShow(persisted: boolean): Event {
@@ -78,6 +83,11 @@ function pendingResponse(): Promise<Response> {
 beforeEach(() => {
   vi.mocked(replaceLocation).mockClear()
   vi.mocked(navigateTo).mockClear()
+  /*
+   * Story 2.11: the first ready answer of a mount sends one entry sync. Unless a test opens another
+   * answer, the server says it is not due yet — nothing is admitted and nothing on screen changes.
+   */
+  stubDashboardSync(() => Promise.resolve(jsonResponse(NOT_DUE)))
 })
 
 /**
@@ -200,6 +210,48 @@ describe('OnboardingScreen', () => {
     expect(getObservedAllowedRequests()).toContain(
       `GET /api/dashboard/evidence?planId=${EVIDENCE_IDS.plan}&pointerVersion=1&calculationId=${EVIDENCE_IDS.calculation}`,
     )
+  })
+
+  it('동기화: 첫 로그인 세션의 대시보드도 첫 READY에서 진입 동기화를 한 번 보내고 신선도 축 바로 뒤에 동기화를 둔다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({
+          authenticated: true,
+          destination: 'onboarding',
+          csrfToken: 'onboarding-token',
+        }),
+      ),
+    )
+    stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture())))
+    let observed: RequestInit | undefined
+    stubDashboardSync((init) => {
+      observed = init
+      return Promise.resolve(jsonResponse(NOT_DUE))
+    })
+    render(<OnboardingScreen />)
+    await screen.findAllByRole('article')
+    await waitFor(() => {
+      expect(
+        getObservedAllowedRequests().filter((entry) => entry === `POST ${DASHBOARD_SYNC_PATH}`),
+      ).toHaveLength(1)
+    })
+    expect(JSON.parse(observed?.body as string)).toEqual({ trigger: 'ENTRY' })
+    expect((observed?.headers as Record<string, string>)[CSRF_HEADER]).toBe('onboarding-token')
+    const trust = screen.getByRole('region', { name: planResultContent.trustHeading })
+    const [freshness, reliability] = within(trust).getAllByRole('group')
+    const control = within(trust).getByRole('button', { name: planSyncContent.action })
+    if (freshness === undefined || reliability === undefined) throw new Error('axes')
+    expect(
+      freshness.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      control.compareDocumentPosition(reliability) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toBe(
+      planResultContent.status.ready(formatSeoulTime(BASIS_AT, planResultContent.timeUnavailable)),
+    )
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(getObservedStorageEntries()).toEqual([])
   })
 
   it('조정 이력: 첫 로그인 세션의 대시보드에서도 같은 패널에서 펼치고 이력 문장은 단일 상태 리전의 세 번째 요소다', async () => {

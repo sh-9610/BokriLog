@@ -23,9 +23,11 @@ import {
   type PlanResult,
 } from '../session/useDashboard'
 import {
+  AVAILABLE_SYNC,
   BASIS_AT,
   dashboardFixture,
   estimatedUndefinedFixture,
+  idleSyncState,
   MEASURED_AT,
   NO_PLAN_FIXTURE,
   planResultFixture,
@@ -44,11 +46,11 @@ function ready(
   body: Record<string, unknown> = planResultFixture(),
   nextAction = 'NONE',
 ): DashboardView {
-  return { kind: 'READY', nextAction, result: parsed(body) }
+  return { kind: 'READY', nextAction, result: parsed(body), sync: AVAILABLE_SYNC }
 }
 
 function dashboard(view: DashboardView, loading = false, reload = vi.fn()): Dashboard {
-  return { view, loading, reload }
+  return { view, loading, reload, refresh: vi.fn() }
 }
 
 /** The calculation evidence while its region is closed (Story 2.9 has its own panel tests). */
@@ -74,6 +76,7 @@ function renderPanel(view: DashboardView, loading = false): void {
       adjustments={closedAdjustments()}
       evidence={closedEvidence()}
       dashboard={dashboard(view, loading)}
+      sync={idleSyncState()}
     />,
   )
 }
@@ -209,7 +212,13 @@ describe('PlanResultPanel', () => {
     ['freshness', 'STALE', 'CASHFLOW_VERIFICATION_OUTDATED', copy.axes.freshness.causes],
     ['freshness', 'STALE', 'BOTH_OUTDATED', copy.axes.freshness.causes],
     ['freshness', 'SYNCING', 'JOB_IN_PROGRESS', copy.axes.freshness.causes],
+    // Story 2.11: the endings of a sync that published nothing, and the states that stop it.
+    ['freshness', 'STALE', 'LAST_SYNC_UNSUCCESSFUL', copy.axes.freshness.causes],
+    ['freshness', 'STALE', 'LAST_SYNC_NEEDS_REVIEW', copy.axes.freshness.causes],
+    ['freshness', 'STALE', 'LONG_GAP', copy.axes.freshness.causes],
+    ['freshness', 'STALE', 'SYNC_UNAVAILABLE', copy.axes.freshness.causes],
     ['reliability', 'REVIEW_REQUIRED', 'TARGET_NOT_POSITIVE', copy.axes.reliability.causes],
+    ['reliability', 'REVIEW_REQUIRED', 'SYNC_REVIEW_REQUIRED', copy.axes.reliability.causes],
   ] as const)('maps the %s cause %s/%s to its copy', (which, state, cause, causes) => {
     const trust =
       which === 'freshness'
@@ -471,6 +480,33 @@ describe('PlanResultPanel', () => {
     expect(nextAction()).toHaveTextContent(nextActionCopy('WAIT_FOR_SYNC', MEASURED))
   })
 
+  it.each([
+    ['SYNC', 'STALE', 'MEASUREMENT_OUTDATED'],
+    ['CHOOSE_CONTINUATION', 'STALE', 'LONG_GAP'],
+  ] as const)(
+    'Story 2.11: the next action %s has its own sentence on the axis and in the next-action section',
+    (code, state, cause) => {
+      const stale = planResultFixture({
+        trust: trustFixture({
+          freshness: { state, cause, nextAction: code, affectedMetrics: [...METRIC_ORDER] },
+        }),
+      })
+      renderPanel(ready(stale, code))
+
+      expect(axis(0)).toHaveTextContent(axisActionCopy(code))
+      expect(nextAction()).toHaveTextContent(nextActionCopy(code, MEASURED))
+      for (const sentence of [axisActionCopy(code), nextActionCopy(code, MEASURED)]) {
+        expect(sentence).not.toBe(NEXT_ACTION_FALLBACK)
+      }
+      expect(nextActionCopy(code, null)).not.toContain(copy.timeUnavailable)
+    },
+  )
+
+  it('Story 2.11: the NONE sentence no longer says nothing can be checked here — a sync control exists', () => {
+    expect(nextActionCopy('NONE', MEASURED)).not.toContain('새로 확인할 수 없습니다')
+    expect(axisActionCopy('NONE')).not.toContain('할 수 있는 조치가 없습니다')
+  })
+
   it('the next action when nothing can be done here names the measurement time and links nowhere', () => {
     renderPanel(ready())
 
@@ -488,7 +524,12 @@ describe('PlanResultPanel', () => {
         freshness: { lastNormalAt: 'not-a-time', measuredAt: 'not-a-time' },
       }),
     })
-    renderPanel({ kind: 'lastGood', nextAction: 'NONE', result: parsed(noTime) })
+    renderPanel({
+      kind: 'lastGood',
+      nextAction: 'NONE',
+      result: parsed(noTime),
+      sync: AVAILABLE_SYNC,
+    })
 
     expect(nextAction()).toHaveTextContent(nextActionCopy('NONE', null))
     expect(screen.getByText(copy.lastGoodHelp(null))).toBeInTheDocument()
@@ -567,7 +608,12 @@ describe('PlanResultPanel', () => {
     })
 
     it('last good result (a failed read): the same values under 마지막 정상 결과, with reload', () => {
-      renderPanel({ kind: 'lastGood', nextAction: 'NONE', result: parsed(planResultFixture()) })
+      renderPanel({
+        kind: 'lastGood',
+        nextAction: 'NONE',
+        result: parsed(planResultFixture()),
+        sync: AVAILABLE_SYNC,
+      })
 
       expect(screen.getByText(copy.lastGoodLabel)).toBeInTheDocument()
       expect(screen.getByText(copy.lastGoodHelp(MEASURED))).toBeInTheDocument()
@@ -578,7 +624,7 @@ describe('PlanResultPanel', () => {
     })
 
     it('retryable after a version conflict: the unswapped values under 재시도 가능, with reload', () => {
-      const kept = { result: parsed(planResultFixture()), nextAction: 'NONE' }
+      const kept = { result: parsed(planResultFixture()), nextAction: 'NONE', sync: AVAILABLE_SYNC }
       renderPanel({ kind: 'retryable', kept })
 
       expect(screen.getByText(copy.retryableLabel)).toBeInTheDocument()
@@ -637,6 +683,7 @@ describe('PlanResultPanel', () => {
         adjustments={closedAdjustments()}
         evidence={closedEvidence()}
         dashboard={dashboard(ready(), false, reload)}
+        sync={idleSyncState()}
       />,
     )
     const button = screen.getByRole('button', { name: copy.reload })
@@ -648,6 +695,7 @@ describe('PlanResultPanel', () => {
         adjustments={closedAdjustments()}
         evidence={closedEvidence()}
         dashboard={dashboard(ready(), true, reload)}
+        sync={idleSyncState()}
       />,
     )
     expect(button).toHaveAttribute('aria-disabled', 'true')
@@ -662,10 +710,16 @@ describe('PlanResultPanel', () => {
         adjustments={closedAdjustments()}
         evidence={closedEvidence()}
         dashboard={dashboard(
-          { kind: 'lastGood', nextAction: 'NONE', result: parsed(planResultFixture()) },
+          {
+            kind: 'lastGood',
+            nextAction: 'NONE',
+            result: parsed(planResultFixture()),
+            sync: AVAILABLE_SYNC,
+          },
           false,
           reload,
         )}
+        sync={idleSyncState()}
       />,
     )
     expect(screen.getByRole('button', { name: copy.reload })).toBe(button)
@@ -684,6 +738,7 @@ describe('PlanResultPanel', () => {
           adjustments={closedAdjustments()}
           evidence={closedEvidence()}
           dashboard={dashboard(ready())}
+          sync={idleSyncState()}
         />,
       )
       screen.getByRole('button', { name: copy.reload }).focus()
@@ -693,6 +748,7 @@ describe('PlanResultPanel', () => {
           adjustments={closedAdjustments()}
           evidence={closedEvidence()}
           dashboard={dashboard(next)}
+          sync={idleSyncState()}
         />,
       )
 
@@ -709,6 +765,7 @@ describe('PlanResultPanel', () => {
           adjustments={closedAdjustments()}
           evidence={closedEvidence()}
           dashboard={dashboard(ready())}
+          sync={idleSyncState()}
         />
       </>,
     )
@@ -723,6 +780,7 @@ describe('PlanResultPanel', () => {
           adjustments={closedAdjustments()}
           evidence={closedEvidence()}
           dashboard={dashboard({ kind: 'denied', cause: 'refused' })}
+          sync={idleSyncState()}
         />
       </>,
     )

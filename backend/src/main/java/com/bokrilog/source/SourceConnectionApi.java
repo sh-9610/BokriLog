@@ -60,6 +60,16 @@ public interface SourceConnectionApi {
     CollectionResult collectInitialInputs(UUID userId, UUID connectionId, Instant t0,
             @Nullable Instant fixedTc, Consumer<Instant> scopeConsumer, Consumer<CollectionPage> pageConsumer);
 
+    /**
+     * The incremental collection of an active plan (Story 2.11): current equity and every required
+     * Transaction Log page of the windows from {@code from} to the cutoff {@code tc} the caller already fixed
+     * from the server time. It never asks the time API, and events are judged against the whole
+     * {@code (t0, tc]}. The same access, connection and credential rules as {@link #collectInitialInputs}
+     * apply; the credential is read once. Call it outside any database transaction.
+     */
+    CollectionResult collectIncrementalInputs(UUID userId, UUID connectionId, Instant t0, Instant from,
+            Instant tc, Consumer<CollectionPage> pageConsumer);
+
     /*
      * Public market facts (Story 2.6).
      *

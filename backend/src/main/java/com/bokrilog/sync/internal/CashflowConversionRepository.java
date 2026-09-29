@@ -201,6 +201,67 @@ class CashflowConversionRepository {
         return jobIdByKey(user, intent, key).or(() -> activeJobId(user, classification.classificationId()));
     }
 
+    /**
+     * The conversion stage of an incremental sync (Story 2.11): a child row the sync attempt owns, running from
+     * the start with the first fencing generation, a lease the attempt's heartbeat renews and the attempt's
+     * {@code tc} as its fixed reference time. Its inputs are copied from the given COMPLETE classification —
+     * the attempt's own — exactly as an admission copies them. Empty when that classification is not a COMPLETE
+     * one of this user under the current policy, or its flows do not add up to its counts.
+     */
+    Optional<Lease> admitChild(UUID childId, PlanSyncRepository.Lease sync, UUID classificationId, Instant reference) {
+        Optional<Classification> found = jdbc.sql("SELECT b.classification_id,b.candidate_id,b.input_scope_hash,"
+                + "b.policy_version,b.deposit_count+b.withdrawal_count FROM sync_cashflow_classification_bundle b "
+                + "JOIN sync_cashflow_classification_job j ON j.job_id=b.job_id AND j.status='COMPLETE' "
+                + "WHERE b.classification_id=:c AND b.user_id=:u AND b.intent_id=:i AND b.portfolio_id=:p "
+                + "AND b.connection_id=:conn AND b.provider_account_id=:a AND b.status='COMPLETE' AND b.review_count=0 "
+                + "AND b.policy_version=:policy")
+            .param("c", classificationId).param("u", sync.userId()).param("i", sync.intentId())
+            .param("p", sync.portfolioId()).param("conn", sync.connectionId()).param("a", sync.providerAccountId())
+            .param("policy", CashflowDecisionTable.POLICY_VERSION)
+            .query((rs, n) -> new Classification(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class),
+                    rs.getString(3), rs.getString(4), rs.getInt(5))).optional();
+        if (found.isEmpty()) return Optional.empty();
+        Classification classification = found.get();
+        List<Input> inputs = classificationInputs(sync.userId(), classificationId);
+        if (inputs.size() != classification.flowCount()) return Optional.empty();
+        String hash = inputHash(classification, inputs);
+        jdbc.sql("INSERT INTO sync_cashflow_conversion_job(job_id,user_id,portfolio_id,intent_id,connection_id,"
+                + "provider_account_id,classification_id,input_scope_hash,flow_count,policy_version,"
+                + "calculation_policy_version,idempotency_key,status,reference_time,fencing_generation,lease_until,"
+                + "heartbeat_at,last_checked_at,plan_sync_job_id) VALUES (:j,:u,:p,:i,:c,:a,:classification,:hash,"
+                + ":count,:policy,:calc,:key,'RUNNING',:reference,1,now()+interval '30 seconds',now(),now(),:sync)")
+            .param("j", childId).param("u", sync.userId()).param("p", sync.portfolioId()).param("i", sync.intentId())
+            .param("c", sync.connectionId()).param("a", sync.providerAccountId())
+            .param("classification", classificationId).param("hash", hash).param("count", inputs.size())
+            .param("policy", PriceConversionPolicy.POLICY_VERSION)
+            .param("calc", PriceConversionPolicy.CALCULATION_POLICY_VERSION)
+            .param("key", "plan-sync:" + sync.jobId() + ":conversion").param("reference", utc(reference))
+            .param("sync", sync.jobId()).update();
+        for (Input in : inputs) {
+            jdbc.sql("INSERT INTO sync_cashflow_conversion_input(job_id,source_event_id,source_id,source_revision,"
+                    + "semantic_hash,provenance_connection_id,classification_verdict,classification_rule_id,"
+                    + "classification_policy_version,asset_code,signed_quantity,occurred_at) VALUES (:j,:event,"
+                    + ":source,:revision,:hash,:connection,:verdict,:rule,:policy,:asset,:quantity,:occurred)")
+                .param("j", childId).param("event", in.sourceEventId()).param("source", in.sourceId())
+                .param("revision", in.sourceRevision()).param("hash", in.semanticHash())
+                .param("connection", in.provenanceConnectionId()).param("verdict", in.verdict())
+                .param("rule", in.ruleId()).param("policy", in.classificationPolicy())
+                .param("asset", in.assetCode()).param("quantity", in.signedQuantity())
+                .param("occurred", utc(in.occurredAt())).update();
+        }
+        return Optional.of(new Lease(childId, sync.userId(), sync.portfolioId(), sync.intentId(), sync.connectionId(),
+                sync.providerAccountId(), classificationId, hash, PriceConversionPolicy.POLICY_VERSION, reference, 1));
+    }
+
+    /** The bundle an attempt published, if any: its id and status. */
+    Optional<String[]> publishedBundle(UUID user, UUID jobId) {
+        return jdbc.sql("SELECT b.conversion_id,b.status FROM sync_cashflow_conversion_job j "
+                + "JOIN sync_cashflow_conversion_bundle b ON b.conversion_id=j.conversion_id AND b.user_id=j.user_id "
+                + "WHERE j.job_id=:j AND j.user_id=:u")
+            .param("j", jobId).param("u", user)
+            .query((rs, n) -> new String[] {rs.getString(1), rs.getString(2)}).optional();
+    }
+
     Optional<UUID> jobIdByKey(UUID user, UUID intent, String key) {
         return jdbc.sql("SELECT job_id FROM sync_cashflow_conversion_job WHERE user_id=:u AND intent_id=:i "
                 + "AND idempotency_key=:k").param("u", user).param("i", intent).param("k", key)
@@ -217,7 +278,8 @@ class CashflowConversionRepository {
         return jdbc.sql("UPDATE sync_cashflow_conversion_job SET status='RUNNING',"
                 + "fencing_generation=fencing_generation+1,lease_until=now()+interval '30 seconds',"
                 + "heartbeat_at=now(),last_checked_at=now() WHERE job_id=(SELECT job_id FROM "
-                + "sync_cashflow_conversion_job WHERE status='QUEUED' OR (status='RUNNING' AND lease_until<now()) "
+                + "sync_cashflow_conversion_job WHERE plan_sync_job_id IS NULL AND (status='QUEUED' "
+                + "OR (status='RUNNING' AND lease_until<now())) "
                 + "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING job_id,user_id,portfolio_id,"
                 + "intent_id,connection_id,provider_account_id,classification_id,input_scope_hash,policy_version,"
                 + "reference_time,fencing_generation")

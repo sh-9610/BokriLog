@@ -2,14 +2,10 @@ package com.bokrilog.sync.internal;
 
 import com.bokrilog.sync.SyncJobApi.ClassificationJob;
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -103,12 +99,39 @@ class CashflowClassificationRepository {
     Optional<Lease> claim() {
         return jdbc.sql("UPDATE sync_cashflow_classification_job SET status='RUNNING',fencing_generation=fencing_generation+1,"
                 + "lease_until=now()+interval '30 seconds',last_checked_at=now() WHERE job_id=(SELECT job_id "
-                + "FROM sync_cashflow_classification_job WHERE status='QUEUED' OR (status='RUNNING' AND lease_until<now()) "
+                + "FROM sync_cashflow_classification_job WHERE plan_sync_job_id IS NULL AND (status='QUEUED' "
+                + "OR (status='RUNNING' AND lease_until<now())) "
                 + "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING job_id,user_id,portfolio_id,intent_id,"
                 + "connection_id,provider_account_id,candidate_id,policy_version,fencing_generation")
             .query((rs,n)->new Lease(rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),rs.getObject(3,UUID.class),
                 rs.getObject(4,UUID.class),rs.getObject(5,UUID.class),rs.getObject(6,UUID.class),rs.getObject(7,UUID.class),
                 rs.getString(8),rs.getLong(9))).optional();
+    }
+    /**
+     * The classification stage of an incremental sync (Story 2.11): a child row the sync attempt owns, running
+     * from the start with the first fencing generation and a lease the attempt's heartbeat renews. It classifies
+     * the attempt's own new candidate under the current policy. The independent claim never picks it.
+     */
+    Lease insertChild(UUID childId, PlanSyncRepository.Lease sync, UUID candidateId) {
+        jdbc.sql("INSERT INTO sync_cashflow_classification_job(job_id,user_id,portfolio_id,intent_id,connection_id,"
+                + "provider_account_id,candidate_id,policy_version,idempotency_key,status,fencing_generation,lease_until,"
+                + "last_checked_at,plan_sync_job_id) VALUES (:j,:u,:p,:i,:c,:a,:candidate,:policy,:key,'RUNNING',1,"
+                + "now()+interval '30 seconds',now(),:sync)")
+            .param("j",childId).param("u",sync.userId()).param("p",sync.portfolioId()).param("i",sync.intentId())
+            .param("c",sync.connectionId()).param("a",sync.providerAccountId()).param("candidate",candidateId)
+            .param("policy",CashflowDecisionTable.POLICY_VERSION).param("key","plan-sync:"+sync.jobId()+":classification")
+            .param("sync",sync.jobId()).update();
+        return new Lease(childId,sync.userId(),sync.portfolioId(),sync.intentId(),sync.connectionId(),
+                sync.providerAccountId(),candidateId,CashflowDecisionTable.POLICY_VERSION,1);
+    }
+    /** The ending a classification attempt published: its bundle's status, or empty without one. */
+    Optional<String> bundleStatus(UUID user,UUID jobId) {
+        return jdbc.sql("SELECT b.status FROM sync_cashflow_classification_bundle b WHERE b.job_id=:j AND b.user_id=:u")
+            .param("j",jobId).param("u",user).query(String.class).optional();
+    }
+    Optional<UUID> bundleId(UUID user,UUID jobId) {
+        return jdbc.sql("SELECT b.classification_id FROM sync_cashflow_classification_bundle b WHERE b.job_id=:j AND b.user_id=:u")
+            .param("j",jobId).param("u",user).query(UUID.class).optional();
     }
     boolean lockOwned(Lease l) {
         return jdbc.sql("SELECT job_id FROM sync_cashflow_classification_job WHERE job_id=:j AND user_id=:u "
@@ -118,7 +141,8 @@ class CashflowClassificationRepository {
     }
     Optional<String> inputHash(Lease l) {
         Optional<CandidateEvidence> evidence=jdbc.sql("SELECT b.completeness_hash,b.job_id,b.portfolio_id,b.intent_id,"
-                + "b.connection_id,b.provider_account_id,b.t0,b.tc,b.equity_decimal,b.measured_at,b.policy_version "
+                + "b.connection_id,b.provider_account_id,b.t0,b.tc,b.equity_decimal,b.measured_at,b.policy_version,"
+                + "b.base_candidate_id,b.window_start "
                 + "FROM sync_initial_candidate_bundle b "
                 + "JOIN sync_initial_collection_job j ON j.job_id=b.job_id AND j.status='INPUTS_COMPLETE' "
                 + "WHERE b.candidate_id=:candidate AND b.user_id=:u AND b.portfolio_id=:p AND b.intent_id=:i "
@@ -139,11 +163,13 @@ class CashflowClassificationRepository {
             .query((rs,n)->new CandidateEvidence(rs.getString(1),rs.getObject(2,UUID.class),rs.getObject(3,UUID.class),
                 rs.getObject(4,UUID.class),rs.getObject(5,UUID.class),rs.getObject(6,UUID.class),
                 rs.getObject(7,OffsetDateTime.class).toInstant(),rs.getObject(8,OffsetDateTime.class).toInstant(),
-                rs.getString(9),rs.getObject(10,OffsetDateTime.class).toInstant(),rs.getString(11))).optional();
+                rs.getString(9),rs.getObject(10,OffsetDateTime.class).toInstant(),rs.getString(11),
+                rs.getObject(12,UUID.class),instantOrNull(rs,13))).optional();
         return evidence.filter(e->evidenceHash(l,e).equals(e.completenessHash())).map(CandidateEvidence::completenessHash);
     }
     private record CandidateEvidence(String completenessHash,UUID jobId,UUID portfolioId,UUID intentId,
-            UUID connectionId,UUID accountId,Instant t0,Instant tc,String equity,Instant measuredAt,String policy) {}
+            UUID connectionId,UUID accountId,Instant t0,Instant tc,String equity,Instant measuredAt,String policy,
+            @Nullable UUID baseCandidateId,@Nullable Instant windowStart) {}
     private String evidenceHash(Lease lease,CandidateEvidence e) {
         String pages=jdbc.sql("SELECT string_agg(event_type||'|'||range_start::text||'|'||range_end::text||'|'||"
                 + "cursor_hash||'|'||item_count||'|'||COALESCE(first_event_at::text,'')||'|'||"
@@ -152,10 +178,10 @@ class CashflowClassificationRepository {
         String events=jdbc.sql("SELECT COALESCE(string_agg(source_id||'|'||semantic_hash,';' ORDER BY source_id),'') "
                 + "FROM sync_initial_candidate_event ce JOIN sync_initial_source_event se ON se.event_id=ce.event_id "
                 + "WHERE ce.candidate_id=:candidate").param("candidate",lease.candidateId()).query(String.class).single();
-        String value=e.jobId()+"|"+e.portfolioId()+"|"+e.intentId()+"|"+e.connectionId()+"|"+e.accountId()+"|"
-                +e.t0()+"|"+e.tc()+"|"+e.equity()+"|"+e.measuredAt()+"|"+e.policy()+"|"+pages+"|"+events;
-        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))); }
-        catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+        // The collection's own formula (InitialCollectionRepository#completenessDigest), base and window included.
+        return InitialCollectionRepository.completenessDigest(e.jobId(),e.portfolioId(),e.intentId(),e.connectionId(),
+                e.accountId(),e.t0(),e.tc(),e.equity(),e.measuredAt(),e.policy(),pages,events,e.baseCandidateId(),
+                e.windowStart());
     }
     List<Input> inputs(Lease l) {
         return jdbc.sql("SELECT se.event_id,se.source_id,se.semantic_hash,se.event_type,se.currency,se.cash_flow,"

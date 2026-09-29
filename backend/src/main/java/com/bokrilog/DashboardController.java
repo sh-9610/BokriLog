@@ -17,6 +17,9 @@ import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -50,6 +53,15 @@ import org.springframework.web.bind.annotation.RestController;
  * or one that is malformed, is the same 404; source event, classification and conversion ids are never
  * taken. 503 {@code ADJUSTMENT_HISTORY_UNAVAILABLE} when any applied row of the version disagrees with its
  * lineage — never a partial list.
+ *
+ * <p>{@code POST /api/dashboard/sync} (Story 2.11) is the one write of this surface: a sync request
+ * {@code {trigger: ENTRY|VISIBILITY|MANUAL}} with an {@code Idempotency-Key}. 202 {@code ACCEPTED} with the new
+ * attempt; 200 {@code JOINED} (the attempt in progress, or the same key replayed with the same trigger),
+ * {@code COOLDOWN}, {@code NOT_DUE} or {@code LONG_GAP} with the latest attempt and — for the first two — the
+ * seconds until it would be due; 403 when the account's write access refuses it; 409 {@code NO_ACTIVE_PLAN},
+ * {@code SYNC_UNAVAILABLE} or {@code IDEMPOTENCY_CONFLICT}; 422 {@code IDEMPOTENCY_KEY_REQUIRED}; 400 for a
+ * body that is not one of the three triggers. It never calls the provider; the worker does. The ready
+ * dashboard carries the sync state beside its result.
  *
  * <p>Amounts and ratios are canonical decimal strings. Rounding for display is the client's final step.
  */
@@ -86,8 +98,34 @@ class DashboardController {
     private final SyncJobApi jobs;
     DashboardController(SyncJobApi jobs) { this.jobs=jobs; }
 
+    /** The sync request (Story 2.11). */
+    static final String SYNC_PATH=AuthSecurityConfig.DASHBOARD_PATH+"/sync";
+    /** 409 codes of the sync admission → safe messages. A closed map; only the stable code is the machine value. */
+    static final java.util.Map<String,String> SYNC_REFUSALS=java.util.Map.of(
+            "NO_ACTIVE_PLAN","동기화할 활성 계획이 없습니다. 대시보드를 다시 불러와 주세요.",
+            "SYNC_UNAVAILABLE","지금은 동기화할 수 없습니다. 대시보드에서 이유를 확인해 주세요.",
+            "IDEMPOTENCY_CONFLICT","같은 요청 키가 다른 동기화 요청에 이미 쓰였습니다. 새로 요청해 주세요.");
+    static final String MESSAGE_SYNC_KEY_REQUIRED=
+            "요청 키가 없거나 형식이 맞지 않아 동기화를 받지 않았습니다. 화면을 새로 열어 다시 시도해 주세요.";
+
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    record DashboardView(String state,String nextAction,@Nullable ResultView result) {}
+    record DashboardView(String state,String nextAction,@Nullable ResultView result,@Nullable SyncView sync) {}
+    /** One sync attempt. Every key is sent; absent values are {@code null}. */
+    record SyncJobView(UUID jobId,String trigger,String status,@Nullable String stage,@Nullable String failureCode,
+            String admittedAt,@Nullable String finishedAt) {}
+    /** The ready dashboard's sync state. Every key is sent; absent values are {@code null}. */
+    record SyncView(String availability,@Nullable String reason,@Nullable Long retryAfterSeconds,
+            @Nullable SyncJobView latest) {}
+    /** A sync admission's answer. Every key is sent; absent values are {@code null}. */
+    record SyncAdmissionView(String outcome,@Nullable SyncJobView job,@Nullable Long retryAfterSeconds) {}
+    /**
+     * Reads the sync request body here rather than binding it: a body the framework cannot read would otherwise
+     * be answered by the common error path, without this surface's {@code no-store}.
+     */
+    private static final tools.jackson.databind.json.JsonMapper JSON=tools.jackson.databind.json.JsonMapper.builder()
+            .build();
+    /** A trigger request is a few bytes; anything much longer is not one. */
+    private static final int MAX_SYNC_BODY_CHARS=1024;
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record MetricView(String metric,@Nullable String value,String nature,@Nullable String unavailableReason) {}
@@ -144,11 +182,11 @@ class DashboardController {
                             .cacheControl(CacheControl.noStore())
                             .body(new ApiErrorHandler.ApiError(DASHBOARD_UNAVAILABLE,MESSAGE_DASHBOARD_UNAVAILABLE,
                                     correlationOf(request)));
-            case SyncJobApi.Dashboard.NoPlan none -> ok(new DashboardView("NO_PLAN",none.nextAction(),null));
+            case SyncJobApi.Dashboard.NoPlan none -> ok(new DashboardView("NO_PLAN",none.nextAction(),null,null));
             case SyncJobApi.Dashboard.Preparing preparing ->
-                    ok(new DashboardView("PREPARING",preparing.nextAction(),null));
+                    ok(new DashboardView("PREPARING",preparing.nextAction(),null,null));
             case SyncJobApi.Dashboard.Ready ready ->
-                    ok(new DashboardView("READY",ready.nextAction(),view(ready.result())));
+                    ok(new DashboardView("READY",ready.nextAction(),view(ready.result()),syncView(ready.sync())));
         };
         String state=switch (read.dashboard()) {
             case SyncJobApi.Dashboard.NotPermitted denied -> "DENIED";
@@ -171,6 +209,121 @@ class DashboardController {
                 (System.nanoTime()-started)/1_000_000,consistent);
     }
 
+    // ------------------------------------------------------------------ sync (Story 2.11)
+
+    static @Nullable SyncJobView syncJobView(SyncJobApi.@Nullable SyncJob job) {
+        return job==null ? null : new SyncJobView(job.jobId(),job.trigger(),job.status(),job.stage(),job.failureCode(),
+                job.admittedAt().toString(),job.finishedAt()==null ? null : job.finishedAt().toString());
+    }
+
+    static SyncView syncView(SyncJobApi.SyncState sync) {
+        return new SyncView(sync.availability(),sync.reason(),sync.retryAfterSeconds(),syncJobView(sync.latest()));
+    }
+
+    /**
+     * One sync request, one operational line: the trigger, the result (an outcome or a refusal code), the status
+     * answered and the latency in milliseconds. No user, key, job, amount or time.
+     */
+    @PostMapping(path=SYNC_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<?> sync(@RequestBody(required=false) @Nullable String body,
+            @RequestHeader(name="Idempotency-Key",required=false) @Nullable String key,
+            HttpServletRequest request,HttpServletResponse response) throws IOException {
+        long started=System.nanoTime();
+        SyncJobApi.SyncTrigger trigger=triggerOf(body);
+        String triggerName=trigger==null ? "-" : trigger.name();
+        if (trigger==null) {
+            ResponseEntity<ApiErrorHandler.ApiError> bad=error(HttpStatus.BAD_REQUEST,ApiErrorHandler.CODE_BAD_REQUEST,
+                    ApiErrorHandler.MESSAGE_BAD_REQUEST,request);
+            logSync(triggerName,"BAD_REQUEST",bad.getStatusCode().value(),started);
+            return bad;
+        }
+        SyncJobApi.SyncAdmission admission;
+        try {
+            admission=jobs.admitPlanSync(currentUserId(),trigger,key);
+        } catch (RuntimeException failure) {
+            // The class name at debug only: a message or cause can carry SQL or values.
+            if (LOG.isDebugEnabled()) LOG.debug("sync admission failed: failure={}",failure.getClass().getName());
+            ResponseEntity<ApiErrorHandler.ApiError> failed=error(HttpStatus.INTERNAL_SERVER_ERROR,
+                    ApiErrorHandler.CODE_INTERNAL_ERROR,ApiErrorHandler.MESSAGE_INTERNAL_ERROR,request);
+            logSync(triggerName,"ERROR",failed.getStatusCode().value(),started);
+            return failed;
+        }
+        switch (admission) {
+            case SyncJobApi.SyncAdmission.NotPermitted denied -> {
+                response.sendError(403);
+                logSync(triggerName,"DENIED",403,started);
+                return null;
+            }
+            case SyncJobApi.SyncAdmission.Accepted accepted -> {
+                logSync(triggerName,"ACCEPTED",202,started);
+                return ResponseEntity.status(HttpStatus.ACCEPTED).cacheControl(CacheControl.noStore())
+                        .body(new SyncAdmissionView("ACCEPTED",syncJobView(accepted.job()),null));
+            }
+            case SyncJobApi.SyncAdmission.Joined joined -> {
+                logSync(triggerName,"JOINED",200,started);
+                return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                        .body(new SyncAdmissionView("JOINED",syncJobView(joined.job()),null));
+            }
+            case SyncJobApi.SyncAdmission.Deferred deferred -> {
+                logSync(triggerName,deferred.outcome(),200,started);
+                return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                        .body(new SyncAdmissionView(deferred.outcome(),syncJobView(deferred.latest()),
+                                deferred.retryAfterSeconds()));
+            }
+            case SyncJobApi.SyncAdmission.Refused refused -> {
+                String code=refused.code();
+                if ("IDEMPOTENCY_KEY_REQUIRED".equals(code)) {
+                    logSync(triggerName,code,422,started);
+                    return ResponseEntity.status(422).contentType(MediaType.APPLICATION_JSON)
+                            .cacheControl(CacheControl.noStore())
+                            .body(new ApiErrorHandler.ApiError(code,MESSAGE_SYNC_KEY_REQUIRED,correlationOf(request)));
+                }
+                if ("BAD_REQUEST".equals(code)) {
+                    logSync(triggerName,code,400,started);
+                    return error(HttpStatus.BAD_REQUEST,ApiErrorHandler.CODE_BAD_REQUEST,
+                            ApiErrorHandler.MESSAGE_BAD_REQUEST,request);
+                }
+                String message=SYNC_REFUSALS.get(code);
+                if (message==null) {
+                    // A refusal this surface does not know is a broken contract, not the caller's fault.
+                    logSync(triggerName,"ERROR",500,started);
+                    return error(HttpStatus.INTERNAL_SERVER_ERROR,ApiErrorHandler.CODE_INTERNAL_ERROR,
+                            ApiErrorHandler.MESSAGE_INTERNAL_ERROR,request);
+                }
+                logSync(triggerName,code,409,started);
+                return error(HttpStatus.CONFLICT,code,message,request);
+            }
+        }
+    }
+
+    /**
+     * The trigger of the body, or {@code null} when there is no body, it is not a JSON object, or its
+     * {@code trigger} is not exactly one of the three names. Other members are ignored.
+     */
+    static SyncJobApi.@Nullable SyncTrigger triggerOf(@Nullable String body) {
+        if (body==null || body.length()>MAX_SYNC_BODY_CHARS) return null;
+        tools.jackson.databind.JsonNode trigger;
+        try {
+            tools.jackson.databind.JsonNode node=JSON.readTree(body);
+            if (node==null || !node.isObject()) return null;
+            trigger=node.get("trigger");
+        } catch (tools.jackson.core.JacksonException malformed) {
+            return null;
+        }
+        if (trigger==null || !trigger.isString()) return null;
+        return switch (trigger.asString()) {
+            case "ENTRY" -> SyncJobApi.SyncTrigger.ENTRY;
+            case "VISIBILITY" -> SyncJobApi.SyncTrigger.VISIBILITY;
+            case "MANUAL" -> SyncJobApi.SyncTrigger.MANUAL;
+            default -> null;
+        };
+    }
+
+    private static void logSync(String trigger,String result,int status,long started) {
+        LOG.info("plan sync admission: trigger={} result={} status={} latencyMs={}",trigger,result,status,
+                (System.nanoTime()-started)/1_000_000);
+    }
+
     // ------------------------------------------------------------------ calculation evidence (Story 2.9)
 
     record EvidenceSnapshotsView(UUID portfolioSnapshotId,long portfolioSequence,UUID basisPortfolioSnapshotId,
@@ -178,7 +331,9 @@ class DashboardController {
     /** Four times under their own names. There is no common snapshot token, and none is invented here. */
     record EvidenceTimesView(String t0,String tc,String measuredAt,String cashflowVerifiedThrough) {}
     record EvidenceConnectionView(String provider,UUID connectionId,String policyVersion) {}
-    record EvidenceSourceRangeView(String rangeStart,String rangeEnd,String collectionPolicy,String completenessHash) {}
+    /** The collected range {@code (t0, tc]} and where the version's own collection windows started. */
+    record EvidenceSourceRangeView(String rangeStart,String rangeEnd,String windowStart,String collectionPolicy,
+            String completenessHash) {}
     record EvidenceClassificationView(UUID classificationId,String policyVersion,String inputScopeHash) {}
     record EvidenceConversionView(UUID conversionId,String pricePolicy,String resultFingerprint) {}
     record EvidenceCashflowsView(int appliedCount,int estimatedCount) {}
@@ -194,7 +349,9 @@ class DashboardController {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record MetricImpactView(String metric,String nature,@Nullable String unavailableReason,
             @Nullable EstimatedCauseView estimatedCause) {}
-    record OfficialVersionView(long pointerVersion,UUID calculationId,String publishedAt,boolean current) {}
+    /** {@code appliedUntil} is {@code null} for the current version and is sent as such. */
+    record OfficialVersionView(long pointerVersion,UUID calculationId,String publishedAt,@Nullable String appliedUntil,
+            boolean current) {}
     record UnpublishedAttemptView(String status,String reasonCode,String finishedAt) {}
     /** Official versions and attempts that never published, in two separate lists. */
     record EvidenceVersionsView(List<OfficialVersionView> official,List<UnpublishedAttemptView> unpublished) {}
@@ -312,8 +469,8 @@ class DashboardController {
                         new EvidenceConnectionView(e.connection().provider(),e.connection().connectionId(),
                                 e.connection().policyVersion()),
                         new EvidenceSourceRangeView(e.sourceRange().rangeStart().toString(),
-                                e.sourceRange().rangeEnd().toString(),e.sourceRange().collectionPolicy(),
-                                e.sourceRange().completenessHash()),
+                                e.sourceRange().rangeEnd().toString(),e.sourceRange().windowStart().toString(),
+                                e.sourceRange().collectionPolicy(),e.sourceRange().completenessHash()),
                         new EvidenceClassificationView(e.classification().classificationId(),
                                 e.classification().policyVersion(),e.classification().inputScopeHash()),
                         new EvidenceConversionView(e.conversion().conversionId(),e.conversion().pricePolicy(),
@@ -331,7 +488,8 @@ class DashboardController {
                         .toList(),
                 new EvidenceVersionsView(
                         e.officialVersions().stream().map(v -> new OfficialVersionView(v.pointerVersion(),
-                                v.calculationId(),v.publishedAt().toString(),v.current())).toList(),
+                                v.calculationId(),v.publishedAt().toString(),
+                                v.appliedUntil()==null ? null : v.appliedUntil().toString(),v.current())).toList(),
                         e.unpublishedAttempts().stream().map(a -> new UnpublishedAttemptView(a.status(),a.reasonCode(),
                                 a.finishedAt().toString())).toList()));
     }

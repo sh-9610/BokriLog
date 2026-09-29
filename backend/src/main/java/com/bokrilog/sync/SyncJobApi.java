@@ -120,8 +120,10 @@ public interface SyncJobApi {
      *     (freshness), the cash-flow verification (input reliability) or the calculation basis (nature)
      * @param affectedMetrics the metrics this axis's state reaches, in the screen's order
      * @param nextAction what the axis leaves the user to do: {@code WAIT_FOR_SYNC} (freshness, while a
-     *     job runs) or {@code NONE}. An axis never produces the screen-level {@code CREATE_PLAN} or
-     *     {@code WAIT_FOR_RESULT} — those belong to {@link Dashboard.NoPlan} and {@link Dashboard.Preparing}
+     *     job runs), {@code SYNC} (freshness, when a new sync can refresh the result — Story 2.11),
+     *     {@code CHOOSE_CONTINUATION} (freshness, after a long gap) or {@code NONE}. An axis never produces
+     *     the screen-level {@code CREATE_PLAN} or {@code WAIT_FOR_RESULT} — those belong to
+     *     {@link Dashboard.NoPlan} and {@link Dashboard.Preparing}
      */
     record TrustAxis(String state, String cause, Instant lastNormalAt, List<String> affectedMetrics,
             String nextAction) {}
@@ -152,11 +154,78 @@ public interface SyncJobApi {
             String resultHash, int flowCount, int estimatedFlowCount, TrustAxes trust,
             List<DashboardMetric> metrics) {}
 
+    // -------------------------------------------------------------------- Story 2.11
+
+    /** Where a sync request came from: entering the dashboard, the tab becoming visible again, or the button. */
+    enum SyncTrigger { ENTRY, VISIBILITY, MANUAL }
+
+    /**
+     * One incremental sync attempt as the screen may see it: its trigger, its status, the stage it reached, its
+     * closed code and its two times. No plan, pointer, amount, time of an input, user or provider identifier.
+     *
+     * @param status {@code QUEUED}, {@code RUNNING}, {@code SUCCEEDED}, {@code FAILED}, {@code NEEDS_REVIEW}
+     *     or {@code BLOCKED}
+     * @param stage {@code TIME}, {@code COLLECTION}, {@code CLASSIFICATION}, {@code CONVERSION},
+     *     {@code CALCULATION} or {@code PUBLICATION}; {@code null} before the first
+     */
+    record SyncJob(UUID jobId, String trigger, String status, @Nullable String stage, @Nullable String failureCode,
+            Instant admittedAt, @Nullable Instant finishedAt) {}
+
+    /**
+     * The sync part of a ready dashboard: whether a sync can be asked for now, why not, when a manual one can be
+     * asked for again, and the plan's latest attempt. Judged by the same rules as the admission, against the
+     * database clock, in the dashboard's one consistent read.
+     *
+     * @param availability {@code AVAILABLE}, {@code IN_PROGRESS}, {@code COOLDOWN}, {@code LONG_GAP} or
+     *     {@code UNAVAILABLE}
+     * @param reason with {@code UNAVAILABLE} only: {@code RESTRICTED}, {@code CONNECTION_UNAVAILABLE} or
+     *     {@code PLAN_PERIOD_ENDED}
+     * @param retryAfterSeconds with {@code COOLDOWN} only: the seconds until a manual sync is admitted again
+     */
+    record SyncState(String availability, @Nullable String reason, @Nullable Long retryAfterSeconds,
+            @Nullable SyncJob latest) {}
+
+    /** The admission of one sync request (SYNC-UX-1.0). Nothing here calls the provider. */
+    sealed interface SyncAdmission permits SyncAdmission.Accepted, SyncAdmission.Joined, SyncAdmission.Deferred,
+            SyncAdmission.NotPermitted, SyncAdmission.Refused {
+        /** A new attempt was queued. */
+        record Accepted(SyncJob job) implements SyncAdmission {}
+        /** The attempt in progress, or the one the same key already made with the same trigger. */
+        record Joined(SyncJob job) implements SyncAdmission {}
+        /**
+         * No attempt was made: {@code COOLDOWN} (a manual request within 30 seconds of the last admission),
+         * {@code NOT_DUE} (an automatic one within 5 minutes of the later of the last admission and the current
+         * publication) or {@code LONG_GAP} (more than 30 days since the cash flows were last verified).
+         *
+         * @param latest the plan's latest attempt, if any
+         * @param retryAfterSeconds for {@code COOLDOWN} and {@code NOT_DUE}: the seconds until it would be due
+         */
+        record Deferred(String outcome, @Nullable SyncJob latest, @Nullable Long retryAfterSeconds)
+                implements SyncAdmission {}
+        /** The account's own write access refused it (its deletion began or ended). */
+        record NotPermitted() implements SyncAdmission {}
+        /**
+         * @param code {@code BAD_REQUEST} (400, no trigger), {@code IDEMPOTENCY_KEY_REQUIRED} (422), or one of
+         *     {@code IDEMPOTENCY_CONFLICT}, {@code NO_ACTIVE_PLAN} and {@code SYNC_UNAVAILABLE} (409). The HTTP
+         *     surface answers any other code as an internal error.
+         */
+        record Refused(String code) implements SyncAdmission {}
+    }
+
+    /**
+     * Admits one sync request for the user's active plan (Story 2.11): the account's write access, the same key
+     * replayed, the active plan and its pointer, an attempt in progress, unavailability, the long gap, the
+     * cooldown and automatic interval, in that order, in one short transaction without any provider call. A
+     * {@code null} trigger is not admitted; the HTTP surface answers it as a malformed request.
+     */
+    SyncAdmission admitPlanSync(@Nullable UUID userId, @Nullable SyncTrigger trigger, @Nullable String idempotencyKey);
+
     /**
      * The dashboard read model (Story 2.8). One of five outcomes; only {@link Dashboard.Ready} carries
      * financial fields. The screen-level next action is a closed set per outcome: {@code CREATE_PLAN}
      * ({@link Dashboard.NoPlan}), {@code WAIT_FOR_RESULT} ({@link Dashboard.Preparing}), and
-     * {@code WAIT_FOR_SYNC} or {@code NONE} ({@link Dashboard.Ready}).
+     * {@code WAIT_FOR_SYNC}, {@code SYNC}, {@code CHOOSE_CONTINUATION} or {@code NONE} ({@link Dashboard.Ready},
+     * the freshness axis's own).
      */
     sealed interface Dashboard permits Dashboard.NotPermitted, Dashboard.Unavailable, Dashboard.NoPlan,
             Dashboard.Preparing, Dashboard.Ready {
@@ -168,8 +237,8 @@ public interface SyncJobApi {
         record NoPlan(String nextAction) implements Dashboard {}
         /** No active plan yet, and one of the user's publication attempts is queued or running. */
         record Preparing(String nextAction) implements Dashboard {}
-        /** The active plan's official bundle. */
-        record Ready(DashboardResult result, String nextAction) implements Dashboard {}
+        /** The active plan's official bundle, and its sync state (Story 2.11). */
+        record Ready(DashboardResult result, String nextAction, SyncState sync) implements Dashboard {}
     }
 
     /**
@@ -248,8 +317,12 @@ public interface SyncJobApi {
          */
         public record Connection(String provider, UUID connectionId, String policyVersion) {}
 
-        /** The collected range: the earliest page start and the latest page end, with the collection policy. */
-        public record SourceRange(Instant rangeStart, Instant rangeEnd, String collectionPolicy,
+        /**
+         * The collected range {@code (t0, tc]} with the collection policy. {@code windowStart} is where the
+         * version's own collection windows started: {@code t0} for a first publication, and for an incremental
+         * sync (Story 2.11) its overlap start — the events before it were carried from the previous version.
+         */
+        public record SourceRange(Instant rangeStart, Instant rangeEnd, Instant windowStart, String collectionPolicy,
                 String completenessHash) {}
 
         public record Classification(UUID classificationId, String policyVersion, String inputScopeHash) {}
@@ -279,11 +352,12 @@ public interface SyncJobApi {
         public record EstimatedCause(String evidenceType, int flowCount) {}
 
         /**
-         * One official version: its publication order (the pointer version), the time it became official
-         * and whether it is the current one.
+         * One official version: its publication order (the pointer version), the time it became official, the
+         * time it stopped being official ({@code null} for the current one — the next version's publication) and
+         * whether it is the current one.
          */
         public record OfficialVersion(long pointerVersion, UUID calculationId, Instant publishedAt,
-                boolean current) {}
+                @Nullable Instant appliedUntil, boolean current) {}
 
         /** An attempt of the same intent that published nothing. Read-only; never an official value. */
         public record UnpublishedAttempt(String status, String reasonCode, Instant finishedAt) {}
@@ -395,8 +469,10 @@ public interface SyncJobApi {
          * An earlier conversion version of the event. It was never used by an official calculation, and it is
          * shown as it was stored — never rewritten.
          *
-         * <p>"Never used officially" holds while a plan has one official version (before Story 2.11): Stories
-         * 2.11, 2.12 and 2.15 must revisit it once earlier official versions exist.
+         * <p>"Never used officially" holds because every official version has its own classification (Story
+         * 2.11 classifies each sync's candidate anew) and a conversion chain never leaves its classification:
+         * an earlier link of the chain was replaced before any version cited it. Stories 2.12 and 2.15, which may
+         * reconvert a classification an official version already cited, must revisit it.
          *
          * @param usdValue the value it had, or {@code null} when it had none (not converted then)
          * @param changeReason why the next version replaced it

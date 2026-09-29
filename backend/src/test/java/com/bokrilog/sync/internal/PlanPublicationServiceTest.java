@@ -73,12 +73,14 @@ class PlanPublicationServiceTest {
     private final AccountAccessApi accounts = mock(AccountAccessApi.class);
     private final OperationalRestrictionApi restrictions = mock(OperationalRestrictionApi.class);
     private final PlanPublicationPort plans = mock(PlanPublicationPort.class);
+    private final PlanSyncService planSyncs = mock(PlanSyncService.class);
+    private final PlanSyncRepository planSyncAttempts = mock(PlanSyncRepository.class);
 
     private final PlanPublicationPort.Terms terms = new PlanPublicationPort.Terms(INTENT, PORTFOLIO, BASIS_SNAPSHOT,
             MEMBERSHIP, CONNECTION, ACCOUNT, BASIS_SOURCE, "1000", T0, END, "DAILY", "0.1", "bybit-readonly-uta-1.0",
             "bybit-readonly-uta-1.0", "CALENDAR-SEOUL-1.0", "CALC-1.0");
     private final Candidate candidate = new Candidate(CANDIDATE, USER, PORTFOLIO, INTENT, CONNECTION, ACCOUNT, T0, TC,
-            "1250", TC, TC, "bybit-readonly-uta-1.0", "a".repeat(64));
+            "1250", TC, TC, "bybit-readonly-uta-1.0", "a".repeat(64), null, null);
     private final CashflowConversionRepository.Classification classification =
             new CashflowConversionRepository.Classification(CLASSIFICATION, CANDIDATE, "b".repeat(64), "CASHFLOW-1.0", 0);
     private final Conversion conversion = new Conversion(CONVERSION, CLASSIFICATION, USER, INTENT, PORTFOLIO,
@@ -92,7 +94,7 @@ class PlanPublicationServiceTest {
     private PlanPublicationService service(boolean conformant) {
         return new PlanPublicationService(repository, classifications, conversions, sources, portfolios, accounts,
                 restrictions, plans, new CalculationConformance(() -> conformant),
-                mock(PlatformTransactionManager.class));
+                mock(PlatformTransactionManager.class), planSyncs, planSyncAttempts);
     }
 
     /** One eligible lineage: the account may write, nothing is restricted, and every input lines up. */
@@ -231,6 +233,11 @@ class PlanPublicationServiceTest {
                 "USD", TC, TC, TC, CURRENT_SNAPSHOT, 2)));
         when(repository.metrics(CALCULATION)).thenReturn(metrics);
         when(repository.freshness(USER, TC, TC)).thenReturn(new DashboardTrust.Freshness(false, true, true));
+        when(repository.lineage(USER, CALCULATION)).thenReturn(Optional.of(lineageRow("BYBIT")));
+        when(repository.history(USER, PLAN)).thenReturn(List.of(
+                new PlanPublicationRepository.HistoryRow(1, CALCULATION, PORTFOLIO, TC)));
+        when(planSyncs.state(eq(USER), any())).thenReturn(
+                new com.bokrilog.sync.SyncJobApi.SyncState("AVAILABLE", null, null, null));
     }
 
     @Test
@@ -239,7 +246,8 @@ class PlanPublicationServiceTest {
         bundle();
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         PlanPublicationService service = new PlanPublicationService(repository, classifications, conversions, sources,
-                portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager);
+                portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager, planSyncs,
+                planSyncAttempts);
 
         assertThat(service.dashboard(USER).dashboard()).isInstanceOf(Dashboard.Ready.class);
         assertThat(service.dashboard(USER).consistency()).isEqualTo(BundleConsistency.CONSISTENT);
@@ -270,7 +278,8 @@ class PlanPublicationServiceTest {
         when(accounts.decide(USER, USER, AccountAccessKind.SENSITIVE)).thenReturn(AccessDecision.DENIED);
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         PlanPublicationService service = new PlanPublicationService(repository, classifications, conversions, sources,
-                portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager);
+                portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager, planSyncs,
+                planSyncAttempts);
 
         // No bundle was read, so nothing is known about its consistency.
         assertThat(service.dashboard(USER))
@@ -352,7 +361,7 @@ class PlanPublicationServiceTest {
     private static PlanPublicationRepository.Lineage lineageRow(String provider) {
         return new PlanPublicationRepository.Lineage(JOB, provider, ACCOUNT, CONNECTION, MEMBERSHIP, BASIS_SOURCE, SOURCE,
                 CANDIDATE, CLASSIFICATION, CONVERSION, "CASHFLOW-1.0", SOURCE_POLICY, "DECIMAL128-HALF_EVEN",
-                "Asia/Seoul", TC);
+                "Asia/Seoul", TC, TC, null);
     }
 
     /** The inputs the creating attempt pinned: exactly the version's, advancing the pointer from the basis. */
@@ -374,7 +383,7 @@ class PlanPublicationServiceTest {
     private static Candidate candidateRow(UUID portfolio, UUID connection, UUID account, Instant t0, Instant tc,
             Instant measuredAt, String policy) {
         return new Candidate(CANDIDATE, USER, portfolio, INTENT, connection, account, t0, tc, "1250", measuredAt, TC,
-                policy, "a".repeat(64));
+                policy, "a".repeat(64), null, null);
     }
 
     private static PlanPublicationRepository.ClassificationBundle classificationRow(UUID intent, UUID portfolio,
@@ -444,7 +453,8 @@ class PlanPublicationServiceTest {
         lineage();
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         PlanPublicationService service = new PlanPublicationService(repository, classifications, conversions, sources,
-                portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager);
+                portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager, planSyncs,
+                planSyncAttempts);
 
         var evidence = found(service.evidence(USER, REFERENCE));
         ArgumentCaptor<TransactionDefinition> definitions = ArgumentCaptor.forClass(TransactionDefinition.class);
@@ -458,7 +468,7 @@ class PlanPublicationServiceTest {
         // The connection's policy is the first snapshot's record of it, not the collection policy.
         assertThat(evidence.connection()).isEqualTo(new CalculationEvidence.Connection("BYBIT", CONNECTION,
                 CONNECTION_POLICY));
-        assertThat(evidence.sourceRange()).isEqualTo(new CalculationEvidence.SourceRange(T0, TC, SOURCE_POLICY,
+        assertThat(evidence.sourceRange()).isEqualTo(new CalculationEvidence.SourceRange(T0, TC, T0, SOURCE_POLICY,
                 "a".repeat(64)));
         assertThat(evidence.classification()).isEqualTo(new CalculationEvidence.Classification(CLASSIFICATION,
                 "CASHFLOW-1.0", "b".repeat(64)));
@@ -469,7 +479,7 @@ class PlanPublicationServiceTest {
                 "CALENDAR-SEOUL-1.0", "DISPLAY-1.0", "DECIMAL128-HALF_EVEN", "Asia/Seoul", "impl", "a".repeat(64),
                 "b".repeat(64), TC));
         assertThat(evidence.officialVersions()).containsExactly(new CalculationEvidence.OfficialVersion(1, CALCULATION,
-                TC, true));
+                TC, null, true));
         assertThat(evidence.unpublishedAttempts()).containsExactly(
                 new CalculationEvidence.UnpublishedAttempt("FAILED", "PUBLICATION_INTERRUPTED", TC));
         assertThat(evidence.metrics()).allSatisfy(metric -> assertThat(metric.estimatedCause()).isNull());
@@ -506,7 +516,8 @@ class PlanPublicationServiceTest {
         when(accounts.decide(USER, USER, AccountAccessKind.SENSITIVE)).thenReturn(AccessDecision.DENIED);
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         PlanPublicationService service = new PlanPublicationService(repository, classifications, conversions, sources,
-                portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager);
+                portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager, planSyncs,
+                planSyncAttempts);
         var refused = new EvidenceRead(new EvidenceOutcome.NotPermitted(), BundleConsistency.NOT_READ);
         assertThat(service.evidence(USER, REFERENCE)).isEqualTo(refused);
         // The refusal comes first: a malformed reference does not tell a deleting account "not found".

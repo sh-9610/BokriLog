@@ -11,7 +11,7 @@
  *    `stubLinkRequest`, `stubUnlinkPrepareRequest`, `stubUnlinkConfirmRequest`,
  *    `stubUnlinkCancelRequest`, `stubConnectionStatusRequest`, `stubConnectionPrepareRequest`,
  *    `stubConnectRequest`, `stubConnectionCancelRequest`, `stubCalculationEvidence`,
- *    `stubAdjustmentHistory`).
+ *    `stubAdjustmentHistory`, `stubDashboardSync`).
  *    전역 거부는 그대로다. 아래 `responders` 절의 근거를 참고한다.
  */
 
@@ -35,6 +35,7 @@ import { DASHBOARD_EVIDENCE_PATH } from '../content/calculationEvidence'
 import { BYBIT_CANCEL_PATH, BYBIT_CONNECT_PATH, BYBIT_CONNECTION_PATH } from '../content/connection'
 import { FIRST_SNAPSHOT_PATH } from '../content/firstSnapshot'
 import { DASHBOARD_PATH } from '../content/planResult'
+import { DASHBOARD_SYNC_PATH } from '../content/planSync'
 
 const observedRequests: string[] = []
 const observedIndexedDbNames: string[] = []
@@ -89,6 +90,18 @@ export function stubPlanConditionState(responder: RequestResponder): void {
  */
 export function stubDashboard(responder: RequestResponder): void {
   responders.set(requestKey('GET', DASHBOARD_PATH), responder)
+}
+
+/**
+ * 동기화 접수 요청 하나를 이 시험 동안만 허용한다(Story 2.11).
+ *
+ * 두 로그인 화면은 첫 `READY` 응답에서 진입 동기화(`ENTRY`)를 한 번 보내고, 사용자가 `동기화`를 누르면
+ * 수동 동기화(`MANUAL`)를 보낸다. 열지 않은 시험에서 이 요청이 나가면 전역 거부가 그것을 기록하고
+ * 거절한다 — 화면이 몰래 동기화를 요청하지 않는다는 단정이 그 기록이다. 응답 함수는 `init`으로 본문
+ * (트리거)과 헤더(CSRF 토큰·멱등 키)를 받는다.
+ */
+export function stubDashboardSync(responder: RequestResponder): void {
+  responders.set(requestKey('POST', DASHBOARD_SYNC_PATH), responder)
 }
 
 /**

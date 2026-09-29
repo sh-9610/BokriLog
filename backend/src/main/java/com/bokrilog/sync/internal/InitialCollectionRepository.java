@@ -76,14 +76,33 @@ class InitialCollectionRepository {
     Optional<Lease> claim() {
         return jdbc.sql("UPDATE sync_initial_collection_job SET status='RUNNING',fencing_generation=fencing_generation+1,"
                 + "lease_until=now()+interval '30 seconds',heartbeat_at=now(),last_checked_at=now() "
-                + "WHERE job_id=(SELECT job_id FROM sync_initial_collection_job WHERE status='QUEUED' OR "
-                + "(status='RUNNING' AND lease_until<now()) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) "
+                + "WHERE job_id=(SELECT job_id FROM sync_initial_collection_job WHERE plan_sync_job_id IS NULL AND "
+                + "(status='QUEUED' OR (status='RUNNING' AND lease_until<now())) ORDER BY created_at "
+                + "FOR UPDATE SKIP LOCKED LIMIT 1) "
                 + "RETURNING job_id,user_id,portfolio_id,intent_id,connection_id,provider_account_id,t0,tc,fencing_generation")
             .query((rs,n)->new Lease(rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),
                 rs.getObject(3,UUID.class),rs.getObject(4,UUID.class),rs.getObject(5,UUID.class),
                 rs.getObject(6,UUID.class),rs.getObject(7,OffsetDateTime.class).toInstant(),
                 rs.getObject(8,OffsetDateTime.class)==null?null:rs.getObject(8,OffsetDateTime.class).toInstant(),
                 rs.getLong(9))).optional();
+    }
+    /**
+     * The collection stage of an incremental sync (Story 2.11): a child row the sync attempt owns. It starts
+     * running, with a lease of its own the attempt's heartbeat renews and the first fencing generation, and its
+     * scope is fixed now — the plan's {@code t0}, the attempt's {@code tc}, its window start and the base
+     * candidate whose events it carries. The independent claim never picks it.
+     */
+    Lease insertIncremental(UUID childId, PlanSyncRepository.Lease sync, Instant tc, Instant windowStart) {
+        jdbc.sql("INSERT INTO sync_initial_collection_job(job_id,user_id,portfolio_id,intent_id,connection_id,"
+                + "provider_account_id,idempotency_key,status,t0,tc,fencing_generation,lease_until,heartbeat_at,"
+                + "last_checked_at,plan_sync_job_id,window_start,base_candidate_id) VALUES (:j,:u,:p,:i,:c,:a,:k,"
+                + "'RUNNING',:t0,:tc,1,now()+interval '30 seconds',now(),now(),:sync,:w,:base)")
+            .param("j",childId).param("u",sync.userId()).param("p",sync.portfolioId()).param("i",sync.intentId())
+            .param("c",sync.connectionId()).param("a",sync.providerAccountId())
+            .param("k","plan-sync:"+sync.jobId()+":collection").param("t0",utc(sync.t0())).param("tc",utc(tc))
+            .param("sync",sync.jobId()).param("w",utc(windowStart)).param("base",sync.baseCandidateId()).update();
+        return new Lease(childId,sync.userId(),sync.portfolioId(),sync.intentId(),sync.connectionId(),
+                sync.providerAccountId(),sync.t0(),tc,1);
     }
     boolean fixScope(Lease l, Instant tc) {
         int updated=jdbc.sql("UPDATE sync_initial_collection_job SET tc=:tc,last_checked_at=now() WHERE job_id=:j "
@@ -214,28 +233,73 @@ class InitialCollectionRepository {
     private record EventIdentity(String sourceId,UUID eventId,String semanticHash) {}
 
     StoredInput complete(Lease l, CollectionObservation input, boolean needsReview) {
-        int updated=jdbc.sql("UPDATE sync_initial_collection_job SET tc=:tc,equity_decimal=:equity,measured_at=:measured,"
-                + "received_at=:received,policy_version=:policy WHERE job_id=:j AND fencing_generation=:g "
-                + "AND status='RUNNING' AND lease_until>now() AND (tc IS NULL OR tc=:tc)")
-            .param("tc",utc(input.tc())).param("equity",input.equityDecimal()).param("measured",utc(input.measuredAt()))
-            .param("received",utc(input.receivedAt())).param("policy",input.policyVersion())
-            .param("j",l.jobId()).param("g",l.generation()).update();
-        boolean complete=updated==1&&input.pageCount()==pageCount(l.jobId())
+        boolean complete=recordObservation(l,input)&&input.pageCount()==pageCount(l.jobId())
                 &&validCoverage(l.jobId(),l.t0(),input.tc());
         if (!complete) needsReview=true;
         String status=needsReview?"NEEDS_REVIEW":"INPUTS_COMPLETE";
         String failure=needsReview?(input.failureCode()==null?"SOURCE_REQUIRES_REVIEW":input.failureCode()):null;
-        UUID candidate=!needsReview?storeCandidate(l,input):null;
+        UUID candidate=!needsReview?storeCandidate(l,input,null,null):null;
         return new StoredInput(candidate,status,failure);
     }
 
-    private boolean validCoverage(UUID jobId, Instant t0, Instant tc) {
+    /**
+     * Completes the collection stage of an incremental sync (Story 2.11). The windows must cover
+     * {@code [windowStart, tc]} without a gap, both types reaching their last page. The new candidate then covers
+     * {@code (t0, tc]} as a whole: the events this collection observed, and the events of the base candidate
+     * (the previous official version's) it did not observe again, carried over with a provenance marker — that
+     * candidate proved them complete. A stored event of the range that is neither is unexplained (a late event
+     * is Story 2.12's to reconcile): the stage needs review and no candidate is made.
+     */
+    StoredInput completeIncremental(Lease l, CollectionObservation input, boolean needsReview, Instant windowStart,
+            UUID baseCandidateId) {
+        boolean complete=recordObservation(l,input)&&input.pageCount()==pageCount(l.jobId())
+                &&validCoverage(l.jobId(),windowStart,input.tc());
+        String failure=needsReview?(input.failureCode()==null?"SOURCE_REQUIRES_REVIEW":input.failureCode()):null;
+        if (!complete&&failure==null) failure="SOURCE_REQUIRES_REVIEW";
+        if (failure==null) {
+            jdbc.sql("INSERT INTO sync_initial_event_provenance(job_id,event_id,connection_id,semantic_hash,"
+                    + "carried_from_candidate_id) SELECT :j,se.event_id,:c,se.semantic_hash,:base "
+                    + "FROM sync_initial_candidate_event ce JOIN sync_initial_source_event se ON se.event_id=ce.event_id "
+                    + "WHERE ce.candidate_id=:base AND se.user_id=:u AND se.provider_account_id=:a "
+                    + "AND se.transaction_time>:t0 AND se.transaction_time<=:tc ON CONFLICT(job_id,event_id) DO NOTHING")
+                .param("j",l.jobId()).param("c",l.connectionId()).param("base",baseCandidateId).param("u",l.userId())
+                .param("a",l.providerAccountId()).param("t0",utc(l.t0())).param("tc",utc(input.tc())).update();
+            // Every base event is carried or observed again, and every stored event of the range is one of them.
+            boolean explained=jdbc.sql("SELECT (SELECT count(*) FROM sync_initial_candidate_event ce "
+                    + "WHERE ce.candidate_id=:base)=(SELECT count(*) FROM sync_initial_candidate_event ce "
+                    + "JOIN sync_initial_event_provenance ep ON ep.event_id=ce.event_id AND ep.job_id=:j "
+                    + "WHERE ce.candidate_id=:base) AND (SELECT count(*) FROM sync_initial_event_provenance ep "
+                    + "JOIN sync_initial_source_event se ON se.event_id=ep.event_id WHERE ep.job_id=:j "
+                    + "AND ep.semantic_hash=se.semantic_hash AND se.transaction_time>:t0 AND se.transaction_time<=:tc)="
+                    + "(SELECT count(*) FROM sync_initial_source_event se WHERE se.user_id=:u AND se.provider_account_id=:a "
+                    + "AND se.transaction_time>:t0 AND se.transaction_time<=:tc)")
+                .param("base",baseCandidateId).param("j",l.jobId()).param("u",l.userId())
+                .param("a",l.providerAccountId()).param("t0",utc(l.t0())).param("tc",utc(input.tc()))
+                .query(Boolean.class).single();
+            if (!explained) failure="SOURCE_REQUIRES_REVIEW";
+        }
+        if (failure!=null) return new StoredInput(null,"NEEDS_REVIEW",failure);
+        return new StoredInput(storeCandidate(l,input,baseCandidateId,windowStart),"INPUTS_COMPLETE",null);
+    }
+
+    /** Records the collection's observation of equity and time on the job, fenced. */
+    private boolean recordObservation(Lease l, CollectionObservation input) {
+        return jdbc.sql("UPDATE sync_initial_collection_job SET tc=:tc,equity_decimal=:equity,measured_at=:measured,"
+                + "received_at=:received,policy_version=:policy WHERE job_id=:j AND fencing_generation=:g "
+                + "AND status='RUNNING' AND lease_until>now() AND (tc IS NULL OR tc=:tc)")
+            .param("tc",utc(input.tc())).param("equity",input.equityDecimal()).param("measured",utc(input.measuredAt()))
+            .param("received",utc(input.receivedAt())).param("policy",input.policyVersion())
+            .param("j",l.jobId()).param("g",l.generation()).update()==1;
+    }
+
+    /** The pages cover {@code [start, tc]} in contiguous windows of at most seven days, both types to their last page. */
+    private boolean validCoverage(UUID jobId, Instant start, Instant tc) {
         List<RangePair> rows=jdbc.sql("SELECT range_start,range_end,count(DISTINCT event_type),count(*) FILTER (WHERE NOT has_next_page) "
                 + "FROM sync_initial_page_evidence WHERE job_id=:j GROUP BY range_start,range_end ORDER BY range_start")
             .param("j",jobId)
             .query((rs,n)->new RangePair(instant(rs,1),instant(rs,2),rs.getInt(3),rs.getInt(4))).list();
-        if (rows.isEmpty() || !rows.getFirst().start().equals(t0)) return false;
-        Instant next=t0;
+        if (rows.isEmpty() || !rows.getFirst().start().equals(start)) return false;
+        Instant next=start;
         for (RangePair r:rows) {
             if (!r.start().equals(next)||r.typeCount()!=2||r.finalPageCount()!=2
                     ||r.end().isAfter(tc)||r.end().isAfter(r.start().plus(MAX_WINDOW_MILLIS,java.time.temporal.ChronoUnit.MILLIS)))
@@ -262,7 +326,22 @@ class InitialCollectionRepository {
             .param("flow",safeFlow).param("time",e.transactionTime()==null?null:utc(e.transactionTime()))
             .param("account",e.accountType()).param("hash",hash).param("code",code).update();
     }
-    private UUID storeCandidate(Lease l, CollectionObservation input) {
+    /**
+     * The completeness hash of a candidate. One formula with its classification's re-check
+     * ({@code CashflowClassificationRepository#evidenceHash}): the page evidence and the event evidence are read
+     * with the same SQL there. An incremental candidate appends its base and window start; an initial one's
+     * text is what it always was.
+     */
+    static String completenessDigest(UUID jobId, UUID portfolioId, UUID intentId, UUID connectionId, UUID accountId,
+            Instant t0, Instant tc, String equity, Instant measuredAt, String policy, String pageEvidence,
+            String eventEvidence, @Nullable UUID baseCandidateId, @Nullable Instant windowStart) {
+        String value=jobId+"|"+portfolioId+"|"+intentId+"|"+connectionId+"|"+accountId+"|"+t0+"|"+tc+"|"+equity+"|"
+                +measuredAt+"|"+policy+"|"+pageEvidence+"|"+eventEvidence;
+        if (baseCandidateId!=null||windowStart!=null) value=value+"|base="+baseCandidateId+"|window="+windowStart;
+        return sha256(value);
+    }
+    private UUID storeCandidate(Lease l, CollectionObservation input, @Nullable UUID baseCandidateId,
+            @Nullable Instant windowStart) {
         String pageEvidence=jdbc.sql("SELECT string_agg(event_type||'|'||range_start::text||'|'||range_end::text||'|'||"
                 + "cursor_hash||'|'||item_count||'|'||COALESCE(first_event_at::text,'')||'|'||"
                 + "COALESCE(last_event_at::text,'')||'|'||has_next_page::text,';' ORDER BY event_type,range_start,cursor_hash) "
@@ -273,18 +352,20 @@ class InitialCollectionRepository {
                 + "AND transaction_time>:t0 AND transaction_time<=:tc")
             .param("u",l.userId()).param("a",l.providerAccountId()).param("t0",utc(l.t0()))
             .param("tc",utc(input.tc())).query(String.class).single();
-        String digest=sha256(l.jobId()+"|"+l.portfolioId()+"|"+l.intentId()+"|"+l.connectionId()+"|"
-                +l.providerAccountId()+"|"+l.t0()+"|"+input.tc()+"|"+input.equityDecimal()+"|"
-                +input.measuredAt()+"|"+input.policyVersion()+"|"+pageEvidence+"|"+eventEvidence);
+        String digest=completenessDigest(l.jobId(),l.portfolioId(),l.intentId(),l.connectionId(),l.providerAccountId(),
+                l.t0(),input.tc(),input.equityDecimal(),input.measuredAt(),input.policyVersion(),pageEvidence,
+                eventEvidence,baseCandidateId,windowStart);
         UUID candidate=UUID.randomUUID();
         jdbc.sql("INSERT INTO sync_initial_candidate_bundle(candidate_id,job_id,user_id,portfolio_id,intent_id,"
-                + "connection_id,provider_account_id,t0,tc,equity_decimal,measured_at,received_at,policy_version,completeness_hash) "
-                + "VALUES (:id,:j,:u,:p,:i,:c,:a,:t0,:tc,:equity,:measured,:received,:policy,:hash)")
+                + "connection_id,provider_account_id,t0,tc,equity_decimal,measured_at,received_at,policy_version,completeness_hash,"
+                + "base_candidate_id,window_start) "
+                + "VALUES (:id,:j,:u,:p,:i,:c,:a,:t0,:tc,:equity,:measured,:received,:policy,:hash,:base,:window)")
             .param("id",candidate).param("j",l.jobId()).param("u",l.userId()).param("p",l.portfolioId())
             .param("i",l.intentId()).param("c",l.connectionId()).param("a",l.providerAccountId())
             .param("t0",utc(l.t0())).param("tc",utc(input.tc())).param("equity",input.equityDecimal())
             .param("measured",utc(input.measuredAt())).param("received",utc(input.receivedAt()))
-            .param("policy",input.policyVersion()).param("hash",digest).update();
+            .param("policy",input.policyVersion()).param("hash",digest).param("base",baseCandidateId)
+            .param("window",windowStart==null?null:utc(windowStart)).update();
         jdbc.sql("INSERT INTO sync_initial_candidate_event(candidate_id,event_id) "
                 + "SELECT :candidate,event_id FROM sync_initial_source_event WHERE user_id=:u "
                 + "AND provider_account_id=:a AND transaction_time>:t0 AND transaction_time<=:tc")
@@ -327,7 +408,7 @@ class InitialCollectionRepository {
         String hash=sha256(e.type()+"|"+currency+"|"+flow+"|"+e.transactionTime().toEpochMilli()+"|UNIFIED");
         return new Parsed(e.type(),currency,flow,e.transactionTime(),hash,null);
     }
-    private static String sha256(String value) {
+    static String sha256(String value) {
         try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))); }
         catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }

@@ -2379,13 +2379,15 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertFreshness(user,"FRESH","BOTH_WITHIN_WINDOW","NONE");
         jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now()-interval '16 minutes' "
                 + "WHERE user_id=:u").param("u",user).update();
-        assertFreshness(user,"STALE","MEASUREMENT_OUTDATED","NONE");
+        // Story 2.11: a stale result's next action is a new sync.
+        assertFreshness(user,"STALE","MEASUREMENT_OUTDATED","SYNC");
         jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now(),basis_at=now()-interval '16 minutes',"
-                + "cashflow_verified_through=now()-interval '16 minutes' WHERE user_id=:u").param("u",user).update();
-        assertFreshness(user,"STALE","CASHFLOW_VERIFICATION_OUTDATED","NONE");
+                + "cashflow_verified_through=now()-interval '16 minutes',last_extended_verification_at="
+                + "now()-interval '16 minutes' WHERE user_id=:u").param("u",user).update();
+        assertFreshness(user,"STALE","CASHFLOW_VERIFICATION_OUTDATED","SYNC");
         jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now()-interval '16 minutes' "
                 + "WHERE user_id=:u").param("u",user).update();
-        assertFreshness(user,"STALE","BOTH_OUTDATED","NONE");
+        assertFreshness(user,"STALE","BOTH_OUTDATED","SYNC");
         jdbc().sql("UPDATE sync_plan_calculation SET current_value_measured_at=now(),basis_at=now(),"
                 + "cashflow_verified_through=now() WHERE user_id=:u").param("u",user).update();
         assertFreshness(user,"FRESH","BOTH_WITHIN_WINDOW","NONE");
@@ -2403,7 +2405,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         } finally {
             jdbc().sql("DELETE FROM sync_job WHERE job_id=:j").param("j",probe).update();
         }
-        assertFreshness(user,"STALE","MEASUREMENT_OUTDATED","NONE");
+        assertFreshness(user,"STALE","MEASUREMENT_OUTDATED","SYNC");
     }
 
     private void assertFreshness(UUID user,String state,String cause,String nextAction) {
@@ -2620,7 +2622,8 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         var result=get(AuthSecurityConfig.DASHBOARD_PATH,cookie);
         assertThat(result.statusCode()).isEqualTo(200);
         assertThat(result.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
-        assertThat(topLevelFieldsOf(result.body())).containsOnlyKeys("state","nextAction","result")
+        // Story 2.11: a ready dashboard carries its sync state beside the result.
+        assertThat(topLevelFieldsOf(result.body())).containsOnlyKeys("state","nextAction","result","sync")
                 .containsEntry("nextAction","NONE");
         var fields=resultOf(result.body());
         assertThat(fields).containsKeys("planId","conditions","basisAt","measuredAt","cashflowVerifiedThrough",
@@ -3125,8 +3128,9 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 .query((rs,n)->new String[] {rs.getString(1),rs.getString(2),
                         rs.getObject(3,java.time.OffsetDateTime.class).toInstant().toString(),
                         rs.getObject(4,java.time.OffsetDateTime.class).toInstant().toString()}).single();
+        // A first publication's own windows started at t0 (Story 2.11 names that start separately).
         assertThat(nested(inputs,"sourceRange")).isEqualTo(java.util.Map.of("rangeStart",candidate[2],"rangeEnd",candidate[3],
-                "collectionPolicy",candidate[0],"completenessHash",candidate[1]));
+                "windowStart",candidate[2],"collectionPolicy",candidate[0],"completenessHash",candidate[1]));
         // The collection covered exactly (t0, tc]: its pages start at t0 and end at tc.
         assertThat(candidate[2]).isEqualTo(row[4]);
         assertThat(candidate[3]).isEqualTo(row[5]);
@@ -3155,9 +3159,15 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 .isEqualTo(java.util.Map.of("metric",m.get("metric"),"nature","OFFICIAL")));
         String publishedAt=jdbc().sql("SELECT published_at FROM sync_official_plan_result WHERE user_id=:u").param("u",user)
                 .query(java.time.OffsetDateTime.class).single().toInstant().toString();
+        // The one official version is current since its publication; it has no end (sent as null).
+        var onlyVersion=new java.util.HashMap<String,Object>();
+        onlyVersion.put("pointerVersion",1);
+        onlyVersion.put("calculationId",shown.get("calculationId"));
+        onlyVersion.put("publishedAt",publishedAt);
+        onlyVersion.put("appliedUntil",null);
+        onlyVersion.put("current",true);
         assertThat(nested(fields,"versions")).isEqualTo(java.util.Map.of(
-                "official",java.util.List.of(java.util.Map.of("pointerVersion",1,"calculationId",shown.get("calculationId"),
-                        "publishedAt",publishedAt,"current",true)),
+                "official",java.util.List.of(onlyVersion),
                 "unpublished",java.util.List.of()));
 
         // AC-8: nothing that names the account inside BokriLog or at the provider.
@@ -3318,7 +3328,9 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         var empty=send("GET",DashboardController.EVIDENCE_PATH+valid,emptyCookie,"X-Request-Id","evidence-tamper-probe");
         assertThat(empty.statusCode()).isEqualTo(404);
         assertThat(empty.body()).isEqualTo(notFound);
-        // A version that is no longer current: the pointer moved on (as Story 2.11 will make it), the old one is stale.
+        // A version that is no longer current: the pointer moved on, the old reference is stale. (Story 2.11's real
+        // next version is IncrementalSyncTest's; here the pointer is only moved, so its history does not agree with
+        // it any more and the moved pointer's own lineage is unavailable rather than found.)
         jdbc().sql("UPDATE sync_official_plan_result SET pointer_version=2 WHERE plan_id=:p").param("p",own.planId())
                 .update();
         try {
@@ -3326,7 +3338,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
             assertThat(stale.statusCode()).isEqualTo(404);
             assertThat(stale.body()).isEqualTo(notFound);
             assertThat(get(DashboardController.EVIDENCE_PATH+query(own.planId(),2,own.calculationId()),cookie).statusCode())
-                    .as("the current version").isEqualTo(200);
+                    .as("a pointer its history does not know").isEqualTo(503);
         } finally {
             jdbc().sql("UPDATE sync_official_plan_result SET pointer_version=1 WHERE plan_id=:p").param("p",own.planId())
                     .update();

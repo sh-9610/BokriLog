@@ -9,6 +9,7 @@ import {
   evidencePath,
 } from '../content/calculationEvidence'
 import { METRIC_ORDER, planPublicationContent, planResultContent } from '../content/planResult'
+import { formatSeoulTime } from '../format/decimal'
 import { useDashboardAdjustments } from '../session/useAdjustmentHistory'
 import {
   evidenceAnnouncement,
@@ -17,10 +18,12 @@ import {
 } from '../session/useCalculationEvidence'
 import { isPlanResult, type DashboardView, type PlanResult } from '../session/useDashboard'
 import {
+  AVAILABLE_SYNC,
   calculationEvidenceFixture,
   estimatedUndefinedFixture,
   EVIDENCE_IDS,
   evidenceResultFixture,
+  idleSyncState,
   MEASURED_AT,
   trustFixture,
 } from '../test/planResultFixture'
@@ -45,7 +48,7 @@ function parsed(body: Record<string, unknown>): PlanResult {
 }
 
 function ready(body: Record<string, unknown> = evidenceResultFixture()): DashboardView {
-  return { kind: 'READY', nextAction: 'NONE', result: parsed(body) }
+  return { kind: 'READY', nextAction: 'NONE', result: parsed(body), sync: AVAILABLE_SYNC }
 }
 
 /** The estimated, partly undefined bundle with UUID-shaped ids. */
@@ -70,13 +73,18 @@ function Harness({
   readonly view: DashboardView
   readonly reload?: () => void
 }): ReactElement {
-  const dashboard = { view, loading: false, reload }
+  const dashboard = { view, loading: false, reload, refresh: vi.fn() }
   const evidence = useDashboardEvidence(dashboard)
   const adjustments = useDashboardAdjustments(dashboard)
   return (
     <>
       <p data-testid="announcement">{evidenceAnnouncement(evidence.view) ?? ''}</p>
-      <PlanResultPanel adjustments={adjustments} dashboard={dashboard} evidence={evidence} />
+      <PlanResultPanel
+        adjustments={adjustments}
+        dashboard={dashboard}
+        evidence={evidence}
+        sync={idleSyncState()}
+      />
     </>
   )
 }
@@ -447,6 +455,103 @@ describe('CalculationEvidence', () => {
     expect(unpublished).not.toHaveTextContent(EVIDENCE_IDS.calculation)
   })
 
+  it('Story 2.11: an incremental version shows where its sync read again, and every official version with its applied end', async () => {
+    const shownV2 = newerBundle()
+    const windowStart = '2026-09-26T01:00:00Z'
+    const base = calculationEvidenceFixture(shownV2)
+    const inputs = base.inputs as Record<string, Record<string, unknown>>
+    const evidence = {
+      ...base,
+      inputs: { ...inputs, sourceRange: { ...inputs.sourceRange, windowStart } },
+      versions: {
+        official: [
+          {
+            pointerVersion: 1,
+            calculationId: EVIDENCE_IDS.calculation,
+            publishedAt: '2026-09-25T00:00:05Z',
+            appliedUntil: '2026-09-27T01:00:01Z',
+            current: false,
+          },
+          {
+            pointerVersion: 2,
+            calculationId: EVIDENCE_IDS.newerCalculation,
+            publishedAt: '2026-09-27T01:00:01Z',
+            appliedUntil: null,
+            current: true,
+          },
+        ],
+        unpublished: [],
+      },
+    }
+    answers(() => Promise.resolve(json(evidence)))
+    render(<Harness view={ready(shownV2)} />)
+    await openEvidence()
+
+    // The collected range is still (t0, tc]; the window start is its own fact beside it.
+    const inputsPart = part(copy.sections.inputs)
+    expect(inputsPart).toHaveTextContent(copy.inputs.windowStart)
+    expect(inputsPart).toHaveTextContent(copy.inputs.windowStartHelp)
+    // P13: this window starts after t0, so the part before it was carried over.
+    expect(inputsPart).toHaveTextContent(copy.inputs.windowStartCarried)
+    expect(inputsPart).not.toHaveTextContent(copy.inputs.windowStartFromT0)
+    expect(inputsPart).toHaveTextContent(
+      `${copy.inputs.windowStart}${formatSeoulTime(windowStart, planResultContent.timeUnavailable)} ${copy.separators.item} ${planResultContent.timeZone}`,
+    )
+    const [official] = within(part(copy.sections.versions)).getAllByRole('list')
+    if (official === undefined) throw new Error('the official list')
+    const rows = within(official).getAllByRole('listitem')
+    expect(rows).toHaveLength(2)
+    const [earlier, current] = rows
+    expect(earlier).toHaveTextContent(EVIDENCE_IDS.calculation)
+    expect(earlier).toHaveTextContent(
+      formatSeoulTime('2026-09-27T01:00:01Z', planResultContent.timeUnavailable),
+    )
+    expect(earlier).toHaveTextContent(copy.versions.earlier)
+    expect(earlier).not.toHaveTextContent(copy.versions.current)
+    expect(current).toHaveTextContent(EVIDENCE_IDS.newerCalculation)
+    expect(current).toHaveTextContent(copy.versions.current)
+    expect(part(copy.sections.versions)).toHaveTextContent(copy.versions.officialHelp)
+    expect(within(part(copy.sections.versions)).queryAllByRole('link')).toEqual([])
+  })
+
+  it('P13: a window that starts at t0 carries nothing over, and says it read from t0', async () => {
+    answers(evidenceOk)
+    render(<Harness view={ready()} />)
+    await openEvidence()
+    const inputsPart = part(copy.sections.inputs)
+    expect(inputsPart).toHaveTextContent(copy.inputs.windowStartFromT0)
+    expect(inputsPart).not.toHaveTextContent(copy.inputs.windowStartCarried)
+  })
+
+  it('P15: accepts an unbroken history whose publications share a millisecond', () => {
+    const shownV2 = parsed(newerBundle())
+    const base = calculationEvidenceFixture(newerBundle())
+    const same = '2026-09-27T01:00:01Z'
+    const history = {
+      ...base,
+      versions: {
+        official: [
+          {
+            pointerVersion: 1,
+            calculationId: EVIDENCE_IDS.calculation,
+            publishedAt: same,
+            appliedUntil: same,
+            current: false,
+          },
+          {
+            pointerVersion: 2,
+            calculationId: EVIDENCE_IDS.newerCalculation,
+            publishedAt: same,
+            appliedUntil: null,
+            current: true,
+          },
+        ],
+        unpublished: [],
+      },
+    }
+    expect(parseEvidence(history, shownV2)).not.toBeNull()
+  })
+
   it('AC-5: with no unpublished attempt the list says so', async () => {
     answers(evidenceOk)
     render(<Harness view={ready()} />)
@@ -583,10 +688,14 @@ describe('CalculationEvidence', () => {
   it('keeps the evidence while the same bundle stays shown after a failed dashboard reload', async () => {
     answers(evidenceOk)
     const result = parsed(evidenceResultFixture())
-    const { rerender } = render(<Harness view={{ kind: 'READY', nextAction: 'NONE', result }} />)
+    const { rerender } = render(
+      <Harness view={{ kind: 'READY', nextAction: 'NONE', result, sync: AVAILABLE_SYNC }} />,
+    )
     await openEvidence()
 
-    rerender(<Harness view={{ kind: 'lastGood', nextAction: 'NONE', result }} />)
+    rerender(
+      <Harness view={{ kind: 'lastGood', nextAction: 'NONE', result, sync: AVAILABLE_SYNC }} />,
+    )
     expect(region()).toHaveTextContent('d'.repeat(64))
   })
 
@@ -798,6 +907,78 @@ describe('CalculationEvidence', () => {
             ],
           },
         },
+      ],
+      [
+        'a window start before t0',
+        changedInput('sourceRange', { windowStart: '2026-09-24T23:59:59Z' }),
+      ],
+      [
+        'a window start after tc',
+        changedInput('sourceRange', { windowStart: '2026-09-27T01:00:01Z' }),
+      ],
+      ['no window start', changedInput('sourceRange', { windowStart: undefined })],
+      ['a window start that is not an instant', changedInput('sourceRange', { windowStart: 'x' })],
+      [
+        'a current version with an applied end',
+        officialVersions({ ...current, appliedUntil: '2026-09-28T00:00:00Z' }),
+      ],
+      [
+        'an earlier version without an applied end',
+        officialVersions(
+          { ...current, pointerVersion: 0, calculationId: 'x', current: false, appliedUntil: null },
+          current,
+        ),
+      ],
+      [
+        'versions out of publication order',
+        officialVersions(
+          {
+            ...current,
+            pointerVersion: 3,
+            calculationId: 'x',
+            current: false,
+            appliedUntil: '2026-09-27T01:00:01Z',
+          },
+          current,
+        ),
+      ],
+      [
+        'P15: a gap between an earlier version and the next',
+        officialVersions(
+          {
+            ...current,
+            pointerVersion: 0,
+            calculationId: 'x',
+            publishedAt: '2026-09-26T00:00:00Z',
+            current: false,
+            appliedUntil: '2026-09-27T00:00:00Z',
+          },
+          current,
+        ),
+      ],
+      [
+        'P15: an applied end before its own publication',
+        officialVersions(
+          {
+            ...current,
+            pointerVersion: 0,
+            calculationId: 'x',
+            publishedAt: '2026-09-27T01:00:02Z',
+            current: false,
+            appliedUntil: '2026-09-27T01:00:01Z',
+          },
+          current,
+        ),
+      ],
+      [
+        'a current version that is not the latest',
+        officialVersions(current, {
+          ...current,
+          pointerVersion: 2,
+          calculationId: 'x',
+          current: false,
+          appliedUntil: '2026-09-27T01:00:01Z',
+        }),
       ],
       [
         'an attempt without an instant',

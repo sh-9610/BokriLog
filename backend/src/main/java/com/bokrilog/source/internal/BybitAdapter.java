@@ -345,6 +345,7 @@ class BybitAdapter {
         Instant tc=fixedTc;
         if (tc==null) {
             Call timeCall = publicCall(SERVER_TIME_PATH);
+            if (timeCall.rejection() != null) return rejectedCollection(timeCall.rejection());
             JsonNode timeResult = resultOf(timeCall);
             if (timeResult == null) return rejectedCollection(reasonOf(timeCall, SourceRejectionReason.PROVIDER_UNAVAILABLE));
             try {
@@ -358,9 +359,36 @@ class BybitAdapter {
             if (!tc.isAfter(t0)) return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
             scopeConsumer.accept(tc);
         }
-        final Instant cutoff=tc;
+        return collect(credentials, expectedAccountRef, t0, t0, tc, pageConsumer);
+    }
 
+    /**
+     * The incremental collection of an active plan (Story 2.11). The cutoff {@code tc} was fixed by the
+     * caller from the server time before any signed call, so this never asks the time API; the windows start
+     * at {@code from} (never before {@code t0}) and still end at the fixed {@code tc}. Events are still judged
+     * against the whole {@code (t0, tc]} — a window that starts later only asks less of the provider.
+     */
+    SourceConnectionApi.CollectionResult collectIncrementalInputs(SourceCredentials credentials,
+            String expectedAccountRef, Instant t0, Instant from, Instant tc,
+            Consumer<SourceConnectionApi.CollectionPage> pageConsumer) {
+        if (!isConfigured()) return rejectedCollection(SourceRejectionReason.UNAVAILABLE);
+        if (!isHeaderSafe(credentials.apiKey()) || !isAcceptable(credentials.apiSecret()))
+            return rejectedCollection(SourceRejectionReason.INVALID_FORMAT);
+        if (from.isBefore(t0) || !tc.isAfter(from)) return rejectedCollection(SourceRejectionReason.INVALID_FORMAT);
+        return collect(credentials, expectedAccountRef, t0, from, tc, pageConsumer);
+    }
+
+    /**
+     * The collection core both collections share: key facts, account mode, the wallet's totalEquity, then
+     * every required type, window and cursor from {@code from} to {@code cutoff}.
+     *
+     * <p>A transport rejection is read first at every call. Without it a timeout, a rate limit or a 5xx folds
+     * into the call site's fallback — a timed-out key check would read as an authentication rejection.
+     */
+    private SourceConnectionApi.CollectionResult collect(SourceCredentials credentials, String expectedAccountRef,
+            Instant t0, Instant from, Instant cutoff, Consumer<SourceConnectionApi.CollectionPage> pageConsumer) {
         Call keyCall = call(credentials, QUERY_API_PATH, "");
+        if (keyCall.rejection() != null) return rejectedCollection(keyCall.rejection());
         JsonNode keyFacts = resultOf(keyCall);
         if (keyFacts == null) return rejectedCollection(reasonOf(keyCall, SourceRejectionReason.AUTHENTICATION_REJECTED));
         SourceRejectionReason keyVerdict = judgeKey(keyFacts);
@@ -370,12 +398,14 @@ class BybitAdapter {
         if (!expectedAccountRef.equals(accountRef)) return rejectedCollection(SourceRejectionReason.SUB_ACCOUNT);
 
         Call accountCall = call(credentials, ACCOUNT_INFO_PATH, "");
+        if (accountCall.rejection() != null) return rejectedCollection(accountCall.rejection());
         JsonNode account = resultOf(accountCall);
         if (account == null) return rejectedCollection(reasonOf(accountCall, SourceRejectionReason.AUTHENTICATION_REJECTED));
         if (!isSupportedAccountMode(account)) return rejectedCollection(SourceRejectionReason.UNSUPPORTED_ACCOUNT_MODE);
 
         Instant receivedAt = Instant.now(this.clock);
         Call walletCall = call(credentials, WALLET_BALANCE_PATH, WALLET_BALANCE_QUERY);
+        if (walletCall.rejection() != null) return rejectedCollection(walletCall.rejection());
         JsonNode wallet = resultOf(walletCall);
         if (wallet == null) return rejectedCollection(reasonOf(walletCall, SourceRejectionReason.WALLET_UNAVAILABLE));
         if (!hasUsableUnifiedEquity(wallet)) return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
@@ -385,7 +415,7 @@ class BybitAdapter {
 
         boolean review = false;
         int completedPages = 0;
-        Instant start = t0;
+        Instant start = from;
         while (start.isBefore(cutoff)) {
             Instant end = start.plus(MAX_WINDOW_MILLIS, ChronoUnit.MILLIS);
             if (end.isAfter(cutoff)) end = cutoff;
@@ -399,6 +429,7 @@ class BybitAdapter {
                     Instant requestedAt = Instant.now(this.clock);
                     Call pageCall = call(credentials, TRANSACTION_LOG_PATH, query);
                     Instant pageReceivedAt = Instant.now(this.clock);
+                    if (pageCall.rejection() != null) return rejectedCollection(pageCall.rejection());
                     JsonNode page = resultOf(pageCall);
                     if (page == null) return rejectedCollection(reasonOf(pageCall, SourceRejectionReason.PROVIDER_UNAVAILABLE));
                     JsonNode list = page.get("list");

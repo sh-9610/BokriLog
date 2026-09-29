@@ -10,6 +10,7 @@ import { entryContent } from '../content/entry'
 import { useDashboardAdjustments } from '../session/useAdjustmentHistory'
 import { useDashboardEvidence } from '../session/useCalculationEvidence'
 import { planPresenceOf, statusBusy, useDashboard } from '../session/useDashboard'
+import { useDashboardSync } from '../session/useDashboardSync'
 import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
@@ -39,7 +40,8 @@ const MAIN_ID = 'signed-in-main'
  * `마지막 정상 결과`·`재시도 가능`으로 구분한다. 상태 변화는 이 화면의 단일 live region이 한 문장으로
  * 알린다. 계산 근거(Story 2.9)는 같은 패널 안에서 펼치고, 그 읽기 상태도 같은 live region이 대시보드
  * 문장 뒤에 이어 말한다. 조정 이력(Story 2.10)도 같은 패널 안에서 펼치고, 그 읽기 상태는 근거 문장 뒤에
- * 이어 말한다. 동기화 조작은 이후 스토리의 범위다.
+ * 이어 말한다. 동기화(Story 2.11)는 신선도 축 바로 뒤에서 조작하고 — 대시보드 진입과 오래 숨겨 둔 탭으로
+ * 돌아오는 순간에도 한 번씩 요청한다 — 그 진행과 결과도 같은 live region이 대시보드 문장 자리에서 한 번씩 말한다.
  */
 export function SignedInScreen(): ReactElement {
   const { csrfToken, gate } = useSessionGate('dashboard')
@@ -50,6 +52,8 @@ export function SignedInScreen(): ReactElement {
   const evidence = useDashboardEvidence(dashboard)
   // The adjustment history of the same bundle (Story 2.10), in its own state.
   const adjustments = useDashboardAdjustments(dashboard)
+  // The user-time sync of the shown plan (Story 2.11): entry, tab return and the button, in its own state.
+  const sync = useDashboardSync(dashboard, csrfToken)
   // Whether the first-snapshot panel leads the dashboard, and how (`planPresenceOf` gives the reasons).
   const presence = planPresenceOf(dashboard.view)
 
@@ -139,6 +143,7 @@ export function SignedInScreen(): ReactElement {
               className={styles.noticeText}
               dashboard={dashboard}
               evidence={evidence}
+              sync={sync}
             />
           ) : (
             <p className={styles.noticeText}>
@@ -161,7 +166,12 @@ export function SignedInScreen(): ReactElement {
           <FirstSnapshotPanel csrfToken={csrfToken} plan={presence} ready={ready} />
         ) : null}
         {ready ? (
-          <PlanResultPanel adjustments={adjustments} dashboard={dashboard} evidence={evidence} />
+          <PlanResultPanel
+            adjustments={adjustments}
+            dashboard={dashboard}
+            evidence={evidence}
+            sync={sync}
+          />
         ) : null}
         {ready ? (
           <section aria-labelledby={authContent.dashboard.id} className={styles.section}>

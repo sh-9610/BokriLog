@@ -1,0 +1,132 @@
+/*
+ * The sync control (Story 2.11), right after the freshness axis: one primary button at least 44px, the
+ * progress marker and texts beside it, the error summary and the long-gap explanation. Everything stacks in
+ * one column and wraps; nothing depends on horizontal scrolling at 320px, 200% or 400% zoom.
+ */
+.sync {
+  display: grid;
+  gap: var(--space-2);
+  min-inline-size: 0;
+  padding-block-start: var(--space-3);
+}
+
+.sync p,
+.sync dl,
+.sync dd {
+  margin: 0;
+}
+
+/* The primary action (DESIGN.md `sync-control`). Its name is the action; its state is the text beside it. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: start;
+  max-inline-size: 100%;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding: var(--space-2) var(--space-5);
+  border: 1px solid var(--component-sync-control-background);
+  border-radius: var(--component-sync-control-radius);
+  background: var(--component-sync-control-background);
+  color: var(--component-sync-control-foreground);
+  font-family: var(--type-body-font-family);
+  font-size: var(--type-body-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-body-line-height);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.button:focus-visible {
+  outline-color: var(--component-sync-control-focus);
+}
+
+/*
+ * Blocked (running, cooling down, or unavailable): it keeps its place and its focus, and does not look like a
+ * control that would run the same request again.
+ */
+.button[aria-disabled='true'] {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-subtle);
+  color: var(--color-ink-secondary);
+  cursor: not-allowed;
+}
+
+.progress {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.state {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  font-weight: var(--type-label-font-weight);
+}
+
+/* The progress marker: a turning ring, and a still one under reduced motion — the text carries the state. */
+.marker {
+  flex: none;
+  inline-size: var(--space-4);
+  block-size: var(--space-4);
+  border: 2px solid var(--color-border-default);
+  border-block-start-color: var(--component-sync-control-background);
+  border-radius: var(--radius-full);
+  animation: sync-turn 1s linear infinite;
+}
+
+@keyframes sync-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marker {
+    border-color: var(--component-sync-control-background);
+    animation: none;
+  }
+}
+
+.help {
+  color: var(--color-ink-secondary);
+  font-size: var(--type-meta-font-size);
+  line-height: var(--type-meta-line-height);
+}
+
+/*
+ * The error summary and the long-gap explanation. Focus moves here (tabIndex -1) when a sync the user pressed
+ * ends without a new official result. Text carries the state; the surface only groups it.
+ */
+.summary {
+  display: grid;
+  gap: var(--space-1);
+  min-inline-size: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--component-service-notice-border);
+  border-radius: var(--radius-md);
+  background: var(--component-service-notice-background);
+  color: var(--component-service-notice-foreground);
+  overflow-wrap: anywhere;
+  scroll-margin-block-start: var(--space-4);
+}
+
+.label {
+  font-weight: var(--type-label-font-weight);
+}
+
+.choices {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.choices div {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.choices dt {
+  font-weight: var(--type-label-font-weight);
+}

@@ -225,6 +225,16 @@ function Inputs({ evidence }: { readonly evidence: Evidence }): ReactElement {
             value: <TimeRange end={sourceRange.rangeEnd} start={sourceRange.rangeStart} />,
           },
           {
+            label: copy.inputs.windowStart,
+            value: <Time value={sourceRange.windowStart} />,
+            // Only a window that starts after t0 carried the part before it over from the previous version.
+            help: `${copy.inputs.windowStartHelp} ${
+              Date.parse(sourceRange.windowStart) > Date.parse(sourceRange.rangeStart)
+                ? copy.inputs.windowStartCarried
+                : copy.inputs.windowStartFromT0
+            }`,
+          },
+          {
             label: copy.inputs.collectionPolicy,
             value: <Id value={sourceRange.collectionPolicy} />,
           },
@@ -397,15 +407,16 @@ function attemptReason(code: string): string {
 }
 
 /**
- * The official versions, each with its publication order and the time it became official, the current one
- * named so; then — apart, and read-only — the attempts that never published. Nothing here links anywhere:
- * no earlier version or attempt has a screen of its own.
+ * The official versions in publication order, each with its order, the time it became official and the time
+ * it stopped being so — the current one named so instead; then — apart, and read-only — the attempts that
+ * never published. Nothing here links anywhere: no earlier version or attempt has a screen of its own.
  */
 function Versions({ evidence }: { readonly evidence: Evidence }): ReactElement {
   const { official, unpublished } = evidence.versions
   return (
     <Part id="versions" title={copy.sections.versions}>
       <p className={styles.term}>{copy.versions.official}</p>
+      <p className={styles.help}>{copy.versions.officialHelp}</p>
       <ul className={styles.list}>
         {official.map((version) => (
           <li
@@ -416,10 +427,14 @@ function Versions({ evidence }: { readonly evidence: Evidence }): ReactElement {
               facts={[
                 { label: copy.versions.order, value: <Id value={version.pointerVersion} /> },
                 { label: copy.versions.effectiveFrom, value: <Time value={version.publishedAt} /> },
-                {
-                  label: copy.versions.effectiveUntil,
-                  value: version.current ? copy.versions.current : copy.versions.earlier,
-                },
+                // "Current" comes from the version's own flag and from nothing else.
+                version.current
+                  ? { label: copy.versions.effectiveUntil, value: copy.versions.current }
+                  : {
+                      label: copy.versions.effectiveUntil,
+                      value: <Time value={version.appliedUntil ?? ''} />,
+                      help: copy.versions.earlier,
+                    },
                 { label: copy.versions.calculationId, value: <Id value={version.calculationId} /> },
               ]}
             />

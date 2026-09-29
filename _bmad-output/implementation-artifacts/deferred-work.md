@@ -263,3 +263,15 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-10-cashflow-adjustment-history.md`
   summary: `AdjustmentHistory.module.css`가 `CalculationEvidence.module.css`의 `.action`(44×44 최소 조작 영역)·`.id`(mono 전체값 줄바꿈)·`.facts`·`.notice` 규칙을 거의 그대로 옮겨 44×44 규칙의 다섯 번째 사본이 됐다.
   evidence: Story 2.10 리뷰가 두 파일의 규칙이 같은 토큰 조합으로 반복된다고 짚었다. Story 1.11이 네 번째 사본을 기록했고 공통 규칙을 한 곳으로 모으는 일은 여러 화면 CSS 모듈을 함께 바꾸는 별도 정리다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-11-incremental-plan-sync.md`
+  summary: 증분 동기화는 매번 `(t0, tc]` 전체를 새 후보·판정·환산·계산 흐름으로 다시 쓰고, 값이 바뀌지 않아도 새 공식 버전을 발행한다. 그래서 저장량이 버전 수 × 사건 수로 늘고 근거의 공식 버전 목록에 상한이 없다. 한 단계 트랜잭션이 30초 lease보다 길어지면 heartbeat(`SKIP LOCKED`)가 갱신하지 못해 큰 이력은 `SYNC_INTERRUPTED`로 끝날 수 있다.
+  evidence: 2.9·2.10의 "계산 버전 하나가 한 계보를 인용한다" 불변식을 지키려고 SPEC Design Notes가 전체 재처리를 택했다. 진입·재활성화 자동 트리거는 5분마다 접수될 수 있다. "변경 없음이면 발행하지 않음"·보존 상한·단계 트랜잭션 안의 lease 연장은 이력 규모가 보이는 시점에 정할 일이다(Story 2.11 리뷰).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-11-incremental-plan-sync.md`
+  summary: 이어받은 사건의 USD 값이나 판정이 공식 버전 사이에서 바뀌어도(가격 revision·정책 버전 교체) Story 2.10 조정 이력에는 변경 표지도 과거 버전도 나타나지 않는다.
+  evidence: 동기화마다 새 판정 묶음을 만들고 `insertBundle`은 `previous_conversion_id`를 같은 판정 안에서만 잇는다. 그래서 버전을 건너는 사슬이 없다. 지금은 캔들 캐시와 고정 정책 때문에 값이 같게 나오지만, 정정을 새 버전으로 반영하는 Story 2.12가 버전 간 연결을 소유해야 한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-11-incremental-plan-sync.md`
+  summary: `검토 필요`로 끝난 동기화(대표적으로 설명되지 않는 저장 사건)의 다음 행동이 `SYNC`인데, 원인이 늦은 사건이면 다시 동기화해도 풀리지 않는다. 발행되지 않은 시도가 저장한 사건이 제공자에서 사라지면 이후 모든 동기화가 검토로 끝난다.
+  evidence: frozen SPEC이 `LAST_SYNC_NEEDS_REVIEW`의 다음 행동을 `SYNC`로 정했고, 늦은 사건의 정밀 재검증은 Story 2.12의 범위다. 확장 검증 창이 그 사건을 다시 관측하면 풀리지만, 제공자에서 사라진 사건은 관측되지 않는다(Story 2.11 리뷰).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-11-incremental-plan-sync.md`
+  summary: `SyncControl.module.css`가 44×44 최소 조작 영역 규칙(`min-block-size`·`min-inline-size: var(--space-target-min)`)의 여섯 번째 사본이 됐다.
+  evidence: Story 2.10이 다섯 번째 사본을 기록했다. 공통 규칙을 한 곳으로 모으는 일은 여러 화면 CSS 모듈을 함께 바꾸는 별도 정리다.

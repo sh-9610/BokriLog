@@ -42,12 +42,17 @@ class SyncJobService implements SyncJobApi {
     private final CashflowConversionMarket market;
     private final PlanPublicationService publications;
     private final AdjustmentHistoryService adjustments;
+    private final PlanSyncService planSyncs;
+    private final PlanSyncRepository planSyncAttempts;
 
     SyncJobService(SyncJobRepository jobs, InitialCollectionRepository initialJobs,
             CashflowClassificationRepository classifications, CashflowConversionRepository conversions,
             SourceConnectionApi sources, PortfolioMembershipApi portfolios, AccountAccessApi accounts,
             OperationalRestrictionApi restrictions, InitialInputsPlanPort plans, PlatformTransactionManager manager,
-            PlanPublicationService publications, AdjustmentHistoryService adjustments) {
+            PlanPublicationService publications, AdjustmentHistoryService adjustments, PlanSyncService planSyncs,
+            PlanSyncRepository planSyncAttempts) {
+        this.planSyncs=planSyncs;
+        this.planSyncAttempts=planSyncAttempts;
         this.jobs=jobs; this.initialJobs=initialJobs; this.classifications=classifications;
         this.conversions=conversions;
         this.sources=sources; this.portfolios=portfolios;
@@ -220,20 +225,35 @@ class SyncJobService implements SyncJobApi {
     public AdjustmentRead adjustmentHistory(@Nullable UUID userId, @Nullable AdjustmentQuery query) {
         return adjustments.read(userId,query);
     }
+    @Override
+    public SyncAdmission admitPlanSync(@Nullable UUID userId, @Nullable SyncTrigger trigger,
+            @Nullable String idempotencyKey) {
+        return planSyncs.admit(userId,trigger,idempotencyKey);
+    }
     /**
      * Erases this user's sync rows. The publication rows go first: the official pointer and calculation
      * version cite the candidate, classification and conversion with ON DELETE RESTRICT. Runs after the
      * portfolio erasure, whose snapshot components cite the source snapshots.
+     *
+     * <p>The incremental sync attempts (Story 2.11) are locked first — in a stage's own lock order, attempt
+     * before child — and erased after their stage rows, which reference them. An attempt still in progress ends
+     * here, with the user's data; its one ending line is written once the erasure committed.
      */
     @Override
     public void eraseSyncData(@Nullable UUID userId) {
-        if (userId!=null) transactions.executeWithoutResult(status -> {
+        if (userId==null) return;
+        List<PlanSyncRepository.Ending> ended=transactions.execute(status -> {
+            planSyncAttempts.lockForErase(userId);
             publications.erase(userId);
             conversions.erase(userId);
             classifications.erase(userId);
             initialJobs.erase(userId);
+            List<PlanSyncRepository.Ending> erased=planSyncAttempts.erase(userId);
             jobs.erase(userId);
+            return erased;
         });
+        if (ended!=null) ended.forEach(ending -> planSyncs.logEnding(new PlanSyncRepository.Ending(ending.jobId(),
+                ending.trigger(),ending.mode(),"ERASED",ending.stage(),"-",ending.latencyMs())));
     }
     Optional<CashflowClassificationRepository.Lease> claimClassification() {
         return transactions.execute(status->classifications.claim().flatMap(lease->{

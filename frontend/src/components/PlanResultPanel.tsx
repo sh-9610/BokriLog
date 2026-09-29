@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactElement } from 'react'
+import { useEffect, useRef, type ReactElement, type ReactNode } from 'react'
 
 import type { AdjustmentHistoryState } from '../session/useAdjustmentHistory'
 import type { EvidenceState } from '../session/useCalculationEvidence'
@@ -7,8 +7,10 @@ import type {
   DashboardView,
   PlanResult,
   PlanResultMetric,
+  SyncStatus,
   TrustAxis,
 } from '../session/useDashboard'
+import type { DashboardSync } from '../session/useDashboardSync'
 
 import { ENTRY_PATH } from '../content/auth'
 import { planConditionContent } from '../content/planConditions'
@@ -24,6 +26,7 @@ import { bundleOf } from '../session/useDashboard'
 import { AdjustmentHistory } from './AdjustmentHistory'
 import { CalculationEvidence } from './CalculationEvidence'
 import styles from './PlanResultPanel.module.css'
+import { SyncControl } from './SyncControl'
 
 const RATIOS: readonly MetricName[] = ['REQUIRED_RATE', 'GOAL_PROGRESS']
 
@@ -135,7 +138,8 @@ interface AxisTime {
  * One trust axis as its own group: state → cause → times → affected metrics → next action, the order
  * EXPERIENCE gives ("what is it → why → which values → what can the user do"). The axis's next action
  * is a short sentence without a time; the approved sentence with the measurement time appears once, in
- * the screen's next-action section.
+ * the screen's next-action section. `after` follows the group inside the same item — the freshness axis's
+ * sync control (Story 2.11), right after the axis it acts on.
  */
 function Axis({
   id,
@@ -146,6 +150,7 @@ function Axis({
   extra,
   times,
   note,
+  after,
 }: {
   readonly id: string
   readonly name: string
@@ -155,6 +160,7 @@ function Axis({
   readonly extra?: readonly string[]
   readonly times: readonly AxisTime[]
   readonly note?: { readonly label: string; readonly text: string }
+  readonly after?: ReactNode
 }): ReactElement {
   return (
     <li className={styles.axis}>
@@ -198,11 +204,20 @@ function Axis({
           </div>
         </dl>
       </div>
+      {after}
     </li>
   )
 }
 
-function Trust({ result }: { readonly result: PlanResult }): ReactElement {
+function Trust({
+  result,
+  status,
+  sync,
+}: {
+  readonly result: PlanResult
+  readonly status: SyncStatus
+  readonly sync: DashboardSync
+}): ReactElement {
   const { freshness, inputReliability, calculationNature } = result.trust
   const unavailable = calculationNature.unavailableMetrics.map(metricName)
   const natureExtra = [
@@ -219,6 +234,7 @@ function Trust({ result }: { readonly result: PlanResult }): ReactElement {
       {/* Three equal groups, never merged into one score or badge. */}
       <ul className={styles.axes}>
         <Axis
+          after={<SyncControl status={status} sync={sync} />}
           axis={freshness}
           causes={copy.axes.freshness.causes}
           id="plan-result-axis-freshness"
@@ -339,7 +355,7 @@ function Notice({
 }
 
 /**
- * The official dashboard (Story 2.8).
+ * The official dashboard (Story 2.8), and the sync that updates it (Story 2.11).
  *
  * Everything comes from one response, held as one piece of state, so a newer bundle replaces the six
  * values and the three axes at once — cards are never assembled from separate requests. The order is
@@ -361,15 +377,22 @@ function Notice({
  * The calculation evidence (Story 2.9) opens beside the metrics heading, on this same screen, for the
  * bundle shown here, and the adjustment history (Story 2.10) opens right after it. Their states are their
  * own (`evidence`, `adjustments`); the screen's status region says what they did.
+ *
+ * The sync control (Story 2.11) sits right after the freshness axis, for the bundle shown. While a sync runs
+ * the bundle stays as it is; when it ends with a new bundle, that bundle replaces this one in one piece (the
+ * dashboard's own rule), and a sync the user pressed moves focus to this panel's heading. Its state is its
+ * own (`sync`); the screen's status region says what it did.
  */
 export function PlanResultPanel({
   dashboard,
   evidence,
   adjustments,
+  sync,
 }: {
   readonly dashboard: Dashboard
   readonly evidence: EvidenceState
   readonly adjustments: AdjustmentHistoryState
+  readonly sync: DashboardSync
 }): ReactElement {
   const { view, loading, reload } = dashboard
   const bundle = bundleOf(view)
@@ -381,6 +404,9 @@ export function PlanResultPanel({
   const heading = useRef<HTMLHeadingElement>(null)
   // The element inside the panel that last had focus, until focus leaves the panel for another element.
   const lastFocused = useRef<Element | null>(null)
+  // A sync's focus request made before this panel was mounted is not replayed.
+  const handledFocus = useRef(sync.focus?.serial ?? 0)
+  const syncFocus = sync.focus
 
   useEffect(() => {
     if (hasNextAction && hasResult) return
@@ -389,6 +415,14 @@ export function PlanResultPanel({
     const lost = active === null || active === document.body || !active.isConnected
     if (last !== null && !last.isConnected && lost) heading.current?.focus()
   }, [hasNextAction, hasResult])
+
+  // A sync the user pressed ended with a new bundle: focus goes to the heading of what replaced the old one.
+  useEffect(() => {
+    if (syncFocus === null || syncFocus.serial === handledFocus.current) return
+    if (syncFocus.target !== 'heading') return
+    handledFocus.current = syncFocus.serial
+    heading.current?.focus()
+  }, [syncFocus])
 
   return (
     <section
@@ -420,7 +454,9 @@ export function PlanResultPanel({
           </div>
         </section>
       )}
-      {result === null ? null : <Trust result={result} />}
+      {result === null || bundle === null ? null : (
+        <Trust result={result} status={bundle.sync} sync={sync} />
+      )}
       {result === null ? null : (
         <section aria-labelledby="plan-result-metrics" className={styles.group}>
           <h3 id="plan-result-metrics">{copy.metricsHeading}</h3>

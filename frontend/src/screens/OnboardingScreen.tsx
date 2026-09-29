@@ -10,6 +10,7 @@ import { entryContent } from '../content/entry'
 import { useDashboardAdjustments } from '../session/useAdjustmentHistory'
 import { useDashboardEvidence } from '../session/useCalculationEvidence'
 import { planPresenceOf, statusBusy, useDashboard } from '../session/useDashboard'
+import { useDashboardSync } from '../session/useDashboardSync'
 import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
@@ -35,7 +36,8 @@ const MAIN_ID = 'onboarding-main'
  *
  * 첫 로그인 세션의 확정 목적지가 이 화면이다. 그 세션이 `/dashboard`를 열어도 이 화면으로
  * 밀려나므로(`useSessionGate`), 공식 대시보드(Story 2.8)도 대시보드 화면과 같은 패널·같은 순서로 여기
- * 그린다 — 조회 모델 응답 하나에서 그리고 화면의 단일 live region이 상태 변화를 한 문장으로 알린다.
+ * 그린다 — 조회 모델 응답 하나에서 그리고 화면의 단일 live region이 상태 변화를 한 문장으로 알린다. 동기화
+ * (Story 2.11)도 대시보드 화면과 같은 자리·같은 트리거로 둔다.
  */
 export function OnboardingScreen(): ReactElement {
   const { csrfToken, gate } = useSessionGate('onboarding')
@@ -46,6 +48,8 @@ export function OnboardingScreen(): ReactElement {
   const evidence = useDashboardEvidence(dashboard)
   // The adjustment history of the same bundle (Story 2.10), in its own state.
   const adjustments = useDashboardAdjustments(dashboard)
+  // The user-time sync of the shown plan (Story 2.11): entry, tab return and the button, in its own state.
+  const sync = useDashboardSync(dashboard, csrfToken)
   // Whether the first-snapshot panel leads the dashboard, and how (`planPresenceOf` gives the reasons).
   const presence = planPresenceOf(dashboard.view)
 
@@ -132,6 +136,7 @@ export function OnboardingScreen(): ReactElement {
               className={styles.noticeText}
               dashboard={dashboard}
               evidence={evidence}
+              sync={sync}
             />
           ) : (
             <p className={styles.noticeText}>
@@ -154,7 +159,12 @@ export function OnboardingScreen(): ReactElement {
           <FirstSnapshotPanel csrfToken={csrfToken} plan={presence} ready={ready} />
         ) : null}
         {ready ? (
-          <PlanResultPanel adjustments={adjustments} dashboard={dashboard} evidence={evidence} />
+          <PlanResultPanel
+            adjustments={adjustments}
+            dashboard={dashboard}
+            evidence={evidence}
+            sync={sync}
+          />
         ) : null}
 
         {ready ? (

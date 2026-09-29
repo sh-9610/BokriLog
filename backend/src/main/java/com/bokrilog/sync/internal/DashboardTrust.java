@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Predicate;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The three trust axes of the dashboard, judged on the server (Story 2.8 AC-5, SYNC-UX-1.0).
@@ -23,14 +24,19 @@ import java.util.function.Predicate;
  * verification ({@code cashflowVerifiedThrough}) and the calculation nature for the basis
  * ({@code basisAt}).
  *
- * <p>The next actions are the closed set of this story: {@link #CREATE_PLAN}, {@link #WAIT_FOR_RESULT},
- * {@link #WAIT_FOR_SYNC} and {@link #NONE}. A sync control arrives with Story 2.11; until then "not
- * fresh" has no action here, and the screen says so without promising one.
+ * <p>The next actions are a closed set: {@link #CREATE_PLAN}, {@link #WAIT_FOR_RESULT}, {@link #WAIT_FOR_SYNC},
+ * {@link #SYNC}, {@link #CHOOSE_CONTINUATION} and {@link #NONE}. Story 2.11 added the sync control: a stale
+ * result is refreshed by a new sync ({@code SYNC}), unless the gap is long ({@code CHOOSE_CONTINUATION}) or no
+ * sync can run ({@code NONE}). The latest sync attempt is one of the facts: a failed or review-required ending
+ * keeps the result "not fresh" whatever its times, and a review-required ending makes the input reliability
+ * "review required" for all six metrics.
  */
 final class DashboardTrust {
     static final String CREATE_PLAN = "CREATE_PLAN";
     static final String WAIT_FOR_RESULT = "WAIT_FOR_RESULT";
     static final String WAIT_FOR_SYNC = "WAIT_FOR_SYNC";
+    static final String SYNC = "SYNC";
+    static final String CHOOSE_CONTINUATION = "CHOOSE_CONTINUATION";
     static final String NONE = "NONE";
 
     /** The screen's order of the six metrics. The repository reads them in this order. */
@@ -57,9 +63,29 @@ final class DashboardTrust {
      */
     record Freshness(boolean syncing, boolean measurementRecent, boolean verificationRecent) {}
 
-    /** What the axes are judged from: the freshness facts and one calculation version with its metrics. */
+    /**
+     * The sync facts of the plan (Story 2.11): the availability the admission would judge now, and the status of
+     * the plan's latest attempt ({@code null} without one). Its closed code is the screen's to show; the axes
+     * need only how it ended — a worker's long gap already reaches them through the availability.
+     */
+    record SyncFacts(String availability, @Nullable String latestStatus) {
+        /** No attempt yet and nothing in the way. */
+        static SyncFacts none() {
+            return new SyncFacts(SyncWindow.Availability.AVAILABLE.name(), null);
+        }
+    }
+
+    /** What the axes are judged from: the freshness and sync facts and one calculation version with its metrics. */
     record Input(Freshness freshness, String inputReliability, boolean estimated, int estimatedFlowCount,
-            Instant measuredAt, Instant verifiedThrough, Instant basisAt, List<DashboardMetric> metrics) {}
+            Instant measuredAt, Instant verifiedThrough, Instant basisAt, List<DashboardMetric> metrics,
+            SyncFacts sync) {
+        /** Without sync facts: no attempt yet and nothing in the way. */
+        Input(Freshness freshness, String inputReliability, boolean estimated, int estimatedFlowCount,
+                Instant measuredAt, Instant verifiedThrough, Instant basisAt, List<DashboardMetric> metrics) {
+            this(freshness, inputReliability, estimated, estimatedFlowCount, measuredAt, verifiedThrough, basisAt,
+                    metrics, SyncFacts.none());
+        }
+    }
 
     /**
      * The three axes, or empty when the version's input reliability is not one this story knows. The
@@ -71,9 +97,9 @@ final class DashboardTrust {
         return Optional.of(new TrustAxes(freshness(input), reliability(input), nature(input)));
     }
 
-    /** The screen's next action for a ready dashboard: wait while a sync runs, otherwise none. */
+    /** The screen's next action for a ready dashboard: the freshness axis's own. */
     static String nextAction(TrustAxes trust) {
-        return WAIT_FOR_SYNC.equals(trust.freshness().nextAction()) ? WAIT_FOR_SYNC : NONE;
+        return trust.freshness().nextAction();
     }
 
     /**
@@ -98,24 +124,37 @@ final class DashboardTrust {
     /**
      * {@code SYNCING} wins over {@code STALE} (as in Story 2.7): the official values stay while a job runs.
      * Freshness is independent of the input review: "fresh, review required, not computable" is a valid
-     * combination. A stale cause names which of the two times is outside the window.
+     * combination. A stale cause names why (SYNC-UX-1.0): no sync can run, the gap is long, the latest attempt
+     * needed review or did not publish, or which of the two times is outside the window.
      */
     private static TrustAxis freshness(Input input) {
         Freshness facts = input.freshness();
+        SyncFacts sync = input.sync();
         if (facts.syncing())
             return new TrustAxis("SYNCING", "JOB_IN_PROGRESS", input.measuredAt(), METRICS, WAIT_FOR_SYNC);
+        if (SyncWindow.Availability.UNAVAILABLE.name().equals(sync.availability()))
+            return new TrustAxis("STALE", "SYNC_UNAVAILABLE", input.measuredAt(), METRICS, NONE);
+        if (SyncWindow.Availability.LONG_GAP.name().equals(sync.availability()))
+            return new TrustAxis("STALE", "LONG_GAP", input.measuredAt(), METRICS, CHOOSE_CONTINUATION);
+        if ("NEEDS_REVIEW".equals(sync.latestStatus()))
+            return new TrustAxis("STALE", "LAST_SYNC_NEEDS_REVIEW", input.measuredAt(), METRICS, SYNC);
+        if ("FAILED".equals(sync.latestStatus()) || "BLOCKED".equals(sync.latestStatus()))
+            return new TrustAxis("STALE", "LAST_SYNC_UNSUCCESSFUL", input.measuredAt(), METRICS, SYNC);
         if (facts.measurementRecent() && facts.verificationRecent())
             return new TrustAxis("FRESH", "BOTH_WITHIN_WINDOW", input.measuredAt(), List.of(), NONE);
         String cause = !facts.measurementRecent() && !facts.verificationRecent() ? "BOTH_OUTDATED"
                 : !facts.measurementRecent() ? "MEASUREMENT_OUTDATED" : "CASHFLOW_VERIFICATION_OUTDATED";
-        return new TrustAxis("STALE", cause, input.measuredAt(), METRICS, NONE);
+        return new TrustAxis("STALE", cause, input.measuredAt(), METRICS, SYNC);
     }
 
     /**
-     * A review under CALC-1.0 has one cause: the adjusted target is not positive. It reaches the target
-     * itself and every ratio that reason left undefined.
+     * A review has two causes. The latest sync ended needing review (Story 2.11): its inputs are held, so every
+     * metric's next version is — all six. Otherwise, under CALC-1.0, the adjusted target is not positive: it
+     * reaches the target itself and every ratio that reason left undefined.
      */
     private static TrustAxis reliability(Input input) {
+        if ("NEEDS_REVIEW".equals(input.sync().latestStatus()))
+            return new TrustAxis("REVIEW_REQUIRED", "SYNC_REVIEW_REQUIRED", input.verifiedThrough(), METRICS, NONE);
         // Only the two known values reach here (judge refuses the rest).
         if ("REVIEW_REQUIRED".equals(input.inputReliability())) {
             List<String> affected = inOrder(input.metrics(), metric -> metric.metric().equals("ADJUSTED_TARGET")

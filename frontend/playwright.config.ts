@@ -61,8 +61,15 @@ export default defineConfig({
    */
   retries: 0,
   workers: isCi ? 1 : undefined,
-  /* CI의 Playwright 단계 timeout(4분)보다 짧다. 남는 시간에 실패 진단 artifact를 업로드한다. */
-  globalTimeout: 180_000,
+  /*
+   * CI의 Playwright 단계 timeout보다 짧다. 남는 시간에 실패 진단 artifact를 업로드한다.
+   *
+   * 주입된 origin(`same-origin-integration`)은 실제 스택에서 전체 묶음을 돈다. 그 단계는 6분이고
+   * 여기 상한은 5분이다. Story 2.10의 PR #49에서 이미 2분 30초(59건)를 썼고, Story 2.11이 동기화
+   * 왕복을 더해 3분 상한의 여유가 거의 사라졌다. preview(`frontend-quality`, 단계 4분)는 스택이
+   * 필요한 시험을 건너뛰므로 3분 그대로다.
+   */
+  globalTimeout: usesInjectedOrigin ? 300_000 : 180_000,
   reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
   outputDir: 'test-results',
   use: {
