@@ -115,10 +115,22 @@ final class BybitStubConfiguration {
     static void resetRequestCount() {
         Front.REQUESTS.set(0);
         Front.PATH_REQUESTS.clear();
+        Front.TRANSACTION_QUERIES.clear();
         Front.STUB.resetScenarioState();
     }
 
     static long lastWalletEnvelopeTime() { return Front.STUB.lastWalletEnvelopeTime(); }
+
+    /** One Transaction Log request as the stub received it: its type and its window, in epoch milliseconds. */
+    record TransactionQuery(String type, long startTime, long endTime) {}
+
+    /**
+     * The Transaction Log requests received since the last reset, in order (Story 2.11). The window each
+     * collection asked for is asserted from these — the only place the request's own arguments are visible.
+     */
+    static List<TransactionQuery> transactionLogQueries() {
+        return List.copyOf(Front.TRANSACTION_QUERIES);
+    }
 
     /** 서버 시간 응답의 모양을 바꾼다. {@link #resetRequestCount}가 정상으로 되돌린다. */
     static void serverTimeMode(DevBybitStub.ServerTimeMode mode) { Front.STUB.serverTimeMode(mode); }
@@ -143,6 +155,9 @@ final class BybitStubConfiguration {
         static final Map<String, AtomicInteger> PATH_REQUESTS = new ConcurrentHashMap<>();
 
         static final DevBybitStub STUB = new DevBybitStub(RESERVED_IP);
+
+        /** Transaction Log requests, in arrival order. */
+        static final List<TransactionQuery> TRANSACTION_QUERIES = new java.util.concurrent.CopyOnWriteArrayList<>();
 
         private final String origin;
 
@@ -194,6 +209,14 @@ final class BybitStubConfiguration {
             String symbol = parameters.get("symbol");
             PATH_REQUESTS.computeIfAbsent(symbol == null ? path : path + "?" + symbol,
                     ignored -> new AtomicInteger()).incrementAndGet();
+            if (DevBybitStub.TRANSACTION_LOG_PATH.equals(path)) {
+                try {
+                    TRANSACTION_QUERIES.add(new TransactionQuery(String.valueOf(parameters.get("type")),
+                            Long.parseLong(parameters.get("startTime")), Long.parseLong(parameters.get("endTime"))));
+                } catch (RuntimeException unparsable) {
+                    TRANSACTION_QUERIES.add(new TransactionQuery(String.valueOf(parameters.get("type")), -1, -1));
+                }
+            }
             DevBybitStub.Response response = stub.handle(path, headers, parameters);
             byte[] bytes = response.body().getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", response.contentType());

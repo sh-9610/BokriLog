@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import type { SyncPhase } from './useDashboardSync'
+
 import {
   planResultContent as copy,
   copyFor,
@@ -7,6 +9,7 @@ import {
   METRIC_ORDER,
   type MetricName,
 } from '../content/planResult'
+import { planSyncContent } from '../content/planSync'
 import { formatSeoulTime, isCanonicalDecimal, isPlainNonNegative } from '../format/decimal'
 
 export interface PlanResultMetric {
@@ -194,25 +197,180 @@ export function isPlanResult(value: unknown): value is PlanResult {
   )
 }
 
-/** One validated dashboard response. Only `READY` carries financial fields. */
-export type DashboardResponse =
-  | { readonly state: 'NO_PLAN' | 'PREPARING'; readonly nextAction: string }
-  | { readonly state: 'READY'; readonly nextAction: string; readonly result: PlanResult }
+/** An instant as the server writes it (`Instant#toString`): UTC, `Z`, whole seconds and an optional fraction. */
+const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/
+
+/** Whether the value is an instant in the server's format. The calculation evidence shares it. */
+export function isInstant(value: unknown): value is string {
+  return typeof value === 'string' && INSTANT.test(value) && Number.isFinite(Date.parse(value))
+}
 
 /**
- * The screen-level next actions each state may carry (Story 2.8's closed set). A pair outside these is
- * not an answer this screen understands.
+ * The three triggers that admit a sync (SYNC-UX-1.0). A job may carry a trigger this screen does not know:
+ * it is kept as it came and folded to safe copy where it is shown.
+ */
+export type SyncTrigger = 'ENTRY' | 'VISIBILITY' | 'MANUAL'
+
+/** A sync job's status: in progress (`QUEUED`·`RUNNING`), or one of four endings. */
+export type SyncJobStatus =
+  'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'NEEDS_REVIEW' | 'BLOCKED'
+const SYNC_JOB_STATUSES: readonly string[] = [
+  'QUEUED',
+  'RUNNING',
+  'SUCCEEDED',
+  'FAILED',
+  'NEEDS_REVIEW',
+  'BLOCKED',
+]
+
+/**
+ * One sync job as the server shows it (Story 2.11): codes and server times only. Every code — the trigger,
+ * the status, the stage and the failure code — may be one this screen does not know; it is kept as it came
+ * and folded to safe copy where it is shown. A status it does not know is an ending (not in progress).
+ */
+export interface SyncJob {
+  readonly jobId: string
+  readonly trigger: string
+  readonly status: string
+  readonly stage: string | null
+  readonly failureCode: string | null
+  readonly admittedAt: string
+  readonly finishedAt: string | null
+}
+
+/** Whether the job has not ended yet. */
+export function inProgress(job: SyncJob): boolean {
+  return job.status === 'QUEUED' || job.status === 'RUNNING'
+}
+
+/** Whether a sync may be asked for now, as the server judged it for the shown plan. */
+export type SyncAvailability = 'AVAILABLE' | 'IN_PROGRESS' | 'COOLDOWN' | 'LONG_GAP' | 'UNAVAILABLE'
+const SYNC_AVAILABILITIES: readonly string[] = [
+  'AVAILABLE',
+  'IN_PROGRESS',
+  'COOLDOWN',
+  'LONG_GAP',
+  'UNAVAILABLE',
+]
+
+/**
+ * The `sync` block of a `READY` answer (Story 2.11): whether a sync can be asked for, why not
+ * (`UNAVAILABLE` only; `null` when the reason is not known), in how many seconds a manual one is admitted
+ * again (`COOLDOWN` only — a relative duration, so this screen never compares a server time with its own
+ * clock), and the plan's latest job.
+ */
+export interface SyncStatus {
+  readonly availability: SyncAvailability
+  readonly reason: string | null
+  readonly retryAfterSeconds: number | null
+  readonly latest: SyncJob | null
+}
+
+/**
+ * The sync block this screen cannot read: a sync is not offered, for a reason not known. The financial bundle
+ * beside it is still shown — the sync block never makes the bundle unacceptable.
+ */
+export const UNKNOWN_SYNC: SyncStatus = {
+  availability: 'UNAVAILABLE',
+  reason: null,
+  retryAfterSeconds: null,
+  latest: null,
+}
+
+/** A nullable field: the server sends `null` explicitly, and an absent key means the same. */
+function absent(value: unknown): value is null | undefined {
+  return value === null || value === undefined
+}
+
+function positiveInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) > 0
+}
+
+/**
+ * A sync job, or `null` when it is not one whole job: an id, string codes, and server instants. For a
+ * status this screen knows, the status and the ending agree — a job in progress has neither an end time
+ * nor a code; a finished one has its end time; only an ending other than `SUCCEEDED` names why. A code it
+ * does not know is not malformed: it is kept and folded to safe copy on screen.
+ */
+export function parseSyncJob(value: unknown): SyncJob | null {
+  const row = record(value)
+  if (row === null) return null
+  const { jobId, trigger, status, stage, failureCode, admittedAt, finishedAt } = row
+  if (typeof jobId !== 'string' || jobId === '') return null
+  if (typeof trigger !== 'string' || typeof status !== 'string') return null
+  if (!absent(stage) && typeof stage !== 'string') return null
+  if (!absent(failureCode) && typeof failureCode !== 'string') return null
+  if (!isInstant(admittedAt) || !(absent(finishedAt) || isInstant(finishedAt))) return null
+  const job: SyncJob = {
+    jobId,
+    trigger,
+    status,
+    stage: absent(stage) ? null : stage,
+    failureCode: absent(failureCode) ? null : failureCode,
+    admittedAt,
+    finishedAt: absent(finishedAt) ? null : finishedAt,
+  }
+  if (!SYNC_JOB_STATUSES.includes(status)) return job
+  const running = inProgress(job)
+  if (running !== (job.finishedAt === null)) return null
+  return (running || job.status === 'SUCCEEDED') === (job.failureCode === null) ? job : null
+}
+
+/**
+ * The `sync` block, always as something this screen can show (P14: the sync block never makes the financial
+ * bundle unacceptable). A whole block is taken as it is: a reason exactly when unavailable, a retry interval
+ * exactly when cooling down, and an in-progress answer only with the job in progress. An availability this
+ * screen does not know is `UNAVAILABLE` for an unknown reason, keeping the latest job; a block that is missing
+ * or does not agree with itself is `UNKNOWN_SYNC` (keeping the latest job when that job is whole).
+ */
+export function parseSyncStatus(value: unknown): SyncStatus {
+  const row = record(value)
+  if (row === null) return UNKNOWN_SYNC
+  const { availability, reason, retryAfterSeconds, latest } = row
+  const job = absent(latest) ? null : parseSyncJob(latest)
+  if (job === null && !absent(latest)) return UNKNOWN_SYNC
+  const folded: SyncStatus = { ...UNKNOWN_SYNC, latest: job }
+  if (typeof availability !== 'string' || !SYNC_AVAILABILITIES.includes(availability)) return folded
+  if (!absent(reason) && typeof reason !== 'string') return folded
+  if (!absent(retryAfterSeconds) && !positiveInteger(retryAfterSeconds)) return folded
+  const status: SyncStatus = {
+    availability: availability as SyncAvailability,
+    reason: absent(reason) ? null : reason,
+    retryAfterSeconds: absent(retryAfterSeconds) ? null : retryAfterSeconds,
+    latest: job,
+  }
+  if ((status.availability === 'UNAVAILABLE') !== (status.reason !== null)) return folded
+  if ((status.availability === 'COOLDOWN') !== (status.retryAfterSeconds !== null)) return folded
+  if (status.availability === 'IN_PROGRESS' && (job === null || !inProgress(job))) return folded
+  return status
+}
+
+/** One validated dashboard response. Only `READY` carries financial fields, and its sync block. */
+export type DashboardResponse =
+  | { readonly state: 'NO_PLAN' | 'PREPARING'; readonly nextAction: string }
+  | {
+      readonly state: 'READY'
+      readonly nextAction: string
+      readonly result: PlanResult
+      readonly sync: SyncStatus
+    }
+
+/**
+ * The screen-level next actions each state may carry: Story 2.8's closed set, and the two Story 2.11 added
+ * to `READY` (`SYNC` when the result is not fresh, `CHOOSE_CONTINUATION` after a long gap). A pair outside
+ * these is not an answer this screen understands.
  */
 const NEXT_ACTIONS: Readonly<Record<DashboardResponse['state'], readonly string[]>> = {
   NO_PLAN: ['CREATE_PLAN'],
   PREPARING: ['WAIT_FOR_RESULT'],
-  READY: ['NONE', 'WAIT_FOR_SYNC'],
+  READY: ['NONE', 'WAIT_FOR_SYNC', 'SYNC', 'CHOOSE_CONTINUATION'],
 }
 
 /**
  * A `GET /api/dashboard` body, or `null` when it is not one whole answer. A state outside the three, a
  * next action that state cannot carry, a financial field on a state that has none, or a malformed bundle
- * all reject it.
+ * all reject it. The sync block never does: on `READY` it is read as far as it can be (`parseSyncStatus`),
+ * and on the states without a bundle it has no meaning and is ignored.
  */
 export function parseDashboard(value: unknown): DashboardResponse | null {
   const row = record(value)
@@ -222,14 +380,14 @@ export function parseDashboard(value: unknown): DashboardResponse | null {
       ? { state: row.state, nextAction: row.nextAction }
       : null
   }
-  if (
-    row.state === 'READY' &&
-    NEXT_ACTIONS.READY.includes(row.nextAction) &&
-    isPlanResult(row.result)
-  ) {
-    return { state: 'READY', nextAction: row.nextAction, result: row.result }
+  if (row.state !== 'READY' || !NEXT_ACTIONS.READY.includes(row.nextAction)) return null
+  if (!isPlanResult(row.result)) return null
+  return {
+    state: 'READY',
+    nextAction: row.nextAction,
+    result: row.result,
+    sync: parseSyncStatus(row.sync),
   }
-  return null
 }
 
 /**
@@ -243,10 +401,11 @@ export function supersedes(next: PlanResult, shown: PlanResult | null): boolean 
   return next.pointerVersion !== shown.pointerVersion || next.calculationId === shown.calculationId
 }
 
-/** The bundle last accepted, with the next action it came with. */
+/** The bundle last accepted, with the next action and the sync block it came with. */
 export interface Accepted {
   readonly result: PlanResult
   readonly nextAction: string
+  readonly sync: SyncStatus
 }
 
 /**
@@ -259,17 +418,41 @@ export interface Accepted {
 export type DashboardView =
   | { readonly kind: 'checking' }
   | { readonly kind: 'NO_PLAN' | 'PREPARING'; readonly nextAction: string }
-  | { readonly kind: 'READY'; readonly nextAction: string; readonly result: PlanResult }
-  | { readonly kind: 'lastGood'; readonly nextAction: string; readonly result: PlanResult }
+  | ({ readonly kind: 'READY' } & Accepted)
+  | ({ readonly kind: 'lastGood' } & Accepted)
   | { readonly kind: 'retryable'; readonly kept: Accepted | null }
   | { readonly kind: 'denied'; readonly cause: 'refused' | 'signedOut' }
 
 export interface Dashboard {
   readonly view: DashboardView
-  /** A read is in flight. The screen marks the result container and its status region busy. */
+  /**
+   * A read the user or the session asked for is in flight. The screen marks the result container and its
+   * status region busy, and says it is reading again. A quiet read (`refresh`) never sets it.
+   */
   readonly loading: boolean
-  /** Reads again. Ignored while a read is in flight. There is no polling: only the user reloads. */
+  /** Reads again. Ignored while such a read is in flight; a quiet read in flight gives way to it. */
   readonly reload: () => void
+  /**
+   * Reads again quietly: the answer is judged exactly like any other, but nothing says a read is in
+   * flight. Only the sync hook (`useDashboardSync`) uses it: to follow a sync job in progress — one this tab
+   * asked for or one the server shows it — every 2 seconds while the document is visible, for at most 3
+   * minutes of visible time; and to read once after an admission answer that changes what the sync control
+   * shows (unavailable, long gap). So polling never turns the status into "다시 불러오는 중". Ignored while any
+   * read is in flight.
+   */
+  readonly refresh: () => void
+}
+
+/**
+ * The longest a dashboard read may take (P9). A read that has not answered by then — the request or its
+ * body — is aborted and counts as a failed read, so no read, loud or quiet, can hold the screen forever.
+ */
+export const DASHBOARD_REQUEST_TIMEOUT_MS = 10_000
+
+/** One read the screen asked for, numbered; a quiet one does not mark the screen busy. */
+interface Request {
+  readonly serial: number
+  readonly quiet: boolean
 }
 
 /**
@@ -281,23 +464,26 @@ export interface Dashboard {
  * response never overwrites a newer one. A validated `READY` bundle replaces the whole view at once. A
  * failed read keeps the last accepted bundle as `lastGood`, or is `retryable` without one; a response
  * whose version may not replace the shown bundle is `retryable` with that bundle kept. A refusal (403)
- * or a gone session (401) drops the accepted bundle. `loading` is true for every read in flight.
+ * or a gone session (401) drops the accepted bundle. `loading` is true for every read in flight except a
+ * quiet one (`refresh`), which is judged the same way but says nothing while it is in flight. Every read
+ * is aborted after `DASHBOARD_REQUEST_TIMEOUT_MS` and then counts as a failed read.
  */
 export function useDashboard(ready: boolean): Dashboard {
   const [view, setView] = useState<DashboardView>({ kind: 'checking' })
-  // One number per read the screen asks for: a reload, or the session becoming ready again.
-  const [request, setRequest] = useState(0)
+  // One number per read the screen asks for: a reload, a quiet refresh, or the session becoming ready.
+  const [request, setRequest] = useState<Request>({ serial: 0, quiet: false })
   const [settled, setSettled] = useState(-1)
   const [wasReady, setWasReady] = useState(ready)
   const sequence = useRef(0)
-  const inFlight = useRef(false)
+  // The kind of the read in flight, if any.
+  const inFlight = useRef<'loud' | 'quiet' | null>(null)
   const accepted = useRef<Accepted | null>(null)
 
   // Adjusting state to a changed prop during render (React's documented pattern, not an effect): the
   // bundle leaves the view the moment the session stops being ready, and a new read starts as loading.
   if (ready !== wasReady) {
     setWasReady(ready)
-    if (ready) setRequest((current) => current + 1)
+    if (ready) setRequest((current) => ({ serial: current.serial + 1, quiet: false }))
     else setView({ kind: 'checking' })
   }
 
@@ -308,32 +494,46 @@ export function useDashboard(ready: boolean): Dashboard {
     }
     sequence.current += 1
     const mine = sequence.current
-    inFlight.current = true
+    inFlight.current = request.quiet ? 'quiet' : 'loud'
     const latest = (): boolean => sequence.current === mine
     const failed = (): DashboardView => {
       const kept = accepted.current
       return kept === null ? { kind: 'retryable', kept: null } : { kind: 'lastGood', ...kept }
     }
     const settle = (next: DashboardView): void => {
-      inFlight.current = false
+      inFlight.current = null
       setView(next)
-      setSettled(request)
+      setSettled(request.serial)
+    }
+    const controller = new AbortController()
+    let deadline: number | undefined
+    // The time limit covers the request and its body. It wins even over a request that ignores the abort.
+    const timedOut = new Promise<never>((_, reject) => {
+      deadline = window.setTimeout(() => {
+        controller.abort()
+        reject(new Error('The dashboard read timed out.'))
+      }, DASHBOARD_REQUEST_TIMEOUT_MS)
+    })
+    const answer = async (): Promise<{ readonly status: number; readonly payload: unknown }> => {
+      const response = await fetch(DASHBOARD_PATH, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+      })
+      const payload: unknown = response.status === 200 ? await response.json() : null
+      return { status: response.status, payload }
     }
     const read = async (): Promise<void> => {
       try {
-        const response = await fetch(DASHBOARD_PATH, {
-          credentials: 'same-origin',
-          cache: 'no-store',
-          headers: { Accept: 'application/json' },
-        })
+        const { status, payload } = await Promise.race([answer(), timedOut])
+        window.clearTimeout(deadline)
         if (!latest()) return
-        if (response.status === 401 || response.status === 403) {
+        if (status === 401 || status === 403) {
           accepted.current = null
-          settle({ kind: 'denied', cause: response.status === 401 ? 'signedOut' : 'refused' })
+          settle({ kind: 'denied', cause: status === 401 ? 'signedOut' : 'refused' })
           return
         }
-        const payload: unknown = response.status === 200 ? await response.json() : null
-        if (!latest()) return
         const parsed = parseDashboard(payload)
         if (parsed === null) {
           settle(failed())
@@ -349,9 +549,16 @@ export function useDashboard(ready: boolean): Dashboard {
           settle({ kind: 'retryable', kept: accepted.current })
           return
         }
-        accepted.current = { result: parsed.result, nextAction: parsed.nextAction }
-        settle({ kind: 'READY', result: parsed.result, nextAction: parsed.nextAction })
+        const bundle: Accepted = {
+          result: parsed.result,
+          nextAction: parsed.nextAction,
+          sync: parsed.sync,
+        }
+        accepted.current = bundle
+        settle({ kind: 'READY', ...bundle })
       } catch {
+        // A network failure, a body that is not JSON, or the time limit.
+        window.clearTimeout(deadline)
         if (latest()) settle(failed())
       }
     }
@@ -359,17 +566,31 @@ export function useDashboard(ready: boolean): Dashboard {
     return () => {
       // Invalidates this read: its answer, if it still comes, belongs to nobody.
       sequence.current += 1
-      inFlight.current = false
+      inFlight.current = null
+      window.clearTimeout(deadline)
+      controller.abort()
     }
   }, [ready, request])
 
   const reload = useCallback((): void => {
-    if (inFlight.current) return
-    inFlight.current = true
-    setRequest((current) => current + 1)
+    // A quiet read in flight gives way: the user asked, so the screen says it is reading.
+    if (inFlight.current === 'loud') return
+    inFlight.current = 'loud'
+    setRequest((current) => ({ serial: current.serial + 1, quiet: false }))
   }, [])
 
-  return { view, loading: ready && settled !== request, reload }
+  const refresh = useCallback((): void => {
+    if (inFlight.current !== null) return
+    inFlight.current = 'quiet'
+    setRequest((current) => ({ serial: current.serial + 1, quiet: true }))
+  }, [])
+
+  return {
+    view,
+    loading: ready && settled !== request.serial && !request.quiet,
+    reload,
+    refresh,
+  }
 }
 
 /** The bundle a view shows, if any: ready, kept after a failure, or kept unswapped after a conflict. */
@@ -379,8 +600,48 @@ export function bundleOf(view: DashboardView): Accepted | null {
   return null
 }
 
-/** The single sentence the screen's status region reads for the dashboard. */
-export function dashboardAnnouncement(dashboard: Dashboard): string {
+/**
+ * The sentence the status region reads for a shown `READY` bundle while a sync is in its phase (Story
+ * 2.11), or `null` when no sync has anything to say. The phase changes once when a sync starts and once
+ * when it ends; a poll in between changes nothing, so nothing is read again.
+ */
+function syncSentence(phase: SyncPhase, result: PlanResult): string | null {
+  const status = planSyncContent.status
+  switch (phase) {
+    case 'idle':
+      return null
+    case 'running':
+      return status.syncing
+    case 'succeeded': {
+      const basis = formatSeoulTime(result.basisAt, copy.timeUnavailable)
+      const reliability = result.trust.inputReliability.state
+      if (reliability === 'CONFIRMED') return status.synced(basis)
+      return status.syncedWithReliability(
+        copyFor(copy.axes.reliability.states, reliability, copy.axes.unknownState),
+        basis,
+      )
+    }
+    case 'failed':
+    case 'review':
+    case 'blocked':
+    case 'cooldown':
+    case 'longGap':
+    case 'unavailable':
+    case 'error':
+    case 'stalled':
+      return status[phase]
+  }
+}
+
+/**
+ * The single sentence the screen's status region reads for the dashboard. It knows about the sync (Story
+ * 2.11): while the shown bundle is ready, the sync's phase has the say — one sentence when it starts, one
+ * when it ends. A quiet read never makes the screen say it is reading again. While a sync is followed, or
+ * after the screen stopped following one, the sync also has the say over a read that did not answer
+ * (`lastGood`, `retryable`): a failed poll does not end the following, so it does not change the sentence
+ * either, and the one sentence that ends it is `stalled` whatever the view.
+ */
+export function dashboardAnnouncement(dashboard: Dashboard, phase: SyncPhase = 'idle'): string {
   const { view } = dashboard
   if (dashboard.loading && view.kind !== 'checking') return copy.status.reloading
   switch (view.kind) {
@@ -391,6 +652,8 @@ export function dashboardAnnouncement(dashboard: Dashboard): string {
     case 'PREPARING':
       return copy.status.preparing
     case 'READY': {
+      const sync = syncSentence(phase, view.result)
+      if (sync !== null) return sync
       const basis = formatSeoulTime(view.result.basisAt, copy.timeUnavailable)
       const reliability = view.result.trust.inputReliability.state
       if (reliability === 'CONFIRMED') return copy.status.ready(basis)
@@ -400,8 +663,10 @@ export function dashboardAnnouncement(dashboard: Dashboard): string {
       )
     }
     case 'lastGood':
-      return copy.status.lastGood
     case 'retryable':
+      if (phase === 'running') return planSyncContent.status.syncing
+      if (phase === 'stalled') return planSyncContent.status.stalled
+      if (view.kind === 'lastGood') return copy.status.lastGood
       return view.kept === null ? copy.status.retryable : copy.status.versionConflict
     case 'denied':
       return view.cause === 'signedOut' ? copy.status.signedOut : copy.status.denied
@@ -431,7 +696,8 @@ export function planPresenceOf(view: DashboardView): PlanPresence | null {
 /**
  * Whether the screen's single status region is busy. The session is being checked or moved (not the
  * reauthentication-required state, which waits for the user rather than changing), a sign-out or
- * reauthentication request is in flight, or the dashboard is reading.
+ * reauthentication request is in flight, or the dashboard is reading — not quietly: a sync's polling never
+ * marks the region busy, or its one sentence would wait behind it.
  */
 export function statusBusy(input: {
   readonly ready: boolean

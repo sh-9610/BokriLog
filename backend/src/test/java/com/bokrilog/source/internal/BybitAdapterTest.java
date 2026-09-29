@@ -59,6 +59,10 @@ class BybitAdapterTest {
     private final List<Boolean> signedRequests = java.util.Collections.synchronizedList(new ArrayList<>());
 
     private final AtomicReference<Duration> delay = new AtomicReference<>(Duration.ZERO);
+    /** A signed path that answers with {@link #failure} instead of its normal answer (Story 2.11). */
+    private volatile String failingPath = "";
+    /** {@code ratelimit} (429), {@code timeout} (slower than the client's timeout) or {@code notjson}. */
+    private volatile String failure = "";
 
     @BeforeEach
     void startServer() throws IOException {
@@ -237,6 +241,82 @@ class BybitAdapterTest {
             assertThat(event.sourceId()).isEqualTo("event-1");
             assertThat(event.accountType()).isEqualTo("UNIFIED");
         });
+    }
+
+    /**
+     * Story 2.11: the incremental collection never asks the time — its {@code tc} was fixed by the caller — and
+     * its windows start at {@code from}, contiguous and at most seven days, up to that {@code tc}; events are
+     * still judged against {@code (t0, tc]}. A scope that starts before {@code t0} or does not end after
+     * {@code from} is refused before any call.
+     */
+    @Test
+    void incrementalCollectionStartsItsWindowsAtFromAndNeverAsksTheTime() {
+        BybitAdapter adapter=adapter(this.origin,RESERVED_IP,Duration.ofSeconds(1));
+        var tc=java.time.Instant.ofEpochMilli(System.currentTimeMillis());
+        var t0=tc.minus(Duration.ofDays(20));
+        var from=tc.minus(Duration.ofDays(8));
+        List<SourceConnectionApi.CollectionPage> pages=new ArrayList<>();
+        var outcome=adapter.collectIncrementalInputs(credentials(),"1",t0,from,tc,pages::add);
+
+        assertThat(outcome).isInstanceOf(SourceConnectionApi.CollectionResult.Collected.class);
+        var value=((SourceConnectionApi.CollectionResult.Collected)outcome).value();
+        assertThat(value.tc()).isEqualTo(tc);
+        assertThat(this.paths).doesNotContain(BybitAdapter.SERVER_TIME_PATH);
+        assertThat(this.paths.getFirst()).isEqualTo(BybitAdapter.QUERY_API_PATH);
+        assertThat(pages.getFirst().evidence().startAt()).isEqualTo(from);
+        var starts=pages.stream().map(p->p.evidence().startAt()).distinct().sorted().toList();
+        assertThat(starts).containsExactly(from,from.plus(Duration.ofDays(7)));
+        assertThat(pages).allSatisfy(page->assertThat(Duration.between(page.evidence().startAt(),
+                page.evidence().endAt())).isLessThanOrEqualTo(Duration.ofDays(7)));
+        assertThat(pages.stream().map(p->p.evidence().endAt()).max(java.util.Comparator.naturalOrder()))
+                .contains(tc);
+        assertThat(this.requests).filteredOn(url->url.contains("transaction-log"))
+                .allMatch(url->!url.contains("startTime="+t0.toEpochMilli()));
+
+        this.paths.clear();
+        assertThat(reasonOfCollection(adapter.collectIncrementalInputs(credentials(),"1",t0,t0.minusMillis(1),tc,
+                pages::add))).as("before t0").isEqualTo(SourceRejectionReason.INVALID_FORMAT);
+        assertThat(reasonOfCollection(adapter.collectIncrementalInputs(credentials(),"1",t0,tc,tc,pages::add)))
+                .as("an empty scope").isEqualTo(SourceRejectionReason.INVALID_FORMAT);
+        assertThat(reasonOfCollection(adapter.collectIncrementalInputs(credentials(),"1",t0,from,
+                from.minusMillis(1),pages::add))).as("tc before from").isEqualTo(SourceRejectionReason.INVALID_FORMAT);
+        assertThat(this.paths).isEmpty();
+    }
+
+    /**
+     * Both collections read a signed call's transport rejection first: a rate limit, a time-out and a body that is
+     * not JSON are reported as themselves at the key check and at a transaction-log page — never folded into the
+     * call site's fallback (a timed-out key check used to read as an authentication rejection).
+     */
+    @org.junit.jupiter.params.ParameterizedTest(name = "{0} at {1} ({2})")
+    @org.junit.jupiter.params.provider.CsvSource({
+        "ratelimit,/v5/user/query-api,initial,RATE_LIMITED", "ratelimit,/v5/user/query-api,incremental,RATE_LIMITED",
+        "timeout,/v5/user/query-api,initial,TIMEOUT", "timeout,/v5/user/query-api,incremental,TIMEOUT",
+        "notjson,/v5/user/query-api,initial,RESPONSE_FORMAT", "notjson,/v5/user/query-api,incremental,RESPONSE_FORMAT",
+        "ratelimit,/v5/account/transaction-log,initial,RATE_LIMITED",
+        "ratelimit,/v5/account/transaction-log,incremental,RATE_LIMITED",
+        "timeout,/v5/account/transaction-log,initial,TIMEOUT",
+        "timeout,/v5/account/transaction-log,incremental,TIMEOUT",
+        "notjson,/v5/account/transaction-log,initial,RESPONSE_FORMAT",
+        "notjson,/v5/account/transaction-log,incremental,RESPONSE_FORMAT"})
+    void aSignedCallsTransportRejectionIsReportedAsItselfDuringEitherCollection(String kind, String path,
+            String entry, SourceRejectionReason expected) {
+        this.failingPath=path;
+        this.failure=kind;
+        BybitAdapter adapter=adapter(this.origin,RESERVED_IP,Duration.ofMillis(300));
+        var tc=java.time.Instant.ofEpochMilli(System.currentTimeMillis());
+        var t0=tc.minus(Duration.ofDays(1));
+        List<SourceConnectionApi.CollectionPage> pages=new ArrayList<>();
+        var outcome=entry.equals("initial")
+                ? adapter.collectInitialInputs(credentials(),"1",t0,tc,ignored->{},pages::add)
+                : adapter.collectIncrementalInputs(credentials(),"1",t0,t0,tc,pages::add);
+        assertThat(reasonOfCollection(outcome)).isEqualTo(expected);
+        assertThat(pages).as("no page is handed on from a rejected call").isEmpty();
+    }
+
+    private static SourceRejectionReason reasonOfCollection(SourceConnectionApi.CollectionResult outcome) {
+        assertThat(outcome).isInstanceOf(SourceConnectionApi.CollectionResult.Rejected.class);
+        return ((SourceConnectionApi.CollectionResult.Rejected) outcome).reason();
     }
 
     @Test
@@ -434,6 +514,34 @@ class BybitAdapterTest {
         }
         String apiKey = exchange.getRequestHeaders().getFirst("X-BAPI-API-KEY");
         this.signedRequests.add(apiKey != null || exchange.getRequestHeaders().getFirst("X-BAPI-SIGN") != null);
+        if (path.equals(this.failingPath)) {
+            switch (this.failure) {
+                case "ratelimit" -> {
+                    byte[] limited = "{\"retCode\":10006,\"retMsg\":\"raw provider text\"}"
+                            .getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(429, limited.length);
+                    exchange.getResponseBody().write(limited);
+                    exchange.close();
+                    return;
+                }
+                case "timeout" -> {
+                    try {
+                        Thread.sleep(700);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                case "notjson" -> {
+                    byte[] text = "not json".getBytes(StandardCharsets.UTF_8);
+                    exchange.getResponseHeaders().set("Content-Type", "text/plain");
+                    exchange.sendResponseHeaders(200, text.length);
+                    exchange.getResponseBody().write(text);
+                    exchange.close();
+                    return;
+                }
+                default -> { }
+            }
+        }
         if ("ratelimit".equals(this.marketMode) && path.startsWith("/v5/market/")) {
             byte[] limited = "{\"retCode\":10006,\"retMsg\":\"raw provider text\"}".getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(429, limited.length);

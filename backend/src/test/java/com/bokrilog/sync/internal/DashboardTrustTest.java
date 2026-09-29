@@ -14,7 +14,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 /**
  * The three axes are judged independently (Story 2.8 AC-5): every combination of freshness (3), input
  * reliability (2) and calculation nature (3) gives each axis its own cause, affected metrics and next
- * action, and no axis borrows from another. The combinations are the pure function's inputs — some cannot
+ * action, and no axis borrows from another. A stale result's next action is a new sync (Story 2.11). The combinations are the pure function's inputs — some cannot
  * occur under CALC-1.0 (a review always leaves a ratio undefined), and the function is total over them.
  */
 class DashboardTrustTest {
@@ -50,15 +50,15 @@ class DashboardTrustTest {
             + "ESTIMATED_CASHFLOW_PRICE,PLAN_AMOUNT PLAN_DIFFERENCE ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,WAIT_FOR_SYNC",
         "SYNCING,REVIEW_REQUIRED,NOT_COMPUTABLE,JOB_IN_PROGRESS,WAIT_FOR_SYNC,TARGET_NOT_POSITIVE,"
             + "ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,METRIC_UNDEFINED,REQUIRED_RATE GOAL_PROGRESS,WAIT_FOR_SYNC",
-        "STALE,CONFIRMED,OFFICIAL,BOTH_OUTDATED,NONE,INPUTS_VERIFIED,-,NO_ESTIMATED_INPUT,-,NONE",
-        "STALE,CONFIRMED,ESTIMATED,BOTH_OUTDATED,NONE,INPUTS_VERIFIED,-,ESTIMATED_CASHFLOW_PRICE,"
-            + "PLAN_AMOUNT PLAN_DIFFERENCE ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,NONE",
-        "STALE,CONFIRMED,NOT_COMPUTABLE,BOTH_OUTDATED,NONE,INPUTS_VERIFIED,-,METRIC_UNDEFINED,REQUIRED_RATE,NONE",
-        "STALE,REVIEW_REQUIRED,OFFICIAL,BOTH_OUTDATED,NONE,TARGET_NOT_POSITIVE,ADJUSTED_TARGET,NO_ESTIMATED_INPUT,-,NONE",
-        "STALE,REVIEW_REQUIRED,ESTIMATED,BOTH_OUTDATED,NONE,TARGET_NOT_POSITIVE,ADJUSTED_TARGET,"
-            + "ESTIMATED_CASHFLOW_PRICE,PLAN_AMOUNT PLAN_DIFFERENCE ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,NONE",
-        "STALE,REVIEW_REQUIRED,NOT_COMPUTABLE,BOTH_OUTDATED,NONE,TARGET_NOT_POSITIVE,"
-            + "ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,METRIC_UNDEFINED,REQUIRED_RATE GOAL_PROGRESS,NONE",
+        "STALE,CONFIRMED,OFFICIAL,BOTH_OUTDATED,SYNC,INPUTS_VERIFIED,-,NO_ESTIMATED_INPUT,-,SYNC",
+        "STALE,CONFIRMED,ESTIMATED,BOTH_OUTDATED,SYNC,INPUTS_VERIFIED,-,ESTIMATED_CASHFLOW_PRICE,"
+            + "PLAN_AMOUNT PLAN_DIFFERENCE ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,SYNC",
+        "STALE,CONFIRMED,NOT_COMPUTABLE,BOTH_OUTDATED,SYNC,INPUTS_VERIFIED,-,METRIC_UNDEFINED,REQUIRED_RATE,SYNC",
+        "STALE,REVIEW_REQUIRED,OFFICIAL,BOTH_OUTDATED,SYNC,TARGET_NOT_POSITIVE,ADJUSTED_TARGET,NO_ESTIMATED_INPUT,-,SYNC",
+        "STALE,REVIEW_REQUIRED,ESTIMATED,BOTH_OUTDATED,SYNC,TARGET_NOT_POSITIVE,ADJUSTED_TARGET,"
+            + "ESTIMATED_CASHFLOW_PRICE,PLAN_AMOUNT PLAN_DIFFERENCE ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,SYNC",
+        "STALE,REVIEW_REQUIRED,NOT_COMPUTABLE,BOTH_OUTDATED,SYNC,TARGET_NOT_POSITIVE,"
+            + "ADJUSTED_TARGET REQUIRED_RATE GOAL_PROGRESS,METRIC_UNDEFINED,REQUIRED_RATE GOAL_PROGRESS,SYNC",
     })
     void eachAxisIsJudgedOnItsOwn(String freshness, String input, String nature, String freshnessCause,
             String freshnessAction, String inputCause, String inputAffected, String natureCause, String natureAffected,
@@ -169,6 +169,44 @@ class DashboardTrustTest {
         var noCurrent = new ArrayList<>(metrics("CONFIRMED", "OFFICIAL"));
         noCurrent.set(0, new DashboardMetric("CURRENT_VALUE", null, "OFFICIAL", "CURRENT_VALUE_NOT_POSITIVE"));
         assertThat(DashboardTrust.wellFormed(noCurrent, false)).as("the current value is always defined").isFalse();
+    }
+
+    /**
+     * Story 2.11: the sync facts. No sync can run → stale, no action; a long gap → stale, a choice; the latest
+     * attempt needed review → stale, sync again, and the input reliability is review required for all six; the
+     * latest attempt failed or was blocked → stale, sync again. Each wins over recent times; a running job wins
+     * over all of them. A successful or no attempt leaves the times to decide.
+     */
+    @ParameterizedTest(name = "{0} / {1} / syncing={2}")
+    @CsvSource({
+        "UNAVAILABLE,,false,STALE,SYNC_UNAVAILABLE,NONE,CONFIRMED,INPUTS_VERIFIED",
+        "LONG_GAP,,false,STALE,LONG_GAP,CHOOSE_CONTINUATION,CONFIRMED,INPUTS_VERIFIED",
+        "LONG_GAP,BLOCKED,false,STALE,LONG_GAP,CHOOSE_CONTINUATION,CONFIRMED,INPUTS_VERIFIED",
+        "AVAILABLE,NEEDS_REVIEW,false,STALE,LAST_SYNC_NEEDS_REVIEW,SYNC,REVIEW_REQUIRED,SYNC_REVIEW_REQUIRED",
+        "COOLDOWN,FAILED,false,STALE,LAST_SYNC_UNSUCCESSFUL,SYNC,CONFIRMED,INPUTS_VERIFIED",
+        "AVAILABLE,BLOCKED,false,STALE,LAST_SYNC_UNSUCCESSFUL,SYNC,CONFIRMED,INPUTS_VERIFIED",
+        "AVAILABLE,SUCCEEDED,false,FRESH,BOTH_WITHIN_WINDOW,NONE,CONFIRMED,INPUTS_VERIFIED",
+        "COOLDOWN,SUCCEEDED,false,FRESH,BOTH_WITHIN_WINDOW,NONE,CONFIRMED,INPUTS_VERIFIED",
+        "IN_PROGRESS,RUNNING,true,SYNCING,JOB_IN_PROGRESS,WAIT_FOR_SYNC,CONFIRMED,INPUTS_VERIFIED",
+        "IN_PROGRESS,NEEDS_REVIEW,true,SYNCING,JOB_IN_PROGRESS,WAIT_FOR_SYNC,REVIEW_REQUIRED,SYNC_REVIEW_REQUIRED",
+    })
+    void theSyncFactsDecideAStaleCauseAndAReviewOverRecentTimes(String availability, String latestStatus,
+            boolean syncing, String state, String cause, String action, String reliability,
+            String reliabilityCause) {
+        var trust = DashboardTrust.judge(new DashboardTrust.Input(new DashboardTrust.Freshness(syncing, true, true),
+                "CONFIRMED", false, 0, MEASURED, VERIFIED, BASIS, metrics("CONFIRMED", "OFFICIAL"),
+                new DashboardTrust.SyncFacts(availability, latestStatus))).orElseThrow();
+        assertThat(trust.freshness().state()).isEqualTo(state);
+        assertThat(trust.freshness().cause()).isEqualTo(cause);
+        assertThat(trust.freshness().nextAction()).isEqualTo(action);
+        assertThat(DashboardTrust.nextAction(trust)).as("the screen's action is the freshness axis's").isEqualTo(action);
+        assertThat(trust.freshness().affectedMetrics()).isEqualTo(state.equals("FRESH") ? List.of() : SIX);
+        assertThat(trust.inputReliability().state()).isEqualTo(reliability);
+        assertThat(trust.inputReliability().cause()).isEqualTo(reliabilityCause);
+        assertThat(trust.inputReliability().lastNormalAt()).isEqualTo(VERIFIED);
+        assertThat(trust.inputReliability().affectedMetrics())
+                .isEqualTo(reliability.equals("REVIEW_REQUIRED") ? SIX : List.of());
+        assertThat(trust.inputReliability().nextAction()).isEqualTo("NONE");
     }
 
     private static DashboardTrust.Input input(String freshness, String input, String nature) {

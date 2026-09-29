@@ -4,8 +4,8 @@
  * 왜 있는가: CI-PLAN §6은 필수 Playwright 실행의 `retries: 0`과 `trace: 'retain-on-failure'`를
  * "한 묶음"으로 못박았다. `on-first-retry`인 채로 retry만 0이 되면 trace가 하나도 남지 않고,
  * retry가 되살아나면 flaky 실패가 green으로 덮인다. 두 값은 설정 파일 한 줄로 조용히 뒤집히므로
- * 시험으로 고정한다. `globalTimeout`은 CI의 Playwright 단계 timeout(4분)보다 짧아야 실패 진단
- * artifact를 올릴 시간이 남는다.
+ * 시험으로 고정한다. `globalTimeout`은 CI의 Playwright 단계 timeout(preview 4분, 주입된 origin
+ * 6분)보다 짧아야 실패 진단 artifact를 올릴 시간이 남는다.
  *
  * Story 1.2가 origin 주입 분기를 더했다. 그 분기가 조용히 사라지면 `same-origin-integration`이
  * Nginx가 아니라 자기가 띄운 `vite preview`를 검증하면서도 green으로 끝난다. 두 경우를 모두
@@ -85,10 +85,16 @@ describe('playwright.config.ts 실행 정책', () => {
     expect(config.use?.screenshot).toBe('only-on-failure')
   })
 
-  it('globalTimeout이 CI의 Playwright 단계 timeout(4분)보다 짧다', async () => {
+  it('globalTimeout이 CI의 Playwright 단계 timeout(preview 4분)보다 짧다', async () => {
     const config = await loadConfig('true')
     expect(config.globalTimeout).toBe(180_000)
     expect(config.globalTimeout).toBeLessThan(4 * 60 * 1000)
+  })
+
+  it('주입된 origin의 globalTimeout이 통합 job의 Playwright 단계 timeout(6분)보다 짧다', async () => {
+    const config = await loadConfig('true', 'http://127.0.0.1:18080')
+    expect(config.globalTimeout).toBe(300_000)
+    expect(config.globalTimeout).toBeLessThan(6 * 60 * 1000)
   })
 })
 
@@ -150,6 +156,5 @@ describe('playwright.config.ts의 origin 주입', () => {
 
     expect(injected.retries).toBe(0)
     expect(injected.use?.trace).toBe('retain-on-failure')
-    expect(injected.globalTimeout).toBe(180_000)
   })
 })

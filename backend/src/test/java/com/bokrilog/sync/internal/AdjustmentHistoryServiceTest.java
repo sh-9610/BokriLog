@@ -106,7 +106,7 @@ class AdjustmentHistoryServiceTest {
         when(publications.lineage(USER, CALCULATION)).thenReturn(Optional.of(new PlanPublicationRepository.Lineage(
                 UUID.randomUUID(), "BYBIT", ACCOUNT, CONNECTION, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
                 CANDIDATE, CLASSIFICATION, CONVERSION, "BYBIT-CASHFLOW-1.0", "bybit-readonly-uta-1.0",
-                "DECIMAL128-HALF_EVEN", "Asia/Seoul", PUBLISHED)));
+                "DECIMAL128-HALF_EVEN", "Asia/Seoul", PUBLISHED, TC, null)));
         when(publications.classificationBundle(USER, CLASSIFICATION)).thenReturn(Optional.of(
                 classificationBundle(CANDIDATE, PORTFOLIO, INTENT, CONNECTION, ACCOUNT, "COMPLETE", "BYBIT-CASHFLOW-1.0")));
         when(history.classificationCounts(USER, CLASSIFICATION))

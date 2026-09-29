@@ -277,7 +277,16 @@ final class DevBybitStub {
          * 다섯(`-2.5 USDT`, 네 번째마다)이며 앞의 둘은 같은 밀리초라 `source_id` 순서가 그 둘을 가른다.
          * 전부 직접 정규화라 시세 호출 없이 환산되고, 한 페이지(20행)를 넘어 `더 보기`가 생긴다.
          */
-        ADJUSTMENTS("adjustments");
+        ADJUSTMENTS("adjustments"),
+
+        /**
+         * 시간이 흐르며 입금이 쌓이는 수집(Story 2.11 e2e). UID마다 첫 지갑 조회 시각이 기준이고, 기준 뒤 10초마다
+         * `+10 USDT` 입금이 하나씩(`incremental-01`…`incremental-48`, 8분 동안) 생긴다. 느린 준비에도 최초 발행 뒤에
+         * 입금이 남는다. 한 type의 한 페이지(50행)에 모두 들어간다. 요청 창 안이면서 이미 지난
+         * 사건만 내고, 지갑 잔액은 `1000 + 10 × 지난 사건 수`다. 그래서 최초 발행 뒤 잠시 기다려 동기화하면 새 입금과
+         * 새 현재가치가 함께 들어온다. 전부 직접 정규화라 시세 호출이 없다.
+         */
+        INCREMENTAL("incremental");
 
         private final String token;
 
@@ -310,6 +319,9 @@ final class DevBybitStub {
     /** 이 스텁이 {@code ips}에 싣는 운영 reserved IP. 어댑터가 요구하는 값과 같아야 한다. */
     private final String reservedIp;
     private final AtomicInteger conflictTransferInReads = new AtomicInteger();
+    /** {@link Scenario#INCREMENTAL}의 UID별 기준 시각(첫 지갑 조회). */
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> incrementalBase =
+            new java.util.concurrent.ConcurrentHashMap<>();
     private final AtomicLong lastWalletEnvelopeTime = new AtomicLong();
 
     /**
@@ -400,13 +412,13 @@ final class DevBybitStub {
         return switch (path) {
             case QUERY_API_PATH -> queryApi(scenario, uid);
             case ACCOUNT_INFO_PATH -> accountInfo(scenario);
-            case WALLET_BALANCE_PATH -> walletBalance(scenario, query);
-            case TRANSACTION_LOG_PATH -> transactionLog(scenario, query);
+            case WALLET_BALANCE_PATH -> walletBalance(scenario, uid, query);
+            case TRANSACTION_LOG_PATH -> transactionLog(scenario, uid, query);
             default -> new Response(404, JSON, "{\"retCode\":10001,\"retMsg\":\"\",\"result\":{}}");
         };
     }
 
-    private Response transactionLog(Scenario scenario,Map<String,String> query) {
+    private Response transactionLog(Scenario scenario,String uid,Map<String,String> query) {
         String type=query.get("type");
         if (!"UNIFIED".equals(query.get("accountType"))
                 ||!("TRANSFER_IN".equals(type)||"TRANSFER_OUT".equals(type))) return error(10001);
@@ -458,6 +470,11 @@ final class DevBybitStub {
             return adjustmentsPage(type,Long.parseLong(query.get("startTime")),
                     end==null?Long.MAX_VALUE:Long.parseLong(end));
         }
+        if (scenario==Scenario.INCREMENTAL) {
+            String end=query.get("endTime");
+            return incrementalPage(uid,type,Long.parseLong(query.get("startTime")),
+                    end==null?Long.MAX_VALUE:Long.parseLong(end));
+        }
         if (scenario==Scenario.ID_CONFLICT&&"TRANSFER_IN".equals(type)) {
             int read=conflictTransferInReads.incrementAndGet();
             String flow=read==1?"1.000":"2.000";
@@ -499,6 +516,37 @@ final class DevBybitStub {
                     .append(start+Math.max(1,i-1)).append("\"}");
         }
         return ok("{\"list\":"+items+"],\"nextPageCursor\":\"\"}");
+    }
+
+    /** How many deposits {@link Scenario#INCREMENTAL} emits, and how far apart. */
+    static final int INCREMENTAL_FLOWS = 48;
+    static final long INCREMENTAL_SPACING_MILLIS = 10_000L;
+
+    /**
+     * {@link Scenario#INCREMENTAL}: the deposits of this UID inside {@code [startTime, endTime]} that are already in
+     * the past. Nothing before the UID's first wallet read.
+     */
+    private Response incrementalPage(String uid,String type,long start,long end) {
+        Long base=incrementalBase.get(uid);
+        if (base==null||!"TRANSFER_IN".equals(type)) return ok("{\"list\":[],\"nextPageCursor\":\"\"}");
+        long now=System.currentTimeMillis();
+        StringBuilder items=new StringBuilder("[");
+        for (int k=1;k<=INCREMENTAL_FLOWS;k++) {
+            long at=base+INCREMENTAL_SPACING_MILLIS*k;
+            if (at<start||at>end||at>now) continue;
+            if (items.length()>1) items.append(',');
+            items.append("{\"id\":\"incremental-").append(String.format(Locale.ROOT,"%02d",k))
+                    .append("\",\"type\":\"TRANSFER_IN\",\"currency\":\"USDT\",\"cashFlow\":\"10\",")
+                    .append("\"transactionTime\":\"").append(at).append("\"}");
+        }
+        return ok("{\"list\":"+items+"],\"nextPageCursor\":\"\"}");
+    }
+
+    /** {@link Scenario#INCREMENTAL}'s balance: 1000 USDT plus 10 for every deposit already in the past. */
+    private String incrementalEquity(String uid) {
+        long base=incrementalBase.computeIfAbsent(uid,ignored->System.currentTimeMillis());
+        long passed=Math.min(INCREMENTAL_FLOWS,Math.max(0,(System.currentTimeMillis()-base)/INCREMENTAL_SPACING_MILLIS));
+        return String.valueOf(1000+10*passed);
     }
 
     private static Response eventPage(String id,String type,String flow,Map<String,String> query,String timeKind) {
@@ -615,6 +663,7 @@ final class DevBybitStub {
 
     void resetScenarioState() {
         conflictTransferInReads.set(0);
+        incrementalBase.clear();
         serverTimeMode.set(ServerTimeMode.NORMAL);
     }
     long lastWalletEnvelopeTime() { return lastWalletEnvelopeTime.get(); }
@@ -653,13 +702,20 @@ final class DevBybitStub {
         return ok("{\"unifiedMarginStatus\":" + mode + ",\"marginMode\":\"REGULAR_MARGIN\"}");
     }
 
-    private Response walletBalance(Scenario scenario, Map<String, String> query) {
+    private Response walletBalance(Scenario scenario, String uid, Map<String, String> query) {
         if (!"UNIFIED".equals(query.get("accountType"))) {
             // 어댑터는 이 값 하나만 묻는다. 다른 값이 오면 흐름이 계약을 벗어났다는 뜻이다.
             return error(10001);
         }
         if (scenario == Scenario.WALLET_FAILURE) {
             return error(10016);
+        }
+        if (scenario == Scenario.INCREMENTAL) {
+            String equity = incrementalEquity(uid);
+            long envelopeTime=System.currentTimeMillis();
+            lastWalletEnvelopeTime.set(envelopeTime);
+            return ok("{\"list\":[{\"accountType\":\"UNIFIED\",\"totalEquity\":\"" + equity
+                    + "\",\"accountIMRate\":\"0\"}]}", envelopeTime);
         }
         long envelopeTime=System.currentTimeMillis();
         lastWalletEnvelopeTime.set(scenario==Scenario.BAD_MEASURED_TIME?0:envelopeTime);

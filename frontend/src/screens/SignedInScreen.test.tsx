@@ -21,6 +21,7 @@ import {
   planPublicationContent,
   planResultContent,
 } from '../content/planResult'
+import { DASHBOARD_SYNC_PATH, planSyncContent } from '../content/planSync'
 import { formatSeoulTime } from '../format/decimal'
 import { navigateTo, replaceLocation } from '../session/navigation'
 import {
@@ -34,6 +35,8 @@ import {
   NO_PLAN_FIXTURE,
   planResultFixture,
   PREPARING_FIXTURE,
+  syncFixture,
+  syncJobFixture,
   trustFixture,
 } from '../test/planResultFixture'
 import {
@@ -43,6 +46,7 @@ import {
   stubAdjustmentHistory,
   stubCalculationEvidence,
   stubDashboard,
+  stubDashboardSync,
   stubFirstSnapshotStart,
   stubFirstSnapshotState,
   stubLogoutRequest,
@@ -68,6 +72,9 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
   })
 }
 
+/** The admission's answer to an automatic trigger within 5 minutes of the last one (Story 2.11). */
+const NOT_DUE = { outcome: 'NOT_DUE', job: null, retryAfterSeconds: 240 }
+
 /** 응답이 아직 오지 않은 상태. `checking` 분기를 관측하기 위한 의도된 무기한 대기다. */
 function pendingResponse(): Promise<Response> {
   return new Promise<Response>(() => {
@@ -89,6 +96,11 @@ function authenticated(): Promise<Response> {
 beforeEach(() => {
   vi.mocked(replaceLocation).mockClear()
   vi.mocked(navigateTo).mockClear()
+  /*
+   * Story 2.11: the first ready answer of a mount sends one entry sync. Unless a test opens another
+   * answer, the server says it is not due yet — nothing is admitted and nothing on screen changes.
+   */
+  stubDashboardSync(() => Promise.resolve(jsonResponse(NOT_DUE)))
 })
 
 /**
@@ -766,6 +778,343 @@ describe('SignedInScreen', () => {
     expect(screen.getByRole('status')).toHaveTextContent(
       planResultContent.status.ready(formatSeoulTime(BASIS_AT, planResultContent.timeUnavailable)),
     )
+  })
+
+  /*
+   * Story 2.11: 사용자 시점 증분 동기화. 진입·탭 복귀·버튼 세 트리거와 그 공지·초점.
+   */
+
+  function syncPosts(): string[] {
+    return getObservedAllowedRequests().filter((entry) => entry === `POST ${DASHBOARD_SYNC_PATH}`)
+  }
+
+  /** Every text the status region showed after the observer started, in order, without repeats. */
+  function recordStatus(): { texts: string[]; busy: string[]; stop: () => void } {
+    const region = screen.getByRole('status')
+    const texts: string[] = []
+    const busy: string[] = []
+    const observer = new MutationObserver(() => {
+      const text = region.textContent
+      if (texts.at(-1) !== text) texts.push(text)
+      busy.push(region.getAttribute('aria-busy') ?? '')
+    })
+    observer.observe(region, {
+      attributes: true,
+      characterData: true,
+      childList: true,
+      subtree: true,
+    })
+    return {
+      texts,
+      busy,
+      stop: () => {
+        observer.disconnect()
+      },
+    }
+  }
+
+  it('동기화: 첫 READY에서 진입 동기화를 한 번 보내고, 아직 때가 아니면 화면이 그대로다', async () => {
+    stubSessionRequest(authenticated)
+    stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture())))
+    let observed: RequestInit | undefined
+    stubDashboardSync((init) => {
+      observed = init
+      return Promise.resolve(jsonResponse(NOT_DUE))
+    })
+    render(<SignedInScreen />)
+    await screen.findAllByRole('article')
+    await waitFor(() => {
+      expect(syncPosts()).toHaveLength(1)
+    })
+    expect(JSON.parse(observed?.body as string)).toEqual({ trigger: 'ENTRY' })
+    expect((observed?.headers as Record<string, string>)[CSRF_HEADER]).toBe(CSRF_TOKEN)
+    // The control sits right after the freshness axis, and nothing about the sync is said yet.
+    const control = screen.getByRole('button', { name: planSyncContent.action })
+    expect(control).toHaveAttribute('aria-disabled', 'false')
+    expect(screen.getByRole('status').textContent).toBe(
+      planResultContent.status.ready(formatSeoulTime(BASIS_AT, planResultContent.timeUnavailable)),
+    )
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(liveRegions()).toHaveLength(1)
+    // A reload is not a new mount: no second entry sync.
+    fireEvent.click(screen.getByRole('button', { name: planResultContent.reload }))
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveAttribute('aria-busy', 'false')
+    })
+    expect(syncPosts()).toHaveLength(1)
+  })
+
+  it('동기화: 누르면 곧바로 동기화 중이 보이고, 조용히 따라가다 새 묶음으로 한 번에 바뀌며 초점은 제목으로 간다', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      stubSessionRequest(authenticated)
+      const job = syncJobFixture()
+      const v2 = planResultFixture({
+        pointerVersion: 2,
+        calculationId: 'calculation-2',
+        basisAt: '2026-09-27T01:20:00Z',
+        measuredAt: '2026-09-27T01:19:59Z',
+        cashflowVerifiedThrough: '2026-09-27T01:20:00Z',
+        publishedAt: '2026-09-27T01:20:01Z',
+        flowCount: 2,
+        trust: trustFixture({
+          freshness: {
+            lastNormalAt: '2026-09-27T01:19:59Z',
+            measuredAt: '2026-09-27T01:19:59Z',
+            cashflowVerifiedThrough: '2026-09-27T01:20:00Z',
+          },
+          inputReliability: { lastNormalAt: '2026-09-27T01:20:00Z' },
+          calculationNature: { lastNormalAt: '2026-09-27T01:20:00Z' },
+        }),
+        metrics: [
+          { metric: 'CURRENT_VALUE', value: '1290', nature: 'OFFICIAL' },
+          { metric: 'PLAN_AMOUNT', value: '1230', nature: 'OFFICIAL' },
+          { metric: 'PLAN_DIFFERENCE', value: '60', nature: 'OFFICIAL' },
+          { metric: 'ADJUSTED_TARGET', value: '1351', nature: 'OFFICIAL' },
+          { metric: 'REQUIRED_RATE', value: '0.0648', nature: 'OFFICIAL' },
+          { metric: 'GOAL_PROGRESS', value: '0.5', nature: 'OFFICIAL' },
+        ],
+      })
+      const queue: (() => Promise<Response>)[] = [
+        () => Promise.resolve(jsonResponse(dashboardFixture())),
+        () =>
+          Promise.resolve(
+            jsonResponse(
+              dashboardFixture(
+                planResultFixture({
+                  trust: trustFixture({
+                    freshness: {
+                      state: 'SYNCING',
+                      cause: 'JOB_IN_PROGRESS',
+                      nextAction: 'WAIT_FOR_SYNC',
+                    },
+                  }),
+                }),
+                'WAIT_FOR_SYNC',
+                syncFixture({
+                  availability: 'IN_PROGRESS',
+                  latest: { ...job, status: 'RUNNING', stage: 'COLLECTION' },
+                }),
+              ),
+            ),
+          ),
+        () =>
+          Promise.resolve(
+            jsonResponse(
+              dashboardFixture(
+                v2,
+                'NONE',
+                syncFixture({
+                  availability: 'COOLDOWN',
+                  retryAfterSeconds: 25,
+                  latest: {
+                    ...job,
+                    status: 'SUCCEEDED',
+                    stage: 'PUBLICATION',
+                    finishedAt: '2026-09-27T01:20:01Z',
+                  },
+                }),
+              ),
+            ),
+          ),
+      ]
+      stubDashboard(() => (queue.shift() ?? (() => Promise.reject(new Error('extra'))))())
+      const triggers: string[] = []
+      const answers: (() => Promise<Response>)[] = [
+        () => Promise.resolve(jsonResponse(NOT_DUE)),
+        () =>
+          Promise.resolve(jsonResponse({ outcome: 'ACCEPTED', job, retryAfterSeconds: null }, 202)),
+      ]
+      stubDashboardSync((init) => {
+        triggers.push((JSON.parse(init?.body as string) as { trigger: string }).trigger)
+        return (answers.shift() ?? (() => Promise.reject(new Error('extra'))))()
+      })
+      render(<SignedInScreen />)
+      expect(await screen.findByText('1,250.00 USD')).toBeInTheDocument()
+      await waitFor(() => {
+        expect(triggers).toEqual(['ENTRY'])
+      })
+      const before = screen.getAllByRole('article').map((card) => card.textContent)
+      const recorder = recordStatus()
+
+      const control = screen.getByRole('button', { name: planSyncContent.action })
+      control.focus()
+      fireEvent.click(control)
+      fireEvent.click(control)
+      // At once, before any answer: 동기화 중, the button blocked and still focused, the values kept.
+      expect(screen.getByText(planSyncContent.running, { exact: true })).toBeVisible()
+      expect(control).toHaveAttribute('aria-disabled', 'true')
+      expect(control).toHaveFocus()
+      expect(screen.getByRole('status').textContent).toBe(planSyncContent.status.syncing)
+      expect(screen.getAllByRole('article').map((card) => card.textContent)).toEqual(before)
+      await waitFor(() => {
+        expect(triggers).toEqual(['ENTRY', 'MANUAL'])
+      })
+
+      // A poll in progress: the old bundle stays, freshness says 동기화 중, and the status is unchanged.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000)
+      })
+      await waitFor(() => {
+        expect(
+          screen.getByRole('heading', {
+            level: 4,
+            name: `${planResultContent.axes.freshness.name}: ${planResultContent.axes.freshness.states.SYNCING ?? ''}`,
+          }),
+        ).toBeInTheDocument()
+      })
+      expect(screen.getByText('1,250.00 USD')).toBeInTheDocument()
+      expect(screen.getByRole('status').textContent).toBe(planSyncContent.status.syncing)
+
+      // The poll that shows the job ended: the new bundle in one piece, and focus to the heading.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000)
+      })
+      expect(await screen.findByText('1,290.00 USD')).toBeInTheDocument()
+      expect(screen.queryByText('1,250.00 USD')).not.toBeInTheDocument()
+      const basis = formatSeoulTime('2026-09-27T01:20:00Z', planResultContent.timeUnavailable)
+      expect(screen.getByRole('status').textContent).toBe(planSyncContent.status.synced(basis))
+      expect(
+        screen.getByRole('heading', { level: 2, name: planResultContent.heading }),
+      ).toHaveFocus()
+      expect(screen.getByText(planSyncContent.cooldown(25))).toBeInTheDocument()
+      recorder.stop()
+      // One sentence when it started, one when it ended — never "reading again", never busy.
+      expect(recorder.texts).toEqual([
+        planSyncContent.status.syncing,
+        planSyncContent.status.synced(basis),
+      ])
+      expect(recorder.busy.every((value) => value === 'false')).toBe(true)
+      expect(screen.getAllByRole('status')).toHaveLength(1)
+      expect(liveRegions()).toHaveLength(1)
+      expect(triggers).toEqual(['ENTRY', 'MANUAL'])
+      expect(getObservedStorageEntries()).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('동기화: 공식 결과를 바꾸지 못한 수동 동기화는 오류 요약으로 초점을 옮기고 원인을 보인다', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      stubSessionRequest(authenticated)
+      const job = syncJobFixture()
+      const queue: (() => Promise<Response>)[] = [
+        () => Promise.resolve(jsonResponse(dashboardFixture())),
+        () =>
+          Promise.resolve(
+            jsonResponse(
+              dashboardFixture(
+                planResultFixture({
+                  trust: trustFixture({
+                    freshness: {
+                      state: 'STALE',
+                      cause: 'LAST_SYNC_UNSUCCESSFUL',
+                      nextAction: 'SYNC',
+                      affectedMetrics: [...METRIC_ORDER],
+                    },
+                  }),
+                }),
+                'SYNC',
+                syncFixture({
+                  availability: 'COOLDOWN',
+                  retryAfterSeconds: 20,
+                  latest: {
+                    ...job,
+                    status: 'FAILED',
+                    stage: 'COLLECTION',
+                    failureCode: 'PROVIDER_UNAVAILABLE',
+                    finishedAt: '2026-09-27T01:10:04Z',
+                  },
+                }),
+              ),
+            ),
+          ),
+      ]
+      stubDashboard(() => (queue.shift() ?? (() => Promise.reject(new Error('extra'))))())
+      const answers: (() => Promise<Response>)[] = [
+        () => Promise.resolve(jsonResponse(NOT_DUE)),
+        () =>
+          Promise.resolve(jsonResponse({ outcome: 'ACCEPTED', job, retryAfterSeconds: null }, 202)),
+      ]
+      stubDashboardSync(() => (answers.shift() ?? (() => Promise.reject(new Error('extra'))))())
+      render(<SignedInScreen />)
+      await screen.findByText('1,250.00 USD')
+      await waitFor(() => {
+        expect(syncPosts()).toHaveLength(1)
+      })
+      fireEvent.click(screen.getByRole('button', { name: planSyncContent.action }))
+      await waitFor(() => {
+        expect(syncPosts()).toHaveLength(2)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000)
+      })
+      const label = await screen.findByText(planSyncContent.summary.statuses.FAILED)
+      // eslint-disable-next-line testing-library/no-node-access -- 오류 요약은 역할이 없는 초점 대상(tabIndex -1)이다. 첫 문장 요소의 부모로만 찾을 수 있다.
+      const summary = label.parentElement
+      expect(summary).toHaveFocus()
+      expect(summary).toHaveTextContent(planSyncContent.summary.codes.PROVIDER_UNAVAILABLE)
+      expect(screen.getByRole('status').textContent).toBe(planSyncContent.status.failed)
+      // The last normal values stay, with the freshness cause and its next action.
+      expect(screen.getByText('1,250.00 USD')).toBeInTheDocument()
+      expect(
+        screen.getByText(planResultContent.axes.freshness.causes.LAST_SYNC_UNSUCCESSFUL ?? ''),
+      ).toBeInTheDocument()
+      // No automatic retry.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000)
+      })
+      expect(syncPosts()).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('동기화: 5분 이상 숨겨 둔 탭으로 돌아오면 세션을 다시 확인한 뒤 탭 복귀 동기화를 한 번 보낸다', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    let visibility: DocumentVisibilityState = 'visible'
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => visibility,
+    })
+    try {
+      stubSessionRequest(authenticated)
+      stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture())))
+      const triggers: string[] = []
+      stubDashboardSync((init) => {
+        triggers.push((JSON.parse(init?.body as string) as { trigger: string }).trigger)
+        return Promise.resolve(jsonResponse(NOT_DUE))
+      })
+      render(<SignedInScreen />)
+      await screen.findAllByRole('article')
+      await waitFor(() => {
+        expect(triggers).toEqual(['ENTRY'])
+      })
+
+      visibility = 'hidden'
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      vi.setSystemTime(Date.now() + 5 * 60_000)
+      visibility = 'visible'
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      // The session is checked again first (Story 1.5); the answer read after it sends VISIBILITY.
+      await waitFor(() => {
+        expect(triggers).toEqual(['ENTRY', 'VISIBILITY'])
+      })
+      expect(getObservedSessionRequests()).toHaveLength(2)
+      await screen.findAllByRole('article')
+      expect(triggers).toEqual(['ENTRY', 'VISIBILITY'])
+    } finally {
+      vi.useRealTimers()
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => 'visible',
+      })
+    }
   })
 
   it('AC-10: 대시보드에 투자 추천·성과·축하·공포·스트릭·배지 문구가 없다', async () => {

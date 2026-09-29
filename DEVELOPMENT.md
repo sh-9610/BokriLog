@@ -372,13 +372,13 @@ changes ──> frontend-quality ──┐
 |---|---|---|
 | `changes` | secret 검사, CI 계약 시험, 변경 분류 | 5분 |
 | `frontend-quality` | 타입 검사 → ESLint → stylelint → Prettier → 빌드 → Vitest → Chromium E2E | 8분 |
-| `backend-quality` | JDK 25 준비 → Gradle `build`(컴파일·Modulith 경계 검사·PostgreSQL Testcontainers 시험·jar) | 15분 |
-| `same-origin-integration` | 두 품질 job의 산출물로 동일 출처 검증(`--keep-stack`) → 같은 스택에서 Story 1.1 회귀 | 15분 |
+| `backend-quality` | JDK 25 준비 → Gradle `build`(컴파일·Modulith 경계 검사·PostgreSQL Testcontainers 시험·jar) | 20분 |
+| `same-origin-integration` | 두 품질 job의 산출물로 동일 출처 검증(`--keep-stack`) → 같은 스택에서 Story 1.1 회귀 | 17분 |
 | `ci-required` | 선행 job 결과 집계. 병합 가능 여부 판정 | 1분 |
 
-`backend-quality`의 15분은 Story 1.3이 10분에서 올린 값이다. 이 job은 이제 Testcontainers로 실제 PostgreSQL을 띄우고, 콜드 실행에는 `postgres:18.6-alpine` 내려받기가, 동시성 시험에는 실제 잠금 경합 대기가 더해진다. 러너에 docker 데몬이 이미 있으므로 서비스 컨테이너도 새 action도 더하지 않았고, 시험은 기존 `Gradle 빌드` 단계 안에서 돈다. `CI-PLAN.md` §4·§10의 backend 예산 8분은 이 상한과 별개로 계속 측정한다.
+`backend-quality`의 15분은 Story 1.3이 10분에서 올린 값이다. 이 job은 이제 Testcontainers로 실제 PostgreSQL을 띄우고, 콜드 실행에는 `postgres:18.6-alpine` 내려받기가, 동시성 시험에는 실제 잠금 경합 대기가 더해진다. 러너에 docker 데몬이 이미 있으므로 서비스 컨테이너도 새 action도 더하지 않았고, 시험은 기존 `Gradle 빌드` 단계 안에서 돈다. `CI-PLAN.md` §4·§10의 backend 예산 8분은 이 상한과 별개로 계속 측정한다. Story 2.11이 15분을 20분으로 올렸다. PR #49에서 이 job이 11분 5초였고, 같은 시험의 로컬 실행보다 1분쯤 길었다. 2.11의 로컬 `clean build`가 12분 56초라 CI는 14분 안팎이 된다.
 
-`same-origin-integration`의 15분은 `CI-PLAN.md` §8이 적은 시작값 5분과 다르다. 그 값은 이 job이 무엇을 하는지 정해지기 전의 추정이고, 지금은 Story 1.1 회귀 단계 하나가 이미 4분을 쓴다. 단계별 상한의 합(내려받기 1 + 동일 출처 검증 7 + `npm ci` 2 + Chromium 설치 2 + 회귀 4 + 정리·업로드 1)이 상한 17분이지만 15분을 유지한다. 검증 단계에 Story 1.3이 세 가지를 더했다 — `postgres:18.6-alpine` 이미지 내려받기, migrate 이미지 빌드, 마이그레이션 실행 — 그래서 그 단계의 예산을 5분에서 7분으로 본다. 실측(PR #9의 2분 2초)과 상한 사이에 아직 여유가 크므로 job 상한은 그대로 두고, 실측이 몇 회 더 쌓이면 두 값을 `CI-PLAN.md` 새 버전이 함께 보정한다. 검증 스크립트가 `--keep-stack`으로 남긴 스택을 회귀가 그대로 쓰므로 compose는 한 번만 뜬다. 필수 검사를 빼서 5분에 맞추지 않는다(CI-PLAN §10). 이 job이 `frontend-quality`의 `npm ci`와 Chromium 설치를 되풀이하는 중복은 `deferred-work.md`에 남겼다. 목표는 `CI-PLAN.md` §10의 PR wall-clock p95 8분이며 job timeout은 목표가 아니라 멈춘 job을 끊는 상한이다.
+`same-origin-integration`의 17분은 `CI-PLAN.md` §8이 적은 시작값 5분과 다르다. 그 값은 이 job이 무엇을 하는지 정해지기 전의 추정이고, 지금은 Story 1.1 회귀 단계 하나가 6분을 쓴다. 회귀 단계는 Story 2.11이 4분에서 6분으로 올렸고, 주입된 origin의 Playwright `globalTimeout`도 3분에서 5분으로 올렸다. PR #49에서 이미 2분 30초(59건)였고 2.11이 실제 스택의 동기화 왕복을 더했기 때문이다. preview를 쓰는 `frontend-quality`의 E2E 단계는 4분·3분 그대로다. 단계별 상한의 합(내려받기 1 + 동일 출처 검증 7 + `npm ci` 2 + Chromium 설치 2 + 회귀 6 + 정리·업로드 1)이 19분이지만 17분을 유지한다. 검증 단계에 Story 1.3이 세 가지를 더했다 — `postgres:18.6-alpine` 이미지 내려받기, migrate 이미지 빌드, 마이그레이션 실행 — 그래서 그 단계의 예산을 5분에서 7분으로 본다. 실측(PR #9의 2분 2초)과 상한 사이에 아직 여유가 크므로 job 상한은 그대로 두고, 실측이 몇 회 더 쌓이면 두 값을 `CI-PLAN.md` 새 버전이 함께 보정한다. 검증 스크립트가 `--keep-stack`으로 남긴 스택을 회귀가 그대로 쓰므로 compose는 한 번만 뜬다. 필수 검사를 빼서 5분에 맞추지 않는다(CI-PLAN §10). 이 job이 `frontend-quality`의 `npm ci`와 Chromium 설치를 되풀이하는 중복은 `deferred-work.md`에 남겼다. 목표는 `CI-PLAN.md` §10의 PR wall-clock p95 8분이며 job timeout은 목표가 아니라 멈춘 job을 끊는 상한이다.
 
 이 job 구조는 Story 1.2의 PR #9에서 2026-09-06에 처음 GitHub에서 돌았다. 첫 실측 wall-clock은 4분 3초로 `CI-PLAN.md` §10의 PR p95 8분 안이다. job별로는 `changes` 16초, `frontend-quality` 1분 9초, `backend-quality` 1분 26초, `same-origin-integration` 2분 2초, `ci-required` 7초다. 같은 날 문서-only PR #10은 `changes` 10초 → `ci-required` 6초로 끝났다. 위 표의 timeout은 이 실측이 몇 회 더 쌓인 뒤 `CI-PLAN.md` 새 버전에서 보정한다.
 

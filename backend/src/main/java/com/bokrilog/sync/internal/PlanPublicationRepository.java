@@ -34,10 +34,14 @@ class PlanPublicationRepository {
     record Lease(UUID jobId, UUID userId, UUID intentId, UUID portfolioId, UUID connectionId,
             UUID providerAccountId, String inputScopeHash, long generation) {}
 
-    /** The complete initial candidate whose totalEquity is E(tc). */
+    /**
+     * The complete candidate whose totalEquity is E(tc). An incremental one (Story 2.11) names the base candidate
+     * whose events it carried and the start of its own windows; an initial one has neither.
+     */
     record Candidate(UUID candidateId, UUID userId, UUID portfolioId, UUID intentId, UUID connectionId,
             UUID providerAccountId, Instant t0, Instant tc, String equity, Instant measuredAt, Instant receivedAt,
-            String policyVersion, String completenessHash) {}
+            String policyVersion, String completenessHash, @Nullable UUID baseCandidateId,
+            @Nullable Instant windowStart) {}
 
     /** The classification's current conversion result: the bundle of its most recently finished attempt. */
     record Conversion(UUID conversionId, UUID classificationId, UUID userId, UUID intentId, UUID portfolioId,
@@ -74,12 +78,13 @@ class PlanPublicationRepository {
 
     Optional<Candidate> candidate(UUID user, UUID candidateId) {
         return jdbc.sql("SELECT candidate_id,user_id,portfolio_id,intent_id,connection_id,provider_account_id,t0,tc,"
-                + "equity_decimal,measured_at,received_at,policy_version,completeness_hash "
+                + "equity_decimal,measured_at,received_at,policy_version,completeness_hash,base_candidate_id,window_start "
                 + "FROM sync_initial_candidate_bundle WHERE candidate_id=:c AND user_id=:u")
             .param("c", candidateId).param("u", user)
             .query((rs, n) -> new Candidate(uuid(rs, 1), uuid(rs, 2), uuid(rs, 3), uuid(rs, 4), uuid(rs, 5),
                     uuid(rs, 6), instant(rs, 7), instant(rs, 8), rs.getString(9), instant(rs, 10), instant(rs, 11),
-                    rs.getString(12), rs.getString(13))).optional();
+                    rs.getString(12), rs.getString(13), rs.getObject(14, UUID.class), instantOrNull(rs, 15)))
+            .optional();
     }
 
     Optional<Conversion> currentConversion(UUID user, UUID classificationId) {
@@ -286,9 +291,15 @@ class PlanPublicationRepository {
             .param("received", utc(candidate.receivedAt())).param("policy", candidate.policyVersion()).update();
     }
 
+    /**
+     * One calculation version to write. {@code lastExtendedVerificationAt} is its second watermark (a first
+     * publication verified all of {@code (t0, tc]} and records {@code tc}); {@code previousCalculationId} is the
+     * version it replaces, {@code null} for a first publication.
+     */
     record CalculationRow(UUID calculationId, UUID jobId, UUID planId, Pinned pinned, UUID portfolioSnapshotId,
             long portfolioSequence, UUID sourceSnapshotId, String classificationPolicy, String pricePolicy,
-            String sourcePolicy, PlanCalculator.Result.Calculated result, int flowCount, int estimatedFlowCount) {}
+            String sourcePolicy, PlanCalculator.Result.Calculated result, int flowCount, int estimatedFlowCount,
+            Instant lastExtendedVerificationAt, @Nullable UUID previousCalculationId) {}
 
     void insertCalculation(CalculationRow row) {
         Pinned p = row.pinned();
@@ -300,10 +311,11 @@ class PlanPublicationRepository {
                 + "calendar_policy,display_policy,precision_policy,time_zone,implementation_version,p0_decimal,t0,end_at,"
                 + "period,target_rate,basis_at,current_value_measured_at,cashflow_verified_through,adjusted_principal,"
                 + "periods_elapsed,periods_total,periods_remaining,flow_count,estimated_flow_count,estimated,"
-                + "input_reliability,input_hash,result_hash) VALUES (:id,:job,:u,:plan,:p,'BYBIT',:a,:c,:m,:bs,:bss,:ps,"
+                + "input_reliability,input_hash,result_hash,last_extended_verification_at,previous_calculation_id) "
+                + "VALUES (:id,:job,:u,:plan,:p,'BYBIT',:a,:c,:m,:bs,:bss,:ps,"
                 + ":pseq,:ss,:cand,:cls,:conv,:clsPolicy,:pricePolicy,:sourcePolicy,:calc,:calendar,:display,:precision,"
                 + ":zone,:impl,:p0,:t0,:end,:period,:rate,:tc,:measured,:verified,:ap,:elapsed,:total,:remaining,:flows,"
-                + ":estimatedFlows,:estimated,:reliability,:inputHash,:resultHash)")
+                + ":estimatedFlows,:estimated,:reliability,:inputHash,:resultHash,:extended,:previous)")
             .param("id", row.calculationId()).param("job", row.jobId()).param("u", p.userId()).param("plan", row.planId())
             .param("p", p.portfolioId()).param("a", p.providerAccountId()).param("c", p.connectionId())
             .param("m", p.membershipId()).param("bs", p.basisPortfolioSnapshotId())
@@ -320,7 +332,8 @@ class PlanPublicationRepository {
             .param("total", r.periodsTotal()).param("remaining", r.periodsRemaining()).param("flows", row.flowCount())
             .param("estimatedFlows", row.estimatedFlowCount()).param("estimated", r.estimated())
             .param("reliability", r.inputReliability().name()).param("inputHash", r.inputHash())
-            .param("resultHash", r.resultHash()).update();
+            .param("resultHash", r.resultHash()).param("extended", utc(row.lastExtendedVerificationAt()))
+            .param("previous", row.previousCalculationId()).update();
         for (PlanCalculator.MetricResult metric : r.metrics()) {
             jdbc.sql("INSERT INTO sync_plan_calculation_metric(calculation_id,metric,value_decimal,nature,unavailable_reason) "
                     + "VALUES (:id,:metric,:value,:nature,:reason)")
@@ -347,9 +360,48 @@ class PlanPublicationRepository {
      * writer for the same plan inserts nothing and the caller rolls its publication back.
      */
     int pointFirst(UUID planId, UUID user, UUID portfolioId, UUID calculationId) {
-        return jdbc.sql("INSERT INTO sync_official_plan_result(plan_id,user_id,portfolio_id,calculation_id,pointer_version) "
-                + "VALUES (:plan,:u,:p,:calc,1) ON CONFLICT (plan_id) DO NOTHING")
+        int inserted = jdbc.sql("INSERT INTO sync_official_plan_result(plan_id,user_id,portfolio_id,calculation_id,"
+                + "pointer_version) VALUES (:plan,:u,:p,:calc,1) ON CONFLICT (plan_id) DO NOTHING")
             .param("plan", planId).param("u", user).param("p", portfolioId).param("calc", calculationId).update();
+        if (inserted == 1) recordHistory(planId);
+        return inserted;
+    }
+
+    /**
+     * The next pointer (Story 2.11): an expected-version CAS. It moves only while the pointer still names the
+     * version and calculation the sync read at admission, to the next version and the new calculation, and the
+     * move is recorded in the append-only history in the same transaction. Zero when the pointer moved.
+     *
+     * <p>The publication time is the statement's, not the transaction's: the publishing transaction may have
+     * waited on the plan lock, and {@code now()} would date the version before the one it replaces committed.
+     */
+    int pointNext(UUID planId, UUID user, long expectedVersion, UUID expectedCalculationId, UUID calculationId) {
+        int moved = jdbc.sql("UPDATE sync_official_plan_result SET calculation_id=:calc,pointer_version=pointer_version+1,"
+                + "published_at=date_trunc('milliseconds',statement_timestamp()) WHERE plan_id=:plan AND user_id=:u "
+                + "AND pointer_version=:v AND calculation_id=:expected")
+            .param("calc", calculationId).param("plan", planId).param("u", user).param("v", expectedVersion)
+            .param("expected", expectedCalculationId).update();
+        if (moved == 1) recordHistory(planId);
+        return moved;
+    }
+
+    /** Appends the pointer's current version to its history. Never updates an earlier row. */
+    private void recordHistory(UUID planId) {
+        jdbc.sql("INSERT INTO sync_official_plan_result_history(plan_id,pointer_version,user_id,portfolio_id,"
+                + "calculation_id,published_at) SELECT plan_id,pointer_version,user_id,portfolio_id,calculation_id,"
+                + "published_at FROM sync_official_plan_result WHERE plan_id=:plan")
+            .param("plan", planId).update();
+    }
+
+    /** One row of the official pointer's history. */
+    record HistoryRow(long pointerVersion, UUID calculationId, UUID portfolioId, Instant publishedAt) {}
+
+    /** The plan's official versions, oldest first. */
+    List<HistoryRow> history(UUID user, UUID planId) {
+        return jdbc.sql("SELECT pointer_version,calculation_id,portfolio_id,published_at "
+                + "FROM sync_official_plan_result_history WHERE plan_id=:plan AND user_id=:u ORDER BY pointer_version")
+            .param("plan", planId).param("u", user)
+            .query((rs, n) -> new HistoryRow(rs.getLong(1), uuid(rs, 2), uuid(rs, 3), instant(rs, 4))).list();
     }
 
     // ---------------------------------------------------------------- official result (through the pointer)
@@ -422,7 +474,8 @@ class PlanPublicationRepository {
                 + "OR EXISTS(SELECT 1 FROM sync_initial_collection_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
                 + "OR EXISTS(SELECT 1 FROM sync_cashflow_classification_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
                 + "OR EXISTS(SELECT 1 FROM sync_cashflow_conversion_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
-                + "OR EXISTS(SELECT 1 FROM sync_plan_publication_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')),"
+                + "OR EXISTS(SELECT 1 FROM sync_plan_publication_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) "
+                + "OR EXISTS(SELECT 1 FROM sync_plan_sync_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')),"
                 + "statement_timestamp()-:measured<=interval '15 minutes',"
                 + "statement_timestamp()-:verified<=interval '15 minutes'")
             .param("u", user).param("measured", utc(measuredAt)).param("verified", utc(verifiedThrough))
@@ -439,21 +492,29 @@ class PlanPublicationRepository {
      * module's own tables only, and never a candidate's events, raw provider fields or credentials.
      */
 
-    /** The lineage columns of a calculation version that the dashboard does not read. */
+    /**
+     * The lineage columns of a calculation version that the dashboard does not read.
+     *
+     * @param lastExtendedAt the version's second watermark: the last extended cash-flow verification
+     * @param previousCalculationId the version it replaced (Story 2.11), {@code null} for a first publication
+     */
     record Lineage(UUID createdByJobId, String provider, UUID providerAccountId, UUID connectionId,
             UUID membershipId, UUID basisSourceSnapshotId, UUID sourceSnapshotId, UUID candidateId,
             UUID classificationId, UUID conversionId, String classificationPolicy, String sourcePolicy,
-            String precisionPolicy, String timeZone, Instant createdAt) {}
+            String precisionPolicy, String timeZone, Instant createdAt, Instant lastExtendedAt,
+            @Nullable UUID previousCalculationId) {}
 
     Optional<Lineage> lineage(UUID user, UUID calculationId) {
         return jdbc.sql("SELECT created_by_job_id,provider,provider_account_id,connection_id,membership_id,"
                 + "basis_source_snapshot_id,source_snapshot_id,candidate_id,classification_id,conversion_id,"
-                + "classification_policy_version,source_policy_version,precision_policy,time_zone,created_at "
+                + "classification_policy_version,source_policy_version,precision_policy,time_zone,created_at,"
+                + "last_extended_verification_at,previous_calculation_id "
                 + "FROM sync_plan_calculation WHERE calculation_id=:c AND user_id=:u")
             .param("c", calculationId).param("u", user)
             .query((rs, n) -> new Lineage(uuid(rs, 1), rs.getString(2), uuid(rs, 3), uuid(rs, 4), uuid(rs, 5),
                     uuid(rs, 6), uuid(rs, 7), uuid(rs, 8), uuid(rs, 9), uuid(rs, 10), rs.getString(11),
-                    rs.getString(12), rs.getString(13), rs.getString(14), instant(rs, 15))).optional();
+                    rs.getString(12), rs.getString(13), rs.getString(14), instant(rs, 15), instant(rs, 16),
+                    rs.getObject(17, UUID.class))).optional();
     }
 
     /**
@@ -511,6 +572,13 @@ class PlanPublicationRepository {
                     uuid(rs, 5), rs.getString(6), rs.getString(7), rs.getString(8))).optional();
     }
 
+    /** A classification's external flows: its deposits and withdrawals. Empty when it is not this user's. */
+    Optional<Integer> externalFlowCount(UUID user, UUID classificationId) {
+        return jdbc.sql("SELECT deposit_count+withdrawal_count FROM sync_cashflow_classification_bundle "
+                + "WHERE classification_id=:c AND user_id=:u")
+            .param("c", classificationId).param("u", user).query(Integer.class).optional();
+    }
+
     /** A conversion bundle by its id — the one a version recorded, not the classification's latest. */
     Optional<Conversion> conversion(UUID user, UUID conversionId) {
         return jdbc.sql("SELECT conversion_id,classification_id,user_id,intent_id,portfolio_id,connection_id,"
@@ -561,6 +629,7 @@ class PlanPublicationRepository {
      */
     void erase(UUID user) {
         jdbc.sql("DELETE FROM sync_official_plan_result WHERE user_id=:u").param("u", user).update();
+        jdbc.sql("DELETE FROM sync_official_plan_result_history WHERE user_id=:u").param("u", user).update();
         jdbc.sql("DELETE FROM sync_plan_publication_job WHERE user_id=:u").param("u", user).update();
         jdbc.sql("DELETE FROM sync_plan_calculation WHERE user_id=:u").param("u", user).update();
         jdbc.sql("DELETE FROM sync_source_snapshot WHERE user_id=:u AND initial_candidate_id IS NOT NULL")

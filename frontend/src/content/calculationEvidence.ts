@@ -126,6 +126,13 @@ export const calculationEvidenceContent = {
     connectionPolicyHelp: '첫 스냅샷이 이 연결의 정책과 대조해 기록한 버전입니다.',
     sourceRange: '원천 범위',
     range: '수집 구간',
+    /** Story 2.11: 이 계산 버전을 만든 동기화가 Bybit 기록을 다시 읽기 시작한 시각. */
+    windowStart: '이번 수집 시작 시각',
+    windowStartHelp: '이 계산 버전을 만든 수집이 Bybit 입출금 기록을 다시 읽기 시작한 시각입니다.',
+    /** 창 시작이 t0보다 뒤일 때만 붙는다. */
+    windowStartCarried: '그 앞 구간은 직전 공식 계산의 수집 결과를 이어받았습니다.',
+    /** 창 시작이 t0일 때(최초 발행, 또는 계획 시작부터 다시 읽은 동기화). */
+    windowStartFromT0: '계획 시작 시각(t0)부터 읽었습니다.',
     collectionPolicy: '수집 정책',
     completenessHash: '완전성 hash',
     classification: '외부 자금흐름 판정',
@@ -183,6 +190,9 @@ export const calculationEvidenceContent = {
   separators: { range: '–', item: '·' },
   versions: {
     official: '공식 버전',
+    /** Story 2.11: 공식 버전은 동기화가 발행할 때마다 하나씩 늘고, 앞 버전은 다음 버전이 발행된 시각에 끝난다. */
+    officialHelp:
+      '발행 순서대로 보입니다. 이전 공식 버전은 다음 버전이 발행되면서 적용이 끝났고, 지금 표시된 값은 현재 공식 버전의 것입니다.',
     order: '발행 순서',
     effectiveFrom: '적용 시작',
     effectiveUntil: '적용 끝',

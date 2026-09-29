@@ -6,7 +6,14 @@ import {
   type AdjustmentDirection,
 } from '../content/adjustmentHistory'
 import { isCanonicalDecimal } from '../format/decimal'
-import { bundleOf, record, strings, type Dashboard, type PlanResult } from './useDashboard'
+import {
+  bundleOf,
+  isInstant,
+  record,
+  strings,
+  type Dashboard,
+  type PlanResult,
+} from './useDashboard'
 
 /** One leg of a spot price route: the closed one-minute candle whose close was used. */
 export interface AdjustmentLeg {
@@ -88,12 +95,6 @@ export type AdjustmentList = AdjustmentPage
 
 /** The most rows one page may carry. The server sends exactly this many when another page follows. */
 export const ADJUSTMENT_PAGE_SIZE = 20
-
-const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/
-
-function isInstant(value: unknown): value is string {
-  return typeof value === 'string' && INSTANT.test(value) && Number.isFinite(Date.parse(value))
-}
 
 function count(value: unknown): value is number {
   return Number.isInteger(value) && (value as number) >= 0

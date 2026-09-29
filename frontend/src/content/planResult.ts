@@ -164,6 +164,15 @@ export const planResultContent = {
           '외부 자금흐름 확인이 15분보다 오래됐습니다. 기존 공식 값은 그대로 유지됩니다.',
         BOTH_OUTDATED:
           '현재가치 측정과 외부 자금흐름 확인이 모두 15분보다 오래됐습니다. 기존 공식 값은 그대로 유지됩니다.',
+        // Story 2.11: 마지막 동기화가 공식 값을 바꾸지 못하고 끝났거나, 지금은 동기화할 수 없을 때.
+        LAST_SYNC_UNSUCCESSFUL:
+          '마지막 동기화를 끝내지 못해 공식 값을 새로 확인하지 못했습니다. 기존 공식 값은 그대로 유지됩니다.',
+        LAST_SYNC_NEEDS_REVIEW:
+          '마지막 동기화의 입력에 검토가 필요해 공식 값을 바꾸지 않았습니다. 기존 공식 값은 그대로 유지됩니다.',
+        LONG_GAP:
+          '외부 자금흐름 확인 뒤 30일이 넘게 지났습니다. 기존 공식 값은 읽기 전용으로 유지됩니다.',
+        SYNC_UNAVAILABLE:
+          '지금은 동기화할 수 없어 공식 값을 새로 확인하지 못합니다. 기존 공식 값은 그대로 유지됩니다.',
       } as Record<string, string>,
       lastNormal: '마지막 정상 시각 (현재가치 측정 시각)',
       verifiedThrough: '외부 자금흐름 확인 시각',
@@ -182,6 +191,9 @@ export const planResultContent = {
       causes: {
         INPUTS_VERIFIED: '수집 완전성, 외부 자금흐름 판정과 사건 시점 환산을 확인한 입력입니다.',
         TARGET_NOT_POSITIVE: '조정 최종 목표가 0 이하라 계획 입력을 검토해야 합니다.',
+        // Story 2.11: 마지막 동기화가 검토 필요로 끝났다. 새 입력은 공식 계산에 들어가지 않았다.
+        SYNC_REVIEW_REQUIRED:
+          '마지막 동기화에서 검토가 필요한 입력이 나와 그 입력을 공식 계산에 쓰지 않았습니다. 표시된 값은 이전 공식 버전입니다.',
       } as Record<string, string>,
       lastNormal: '마지막 정상 시각 (외부 자금흐름 확인 시각)',
     },
@@ -233,21 +245,32 @@ export function copyFor(
 export const NEXT_ACTION_FALLBACK = '다시 불러와 상태를 확인해 주세요.'
 
 /**
- * 화면 단위 다음 행동 코드 → 문장(Story 2.8의 닫힌 집합: `CREATE_PLAN`·`WAIT_FOR_RESULT`·
- * `WAIT_FOR_SYNC`·`NONE`). 동기화 조작은 Story 2.11이 코드를 더한다. 그전까지 `최신 아님`의 다음
- * 행동은 `NONE`이고, 자동 복구나 이후 기능을 약속하지 않는다. `NONE`의 승인 문장은 화면에 한 번,
- * 다음 행동 섹션에만 나온다.
+ * 화면 단위 다음 행동 코드 → 문장(닫힌 집합: Story 2.8의 `CREATE_PLAN`·`WAIT_FOR_RESULT`·`WAIT_FOR_SYNC`·
+ * `NONE`과 Story 2.11의 `SYNC`·`CHOOSE_CONTINUATION`). 동기화 조작이 생겼으므로 `최신 아님`의 다음 행동은
+ * `SYNC`이고, `NONE`은 따로 할 조치가 없다는 뜻이다(최신이거나, 지금은 동기화를 받지 않는 상태). 자동
+ * 복구나 이후 기능을 약속하지 않는다. `NONE`의 승인 문장은 화면에 한 번, 다음 행동 섹션에만 나온다.
  *
  * @param measured 서울 시각으로 쓴 현재가치 측정 시각. 결과가 없거나 시각을 표시할 수 없으면 `null`이다.
  */
 export function nextActionCopy(code: string, measured: string | null): string {
+  const shown =
+    measured === null
+      ? '표시된 값은 마지막 정상 결과입니다.'
+      : `표시된 값은 ${measured}의 마지막 정상 결과입니다.`
   switch (code) {
     case 'NONE':
-      return measured === null
-        ? '지금 이 화면에서 새로 확인할 수 없습니다. 표시된 값은 마지막 정상 결과입니다.'
-        : `지금 이 화면에서 새로 확인할 수 없습니다. 표시된 값은 ${measured}의 마지막 정상 결과입니다.`
+      return `지금 따로 할 조치는 없습니다. ${shown}`
+    case 'SYNC':
+      return `동기화로 현재가치와 입출금 기록을 다시 확인할 수 있습니다. ${shown}`
+    case 'CHOOSE_CONTINUATION':
+      // 이 화면이 실행할 수 없는 선택을 지시하지 않는다. 두 방법과 그 차이, 지금은 고를 수 없다는 사실만 말한다.
+      return `장기 미동기화·선택 필요: 마지막 확인 뒤 30일이 넘게 지나 동기화하지 않습니다. 이어 가는 방법은 공백 기간 전체를 수집하는 기존 계획 계속과, 공백 기간을 수집하지 않고 새 기준으로 시작하는 새 계획 시작 두 가지이며, 이 화면에서는 아직 선택할 수 없습니다. ${
+        measured === null
+          ? '표시된 값은 마지막 정상 결과이며 읽기 전용으로 유지됩니다.'
+          : `표시된 값은 ${measured}의 마지막 정상 결과이며 읽기 전용으로 유지됩니다.`
+      }`
     case 'WAIT_FOR_SYNC':
-      return '동기화 작업이 진행 중입니다. 작업이 끝난 뒤 다시 불러와 확인해 주세요. 그전까지 표시된 값은 바뀌지 않습니다.'
+      return '동기화 작업이 진행 중입니다. 작업이 끝날 때까지 표시된 값은 바뀌지 않습니다. 끝난 뒤의 결과는 이 화면에 표시되며 다시 불러오기로도 확인할 수 있습니다.'
     case 'WAIT_FOR_RESULT':
       return '발행이 끝난 뒤 다시 불러와 결과를 확인해 주세요.'
     case 'CREATE_PLAN':
@@ -259,16 +282,20 @@ export function nextActionCopy(code: string, measured: string | null): string {
 }
 
 /**
- * 축 하나의 다음 행동 코드 → 짧은 문장. 축은 `WAIT_FOR_SYNC`(신선도, 작업 진행 중)와 `NONE`만
- * 만든다. 시각을 담지 않는다 — 축마다 자기 마지막 정상 시각이 따로 있고, 측정 시각을 되풀이하면 두
- * 기준이 한 묶음에 섞여 읽힌다.
+ * 축 하나의 다음 행동 코드 → 짧은 문장. 신선도 축은 `WAIT_FOR_SYNC`(작업 진행 중)·`SYNC`(최신 아님)·
+ * `CHOOSE_CONTINUATION`(장기 미동기화)·`NONE`을, 나머지 두 축은 `NONE`만 만든다. 시각을 담지 않는다 — 축마다
+ * 자기 마지막 정상 시각이 따로 있고, 측정 시각을 되풀이하면 두 기준이 한 묶음에 섞여 읽힌다.
  */
 export function axisActionCopy(code: string): string {
   switch (code) {
     case 'NONE':
-      return '지금 할 수 있는 조치가 없습니다.'
+      return '지금 따로 할 조치는 없습니다.'
+    case 'SYNC':
+      return '동기화 버튼으로 다시 확인할 수 있습니다.'
+    case 'CHOOSE_CONTINUATION':
+      return '장기 미동기화 상태입니다. 이어 가는 방법은 이 화면에서 아직 선택할 수 없습니다.'
     case 'WAIT_FOR_SYNC':
-      return '동기화 작업이 끝난 뒤 다시 불러와 확인해 주세요.'
+      return '동기화 작업이 끝날 때까지 기다려 주세요. 다시 불러오기로도 확인할 수 있습니다.'
     default:
       return NEXT_ACTION_FALLBACK
   }

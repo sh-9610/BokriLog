@@ -5,7 +5,12 @@
  * 묶음은 스스로 일치해야 받아들여진다(`isPlanResult`): 축마다 자기 마지막 정상 시각이 그 묶음의
  * 시각이고, 신선도는 두 시각을 제 이름으로 되풀이하며, 계산 불가 지표는 값이 없는 지표 그대로다.
  * 아래 도우미가 그 일치를 기본값으로 지킨다.
+ *
+ * `READY`에는 동기화 블록(Story 2.11)이 함께 온다. 기본값은 "지금 동기화할 수 있고 지난 작업은 없다"이다.
  */
+
+import type { SyncStatus } from '../session/useDashboard'
+import type { DashboardSync } from '../session/useDashboardSync'
 
 export const BASIS_AT = '2026-09-27T01:00:00Z'
 export const MEASURED_AT = '2026-09-27T00:59:59Z'
@@ -109,12 +114,60 @@ export function planResultFixture(
   }
 }
 
+/** One sync job of `sync.latest` or of an admission answer (Story 2.11). In progress by default. */
+export function syncJobFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    jobId: '1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b',
+    trigger: 'MANUAL',
+    status: 'QUEUED',
+    stage: null,
+    failureCode: null,
+    admittedAt: '2026-09-27T01:10:00Z',
+    finishedAt: null,
+    ...overrides,
+  }
+}
+
+/** The `sync` block of a `READY` answer (Story 2.11): a sync may be asked for now, and none ran before. */
+export function syncFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    availability: 'AVAILABLE',
+    reason: null,
+    retryAfterSeconds: null,
+    latest: null,
+    ...overrides,
+  }
+}
+
 /** A whole `READY` answer. */
 export function dashboardFixture(
   result: Record<string, unknown> = planResultFixture(),
   nextAction = 'NONE',
+  sync: Record<string, unknown> = syncFixture(),
 ): Record<string, unknown> {
-  return { state: 'READY', nextAction, result }
+  return { state: 'READY', nextAction, result, sync }
+}
+
+/** The parsed default sync block, for views a test builds by hand. */
+export const AVAILABLE_SYNC: SyncStatus = {
+  availability: 'AVAILABLE',
+  reason: null,
+  retryAfterSeconds: null,
+  latest: null,
+}
+
+/** A sync with nothing to say: for panels a test renders without the sync hook. */
+export function idleSyncState(overrides: Partial<DashboardSync> = {}): DashboardSync {
+  return {
+    phase: 'idle',
+    running: false,
+    followingElsewhere: false,
+    canRequest: true,
+    cooldownSeconds: null,
+    focus: null,
+    request: () => undefined,
+    ...overrides,
+  }
 }
 
 export const NO_PLAN_FIXTURE: Readonly<Record<string, unknown>> = {
@@ -212,6 +265,8 @@ export function calculationEvidenceFixture(
       sourceRange: {
         rangeStart: (result.conditions as Record<string, unknown>).startAt,
         rangeEnd: result.basisAt,
+        // The first publication reads from t0 (Story 2.11 names the window start of every version).
+        windowStart: (result.conditions as Record<string, unknown>).startAt,
         collectionPolicy: 'bybit-readonly-uta-1.0',
         completenessHash: 'c'.repeat(64),
       },
@@ -257,6 +312,7 @@ export function calculationEvidenceFixture(
           pointerVersion: result.pointerVersion,
           calculationId: result.calculationId,
           publishedAt: result.publishedAt,
+          appliedUntil: null,
           current: true,
         },
       ],

@@ -27,6 +27,7 @@ import com.bokrilog.sync.internal.PlanPublicationRepository.Lease;
 import com.bokrilog.sync.internal.PlanPublicationRepository.Pinned;
 import com.bokrilog.sync.internal.PlanPublicationRepository.PublicationBlocked;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
@@ -77,11 +78,17 @@ class PlanPublicationService {
      * evidence (Story 2.9) reads its lineage in a transaction of the same kind.
      */
     private final TransactionTemplate dashboardReads;
+    /** The incremental sync (Story 2.11): the dashboard's sync state and the lineage of the versions it made. */
+    private final PlanSyncService syncs;
+    private final PlanSyncRepository syncAttempts;
 
     PlanPublicationService(PlanPublicationRepository repository, CashflowClassificationRepository classifications,
             CashflowConversionRepository conversions, SourceConnectionApi sources, PortfolioMembershipApi portfolios,
             AccountAccessApi accounts, OperationalRestrictionApi restrictions, PlanPublicationPort plans,
-            CalculationConformance conformance, PlatformTransactionManager manager) {
+            CalculationConformance conformance, PlatformTransactionManager manager, PlanSyncService syncs,
+            PlanSyncRepository syncAttempts) {
+        this.syncs = syncs;
+        this.syncAttempts = syncAttempts;
         this.repository = repository;
         this.classifications = classifications;
         this.conversions = conversions;
@@ -334,7 +341,9 @@ class PlanPublicationService {
         repository.insertCalculation(new PlanPublicationRepository.CalculationRow(calculationId, lease.jobId(), planId,
                 pinned, snapshot.snapshotId(), snapshot.publicationSequence(), sourceSnapshotId,
                 repository.classificationPolicy(pinned.classificationId()), inputs.conversion().policyVersion(),
-                inputs.candidate().policyVersion(), result, result.appliedCashflows().size(), estimatedFlows));
+                inputs.candidate().policyVersion(), result, result.appliedCashflows().size(), estimatedFlows,
+                // The initial collection verified all of (t0, tc]: the first extended verification is tc itself.
+                pinned.tc(), null));
         Map<String, Flow> bySource = new HashMap<>();
         loaded.flows().forEach(flow -> bySource.put(flow.sourceId(), flow));
         for (PlanCalculator.AppliedCashflow applied : result.appliedCashflows()) {
@@ -523,8 +532,11 @@ class PlanPublicationService {
         return sha256(fields.toString());
     }
 
-    /** {@code name=length:value;} per field. A length read first makes every character of a value inert. */
-    private static final class Fields {
+    /**
+     * {@code name=length:value;} per field. A length read first makes every character of a value inert. The
+     * incremental sync's input hash (Story 2.11) uses the same serialization.
+     */
+    static final class Fields {
         private final StringBuilder payload = new StringBuilder();
 
         Fields(String kind) {
@@ -588,8 +600,8 @@ class PlanPublicationService {
         /*
          * The portfolio pointer must cite the version's own snapshot. This relies on AD-23: the portfolio
          * pointer and the plan's official pointer advance together, in one publication transaction, so a
-         * difference means the two pointers came from different moments. A later story that advances one
-         * without the other (Story 2.11's incremental sync, for instance) must revisit this check.
+         * difference means the two pointers came from different moments. Story 2.11's incremental sync keeps
+         * that: it advances both in its own one publication transaction (PlanSyncPublisher), never one alone.
          */
         var portfolio = portfolios.officialValue(user).orElse(null);
         if (portfolio == null || !portfolio.snapshotId().equals(calculation.portfolioSnapshotId())
@@ -597,11 +609,17 @@ class PlanPublicationService {
             return new Dashboard.Unavailable();
         List<DashboardMetric> metrics = repository.metrics(pointer.calculationId());
         if (!DashboardTrust.wellFormed(metrics, calculation.estimated())) return new Dashboard.Unavailable();
+        var lineage = repository.lineage(user, pointer.calculationId()).orElse(null);
+        if (lineage == null) return new Dashboard.Unavailable();
+        // The sync state (Story 2.11), in the same consistent read and against the same database clock.
+        var sync = syncs.state(user, new PlanSyncGuard.Base(plan, pointer, calculation, lineage));
+        var latest = sync.latest();
         // The axes fail closed: a reliability this story does not know is not shown as anything.
         var trust = DashboardTrust.judge(new DashboardTrust.Input(
                 repository.freshness(user, calculation.measuredAt(), calculation.verifiedThrough()),
                 calculation.inputReliability(), calculation.estimated(), calculation.estimatedFlowCount(),
-                calculation.measuredAt(), calculation.verifiedThrough(), calculation.basisAt(), metrics))
+                calculation.measuredAt(), calculation.verifiedThrough(), calculation.basisAt(), metrics,
+                new DashboardTrust.SyncFacts(sync.availability(), latest == null ? null : latest.status())))
                 .orElse(null);
         if (trust == null) return new Dashboard.Unavailable();
         return new Dashboard.Ready(new DashboardResult(plan.planId(), "ACTIVE", notation(calculation.principal()),
@@ -611,7 +629,7 @@ class PlanPublicationService {
                 calculation.verifiedThrough(), calculation.calculationPolicy(), calculation.calendarPolicy(),
                 calculation.displayPolicy(), calculation.pricePolicy(), calculation.implementationVersion(),
                 calculation.inputHash(), calculation.resultHash(), calculation.flowCount(),
-                calculation.estimatedFlowCount(), trust, metrics), DashboardTrust.nextAction(trust));
+                calculation.estimatedFlowCount(), trust, metrics), DashboardTrust.nextAction(trust), sync);
     }
 
     // ---------------------------------------------------------------- calculation evidence (Story 2.9)
@@ -651,15 +669,21 @@ class PlanPublicationService {
      * <ul>
      *   <li>the version belongs to the plan, its portfolio and its terms, the portfolio pointer cites its
      *       snapshot, and its metrics are a whole six (the dashboard's own checks);
-     *   <li>its creating attempt published exactly this plan and version, for the plan's intent, from the
-     *       inputs it pinned at admission ({@link #calculatedFromPinned});
+     *   <li>its creating attempt published exactly this plan and version, for the plan's intent: a first
+     *       publication from the inputs it pinned at admission ({@link #calculatedFromPinned}), or an incremental
+     *       sync (Story 2.11) that continued the version it read — the previous calculation of the same plan and
+     *       terms, the next portfolio sequence, a candidate based on the previous one's, a window starting inside
+     *       {@code [t0, previous verification]} and both watermarks as its mode leaves them
+     *       ({@link #continuedFrom});
      *   <li>its tc source snapshot was built from its candidate under the candidate's policy, and its basis
      *       source snapshot is the first snapshot of the same connection, measured at {@code t0};
      *   <li>the candidate, the classification and the conversion are one lineage — the same candidate, the
      *       same classification, the policies the version recorded, the same portfolio, intent, connection
-     *       and provider account — the collection covered exactly {@code (t0, tc]}, and the conversion is
-     *       the calculable one the version recorded;
-     *   <li>the applied cash-flow history has the version's counts and cites only its conversion.
+     *       and provider account — the collection's own windows covered exactly {@code [window start, tc]}
+     *       (the window start is {@code t0} for a first publication), and the conversion is the calculable one
+     *       the version recorded;
+     *   <li>the applied cash-flow history has the version's counts and cites only its conversion;
+     *   <li>the pointer's history is one contiguous line of versions ending in the current pointer.
      * </ul>
      */
     private EvidenceOutcome lineage(UUID user, EvidenceReference reference) {
@@ -683,11 +707,6 @@ class PlanPublicationService {
         var lineage = repository.lineage(user, calculationId).orElse(null);
         if (lineage == null || !"BYBIT".equals(lineage.provider())) return new EvidenceOutcome.Unavailable();
 
-        var attempt = repository.creatingAttempt(user, lineage.createdByJobId()).orElse(null);
-        if (attempt == null || !"PUBLISHED".equals(attempt.status()) || !plan.planId().equals(attempt.planId())
-                || !calculationId.equals(attempt.calculationId())
-                || !calculatedFromPinned(attempt.pinned(), plan.intentId(), calculation, lineage, metrics))
-            return new EvidenceOutcome.Unavailable();
         var candidate = repository.candidate(user, lineage.candidateId()).orElse(null);
         if (candidate == null || !candidate.intentId().equals(plan.intentId())
                 || !candidate.portfolioId().equals(calculation.portfolioId())
@@ -697,6 +716,31 @@ class PlanPublicationService {
                 || !candidate.measuredAt().equals(calculation.measuredAt())
                 || !candidate.policyVersion().equals(lineage.sourcePolicy()))
             return new EvidenceOutcome.Unavailable();
+        // The creating attempt: a first publication, or an incremental sync (Story 2.11).
+        var attempt = repository.creatingAttempt(user, lineage.createdByJobId()).orElse(null);
+        Instant windowStart;
+        int expectedConversionFlows;
+        if (attempt != null) {
+            if (!"PUBLISHED".equals(attempt.status()) || !plan.planId().equals(attempt.planId())
+                    || !calculationId.equals(attempt.calculationId()) || lineage.previousCalculationId() != null
+                    || candidate.baseCandidateId() != null || candidate.windowStart() != null
+                    || !lineage.lastExtendedAt().equals(calculation.verifiedThrough())
+                    || !calculatedFromPinned(attempt.pinned(), plan.intentId(), calculation, lineage, metrics))
+                return new EvidenceOutcome.Unavailable();
+            windowStart = calculation.t0();
+            expectedConversionFlows = attempt.pinned().flowCount();
+        } else {
+            var sync = syncAttempts.creatingSync(user, lineage.createdByJobId()).orElse(null);
+            var children = syncAttempts.childResults(user, lineage.createdByJobId()).orElse(null);
+            var externalFlows = repository.externalFlowCount(user, lineage.classificationId()).orElse(null);
+            if (sync == null || children == null || externalFlows == null
+                    || !continuedFrom(user, sync, children, plan, pointer, calculationId, calculation, lineage,
+                            candidate))
+                return new EvidenceOutcome.Unavailable();
+            windowStart = Objects.requireNonNull(sync.windowStart());
+            // The conversion converted every external flow its classification found.
+            expectedConversionFlows = externalFlows;
+        }
         var source = repository.sourceOrigin(user, lineage.sourceSnapshotId()).orElse(null);
         if (source == null || !lineage.candidateId().equals(source.candidateId())
                 || !source.connectionId().equals(lineage.connectionId())
@@ -715,9 +759,10 @@ class PlanPublicationService {
                 || !basis.providerAccountId().equals(lineage.providerAccountId())
                 || !basis.measuredAt().equals(calculation.t0()))
             return new EvidenceOutcome.Unavailable();
-        // The collection covered exactly (t0, tc]: its pages start at the plan start and end at the basis.
+        // The collection's own windows covered exactly [window start, tc]; together with the carried events of
+        // an incremental candidate that is the whole (t0, tc].
         var range = repository.collectionRange(user, lineage.candidateId()).orElse(null);
-        if (range == null || !range.start().equals(calculation.t0()) || !range.end().equals(calculation.basisAt()))
+        if (range == null || !range.start().equals(windowStart) || !range.end().equals(calculation.basisAt()))
             return new EvidenceOutcome.Unavailable();
         var classification = repository.classificationBundle(user, lineage.classificationId()).orElse(null);
         if (classification == null || !"COMPLETE".equals(classification.status())
@@ -737,7 +782,7 @@ class PlanPublicationService {
                 || !conversion.portfolioId().equals(calculation.portfolioId())
                 || !conversion.connectionId().equals(lineage.connectionId())
                 || !conversion.providerAccountId().equals(lineage.providerAccountId())
-                || conversion.flowCount() != attempt.pinned().flowCount())
+                || conversion.flowCount() != expectedConversionFlows)
             return new EvidenceOutcome.Unavailable();
         var flows = repository.appliedFlowCounts(calculationId, lineage.conversionId());
         if (flows.count() != calculation.flowCount() || flows.estimated() != calculation.estimatedFlowCount()
@@ -751,6 +796,9 @@ class PlanPublicationService {
         } else if (!flows.estimatedEvidence().isEmpty()) {
             return new EvidenceOutcome.Unavailable();
         }
+        List<CalculationEvidence.OfficialVersion> versions = officialVersions(user, plan.planId(), pointer,
+                calculation.portfolioId());
+        if (versions == null) return new EvidenceOutcome.Unavailable();
 
         var evidence = new CalculationEvidence(plan.planId(), pointer.version(), calculationId,
                 new CalculationEvidence.Snapshots(calculation.portfolioSnapshotId(), calculation.portfolioSequence(),
@@ -759,8 +807,8 @@ class PlanPublicationService {
                 new CalculationEvidence.Times(calculation.t0(), calculation.basisAt(), calculation.measuredAt(),
                         calculation.verifiedThrough()),
                 new CalculationEvidence.Connection(lineage.provider(), lineage.connectionId(), basis.policyVersion()),
-                new CalculationEvidence.SourceRange(range.start(), range.end(), candidate.policyVersion(),
-                        candidate.completenessHash()),
+                new CalculationEvidence.SourceRange(calculation.t0(), range.end(), windowStart,
+                        candidate.policyVersion(), candidate.completenessHash()),
                 new CalculationEvidence.Classification(lineage.classificationId(), classification.policyVersion(),
                         classification.inputScopeHash()),
                 new CalculationEvidence.Conversion(lineage.conversionId(), conversion.policyVersion(),
@@ -772,13 +820,94 @@ class PlanPublicationService {
                         calculation.calendarPolicy(), calculation.displayPolicy(), lineage.precisionPolicy(),
                         lineage.timeZone(), calculation.implementationVersion(), calculation.inputHash(),
                         calculation.resultHash(), lineage.createdAt()),
-                impacts(metrics, calculation.estimatedFlowCount(), evidenceType),
-                // The pointer keeps no history (V10): the one official version is the current one, official
-                // since the pointer was published. Earlier versions arrive with Story 2.11's history.
-                List.of(new CalculationEvidence.OfficialVersion(pointer.version(), calculationId, pointer.publishedAt(),
-                        true)),
+                impacts(metrics, calculation.estimatedFlowCount(), evidenceType), versions,
                 repository.unpublished(user, plan.intentId()));
         return new EvidenceOutcome.Found(evidence);
+    }
+
+    /**
+     * The plan's official versions from the pointer's append-only history (Story 2.11), oldest first: each
+     * version is official from its publication until the next one's, and the current one has no end. {@code null}
+     * when the history is not one line ending in the current pointer — a gap, a version of another portfolio, a
+     * publication earlier than the one before, or a last row that is not the pointer itself. Two versions may share
+     * a millisecond (the times are stored to the millisecond), so an equal time is still one line.
+     */
+    private @Nullable List<CalculationEvidence.OfficialVersion> officialVersions(UUID user, UUID planId,
+            PlanPublicationRepository.Pointer pointer, UUID portfolioId) {
+        List<PlanPublicationRepository.HistoryRow> rows = repository.history(user, planId);
+        if (rows.isEmpty()) return null;
+        List<CalculationEvidence.OfficialVersion> versions = new java.util.ArrayList<>();
+        for (int index = 0; index < rows.size(); index++) {
+            var row = rows.get(index);
+            var next = index + 1 < rows.size() ? rows.get(index + 1) : null;
+            if (row.pointerVersion() != index + 1 || !row.portfolioId().equals(portfolioId)
+                    || (next != null && next.publishedAt().isBefore(row.publishedAt())))
+                return null;
+            versions.add(new CalculationEvidence.OfficialVersion(row.pointerVersion(), row.calculationId(),
+                    row.publishedAt(), next == null ? null : next.publishedAt(), next == null));
+        }
+        var last = rows.getLast();
+        if (last.pointerVersion() != pointer.version() || !last.calculationId().equals(pointer.calculationId())
+                || !last.publishedAt().equals(pointer.publishedAt()))
+            return null;
+        return List.copyOf(versions);
+    }
+
+    /**
+     * Whether an incremental version (Story 2.11) continued the version its sync read at admission: the sync
+     * published exactly this plan, version and calculation from the plan's own portfolio, intent, membership,
+     * connection and provider account; the version's predecessor is the sync's base — a calculation of the same
+     * plan and terms, one portfolio sequence before, whose verification and extended verification the sync read,
+     * with the same basis — and its candidate is based on that one's; the window starts inside
+     * {@code [t0, previous verification]}; {@code tc} moved past the previous verification; and the extended
+     * watermark is {@code tc} after an extended sync and the previous one otherwise. The version's candidate,
+     * classification and conversion are exactly what the sync's own stages produced, and the candidate's window
+     * and {@code tc} are the scope the sync fixed.
+     */
+    private boolean continuedFrom(UUID user, PlanSyncRepository.CreatingSync sync,
+            PlanSyncRepository.ChildResults children, PlanPublicationPort.ActivePlan plan,
+            PlanPublicationRepository.Pointer pointer, UUID calculationId,
+            PlanPublicationRepository.CalculationView calculation, PlanPublicationRepository.Lineage lineage,
+            Candidate candidate) {
+        if (!lineage.candidateId().equals(children.candidateId())
+                || !lineage.classificationId().equals(children.classificationId())
+                || !lineage.conversionId().equals(children.conversionId())
+                || sync.tc() == null || !sync.tc().equals(candidate.tc()))
+            return false;
+        if (!"SUCCEEDED".equals(sync.status()) || !sync.planId().equals(plan.planId())
+                || !calculationId.equals(sync.calculationId()) || sync.publishedPointerVersion() == null
+                || sync.publishedPointerVersion() != pointer.version()
+                || sync.basePointerVersion() + 1 != pointer.version()
+                || !sync.portfolioId().equals(calculation.portfolioId()) || !sync.intentId().equals(plan.intentId())
+                || !sync.membershipId().equals(lineage.membershipId())
+                || !sync.connectionId().equals(lineage.connectionId())
+                || !sync.providerAccountId().equals(lineage.providerAccountId())
+                || !sync.baseCalculationId().equals(lineage.previousCalculationId())
+                || sync.tc() == null || !sync.tc().equals(calculation.basisAt()) || sync.windowStart() == null
+                || sync.mode() == null)
+            return false;
+        Instant expectedExtended = "EXTENDED".equals(sync.mode()) ? sync.tc() : sync.baseExtendedAt();
+        if (!lineage.lastExtendedAt().equals(expectedExtended)) return false;
+        var previous = repository.calculation(user, sync.baseCalculationId()).orElse(null);
+        var previousLineage = repository.lineage(user, sync.baseCalculationId()).orElse(null);
+        if (previous == null || previousLineage == null || !previous.planId().equals(plan.planId())
+                || !previous.portfolioId().equals(calculation.portfolioId())
+                || !previous.t0().equals(calculation.t0()) || !previous.endAt().equals(calculation.endAt())
+                || !previous.period().equals(calculation.period())
+                || !sameDecimal(previous.principal(), calculation.principal())
+                || !sameDecimal(previous.targetRate(), calculation.targetRate())
+                || previous.portfolioSequence() + 1 != calculation.portfolioSequence()
+                || !previous.basisPortfolioSnapshotId().equals(calculation.basisPortfolioSnapshotId())
+                || !previousLineage.basisSourceSnapshotId().equals(lineage.basisSourceSnapshotId())
+                || !previous.verifiedThrough().equals(sync.baseVerifiedThrough())
+                || !previousLineage.lastExtendedAt().equals(sync.baseExtendedAt())
+                || !previousLineage.candidateId().equals(sync.baseCandidateId()))
+            return false;
+        Instant windowStart = sync.windowStart();
+        return previousLineage.candidateId().equals(candidate.baseCandidateId())
+                && windowStart.equals(candidate.windowStart()) && !windowStart.isBefore(calculation.t0())
+                && !windowStart.isAfter(previous.verifiedThrough())
+                && calculation.basisAt().isAfter(previous.verifiedThrough());
     }
 
     /**
@@ -787,8 +916,8 @@ class PlanPublicationService {
      * classification and conversion; the terms, {@code tc}, E(tc) and its measurement time; the policies.
      *
      * <p>The portfolio pointer the publication advanced from is the plan's basis snapshot, and the version's
-     * snapshot is the next sequence. That holds for the first publication — the only kind before Story 2.11
-     * (incremental sync) and 2.15 (a following plan), which must revisit it.
+     * snapshot is the next sequence. That holds for a first publication; an incremental sync's version is judged
+     * by {@link #continuedFrom} instead, and Story 2.15 (a following plan) must revisit it.
      *
      * <p>The pinned input scope hash is not recomputed here: it covers the intent's source and portfolio
      * policy versions, which only the plan module holds and no port exposes.
@@ -893,12 +1022,16 @@ class PlanPublicationService {
         }
     }
 
-    private static boolean validKey(String key) {
+    /**
+     * The key rule of the plan's commands: the first publication's and the incremental sync's (Story 2.11). A key
+     * is the caller's own; none is invented for it.
+     */
+    static boolean validKey(String key) {
         return key.length() >= 16 && key.length() <= 128 && key.matches("[A-Za-z0-9._:-]+")
                 && !key.contains("..") && !key.startsWith("-");
     }
 
-    private static String sha256(String value) {
+    static String sha256(String value) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                     .digest(value.getBytes(StandardCharsets.UTF_8)));

@@ -23,8 +23,10 @@ import {
   adjustmentRowFixture,
   adjustmentTime,
   adjustmentWithdrawalFixture,
+  AVAILABLE_SYNC,
   EVIDENCE_IDS,
   evidenceResultFixture,
+  idleSyncState,
   trustFixture,
 } from '../test/planResultFixture'
 import {
@@ -59,7 +61,7 @@ function parsed(body: Record<string, unknown>): PlanResult {
 }
 
 function ready(body: Record<string, unknown> = shownResult()): DashboardView {
-  return { kind: 'READY', nextAction: 'NONE', result: parsed(body) }
+  return { kind: 'READY', nextAction: 'NONE', result: parsed(body), sync: AVAILABLE_SYNC }
 }
 
 /** Rows `from..to`: every fourth a withdrawal of -2.5 USDT, the rest deposits of 10.25 USDT. */
@@ -94,13 +96,18 @@ function Harness({
   readonly view: DashboardView
   readonly reload?: () => void
 }): ReactElement {
-  const dashboard = { view, loading: false, reload }
+  const dashboard = { view, loading: false, reload, refresh: vi.fn() }
   const evidence = useDashboardEvidence(dashboard)
   const adjustments = useDashboardAdjustments(dashboard)
   return (
     <>
       <p data-testid="announcement">{adjustmentAnnouncement(adjustments.view) ?? ''}</p>
-      <PlanResultPanel adjustments={adjustments} dashboard={dashboard} evidence={evidence} />
+      <PlanResultPanel
+        adjustments={adjustments}
+        dashboard={dashboard}
+        evidence={evidence}
+        sync={idleSyncState()}
+      />
     </>
   )
 }
@@ -998,9 +1005,13 @@ describe('AdjustmentHistory', { timeout: 20_000 }, () => {
   it('keeps the history while the same bundle stays shown after a failed dashboard reload', async () => {
     answers(ok(firstPage()))
     const result = parsed(shownResult())
-    const { rerender } = render(<Harness view={{ kind: 'READY', nextAction: 'NONE', result }} />)
+    const { rerender } = render(
+      <Harness view={{ kind: 'READY', nextAction: 'NONE', result, sync: AVAILABLE_SYNC }} />,
+    )
     await openHistory()
-    rerender(<Harness view={{ kind: 'lastGood', nextAction: 'NONE', result }} />)
+    rerender(
+      <Harness view={{ kind: 'lastGood', nextAction: 'NONE', result, sync: AVAILABLE_SYNC }} />,
+    )
     expect(listed()).toHaveLength(20)
   })
 })

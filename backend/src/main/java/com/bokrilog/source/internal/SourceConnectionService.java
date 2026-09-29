@@ -130,6 +130,28 @@ class SourceConnectionService implements SourceConnectionApi {
     }
 
     @Override
+    public CollectionResult collectIncrementalInputs(UUID userId, UUID connectionId, Instant t0, Instant from,
+            Instant tc, Consumer<com.bokrilog.source.SourceConnectionApi.CollectionPage> pageConsumer) {
+        if (this.accountAccess.decide(userId, userId, AccountAccessKind.SENSITIVE)
+                != AccessDecision.ALLOWED)
+            return new CollectionResult.Rejected(SourceRejectionReason.NOT_PERMITTED);
+        Optional<SourceConnectionRepository.SnapshotRow> row =
+                this.repository.snapshotConnection(userId, connectionId);
+        if (row.isEmpty()) return new CollectionResult.Rejected(SourceRejectionReason.NOT_PERMITTED);
+        var r = row.get();
+        var opened = this.cipher.open(new CredentialCipher.Aad(userId, connectionId,
+                r.credentialId(), r.keyVersion(), r.algorithmVersion()), r.nonce(), r.ciphertext());
+        if (opened.isEmpty()) return new CollectionResult.Rejected(SourceRejectionReason.UNAVAILABLE);
+        String[] pair = opened.get();
+        CollectionResult result = this.bybit.collectIncrementalInputs(
+                new SourceCredentials(pair[0], pair[1]), r.providerAccountRef(), t0, from, tc, pageConsumer);
+        if (result instanceof CollectionResult.Collected collected
+                && !r.providerAccountRef().equals(collected.value().providerAccountRef()))
+            return new CollectionResult.Rejected(SourceRejectionReason.SUB_ACCOUNT);
+        return result;
+    }
+
+    @Override
     public MarketTimeResult marketTime() {
         return this.bybit.marketTime();
     }

@@ -3,7 +3,14 @@ import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { calculationEvidenceContent as copy, evidencePath } from '../content/calculationEvidence'
 import { METRIC_ORDER, type MetricName } from '../content/planResult'
 import { isPlainNonNegative } from '../format/decimal'
-import { bundleOf, record, strings, type Dashboard, type PlanResult } from './useDashboard'
+import {
+  bundleOf,
+  isInstant,
+  record,
+  strings,
+  type Dashboard,
+  type PlanResult,
+} from './useDashboard'
 
 /** One metric's character and why (Story 2.9). The value itself is the dashboard's, not the evidence's. */
 export interface EvidenceMetric {
@@ -17,10 +24,15 @@ export interface EvidenceMetric {
   readonly estimatedCause?: { readonly evidenceType: string; readonly flowCount: number }
 }
 
+/**
+ * One official version of the plan, from the pointer history (Story 2.11): when it became official and, for
+ * every version but the current one, when it stopped being so.
+ */
 export interface OfficialVersion {
   readonly pointerVersion: number
   readonly calculationId: string
   readonly publishedAt: string
+  readonly appliedUntil: string | null
   readonly current: boolean
 }
 
@@ -62,6 +74,11 @@ export interface CalculationEvidence {
     readonly sourceRange: {
       readonly rangeStart: string
       readonly rangeEnd: string
+      /**
+       * Where the sync that made this version began reading Bybit again (Story 2.11). The part before it was
+       * carried over from the previous official calculation's candidate. The first publication reads from `t0`.
+       */
+      readonly windowStart: string
       readonly collectionPolicy: string
       readonly completenessHash: string
     }
@@ -114,13 +131,6 @@ function list(value: unknown): readonly unknown[] | null {
   return Array.isArray(value) ? value : null
 }
 
-/** An instant as the server writes it (`Instant#toString`): UTC, `Z`, whole seconds and an optional fraction. */
-const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/
-
-function isInstant(value: unknown): boolean {
-  return typeof value === 'string' && INSTANT.test(value) && Number.isFinite(Date.parse(value))
-}
-
 /**
  * The metric impact agrees with the shown bundle and with itself: the six in order, each with the shown
  * metric's nature and reason; the current value official and without a cause; a derived metric names the
@@ -148,13 +158,43 @@ function isImpact(value: unknown, shown: PlanResult, index: number, estimated: n
 
 function isOfficialVersion(value: unknown): boolean {
   const row = record(value)
+  if (row === null) return false
+  // Only the current version is still applied; every earlier one names when it stopped being official.
+  const applied =
+    row.current === true
+      ? row.appliedUntil === null || row.appliedUntil === undefined
+      : isInstant(row.appliedUntil)
   return (
-    row !== null &&
     typeof row.calculationId === 'string' &&
     isInstant(row.publishedAt) &&
     Number.isInteger(row.pointerVersion) &&
-    typeof row.current === 'boolean'
+    typeof row.current === 'boolean' &&
+    applied
   )
+}
+
+/**
+ * The official versions are one unbroken history in publication order: each pointer version after the one
+ * before, and every earlier version applied from its publication until exactly the next one's publication
+ * (never before its own — two publications in the same millisecond are allowed, so the times only need to
+ * be non-decreasing). The one current version is the last of them.
+ */
+function inPublicationOrder(versions: readonly OfficialVersion[]): boolean {
+  return versions.every((version, index) => {
+    const next = versions[index + 1]
+    if (next === undefined) return true
+    return (
+      next.pointerVersion > version.pointerVersion &&
+      version.appliedUntil === next.publishedAt &&
+      Date.parse(version.appliedUntil) >= Date.parse(version.publishedAt)
+    )
+  })
+}
+
+/** Whether `inner` is not before `start` and not after `end` (all three instants). */
+function within(inner: string, start: string, end: string): boolean {
+  const at = Date.parse(inner)
+  return Date.parse(start) <= at && at <= Date.parse(end)
 }
 
 function isUnpublished(value: unknown): boolean {
@@ -170,9 +210,10 @@ function isUnpublished(value: unknown): boolean {
 /**
  * A `GET /api/dashboard/evidence` body, or `null` when it is not the whole lineage of the shown bundle. The
  * three reference values must be the shown pointer's; the snapshots, the times and the plan terms the shown
- * bundle's; the collected range exactly `(t0, tc]`; the one current official version that pointer; and the
- * metric impact the shown metrics'. Every instant is in the server's format. Anything else — a missing
- * section, a malformed field, another bundle's lineage — is dropped whole, never rendered in part.
+ * bundle's; the collected range exactly `(t0, tc]`, with the window this version's sync read again inside it;
+ * the official versions in publication order, the last and only current one that pointer; and the metric
+ * impact the shown metrics'. Every instant is in the server's format. Anything else — a missing section, a
+ * malformed field, another bundle's lineage — is dropped whole, never rendered in part.
  */
 export function parseEvidence(value: unknown, shown: PlanResult): CalculationEvidence | null {
   const row = record(value)
@@ -230,6 +271,9 @@ export function parseEvidence(value: unknown, shown: PlanResult): CalculationEvi
     range.rangeEnd === times.tc &&
     isInstant(range.rangeStart) &&
     isInstant(range.rangeEnd) &&
+    // The window the sync read again starts inside [t0, tc] (at t0 for the first publication).
+    isInstant(range.windowStart) &&
+    within(range.windowStart, range.rangeStart, range.rangeEnd) &&
     strings(inputs.classification, ['classificationId', 'policyVersion', 'inputScopeHash']) &&
     strings(inputs.conversion, ['conversionId', 'pricePolicy', 'resultFingerprint']) &&
     count(cashflows.appliedCount) &&
@@ -265,11 +309,14 @@ export function parseEvidence(value: unknown, shown: PlanResult): CalculationEvi
     unpublished.every(isUnpublished)
   if (!whole) return null
   const evidence = row as unknown as CalculationEvidence
-  // Exactly one official version is current, and it is the pointer the screen shows.
-  const current = evidence.versions.official.filter((version) => version.current)
+  // Exactly one official version is current, it is the latest, and it is the pointer the screen shows.
+  const officials = evidence.versions.official
+  const current = officials.filter((version) => version.current)
   const [only] = current
   if (
     current.length !== 1 ||
+    officials.at(-1) !== only ||
+    !inPublicationOrder(officials) ||
     only?.pointerVersion !== shown.pointerVersion ||
     only.calculationId !== shown.calculationId
   ) {
