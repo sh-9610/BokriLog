@@ -112,6 +112,7 @@ class DevBybitStubConfig {
         DevBybitStub.Response response = stub.handle(path, headers(request), parameters(request));
         return ServerResponse.status(response.status())
                 .contentType(MediaType.parseMediaType(response.contentType()))
+                .headers(headers -> response.headers().forEach(headers::set))
                 .body(response.body());
     }
 

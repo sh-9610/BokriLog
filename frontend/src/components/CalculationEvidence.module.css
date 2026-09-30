@@ -41,7 +41,10 @@
   scroll-margin-block-start: var(--space-4);
 }
 
-/* One of the six parts, in the reading order: snapshots → times → inputs → calculation → metrics → versions. */
+/*
+ * One of the parts, in the reading order: change (Story 2.12) → snapshots → times → inputs → calculation →
+ * metrics → versions.
+ */
 .part {
   display: grid;
   gap: var(--space-2);

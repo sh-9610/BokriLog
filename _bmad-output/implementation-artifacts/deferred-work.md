@@ -275,3 +275,15 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-11-incremental-plan-sync.md`
   summary: `SyncControl.module.css`가 44×44 최소 조작 영역 규칙(`min-block-size`·`min-inline-size: var(--space-target-min)`)의 여섯 번째 사본이 됐다.
   evidence: Story 2.10이 다섯 번째 사본을 기록했다. 공통 규칙을 한 곳으로 모으는 일은 여러 화면 CSS 모듈을 함께 바꾸는 별도 정리다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-12-precision-reverification.md`
+  summary: 44×44 최소 조작 영역 규칙의 일곱·여덟 번째 사본이 생겼다(`SyncControl.module.css`의 `.secondary`, `VerificationControl.module.css`의 `.button`). `.ranges`는 세 CSS 모듈에, `.facts`·진행 표지 `@keyframes`는 두 곳에 같은 모양으로 있다.
+  evidence: Story 2.10·2.11이 다섯·여섯 번째 사본을 기록했다. 공통 규칙을 한 곳으로 모으는 일은 여러 화면 CSS 모듈을 함께 바꾸는 별도 정리다(Story 2.12 리뷰).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-12-precision-reverification.md`
+  summary: 현재가치의 측정 시각(`measured_at`, 수집 끝 wallet 응답)과 흐름 확인 상한(`tc`) 사이의 간격에 상한이 없다. page 재시도(최대 2·10·30초)나 CATCH_UP의 마지막 7일 재수집이 그 간격을 넓히고, 그 사이의 입출금은 `E`에는 들어가지만 흐름에는 들어가지 않는다.
+  evidence: Story 2.4부터 `tc`를 먼저 고정하고 wallet을 수집 끝에 읽는 설계다(ERD §2.2가 두 시각을 분리한다). 간격 상한은 새 정책 값이라 이 스토리에서 정하지 않았다(Story 2.12 리뷰).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-12-precision-reverification.md`
+  summary: Bybit 호출 예산(token bucket·동시 수집 2·IP 403 회로)이 프로세스 메모리에만 있어, 같은 reserved IP 뒤의 둘째 인스턴스는 한도와 차단 회로를 공유하지 않는다.
+  evidence: ERD §2.5는 "프로세스 token bucket"을 기본값으로 정했고 지금 배포는 단일 API 프로세스다. Blue-green 전환(Story 3.8) 동안 두 프로세스가 겹치는 시점에 공유 여부를 정할 일이다(Story 2.12 리뷰).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-12-precision-reverification.md`
+  summary: 동기화 작업 heartbeat가 `SKIP LOCKED`라서, 긴 page 저장 트랜잭션이 작업·자식 행을 잡고 있는 동안 lease 갱신이 건너뛰어진다. CATCH_UP처럼 page가 많은 작업은 재개(최대 2회)를 소진할 수 있다.
+  evidence: Story 2.11이 물려준 heartbeat 관용이다(항목 85와 같은 원인). 단계 트랜잭션 안의 lease 연장은 이력 규모가 보이는 시점에 함께 정할 일이다(Story 2.12 리뷰).

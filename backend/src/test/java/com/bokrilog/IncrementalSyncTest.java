@@ -42,14 +42,9 @@ import org.springframework.transaction.support.TransactionTemplate;
  */
 // The plan lock is held by a resource the body never names: holding it is the point.
 @SuppressWarnings("try")
-class IncrementalSyncTest extends AuthFlowTestBase {
+class IncrementalSyncTest extends PlanSyncTestBase {
     private static final String SYNC_PATH = AuthSecurityConfig.DASHBOARD_PATH + "/sync";
 
-    @Autowired private SourceConnectionApi source;
-    @Autowired private PortfolioMembershipApi portfolio;
-    @Autowired private SyncJobApi sync;
-    @Autowired private PlanConditionApi plans;
-    @Autowired private PlatformTransactionManager manager;
 
     // ------------------------------------------------------------------------------------------ MANUAL
 
@@ -84,8 +79,9 @@ class IncrementalSyncTest extends AuthFlowTestBase {
             assertThat(fields).containsOnlyKeys("outcome", "job", "retryAfterSeconds")
                     .containsEntry("outcome", "ACCEPTED").containsEntry("retryAfterSeconds", null);
             var jobView = nested(fields, "job");
-            assertThat(jobView).containsOnlyKeys("jobId", "trigger", "status", "stage", "failureCode", "admittedAt",
-                    "finishedAt").containsEntry("trigger", "MANUAL").containsEntry("status", "QUEUED");
+            assertThat(jobView).containsOnlyKeys("jobId", "purpose", "reason", "trigger", "status", "stage",
+                    "failureCode", "admittedAt", "finishedAt").containsEntry("purpose", "SYNC")
+                    .containsEntry("reason", null).containsEntry("trigger", "MANUAL").containsEntry("status", "QUEUED");
             job = UUID.fromString((String) jobView.get("jobId"));
             // The attempt runs up to the publication and waits there for the plan lock.
             awaitBlockedOnPlanLock();
@@ -164,7 +160,8 @@ class IncrementalSyncTest extends AuthFlowTestBase {
 
         // The ready dashboard carries the sync state beside the result, and a manual sync now cools down.
         var dashboard = get(AuthSecurityConfig.DASHBOARD_PATH, cookie);
-        assertThat(topLevelFieldsOf(dashboard.body())).containsOnlyKeys("state", "nextAction", "result", "sync");
+        assertThat(topLevelFieldsOf(dashboard.body())).containsOnlyKeys("state", "nextAction", "result", "sync",
+                "verification", "change");
         var syncView = nested(topLevelFieldsOf(dashboard.body()), "sync");
         assertThat(syncView).containsOnlyKeys("availability", "reason", "retryAfterSeconds", "latest")
                 .containsEntry("availability", "COOLDOWN").containsEntry("reason", null);
@@ -181,6 +178,20 @@ class IncrementalSyncTest extends AuthFlowTestBase {
                 + "&calculationId=" + v2.calculationId(), cookie);
         assertThat(evidence.statusCode()).as(evidence.body()).isEqualTo(200);
         var evidenceFields = topLevelFieldsOf(evidence.body());
+        // Story 2.12: deposits after v1's verification are not late — no marker on the dashboard, and the evidence
+        // lists each one as a new event (ADDED, not late).
+        assertThat(nested(topLevelFieldsOf(dashboard.body()), "change")).containsEntry("kind", "NONE")
+                .containsEntry("lateChangeCount", 0).containsEntry("firstAffectedAt", null)
+                .containsEntry("verifiedAt", null);
+        var evidenceChange = nested(evidenceFields, "change");
+        assertThat(evidenceChange).containsEntry("kind", "NONE").containsEntry("purpose", "SYNC")
+                .containsEntry("firstAffectedAt", null);
+        assertThat(nested(evidenceChange, "previous")).containsEntry("pointerVersion", 1)
+                .containsEntry("calculationId", v1.calculationId().toString());
+        @SuppressWarnings("unchecked")
+        var changedEvents = (List<Map<String, Object>>) evidenceChange.get("events");
+        assertThat(changedEvents).hasSize(v2.flowCount() - v1.flowCount()).allSatisfy(event -> assertThat(event)
+                .containsEntry("changeKind", "ADDED").containsEntry("late", false));
         var range = nested(nested(evidenceFields, "inputs"), "sourceRange");
         assertThat(range).containsEntry("rangeStart", v2.startAt().toString())
                 .containsEntry("rangeEnd", v2.basisAt().toString())
@@ -203,6 +214,8 @@ class IncrementalSyncTest extends AuthFlowTestBase {
         var rows = (List<Map<String, Object>>) topLevelFieldsOf(history.body()).get("rows");
         assertThat(rows).extracting(row -> ((Number) row.get("sequence")).intValue())
                 .containsExactlyElementsOf(java.util.stream.IntStream.rangeClosed(1, v2.flowCount()).boxed().toList());
+        assertThat(rows).as("no row was found late or changed").allSatisfy(row -> assertThat(row)
+                .containsEntry("versionChange", null));
         assertThat(nested(topLevelFieldsOf(history.body()), "coverage"))
                 .containsEntry("from", v2.startAt().toString()).containsEntry("through", v2.basisAt().toString());
         // The version the screen held is no longer current: its references are the same common 404.
@@ -217,8 +230,11 @@ class IncrementalSyncTest extends AuthFlowTestBase {
                 + "status=409"));
         assertThat(admissions).anySatisfy(line -> assertThat(line).contains("trigger=MANUAL result=COOLDOWN status=200"));
         var endings = lines(output, "plan sync finished: job=" + job + " ");
-        assertThat(endings).singleElement().satisfies(line -> assertThat(line).contains("trigger=MANUAL mode=NORMAL "
-                + "status=SUCCEEDED stage=PUBLICATION code=- latencyMs=").endsWith(
+        // Story 2.12 widened the line: purpose and reason, the collection's targets, windows, pages and retries, the
+        // reconciliation outcomes and late changes. A sync plans no target range and records no outcome.
+        assertThat(endings).singleElement().satisfies(line -> assertThat(line).contains("purpose=SYNC reason=- "
+                + "trigger=MANUAL mode=NORMAL status=SUCCEEDED stage=PUBLICATION code=- targets=0 windows=1 pages=2 "
+                + "retries=0 reconciled=0 lateChanges=0 latencyMs=").endsWith(
                 "policies=BYBIT-CASHFLOW-1.0,BYBIT-PRICE-1.0,CALC-1.0,CALENDAR-SEOUL-1.0"));
         for (String line : lines(output, "plan sync ")) {
             for (String forbidden : List.of(user.toString(), intent.toString(), v2.planId().toString(),
@@ -510,8 +526,8 @@ class IncrementalSyncTest extends AuthFlowTestBase {
         var constructor = leaseType.getDeclaredConstructors()[0];
         constructor.setAccessible(true);
         Object lease = constructor.newInstance(job, user, v1.planId(), portfolioId, base[5], base[2], base[3], base[4],
-                "MANUAL", v1.calculationId(), 1L, base[0], v1.cashflowVerifiedThrough(), v1.cashflowVerifiedThrough(),
-                v1.startAt(), v1.endAt(), 1L);
+                "SYNC", null, "MANUAL", v1.calculationId(), 1L, base[0], v1.cashflowVerifiedThrough(),
+                v1.cashflowVerifiedThrough(), v1.startAt(), v1.endAt(), 1L);
         var method = service.getDeclaredMethod("heartbeat", leaseType);
         method.setAccessible(true);
         return (Boolean) method.invoke(context.getBean(service), lease);
@@ -522,7 +538,8 @@ class IncrementalSyncTest extends AuthFlowTestBase {
     /**
      * AC-5: a stored event of (t0, tc] that neither the previous official candidate nor this sync's windows
      * explain holds the publication: no new version, both watermarks unchanged, the input reliability "review
-     * required" for all six metrics and the freshness "not fresh" with a new sync as the next action.
+     * required" for all six metrics and the freshness "not fresh". Story 2.12: syncing again cannot resolve it, so
+     * the next action of both axes is the precision verification.
      */
     @Test
     void anUnexplainedStoredEventHoldsThePublicationForReview() throws Exception {
@@ -546,9 +563,14 @@ class IncrementalSyncTest extends AuthFlowTestBase {
         assertThat(reliability.state()).isEqualTo("REVIEW_REQUIRED");
         assertThat(reliability.cause()).isEqualTo("SYNC_REVIEW_REQUIRED");
         assertThat(reliability.affectedMetrics()).hasSize(6);
+        assertThat(reliability.nextAction()).isEqualTo("VERIFY");
         assertThat(dashboard.result().trust().freshness().cause()).isEqualTo("LAST_SYNC_NEEDS_REVIEW");
-        assertThat(dashboard.nextAction()).isEqualTo("SYNC");
+        assertThat(dashboard.nextAction()).isEqualTo("VERIFY");
         assertThat(dashboard.sync().latest().status()).isEqualTo("NEEDS_REVIEW");
+        // The cooldown after an admission holds for every purpose: 30 seconds after the sync's.
+        assertThat(dashboard.verification().availability()).isEqualTo("COOLDOWN");
+        assertThat(dashboard.verification().suggestedReason()).isEqualTo("GAP_SUSPECTED");
+        assertThat(dashboard.verification().preview().anomalyCount()).isEqualTo(1);
     }
 
     /**
@@ -561,14 +583,17 @@ class IncrementalSyncTest extends AuthFlowTestBase {
     void aFailureAtAnyStageKeepsTheLastOfficialVersionAndIsNotRetried(String stage, String status, String code)
             throws Exception {
         UUID user = connect(DevBybitStub.Scenario.UTA2);
-        publishedPlan(user, "incremental-fail-" + stage.toLowerCase(java.util.Locale.ROOT), null);
+        publishedPlan(user, "incremental-fail-" + stage.toLowerCase(java.util.Locale.ROOT),
+                stage.equals("CONVERSION") ? Instant.now().minus(Duration.ofDays(3)) : null);
         var v1 = ready(user);
         if (stage.equals("CONVERSION")) {
-            // A carried withdrawal of an asset without a trading route: its conversion is held.
+            // A carried withdrawal of an asset without a trading route: its conversion is held. It lies before the
+            // sync's window (verified - 24 h): an official event inside the window that the collection does not see
+            // again is a missing one since Story 2.12, and would end the attempt in review instead.
             UUID candidate = jdbc().sql("SELECT candidate_id FROM sync_plan_calculation WHERE calculation_id=:c")
                     .param("c", v1.calculationId()).query(UUID.class).single();
             UUID event = insertSourceEvent(user, "halt-carried", "TRANSFER_OUT", "HALT", "-2.5",
-                    v1.basisAt().minusMillis(500));
+                    v1.startAt().plus(Duration.ofHours(1)));
             jdbc().sql("INSERT INTO sync_initial_candidate_event(candidate_id,event_id) VALUES (:c,:e)")
                     .param("c", candidate).param("e", event).update();
         }
@@ -805,7 +830,6 @@ class IncrementalSyncTest extends AuthFlowTestBase {
     }
 
     // ------------------------------------------------------------------------------------------ helpers
-
     private HttpResponseView postSync(String cookie, @Nullable String csrf, String trigger, String key)
             throws Exception {
         var response = sendJson("POST", SYNC_PATH, "{\"trigger\":\"" + trigger + "\"}", cookie, "Origin",
@@ -814,45 +838,12 @@ class IncrementalSyncTest extends AuthFlowTestBase {
         return new HttpResponseView(response.statusCode(), response.body(), response.headers());
     }
 
-    private record HttpResponseView(int statusCode, String body, java.net.http.HttpHeaders headers) {}
-
     private UUID manual(UUID user, String key) {
         var admission = sync.admitPlanSync(user, SyncJobApi.SyncTrigger.MANUAL, key);
         assertThat(admission).as("admission").isInstanceOf(SyncJobApi.SyncAdmission.Accepted.class);
         return ((SyncJobApi.SyncAdmission.Accepted) admission).job().jobId();
     }
 
-    private String awaitSync(UUID job) throws InterruptedException {
-        for (int i = 0; i < 300; i++) {
-            String status = jdbc().sql("SELECT status FROM sync_plan_sync_job WHERE job_id=:j").param("j", job)
-                    .query(String.class).optional().orElse("GONE");
-            if (!status.equals("QUEUED") && !status.equals("RUNNING")) return status;
-            Thread.sleep(100);
-        }
-        throw new AssertionError("plan sync did not finish");
-    }
-
-    /** The windows cover [start, tc] contiguously, each at most seven days, both types in each window. */
-    private static void assertWindows(List<BybitStubConfiguration.TransactionQuery> queries, Instant start, Instant tc) {
-        assertThat(queries).isNotEmpty();
-        var byWindow = new java.util.TreeMap<Long, java.util.Set<String>>();
-        var ends = new java.util.HashMap<Long, Long>();
-        for (var q : queries) {
-            byWindow.computeIfAbsent(q.startTime(), ignored -> new java.util.HashSet<>()).add(q.type());
-            ends.put(q.startTime(), q.endTime());
-        }
-        long next = start.toEpochMilli();
-        for (var window : byWindow.entrySet()) {
-            assertThat(window.getKey()).as("contiguous").isEqualTo(next);
-            assertThat(window.getValue()).containsExactlyInAnyOrder("TRANSFER_IN", "TRANSFER_OUT");
-            long end = ends.get(window.getKey());
-            assertThat(end - window.getKey()).isPositive().isLessThanOrEqualTo(Duration.ofDays(7).toMillis());
-            next = end;
-        }
-        assertThat(next).as("the closed tc").isEqualTo(tc.toEpochMilli());
-    }
-
-    /** The last official version is exactly v1: pointer, calculation, portfolio pointer and watermarks. */
     private void assertUnchanged(UUID user, SyncJobApi.DashboardResult v1) {
         var now = ready(user);
         assertThat(now.pointerVersion()).isEqualTo(1);
@@ -867,177 +858,5 @@ class IncrementalSyncTest extends AuthFlowTestBase {
                 .isEqualTo(2L);
         assertThat(jdbc().sql("SELECT count(*) FROM sync_source_snapshot WHERE user_id=:u AND initial_candidate_id "
                 + "IS NOT NULL").param("u", user).query(Integer.class).single()).isEqualTo(1);
-    }
-
-    private void assertNoChildInProgress(UUID job) {
-        for (String table : List.of("sync_initial_collection_job", "sync_cashflow_classification_job",
-                "sync_cashflow_conversion_job")) {
-            assertThat(jdbc().sql("SELECT count(*) FROM " + table + " WHERE plan_sync_job_id=:j AND status IN "
-                    + "('QUEUED','RUNNING')").param("j", job).query(Integer.class).single()).as(table).isZero();
-        }
-    }
-
-    /** Moves the version's verification (and its extended one) back, keeping it before t0 < basis. */
-    private void moveVerification(UUID user, UUID calculation, String interval) {
-        jdbc().sql("UPDATE sync_plan_calculation SET basis_at=now()-interval '" + interval + "',cashflow_verified_through="
-                + "now()-interval '" + interval + "',last_extended_verification_at=now()-interval '" + interval
-                + "' WHERE calculation_id=:c AND user_id=:u").param("c", calculation).param("u", user).update();
-    }
-
-    private UUID insertSourceEvent(UUID user, String sourceId, String type, String currency, String cashFlow,
-            Instant at) {
-        var connection = jdbc().sql("SELECT connection_id,provider_account_id FROM source_connection WHERE user_id=:u "
-                + "AND status='ACTIVE'").param("u", user)
-                .query((rs, n) -> new UUID[] {rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)}).single();
-        UUID event = UUID.randomUUID();
-        jdbc().sql("INSERT INTO sync_initial_source_event(event_id,user_id,provider_account_id,source_id,event_type,"
-                + "currency,cash_flow,transaction_time,account_type,semantic_hash,observed_connection_id) VALUES "
-                + "(:e,:u,:a,:s,:t,:c,:f,:at,'UNIFIED',:h,:conn)")
-            .param("e", event).param("u", user).param("a", connection[1]).param("s", sourceId).param("t", type)
-            .param("c", currency).param("f", cashFlow).param("at", OffsetDateTime.ofInstant(at, ZoneOffset.UTC))
-            .param("h", sha256(type + "|" + currency + "|" + cashFlow + "|" + at.toEpochMilli() + "|UNIFIED"))
-            .param("conn", connection[0]).update();
-        return event;
-    }
-
-    private String planRow(UUID user) {
-        return jdbc().sql("SELECT plan_id||'|'||p0_decimal||'|'||t0||'|'||end_at||'|'||period||'|'||target_rate||'|'||"
-                + "status||'|'||created_at||'|'||intent_id FROM plan_definition WHERE user_id=:u").param("u", user)
-                .query(String.class).single();
-    }
-
-    private int countOf(String table, UUID user) {
-        return jdbc().sql("SELECT count(*) FROM " + table + " WHERE user_id=:u").param("u", user)
-                .query(Integer.class).single();
-    }
-
-    private SyncJobApi.DashboardResult ready(UUID user) {
-        var dashboard = sync.dashboard(user).dashboard();
-        assertThat(dashboard).isInstanceOf(SyncJobApi.Dashboard.Ready.class);
-        return ((SyncJobApi.Dashboard.Ready) dashboard).result();
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> nested(Map<String, Object> fields, String name) {
-        return (Map<String, Object>) fields.get(name);
-    }
-
-    private static List<String> lines(CapturedOutput output, String marker) {
-        List<String> found = new ArrayList<>();
-        for (String line : output.getAll().split("\\R")) if (line.contains(marker)) found.add(line);
-        return found;
-    }
-
-    private static String sha256(String value) {
-        try {
-            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-        } catch (java.security.NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException(impossible);
-        }
-    }
-
-    /**
-     * Publishes the first official version (Story 2.7) of a new plan: the first snapshot, daily conditions
-     * ending 30 days later, and the collection, classification and conversion of its inputs. {@code start}
-     * moves t0 back before the collection starts.
-     */
-    private UUID publishedPlan(UUID user, String prefix, @Nullable Instant start) throws Exception {
-        UUID firstJob = sync.admit(user, prefix + "-seed").orElseThrow().jobId();
-        for (int i = 0; i < 100 && !"SUCCEEDED".equals(sync.job(user, firstJob).orElseThrow().status()); i++)
-            Thread.sleep(100);
-        assertThat(sync.job(user, firstJob).orElseThrow().status()).isEqualTo("SUCCEEDED");
-        var snapshot = plans.state(user).snapshot();
-        String end = LocalDateTime.ofInstant(snapshot.measuredAt(), ZoneId.of("Asia/Seoul")).plusDays(30)
-                .withSecond(0).withNano(0).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
-        var preview = plans.preview(user, prefix + "-session", new PlanConditionApi.PreviewInput(end, "DAILY", "0.1"))
-                .orElseThrow();
-        UUID intent = plans.confirm(user, prefix + "-session", preview.confirmationRef(), prefix + "-confirm-001")
-                .intent().intentId();
-        if (start != null) shiftStart(user, intent, start);
-        UUID collection = sync.admitInitialInputs(user, intent, prefix + "-inputs-001").orElseThrow().jobId();
-        awaitTable("sync_initial_collection_job", collection, "INPUTS_COMPLETE");
-        UUID classification = sync.admitCashflowClassification(user, intent, prefix + "-classification-001")
-                .orElseThrow().jobId();
-        awaitTable("sync_cashflow_classification_job", classification, "COMPLETE");
-        UUID conversion = sync.admitCashflowConversion(user, intent, prefix + "-conversion-001").orElseThrow().jobId();
-        awaitTable("sync_cashflow_conversion_job", conversion, "CONVERTED");
-        var admission = sync.admitPlanPublication(user, intent, prefix + "-publication-001");
-        UUID publication = ((SyncJobApi.PublicationAdmission.Accepted) admission).job().jobId();
-        awaitTable("sync_plan_publication_job", publication, "PUBLISHED");
-        return intent;
-    }
-
-    private void awaitTable(String table, UUID job, String expected) throws InterruptedException {
-        String status = null;
-        for (int i = 0; i < 150; i++) {
-            status = jdbc().sql("SELECT status FROM " + table + " WHERE job_id=:j").param("j", job)
-                    .query(String.class).single();
-            if (!status.equals("QUEUED") && !status.equals("RUNNING")) break;
-            Thread.sleep(100);
-        }
-        assertThat(status).as(table).isEqualTo(expected);
-    }
-
-    /** Moves the plan start (the first snapshot's time and the intent's t0) back, before the collection starts. */
-    private void shiftStart(UUID user, UUID intent, Instant start) {
-        var t0 = OffsetDateTime.ofInstant(start, ZoneOffset.UTC);
-        jdbc().sql("UPDATE portfolio_snapshot SET measured_at=:t0 WHERE user_id=:u AND publication_sequence=1")
-                .param("t0", t0).param("u", user).update();
-        jdbc().sql("UPDATE sync_source_snapshot SET measured_at=:t0 WHERE user_id=:u AND job_id IS NOT NULL")
-                .param("t0", t0).param("u", user).update();
-        jdbc().sql("UPDATE plan_condition_intent SET t0=:t0 WHERE intent_id=:i").param("t0", t0).param("i", intent)
-                .update();
-        jdbc().sql("UPDATE portfolio_source_membership SET started_at=:before WHERE portfolio_id IN "
-                + "(SELECT portfolio_id FROM portfolio WHERE user_id=:u)")
-                .param("before", t0.minusMinutes(1)).param("u", user).update();
-    }
-
-    private UUID connect(DevBybitStub.Scenario scenario) {
-        UUID user = accountLifecycle().createAccount();
-        store(user, scenario);
-        return user;
-    }
-
-    private void store(UUID user, DevBybitStub.Scenario scenario) {
-        Instant start = Instant.now().minusSeconds(2);
-        String uid = "incremental-" + UUID.randomUUID();
-        var credentials = new SourceCredentials(BybitStubConfiguration.apiKey(scenario, uid),
-                BybitStubConfiguration.newSecret());
-        new TransactionTemplate(manager).executeWithoutResult(status -> {
-            var stored = (SourceConnectionApi.StoreOutcome.Stored) source.store(user, SourceProvider.BYBIT,
-                    new SourceVerification.Verified(uid, start, "bybit-readonly-uta-1.0"), credentials);
-            portfolio.attachActiveSource(user, stored.connectionId(), stored.providerAccountId(), start);
-        });
-    }
-
-    /** Holds the user's plan write lock (the first lock of the publishing transaction) until closed. */
-    private AutoCloseable holdPlanLock(UUID user) throws InterruptedException {
-        var acquired = new CountDownLatch(1);
-        var release = new CountDownLatch(1);
-        Thread holder = Thread.ofVirtual().start(() -> new TransactionTemplate(manager).executeWithoutResult(status -> {
-            jdbc().sql("WITH l AS MATERIALIZED (SELECT pg_advisory_xact_lock(hashtextextended(:u,0))) SELECT 1 FROM l")
-                    .param("u", user.toString()).query(Integer.class).single();
-            acquired.countDown();
-            try {
-                if (!release.await(30, TimeUnit.SECONDS)) throw new IllegalStateException("plan lock never released");
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-            }
-        }));
-        assertThat(acquired.await(5, TimeUnit.SECONDS)).isTrue();
-        return () -> {
-            release.countDown();
-            holder.join(10_000);
-        };
-    }
-
-    private void awaitBlockedOnPlanLock() throws InterruptedException {
-        for (int i = 0; i < 200; i++) {
-            if (jdbc().sql("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND NOT granted")
-                    .query(Integer.class).single() > 0) return;
-            Thread.sleep(50);
-        }
-        throw new AssertionError("the sync never reached the plan lock");
     }
 }

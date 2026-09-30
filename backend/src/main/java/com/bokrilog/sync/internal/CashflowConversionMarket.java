@@ -59,6 +59,18 @@ final class CashflowConversionMarket {
      */
     @Nullable List<PriceConversionPolicy.FlowOutcome> convert(List<PriceConversionPolicy.FlowInput> flows,
             PriceConversionPolicy.@Nullable Reference reference, BooleanSupplier active) {
+        return convert(flows, reference, active, Set.of());
+    }
+
+    /**
+     * Converts the flows, asking the provider again for the candles of the given event minutes even when the shared
+     * evidence already holds them (Story 2.12: a verification re-reads the flows inside its targets). A close that
+     * changed becomes the candle's next revision (Story 2.6's rule); the earlier revision stays.
+     *
+     * @param forcedMinutes event minutes whose cached candles are not trusted in this attempt
+     */
+    @Nullable List<PriceConversionPolicy.FlowOutcome> convert(List<PriceConversionPolicy.FlowInput> flows,
+            PriceConversionPolicy.@Nullable Reference reference, BooleanSupplier active, Set<Instant> forcedMinutes) {
         Map<String, PriceConversionPolicy.InstrumentLookup> instruments = new HashMap<>();
         Map<String, Map<Instant, PriceConversionPolicy.CandleLookup>> candles = new HashMap<>();
         Map<String, Set<Instant>> potentialMinutes = reference instanceof PriceConversionPolicy.Reference.Fixed fixed
@@ -94,7 +106,7 @@ final class CashflowConversionMarket {
                 Set<Instant> minutes = new TreeSet<>(need.getValue());
                 minutes.addAll(potentialMinutes.getOrDefault(symbol, Set.of()));
                 minutes.removeAll(bySymbol.keySet());
-                if (!resolveCandles(symbol, minutes, fixed.at(), bySymbol, active)) return null;
+                if (!resolveCandles(symbol, minutes, fixed.at(), bySymbol, active, forcedMinutes)) return null;
             }
         }
         throw new IllegalStateException("conversion evaluation did not settle");
@@ -149,12 +161,12 @@ final class CashflowConversionMarket {
      * @return {@code false} when the attempt stopped
      */
     private boolean resolveCandles(String symbol, Set<Instant> minutes, Instant reference,
-            Map<Instant, PriceConversionPolicy.CandleLookup> target, BooleanSupplier active) {
+            Map<Instant, PriceConversionPolicy.CandleLookup> target, BooleanSupplier active, Set<Instant> forcedMinutes) {
         if (minutes.isEmpty()) return true;
         Map<Instant, PriceConversionPolicy.CandleFact> cached = conversions.latestCandles(symbol, minutes);
         List<Instant> misses = new ArrayList<>();
         for (Instant minute : minutes) {
-            PriceConversionPolicy.CandleFact hit = cached.get(minute);
+            PriceConversionPolicy.CandleFact hit = forcedMinutes.contains(minute) ? null : cached.get(minute);
             if (hit != null) target.put(minute, new PriceConversionPolicy.CandleLookup.Observed(Map.of(minute, hit), Set.of()));
             else misses.add(minute);
         }

@@ -83,7 +83,7 @@ export const calculationEvidenceContent = {
     signedOut: SESSION_EXPIRED,
     signInLink: '로그인 화면으로 이동',
   },
-  /** 여섯 절. 이 순서가 AC-1·AC-7의 읽기 순서다. */
+  /** 여섯 절. 이 순서가 AC-1·AC-7의 읽기 순서다. Story 2.12의 `변경 근거`는 이 앞에 온다(`planVerification.ts`). */
   sections: {
     snapshots: '스냅샷',
     times: '시각',

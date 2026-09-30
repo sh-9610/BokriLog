@@ -8,6 +8,7 @@ import {
 } from '../content/adjustmentHistory'
 import { ENTRY_PATH } from '../content/auth'
 import { planResultContent } from '../content/planResult'
+import { planVerificationContent } from '../content/planVerification'
 import { formatSeoulInstant } from '../format/decimal'
 import {
   adjustmentAnnouncement,
@@ -16,7 +17,12 @@ import {
   useDashboardAdjustments,
 } from '../session/useAdjustmentHistory'
 import { useDashboardEvidence } from '../session/useCalculationEvidence'
-import { isPlanResult, type DashboardView, type PlanResult } from '../session/useDashboard'
+import {
+  isPlanResult,
+  NO_CHANGE,
+  type DashboardView,
+  type PlanResult,
+} from '../session/useDashboard'
 import {
   ADJUSTMENT_IDS,
   adjustmentPageFixture,
@@ -24,6 +30,7 @@ import {
   adjustmentTime,
   adjustmentWithdrawalFixture,
   AVAILABLE_SYNC,
+  AVAILABLE_VERIFICATION,
   EVIDENCE_IDS,
   evidenceResultFixture,
   idleSyncState,
@@ -61,7 +68,14 @@ function parsed(body: Record<string, unknown>): PlanResult {
 }
 
 function ready(body: Record<string, unknown> = shownResult()): DashboardView {
-  return { kind: 'READY', nextAction: 'NONE', result: parsed(body), sync: AVAILABLE_SYNC }
+  return {
+    kind: 'READY',
+    nextAction: 'NONE',
+    result: parsed(body),
+    sync: AVAILABLE_SYNC,
+    verification: AVAILABLE_VERIFICATION,
+    change: NO_CHANGE,
+  }
 }
 
 /** Rows `from..to`: every fourth a withdrawal of -2.5 USDT, the rest deposits of 10.25 USDT. */
@@ -829,6 +843,110 @@ describe('AdjustmentHistory', { timeout: 20_000 }, () => {
     expect(region()).not.toHaveTextContent(copy.detail.earlier)
   })
 
+  it('Story 2.12: a late-added and a value-changed row of this version carry their marker in words, the previous value, and the discovery and application times', async () => {
+    const page = firstPage()
+    const [first, second, ...rest] = page.rows as Record<string, unknown>[]
+    answers(
+      ok({
+        ...page,
+        rows: [
+          {
+            ...first,
+            versionChange: {
+              change: 'ADDED',
+              late: true,
+              previousUsdValue: null,
+              discoveredAt: '2026-09-27T00:59:30.123Z',
+              appliedAt: '2026-09-27T01:00:01Z',
+            },
+          },
+          {
+            ...second,
+            versionChange: {
+              change: 'VALUE_CHANGED',
+              late: false,
+              previousUsdValue: '10.244',
+              discoveredAt: '2026-09-26T00:00:30Z',
+              appliedAt: '2026-09-27T01:00:01Z',
+            },
+          },
+          ...rest,
+        ],
+      }),
+    )
+    render(<Harness view={ready()} />)
+    await openHistory()
+    const marker = planVerificationContent.history
+    const [late, changed, plain] = listed()
+    expect(late).toHaveTextContent(marker.lateAdded)
+    expect(late).toHaveTextContent(`${marker.previousValue}${planVerificationContent.absent}`)
+    expect(late).toHaveTextContent(marker.discoveredAt)
+    expect(late).toHaveTextContent(marker.appliedAt)
+    // eslint-disable-next-line testing-library/no-node-access -- 시각의 기계값은 `time` 요소의 속성으로만 읽을 수 있다.
+    expect(late?.querySelector('time[datetime="2026-09-27T00:59:30.123Z"]')).not.toBeNull()
+    expect(changed).toHaveTextContent(marker.valueChanged)
+    // The previous value is rounded once for display, like every USD amount here.
+    expect(changed).toHaveTextContent(`${marker.previousValue}10.24 USD`)
+    expect(plain).not.toHaveTextContent(marker.lateAdded)
+    expect(plain).not.toHaveTextContent(marker.valueChanged)
+    expect(getObservedStorageEntries()).toEqual([])
+  })
+
+  it('Story 2.12: a marker whose previous value is left out says 없음, never an empty USD amount', async () => {
+    const page = firstPage()
+    const [first, ...rest] = page.rows as Record<string, unknown>[]
+    answers(
+      ok({
+        ...page,
+        rows: [
+          {
+            ...first,
+            versionChange: {
+              change: 'ADDED',
+              late: true,
+              discoveredAt: '2026-09-27T00:59:30Z',
+              appliedAt: '2026-09-27T01:00:01Z',
+            },
+          },
+          ...rest,
+        ],
+      }),
+    )
+    render(<Harness view={ready()} />)
+    await openHistory()
+    const [late] = listed()
+    const marker = planVerificationContent.history
+    expect(late).toHaveTextContent(`${marker.previousValue}${planVerificationContent.absent}`)
+    expect(late).not.toHaveTextContent(`${marker.previousValue} USD`)
+  })
+
+  it('Story 2.12: a version change it does not know is marked in safe words, never as it came', async () => {
+    const page = firstPage()
+    const [first, ...rest] = page.rows as Record<string, unknown>[]
+    answers(
+      ok({
+        ...page,
+        rows: [
+          {
+            ...first,
+            versionChange: {
+              change: 'SOMETHING_NEW',
+              late: false,
+              previousUsdValue: null,
+              discoveredAt: '2026-09-27T00:59:30Z',
+              appliedAt: '2026-09-27T01:00:01Z',
+            },
+          },
+          ...rest,
+        ],
+      }),
+    )
+    render(<Harness view={ready()} />)
+    await openHistory()
+    expect(listed()[0]).toHaveTextContent(planVerificationContent.history.unknown)
+    expect(region()).not.toHaveTextContent('SOMETHING_NEW')
+  })
+
   it('folds unknown codes to its own safe copy and never shows them as they are', async () => {
     const result = shownResult({ flowCount: 1 })
     const odd = adjustmentRowFixture(1, EVIDENCE_IDS.calculation, {
@@ -969,6 +1087,83 @@ describe('AdjustmentHistory', { timeout: 20_000 }, () => {
         }),
       ],
       ['an event time that is not an instant', firstRow({ occurredAt: 'yesterday' })],
+      [
+        'a version change without its times',
+        firstRow({ versionChange: { change: 'ADDED', late: true, previousUsdValue: null } }),
+      ],
+      [
+        'a version change with a rounded previous value',
+        firstRow({
+          versionChange: {
+            change: 'VALUE_CHANGED',
+            late: false,
+            previousUsdValue: '10.240',
+            discoveredAt: '2026-09-27T00:59:30Z',
+            appliedAt: '2026-09-27T01:00:01Z',
+          },
+        }),
+      ],
+      ['a version change that is not an object', firstRow({ versionChange: 'ADDED' })],
+      [
+        'an added flow with a previous value',
+        firstRow({
+          versionChange: {
+            change: 'ADDED',
+            late: true,
+            previousUsdValue: '10',
+            discoveredAt: '2026-09-27T00:59:30Z',
+            appliedAt: '2026-09-27T01:00:01Z',
+          },
+        }),
+      ],
+      [
+        'a changed value without its previous value',
+        firstRow({
+          versionChange: {
+            change: 'VALUE_CHANGED',
+            late: false,
+            previousUsdValue: null,
+            discoveredAt: '2026-09-27T00:59:30Z',
+            appliedAt: '2026-09-27T01:00:01Z',
+          },
+        }),
+      ],
+      [
+        'a removed flow among the applied rows',
+        firstRow({
+          versionChange: {
+            change: 'REMOVED',
+            late: true,
+            previousUsdValue: '10',
+            discoveredAt: '2026-09-27T00:59:30Z',
+            appliedAt: '2026-09-27T01:00:01Z',
+          },
+        }),
+      ],
+      [
+        'a deposit whose previous value is negative',
+        firstRow({
+          versionChange: {
+            change: 'VALUE_CHANGED',
+            late: false,
+            previousUsdValue: '-10',
+            discoveredAt: '2026-09-27T00:59:30Z',
+            appliedAt: '2026-09-27T01:00:01Z',
+          },
+        }),
+      ],
+      [
+        'a flow discovered after it was applied',
+        firstRow({
+          versionChange: {
+            change: 'ADDED',
+            late: true,
+            previousUsdValue: null,
+            discoveredAt: '2026-09-27T01:00:02Z',
+            appliedAt: '2026-09-27T01:00:01Z',
+          },
+        }),
+      ],
     ])('rejects %s', (_name, page) => {
       expect(parseAdjustmentPage(page, shown, 'ALL')).toBeNull()
     })
@@ -1006,11 +1201,29 @@ describe('AdjustmentHistory', { timeout: 20_000 }, () => {
     answers(ok(firstPage()))
     const result = parsed(shownResult())
     const { rerender } = render(
-      <Harness view={{ kind: 'READY', nextAction: 'NONE', result, sync: AVAILABLE_SYNC }} />,
+      <Harness
+        view={{
+          kind: 'READY',
+          nextAction: 'NONE',
+          result,
+          sync: AVAILABLE_SYNC,
+          verification: AVAILABLE_VERIFICATION,
+          change: NO_CHANGE,
+        }}
+      />,
     )
     await openHistory()
     rerender(
-      <Harness view={{ kind: 'lastGood', nextAction: 'NONE', result, sync: AVAILABLE_SYNC }} />,
+      <Harness
+        view={{
+          kind: 'lastGood',
+          nextAction: 'NONE',
+          result,
+          sync: AVAILABLE_SYNC,
+          verification: AVAILABLE_VERIFICATION,
+          change: NO_CHANGE,
+        }}
+      />,
     )
     expect(listed()).toHaveLength(20)
   })

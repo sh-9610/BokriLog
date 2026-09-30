@@ -61,8 +61,18 @@ class BybitAdapterTest {
     private final AtomicReference<Duration> delay = new AtomicReference<>(Duration.ZERO);
     /** A signed path that answers with {@link #failure} instead of its normal answer (Story 2.11). */
     private volatile String failingPath = "";
-    /** {@code ratelimit} (429), {@code timeout} (slower than the client's timeout) or {@code notjson}. */
+    /**
+     * {@code ratelimit} (429), {@code timeout} (slower than the client's timeout), {@code notjson}, and for the call
+     * budget (Story 2.12) {@code server} (503), {@code unauthorized} (401), {@code forbidden} (403), {@code retcode10006}
+     * (200 with a reset header 300 ms ahead) and {@code retcode10001}.
+     */
     private volatile String failure = "";
+    /** How many requests of the failing path fail; negative is every one. */
+    private final java.util.concurrent.atomic.AtomicInteger failTimes = new java.util.concurrent.atomic.AtomicInteger(-1);
+    /** Whether transaction-log answers carry a low remaining limit (10 %) with a reset 300 ms ahead. */
+    private volatile boolean lowLimit;
+    /** When each request arrived, in order, with its path. */
+    private final List<long[]> arrivals = java.util.Collections.synchronizedList(new ArrayList<>());
 
     @BeforeEach
     void startServer() throws IOException {
@@ -157,16 +167,16 @@ class BybitAdapterTest {
          * "값이 없으면 기능만 닫히고 기동은 산다"와 정면으로 부딪힌다.
          */
         for (String unreadable : List.of("", "   ", "나중에")) {
-            assertThat(new SourceProperties.Bybit(null, null, unreadable).requestTimeoutOrDefault())
+            assertThat(new SourceProperties.Bybit(null, null, unreadable, null).requestTimeoutOrDefault())
                     .isEqualTo(SourceProperties.Bybit.DEFAULT_REQUEST_TIMEOUT);
         }
         // 0 이하도 같다. 상한이 없다는 뜻이 되어 무한정 기다리는 경로가 열린다.
-        assertThat(new SourceProperties.Bybit(null, null, "0s").requestTimeoutOrDefault())
+        assertThat(new SourceProperties.Bybit(null, null, "0s", null).requestTimeoutOrDefault())
                 .isEqualTo(SourceProperties.Bybit.DEFAULT_REQUEST_TIMEOUT);
-        assertThat(new SourceProperties.Bybit(null, null, "-1s").requestTimeoutOrDefault())
+        assertThat(new SourceProperties.Bybit(null, null, "-1s", null).requestTimeoutOrDefault())
                 .isEqualTo(SourceProperties.Bybit.DEFAULT_REQUEST_TIMEOUT);
         // 읽히는 값은 그대로 쓴다.
-        assertThat(new SourceProperties.Bybit(null, null, "250ms").requestTimeoutOrDefault())
+        assertThat(new SourceProperties.Bybit(null, null, "250ms", null).requestTimeoutOrDefault())
                 .isEqualTo(Duration.ofMillis(250));
     }
 
@@ -214,7 +224,7 @@ class BybitAdapterTest {
         long tcMillis=System.currentTimeMillis();
         var t0=java.time.Instant.ofEpochMilli(tcMillis-8L*24*60*60*1000);
         List<SourceConnectionApi.CollectionPage> pages=new ArrayList<>();
-        var outcome=adapter.collectInitialInputs(credentials(),"1",t0,null,ignored->{},pages::add);
+        var outcome=adapter.collectInitialInputs(credentials(),"1",t0,null,ignored->{},pages::add,()->true);
 
         assertThat(outcome).isInstanceOf(SourceConnectionApi.CollectionResult.Collected.class);
         var value=((SourceConnectionApi.CollectionResult.Collected)outcome).value();
@@ -244,22 +254,23 @@ class BybitAdapterTest {
     }
 
     /**
-     * Story 2.11: the incremental collection never asks the time — its {@code tc} was fixed by the caller — and
-     * its windows start at {@code from}, contiguous and at most seven days, up to that {@code tc}; events are
-     * still judged against {@code (t0, tc]}. A scope that starts before {@code t0} or does not end after
-     * {@code from} is refused before any call.
+     * The window collection (Stories 2.11 and 2.12) never asks the time — its {@code tc} was fixed by the caller — and
+     * reads exactly the windows it is given: from {@code from}, contiguous and at most seven days, up to that
+     * {@code tc}; events are still judged against {@code (t0, tc]}. A window that starts before {@code t0}, is empty or
+     * ends past {@code tc} is refused before any call. (Story 2.12 removed the incremental wrapper that had no caller.)
      */
     @Test
-    void incrementalCollectionStartsItsWindowsAtFromAndNeverAsksTheTime() {
+    void windowCollectionReadsItsWindowsFromFromAndNeverAsksTheTime() {
         BybitAdapter adapter=adapter(this.origin,RESERVED_IP,Duration.ofSeconds(1));
         var tc=java.time.Instant.ofEpochMilli(System.currentTimeMillis());
         var t0=tc.minus(Duration.ofDays(20));
         var from=tc.minus(Duration.ofDays(8));
         List<SourceConnectionApi.CollectionPage> pages=new ArrayList<>();
-        var outcome=adapter.collectIncrementalInputs(credentials(),"1",t0,from,tc,pages::add);
+        var outcome=adapter.collectWindows(credentials(),"1",t0,tc,BybitAdapter.contiguousWindows(from,tc),true,
+                pages::add,()->true);
 
-        assertThat(outcome).isInstanceOf(SourceConnectionApi.CollectionResult.Collected.class);
-        var value=((SourceConnectionApi.CollectionResult.Collected)outcome).value();
+        assertThat(outcome).isInstanceOf(SourceConnectionApi.WindowCollectionResult.Collected.class);
+        var value=((SourceConnectionApi.WindowCollectionResult.Collected)outcome).value();
         assertThat(value.tc()).isEqualTo(tc);
         assertThat(this.paths).doesNotContain(BybitAdapter.SERVER_TIME_PATH);
         assertThat(this.paths.getFirst()).isEqualTo(BybitAdapter.QUERY_API_PATH);
@@ -274,12 +285,14 @@ class BybitAdapterTest {
                 .allMatch(url->!url.contains("startTime="+t0.toEpochMilli()));
 
         this.paths.clear();
-        assertThat(reasonOfCollection(adapter.collectIncrementalInputs(credentials(),"1",t0,t0.minusMillis(1),tc,
-                pages::add))).as("before t0").isEqualTo(SourceRejectionReason.INVALID_FORMAT);
-        assertThat(reasonOfCollection(adapter.collectIncrementalInputs(credentials(),"1",t0,tc,tc,pages::add)))
-                .as("an empty scope").isEqualTo(SourceRejectionReason.INVALID_FORMAT);
-        assertThat(reasonOfCollection(adapter.collectIncrementalInputs(credentials(),"1",t0,from,
-                from.minusMillis(1),pages::add))).as("tc before from").isEqualTo(SourceRejectionReason.INVALID_FORMAT);
+        assertThat(reasonOfWindows(adapter.collectWindows(credentials(),"1",t0,tc,
+                List.of(new SourceConnectionApi.CollectionWindow(t0.minusMillis(1),tc.minus(Duration.ofDays(14)))),true,
+                pages::add,()->true))).as("before t0").isEqualTo(SourceRejectionReason.INVALID_FORMAT);
+        assertThat(reasonOfWindows(adapter.collectWindows(credentials(),"1",t0,tc,
+                List.of(new SourceConnectionApi.CollectionWindow(tc.minusSeconds(1),tc.plusSeconds(1))),true,
+                pages::add,()->true))).as("past tc").isEqualTo(SourceRejectionReason.INVALID_FORMAT);
+        assertThat(reasonOfWindows(adapter.collectWindows(credentials(),"1",t0,tc,List.of(),false,pages::add,
+                ()->true))).as("nothing to read").isEqualTo(SourceRejectionReason.INVALID_FORMAT);
         assertThat(this.paths).isEmpty();
     }
 
@@ -290,15 +303,15 @@ class BybitAdapterTest {
      */
     @org.junit.jupiter.params.ParameterizedTest(name = "{0} at {1} ({2})")
     @org.junit.jupiter.params.provider.CsvSource({
-        "ratelimit,/v5/user/query-api,initial,RATE_LIMITED", "ratelimit,/v5/user/query-api,incremental,RATE_LIMITED",
-        "timeout,/v5/user/query-api,initial,TIMEOUT", "timeout,/v5/user/query-api,incremental,TIMEOUT",
-        "notjson,/v5/user/query-api,initial,RESPONSE_FORMAT", "notjson,/v5/user/query-api,incremental,RESPONSE_FORMAT",
+        "ratelimit,/v5/user/query-api,initial,RATE_LIMITED", "ratelimit,/v5/user/query-api,windows,RATE_LIMITED",
+        "timeout,/v5/user/query-api,initial,TIMEOUT", "timeout,/v5/user/query-api,windows,TIMEOUT",
+        "notjson,/v5/user/query-api,initial,RESPONSE_FORMAT", "notjson,/v5/user/query-api,windows,RESPONSE_FORMAT",
         "ratelimit,/v5/account/transaction-log,initial,RATE_LIMITED",
-        "ratelimit,/v5/account/transaction-log,incremental,RATE_LIMITED",
+        "ratelimit,/v5/account/transaction-log,windows,RATE_LIMITED",
         "timeout,/v5/account/transaction-log,initial,TIMEOUT",
-        "timeout,/v5/account/transaction-log,incremental,TIMEOUT",
+        "timeout,/v5/account/transaction-log,windows,TIMEOUT",
         "notjson,/v5/account/transaction-log,initial,RESPONSE_FORMAT",
-        "notjson,/v5/account/transaction-log,incremental,RESPONSE_FORMAT"})
+        "notjson,/v5/account/transaction-log,windows,RESPONSE_FORMAT"})
     void aSignedCallsTransportRejectionIsReportedAsItselfDuringEitherCollection(String kind, String path,
             String entry, SourceRejectionReason expected) {
         this.failingPath=path;
@@ -307,16 +320,268 @@ class BybitAdapterTest {
         var tc=java.time.Instant.ofEpochMilli(System.currentTimeMillis());
         var t0=tc.minus(Duration.ofDays(1));
         List<SourceConnectionApi.CollectionPage> pages=new ArrayList<>();
-        var outcome=entry.equals("initial")
-                ? adapter.collectInitialInputs(credentials(),"1",t0,tc,ignored->{},pages::add)
-                : adapter.collectIncrementalInputs(credentials(),"1",t0,t0,tc,pages::add);
-        assertThat(reasonOfCollection(outcome)).isEqualTo(expected);
+        var reason=entry.equals("initial")
+                ? reasonOfCollection(adapter.collectInitialInputs(credentials(),"1",t0,tc,ignored->{},pages::add,
+                        ()->true))
+                : reasonOfWindows(adapter.collectWindows(credentials(),"1",t0,tc,BybitAdapter.contiguousWindows(t0,tc),
+                        true,pages::add,()->true));
+        assertThat(reason).isEqualTo(expected);
         assertThat(pages).as("no page is handed on from a rejected call").isEmpty();
+    }
+
+    // ------------------------------------------------------------------ Story 2.12 call budget
+
+    private SourceConnectionApi.WindowCollectionResult oneWindow(BybitAdapter adapter) {
+        var tc = java.time.Instant.ofEpochMilli(System.currentTimeMillis());
+        var t0 = tc.minus(Duration.ofDays(1));
+        return adapter.collectWindows(credentials(), "1", t0, tc,
+                List.of(new SourceConnectionApi.CollectionWindow(t0, tc)), true, page -> {}, () -> true);
+    }
+
+    private List<Long> transactionArrivals() {
+        synchronized (this.arrivals) {
+            return this.arrivals.stream().filter(arrival -> arrival[1] == 1).map(arrival -> arrival[0]).toList();
+        }
+    }
+
+    /**
+     * A collection page that times out, answers 429, 5xx or {@code 10006} is asked again, the same page, up to three
+     * times; the fourth failure is the collection's answer (ERD-1.0.0 §2.5).
+     */
+    @org.junit.jupiter.params.ParameterizedTest(name = "{0}")
+    @org.junit.jupiter.params.provider.CsvSource({"ratelimit,RATE_LIMITED", "server,PROVIDER_UNAVAILABLE",
+        "timeout,TIMEOUT", "retcode10006,RATE_LIMITED"})
+    void aRetryablePageFailureIsAskedAgainThreeTimesAndNoMore(String kind, SourceRejectionReason expected) {
+        this.failingPath = BybitAdapter.TRANSACTION_LOG_PATH;
+        this.failure = kind;
+        var outcome = oneWindow(adapter(this.origin, RESERVED_IP, Duration.ofMillis(300)));
+        assertThat(outcome).isInstanceOf(SourceConnectionApi.WindowCollectionResult.Rejected.class);
+        var rejected = (SourceConnectionApi.WindowCollectionResult.Rejected) outcome;
+        assertThat(rejected.reason()).isEqualTo(expected);
+        assertThat(rejected.retryCount()).isEqualTo(3);
+        assertThat(rejected.pageCount()).isZero();
+        // The single-threaded server drains slow requests after the client gave up on them.
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (transactionArrivals().size() < 4 && System.nanoTime() < deadline) {
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        assertThat(transactionArrivals()).hasSize(4);
+    }
+
+    /** A page that recovers on its second retry is handed on once, and the collection reports both retries. */
+    @Test
+    void aPageThatRecoversIsHandedOnOnceWithItsRetries() {
+        this.failingPath = BybitAdapter.TRANSACTION_LOG_PATH;
+        this.failure = "server";
+        this.failTimes.set(2);
+        List<SourceConnectionApi.CollectionPage> pages = new ArrayList<>();
+        var tc = java.time.Instant.ofEpochMilli(System.currentTimeMillis());
+        var t0 = tc.minus(Duration.ofDays(1));
+        var outcome = adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1)).collectWindows(credentials(), "1", t0,
+                tc, List.of(new SourceConnectionApi.CollectionWindow(t0, tc)), true, pages::add, () -> true);
+        assertThat(outcome).isInstanceOf(SourceConnectionApi.WindowCollectionResult.Collected.class);
+        var value = ((SourceConnectionApi.WindowCollectionResult.Collected) outcome).value();
+        assertThat(value.retryCount()).isEqualTo(2);
+        assertThat(value.pageCount()).isEqualTo(pages.size());
+        assertThat(value.equityDecimal()).isEqualTo("10.00");
+        var arrivals = transactionArrivals();
+        assertThat(arrivals.get(1) - arrivals.get(0)).as("the first delay").isGreaterThanOrEqualTo(15);
+        assertThat(arrivals.get(2) - arrivals.get(1)).as("the second delay").isGreaterThanOrEqualTo(35);
+    }
+
+    /** Authentication, schema and semantic failures of a page are not retried. */
+    @org.junit.jupiter.params.ParameterizedTest(name = "{0}")
+    @org.junit.jupiter.params.provider.CsvSource({"unauthorized,AUTHENTICATION_REJECTED", "notjson,RESPONSE_FORMAT",
+        "retcode10001,PROVIDER_UNAVAILABLE"})
+    void aNonRetryablePageFailureIsAskedOnce(String kind, SourceRejectionReason expected) {
+        this.failingPath = BybitAdapter.TRANSACTION_LOG_PATH;
+        this.failure = kind;
+        var outcome = (SourceConnectionApi.WindowCollectionResult.Rejected) oneWindow(
+                adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1)));
+        assertThat(outcome.reason()).isEqualTo(expected);
+        assertThat(outcome.retryCount()).isZero();
+        assertThat(transactionArrivals()).hasSize(1);
+    }
+
+    /** {@code 10006} is asked again no earlier than the reset time its headers gave. */
+    @Test
+    void aRateLimitIsRetriedAfterItsResetTime() {
+        this.failingPath = BybitAdapter.TRANSACTION_LOG_PATH;
+        this.failure = "retcode10006";
+        this.failTimes.set(1);
+        var outcome = oneWindow(adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1)));
+        assertThat(outcome).isInstanceOf(SourceConnectionApi.WindowCollectionResult.Collected.class);
+        var arrivals = transactionArrivals();
+        assertThat(arrivals.get(1) - arrivals.get(0)).isGreaterThanOrEqualTo(250);
+    }
+
+    /**
+     * Interpretation C4: a {@code 10006} whose reset time is an 18-digit value is asked again after the longest
+     * backoff (60 ms in this budget), not never, and nothing overflows.
+     */
+    @Test
+    void aRateLimitWithAnAbsurdResetIsRetriedAfterTheLongestBackoff() {
+        this.failingPath = BybitAdapter.TRANSACTION_LOG_PATH;
+        this.failure = "retcode10006far";
+        this.failTimes.set(1);
+        var outcome = oneWindow(adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1)));
+        assertThat(outcome).isInstanceOf(SourceConnectionApi.WindowCollectionResult.Collected.class);
+        var arrivals = transactionArrivals();
+        assertThat(arrivals.get(1) - arrivals.get(0)).isBetween(40L, 1_000L);
+    }
+
+    /**
+     * A collection whose lease stops holding while it waits to retry a page stops: nothing more is sent, and the
+     * answer is "stopped", not a provider rejection the caller would record (patch 8).
+     */
+    @Test
+    void aCollectionWhoseLeaseStopsHoldingStopsWithoutAProviderAnswer() {
+        this.failingPath = BybitAdapter.TRANSACTION_LOG_PATH;
+        this.failure = "server";
+        var tc = java.time.Instant.ofEpochMilli(System.currentTimeMillis());
+        var t0 = tc.minus(Duration.ofDays(1));
+        var outcome = adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1)).collectWindows(credentials(), "1", t0,
+                tc, List.of(new SourceConnectionApi.CollectionWindow(t0, tc)), true, page -> {},
+                () -> transactionArrivals().isEmpty());
+        assertThat(outcome).isEqualTo(new SourceConnectionApi.WindowCollectionResult.Stopped(0, 0));
+        assertThat(transactionArrivals()).hasSize(1);
+    }
+
+    /** A page asked again carries the times of the try that answered, not of its first try (patch 9). */
+    @Test
+    void aRetriedPageCarriesTheTimesOfTheTryThatAnswered() {
+        this.failingPath = BybitAdapter.TRANSACTION_LOG_PATH;
+        this.failure = "server";
+        this.failTimes.set(2);
+        List<SourceConnectionApi.CollectionPage> pages = new ArrayList<>();
+        var tc = java.time.Instant.ofEpochMilli(System.currentTimeMillis());
+        var t0 = tc.minus(Duration.ofDays(1));
+        var outcome = adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1)).collectWindows(credentials(), "1", t0,
+                tc, List.of(new SourceConnectionApi.CollectionWindow(t0, tc)), true, pages::add, () -> true);
+        assertThat(outcome).isInstanceOf(SourceConnectionApi.WindowCollectionResult.Collected.class);
+        var arrivals = transactionArrivals();
+        var first = pages.getFirst().evidence();
+        assertThat(first.requestedAt().toEpochMilli()).as("after the failed tries")
+                .isGreaterThanOrEqualTo(arrivals.get(1));
+        assertThat(first.receivedAt()).isAfterOrEqualTo(first.requestedAt());
+    }
+
+    /**
+     * A ban that opens the circuit while another call waits for its token holds that call back too: the circuit is
+     * looked at again after the token (patch 4), so the waiting call sends nothing.
+     */
+    @Test
+    void aCircuitThatOpensWhileACallWaitsForItsTokenHoldsThatCallBack() throws Exception {
+        this.failingPath = BybitAdapter.QUERY_API_PATH;
+        this.failure = "forbidden";
+        this.delay.set(Duration.ofMillis(300));
+        // One signed token a second: the second call waits about a second for it, long after the ban came back.
+        BybitAdapter adapter = adapter(this.origin, RESERVED_IP, Duration.ofSeconds(2),
+                new SourceProperties.Budget("1", null, null, "20ms,40ms,60ms", "0", "5s", null, "200ms"));
+        var first = java.util.concurrent.CompletableFuture.supplyAsync(() -> adapter.verify(credentials()));
+        // The first request is at the server (which answers it 300 ms later); the circuit is still closed.
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (sizeOfPaths() < 1 && System.nanoTime() < deadline) Thread.sleep(5);
+        var second = java.util.concurrent.CompletableFuture.supplyAsync(() -> adapter.verify(credentials()));
+        assertThat(reasonOf(first.get(5, java.util.concurrent.TimeUnit.SECONDS)))
+                .isEqualTo(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        assertThat(reasonOf(second.get(5, java.util.concurrent.TimeUnit.SECONDS)))
+                .isEqualTo(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        assertThat(sizeOfPaths()).as("the waiting call sent nothing").isEqualTo(1);
+    }
+
+    /** Headers saying 10 % is left hold the next page until the reset time, at most the configured cap. */
+    @Test
+    void aLowRemainingLimitHoldsTheNextPage() {
+        this.lowLimit = true;
+        var outcome = oneWindow(adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1)));
+        assertThat(outcome).isInstanceOf(SourceConnectionApi.WindowCollectionResult.Collected.class);
+        var arrivals = transactionArrivals();
+        assertThat(arrivals).hasSizeGreaterThanOrEqualTo(2);
+        // The reset is 300 ms ahead; the test budget caps the wait at 200 ms.
+        assertThat(arrivals.get(1) - arrivals.get(0)).isBetween(180L, 290L);
+    }
+
+    /**
+     * An HTTP 403 is an IP ban: the page is not retried, and every Bybit call — signed or public — is held back without
+     * a request until the circuit closes.
+     */
+    @Test
+    void aForbiddenAnswerOpensTheCircuitOverEveryCall() throws InterruptedException {
+        this.failingPath = BybitAdapter.TRANSACTION_LOG_PATH;
+        this.failure = "forbidden";
+        BybitAdapter adapter = adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1));
+        var outcome = (SourceConnectionApi.WindowCollectionResult.Rejected) oneWindow(adapter);
+        assertThat(outcome.reason()).isEqualTo(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        assertThat(outcome.retryCount()).isZero();
+        int requests = sizeOfPaths();
+        assertThat(((SourceConnectionApi.MarketTimeResult.Rejected) adapter.marketTime()).reason())
+                .isEqualTo(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        assertThat(reasonOf(adapter.verify(credentials()))).isEqualTo(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        assertThat(sizeOfPaths()).as("no request while the circuit is open").isEqualTo(requests);
+        Thread.sleep(700);
+        assertThat(adapter.marketTime()).isInstanceOf(SourceConnectionApi.MarketTimeResult.Observed.class);
+        assertThat(sizeOfPaths()).isEqualTo(requests + 1);
+    }
+
+    /**
+     * A 403 at the connection admission's first call (query-api) is an IP ban too: the connection is refused as a
+     * provider failure and the circuit holds every later Bybit call back without a request.
+     */
+    @Test
+    void aForbiddenConnectionAdmissionOpensTheCircuit() {
+        this.failingPath = BybitAdapter.QUERY_API_PATH;
+        this.failure = "forbidden";
+        BybitAdapter adapter = adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1));
+        assertThat(reasonOf(adapter.verify(credentials()))).isEqualTo(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        assertThat(this.paths).containsExactly(BybitAdapter.QUERY_API_PATH);
+        assertThat(((SourceConnectionApi.MarketTimeResult.Rejected) adapter.marketTime()).reason())
+                .isEqualTo(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        assertThat(reasonOf(adapter.verify(credentials()))).isEqualTo(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        assertThat(this.paths).as("nothing more while the circuit is open").hasSize(1);
+    }
+
+    /** The admission's calls are never retried, whatever the failure. */
+    @Test
+    void anAdmissionCallIsNeverRetried() {
+        this.failingPath = BybitAdapter.QUERY_API_PATH;
+        this.failure = "server";
+        assertThat(reasonOf(adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1)).verify(credentials())))
+                .isEqualTo(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        assertThat(this.paths).containsExactly(BybitAdapter.QUERY_API_PATH);
+    }
+
+    /** A window outside [t0, tc], longer than seven days or empty, and a wallet-less empty call are refused unsent. */
+    @Test
+    void anInvalidWindowIsRefusedWithoutACall() {
+        BybitAdapter adapter = adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1));
+        var tc = java.time.Instant.ofEpochMilli(System.currentTimeMillis());
+        var t0 = tc.minus(Duration.ofDays(20));
+        for (var windows : List.of(List.of(new SourceConnectionApi.CollectionWindow(t0.minusMillis(1), t0.plusSeconds(1))),
+                List.of(new SourceConnectionApi.CollectionWindow(tc.minusSeconds(1), tc.plusMillis(1))),
+                List.of(new SourceConnectionApi.CollectionWindow(t0, t0.plus(Duration.ofDays(7)).plusMillis(1))),
+                List.of(new SourceConnectionApi.CollectionWindow(t0, t0)))) {
+            var outcome = adapter.collectWindows(credentials(), "1", t0, tc, windows, true, page -> {}, () -> true);
+            assertThat(((SourceConnectionApi.WindowCollectionResult.Rejected) outcome).reason())
+                    .isEqualTo(SourceRejectionReason.INVALID_FORMAT);
+        }
+        assertThat(((SourceConnectionApi.WindowCollectionResult.Rejected) adapter.collectWindows(credentials(), "1",
+                t0, tc, List.of(), false, page -> {}, () -> true)).reason()).isEqualTo(SourceRejectionReason.INVALID_FORMAT);
+        assertThat(this.paths).isEmpty();
     }
 
     private static SourceRejectionReason reasonOfCollection(SourceConnectionApi.CollectionResult outcome) {
         assertThat(outcome).isInstanceOf(SourceConnectionApi.CollectionResult.Rejected.class);
         return ((SourceConnectionApi.CollectionResult.Rejected) outcome).reason();
+    }
+
+    private static SourceRejectionReason reasonOfWindows(SourceConnectionApi.WindowCollectionResult outcome) {
+        assertThat(outcome).isInstanceOf(SourceConnectionApi.WindowCollectionResult.Rejected.class);
+        return ((SourceConnectionApi.WindowCollectionResult.Rejected) outcome).reason();
     }
 
     @Test
@@ -326,7 +591,7 @@ class BybitAdapterTest {
         List<SourceConnectionApi.CollectionPage> pages=new ArrayList<>();
         var t0=java.time.Instant.now().minusSeconds(60);
 
-        var outcome=adapter.collectInitialInputs(credentials(),"1",t0,null,ignored->{},pages::add);
+        var outcome=adapter.collectInitialInputs(credentials(),"1",t0,null,ignored->{},pages::add,()->true);
 
         assertThat(outcome).isInstanceOf(SourceConnectionApi.CollectionResult.Rejected.class);
         assertThat(((SourceConnectionApi.CollectionResult.Rejected)outcome).reason())
@@ -514,8 +779,32 @@ class BybitAdapterTest {
         }
         String apiKey = exchange.getRequestHeaders().getFirst("X-BAPI-API-KEY");
         this.signedRequests.add(apiKey != null || exchange.getRequestHeaders().getFirst("X-BAPI-SIGN") != null);
-        if (path.equals(this.failingPath)) {
+        this.arrivals.add(new long[] {System.currentTimeMillis(), path.equals(BybitAdapter.TRANSACTION_LOG_PATH) ? 1 : 0});
+        if (path.equals(this.failingPath) && failsNow()) {
             switch (this.failure) {
+                case "server", "unauthorized", "forbidden" -> {
+                    byte[] refused = "{\"retCode\":10016,\"retMsg\":\"raw provider text\"}"
+                            .getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(this.failure.equals("server") ? 503
+                            : this.failure.equals("unauthorized") ? 401 : 403, refused.length);
+                    exchange.getResponseBody().write(refused);
+                    exchange.close();
+                    return;
+                }
+                case "retcode10006", "retcode10001", "retcode10006far" -> {
+                    byte[] refused = ("{\"retCode\":" + this.failure.substring(7, 12) + ",\"retMsg\":\"raw provider text\","
+                            + "\"result\":{},\"time\":1}").getBytes(StandardCharsets.UTF_8);
+                    exchange.getResponseHeaders().set("Content-Type", "application/json");
+                    exchange.getResponseHeaders().set("X-Bapi-Limit", "10");
+                    exchange.getResponseHeaders().set("X-Bapi-Limit-Status", "0");
+                    // "far": an 18-digit reset time no clock reaches (interpretation C4).
+                    exchange.getResponseHeaders().set("X-Bapi-Limit-Reset-Timestamp", this.failure.endsWith("far")
+                            ? "999999999999999999" : String.valueOf(System.currentTimeMillis() + 300));
+                    exchange.sendResponseHeaders(200, refused.length);
+                    exchange.getResponseBody().write(refused);
+                    exchange.close();
+                    return;
+                }
                 case "ratelimit" -> {
                     byte[] limited = "{\"retCode\":10006,\"retMsg\":\"raw provider text\"}"
                             .getBytes(StandardCharsets.UTF_8);
@@ -574,9 +863,24 @@ class BybitAdapterTest {
                 };
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
+        if (this.lowLimit && path.equals(BybitAdapter.TRANSACTION_LOG_PATH)) {
+            exchange.getResponseHeaders().set("X-Bapi-Limit", "10");
+            exchange.getResponseHeaders().set("X-Bapi-Limit-Status", "1");
+            exchange.getResponseHeaders().set("X-Bapi-Limit-Reset-Timestamp",
+                    String.valueOf(System.currentTimeMillis() + 300));
+        }
         exchange.sendResponseHeaders(200, bytes.length);
         exchange.getResponseBody().write(bytes);
         exchange.close();
+    }
+
+    /** Whether this request of the failing path fails: every one while the count is negative, else that many. */
+    private boolean failsNow() {
+        int left = this.failTimes.get();
+        if (left < 0) return true;
+        if (left == 0) return false;
+        this.failTimes.decrementAndGet();
+        return true;
     }
 
     private String transactionResponse(String query) {
@@ -652,6 +956,12 @@ class BybitAdapterTest {
                 + ",\"time\":" + envelopeTime + "}";
     }
 
+    private static BybitAdapter adapter(String baseUrl, String reservedIp, Duration timeout,
+            SourceProperties.Budget budget) {
+        return new BybitAdapter(new SourceProperties(SourceProperties.Credential.empty(),
+                new SourceProperties.Bybit(baseUrl, reservedIp, timeout.toMillis() + "ms", budget)));
+    }
+
     private static BybitAdapter adapter(String baseUrl, String reservedIp, Duration timeout) {
         return new BybitAdapter(
                 new SourceProperties(
@@ -659,7 +969,11 @@ class BybitAdapterTest {
                         // 상한은 문자열로 구성된다. 빈 값이 기동을 죽이지 않게 하려는 배치이며
                         // (`SourceProperties.Bybit.requestTimeoutOrDefault`) 여기서는 그 형식을
                         // 그대로 지난다 — 시험이 제품과 다른 경로로 값을 넣지 않는다.
-                        new SourceProperties.Bybit(baseUrl, reservedIp, timeout.toMillis() + "ms")));
+                        new SourceProperties.Bybit(baseUrl, reservedIp, timeout.toMillis() + "ms",
+                                // A call budget whose page retries take milliseconds (Story 2.12): the retry
+                                // itself is asserted, not its production delays.
+                                new SourceProperties.Budget(null, null, null, "20ms,40ms,60ms", "0", "600ms", null,
+                                        "200ms"))));
     }
 
     private static SourceCredentials credentials() {

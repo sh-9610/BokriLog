@@ -56,19 +56,64 @@ public interface SourceConnectionApi {
     /** 저장된 암호문을 복호한 뒤 한 번만 제공자에 묻는다. 호출자는 DB 트랜잭션 밖에서 호출한다. */
     EquityResult readEquity(UUID userId, UUID connectionId);
 
-    /** Reads current equity and every required Transaction Log page outside any database transaction. */
+    /**
+     * Reads current equity and every required Transaction Log page outside any database transaction. {@code alive} is
+     * the caller's lease guard: the call budget's waits and page retries give up as soon as it turns false, and the
+     * result is then a rejection the caller does not act on (it checks its own lease first).
+     */
     CollectionResult collectInitialInputs(UUID userId, UUID connectionId, Instant t0,
-            @Nullable Instant fixedTc, Consumer<Instant> scopeConsumer, Consumer<CollectionPage> pageConsumer);
+            @Nullable Instant fixedTc, Consumer<Instant> scopeConsumer, Consumer<CollectionPage> pageConsumer,
+            java.util.function.BooleanSupplier alive);
 
     /**
-     * The incremental collection of an active plan (Story 2.11): current equity and every required
-     * Transaction Log page of the windows from {@code from} to the cutoff {@code tc} the caller already fixed
-     * from the server time. It never asks the time API, and events are judged against the whole
-     * {@code (t0, tc]}. The same access, connection and credential rules as {@link #collectInitialInputs}
-     * apply; the credential is read once. Call it outside any database transaction.
+     * One Transaction Log window to read (Story 2.12): a closed product range {@code [start, end]} of at most seven
+     * days inside {@code [t0, tc]}. Both types and every cursor of it are read.
      */
-    CollectionResult collectIncrementalInputs(UUID userId, UUID connectionId, Instant t0, Instant from,
-            Instant tc, Consumer<CollectionPage> pageConsumer);
+    record CollectionWindow(Instant start, Instant end) {}
+
+    /**
+     * What a collection of explicit windows observed (Story 2.12). The equity, its measurement and receipt times are
+     * present exactly when the wallet was asked for. {@code pageCount} counts the pages handed on, {@code retryCount}
+     * the page retries the call budget allowed.
+     */
+    record WindowCollection(String providerAccountRef, @Nullable String equityDecimal, @Nullable Instant measuredAt,
+            @Nullable Instant receivedAt, Instant tc, int pageCount, int retryCount, boolean reviewRequired,
+            @Nullable String failureCode, String policyVersion) {
+
+        /** The observation in Story 2.4's shape. Only for a collection that asked for the wallet. */
+        public CollectionObservation observation() {
+            if (this.equityDecimal == null || this.measuredAt == null || this.receivedAt == null)
+                throw new IllegalStateException("a collection without the wallet has no equity observation");
+            return new CollectionObservation(this.providerAccountRef, this.equityDecimal, this.measuredAt,
+                    this.receivedAt, this.tc, this.pageCount, this.reviewRequired, this.failureCode,
+                    this.policyVersion);
+        }
+    }
+
+    sealed interface WindowCollectionResult {
+        record Collected(WindowCollection value) implements WindowCollectionResult {}
+        /** Refused; the counts say how far it got (pages handed on and page retries), for the attempt's one line. */
+        record Rejected(SourceRejectionReason reason, int pageCount, int retryCount) implements WindowCollectionResult {}
+        /**
+         * Stopped because {@code alive} turned false during a wait or before a call: the caller's lease no longer
+         * holds. Not a provider answer — the caller ends nothing for it, as for a lost lease.
+         */
+        record Stopped(int pageCount, int retryCount) implements WindowCollectionResult {}
+    }
+
+    /**
+     * The collection core every sync purpose shares (Story 2.12): the key facts, the account mode, the wallet's
+     * totalEquity when {@code includeWallet}, and every required type and cursor of exactly the given windows, in
+     * order, with {@code tc} as the fixed cutoff the caller already took from the server time. It never asks the time
+     * API. A collection page that times out or answers 429, {@code 10006} or 5xx is asked again up to three times
+     * (2, 10 and 30 seconds plus jitter, ERD-1.0.0 §2.5), only while {@code alive} holds; authentication, permission,
+     * schema and semantic failures are not retried, and an IP ban (403) opens a ten-minute circuit over every Bybit
+     * call. At most two collections run at once. The same access, connection and credential rules as
+     * {@link #collectInitialInputs} apply; the credential is read once. Call it outside any database transaction.
+     */
+    WindowCollectionResult collectWindows(UUID userId, UUID connectionId, Instant t0, Instant tc,
+            List<CollectionWindow> windows, boolean includeWallet, Consumer<CollectionPage> pageConsumer,
+            java.util.function.BooleanSupplier alive);
 
     /*
      * Public market facts (Story 2.6).

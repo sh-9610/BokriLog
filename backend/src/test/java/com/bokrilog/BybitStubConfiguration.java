@@ -51,6 +51,15 @@ final class BybitStubConfiguration {
 
     private static final Front FRONT = Front.start();
 
+    /** The shortened page retry delays of the tests' call budget (production: 2s, 10s, 30s). */
+    static final String RETRY_DELAYS = "50ms,100ms,150ms";
+
+    /** The tests' IP circuit (production: 10 minutes). The IP-ban test waits it out before it ends. */
+    static final java.time.Duration CIRCUIT_OPEN = java.time.Duration.ofMillis(3000);
+
+    /** The tests' cap on the low-remaining header wait (production: 5 seconds). */
+    static final java.time.Duration LOW_REMAINING_WAIT_CAP = java.time.Duration.ofMillis(1500);
+
     /** 시험 JVM이 실행 시점에 만든 key ring. 소스에도 설정 파일에도 리터럴이 없다. */
     private static final String KEY_RING =
             KEY_VERSION + ":" + newKey() + "," + PREVIOUS_KEY_VERSION + ":" + newKey();
@@ -69,6 +78,15 @@ final class BybitStubConfiguration {
         registry.add("bokrilog.source.bybit.reserved-ip", () -> RESERVED_IP);
         // 시험이 몇 초를 기다리지 않는다. 시간초과 축은 어댑터 단위 시험이 자기 서버로 본다.
         registry.add("bokrilog.source.bybit.request-timeout", () -> "3s");
+        // The call budget (Story 2.12), shortened for tests only: retries in tens of milliseconds, buckets that never
+        // hold a test back, a circuit of three seconds (the IP-ban test waits it out) and a short header wait.
+        registry.add("bokrilog.source.bybit.budget.auth-per-second", () -> "1000");
+        registry.add("bokrilog.source.bybit.budget.public-per-second", () -> "1000");
+        registry.add("bokrilog.source.bybit.budget.max-concurrent-collections", () -> "2");
+        registry.add("bokrilog.source.bybit.budget.retry-delays", () -> RETRY_DELAYS);
+        registry.add("bokrilog.source.bybit.budget.circuit-open", () -> CIRCUIT_OPEN.toMillis() + "ms");
+        registry.add("bokrilog.source.bybit.budget.low-remaining-wait-cap",
+                () -> LOW_REMAINING_WAIT_CAP.toMillis() + "ms");
         registry.add("bokrilog.source.credential.keys", () -> KEY_RING);
         registry.add("bokrilog.source.credential.active-key-version", () -> KEY_VERSION);
     }
@@ -121,8 +139,14 @@ final class BybitStubConfiguration {
 
     static long lastWalletEnvelopeTime() { return Front.STUB.lastWalletEnvelopeTime(); }
 
-    /** One Transaction Log request as the stub received it: its type and its window, in epoch milliseconds. */
-    record TransactionQuery(String type, long startTime, long endTime) {}
+    /** How many TRANSFER_IN reads the UID made in a Story 2.12 scenario since the last reset. */
+    static int transferInReads(String uid) { return Front.STUB.transferInReads(uid); }
+
+    /**
+     * One Transaction Log request as the stub received it: its type and its window, in epoch milliseconds, and when it
+     * arrived (Story 2.12: the call budget's waits and retries are asserted from the arrival times).
+     */
+    record TransactionQuery(String type, long startTime, long endTime, long receivedAtMillis) {}
 
     /**
      * The Transaction Log requests received since the last reset, in order (Story 2.11). The window each
@@ -212,14 +236,17 @@ final class BybitStubConfiguration {
             if (DevBybitStub.TRANSACTION_LOG_PATH.equals(path)) {
                 try {
                     TRANSACTION_QUERIES.add(new TransactionQuery(String.valueOf(parameters.get("type")),
-                            Long.parseLong(parameters.get("startTime")), Long.parseLong(parameters.get("endTime"))));
+                            Long.parseLong(parameters.get("startTime")), Long.parseLong(parameters.get("endTime")),
+                            System.currentTimeMillis()));
                 } catch (RuntimeException unparsable) {
-                    TRANSACTION_QUERIES.add(new TransactionQuery(String.valueOf(parameters.get("type")), -1, -1));
+                    TRANSACTION_QUERIES.add(new TransactionQuery(String.valueOf(parameters.get("type")), -1, -1,
+                            System.currentTimeMillis()));
                 }
             }
             DevBybitStub.Response response = stub.handle(path, headers, parameters);
             byte[] bytes = response.body().getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", response.contentType());
+            response.headers().forEach((name, value) -> exchange.getResponseHeaders().set(name, value));
             exchange.sendResponseHeaders(response.status(), bytes.length);
             exchange.getResponseBody().write(bytes);
             exchange.close();

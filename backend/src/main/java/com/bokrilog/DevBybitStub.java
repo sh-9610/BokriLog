@@ -106,7 +106,14 @@ final class DevBybitStub {
         INSTRUMENT_DUPLICATE("IDUPUSDT", "IDUP", "USDT", "Trading", "1"),
 
         /** 목록이 비어 있지 않은데 요청한 symbol이 없다. 알 수 없는 답이지 "미상장"이 아니다. */
-        INSTRUMENT_FOREIGN("IFORUSDT", "IFOR", "USDT", "Trading", "1");
+        INSTRUMENT_FOREIGN("IFORUSDT", "IFOR", "USDT", "Trading", "1"),
+
+        /**
+         * 제공자가 과거 종가를 정정한다(Story 2.12). 요청이 끝나는 분마다 첫 kline 읽기의 종가는 {@code 2}이고
+         * 그 뒤 읽기부터 {@code 2.5}다 — 캐시를 건너뛰고 다시 읽는 정밀 검증만 정정을 본다. 다른 분의 읽기와는
+         * 서로 세지 않으므로 시험 순서에 기대지 않는다.
+         */
+        REVISED("REVUSDT", "REV", "USDT", "Trading", "2");
 
         private final String symbol;
         private final String base;
@@ -286,7 +293,38 @@ final class DevBybitStub {
          * 사건만 내고, 지갑 잔액은 `1000 + 10 × 지난 사건 수`다. 그래서 최초 발행 뒤 잠시 기다려 동기화하면 새 입금과
          * 새 현재가치가 함께 들어온다. 전부 직접 정규화라 시세 호출이 없다.
          */
-        INCREMENTAL("incremental");
+        INCREMENTAL("incremental"),
+
+        /**
+         * 늦게 기록된 입금(Story 2.12 e2e). UID의 첫 TRANSFER_IN 읽기가 요청한 창의 시작이 기준이고, 두 번째
+         * TRANSFER_IN 읽기부터 기준+1초의 {@code late-event-01}(+25 USDT)이 보인다 — 요청 창 안이고 이미 지난
+         * 경우에만. 최초 수집은 그것을 보지 못하고, 그 구간을 다시 읽는 정밀 검증이 늦은 사건으로 찾는다.
+         */
+        LATE_EVENT("lateevent"),
+
+        /** 첫 TRANSFER_IN 읽기에만 보이는 입금 {@code vanishing-01}(+7 USDT, 기준+1초). 공식 사건의 소실이다. */
+        VANISHING("vanishing"),
+
+        /** {@link #LATE_EVENT}의 출금판. 두 번째 읽기부터 기준+1초의 {@code late-withdrawal-01}(-5 USDT)이 보인다. */
+        LATE_WITHDRAWAL("latewithdrawal"),
+
+        /** 기준+1초의 {@code REV} 입금 하나. {@link MarketFixture#REVISED}가 그 가격을 정정한다. */
+        REVISED_PRICE("revprice"),
+
+        /** 첫 TRANSFER_IN 읽기(최초 수집) 뒤 두 번 503을 낸다. 수집 페이지 재시도 두 번이면 통과한다. */
+        LOG_FLAKY("logflaky"),
+
+        /** 첫 TRANSFER_IN 읽기 뒤 한 번 {@code retCode 10006}과 reset 헤더(지금+200ms)를 낸다. */
+        LOG_RATE_LIMITED("logratelimited"),
+
+        /** 첫 TRANSFER_IN 읽기 뒤로는 HTTP 403이다. IP 차단이며 호출 예산이 회로를 연다. */
+        LOG_IP_BAN("logipban"),
+
+        /** 첫 TRANSFER_IN 읽기 뒤로는 잔여 한도 10%와 reset 헤더(지금+300ms)를 싣는다. 다음 페이지가 기다린다. */
+        LOG_LOW_LIMIT("loglowlimit"),
+
+        /** 첫 TRANSFER_IN 읽기 뒤로는 언제나 503이다. 재시도 셋을 다 써도 실패한다. */
+        LOG_DOWN("logdown");
 
         private final String token;
 
@@ -309,8 +347,12 @@ final class DevBybitStub {
         }
     }
 
-    /** 스텁이 내는 응답 하나. */
-    record Response(int status, String contentType, String body) {}
+    /** 스텁이 내는 응답 하나. {@code headers}는 제공자의 한도 헤더처럼 응답에 더 실을 값이다. */
+    record Response(int status, String contentType, String body, Map<String, String> headers) {
+        Response(int status, String contentType, String body) {
+            this(status, contentType, body, Map.of());
+        }
+    }
 
     private static final String JSON = "application/json";
 
@@ -323,6 +365,17 @@ final class DevBybitStub {
     private final java.util.concurrent.ConcurrentHashMap<String, Long> incrementalBase =
             new java.util.concurrent.ConcurrentHashMap<>();
     private final AtomicLong lastWalletEnvelopeTime = new AtomicLong();
+    /** Story 2.12: TRANSFER_IN reads per UID, and the event time each UID's first TRANSFER_IN read fixed. */
+    private final java.util.concurrent.ConcurrentHashMap<String, AtomicInteger> transferInReads =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> verificationEventAt =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /**
+     * {@link MarketFixture#REVISED}'s kline reads, by the minute a request ends at: the first read of a minute sees the
+     * first close and every later read of the same minute the corrected one, whatever other test read another minute.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<Long, AtomicInteger> revisedKlineReads =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
      * 서버 시간 응답의 모양. 서버 시간에는 키도 symbol도 없어 선택자가 없으므로 시험 표면이 이 값을
@@ -475,6 +528,14 @@ final class DevBybitStub {
             return incrementalPage(uid,type,Long.parseLong(query.get("startTime")),
                     end==null?Long.MAX_VALUE:Long.parseLong(end));
         }
+        if (scenario==Scenario.LATE_EVENT||scenario==Scenario.VANISHING||scenario==Scenario.REVISED_PRICE
+                ||scenario==Scenario.LATE_WITHDRAWAL
+                ||scenario==Scenario.LOG_FLAKY||scenario==Scenario.LOG_RATE_LIMITED||scenario==Scenario.LOG_IP_BAN
+                ||scenario==Scenario.LOG_LOW_LIMIT||scenario==Scenario.LOG_DOWN) {
+            String end=query.get("endTime");
+            return verificationPage(scenario,uid,type,Long.parseLong(query.get("startTime")),
+                    end==null?Long.MAX_VALUE:Long.parseLong(end));
+        }
         if (scenario==Scenario.ID_CONFLICT&&"TRANSFER_IN".equals(type)) {
             int read=conflictTransferInReads.incrementAndGet();
             String flow=read==1?"1.000":"2.000";
@@ -549,6 +610,69 @@ final class DevBybitStub {
         return String.valueOf(1000+10*passed);
     }
 
+    /**
+     * The Story 2.12 scenarios. Every one counts this UID's TRANSFER_IN reads, and the first read fixes the event
+     * time: a second after that window's start, or the window's midpoint when it is shorter than two seconds — so the
+     * event always falls inside the first collection's range {@code (t0, tc]}, even when the collection runs within a
+     * second of the plan's start (the browser flow). Events are emitted only inside the requested window and once
+     * they are in the past. The failing ones leave the first read (the initial collection) alone and fail from the
+     * second.
+     */
+    private Response verificationPage(Scenario scenario,String uid,String type,long start,long end) {
+        if (!"TRANSFER_IN".equals(type)) {
+            int reads=transferInReads.getOrDefault(uid,new AtomicInteger()).get();
+            if (scenario==Scenario.LOG_LOW_LIMIT&&reads>=2)
+                return lowLimit(ok("{\"list\":[],\"nextPageCursor\":\"\"}"));
+            Long outAt=verificationEventAt.get(uid);
+            if (scenario==Scenario.LATE_WITHDRAWAL&&outAt!=null&&reads>=2) {
+                long at=outAt;
+                if (at>=start&&at<=end&&at<=System.currentTimeMillis())
+                    return singleEvent("late-withdrawal-01","USDT","-5",at);
+            }
+            return ok("{\"list\":[],\"nextPageCursor\":\"\"}");
+        }
+        int read=transferInReads.computeIfAbsent(uid,ignored->new AtomicInteger()).incrementAndGet();
+        long at=verificationEventAt.computeIfAbsent(uid,ignored->start+Math.min(1000,Math.max(1,(end-start)/2)));
+        boolean visible=at>=start&&at<=end&&at<=System.currentTimeMillis();
+        return switch (scenario) {
+            case LATE_EVENT -> visible&&read>=2 ? singleEvent("late-event-01","USDT","25",at) : emptyPage();
+            case VANISHING -> visible&&read==1 ? singleEvent("vanishing-01","USDT","7",at) : emptyPage();
+            case REVISED_PRICE -> visible ? singleEvent("revised-01","REV","1",at) : emptyPage();
+            case LOG_FLAKY -> read==2||read==3 ? new Response(503,JSON,"{\"retCode\":10016,\"retMsg\":\"\"}")
+                    : emptyPage();
+            case LOG_RATE_LIMITED -> read==2
+                    ? new Response(200,JSON,"{\"retCode\":10006,\"retMsg\":\"\",\"result\":{},\"time\":"
+                            +System.currentTimeMillis()+"}",Map.of("X-Bapi-Limit","10","X-Bapi-Limit-Status","0",
+                            "X-Bapi-Limit-Reset-Timestamp",String.valueOf(System.currentTimeMillis()+200)))
+                    : emptyPage();
+            case LOG_IP_BAN -> read>=2 ? new Response(403,TEXT,"forbidden") : emptyPage();
+            case LOG_LOW_LIMIT -> read>=2 ? lowLimit(emptyPage()) : emptyPage();
+            case LOG_DOWN -> read>=2 ? new Response(503,JSON,"{\"retCode\":10016,\"retMsg\":\"\"}") : emptyPage();
+            default -> emptyPage();
+        };
+    }
+
+    /** How many TRANSFER_IN reads this UID made (Story 2.12 scenarios). */
+    int transferInReads(String uid) {
+        AtomicInteger reads=transferInReads.get(uid);
+        return reads==null?0:reads.get();
+    }
+
+    private static Response lowLimit(Response response) {
+        return new Response(response.status(),response.contentType(),response.body(),Map.of("X-Bapi-Limit","10",
+                "X-Bapi-Limit-Status","1","X-Bapi-Limit-Reset-Timestamp",String.valueOf(System.currentTimeMillis()+300)));
+    }
+
+    private static Response emptyPage() {
+        return ok("{\"list\":[],\"nextPageCursor\":\"\"}");
+    }
+
+    private static Response singleEvent(String id,String currency,String flow,long at) {
+        return ok("{\"list\":[{\"id\":\""+id+"\",\"type\":\""+(flow.startsWith("-")?"TRANSFER_OUT":"TRANSFER_IN")
+                +"\",\"currency\":\""+currency+"\",\"cashFlow\":\""+flow+"\",\"transactionTime\":\""+at
+                +"\"}],\"nextPageCursor\":\"\"}");
+    }
+
     private static Response eventPage(String id,String type,String flow,Map<String,String> query,String timeKind) {
         long start=Long.parseLong(query.get("startTime"));
         long eventAt=timeKind.equals("start")?start:start+1;
@@ -596,7 +720,7 @@ final class DevBybitStub {
      * 그리고 창 전체가 {@code limit} 안에 들어야 한다. 밖이면 오류 envelope이다. 중복 행을 싣는
      * fixture도 그 상한을 넘지 않는다.
      */
-    private static Response kline(Map<String, String> query) {
+    private Response kline(Map<String, String> query) {
         MarketFixture fixture = MarketFixture.of(query.get("symbol"));
         if (!"spot".equals(query.get("category")) || !"1".equals(query.get("interval")) || fixture == null) {
             return error(10001);
@@ -626,12 +750,15 @@ final class DevBybitStub {
                 return error(10016);
             }
         }
+        String close = fixture == MarketFixture.REVISED
+                ? (this.revisedKlineReads.computeIfAbsent(Math.floorDiv(end, MINUTE_MILLIS), ignored -> new AtomicInteger())
+                        .incrementAndGet() == 1 ? "2" : "2.5") : fixture.close;
         long current = Math.floorDiv(System.currentTimeMillis(), MINUTE_MILLIS) * MINUTE_MILLIS;
         long first = Math.floorDiv(start + MINUTE_MILLIS - 1, MINUTE_MILLIS) * MINUTE_MILLIS;
         StringBuilder rows = new StringBuilder("[");
         int count = 0;
         for (long at = Math.min(Math.floorDiv(end, MINUTE_MILLIS) * MINUTE_MILLIS, current);
-                at >= first && count < limit && fixture.close != null;
+                at >= first && count < limit && close != null;
                 at -= MINUTE_MILLIS) {
             if (fixture == MarketFixture.GAP && Math.floorDiv(at, MINUTE_MILLIS) % 10 != 0) {
                 continue;
@@ -642,13 +769,13 @@ final class DevBybitStub {
             if (fixture == MarketFixture.MALFORMED && count == 0) {
                 rows.append("[\"").append(at).append("\",\"5\",\"5\",\"5\",\"5\",\"1\"]");
             } else {
-                rows.append(candle(at, fixture.close, "1"));
+                rows.append(candle(at, close, "1"));
             }
             count++;
             // The duplicate row counts toward the cap like any other row.
             if ((fixture == MarketFixture.CONFLICT || fixture == MarketFixture.VOLUME_ONLY) && count < limit) {
                 rows.append(',').append(fixture == MarketFixture.CONFLICT
-                        ? candle(at, "4.1", "1") : candle(at, fixture.close, "2"));
+                        ? candle(at, "4.1", "1") : candle(at, close, "2"));
                 count++;
             }
         }
@@ -664,6 +791,9 @@ final class DevBybitStub {
     void resetScenarioState() {
         conflictTransferInReads.set(0);
         incrementalBase.clear();
+        transferInReads.clear();
+        verificationEventAt.clear();
+        revisedKlineReads.clear();
         serverTimeMode.set(ServerTimeMode.NORMAL);
     }
     long lastWalletEnvelopeTime() { return lastWalletEnvelopeTime.get(); }

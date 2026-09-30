@@ -173,6 +173,9 @@ export const planResultContent = {
           '외부 자금흐름 확인 뒤 30일이 넘게 지났습니다. 기존 공식 값은 읽기 전용으로 유지됩니다.',
         SYNC_UNAVAILABLE:
           '지금은 동기화할 수 없어 공식 값을 새로 확인하지 못합니다. 기존 공식 값은 그대로 유지됩니다.',
+        // Story 2.12: 마지막 정밀 검증이 검토 필요로 끝났다. 같은 기준 계산 동안 다시 요청해도 바뀌지 않는다.
+        LAST_VERIFICATION_NEEDS_REVIEW:
+          '마지막 정밀 검증의 입력에 검토가 필요해 공식 값을 바꾸지 않았습니다. 기존 공식 값은 그대로 유지됩니다.',
       } as Record<string, string>,
       lastNormal: '마지막 정상 시각 (현재가치 측정 시각)',
       verifiedThrough: '외부 자금흐름 확인 시각',
@@ -194,6 +197,12 @@ export const planResultContent = {
         // Story 2.11: 마지막 동기화가 검토 필요로 끝났다. 새 입력은 공식 계산에 들어가지 않았다.
         SYNC_REVIEW_REQUIRED:
           '마지막 동기화에서 검토가 필요한 입력이 나와 그 입력을 공식 계산에 쓰지 않았습니다. 표시된 값은 이전 공식 버전입니다.',
+        // Story 2.12: 정밀 검증으로도 풀리지 않는 입력(다시 보이지 않은 공식 사건, 같은 ID의 다른 내용 등).
+        VERIFICATION_REVIEW_REQUIRED:
+          '정밀 검증에서 다시 읽어도 풀리지 않는 입력이 나와 그 입력을 공식 계산에 쓰지 않았습니다. 표시된 값은 이전 공식 버전입니다.',
+        // Story 2.12: 다시 읽어야 할 구간이 Bybit의 조회 가능 범위(최근 2년)보다 이르다. 2년을 넘는 재구성은 하지 않는다.
+        HISTORY_OUT_OF_RANGE:
+          '다시 읽어야 할 구간이 Bybit에서 조회할 수 있는 최근 2년보다 이르러 입력을 다시 구성할 수 없습니다. 표시된 값은 이전 공식 버전입니다.',
       } as Record<string, string>,
       lastNormal: '마지막 정상 시각 (외부 자금흐름 확인 시각)',
     },
@@ -246,9 +255,11 @@ export const NEXT_ACTION_FALLBACK = '다시 불러와 상태를 확인해 주세
 
 /**
  * 화면 단위 다음 행동 코드 → 문장(닫힌 집합: Story 2.8의 `CREATE_PLAN`·`WAIT_FOR_RESULT`·`WAIT_FOR_SYNC`·
- * `NONE`과 Story 2.11의 `SYNC`·`CHOOSE_CONTINUATION`). 동기화 조작이 생겼으므로 `최신 아님`의 다음 행동은
- * `SYNC`이고, `NONE`은 따로 할 조치가 없다는 뜻이다(최신이거나, 지금은 동기화를 받지 않는 상태). 자동
- * 복구나 이후 기능을 약속하지 않는다. `NONE`의 승인 문장은 화면에 한 번, 다음 행동 섹션에만 나온다.
+ * `NONE`, Story 2.11의 `SYNC`·`CHOOSE_CONTINUATION`, Story 2.12의 `VERIFY`). 동기화 조작이 생겼으므로 `최신
+ * 아님`의 다음 행동은 `SYNC`이고, 동기화가 검토 필요로 끝났으면 풀 수 없는 재동기화 대신 `VERIFY`(정밀
+ * 검증)다. `NONE`은 따로 할 조치가 없다는 뜻이다(최신이거나, 지금은 받지 않거나, 다시 요청해도 바뀌지 않는
+ * 상태). 자동 복구나 이후 기능을 약속하지 않는다. `NONE`의 승인 문장은 화면에 한 번, 다음 행동 섹션에만 나온다.
+ * 버튼은 화면 위치가 아니라 이름으로 가리키고(WCAG 1.3.3), 지금은 막혀 있을 수 있다는 사실을 함께 말한다.
  *
  * @param measured 서울 시각으로 쓴 현재가치 측정 시각. 결과가 없거나 시각을 표시할 수 없으면 `null`이다.
  */
@@ -262,9 +273,12 @@ export function nextActionCopy(code: string, measured: string | null): string {
       return `지금 따로 할 조치는 없습니다. ${shown}`
     case 'SYNC':
       return `동기화로 현재가치와 입출금 기록을 다시 확인할 수 있습니다. ${shown}`
+    case 'VERIFY':
+      // 버튼을 이름으로 가리킨다. 지금 요청할 수 없으면(쿨다운·사용 불가) 버튼 곁의 설명이 이유를 말한다.
+      return `정밀 검증 버튼으로 필요한 구간의 입출금 기록을 다시 읽도록 요청할 수 있습니다. 지금 요청할 수 없으면 그 버튼 곁에 이유가 보입니다. ${shown}`
     case 'CHOOSE_CONTINUATION':
-      // 이 화면이 실행할 수 없는 선택을 지시하지 않는다. 두 방법과 그 차이, 지금은 고를 수 없다는 사실만 말한다.
-      return `장기 미동기화·선택 필요: 마지막 확인 뒤 30일이 넘게 지나 동기화하지 않습니다. 이어 가는 방법은 공백 기간 전체를 수집하는 기존 계획 계속과, 공백 기간을 수집하지 않고 새 기준으로 시작하는 새 계획 시작 두 가지이며, 이 화면에서는 아직 선택할 수 없습니다. ${
+      // 실행할 수 있는 선택(기존 계획 계속)만 버튼으로 가리키고, 새 계획 시작은 차이만 말한다.
+      return `장기 미동기화·선택 필요: 마지막 확인 뒤 30일이 넘게 지나 동기화하지 않습니다. 이어 가는 방법은 공백 기간을 수집하는 기존 계획 계속과, 공백 기간을 수집하지 않고 새 기준으로 시작하는 새 계획 시작 두 가지입니다. 기존 계획 계속은 기존 계획 계속 버튼으로 요청할 수 있고, 지금 요청할 수 없으면 그 버튼 곁에 이유가 보입니다. ${
         measured === null
           ? '표시된 값은 마지막 정상 결과이며 읽기 전용으로 유지됩니다.'
           : `표시된 값은 ${measured}의 마지막 정상 결과이며 읽기 전용으로 유지됩니다.`
@@ -283,8 +297,9 @@ export function nextActionCopy(code: string, measured: string | null): string {
 
 /**
  * 축 하나의 다음 행동 코드 → 짧은 문장. 신선도 축은 `WAIT_FOR_SYNC`(작업 진행 중)·`SYNC`(최신 아님)·
- * `CHOOSE_CONTINUATION`(장기 미동기화)·`NONE`을, 나머지 두 축은 `NONE`만 만든다. 시각을 담지 않는다 — 축마다
- * 자기 마지막 정상 시각이 따로 있고, 측정 시각을 되풀이하면 두 기준이 한 묶음에 섞여 읽힌다.
+ * `VERIFY`(동기화 검토 뒤)·`CHOOSE_CONTINUATION`(장기 미동기화)·`NONE`을, 입력 신뢰도 축은 `VERIFY`·`NONE`을,
+ * 계산 성격 축은 `NONE`만 만든다. 시각을 담지 않는다 — 축마다 자기 마지막 정상 시각이 따로 있고, 측정 시각을
+ * 되풀이하면 두 기준이 한 묶음에 섞여 읽힌다.
  */
 export function axisActionCopy(code: string): string {
   switch (code) {
@@ -292,8 +307,10 @@ export function axisActionCopy(code: string): string {
       return '지금 따로 할 조치는 없습니다.'
     case 'SYNC':
       return '동기화 버튼으로 다시 확인할 수 있습니다.'
+    case 'VERIFY':
+      return '정밀 검증 버튼으로 필요한 구간을 다시 읽도록 요청할 수 있습니다. 지금 요청할 수 없으면 그 버튼 곁에 이유가 보입니다.'
     case 'CHOOSE_CONTINUATION':
-      return '장기 미동기화 상태입니다. 이어 가는 방법은 이 화면에서 아직 선택할 수 없습니다.'
+      return '장기 미동기화 상태입니다. 기존 계획 계속 버튼으로 공백 기간을 이어 가도록 요청할 수 있고, 지금 요청할 수 없으면 그 버튼 곁에 이유가 보입니다.'
     case 'WAIT_FOR_SYNC':
       return '동기화 작업이 끝날 때까지 기다려 주세요. 다시 불러오기로도 확인할 수 있습니다.'
     default:

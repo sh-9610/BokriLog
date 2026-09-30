@@ -22,6 +22,7 @@ import {
   planResultContent,
 } from '../content/planResult'
 import { DASHBOARD_SYNC_PATH, planSyncContent } from '../content/planSync'
+import { DASHBOARD_VERIFICATION_PATH, planVerificationContent } from '../content/planVerification'
 import { formatSeoulTime } from '../format/decimal'
 import { navigateTo, replaceLocation } from '../session/navigation'
 import {
@@ -29,6 +30,7 @@ import {
   adjustmentRowFixture,
   BASIS_AT,
   calculationEvidenceFixture,
+  changeFixture,
   dashboardFixture,
   evidenceResultFixture,
   MEASURED_AT,
@@ -38,6 +40,8 @@ import {
   syncFixture,
   syncJobFixture,
   trustFixture,
+  verificationFixture,
+  verificationJobFixture,
 } from '../test/planResultFixture'
 import {
   getObservedAllowedRequests,
@@ -47,6 +51,7 @@ import {
   stubCalculationEvidence,
   stubDashboard,
   stubDashboardSync,
+  stubDashboardVerification,
   stubFirstSnapshotStart,
   stubFirstSnapshotState,
   stubLogoutRequest,
@@ -988,6 +993,174 @@ describe('SignedInScreen', () => {
       expect(screen.getAllByRole('status')).toHaveLength(1)
       expect(liveRegions()).toHaveLength(1)
       expect(triggers).toEqual(['ENTRY', 'MANUAL'])
+      expect(getObservedStorageEntries()).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('정밀 검증(Story 2.12): 누르면 곧바로 정밀 검증 중이 보이고, 끝나면 v2로 한 번에 바뀌며 초점은 제목, 결과 표지는 늦은 입금과 영향 시작을 말한다', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      stubSessionRequest(authenticated)
+      const job = verificationJobFixture({ reason: 'GAP_SUSPECTED' })
+      const lateAt = '2026-09-25T00:00:01Z'
+      const v2 = planResultFixture({
+        pointerVersion: 2,
+        calculationId: 'calculation-2',
+        basisAt: '2026-09-27T01:20:00Z',
+        measuredAt: '2026-09-27T01:19:59Z',
+        cashflowVerifiedThrough: '2026-09-27T01:20:00Z',
+        publishedAt: '2026-09-27T01:20:01Z',
+        flowCount: 1,
+        trust: trustFixture({
+          freshness: {
+            lastNormalAt: '2026-09-27T01:19:59Z',
+            measuredAt: '2026-09-27T01:19:59Z',
+            cashflowVerifiedThrough: '2026-09-27T01:20:00Z',
+          },
+          inputReliability: { lastNormalAt: '2026-09-27T01:20:00Z' },
+          calculationNature: { lastNormalAt: '2026-09-27T01:20:00Z' },
+        }),
+        metrics: [
+          { metric: 'CURRENT_VALUE', value: '1275', nature: 'OFFICIAL' },
+          { metric: 'PLAN_AMOUNT', value: '1235', nature: 'OFFICIAL' },
+          { metric: 'PLAN_DIFFERENCE', value: '40', nature: 'OFFICIAL' },
+          { metric: 'ADJUSTED_TARGET', value: '1358.5', nature: 'OFFICIAL' },
+          { metric: 'REQUIRED_RATE', value: '0.0648', nature: 'OFFICIAL' },
+          { metric: 'GOAL_PROGRESS', value: '0.5', nature: 'OFFICIAL' },
+        ],
+      })
+      const running = { ...job, status: 'RUNNING', stage: 'COLLECTION' }
+      const done = {
+        ...job,
+        status: 'SUCCEEDED',
+        stage: 'PUBLICATION',
+        finishedAt: '2026-09-27T01:20:01Z',
+      }
+      const queue: (() => Promise<Response>)[] = [
+        () => Promise.resolve(jsonResponse(dashboardFixture())),
+        () =>
+          Promise.resolve(
+            jsonResponse(
+              dashboardFixture(
+                planResultFixture({
+                  trust: trustFixture({
+                    freshness: {
+                      state: 'SYNCING',
+                      cause: 'JOB_IN_PROGRESS',
+                      nextAction: 'WAIT_FOR_SYNC',
+                    },
+                  }),
+                }),
+                'WAIT_FOR_SYNC',
+                syncFixture({ availability: 'IN_PROGRESS', latest: running }),
+                verificationFixture({ availability: 'IN_PROGRESS', latest: running }),
+              ),
+            ),
+          ),
+        () =>
+          Promise.resolve(
+            jsonResponse(
+              dashboardFixture(
+                v2,
+                'NONE',
+                syncFixture({ availability: 'COOLDOWN', retryAfterSeconds: 25, latest: done }),
+                verificationFixture({
+                  availability: 'COOLDOWN',
+                  retryAfterSeconds: 25,
+                  latest: done,
+                }),
+                changeFixture({
+                  kind: 'CORRECTED',
+                  purpose: 'VERIFY',
+                  reason: 'GAP_SUSPECTED',
+                  lateChangeCount: 1,
+                  firstAffectedAt: lateAt,
+                }),
+              ),
+            ),
+          ),
+      ]
+      stubDashboard(() => (queue.shift() ?? (() => Promise.reject(new Error('extra'))))())
+      const bodies: unknown[] = []
+      stubDashboardVerification((init) => {
+        bodies.push(JSON.parse(init?.body as string))
+        return Promise.resolve(
+          jsonResponse({ outcome: 'ACCEPTED', job, retryAfterSeconds: null }, 202),
+        )
+      })
+      render(<SignedInScreen />)
+      expect(await screen.findByText('1,250.00 USD')).toBeInTheDocument()
+      await waitFor(() => {
+        expect(syncPosts()).toHaveLength(1)
+      })
+      const before = screen.getAllByRole('article').map((card) => card.textContent)
+      const recorder = recordStatus()
+
+      const control = screen.getByRole('button', { name: planVerificationContent.action })
+      control.focus()
+      fireEvent.click(control)
+      fireEvent.click(control)
+      // At once, before any answer: 정밀 검증 중, the button blocked and still focused, the values kept.
+      expect(screen.getByText(planVerificationContent.running, { exact: true })).toBeVisible()
+      expect(control).toHaveAttribute('aria-disabled', 'true')
+      expect(control).toHaveFocus()
+      expect(screen.getByRole('status').textContent).toBe(planVerificationContent.status.running)
+      expect(screen.getAllByRole('article').map((card) => card.textContent)).toEqual(before)
+      // The sync button is blocked too, and says why.
+      expect(screen.getByRole('button', { name: planSyncContent.action })).toHaveAttribute(
+        'aria-disabled',
+        'true',
+      )
+      await waitFor(() => {
+        expect(bodies).toEqual([
+          {
+            kind: 'PRECISION',
+            planId: 'plan-1',
+            pointerVersion: 1,
+            calculationId: 'calculation-1',
+          },
+        ])
+      })
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000)
+      })
+      expect(screen.getByText('1,250.00 USD')).toBeInTheDocument()
+      expect(screen.getByRole('status').textContent).toBe(planVerificationContent.status.running)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000)
+      })
+      expect(await screen.findByText('1,275.00 USD')).toBeInTheDocument()
+      expect(screen.queryByText('1,250.00 USD')).not.toBeInTheDocument()
+      expect(
+        screen.getByRole('heading', { level: 2, name: planResultContent.heading }),
+      ).toHaveFocus()
+      const basis = formatSeoulTime('2026-09-27T01:20:00Z', planResultContent.timeUnavailable)
+      const closing = planVerificationContent.status.succeeded(
+        planVerificationContent.change.correctedSentence(1),
+        null,
+        basis,
+      )
+      expect(screen.getByRole('status').textContent).toBe(closing)
+      // The result marker: one late deposit, and where its impact starts.
+      const start = formatSeoulTime(lateAt, planResultContent.timeUnavailable)
+      expect(screen.getByRole('region', { name: planResultContent.heading })).toHaveTextContent(
+        `${planVerificationContent.change.corrected(1)}, ${planVerificationContent.change.impactStart} ${start}`,
+      )
+      expect(screen.getByText(planVerificationContent.cooldown(25))).toBeInTheDocument()
+      recorder.stop()
+      expect(recorder.texts).toEqual([planVerificationContent.status.running, closing])
+      expect(recorder.busy.every((value) => value === 'false')).toBe(true)
+      expect(screen.getAllByRole('status')).toHaveLength(1)
+      expect(liveRegions()).toHaveLength(1)
+      expect(
+        getObservedAllowedRequests().filter(
+          (entry) => entry === `POST ${DASHBOARD_VERIFICATION_PATH}`,
+        ),
+      ).toHaveLength(1)
       expect(getObservedStorageEntries()).toEqual([])
     } finally {
       vi.useRealTimers()

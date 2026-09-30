@@ -296,6 +296,23 @@ docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --b
 - 만료된 미소비 허가는 **발급 경로가 자기 사용자 범위에서** 기회적으로 쓸어 낸다. 스케줄러도 배치도 두지 않고, 그 정리가 실패해도 발급은 막히지 않는다. 범위 없는 전체 테이블 DELETE를 매 발급마다 돌리면 발급 하나의 비용이 테이블 크기에 비례한다. 소비된 행은 남긴다 — 그 행의 `operation_id`와 `result`가 멱등 재전송의 유일한 근거이고, 남는 행의 정리는 계정 삭제의 `ON DELETE CASCADE`가 맡는다.
 - 인증 표면은 servlet 웹 애플리케이션에서만 배선한다(`@ConditionalOnWebApplication(type = SERVLET)`). 같은 이미지의 일회성 migration 역할은 웹 서버 없이 뜨므로 `HttpSecurity`가 없고, 조건이 없으면 마이그레이션이 컨텍스트 생성 실패로 끝난다. 허가 포트도 같은 조건이다 — 그 프로세스에는 세션 개념 자체가 없다.
 
+### Bybit 호출 예산
+
+Story 2.12가 ERD-1.0.0 §2.5의 호출 예산을 `source` 모듈의 `BybitCallBudget`에 두었다. 값은 `application.yml`의 `bokrilog.source.bybit.budget.*`이고 운영 기본값은 ERD 그대로다. 각 값은 환경 변수로 덮어쓸 수 있으며, 비었거나 읽을 수 없거나 범위 밖의 값은 기동을 죽이지 않고 기본값으로 접힌다(값은 예외·로그에 싣지 않는다). 백엔드 시험만 `BybitStubConfiguration`에서 값을 줄인다.
+
+| 속성 | 환경 변수 | 기본값 | 뜻 |
+|---|---|---|---|
+| `auth-per-second` | `BOKRILOG_BYBIT_AUTH_PER_SECOND` | `5` | 서명 호출의 자격정보(UID)당 초당 요청 수. 0.1 미만은 기본값 |
+| `public-per-second` | `BOKRILOG_BYBIT_PUBLIC_PER_SECOND` | `10` | 공개 Market 호출의 서비스 전체 초당 요청 수. 0.1 미만은 기본값 |
+| `max-concurrent-collections` | `BOKRILOG_BYBIT_MAX_CONCURRENT_COLLECTIONS` | `2` | 동시에 도는 수집 수. 양의 정수만 받는다(소수는 기본값) |
+| `retry-delays` | `BOKRILOG_BYBIT_RETRY_DELAYS` | `2s,10s,30s` | 수집 페이지(거래 기록·지갑)의 timeout·429·`10006`·5xx 재시도 간격. 최대 3개. 제공자 reset 시각에 따른 대기도 이 중 가장 긴 값을 넘지 않는다 |
+| `retry-jitter` | `BOKRILOG_BYBIT_RETRY_JITTER` | `0.2` | 재시도 간격 위에 더하는 최대 비율(0~1) |
+| `circuit-open` | `BOKRILOG_BYBIT_CIRCUIT_OPEN` | `10m` | HTTP 403(IP 차단) 뒤 모든 Bybit 호출을 요청 없이 막는 시간. 열릴 때 WARN 한 줄(시간만) |
+| `low-remaining-ratio` | `BOKRILOG_BYBIT_LOW_REMAINING_RATIO` | `0.2` | `X-Bapi-Limit-Status`가 한도의 이 비율 이하면 다음 페이지를 reset 시각까지 늦춘다 |
+| `low-remaining-wait-cap` | `BOKRILOG_BYBIT_LOW_REMAINING_WAIT_CAP` | `5s` | 그 대기의 상한 |
+
+예산은 **프로세스 하나의 것**이다 — bucket·동시 수집 수·회로가 JVM 메모리에 살고 인스턴스끼리 나누지 않으므로, API 프로세스를 둘 이상 띄우면 제공자가 보는 호출 수는 그 배수가 된다(이 한계는 `deferred-work.md`가 소유한다). 모든 대기와 재시도는 호출자의 lease가 살아 있는 동안만 이어지고, lease를 잃어 멈춘 수집은 제공자 오류 코드를 남기지 않는다.
+
 ## 동일 출처 실행 (`deploy/`)
 
 Nginx가 `frontend/dist/`를 origin 루트에서 제공하고 `/api`만 백엔드로 프록시한다. 브라우저는 하나의 origin에서 화면과 서버 응답을 함께 받는다. 이 구성이 개발·CI 공용이며 production 프로필이 아니다. image digest 고정·자원 제한·로그 전송·blue/green 슬롯은 Story 3.8과 배포 작업이 소유한다.
@@ -372,11 +389,11 @@ changes ──> frontend-quality ──┐
 |---|---|---|
 | `changes` | secret 검사, CI 계약 시험, 변경 분류 | 5분 |
 | `frontend-quality` | 타입 검사 → ESLint → stylelint → Prettier → 빌드 → Vitest → Chromium E2E | 8분 |
-| `backend-quality` | JDK 25 준비 → Gradle `build`(컴파일·Modulith 경계 검사·PostgreSQL Testcontainers 시험·jar) | 20분 |
+| `backend-quality` | JDK 25 준비 → Gradle `build`(컴파일·Modulith 경계 검사·PostgreSQL Testcontainers 시험·jar) | 25분 |
 | `same-origin-integration` | 두 품질 job의 산출물로 동일 출처 검증(`--keep-stack`) → 같은 스택에서 Story 1.1 회귀 | 17분 |
 | `ci-required` | 선행 job 결과 집계. 병합 가능 여부 판정 | 1분 |
 
-`backend-quality`의 15분은 Story 1.3이 10분에서 올린 값이다. 이 job은 이제 Testcontainers로 실제 PostgreSQL을 띄우고, 콜드 실행에는 `postgres:18.6-alpine` 내려받기가, 동시성 시험에는 실제 잠금 경합 대기가 더해진다. 러너에 docker 데몬이 이미 있으므로 서비스 컨테이너도 새 action도 더하지 않았고, 시험은 기존 `Gradle 빌드` 단계 안에서 돈다. `CI-PLAN.md` §4·§10의 backend 예산 8분은 이 상한과 별개로 계속 측정한다. Story 2.11이 15분을 20분으로 올렸다. PR #49에서 이 job이 11분 5초였고, 같은 시험의 로컬 실행보다 1분쯤 길었다. 2.11의 로컬 `clean build`가 12분 56초라 CI는 14분 안팎이 된다.
+`backend-quality`의 15분은 Story 1.3이 10분에서 올린 값이다. 이 job은 이제 Testcontainers로 실제 PostgreSQL을 띄우고, 콜드 실행에는 `postgres:18.6-alpine` 내려받기가, 동시성 시험에는 실제 잠금 경합 대기가 더해진다. 러너에 docker 데몬이 이미 있으므로 서비스 컨테이너도 새 action도 더하지 않았고, 시험은 기존 `Gradle 빌드` 단계 안에서 돈다. `CI-PLAN.md` §4·§10의 backend 예산 8분은 이 상한과 별개로 계속 측정한다. Story 2.11이 15분을 20분으로 올렸다. PR #49에서 이 job이 11분 5초였고, 같은 시험의 로컬 실행보다 1분쯤 길었다. 2.11의 로컬 `clean build`가 12분 56초라 CI는 14분 안팎이 된다. Story 2.12가 다시 20분을 25분으로 올렸다. 2.12의 로컬 `clean build`(`--no-parallel --max-workers=1`)가 15분 54초, 리뷰 보강 시험을 더한 뒤 16분 59초였고 그중 새 `PlanVerificationTest`가 약 4분이다. PR #52에서 이 job이 13분 0초로 로컬 실행과 거의 같았으므로 CI는 17분 안팎이 되고, 20분은 러너 편차와 콜드 이미지 내려받기가 겹치면 끊길 수 있다.
 
 `same-origin-integration`의 17분은 `CI-PLAN.md` §8이 적은 시작값 5분과 다르다. 그 값은 이 job이 무엇을 하는지 정해지기 전의 추정이고, 지금은 Story 1.1 회귀 단계 하나가 6분을 쓴다. 회귀 단계는 Story 2.11이 4분에서 6분으로 올렸고, 주입된 origin의 Playwright `globalTimeout`도 3분에서 5분으로 올렸다. PR #49에서 이미 2분 30초(59건)였고 2.11이 실제 스택의 동기화 왕복을 더했기 때문이다. preview를 쓰는 `frontend-quality`의 E2E 단계는 4분·3분 그대로다. 단계별 상한의 합(내려받기 1 + 동일 출처 검증 7 + `npm ci` 2 + Chromium 설치 2 + 회귀 6 + 정리·업로드 1)이 19분이지만 17분을 유지한다. 검증 단계에 Story 1.3이 세 가지를 더했다 — `postgres:18.6-alpine` 이미지 내려받기, migrate 이미지 빌드, 마이그레이션 실행 — 그래서 그 단계의 예산을 5분에서 7분으로 본다. 실측(PR #9의 2분 2초)과 상한 사이에 아직 여유가 크므로 job 상한은 그대로 두고, 실측이 몇 회 더 쌓이면 두 값을 `CI-PLAN.md` 새 버전이 함께 보정한다. 검증 스크립트가 `--keep-stack`으로 남긴 스택을 회귀가 그대로 쓰므로 compose는 한 번만 뜬다. 필수 검사를 빼서 5분에 맞추지 않는다(CI-PLAN §10). 이 job이 `frontend-quality`의 `npm ci`와 Chromium 설치를 되풀이하는 중복은 `deferred-work.md`에 남겼다. 목표는 `CI-PLAN.md` §10의 PR wall-clock p95 8분이며 job timeout은 목표가 아니라 멈춘 job을 끊는 상한이다.
 

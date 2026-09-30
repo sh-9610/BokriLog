@@ -61,8 +61,8 @@ class PlanSyncPublisherTest {
     private final PlanSyncGuard guard = mock(PlanSyncGuard.class);
 
     private final PlanSyncRepository.Lease lease = new PlanSyncRepository.Lease(JOB, USER, PLAN, PORTFOLIO, INTENT,
-            MEMBERSHIP, CONNECTION, ACCOUNT, "MANUAL", BASE_CALCULATION, 1, BASE_CANDIDATE, VERIFIED, VERIFIED, T0, END,
-            1);
+            MEMBERSHIP, CONNECTION, ACCOUNT, "SYNC", null, "MANUAL", BASE_CALCULATION, 1, BASE_CANDIDATE, VERIFIED,
+            VERIFIED, T0, END, 1);
     private final Conversion conversion = new Conversion(CONVERSION, CLASSIFICATION, USER, INTENT, PORTFOLIO,
             CONNECTION, ACCOUNT, "CONVERTED", true, "c".repeat(64), "BYBIT-PRICE-1.0", 0, 0);
     private final Pinned pinned = new Pinned(JOB, USER, PORTFOLIO, INTENT, MEMBERSHIP, CONNECTION, ACCOUNT,
@@ -76,7 +76,8 @@ class PlanSyncPublisherTest {
 
     private static PlanSyncRepository.CreatingSync scope(Instant tc, Instant window) {
         return new PlanSyncRepository.CreatingSync("RUNNING", PLAN, PORTFOLIO, INTENT, MEMBERSHIP, CONNECTION, ACCOUNT,
-                null, null, BASE_CALCULATION, 1, BASE_CANDIDATE, VERIFIED, VERIFIED, tc, "NORMAL", window);
+                null, null, BASE_CALCULATION, 1, BASE_CANDIDATE, VERIFIED, VERIFIED, tc, "NORMAL", window, "SYNC", null,
+                null, null);
     }
 
     private PlanSyncPublisher.Prepared prepared(Candidate candidate) {

@@ -122,7 +122,7 @@ docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --b
 
 - 첫 GitHub 실측(2026-09-06, PR #9): wall-clock 4분 3초. 문서-only 경로(`_bmad-output/**`, 최상위 `*.md`)는 `changes`와 `ci-required`만 돌아 1분 안에 끝난다.
 - artifact 이름에 `run_attempt`가 들어가 `Re-run failed jobs`는 쓸 수 없다. 재실행은 `Re-run all jobs`다.
-- 통합 job timeout 17분은 CI-PLAN §8의 시작값 5분과 다르다. `backend-quality`도 Story 1.3에서 10분 → 15분으로 올렸다(Testcontainers 콜드 실행). Story 2.11이 다시 `backend-quality`를 15 → 20분, 통합 job을 15 → 17분(회귀 단계 4 → 6분, 주입 origin Playwright `globalTimeout` 3 → 5분)으로 올렸다 — PR #49 실측이 백엔드 11분 5초·회귀 2분 30초였고 PR #52의 백엔드가 13분 0초였다. 두 값 모두 실측이 몇 회 더 쌓인 뒤 CI-PLAN 새 버전으로 보정하기로 했고 아직 발행 전이다.
+- 통합 job timeout 17분은 CI-PLAN §8의 시작값 5분과 다르다. `backend-quality`도 Story 1.3에서 10분 → 15분으로 올렸다(Testcontainers 콜드 실행). Story 2.11이 다시 `backend-quality`를 15 → 20분, 통합 job을 15 → 17분(회귀 단계 4 → 6분, 주입 origin Playwright `globalTimeout` 3 → 5분)으로 올렸다 — PR #49 실측이 백엔드 11분 5초·회귀 2분 30초였고 PR #52의 백엔드가 13분 0초였다. Story 2.12가 `backend-quality`를 다시 20 → 25분으로 올렸다 — 로컬 `clean build`(`--no-parallel --max-workers=1`)가 16분 59초가 됐고(새 `PlanVerificationTest`가 약 4분) PR #52의 CI가 로컬과 거의 같았으므로 CI도 17분 안팎이라, 20분은 러너 편차와 콜드 이미지 내려받기가 겹치면 끊긴다. 그 job의 `Gradle 빌드` 단계에는 따로 걸린 timeout이 없다. 두 값 모두 실측이 몇 회 더 쌓인 뒤 CI-PLAN 새 버전으로 보정하기로 했고 아직 발행 전이다.
 - Testcontainers는 러너의 docker 데몬을 그대로 쓴다. `backend-quality`에 서비스 컨테이너도, docker를 설치하는 action도 더하지 않았다. 시험은 기존 `Gradle 빌드` 단계 안에서 돈다.
 - 로컬에서 CI 계약을 미리 확인하는 명령은 `bash .github/scripts/test-ci-scripts.sh`다.
 

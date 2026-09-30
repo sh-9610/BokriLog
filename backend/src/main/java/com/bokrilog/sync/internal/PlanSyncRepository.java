@@ -14,7 +14,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 /**
- * Story 2.11 incremental sync attempts (V11).
+ * Story 2.11 incremental sync attempts (V11), and Story 2.12's precision verifications and long-gap continuations in
+ * the same table (V12): one purpose column, one in-progress index, one lease.
  *
  * <p>One attempt runs the collection, classification and conversion stages as rows of their own tables — the
  * "children" — and holds their lease: its heartbeat renews theirs, and its fenced ending ends every child it
@@ -36,57 +37,75 @@ class PlanSyncRepository {
      * and {@code T}.
      */
     record Lease(UUID jobId, UUID userId, UUID planId, UUID portfolioId, UUID intentId, UUID membershipId,
-            UUID connectionId, UUID providerAccountId, String trigger, UUID baseCalculationId, long basePointerVersion,
-            UUID baseCandidateId, Instant baseVerifiedThrough, Instant baseExtendedAt, Instant t0, Instant endAt,
-            long generation) {}
+            UUID connectionId, UUID providerAccountId, String purpose, @Nullable String reason, String trigger,
+            UUID baseCalculationId, long basePointerVersion, UUID baseCandidateId, Instant baseVerifiedThrough,
+            Instant baseExtendedAt, Instant t0, Instant endAt, long generation) {
 
-    /** A new attempt, as the admission pinned it. */
+        /** A precision verification or a continuation (Story 2.12), as opposed to a sync. */
+        boolean verifying() {
+            return !"SYNC".equals(this.purpose);
+        }
+    }
+
+    /** A new attempt, as the admission pinned it. {@code reason} is {@code null} for a sync. */
     record Admission(UUID jobId, UUID userId, UUID planId, UUID portfolioId, UUID intentId, UUID membershipId,
-            UUID connectionId, UUID providerAccountId, String trigger, String key, UUID baseCalculationId,
-            long basePointerVersion, UUID baseCandidateId, Instant baseVerifiedThrough, Instant baseExtendedAt,
-            Instant t0, Instant endAt) {}
+            UUID connectionId, UUID providerAccountId, String purpose, @Nullable String reason, String trigger,
+            String key, UUID baseCalculationId, long basePointerVersion, UUID baseCandidateId,
+            Instant baseVerifiedThrough, Instant baseExtendedAt, Instant t0, Instant endAt) {}
 
-    record KeyedJob(String trigger, SyncJob job) {}
-
-    /** A claimed attempt. {@code interrupted}: its previous holder lost the lease while running it. */
-    record Claimed(Lease lease, boolean interrupted) {}
+    /**
+     * A claimed attempt. {@code interrupted}: its previous holder lost the lease while running it and it may not go
+     * on. {@code resumed}: the same, but a verification or continuation still in its time, collection or final-sweep
+     * stage and within its two resumptions — it goes on from its checkpoints (Story 2.12).
+     */
+    record Claimed(Lease lease, boolean interrupted, boolean resumed) {}
 
     /** What the one ending line of an attempt says. No user, amount or time of an input. */
-    record Ending(UUID jobId, String trigger, @Nullable String mode, String status, @Nullable String stage,
-            @Nullable String failureCode, long latencyMs) {}
+    record Ending(UUID jobId, String purpose, @Nullable String reason, String trigger, @Nullable String mode,
+            String status, @Nullable String stage, @Nullable String failureCode, long latencyMs) {}
+
+    /**
+     * How far an attempt got, read when a worker takes it: the fixed times and scope, the stage, the continuation's
+     * first-phase cutoff, the collection child and the resumptions used.
+     */
+    record Progress(@Nullable Instant tc, @Nullable String mode, @Nullable Instant windowStart, @Nullable String stage,
+            @Nullable Instant initialTc, @Nullable UUID collectionJobId, int resumeCount) {}
 
     // ---------------------------------------------------------------- admission
 
     /** Inserts the attempt. Zero when the key or the one-in-progress index was taken first. */
     int insert(Admission a) {
         return jdbc.sql("INSERT INTO sync_plan_sync_job(job_id,user_id,plan_id,portfolio_id,intent_id,membership_id,"
-                + "connection_id,provider_account_id,trigger,idempotency_key,base_calculation_id,base_pointer_version,"
-                + "base_candidate_id,base_verified_through,base_extended_verification_at,t0,end_at,status) VALUES "
-                + "(:j,:u,:plan,:p,:i,:m,:c,:a,:trigger,:key,:calc,:version,:cand,:verified,:extended,:t0,:end,'QUEUED') "
-                + "ON CONFLICT DO NOTHING")
+                + "connection_id,provider_account_id,purpose,reason_code,trigger,idempotency_key,base_calculation_id,"
+                + "base_pointer_version,base_candidate_id,base_verified_through,base_extended_verification_at,t0,end_at,"
+                + "status) VALUES (:j,:u,:plan,:p,:i,:m,:c,:a,:purpose,:reason,:trigger,:key,:calc,:version,:cand,"
+                + ":verified,:extended,:t0,:end,'QUEUED') ON CONFLICT DO NOTHING")
             .param("j", a.jobId()).param("u", a.userId()).param("plan", a.planId()).param("p", a.portfolioId())
             .param("i", a.intentId()).param("m", a.membershipId()).param("c", a.connectionId())
-            .param("a", a.providerAccountId()).param("trigger", a.trigger()).param("key", a.key())
+            .param("a", a.providerAccountId()).param("purpose", a.purpose()).param("reason", a.reason())
+            .param("trigger", a.trigger()).param("key", a.key())
             .param("calc", a.baseCalculationId()).param("version", a.basePointerVersion())
             .param("cand", a.baseCandidateId()).param("verified", utc(a.baseVerifiedThrough()))
             .param("extended", utc(a.baseExtendedAt())).param("t0", utc(a.t0())).param("end", utc(a.endAt()))
             .update();
     }
 
-    private static final String VIEW = "SELECT job_id,trigger,status,stage,failure_code,admitted_at,finished_at "
-            + "FROM sync_plan_sync_job";
+    private static final String VIEW_COLUMNS = "job_id,purpose,reason_code,trigger,status,stage,failure_code,"
+            + "admitted_at,finished_at";
+
+    private static final String VIEW = "SELECT " + VIEW_COLUMNS + " FROM sync_plan_sync_job";
 
     private static SyncJob view(ResultSet rs, int offset) throws SQLException {
         return new SyncJob(uuid(rs, offset + 1), rs.getString(offset + 2), rs.getString(offset + 3),
-                rs.getString(offset + 4), rs.getString(offset + 5), instant(rs, offset + 6),
-                instantOrNull(rs, offset + 7));
+                rs.getString(offset + 4), rs.getString(offset + 5), rs.getString(offset + 6),
+                rs.getString(offset + 7), instant(rs, offset + 8), instantOrNull(rs, offset + 9));
     }
 
-    Optional<KeyedJob> byKey(UUID user, String key) {
-        return jdbc.sql("SELECT trigger,job_id,trigger,status,stage,failure_code,admitted_at,finished_at "
-                + "FROM sync_plan_sync_job WHERE user_id=:u AND idempotency_key=:k")
+    /** The attempt this key made, of any purpose: the caller judges whether the replay is the same request. */
+    Optional<SyncJob> byKey(UUID user, String key) {
+        return jdbc.sql(VIEW + " WHERE user_id=:u AND idempotency_key=:k")
             .param("u", user).param("k", key)
-            .query((rs, n) -> new KeyedJob(rs.getString(1), view(rs, 1))).optional();
+            .query((rs, n) -> view(rs, 0)).optional();
     }
 
     Optional<SyncJob> byId(UUID user, UUID jobId) {
@@ -106,7 +125,57 @@ class PlanSyncRepository {
             .param("u", user).param("plan", planId).query((rs, n) -> view(rs, 0)).optional();
     }
 
-    /** The time of the plan's last admission, of any trigger and any ending. */
+    /** The plan's most recent verification or continuation, whatever its ending (Story 2.12). */
+    Optional<SyncJob> latestVerification(UUID user, UUID planId) {
+        return jdbc.sql(VIEW + " WHERE user_id=:u AND plan_id=:plan AND purpose IN ('VERIFY','CATCH_UP') "
+                + "ORDER BY admitted_at DESC,job_id DESC LIMIT 1")
+            .param("u", user).param("plan", planId).query((rs, n) -> view(rs, 0)).optional();
+    }
+
+    /**
+     * A verification or continuation of the current base that ended in a <b>persistent</b> review (Story 2.12,
+     * interpretations C1~C3): one predicate for the admission's "not useful", the sync that must not carry the
+     * missing event silently, and the dashboard's trust axes.
+     *
+     * <p>Persistent: the attempt ended {@code NEEDS_REVIEW} with {@code SOURCE_EVENT_MISSING},
+     * {@code HISTORY_OUT_OF_RANGE}, {@code CLASSIFICATION_REQUIRES_REVIEW} or {@code CONVERSION_REQUIRES_REVIEW}; or
+     * with {@code SOURCE_REQUIRES_REVIEW} while its collection kept a diagnostic — an event observation row, or a page
+     * the adapter itself flagged — or its reconciliation recorded a {@code CONFLICT}. A review that only a transient
+     * rejection produced (a malformed answer, {@code RESPONSE_FORMAT}) or an unexplained event outside the targets
+     * (which the next verification reads as an anomaly range) is not: asking again can change it.
+     */
+    private static final String PERSISTENT_REVIEW = "j.user_id=:u AND j.plan_id=:plan AND j.base_calculation_id=:calc "
+            + "AND j.purpose IN ('VERIFY','CATCH_UP') AND j.status='NEEDS_REVIEW' AND (j.failure_code IN "
+            + "('SOURCE_EVENT_MISSING','HISTORY_OUT_OF_RANGE','CLASSIFICATION_REQUIRES_REVIEW','CONVERSION_REQUIRES_REVIEW') "
+            + "OR (j.failure_code='SOURCE_REQUIRES_REVIEW' AND (EXISTS (SELECT 1 FROM sync_initial_event_observation o "
+            + "WHERE o.job_id=j.collection_job_id) OR EXISTS (SELECT 1 FROM sync_initial_collection_job c "
+            + "WHERE c.job_id=j.collection_job_id AND c.page_review) OR EXISTS (SELECT 1 FROM sync_plan_verification_event v "
+            + "WHERE v.job_id=j.job_id AND v.outcome='CONFLICT'))))";
+
+    /** The persistent review of a base: the attempt that ended so and its closed code. */
+    record Review(UUID jobId, String code) {}
+
+    /**
+     * The latest persistent review of this base ({@link #PERSISTENT_REVIEW}), or empty. It stands for as long as the
+     * base calculation is the official one.
+     */
+    Optional<Review> verificationReview(UUID user, UUID planId, UUID baseCalculationId) {
+        return jdbc.sql("SELECT j.job_id,j.failure_code FROM sync_plan_sync_job j WHERE " + PERSISTENT_REVIEW
+                + " ORDER BY j.admitted_at DESC,j.job_id DESC LIMIT 1")
+            .param("u", user).param("plan", planId).param("calc", baseCalculationId)
+            .query((rs, n) -> new Review(uuid(rs, 1), rs.getString(2))).optional();
+    }
+
+    /**
+     * Whether this base already has a persistent review ({@link #PERSISTENT_REVIEW}): a precision verification or a
+     * continuation of it would only end the same way.
+     */
+    boolean persistentlyReviewed(UUID user, UUID planId, UUID baseCalculationId) {
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_plan_sync_job j WHERE " + PERSISTENT_REVIEW + ")")
+            .param("u", user).param("plan", planId).param("calc", baseCalculationId).query(Boolean.class).single();
+    }
+
+    /** The time of the plan's last admission, of any purpose, trigger and ending. */
     Optional<Instant> lastAdmission(UUID user, UUID planId) {
         return jdbc.sql("SELECT admitted_at FROM sync_plan_sync_job WHERE user_id=:u AND plan_id=:plan "
                 + "ORDER BY admitted_at DESC LIMIT 1")
@@ -127,28 +196,53 @@ class PlanSyncRepository {
     // ---------------------------------------------------------------- the worker's lease
 
     private static final String LEASE_COLUMNS = "j.job_id,j.user_id,j.plan_id,j.portfolio_id,j.intent_id,"
-            + "j.membership_id,j.connection_id,j.provider_account_id,j.trigger,j.base_calculation_id,"
-            + "j.base_pointer_version,j.base_candidate_id,j.base_verified_through,j.base_extended_verification_at,"
-            + "j.t0,j.end_at,j.fencing_generation";
+            + "j.membership_id,j.connection_id,j.provider_account_id,j.purpose,j.reason_code,j.trigger,"
+            + "j.base_calculation_id,j.base_pointer_version,j.base_candidate_id,j.base_verified_through,"
+            + "j.base_extended_verification_at,j.t0,j.end_at,j.fencing_generation";
 
     private static Lease lease(ResultSet rs) throws SQLException {
         return new Lease(uuid(rs, 1), uuid(rs, 2), uuid(rs, 3), uuid(rs, 4), uuid(rs, 5), uuid(rs, 6), uuid(rs, 7),
-                uuid(rs, 8), rs.getString(9), uuid(rs, 10), rs.getLong(11), uuid(rs, 12), instant(rs, 13),
-                instant(rs, 14), instant(rs, 15), instant(rs, 16), rs.getLong(17));
+                uuid(rs, 8), rs.getString(9), rs.getString(10), rs.getString(11), uuid(rs, 12), rs.getLong(13),
+                uuid(rs, 14), instant(rs, 15), instant(rs, 16), instant(rs, 17), instant(rs, 18), rs.getLong(19));
     }
 
     /**
-     * Claims the oldest queued attempt, or a running one whose lease expired. A reclaimed running attempt is
-     * reported as interrupted: the caller ends it instead of running it again (no automatic retry).
+     * A reclaimed attempt may go on: a verification or continuation before its classification, twice at most. Judged
+     * on the row as it was before the claim — the claim itself counts the resumption.
+     */
+    private static final String RESUMABLE = "(status='RUNNING' AND purpose IN ('VERIFY','CATCH_UP') "
+            + "AND (stage IS NULL OR stage IN ('TIME','COLLECTION','FINAL_SWEEP')) AND resume_count<2)";
+
+    /**
+     * Claims the oldest queued attempt, or a running one whose lease expired. A reclaimed sync — or a reclaimed
+     * verification past its collection, or one that already went on twice — is reported as interrupted: the caller
+     * ends it instead of running it again (no automatic retry). A reclaimed verification or continuation still in
+     * its time, collection or final-sweep stage counts one resumption and goes on from its checkpoints.
      */
     Optional<Claimed> claim() {
-        return jdbc.sql("WITH picked AS (SELECT job_id,status AS previous FROM sync_plan_sync_job "
-                + "WHERE status='QUEUED' OR (status='RUNNING' AND lease_until<statement_timestamp()) "
+        return jdbc.sql("WITH picked AS (SELECT job_id,status AS previous," + RESUMABLE + " AS resumable "
+                + "FROM sync_plan_sync_job WHERE status='QUEUED' OR (status='RUNNING' AND lease_until<statement_timestamp()) "
                 + "ORDER BY admitted_at FOR UPDATE SKIP LOCKED LIMIT 1) "
                 + "UPDATE sync_plan_sync_job j SET status='RUNNING',fencing_generation=j.fencing_generation+1,"
-                + "lease_until=statement_timestamp()+interval '30 seconds',heartbeat_at=statement_timestamp() "
-                + "FROM picked WHERE j.job_id=picked.job_id RETURNING " + LEASE_COLUMNS + ",picked.previous")
-            .query((rs, n) -> new Claimed(lease(rs), "RUNNING".equals(rs.getString(18)))).optional();
+                + "lease_until=statement_timestamp()+interval '30 seconds',heartbeat_at=statement_timestamp(),"
+                + "resume_count=CASE WHEN picked.resumable THEN j.resume_count+1 ELSE j.resume_count END "
+                + "FROM picked WHERE j.job_id=picked.job_id RETURNING " + LEASE_COLUMNS + ",picked.previous,"
+                + "picked.resumable")
+            .query((rs, n) -> {
+                boolean reclaimed = "RUNNING".equals(rs.getString(20));
+                boolean resumable = rs.getBoolean(21);
+                return new Claimed(lease(rs), reclaimed && !resumable, reclaimed && resumable);
+            }).optional();
+    }
+
+    /** How far the attempt got. */
+    Progress progress(Lease lease) {
+        return jdbc.sql("SELECT tc,mode,window_start,stage,initial_tc,collection_job_id,resume_count "
+                + "FROM sync_plan_sync_job WHERE job_id=:j AND user_id=:u")
+            .param("j", lease.jobId()).param("u", lease.userId())
+            .query((rs, n) -> new Progress(instantOrNull(rs, 1), rs.getString(2), instantOrNull(rs, 3),
+                    rs.getString(4), instantOrNull(rs, 5), rs.getObject(6, UUID.class), rs.getInt(7)))
+            .single();
     }
 
     /** Locks the attempt row if this lease still owns it. Serializes with erasure and with the heartbeat. */
@@ -219,6 +313,16 @@ class PlanSyncRepository {
             .update() == 1;
     }
 
+    /**
+     * The continuation's final sweep fixes its new cutoff once (Story 2.12): the first phase's {@code tc} is kept as
+     * {@code initial_tc} and {@code tc} becomes {@code tcFinal}, only after it.
+     */
+    boolean fixFinalTime(Lease lease, Instant tcFinal) {
+        return jdbc.sql("UPDATE sync_plan_sync_job SET initial_tc=tc,tc=:f" + FENCE
+                + " AND purpose='CATCH_UP' AND initial_tc IS NULL AND tc IS NOT NULL AND tc<:f")
+            .param("f", utc(tcFinal)).param("j", lease.jobId()).param("g", lease.generation()).update() == 1;
+    }
+
     boolean attachCollection(Lease lease, UUID child) {
         return jdbc.sql("UPDATE sync_plan_sync_job SET collection_job_id=:c,stage='COLLECTION'" + FENCE
                 + " AND collection_job_id IS NULL")
@@ -237,12 +341,12 @@ class PlanSyncRepository {
             .param("c", child).param("j", lease.jobId()).param("g", lease.generation()).update() == 1;
     }
 
-    private static final String ENDING = " RETURNING job_id,trigger,mode,status,stage,failure_code,"
+    private static final String ENDING = " RETURNING job_id,purpose,reason_code,trigger,mode,status,stage,failure_code,"
             + "(extract(epoch FROM (finished_at-admitted_at))*1000)::bigint";
 
     private static Ending ending(ResultSet rs) throws SQLException {
         return new Ending(uuid(rs, 1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5),
-                rs.getString(6), rs.getLong(7));
+                rs.getString(6), rs.getString(7), rs.getString(8), rs.getLong(9));
     }
 
     /**
@@ -295,19 +399,88 @@ class PlanSyncRepository {
             UUID connectionId, UUID providerAccountId, @Nullable UUID calculationId,
             @Nullable Long publishedPointerVersion, UUID baseCalculationId, long basePointerVersion,
             UUID baseCandidateId, Instant baseVerifiedThrough, Instant baseExtendedAt, @Nullable Instant tc,
-            @Nullable String mode, @Nullable Instant windowStart) {}
+            @Nullable String mode, @Nullable Instant windowStart, String purpose, @Nullable String reason,
+            @Nullable Instant initialTc, @Nullable Instant finishedAt) {}
 
     Optional<CreatingSync> creatingSync(UUID user, UUID jobId) {
         return jdbc.sql("SELECT status,plan_id,portfolio_id,intent_id,membership_id,connection_id,provider_account_id,"
                 + "calculation_id,published_pointer_version,base_calculation_id,base_pointer_version,base_candidate_id,"
-                + "base_verified_through,base_extended_verification_at,tc,mode,window_start FROM sync_plan_sync_job "
-                + "WHERE job_id=:j AND user_id=:u")
+                + "base_verified_through,base_extended_verification_at,tc,mode,window_start,purpose,reason_code,"
+                + "initial_tc,finished_at FROM sync_plan_sync_job WHERE job_id=:j AND user_id=:u")
             .param("j", jobId).param("u", user)
             .query((rs, n) -> new CreatingSync(rs.getString(1), uuid(rs, 2), uuid(rs, 3), uuid(rs, 4), uuid(rs, 5),
                     uuid(rs, 6), uuid(rs, 7), rs.getObject(8, UUID.class),
                     rs.getObject(9) == null ? null : rs.getLong(9), uuid(rs, 10), rs.getLong(11), uuid(rs, 12),
                     instant(rs, 13), instant(rs, 14), instantOrNull(rs, 15), rs.getString(16),
-                    instantOrNull(rs, 17)))
+                    instantOrNull(rs, 17), rs.getString(18), rs.getString(19), instantOrNull(rs, 20),
+                    instantOrNull(rs, 21)))
+            .optional();
+    }
+
+    // ---------------------------------------------------------------- the verification plan (Story 2.12)
+
+    /** Appends ranges to the attempt's plan, after the ones it already has. */
+    void insertRanges(UUID user, UUID jobId, List<VerificationPlanner.Range> ranges) {
+        for (VerificationPlanner.Range range : ranges) {
+            jdbc.sql("INSERT INTO sync_plan_verification_range(job_id,seq,user_id,kind,range_start,range_end) "
+                    + "SELECT :j,COALESCE(max(seq),0)+1,:u,:kind,:start,:end FROM sync_plan_verification_range "
+                    + "WHERE job_id=:j")
+                .param("j", jobId).param("u", user).param("kind", range.kind().name())
+                .param("start", utc(range.start())).param("end", utc(range.end())).update();
+        }
+    }
+
+    /** The attempt's plan in the order it was written: its targets and the evidence it reused. */
+    List<VerificationPlanner.Range> ranges(UUID user, UUID jobId) {
+        return jdbc.sql("SELECT kind,range_start,range_end FROM sync_plan_verification_range WHERE job_id=:j "
+                + "AND user_id=:u ORDER BY seq")
+            .param("j", jobId).param("u", user)
+            .query((rs, n) -> new VerificationPlanner.Range(VerificationPlanner.Kind.valueOf(rs.getString(1)),
+                    instant(rs, 2), instant(rs, 3)))
+            .list();
+    }
+
+    /** The attempt's reconciliation counts, by outcome: new, same, missing, superseded, conflict. */
+    int[] reconciliationCounts(UUID user, UUID jobId) {
+        return jdbc.sql("SELECT count(*) FILTER (WHERE outcome='NEW'),count(*) FILTER (WHERE outcome='SAME'),"
+                + "count(*) FILTER (WHERE outcome='MISSING'),count(*) FILTER (WHERE outcome='SUPERSEDED'),"
+                + "count(*) FILTER (WHERE outcome='CONFLICT') FROM sync_plan_verification_event "
+                + "WHERE job_id=:j AND user_id=:u")
+            .param("j", jobId).param("u", user)
+            .query((rs, n) -> new int[] {rs.getInt(1), rs.getInt(2), rs.getInt(3), rs.getInt(4), rs.getInt(5)})
+            .single();
+    }
+
+    /**
+     * The facts of an attempt's ending line that live in the database: how many targets it planned, how many
+     * reconciliation outcomes it recorded and how many late changes the version it published carries.
+     */
+    int[] endingFacts(UUID jobId) {
+        return jdbc.sql("SELECT (SELECT count(*) FROM sync_plan_verification_range WHERE job_id=:j AND kind<>'REUSED'),"
+                + "(SELECT count(*) FROM sync_plan_verification_event WHERE job_id=:j),"
+                + "(SELECT count(*) FROM sync_plan_calculation_change ch JOIN sync_plan_sync_job s "
+                + "ON s.calculation_id=ch.calculation_id WHERE s.job_id=:j AND " + VersionChanges.LATE_SQL + ")")
+            .param("j", jobId)
+            .query((rs, n) -> new int[] {rs.getInt(1), rs.getInt(2), rs.getInt(3)}).optional()
+            .orElse(new int[] {0, 0, 0});
+    }
+
+    /**
+     * A reclaimed verification takes its collection child over (Story 2.12): the child's fence moves on, so a late
+     * holder's page writes fail, and its lease is renewed for this holder. Empty when the child is not running. The
+     * clock is {@code statement_timestamp()}, the one the attempt's own lease and claim use.
+     */
+    Optional<InitialCollectionRepository.Lease> takeOverCollection(Lease lease, UUID childId) {
+        return jdbc.sql("UPDATE sync_initial_collection_job SET fencing_generation=fencing_generation+1,"
+                + "lease_until=statement_timestamp()+interval '30 seconds',heartbeat_at=statement_timestamp(),"
+                + "last_checked_at=statement_timestamp() "
+                + "WHERE job_id=:c AND plan_sync_job_id=:j AND user_id=:u AND status='RUNNING' "
+                + "RETURNING job_id,user_id,portfolio_id,intent_id,connection_id,provider_account_id,t0,tc,"
+                + "fencing_generation")
+            .param("c", childId).param("j", lease.jobId()).param("u", lease.userId())
+            .query((rs, n) -> new InitialCollectionRepository.Lease(uuid(rs, 1), uuid(rs, 2), uuid(rs, 3),
+                    uuid(rs, 4), uuid(rs, 5), uuid(rs, 6), instant(rs, 7), instantOrNull(rs, 8), rs.getLong(9),
+                    lease.jobId()))
             .optional();
     }
 
@@ -348,12 +521,25 @@ class PlanSyncRepository {
     }
 
     /**
+     * Erases the user's Story 2.12 rows first, before any row they cite: the reconciliation outcomes and the planned
+     * ranges of the attempts, the change rows of the calculation versions and the candidates' exclusions. Other users'
+     * rows stay.
+     */
+    void eraseVerification(UUID user) {
+        jdbc.sql("DELETE FROM sync_plan_verification_event WHERE user_id=:u").param("u", user).update();
+        jdbc.sql("DELETE FROM sync_plan_verification_range WHERE user_id=:u").param("u", user).update();
+        jdbc.sql("DELETE FROM sync_plan_calculation_change WHERE user_id=:u").param("u", user).update();
+        jdbc.sql("DELETE FROM sync_initial_candidate_excluded_event WHERE user_id=:u").param("u", user).update();
+    }
+
+    /**
      * Erases the user's attempts, after their children. Returns the attempts that were still in progress: they
      * end here, with the user's data, and the caller writes their one ending line once this commits.
      */
     List<Ending> erase(UUID user) {
-        return jdbc.sql("DELETE FROM sync_plan_sync_job WHERE user_id=:u RETURNING job_id,trigger,mode,status,stage,"
-                + "failure_code,(extract(epoch FROM (statement_timestamp()-admitted_at))*1000)::bigint")
+        return jdbc.sql("DELETE FROM sync_plan_sync_job WHERE user_id=:u RETURNING job_id,purpose,reason_code,trigger,"
+                + "mode,status,stage,failure_code,"
+                + "(extract(epoch FROM (statement_timestamp()-admitted_at))*1000)::bigint")
             .param("u", user).query((rs, n) -> ending(rs)).list().stream()
             .filter(e -> "QUEUED".equals(e.status()) || "RUNNING".equals(e.status())).toList();
     }

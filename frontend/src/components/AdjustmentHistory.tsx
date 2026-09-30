@@ -5,6 +5,7 @@ import type {
   AdjustmentHistoryState,
   AdjustmentList,
   AdjustmentRevision,
+  AdjustmentVersionChange,
   AdjustmentView,
 } from '../session/useAdjustmentHistory'
 import type { PlanResult } from '../session/useDashboard'
@@ -17,6 +18,7 @@ import {
 } from '../content/adjustmentHistory'
 import { ENTRY_PATH } from '../content/auth'
 import { copyFor, planResultContent } from '../content/planResult'
+import { planVerificationContent } from '../content/planVerification'
 import {
   formatAmount,
   formatQuantity,
@@ -285,6 +287,46 @@ function Revision({ revision }: { readonly revision: AdjustmentRevision }): Reac
   )
 }
 
+/** The sentence of a version change marker: late, new or changed, in words — never a colour alone. */
+function versionMarker(change: AdjustmentVersionChange): string {
+  const marker = planVerificationContent.history
+  if (change.change === 'ADDED') return change.late ? marker.lateAdded : marker.added
+  if (change.change === 'VALUE_CHANGED') return marker.valueChanged
+  return marker.unknown
+}
+
+/**
+ * What the shown version changed about this flow (Story 2.12): the marker, the value it had in the previous
+ * official version (rounded once for display; none for a flow the previous version did not apply), and when
+ * it was discovered and applied.
+ */
+function VersionChange({ change }: { readonly change: AdjustmentVersionChange }): ReactElement {
+  const marker = planVerificationContent.history
+  return (
+    <div className={styles.part}>
+      <p className={styles.changed}>{versionMarker(change)}</p>
+      <Facts
+        className={styles.rowFacts}
+        facts={[
+          {
+            label: marker.previousValue,
+            value:
+              change.previousUsdValue === null
+                ? planVerificationContent.absent
+                : usd(change.previousUsdValue),
+            describedBy: change.previousUsdValue === null ? undefined : TERM_ID,
+          },
+          {
+            label: marker.discoveredAt,
+            value: <Time precise value={change.discoveredAt} />,
+          },
+          { label: marker.appliedAt, value: <Time value={change.appliedAt} /> },
+        ]}
+      />
+    </div>
+  )
+}
+
 /** The lineage of one row: source event → classification → conversion → calculation → change history. */
 function Detail({
   row,
@@ -416,7 +458,8 @@ function Detail({
  * One applied flow as a named group: its title (sequence, time and type — two flows of one instant and one
  * type still differ by their sequence, in the title and in the toggle's name), then the facts in the reading order —
  * event time → type → quantity → USD value → classification → price → applied version — the change
- * marker in words, and a toggle for the whole lineage.
+ * marker in words, the version change marker with the previous value (Story 2.12), and a toggle for the whole
+ * lineage.
  */
 function Row({
   row,
@@ -473,6 +516,9 @@ function Row({
           ]}
         />
         {row.changed ? <p className={styles.changed}>{copy.row.changed}</p> : null}
+        {row.versionChange === undefined || row.versionChange === null ? null : (
+          <VersionChange change={row.versionChange} />
+        )}
         <button
           aria-controls={`${id}-detail`}
           aria-expanded={open}

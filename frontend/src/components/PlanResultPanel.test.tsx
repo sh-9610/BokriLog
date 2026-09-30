@@ -4,7 +4,9 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AdjustmentHistoryState } from '../session/useAdjustmentHistory'
 import type { EvidenceState } from '../session/useCalculationEvidence'
 
+import { adjustmentHistoryContent } from '../content/adjustmentHistory'
 import { ENTRY_PATH } from '../content/auth'
+import { calculationEvidenceContent } from '../content/calculationEvidence'
 import { planConditionContent } from '../content/planConditions'
 import {
   axisActionCopy,
@@ -13,10 +15,16 @@ import {
   NEXT_ACTION_FALLBACK,
   nextActionCopy,
 } from '../content/planResult'
+import { planSyncContent } from '../content/planSync'
+import { planVerificationContent } from '../content/planVerification'
 import { formatSeoulTime } from '../format/decimal'
 import {
   isPlanResult,
+  NO_CHANGE,
   parseDashboard,
+  parseSyncStatus,
+  parseVerificationStatus,
+  parseVersionChange,
   supersedes,
   type Dashboard,
   type DashboardView,
@@ -24,7 +32,9 @@ import {
 } from '../session/useDashboard'
 import {
   AVAILABLE_SYNC,
+  AVAILABLE_VERIFICATION,
   BASIS_AT,
+  changeFixture,
   dashboardFixture,
   estimatedUndefinedFixture,
   idleSyncState,
@@ -32,7 +42,10 @@ import {
   NO_PLAN_FIXTURE,
   planResultFixture,
   PREPARING_FIXTURE,
+  syncFixture,
   trustFixture,
+  verificationFixture,
+  verificationJobFixture,
   VERIFIED_THROUGH,
 } from '../test/planResultFixture'
 import { PlanResultPanel } from './PlanResultPanel'
@@ -46,7 +59,14 @@ function ready(
   body: Record<string, unknown> = planResultFixture(),
   nextAction = 'NONE',
 ): DashboardView {
-  return { kind: 'READY', nextAction, result: parsed(body), sync: AVAILABLE_SYNC }
+  return {
+    kind: 'READY',
+    nextAction,
+    result: parsed(body),
+    sync: AVAILABLE_SYNC,
+    verification: AVAILABLE_VERIFICATION,
+    change: NO_CHANGE,
+  }
 }
 
 function dashboard(view: DashboardView, loading = false, reload = vi.fn()): Dashboard {
@@ -529,6 +549,8 @@ describe('PlanResultPanel', () => {
       nextAction: 'NONE',
       result: parsed(noTime),
       sync: AVAILABLE_SYNC,
+      verification: AVAILABLE_VERIFICATION,
+      change: NO_CHANGE,
     })
 
     expect(nextAction()).toHaveTextContent(nextActionCopy('NONE', null))
@@ -613,6 +635,8 @@ describe('PlanResultPanel', () => {
         nextAction: 'NONE',
         result: parsed(planResultFixture()),
         sync: AVAILABLE_SYNC,
+        verification: AVAILABLE_VERIFICATION,
+        change: NO_CHANGE,
       })
 
       expect(screen.getByText(copy.lastGoodLabel)).toBeInTheDocument()
@@ -624,7 +648,13 @@ describe('PlanResultPanel', () => {
     })
 
     it('retryable after a version conflict: the unswapped values under 재시도 가능, with reload', () => {
-      const kept = { result: parsed(planResultFixture()), nextAction: 'NONE', sync: AVAILABLE_SYNC }
+      const kept = {
+        result: parsed(planResultFixture()),
+        nextAction: 'NONE',
+        sync: AVAILABLE_SYNC,
+        verification: AVAILABLE_VERIFICATION,
+        change: NO_CHANGE,
+      }
       renderPanel({ kind: 'retryable', kept })
 
       expect(screen.getByText(copy.retryableLabel)).toBeInTheDocument()
@@ -715,6 +745,8 @@ describe('PlanResultPanel', () => {
             nextAction: 'NONE',
             result: parsed(planResultFixture()),
             sync: AVAILABLE_SYNC,
+            verification: AVAILABLE_VERIFICATION,
+            change: NO_CHANGE,
           },
           false,
           reload,
@@ -923,6 +955,363 @@ describe('PlanResultPanel', () => {
       expect(supersedes(newer, shown)).toBe(true)
       expect(supersedes(otherPlan, shown)).toBe(true)
       expect(supersedes(older, null)).toBe(true)
+    })
+  })
+
+  describe('Story 2.12: the precision verification, the result marker and a held input', () => {
+    const ALL = [
+      'CURRENT_VALUE',
+      'PLAN_AMOUNT',
+      'PLAN_DIFFERENCE',
+      'ADJUSTED_TARGET',
+      'REQUIRED_RATE',
+      'GOAL_PROGRESS',
+    ]
+
+    it('the verification control sits right after the sync control, before the other controls of the panel', () => {
+      renderPanel(ready())
+      const region = screen.getByRole('region', { name: copy.heading })
+      const names = within(region)
+        .getAllByRole('button')
+        .map((button) => button.textContent)
+      expect(names.slice(0, 5)).toEqual([
+        planSyncContent.action,
+        planVerificationContent.action,
+        calculationEvidenceContent.open,
+        adjustmentHistoryContent.open,
+        copy.reload,
+      ])
+      // Still three axis groups: neither control is one of them.
+      expect(axes()).toHaveLength(3)
+    })
+
+    it('the result marker of a corrected version sits under the introduction, before the current value', () => {
+      const view: DashboardView = {
+        ...ready(),
+        change: parseVersionChange(
+          changeFixture({
+            kind: 'CORRECTED',
+            purpose: 'VERIFY',
+            reason: 'GAP_SUSPECTED',
+            lateChangeCount: 1,
+            firstAffectedAt: '2026-09-25T00:00:01Z',
+          }),
+        ),
+      } as DashboardView
+      renderPanel(view)
+      const marker = screen.getByText(planVerificationContent.change.correctedHelp)
+      const intro = screen.getByText(copy.intro)
+      const current = screen.getByRole('region', { name: copy.currentHeading })
+      expect(intro.compareDocumentPosition(marker) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(
+        marker.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy()
+      expect(screen.getByRole('region', { name: copy.heading })).toHaveTextContent(
+        planVerificationContent.change.corrected(1),
+      )
+    })
+
+    it.each([
+      ['VERIFICATION_REVIEW_REQUIRED', 'REVIEW_REQUIRED'],
+      ['HISTORY_OUT_OF_RANGE', 'UNUSABLE'],
+    ])(
+      'a reliability held by a verification (%s) names the cause, the affected range, all six metrics, no next action and that asking again will not change it',
+      (cause, state) => {
+        const body = planResultFixture({
+          trust: trustFixture({
+            inputReliability: { state, cause, affectedMetrics: ALL, nextAction: 'NONE' },
+          }),
+        })
+        const view = {
+          ...ready(body),
+          verification: parseVerificationStatus(
+            verificationFixture({
+              availability: 'NOT_USEFUL',
+              latest: verificationJobFixture({
+                status: 'NEEDS_REVIEW',
+                failureCode: cause === 'HISTORY_OUT_OF_RANGE' ? cause : 'SOURCE_EVENT_MISSING',
+                finishedAt: '2026-09-27T01:10:40Z',
+                targets: [
+                  { kind: 'ANOMALY', start: '2026-09-25T00:00:00Z', end: '2026-09-26T00:00:01Z' },
+                ],
+                holdsResult: true,
+              }),
+            }),
+          ),
+        } as DashboardView
+        renderPanel(view)
+        const reliability = axis(1)
+        expect(reliability).toHaveAccessibleName(named('reliability', state))
+        expect(reliability).toHaveTextContent(copy.axes.reliability.causes[cause] ?? 'missing')
+        expect(reliability).toHaveTextContent(planVerificationContent.held.notices.VERIFY ?? '')
+        expect(reliability).toHaveTextContent(planVerificationContent.held.targetsLabel)
+        expect(reliability).toHaveTextContent(
+          planVerificationContent.rangeKinds.ANOMALY ?? 'missing',
+        )
+        expect(reliability).toHaveTextContent(`${copy.axes.affected}${NAMES.join(', ')}`)
+        expect(reliability).toHaveTextContent(axisActionCopy('NONE'))
+        // No button asks for what cannot change: the notice takes its place.
+        expect(
+          screen.queryByRole('button', { name: planVerificationContent.action }),
+        ).not.toBeInTheDocument()
+        expect(screen.getByText(planVerificationContent.notUseful.label)).toBeVisible()
+        // P11: the notice beside the control is not the axis's sentence said a second time.
+        expect(screen.getAllByText(planVerificationContent.notUseful.text)).toHaveLength(1)
+        expect(
+          screen.getAllByText(planVerificationContent.held.notices.VERIFY ?? 'missing'),
+        ).toHaveLength(1)
+      },
+    )
+
+    /** A reliability held by a verification of this basis, with the latest job as given. */
+    function heldView(latest: Record<string, unknown> | null): DashboardView {
+      const body = planResultFixture({
+        trust: trustFixture({
+          inputReliability: {
+            state: 'REVIEW_REQUIRED',
+            cause: 'VERIFICATION_REVIEW_REQUIRED',
+            affectedMetrics: ALL,
+            nextAction: 'NONE',
+          },
+        }),
+      })
+      return {
+        ...ready(body),
+        verification: parseVerificationStatus(
+          verificationFixture({ availability: 'NOT_USEFUL', latest }),
+        ),
+      } as DashboardView
+    }
+
+    const ANOMALY = [
+      { kind: 'ANOMALY', start: '2026-09-25T00:00:00Z', end: '2026-09-26T00:00:01Z' },
+    ]
+
+    it.each([
+      [
+        'a job in progress',
+        verificationJobFixture({ status: 'RUNNING', targets: ANOMALY, holdsResult: true }),
+      ],
+      [
+        'a job the server does not mark as holding the result',
+        verificationJobFixture({
+          status: 'NEEDS_REVIEW',
+          failureCode: 'SOURCE_EVENT_MISSING',
+          finishedAt: '2026-09-27T01:10:40Z',
+          targets: ANOMALY,
+        }),
+      ],
+      [
+        'a job that published',
+        verificationJobFixture({
+          status: 'SUCCEEDED',
+          finishedAt: '2026-09-27T01:10:40Z',
+          targets: ANOMALY,
+          holdsResult: true,
+        }),
+      ],
+      ['no job at all', null],
+    ])('P10: %s names no range on the held reliability', (_name, latest) => {
+      renderPanel(heldView(latest))
+      const reliability = axis(1)
+      expect(reliability).not.toHaveTextContent(planVerificationContent.held.targetsLabel)
+      expect(reliability).not.toHaveTextContent(
+        planVerificationContent.rangeKinds.ANOMALY ?? 'missing',
+      )
+      // The notice still says asking again will not change it, in general words.
+      expect(reliability).toHaveTextContent(planVerificationContent.held.notice)
+    })
+
+    it('P10: ranges of the holding job that could not be read are said in safe words', () => {
+      renderPanel(
+        heldView(
+          verificationJobFixture({
+            status: 'NEEDS_REVIEW',
+            failureCode: 'SOURCE_EVENT_MISSING',
+            finishedAt: '2026-09-27T01:10:40Z',
+            targets: [{ kind: 'ANOMALY', start: 'later', end: 'sooner' }],
+            holdsResult: true,
+          }),
+        ),
+      )
+      expect(axis(1)).toHaveTextContent(
+        `${planVerificationContent.held.targetsLabel}${planVerificationContent.rangesUnreadable}`,
+      )
+    })
+
+    it('P11: a hold a catch-up caused says the catch-up cannot help, never to ask for a verification again', () => {
+      const body = planResultFixture({
+        trust: trustFixture({
+          inputReliability: {
+            state: 'UNUSABLE',
+            cause: 'HISTORY_OUT_OF_RANGE',
+            affectedMetrics: ALL,
+            nextAction: 'NONE',
+          },
+        }),
+      })
+      const view = {
+        ...ready(body),
+        verification: parseVerificationStatus(
+          verificationFixture({
+            availability: 'NOT_USEFUL',
+            preview: null,
+            catchUpFrom: '2026-08-20T01:00:00Z',
+            latest: verificationJobFixture({
+              purpose: 'CATCH_UP',
+              reason: 'LONG_GAP_CONTINUATION',
+              status: 'NEEDS_REVIEW',
+              failureCode: 'HISTORY_OUT_OF_RANGE',
+              finishedAt: '2026-09-27T01:10:40Z',
+              targets: ANOMALY,
+              holdsResult: true,
+            }),
+          }),
+        ),
+      } as DashboardView
+      renderPanel(view)
+      const reliability = axis(1)
+      expect(reliability).toHaveTextContent(planVerificationContent.held.notices.CATCH_UP ?? '')
+      expect(reliability).not.toHaveTextContent(planVerificationContent.held.notices.VERIFY ?? '')
+      expect(reliability).toHaveTextContent(planVerificationContent.held.targetsLabel)
+    })
+
+    it('P23: after a long gap the panel hands the catch-up its block: the range, and a button that asks', () => {
+      const from = '2026-08-20T01:00:00Z'
+      const view = {
+        ...ready(planResultFixture(), 'CHOOSE_CONTINUATION'),
+        sync: parseSyncStatus(syncFixture({ availability: 'LONG_GAP' })),
+        verification: parseVerificationStatus(
+          verificationFixture({ availability: 'LONG_GAP', preview: null, catchUpFrom: from }),
+        ),
+      } as DashboardView
+      render(
+        <PlanResultPanel
+          adjustments={closedAdjustments()}
+          dashboard={dashboard(view)}
+          evidence={closedEvidence()}
+          sync={idleSyncState({ canRequest: false, canVerify: false, canCatchUp: true })}
+        />,
+      )
+      const continueButton = screen.getByRole('button', {
+        name: planSyncContent.longGap.continueAction,
+      })
+      expect(continueButton).toHaveAttribute('aria-disabled', 'false')
+      expect(continueButton).not.toHaveAttribute('aria-describedby')
+      expect(screen.getByRole('region', { name: copy.trustHeading })).toHaveTextContent(
+        `${planSyncContent.longGap.continueRangeLabel}: ${formatSeoulTime(from, copy.timeUnavailable)}`,
+      )
+      // The verification says one short sentence instead of its purpose and button.
+      expect(screen.getByText(planVerificationContent.longGap.continuation)).toBeVisible()
+      expect(
+        screen.queryByRole('button', { name: planVerificationContent.action }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('C3: a long gap whose basis a verification review holds offers neither request, and says why once each', () => {
+      const body = planResultFixture({
+        trust: trustFixture({
+          freshness: {
+            state: 'STALE',
+            cause: 'LAST_VERIFICATION_NEEDS_REVIEW',
+            affectedMetrics: ALL,
+            nextAction: 'NONE',
+          },
+          inputReliability: {
+            state: 'REVIEW_REQUIRED',
+            cause: 'VERIFICATION_REVIEW_REQUIRED',
+            affectedMetrics: ALL,
+            nextAction: 'NONE',
+          },
+        }),
+      })
+      const view = {
+        ...ready(body, 'NONE'),
+        sync: parseSyncStatus(syncFixture({ availability: 'LONG_GAP' })),
+        verification: parseVerificationStatus(
+          verificationFixture({
+            availability: 'NOT_USEFUL',
+            preview: null,
+            catchUpFrom: '2026-08-20T01:00:00Z',
+            latest: verificationJobFixture({
+              status: 'NEEDS_REVIEW',
+              failureCode: 'SOURCE_EVENT_MISSING',
+              finishedAt: '2026-09-27T01:10:40Z',
+              targets: ANOMALY,
+              holdsResult: true,
+            }),
+          }),
+        ),
+      } as DashboardView
+      render(
+        <PlanResultPanel
+          adjustments={closedAdjustments()}
+          dashboard={dashboard(view)}
+          evidence={closedEvidence()}
+          sync={idleSyncState({ canRequest: false, canVerify: false, canCatchUp: false })}
+        />,
+      )
+      const trust = screen.getByRole('region', { name: copy.trustHeading })
+      expect(
+        within(trust).queryByRole('button', { name: planSyncContent.longGap.continueAction }),
+      ).not.toBeInTheDocument()
+      expect(within(trust).queryAllByRole('button')).toHaveLength(0)
+      expect(
+        within(trust).getAllByText(planVerificationContent.catchUp.notUseful.label),
+      ).toHaveLength(1)
+      expect(within(trust).getByText(planVerificationContent.longGap.held)).toBeVisible()
+      expect(axis(0)).toHaveTextContent(
+        copy.axes.freshness.causes.LAST_VERIFICATION_NEEDS_REVIEW ?? 'missing',
+      )
+      expect(axis(0)).toHaveTextContent(axisActionCopy('NONE'))
+      expect(axis(1)).toHaveTextContent(planVerificationContent.held.notices.VERIFY ?? '')
+      expect(nextAction()).toHaveTextContent(nextActionCopy('NONE', MEASURED))
+    })
+
+    it('P18: the result marker is a named group', () => {
+      const view: DashboardView = {
+        ...ready(),
+        change: parseVersionChange(
+          changeFixture({
+            kind: 'VERIFIED_NO_CHANGE',
+            purpose: 'VERIFY',
+            reason: 'USER_REQUEST',
+            verifiedAt: '2026-09-27T01:10:40Z',
+          }),
+        ),
+      } as DashboardView
+      renderPanel(view)
+      expect(
+        screen.getByRole('group', { name: planVerificationContent.change.verified }),
+      ).toHaveTextContent(planVerificationContent.change.verifiedHelp)
+    })
+
+    it('a sync that ended in review points to the precision verification', () => {
+      const body = planResultFixture({
+        trust: trustFixture({
+          freshness: {
+            state: 'STALE',
+            cause: 'LAST_SYNC_NEEDS_REVIEW',
+            affectedMetrics: ALL,
+            nextAction: 'VERIFY',
+          },
+          inputReliability: {
+            state: 'REVIEW_REQUIRED',
+            cause: 'SYNC_REVIEW_REQUIRED',
+            affectedMetrics: ALL,
+            nextAction: 'VERIFY',
+          },
+        }),
+      })
+      renderPanel(ready(body, 'VERIFY'))
+      expect(axis(0)).toHaveTextContent(axisActionCopy('VERIFY'))
+      expect(axis(1)).toHaveTextContent(axisActionCopy('VERIFY'))
+      expect(screen.getByRole('region', { name: copy.nextActionHeading })).toHaveTextContent(
+        nextActionCopy('VERIFY', MEASURED),
+      )
+      expect(document.body.textContent).not.toMatch(
+        /축하|성공|실패|손실|수익을 내|투자성과|계좌 수익률|추천합니다|스트릭|배지|달성하세요|서두르|놓치/,
+      )
     })
   })
 })
