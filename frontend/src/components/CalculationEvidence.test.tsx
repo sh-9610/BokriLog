@@ -9,6 +9,7 @@ import {
   evidencePath,
 } from '../content/calculationEvidence'
 import { METRIC_ORDER, planPublicationContent, planResultContent } from '../content/planResult'
+import { planVerificationContent } from '../content/planVerification'
 import { formatSeoulTime } from '../format/decimal'
 import { useDashboardAdjustments } from '../session/useAdjustmentHistory'
 import {
@@ -16,15 +17,24 @@ import {
   parseEvidence,
   useDashboardEvidence,
 } from '../session/useCalculationEvidence'
-import { isPlanResult, type DashboardView, type PlanResult } from '../session/useDashboard'
+import {
+  isPlanResult,
+  NO_CHANGE,
+  type DashboardView,
+  type PlanResult,
+} from '../session/useDashboard'
 import {
   AVAILABLE_SYNC,
+  AVAILABLE_VERIFICATION,
   calculationEvidenceFixture,
+  comparedMetricsFixture,
   estimatedUndefinedFixture,
   EVIDENCE_IDS,
+  evidenceChangeFixture,
   evidenceResultFixture,
   idleSyncState,
   MEASURED_AT,
+  PREVIOUS_BASIS_AT,
   trustFixture,
 } from '../test/planResultFixture'
 import {
@@ -48,7 +58,14 @@ function parsed(body: Record<string, unknown>): PlanResult {
 }
 
 function ready(body: Record<string, unknown> = evidenceResultFixture()): DashboardView {
-  return { kind: 'READY', nextAction: 'NONE', result: parsed(body), sync: AVAILABLE_SYNC }
+  return {
+    kind: 'READY',
+    nextAction: 'NONE',
+    result: parsed(body),
+    sync: AVAILABLE_SYNC,
+    verification: AVAILABLE_VERIFICATION,
+    change: NO_CHANGE,
+  }
 }
 
 /** The estimated, partly undefined bundle with UUID-shaped ids. */
@@ -141,6 +158,19 @@ function newerBundle(): Record<string, unknown> {
   return evidenceResultFixture({ pointerVersion: 2, calculationId: EVIDENCE_IDS.newerCalculation })
 }
 
+/** The change part of v2 (Story 2.12): v1 right before it, the six metrics compared, no changed flow. */
+function changeFromV1(result: Record<string, unknown>): Record<string, unknown> {
+  return evidenceChangeFixture({
+    purpose: 'SYNC',
+    previous: {
+      pointerVersion: 1,
+      calculationId: EVIDENCE_IDS.calculation,
+      basisAt: PREVIOUS_BASIS_AT,
+    },
+    metrics: comparedMetricsFixture(result),
+  })
+}
+
 describe('CalculationEvidence', () => {
   it('AC-1/AC-7: 계산 근거 보기 opens the region on the same screen, moves focus to its title and reads in order', async () => {
     const { urls } = answers(evidenceOk)
@@ -168,6 +198,8 @@ describe('CalculationEvidence', () => {
         .getAllByRole('heading', { level: 5 })
         .map((heading) => heading.textContent),
     ).toEqual([
+      // Story 2.12: what the version changed comes first, before the snapshots.
+      planVerificationContent.evidence.title,
       copy.sections.snapshots,
       copy.sections.times,
       copy.sections.inputs,
@@ -482,6 +514,7 @@ describe('CalculationEvidence', () => {
         ],
         unpublished: [],
       },
+      change: changeFromV1(shownV2),
     }
     answers(() => Promise.resolve(json(evidence)))
     render(<Harness view={ready(shownV2)} />)
@@ -548,6 +581,7 @@ describe('CalculationEvidence', () => {
         ],
         unpublished: [],
       },
+      change: changeFromV1(newerBundle()),
     }
     expect(parseEvidence(history, shownV2)).not.toBeNull()
   })
@@ -689,12 +723,30 @@ describe('CalculationEvidence', () => {
     answers(evidenceOk)
     const result = parsed(evidenceResultFixture())
     const { rerender } = render(
-      <Harness view={{ kind: 'READY', nextAction: 'NONE', result, sync: AVAILABLE_SYNC }} />,
+      <Harness
+        view={{
+          kind: 'READY',
+          nextAction: 'NONE',
+          result,
+          sync: AVAILABLE_SYNC,
+          verification: AVAILABLE_VERIFICATION,
+          change: NO_CHANGE,
+        }}
+      />,
     )
     await openEvidence()
 
     rerender(
-      <Harness view={{ kind: 'lastGood', nextAction: 'NONE', result, sync: AVAILABLE_SYNC }} />,
+      <Harness
+        view={{
+          kind: 'lastGood',
+          nextAction: 'NONE',
+          result,
+          sync: AVAILABLE_SYNC,
+          verification: AVAILABLE_VERIFICATION,
+          change: NO_CHANGE,
+        }}
+      />,
     )
     expect(region()).toHaveTextContent('d'.repeat(64))
   })

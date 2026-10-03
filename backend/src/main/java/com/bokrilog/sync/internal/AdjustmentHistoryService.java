@@ -172,6 +172,16 @@ class AdjustmentHistoryService {
         String net = PlanPublicationService.notation(totals.selectedSum());
         if (!canonical(net)) return new AdjustmentOutcome.Unavailable();
 
+        // The version's change rows (Story 2.12) must be exactly its flow difference from the one it replaced; its
+        // late rows (VersionChanges) carry a marker with the previous value. A removal is late too, but a removed
+        // flow is not one of this version's rows.
+        Map<UUID, PlanPublicationRepository.ChangeRow> marks = new java.util.HashMap<>();
+        if (lineage.previousCalculationId() != null) {
+            if (!publications.changesConsistent(user, calculationId, lineage.previousCalculationId()))
+                return new AdjustmentOutcome.Unavailable();
+            for (var change : VersionChanges.late(publications.changes(user, calculationId)))
+                marks.put(change.sourceEventId(), change);
+        }
         List<EarlierVersion> earlier = earlierVersions(user, lineage.classificationId(), lineage.conversionId(),
                 conversion.flowCount());
         if (earlier == null) return new AdjustmentOutcome.Unavailable();
@@ -187,7 +197,7 @@ class AdjustmentHistoryService {
         List<AdjustmentHistory.Adjustment> adjustments = new ArrayList<>();
         for (PageRow row : rows) {
             adjustments.add(adjustment(row, lineage, calculationId, legs.getOrDefault(row.sourceEventId(), List.of()),
-                    earlier, earlierFlows));
+                    earlier, earlierFlows, marks.get(row.sourceEventId()), pointer.publishedAt()));
         }
         String next = fetched.size() > PAGE_SIZE
                 ? AdjustmentCursor.encode(user, query, rows.getLast().sequence()) : null;
@@ -238,7 +248,8 @@ class AdjustmentHistoryService {
      */
     private static AdjustmentHistory.Adjustment adjustment(PageRow row, PlanPublicationRepository.Lineage lineage,
             UUID calculationId, List<AdjustmentHistory.PriceLeg> legs, List<EarlierVersion> earlier,
-            Map<UUID, Map<UUID, EarlierFlow>> earlierFlows) {
+            Map<UUID, Map<UUID, EarlierFlow>> earlierFlows, PlanPublicationRepository.@Nullable ChangeRow mark,
+            java.time.Instant appliedAt) {
         List<AdjustmentHistory.Revision> revisions = new ArrayList<>();
         boolean changed = false;
         for (EarlierVersion version : earlier) {
@@ -260,7 +271,10 @@ class AdjustmentHistoryService {
                 row.discoveredAt(),
                 new AdjustmentHistory.References(row.sourceEventId(), row.sourceId(), lineage.classificationId(),
                         lineage.conversionId(), calculationId),
-                changed, changed ? List.copyOf(revisions) : List.of());
+                changed, changed ? List.copyOf(revisions) : List.of(),
+                mark == null ? null : new AdjustmentHistory.VersionMark(mark.kind(), mark.late(),
+                        mark.previousUsd() == null ? null : PlanPublicationService.notation(mark.previousUsd()),
+                        mark.discoveredAt(), appliedAt));
     }
 
     private static boolean sameDecimal(String left, String right) {

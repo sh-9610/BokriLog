@@ -8,6 +8,7 @@ import { entryContent } from '../src/content/entry'
 import { planConditionContent } from '../src/content/planConditions'
 import { planResultContent } from '../src/content/planResult'
 import { planSyncContent } from '../src/content/planSync'
+import { planVerificationContent } from '../src/content/planVerification'
 import {
   collectAndClassify,
   connectAndSavePlan,
@@ -251,8 +252,9 @@ test.describe('활성 계획의 증분 동기화', () => {
 
     /*
      * The keyboard order from a fresh load at 320 CSS px: the header, then the sync button right after the
-     * freshness axis, the evidence and history buttons, then the reload. The fresh load's entry sync is not
-     * due (a manual one was admitted moments ago), so nothing changes on screen.
+     * freshness axis, the precision verification button right after it (Story 2.12), the evidence and history
+     * buttons, then the reload. The fresh load's entry sync is not due (a manual one was admitted moments
+     * ago), so nothing changes on screen.
      */
     await page.reload()
     await expect(panel.getByRole('region', { name: planResultContent.currentHeading })).toBeVisible(
@@ -261,7 +263,7 @@ test.describe('활성 계획의 증분 동기화', () => {
       },
     )
     const reached: string[] = []
-    for (let step = 0; step < 7; step += 1) {
+    for (let step = 0; step < 8; step += 1) {
       await page.keyboard.press('Tab')
       reached.push(await page.evaluate(() => document.activeElement?.textContent.trim() ?? ''))
     }
@@ -270,6 +272,7 @@ test.describe('활성 계획의 증분 동기화', () => {
       authContent.settings.link,
       authContent.signOut.label,
       planSyncContent.action,
+      planVerificationContent.action,
       calculationEvidenceContent.open,
       adjustmentHistoryContent.open,
       planResultContent.reload,

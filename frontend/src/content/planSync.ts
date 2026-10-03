@@ -40,17 +40,30 @@ export const planSyncContent = {
     CONNECTION_UNAVAILABLE:
       'Bybit 연결을 확인할 수 없어 동기화할 수 없습니다. 설정 화면에서 연결 상태를 확인해 주세요.',
     PLAN_PERIOD_ENDED: '계획 종료 시각이 지나 이 계획은 더 동기화하지 않습니다.',
+    // Story 2.12: 같은 기준 계산의 검증 작업이 검토 필요로 끝나 결과를 보류하고 있다. 동기화해도 바뀌지 않으므로
+    // 받지 않는다. 사용자가 풀 수 없는 원인이라 다시 요청하라고 권하지 않는다.
+    REVIEW_HELD:
+      '같은 기준 계산에서 입력 검토가 필요한 상태로 끝난 작업이 결과를 보류하고 있어 동기화를 받지 않습니다. 다시 요청해도 바뀌지 않으며, 원인과 확인 대상 구간은 신뢰 상태의 입력 신뢰도에 있습니다.',
   },
   /** 사유를 모르거나 동기화 블록을 읽을 수 없을 때. 금융 결과는 그대로 보이고 동기화만 막는다. */
   unknownReason: '동기화할 수 있는지 확인하지 못했습니다. 다시 불러오기로 다시 확인할 수 있습니다.',
   /**
    * 버튼이 진행 중인 작업 때문에 막혔을 때의 이유(`aria-describedby`). 다른 탭·자동 트리거가 시작한 작업을
-   * 이 화면이 따라가는 중이거나, 이 화면이 더 따라가지 않는 작업이 아직 진행 중일 때다.
+   * 이 화면이 따라가는 중이거나, 이 화면이 더 따라가지 않는 작업이 아직 진행 중일 때다. 더 따라가지 않는 작업은
+   * 그 목적으로 부른다(Story 2.12: 같은 작업 표에 정밀 검증·기존 계획 계속도 있다).
    */
   inProgressElsewhere:
     '다른 곳에서 시작한 동기화가 진행 중입니다. 끝날 때까지 새로 요청할 수 없고, 끝나면 이 화면이 결과를 표시합니다.',
-  inProgressUnfollowed:
-    '동기화가 아직 진행 중이라 새로 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+  inProgressUnfollowed: {
+    SYNC: '동기화가 아직 진행 중이라 새로 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+    VERIFY:
+      '정밀 검증이 아직 진행 중이라 동기화를 새로 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+    CATCH_UP:
+      '기존 계획 계속이 아직 진행 중이라 동기화를 새로 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+  },
+  /** 정밀 검증·기존 계획 계속이 진행 중일 때(Story 2.12). 목적과 무관하게 진행 작업은 하나다. */
+  inProgressOther:
+    '정밀 검증이나 기존 계획 계속이 진행 중이라 동기화를 새로 요청할 수 없습니다. 끝나면 이 화면이 결과를 표시합니다.',
   /**
    * 동기화 오류 요약. 사용자가 누른 동기화가 공식 결과를 바꾸지 못하고 끝나면 초점이 여기로 온다. 마지막
    * 작업의 상태·원인·단계·시각을 서버가 판정한 코드 그대로 보인다.
@@ -96,12 +109,18 @@ export const planSyncContent = {
       INPUTS_CHANGED: '동기화 입력이 그사이 바뀌어 발행하지 않았습니다. 다시 동기화할 수 있습니다.',
       LONG_GAP: '마지막 외부 자금흐름 확인 뒤 30일이 넘게 지나 동기화하지 않았습니다.',
       PLAN_PERIOD_ENDED: '계획 종료 시각이 지나 동기화하지 않았습니다.',
+      // Story 2.12: 공식 사건의 소실은 이제 검토 필요다. 조회 가능 범위 밖의 구간은 다시 구성하지 않는다.
+      SOURCE_EVENT_MISSING:
+        '이미 공식 계산에 쓴 입출금 기록이 다시 읽은 구간에서 보이지 않아 입력을 검토해야 합니다.',
+      HISTORY_OUT_OF_RANGE:
+        '다시 읽어야 할 구간이 Bybit에서 조회할 수 있는 최근 2년보다 이르러 다시 구성할 수 없습니다.',
     },
     unknownCode: '동기화를 끝내지 못한 원인을 확인하지 못했습니다.',
     /** 작업이 멈춘 단계. */
     stages: {
       TIME: '기준 시각 확인',
       COLLECTION: '입출금 기록 수집',
+      FINAL_SWEEP: '발행 직전 최근 기록 재확인',
       CLASSIFICATION: '외부 자금흐름 판정',
       CONVERSION: '사건 시점 USD 환산',
       CALCULATION: '계획 계산',
@@ -112,7 +131,8 @@ export const planSyncContent = {
     triggers: {
       ENTRY: '대시보드 진입',
       VISIBILITY: '탭으로 돌아옴',
-      MANUAL: '동기화 버튼',
+      MANUAL: '사용자 요청',
+      SYSTEM: '서비스 요청',
     },
     unknownTrigger: '확인할 수 없는 요청',
   },
@@ -139,20 +159,26 @@ export const planSyncContent = {
     },
   },
   /**
-   * 장기 미동기화(마지막 확인 뒤 30일 초과). 버튼 대신 이 설명을 둔다. 두 선택의 실행은 이 스토리의 범위가
-   * 아니므로 설명만 하고 어디로도 이동시키지 않는다.
+   * 장기 미동기화(마지막 확인 뒤 30일 초과). 동기화 버튼 대신 이 설명과 `기존 계획 계속` 버튼을 둔다(Story 2.12).
+   * 두 방법은 수집하는 데이터 범위가 다르다. `새 계획 시작`은 이 스토리의 범위가 아니므로 설명만 둔다.
    */
   longGap: {
     label: LONG_GAP_LABEL,
     text: '마지막 외부 자금흐름 확인 뒤 30일이 넘게 지나 동기화를 시작하지 않습니다. 이어 가는 방법은 두 가지이며, 둘은 수집하는 데이터 범위가 다릅니다.',
     continueTitle: '기존 계획 계속',
     continueText:
-      '공백 기간 전체의 입출금 기록을 모두 수집해 따라잡은 뒤, 같은 계획 조건으로 비교를 이어 갑니다.',
+      '마지막 확인 시각 앞 7일부터 지금까지의 입출금 기록을 모두 수집해 따라잡은 뒤, 같은 계획 조건으로 비교를 이어 갑니다.',
+    /** 수집 범위. 시작은 서버가 준 `catchUpFrom`이고 끝은 요청이 처리되는 시점이다. */
+    continueRangeLabel: '수집 범위',
+    continueRangeUntil: '지금까지',
+    continueCost:
+      '공백 기간을 7일씩 나눠 모두 읽고 발행 직전 최근 7일을 한 번 더 확인하므로 몇 분 이상 걸릴 수 있습니다. 끝날 때까지 표시된 결과는 읽기 전용으로 유지됩니다.',
+    /** `기존 계획 계속` 버튼. 이름은 언제나 동작이다. */
+    continueAction: '기존 계획 계속',
     newPlanTitle: '새 계획 시작',
     newPlanText:
       '공백 기간의 기록은 수집하지 않습니다. 지금 계획의 비교는 계산 불가가 되고, 새 기준 현재가치로 새 계획을 만듭니다.',
     readOnly: '마지막 정상 결과는 읽기 전용으로 유지됩니다.',
-    notHere: '이 화면에서는 아직 두 방법 가운데 하나를 선택할 수 없습니다. 차이만 설명합니다.',
   },
   /**
    * 화면의 단일 상태 리전이 대시보드 문장 자리에서 읽는 동기화 문장. 한 동기화의 시작과 끝에 한 번씩만
@@ -186,7 +212,8 @@ export const planSyncCopyStrings: readonly string[] = [
   ...Object.values(planSyncContent.reasons),
   planSyncContent.unknownReason,
   planSyncContent.inProgressElsewhere,
-  planSyncContent.inProgressUnfollowed,
+  ...Object.values(planSyncContent.inProgressUnfollowed),
+  planSyncContent.inProgressOther,
   ...Object.values(planSyncContent.summary.statuses),
   planSyncContent.summary.unknownStatus,
   planSyncContent.summary.kept,

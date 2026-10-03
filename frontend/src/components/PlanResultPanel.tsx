@@ -3,11 +3,11 @@ import { useEffect, useRef, type ReactElement, type ReactNode } from 'react'
 import type { AdjustmentHistoryState } from '../session/useAdjustmentHistory'
 import type { EvidenceState } from '../session/useCalculationEvidence'
 import type {
+  Accepted,
   Dashboard,
   DashboardView,
   PlanResult,
   PlanResultMetric,
-  SyncStatus,
   TrustAxis,
 } from '../session/useDashboard'
 import type { DashboardSync } from '../session/useDashboardSync'
@@ -21,14 +21,24 @@ import {
   nextActionCopy,
   type MetricName,
 } from '../content/planResult'
+import { planVerificationContent } from '../content/planVerification'
 import { formatAmount, formatPercent, formatSeoulTime, percentFromRatio } from '../format/decimal'
-import { bundleOf } from '../session/useDashboard'
+import { bundleOf, heldBy } from '../session/useDashboard'
 import { AdjustmentHistory } from './AdjustmentHistory'
 import { CalculationEvidence } from './CalculationEvidence'
 import styles from './PlanResultPanel.module.css'
 import { SyncControl } from './SyncControl'
+import { VerificationControl } from './VerificationControl'
+import { RangeList } from './VerificationRanges'
+import { VersionChangeNote } from './VersionChangeNote'
 
 const RATIOS: readonly MetricName[] = ['REQUIRED_RATE', 'GOAL_PROGRESS']
+
+/**
+ * The input reliability causes a verification or catch-up ended in (Story 2.12): asking again for the same basis
+ * cannot change them, so the axis says so and names the ranges the job that holds the result set out to check.
+ */
+const HELD_CAUSES: readonly string[] = ['VERIFICATION_REVIEW_REQUIRED', 'HISTORY_OUT_OF_RANGE']
 
 function validTime(value: string): boolean {
   return Number.isFinite(new Date(value).getTime())
@@ -134,6 +144,12 @@ interface AxisTime {
   readonly value: string
 }
 
+/** One more named fact an axis shows after its times, such as the range a held input reaches. */
+interface AxisRow {
+  readonly label: string
+  readonly value: ReactNode
+}
+
 /**
  * One trust axis as its own group: state → cause → times → affected metrics → next action, the order
  * EXPERIENCE gives ("what is it → why → which values → what can the user do"). The axis's next action
@@ -150,6 +166,7 @@ function Axis({
   extra,
   times,
   note,
+  rows = [],
   after,
 }: {
   readonly id: string
@@ -160,6 +177,7 @@ function Axis({
   readonly extra?: readonly string[]
   readonly times: readonly AxisTime[]
   readonly note?: { readonly label: string; readonly text: string }
+  readonly rows?: readonly AxisRow[]
   readonly after?: ReactNode
 }): ReactElement {
   return (
@@ -194,6 +212,12 @@ function Axis({
               <dd>{note.text}</dd>
             </div>
           )}
+          {rows.map((row) => (
+            <div key={row.label}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          ))}
           <div>
             <dt>{copy.axes.affected}</dt>
             <dd>{metricNames(axis.affectedMetrics)}</dd>
@@ -210,15 +234,38 @@ function Axis({
 }
 
 function Trust({
-  result,
-  status,
+  bundle,
   sync,
 }: {
-  readonly result: PlanResult
-  readonly status: SyncStatus
+  readonly bundle: Accepted
   readonly sync: DashboardSync
 }): ReactElement {
+  const { result, verification } = bundle
   const { freshness, inputReliability, calculationNature } = result.trust
+  // A job that ended in review or out of range holds the input (spec: 미해소): the notice that asking again for
+  // the same basis will not change it — in the words of that job's purpose — and the ranges it set out to
+  // check. Only the job the server marks as holding the result names ranges: one in progress, one that
+  // published or one of an earlier basis does not. Ranges it could not read are said in safe words.
+  const held = HELD_CAUSES.includes(inputReliability.cause)
+  const holder = held ? heldBy(verification) : null
+  const heldCopy = planVerificationContent.held
+  const heldNotice =
+    holder === null ? heldCopy.notice : copyFor(heldCopy.notices, holder.purpose, heldCopy.notice)
+  const heldRows: AxisRow[] =
+    holder === null || holder.targets?.length === 0
+      ? []
+      : [
+          {
+            label: heldCopy.targetsLabel,
+            value: (
+              <RangeList
+                className={styles.ranges}
+                empty={planVerificationContent.none}
+                ranges={holder.targets}
+              />
+            ),
+          },
+        ]
   const unavailable = calculationNature.unavailableMetrics.map(metricName)
   const natureExtra = [
     ...(unavailable.length > 0
@@ -234,7 +281,12 @@ function Trust({
       {/* Three equal groups, never merged into one score or badge. */}
       <ul className={styles.axes}>
         <Axis
-          after={<SyncControl status={status} sync={sync} />}
+          after={
+            <>
+              <SyncControl status={bundle.sync} sync={sync} verification={verification} />
+              <VerificationControl status={verification} sync={sync} />
+            </>
+          }
           axis={freshness}
           causes={copy.axes.freshness.causes}
           id="plan-result-axis-freshness"
@@ -252,8 +304,10 @@ function Trust({
         <Axis
           axis={inputReliability}
           causes={copy.axes.reliability.causes}
+          extra={held ? [heldNotice] : undefined}
           id="plan-result-axis-reliability"
           name={copy.axes.reliability.name}
+          rows={heldRows}
           states={copy.axes.reliability.states}
           times={[
             { label: copy.axes.reliability.lastNormal, value: inputReliability.lastNormalAt },
@@ -378,10 +432,12 @@ function Notice({
  * bundle shown here, and the adjustment history (Story 2.10) opens right after it. Their states are their
  * own (`evidence`, `adjustments`); the screen's status region says what they did.
  *
- * The sync control (Story 2.11) sits right after the freshness axis, for the bundle shown. While a sync runs
- * the bundle stays as it is; when it ends with a new bundle, that bundle replaces this one in one piece (the
- * dashboard's own rule), and a sync the user pressed moves focus to this panel's heading. Its state is its
- * own (`sync`); the screen's status region says what it did.
+ * The sync control (Story 2.11) sits right after the freshness axis, for the bundle shown, and the precision
+ * verification (Story 2.12) right after it. While a job runs the bundle stays as it is; when it ends with a new
+ * bundle, that bundle replaces this one in one piece (the dashboard's own rule), and a job the user pressed
+ * moves focus to this panel's heading. Their state is their own (`sync`); the screen's status region says what
+ * they did. The result marker of the shown version (Story 2.12) sits under the introduction: how many late
+ * cash flows it applied and where their impact starts, or that a verification found no change.
  */
 export function PlanResultPanel({
   dashboard,
@@ -446,6 +502,7 @@ export function PlanResultPanel({
       <Notice measured={measured} view={view} />
 
       {result === null ? null : <p>{copy.intro}</p>}
+      {bundle === null ? null : <VersionChangeNote change={bundle.change} />}
       {result === null || current === undefined ? null : (
         <section aria-labelledby="plan-result-current" className={styles.group}>
           <h3 id="plan-result-current">{copy.currentHeading}</h3>
@@ -454,9 +511,7 @@ export function PlanResultPanel({
           </div>
         </section>
       )}
-      {result === null || bundle === null ? null : (
-        <Trust result={result} status={bundle.sync} sync={sync} />
-      )}
+      {bundle === null ? null : <Trust bundle={bundle} sync={sync} />}
       {result === null ? null : (
         <section aria-labelledby="plan-result-metrics" className={styles.group}>
           <h3 id="plan-result-metrics">{copy.metricsHeading}</h3>

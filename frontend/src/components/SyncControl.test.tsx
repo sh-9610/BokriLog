@@ -10,19 +10,27 @@ import { calculationEvidenceContent } from '../content/calculationEvidence'
 import { entryContent } from '../content/entry'
 import { axisActionCopy, nextActionCopy, planResultContent } from '../content/planResult'
 import { planSyncContent as copy, planSyncCopyStrings } from '../content/planSync'
+import { planVerificationContent } from '../content/planVerification'
 import { formatSeoulTime } from '../format/decimal'
 import {
   isPlanResult,
+  NO_CHANGE,
   parseSyncStatus,
+  parseVerificationStatus,
   UNKNOWN_SYNC,
+  UNKNOWN_VERIFICATION,
   type SyncStatus,
+  type VerificationStatus,
 } from '../session/useDashboard'
 import {
   AVAILABLE_SYNC,
+  AVAILABLE_VERIFICATION,
   idleSyncState,
   planResultFixture,
   syncFixture,
   syncJobFixture,
+  verificationFixture,
+  verificationJobFixture,
 } from '../test/planResultFixture'
 import { getObservedStorageEntries } from '../test/setup'
 import { PlanResultPanel } from './PlanResultPanel'
@@ -54,7 +62,13 @@ function summaryWith(label: string): HTMLElement {
 describe('SyncControl', () => {
   it('offers one primary 동기화 button with the recent-events note, and nothing else to report', () => {
     const request = vi.fn()
-    render(<SyncControl status={AVAILABLE_SYNC} sync={idleSyncState({ request })} />)
+    render(
+      <SyncControl
+        verification={AVAILABLE_VERIFICATION}
+        status={AVAILABLE_SYNC}
+        sync={idleSyncState({ request })}
+      />,
+    )
 
     expect(button()).toHaveAttribute('aria-disabled', 'false')
     expect(button()).not.toHaveAttribute('aria-describedby')
@@ -75,6 +89,7 @@ describe('SyncControl', () => {
     const request = vi.fn()
     render(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={AVAILABLE_SYNC}
         sync={idleSyncState({ phase: 'running', running: true, canRequest: false, request })}
       />,
@@ -97,6 +112,7 @@ describe('SyncControl', () => {
     const request = vi.fn()
     const { rerender } = render(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={status({ availability: 'COOLDOWN', retryAfterSeconds: 25 })}
         sync={idleSyncState({ cooldownSeconds: 25, canRequest: false, request })}
       />,
@@ -109,6 +125,7 @@ describe('SyncControl', () => {
 
     rerender(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={status({ availability: 'COOLDOWN', retryAfterSeconds: 25 })}
         sync={idleSyncState({ request })}
       />,
@@ -121,10 +138,13 @@ describe('SyncControl', () => {
     ['RESTRICTED', copy.reasons.RESTRICTED],
     ['CONNECTION_UNAVAILABLE', copy.reasons.CONNECTION_UNAVAILABLE],
     ['PLAN_PERIOD_ENDED', copy.reasons.PLAN_PERIOD_ENDED],
+    // F8: a persistent review of this basis holds the result; syncing again cannot change it.
+    ['REVIEW_HELD', copy.reasons.REVIEW_HELD],
     ['SOMETHING_NEW', copy.unknownReason],
   ])('unavailable (%s): the button is blocked and the reason is beside it', (reason, text) => {
     render(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={status({ availability: 'UNAVAILABLE', reason })}
         sync={idleSyncState({ canRequest: false })}
       />,
@@ -145,6 +165,7 @@ describe('SyncControl', () => {
     (jobStatus, code, label) => {
       render(
         <SyncControl
+          verification={AVAILABLE_VERIFICATION}
           status={status({ latest: ended({ status: jobStatus, failureCode: code }) })}
           sync={idleSyncState()}
         />,
@@ -170,6 +191,7 @@ describe('SyncControl', () => {
   it('folds unknown codes, stages and triggers to safe copy and never shows them verbatim', () => {
     render(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={status({
           latest: ended({ status: 'FAILED', failureCode: 'NEW_CODE', stage: 'NEW_STAGE' }),
         })}
@@ -185,6 +207,7 @@ describe('SyncControl', () => {
   it('shows no summary while a sync runs or after one that published', () => {
     const { rerender } = render(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={status({ latest: ended({ status: 'FAILED', failureCode: 'SYNC_FAILED' }) })}
         sync={idleSyncState({ phase: 'running', running: true, canRequest: false })}
       />,
@@ -192,6 +215,7 @@ describe('SyncControl', () => {
     expect(screen.queryByText(copy.summary.statuses.FAILED)).not.toBeInTheDocument()
     rerender(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={status({ latest: ended({ status: 'SUCCEEDED', stage: null }) })}
         sync={idleSyncState({ phase: 'succeeded' })}
       />,
@@ -204,7 +228,13 @@ describe('SyncControl', () => {
   it.each(['cooldown', 'unavailable', 'error', 'stalled'] as const)(
     'an admission that ended as %s has a summary of its own',
     (phase) => {
-      render(<SyncControl status={AVAILABLE_SYNC} sync={idleSyncState({ phase })} />)
+      render(
+        <SyncControl
+          verification={AVAILABLE_VERIFICATION}
+          status={AVAILABLE_SYNC}
+          sync={idleSyncState({ phase })}
+        />,
+      )
       const summary = summaryWith(copy.local[phase].label)
       expect(summary).toHaveTextContent(copy.local[phase].text)
       expect(summary).toHaveAttribute('tabindex', '-1')
@@ -213,11 +243,16 @@ describe('SyncControl', () => {
 
   it('moves focus to the summary when asked, once, and leaves the heading requests to the panel', () => {
     const { rerender } = render(
-      <SyncControl status={AVAILABLE_SYNC} sync={idleSyncState({ phase: 'error' })} />,
+      <SyncControl
+        verification={AVAILABLE_VERIFICATION}
+        status={AVAILABLE_SYNC}
+        sync={idleSyncState({ phase: 'error' })}
+      />,
     )
     button().focus()
     rerender(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={AVAILABLE_SYNC}
         sync={idleSyncState({ phase: 'error', focus: { target: 'heading', serial: 1 } })}
       />,
@@ -225,6 +260,7 @@ describe('SyncControl', () => {
     expect(button()).toHaveFocus()
     rerender(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={AVAILABLE_SYNC}
         sync={idleSyncState({ phase: 'error', focus: { target: 'summary', serial: 2 } })}
       />,
@@ -234,6 +270,7 @@ describe('SyncControl', () => {
     button().focus()
     rerender(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={AVAILABLE_SYNC}
         sync={idleSyncState({ phase: 'error', focus: { target: 'summary', serial: 2 } })}
       />,
@@ -244,6 +281,7 @@ describe('SyncControl', () => {
   it('a request made before it was mounted is not replayed', () => {
     render(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={AVAILABLE_SYNC}
         sync={idleSyncState({ phase: 'error', focus: { target: 'summary', serial: 4 } })}
       />,
@@ -263,33 +301,44 @@ describe('SyncControl', () => {
       idleSyncState({ phase: 'longGap', canRequest: false }),
     ],
   ])(
-    'after a long gap (%s): no button, the two choices and their data ranges, and a read-only result',
+    'after a long gap (%s): no sync button, the two choices and their data ranges, and a read-only result',
     (_name, block, sync) => {
-      render(<SyncControl status={block} sync={sync} />)
-      expect(screen.queryByRole('button')).not.toBeInTheDocument()
+      render(<SyncControl verification={AVAILABLE_VERIFICATION} status={block} sync={sync} />)
+      expect(screen.queryByRole('button', { name: copy.action })).not.toBeInTheDocument()
       const explanation = summaryWith(copy.longGap.label)
       expect(explanation).toHaveAttribute('tabindex', '-1')
       for (const text of [
         copy.longGap.text,
         copy.longGap.continueTitle,
         copy.longGap.continueText,
+        copy.longGap.continueCost,
         copy.longGap.newPlanTitle,
         copy.longGap.newPlanText,
         copy.longGap.readOnly,
-        copy.longGap.notHere,
       ]) {
         expect(explanation).toHaveTextContent(text)
       }
-      // Described only: neither choice runs from here, and nothing links to a screen that does not exist.
+      // Story 2.12: the catch-up runs from here; the old "cannot choose here" wording is gone.
+      expect(explanation).not.toHaveTextContent('선택할 수 없습니다')
+      expect(screen.getByRole('button', { name: copy.longGap.continueAction })).toBeVisible()
+      // `새 계획 시작` is explained only: one button, and nothing links to a screen that does not exist.
+      expect(screen.getAllByRole('button')).toHaveLength(1)
       expect(screen.queryByRole('link')).not.toBeInTheDocument()
     },
   )
 
   it('moves focus to the long-gap explanation when a pressed sync ended that way', () => {
-    const { rerender } = render(<SyncControl status={AVAILABLE_SYNC} sync={idleSyncState()} />)
+    const { rerender } = render(
+      <SyncControl
+        verification={AVAILABLE_VERIFICATION}
+        status={AVAILABLE_SYNC}
+        sync={idleSyncState()}
+      />,
+    )
     button().focus()
     rerender(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={AVAILABLE_SYNC}
         sync={idleSyncState({
           phase: 'longGap',
@@ -304,13 +353,18 @@ describe('SyncControl', () => {
   it('P13: an unavailable sync never shows the same name twice', () => {
     // Before the server's reason arrives, the refused request has its own summary.
     const { rerender } = render(
-      <SyncControl status={AVAILABLE_SYNC} sync={idleSyncState({ phase: 'unavailable' })} />,
+      <SyncControl
+        verification={AVAILABLE_VERIFICATION}
+        status={AVAILABLE_SYNC}
+        sync={idleSyncState({ phase: 'unavailable' })}
+      />,
     )
     expect(screen.getAllByText(new RegExp(copy.unavailableLabel))).toHaveLength(1)
     expect(summaryWith(copy.local.unavailable.label)).toHaveTextContent(copy.local.unavailable.text)
     // Then the server's reason line says it, and the summary gives way to it.
     rerender(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={status({ availability: 'UNAVAILABLE', reason: 'RESTRICTED' })}
         sync={idleSyncState({ phase: 'unavailable', canRequest: false })}
       />,
@@ -321,7 +375,13 @@ describe('SyncControl', () => {
   })
 
   it('P14: a sync block it could not read blocks the button with a safe reason', () => {
-    render(<SyncControl status={UNKNOWN_SYNC} sync={idleSyncState({ canRequest: false })} />)
+    render(
+      <SyncControl
+        verification={AVAILABLE_VERIFICATION}
+        status={UNKNOWN_SYNC}
+        sync={idleSyncState({ canRequest: false })}
+      />,
+    )
     expect(button()).toHaveAttribute('aria-disabled', 'true')
     expect(button()).toHaveAccessibleDescription(`${copy.unavailableLabel}: ${copy.unknownReason}`)
   })
@@ -329,6 +389,7 @@ describe('SyncControl', () => {
   it('P16: a job found in progress elsewhere is followed with its reason beside the blocked button', () => {
     const { rerender } = render(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={status({
           availability: 'IN_PROGRESS',
           latest: syncJobFixture({ trigger: 'VISIBILITY', status: 'RUNNING' }),
@@ -347,6 +408,7 @@ describe('SyncControl', () => {
     // A job still in progress that this screen no longer follows: blocked, and it says why.
     rerender(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={status({
           availability: 'IN_PROGRESS',
           latest: syncJobFixture({ status: 'RUNNING' }),
@@ -355,10 +417,11 @@ describe('SyncControl', () => {
       />,
     )
     expect(screen.queryByText(copy.running, { exact: true })).not.toBeInTheDocument()
-    expect(button()).toHaveAccessibleDescription(copy.inProgressUnfollowed)
+    expect(button()).toHaveAccessibleDescription(copy.inProgressUnfollowed.SYNC)
     // This tab's own job: 동기화 중, without the elsewhere line.
     rerender(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={AVAILABLE_SYNC}
         sync={idleSyncState({ phase: 'running', running: true, canRequest: false })}
       />,
@@ -370,6 +433,7 @@ describe('SyncControl', () => {
   it('moves focus to the button when the summary that held it goes away, instead of dropping it', () => {
     const { rerender } = render(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={AVAILABLE_SYNC}
         sync={idleSyncState({ phase: 'unavailable', focus: { target: 'summary', serial: 1 } })}
       />,
@@ -380,6 +444,7 @@ describe('SyncControl', () => {
     // The server's reason arrives: the refused request's summary gives way to the reason line.
     rerender(
       <SyncControl
+        verification={AVAILABLE_VERIFICATION}
         status={status({ availability: 'UNAVAILABLE', reason: 'RESTRICTED' })}
         sync={idleSyncState({
           phase: 'unavailable',
@@ -439,12 +504,13 @@ describe('SyncControl', () => {
     // Whether the request reached the server is not known.
     expect(copy.local.error.text).not.toContain('닿았는지')
     expect(copy.local.error.label).not.toContain('요청하지 못했습니다')
-    // A choice the screen cannot perform is described, not asked for.
+    // The choice that runs from here (Story 2.12) is pointed to by its button; neither is pressed on the user.
     for (const text of [
       nextActionCopy('CHOOSE_CONTINUATION', null),
       axisActionCopy('CHOOSE_CONTINUATION'),
     ]) {
-      expect(text).toContain('아직 선택할 수 없습니다')
+      expect(text).toContain(copy.longGap.continueAction)
+      expect(text).not.toContain('아직 선택할 수 없습니다')
       expect(text).not.toMatch(/선택해 주세요|선택하세요|정해야 합니다/)
     }
     expect(nextActionCopy('CHOOSE_CONTINUATION', null)).toContain('읽기 전용')
@@ -473,6 +539,8 @@ describe('the sync control in the dashboard panel', () => {
             nextAction: 'NONE',
             result: body as unknown as PlanResult,
             sync: AVAILABLE_SYNC,
+            verification: AVAILABLE_VERIFICATION,
+            change: NO_CHANGE,
           },
           loading: false,
           reload: vi.fn(),
@@ -525,5 +593,511 @@ describe('the sync control in the dashboard panel', () => {
     rerender(panel(idleSyncState({ phase: 'error', focus: { target: 'summary', serial: 2 } })))
     expect(heading).not.toHaveFocus()
     expect(summaryWith(copy.local.error.label)).toHaveFocus()
+  })
+})
+
+describe('the catch-up after a long gap (Story 2.12)', () => {
+  const catchUp = planVerificationContent.catchUp
+  const FROM = '2026-08-20T01:00:00Z'
+
+  function gap(overrides: Record<string, unknown> = {}): VerificationStatus {
+    return parseVerificationStatus(
+      verificationFixture({
+        availability: 'LONG_GAP',
+        preview: null,
+        catchUpFrom: FROM,
+        ...overrides,
+      }),
+    )
+  }
+
+  function continueButton(): HTMLElement {
+    return screen.getByRole('button', { name: copy.longGap.continueAction })
+  }
+
+  const longGapStatus = (): SyncStatus => status({ availability: 'LONG_GAP' })
+
+  it('offers 기존 계획 계속 with the range it collects and its cost, and runs it on a press', () => {
+    const requestVerification = vi.fn()
+    render(
+      <SyncControl
+        status={longGapStatus()}
+        sync={idleSyncState({ canRequest: false, canCatchUp: true, requestVerification })}
+        verification={gap()}
+      />,
+    )
+    const explanation = summaryWith(copy.longGap.label)
+    expect(explanation).toHaveTextContent(
+      `${copy.longGap.continueRangeLabel}: ${formatSeoulTime(FROM, planResultContent.timeUnavailable)} – ${copy.longGap.continueRangeUntil}`,
+    )
+    expect(explanation).toHaveTextContent(copy.longGap.continueCost)
+    // eslint-disable-next-line testing-library/no-node-access -- 시각의 기계값은 `time` 요소의 속성으로만 읽을 수 있다.
+    expect(explanation.querySelector(`time[datetime="${FROM}"]`)).not.toBeNull()
+    expect(continueButton()).toHaveAttribute('aria-disabled', 'false')
+    expect(continueButton()).not.toHaveAttribute('aria-describedby')
+    fireEvent.click(continueButton())
+    expect(requestVerification).toHaveBeenCalledWith('CATCH_UP')
+    expect(getObservedStorageEntries()).toEqual([])
+  })
+
+  it('keeps the long-gap explanation while the catch-up runs, with its own progress and the button blocked in place', () => {
+    const requestVerification = vi.fn()
+    render(
+      <SyncControl
+        status={status({
+          availability: 'IN_PROGRESS',
+          latest: verificationJobFixture({ purpose: 'CATCH_UP', status: 'RUNNING' }),
+        })}
+        sync={idleSyncState({
+          phase: 'running',
+          purpose: 'CATCH_UP',
+          running: true,
+          canRequest: false,
+          canCatchUp: false,
+          requestVerification,
+        })}
+        verification={parseVerificationStatus(verificationFixture({ availability: 'IN_PROGRESS' }))}
+      />,
+    )
+    expect(summaryWith(copy.longGap.label)).toBeVisible()
+    expect(screen.getByText(catchUp.running, { exact: true })).toBeVisible()
+    expect(continueButton()).toHaveAttribute('aria-disabled', 'true')
+    expect(continueButton()).toHaveAccessibleDescription(catchUp.running)
+    fireEvent.click(continueButton())
+    expect(requestVerification).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: copy.action })).not.toBeInTheDocument()
+  })
+
+  it('counts the catch-up cool-down down beside its button', () => {
+    render(
+      <SyncControl
+        status={longGapStatus()}
+        sync={idleSyncState({
+          canRequest: false,
+          canCatchUp: false,
+          verificationCooldownSeconds: 7,
+        })}
+        verification={gap({ retryAfterSeconds: 7 })}
+      />,
+    )
+    expect(screen.getByText(catchUp.cooldown(7))).toBeInTheDocument()
+    expect(continueButton()).toHaveAccessibleDescription(catchUp.cooldown(7))
+  })
+
+  it.each([
+    [
+      'the server says it is unavailable',
+      parseVerificationStatus(
+        verificationFixture({ availability: 'UNAVAILABLE', reason: 'RESTRICTED' }),
+      ),
+      `${catchUp.unavailableLabel}: ${planVerificationContent.reasons.RESTRICTED}`,
+    ],
+    [
+      'the block could not be read',
+      UNKNOWN_VERIFICATION,
+      `${catchUp.unavailableLabel}: ${catchUp.unknownReason}`,
+    ],
+    [
+      'the block has not caught up with the long gap yet',
+      AVAILABLE_VERIFICATION,
+      catchUp.unknownReason,
+    ],
+  ])('blocked when %s, with the reason beside it', (_name, verification, line) => {
+    render(
+      <SyncControl
+        status={longGapStatus()}
+        sync={idleSyncState({ canRequest: false, canCatchUp: false })}
+        verification={verification}
+      />,
+    )
+    expect(continueButton()).toHaveAttribute('aria-disabled', 'true')
+    expect(continueButton()).toHaveAccessibleDescription(line)
+  })
+
+  it('a catch-up that ended without a new result has its summary, which a pressed catch-up moves focus to', () => {
+    const review = verificationJobFixture({
+      purpose: 'CATCH_UP',
+      reason: 'LONG_GAP_CONTINUATION',
+      status: 'NEEDS_REVIEW',
+      failureCode: 'HISTORY_OUT_OF_RANGE',
+      stage: 'COLLECTION',
+      finishedAt: '2026-09-27T01:12:00Z',
+    })
+    const { rerender } = render(
+      <SyncControl
+        status={status({ availability: 'LONG_GAP', latest: review })}
+        sync={idleSyncState({ canRequest: false, canCatchUp: true })}
+        verification={gap({ latest: review })}
+      />,
+    )
+    continueButton().focus()
+    rerender(
+      <SyncControl
+        status={status({ availability: 'LONG_GAP', latest: review })}
+        sync={idleSyncState({
+          phase: 'review',
+          purpose: 'CATCH_UP',
+          canRequest: false,
+          canCatchUp: true,
+          focus: { target: 'summary', serial: 1 },
+        })}
+        verification={gap({ latest: review })}
+      />,
+    )
+    const summary = summaryWith(catchUp.summary.statuses.NEEDS_REVIEW ?? 'missing')
+    expect(summary).toHaveFocus()
+    // In the catch-up's own words: its cause, its kept result and its stage.
+    expect(summary).toHaveTextContent(
+      `${catchUp.summary.causeLabel}: ${catchUp.summary.codes.HISTORY_OUT_OF_RANGE ?? 'missing'}`,
+    )
+    expect(summary).toHaveTextContent(catchUp.summary.kept)
+    expect(summary).toHaveTextContent(
+      `${catchUp.summary.stageLabel}: ${catchUp.summary.stages.COLLECTION ?? 'missing'}`,
+    )
+    // The sync's own summary does not claim the catch-up's ending.
+    expect(screen.queryByText(copy.summary.statuses.NEEDS_REVIEW)).not.toBeInTheDocument()
+  })
+
+  it.each(['cooldown', 'error', 'stalled', 'stale', 'busy', 'refused', 'notUseful'] as const)(
+    'a catch-up request that ended as %s is said inside the long-gap explanation',
+    (phase) => {
+      render(
+        <SyncControl
+          status={longGapStatus()}
+          sync={idleSyncState({ phase, purpose: 'CATCH_UP', canRequest: false })}
+          verification={gap()}
+        />,
+      )
+      expect(summaryWith(catchUp.local[phase].label)).toHaveTextContent(catchUp.local[phase].text)
+    },
+  )
+
+  it('a catch-up that met no long gap is said beside the sync button once the long gap is gone', () => {
+    render(
+      <SyncControl
+        status={AVAILABLE_SYNC}
+        sync={idleSyncState({ phase: 'notLongGap', purpose: 'CATCH_UP' })}
+        verification={AVAILABLE_VERIFICATION}
+      />,
+    )
+    expect(button()).toBeVisible()
+    expect(summaryWith(catchUp.local.notLongGap.label)).toHaveTextContent(
+      catchUp.local.notLongGap.text,
+    )
+  })
+
+  it('C3: a long gap whose basis a review already holds offers no catch-up: a notice takes the button’s place', () => {
+    const review = verificationJobFixture({
+      status: 'NEEDS_REVIEW',
+      failureCode: 'SOURCE_EVENT_MISSING',
+      finishedAt: '2026-09-27T01:12:00Z',
+      holdsResult: true,
+    })
+    const { rerender } = render(
+      <SyncControl
+        status={longGapStatus()}
+        sync={idleSyncState({
+          canRequest: false,
+          canCatchUp: false,
+          verificationCooldownSeconds: 5,
+        })}
+        verification={gap({ availability: 'NOT_USEFUL', latest: review, retryAfterSeconds: null })}
+      />,
+    )
+    // The long-gap explanation stays, with the range a catch-up would collect.
+    expect(summaryWith(copy.longGap.label)).toHaveTextContent(copy.longGap.continueRangeLabel)
+    expect(
+      screen.queryByRole('button', { name: copy.longGap.continueAction }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryAllByRole('button')).toHaveLength(0)
+    const notice = summaryWith(catchUp.notUseful.label)
+    expect(notice).toHaveTextContent(catchUp.notUseful.text)
+    expect(notice).toHaveAttribute('tabindex', '-1')
+    // Neither a cool-down nor an unknown reason is said for a button that is not there.
+    expect(screen.queryByText(catchUp.cooldown(5))).not.toBeInTheDocument()
+    expect(screen.queryByText(catchUp.unknownReason)).not.toBeInTheDocument()
+    // It does not tell the user to ask for a precision verification either.
+    expect(notice).not.toHaveTextContent(planVerificationContent.action)
+    // A pressed catch-up refused as not useful: the notice says it; no second summary with the same name.
+    rerender(
+      <SyncControl
+        status={longGapStatus()}
+        sync={idleSyncState({
+          phase: 'notUseful',
+          purpose: 'CATCH_UP',
+          canRequest: false,
+          canCatchUp: false,
+          focus: { target: 'summary', serial: 1 },
+        })}
+        verification={gap({ availability: 'NOT_USEFUL', latest: review, retryAfterSeconds: null })}
+      />,
+    )
+    expect(screen.queryByText(catchUp.local.notUseful.text)).not.toBeInTheDocument()
+    expect(screen.getAllByText(catchUp.notUseful.label)).toHaveLength(1)
+    expect(summaryWith(catchUp.notUseful.label)).toHaveFocus()
+  })
+
+  it('a long gap the verification block names while another state is said still shows the catch-up, blocked with that reason', () => {
+    render(
+      <SyncControl
+        status={status({ availability: 'UNAVAILABLE', reason: 'RESTRICTED' })}
+        sync={idleSyncState({ canRequest: false, canVerify: false, canCatchUp: false })}
+        verification={gap({ availability: 'UNAVAILABLE', reason: 'RESTRICTED' })}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: copy.action })).not.toBeInTheDocument()
+    expect(summaryWith(copy.longGap.label)).toHaveTextContent(copy.longGap.continueRangeLabel)
+    expect(continueButton()).toHaveAttribute('aria-disabled', 'true')
+    expect(continueButton()).toHaveAccessibleDescription(
+      `${catchUp.unavailableLabel}: ${planVerificationContent.reasons.RESTRICTED}`,
+    )
+  })
+
+  it('P17: a catch-up that ended keeps its summary after the control leaves the long-gap form', () => {
+    const failed = verificationJobFixture({
+      purpose: 'CATCH_UP',
+      reason: 'LONG_GAP_CONTINUATION',
+      status: 'FAILED',
+      failureCode: 'PROVIDER_UNAVAILABLE',
+      stage: 'COLLECTION',
+      finishedAt: '2026-09-27T01:12:00Z',
+    })
+    const unavailable = (): SyncStatus =>
+      status({ availability: 'UNAVAILABLE', reason: 'RESTRICTED', latest: failed })
+    const { rerender } = render(
+      <SyncControl
+        status={unavailable()}
+        sync={idleSyncState({
+          phase: 'running',
+          purpose: 'CATCH_UP',
+          running: true,
+          canRequest: false,
+        })}
+        verification={parseVerificationStatus(
+          verificationFixture({
+            availability: 'UNAVAILABLE',
+            reason: 'RESTRICTED',
+            latest: failed,
+          }),
+        )}
+      />,
+    )
+    // The pressed catch-up ended (said, with focus) while the plan is now shown as unavailable.
+    rerender(
+      <SyncControl
+        status={unavailable()}
+        sync={idleSyncState({
+          phase: 'failed',
+          purpose: 'CATCH_UP',
+          canRequest: false,
+          focus: { target: 'summary', serial: 1 },
+        })}
+        verification={parseVerificationStatus(
+          verificationFixture({
+            availability: 'UNAVAILABLE',
+            reason: 'RESTRICTED',
+            latest: failed,
+          }),
+        )}
+      />,
+    )
+    const summary = summaryWith(catchUp.summary.statuses.FAILED ?? 'missing')
+    expect(summary).toHaveFocus()
+    expect(summary).toHaveTextContent(catchUp.summary.codes.PROVIDER_UNAVAILABLE ?? 'missing')
+    // In its own words: never "sync again".
+    expect(summary.textContent).not.toContain('동기화할 수 있습니다')
+    // Once the outcome is dropped (a reload), the plan's latest job still explains it.
+    rerender(
+      <SyncControl
+        status={unavailable()}
+        sync={idleSyncState({ canRequest: false })}
+        verification={parseVerificationStatus(
+          verificationFixture({
+            availability: 'UNAVAILABLE',
+            reason: 'RESTRICTED',
+            latest: failed,
+          }),
+        )}
+      />,
+    )
+    expect(summaryWith(catchUp.summary.statuses.FAILED ?? 'missing')).toBeVisible()
+    expect(screen.queryByText(copy.summary.statuses.FAILED)).not.toBeInTheDocument()
+  })
+
+  it('F7: while an automatic sync admission has not answered, the blocked catch-up button says why', () => {
+    render(
+      <SyncControl
+        status={longGapStatus()}
+        sync={idleSyncState({ canRequest: false, canCatchUp: false, admitting: true })}
+        verification={gap()}
+      />,
+    )
+    expect(continueButton()).toHaveAttribute('aria-disabled', 'true')
+    expect(continueButton()).toHaveAccessibleDescription(catchUp.admitting)
+  })
+
+  it('F7: a job this screen no longer follows blocks the catch-up, named by its own purpose', () => {
+    const job = verificationJobFixture({ purpose: 'VERIFY', status: 'RUNNING' })
+    render(
+      <SyncControl
+        status={status({ availability: 'IN_PROGRESS', latest: job })}
+        sync={idleSyncState({ phase: 'stalled', purpose: 'VERIFY', canRequest: false })}
+        verification={gap({ availability: 'IN_PROGRESS', latest: job, retryAfterSeconds: null })}
+      />,
+    )
+    expect(continueButton()).toHaveAttribute('aria-disabled', 'true')
+    expect(continueButton()).toHaveAccessibleDescription(catchUp.inProgressUnfollowed.VERIFY)
+  })
+
+  it('F6: a pressed catch-up that ended with a new bundle sends focus to the heading only, never to the sync button first', () => {
+    function gapPanel(
+      syncStatus: SyncStatus,
+      verification: VerificationStatus,
+      sync: DashboardSync,
+    ): ReactElement {
+      const body = planResultFixture()
+      return (
+        <PlanResultPanel
+          adjustments={{
+            view: { kind: 'closed' },
+            open: vi.fn(),
+            close: vi.fn(),
+            filter: vi.fn(),
+            more: vi.fn(),
+            retry: vi.fn(),
+          }}
+          dashboard={{
+            view: {
+              kind: 'READY',
+              nextAction: 'NONE',
+              result: body as unknown as PlanResult,
+              sync: syncStatus,
+              verification,
+              change: NO_CHANGE,
+            },
+            loading: false,
+            reload: vi.fn(),
+            refresh: vi.fn(),
+          }}
+          evidence={{ view: { kind: 'closed' }, open: vi.fn(), close: vi.fn(), retry: vi.fn() }}
+          sync={sync}
+        />
+      )
+    }
+    const { rerender } = render(
+      gapPanel(longGapStatus(), gap(), idleSyncState({ canRequest: false, canCatchUp: true })),
+    )
+    continueButton().focus()
+    expect(continueButton()).toHaveFocus()
+    const focused: string[] = []
+    const record = (event: FocusEvent): void => {
+      focused.push((event.target as HTMLElement).textContent)
+    }
+    document.addEventListener('focusin', record)
+    // The catch-up published: the long gap is over (its form and button go) and the heading is asked for.
+    rerender(
+      gapPanel(
+        AVAILABLE_SYNC,
+        AVAILABLE_VERIFICATION,
+        idleSyncState({
+          phase: 'succeeded',
+          purpose: 'CATCH_UP',
+          focus: { target: 'heading', serial: 1 },
+        }),
+      ),
+    )
+    document.removeEventListener('focusin', record)
+    expect(screen.getByRole('heading', { level: 2, name: planResultContent.heading })).toHaveFocus()
+    expect(focused).toEqual([planResultContent.heading])
+    expect(button()).not.toHaveFocus()
+  })
+
+  it('moves focus to the catch-up button when the summary that held it goes away', () => {
+    const { rerender } = render(
+      <SyncControl
+        status={longGapStatus()}
+        sync={idleSyncState({ phase: 'error', purpose: 'CATCH_UP', canRequest: false })}
+        verification={gap()}
+      />,
+    )
+    summaryWith(catchUp.local.error.label).focus()
+    rerender(
+      <SyncControl
+        status={longGapStatus()}
+        sync={idleSyncState({ canRequest: false, canCatchUp: true })}
+        verification={gap()}
+      />,
+    )
+    expect(continueButton()).toHaveFocus()
+  })
+})
+
+describe('the sync control beside a precision verification (Story 2.12)', () => {
+  it('while a verification runs, the sync button is blocked and says so, without 동기화 중', () => {
+    render(
+      <SyncControl
+        verification={AVAILABLE_VERIFICATION}
+        status={status({
+          availability: 'IN_PROGRESS',
+          latest: verificationJobFixture({ status: 'RUNNING' }),
+        })}
+        sync={idleSyncState({
+          phase: 'running',
+          purpose: 'VERIFY',
+          running: true,
+          canRequest: false,
+        })}
+      />,
+    )
+    expect(screen.queryByText(copy.running, { exact: true })).not.toBeInTheDocument()
+    expect(button()).toHaveAttribute('aria-disabled', 'true')
+    expect(button()).toHaveAccessibleDescription(copy.inProgressOther)
+  })
+
+  it.each([
+    ['a precision verification', 'VERIFY', copy.inProgressUnfollowed.VERIFY],
+    ['a catch-up', 'CATCH_UP', copy.inProgressUnfollowed.CATCH_UP],
+  ] as const)(
+    'F7: %s still in progress that this screen no longer follows is named by its own purpose, never as a sync',
+    (_name, purpose, text) => {
+      const job = verificationJobFixture({ purpose, status: 'RUNNING' })
+      render(
+        <SyncControl
+          verification={parseVerificationStatus(
+            verificationFixture({ availability: 'IN_PROGRESS', latest: job }),
+          )}
+          status={status({ availability: 'IN_PROGRESS', latest: job })}
+          sync={idleSyncState({ phase: 'stalled', purpose, canRequest: false })}
+        />,
+      )
+      expect(button()).toHaveAttribute('aria-disabled', 'true')
+      expect(button()).toHaveAccessibleDescription(text)
+      expect(screen.queryByText(copy.inProgressUnfollowed.SYNC)).not.toBeInTheDocument()
+    },
+  )
+
+  it("a verification's ending and outcomes are not the sync control's to say", () => {
+    const { rerender } = render(
+      <SyncControl
+        verification={AVAILABLE_VERIFICATION}
+        status={status({
+          latest: verificationJobFixture({
+            status: 'NEEDS_REVIEW',
+            failureCode: 'SOURCE_EVENT_MISSING',
+            finishedAt: '2026-09-27T01:10:40Z',
+          }),
+        })}
+        sync={idleSyncState()}
+      />,
+    )
+    expect(screen.queryByText(copy.summary.statuses.NEEDS_REVIEW)).not.toBeInTheDocument()
+    rerender(
+      <SyncControl
+        verification={AVAILABLE_VERIFICATION}
+        status={AVAILABLE_SYNC}
+        sync={idleSyncState({ phase: 'error', purpose: 'VERIFY' })}
+      />,
+    )
+    expect(screen.queryByText(copy.local.error.label)).not.toBeInTheDocument()
   })
 })

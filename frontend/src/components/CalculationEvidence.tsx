@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactElement, type ReactNode } from 'react'
+import { useEffect, useRef, type ReactElement } from 'react'
 
 import type {
   CalculationEvidence as Evidence,
@@ -15,116 +15,13 @@ import {
   planResultContent,
   type MetricName,
 } from '../content/planResult'
-import {
-  formatAmount,
-  formatSeoulInstant,
-  formatSeoulTime,
-  percentFromRatio,
-} from '../format/decimal'
+import { formatAmount, percentFromRatio } from '../format/decimal'
 import styles from './CalculationEvidence.module.css'
+import { EvidenceChange } from './EvidenceChange'
+import { Facts, Id, Part, Time, TimeRange } from './EvidenceParts'
 
 const REGION_ID = 'calculation-evidence'
 const HEADING_ID = 'calculation-evidence-heading'
-
-function validTime(value: string): boolean {
-  return Number.isFinite(new Date(value).getTime())
-}
-
-/** An instant in Asia/Seoul with its machine value, or the unavailable sentence (never spliced into another). */
-function Instant({
-  value,
-  precise = false,
-}: {
-  readonly value: string
-  readonly precise?: boolean
-}): ReactElement {
-  const format = precise ? formatSeoulInstant : formatSeoulTime
-  return (
-    <time dateTime={validTime(value) ? value : undefined}>
-      {format(value, planResultContent.timeUnavailable)}
-    </time>
-  )
-}
-
-/**
- * A time in Asia/Seoul with its zone. `precise` shows seconds and milliseconds: the times section says
- * whether two times are the same, and two times in the same minute must not look alike there.
- */
-function Time({
-  value,
-  precise = false,
-}: {
-  readonly value: string
-  readonly precise?: boolean
-}): ReactElement {
-  return (
-    <>
-      <Instant precise={precise} value={value} /> {copy.separators.item}{' '}
-      {planResultContent.timeZone}
-    </>
-  )
-}
-
-/** A range of two times in Asia/Seoul, with its zone once. */
-function TimeRange({ start, end }: { readonly start: string; readonly end: string }): ReactElement {
-  return (
-    <>
-      <Instant value={start} /> {copy.separators.range} <Instant value={end} />{' '}
-      {copy.separators.item} {planResultContent.timeZone}
-    </>
-  )
-}
-
-/**
- * A long machine identifier, whole: never shortened, wrapped safely even without spaces, and read by
- * assistive technology exactly as it is shown (DESIGN.md: mono, full value from the start).
- */
-function Id({ value }: { readonly value: string | number }): ReactElement {
-  return <code className={styles.id}>{String(value)}</code>
-}
-
-interface Fact {
-  readonly label: string
-  readonly value: ReactNode
-  readonly help?: string
-}
-
-function Facts({ facts }: { readonly facts: readonly Fact[] }): ReactElement {
-  return (
-    <dl className={styles.facts}>
-      {facts.map((fact) => (
-        <div key={fact.label}>
-          <dt>{fact.label}</dt>
-          <dd>
-            {fact.value}
-            {fact.help === undefined ? null : <span className={styles.help}>{fact.help}</span>}
-          </dd>
-        </div>
-      ))}
-    </dl>
-  )
-}
-
-/** One of the six parts, a named group in the reading order. */
-function Part({
-  id,
-  title,
-  children,
-}: {
-  readonly id: string
-  readonly title: string
-  readonly children: ReactNode
-}): ReactElement {
-  const headingId = `calculation-evidence-${id}`
-  return (
-    <div aria-labelledby={headingId} className={styles.part} role="group">
-      <h5 className={styles.partTitle} id={headingId}>
-        {title}
-      </h5>
-      {children}
-    </div>
-  )
-}
 
 function Snapshots({ evidence }: { readonly evidence: Evidence }): ReactElement {
   const { snapshots } = evidence
@@ -498,7 +395,9 @@ function Failure({
 
 /**
  * The calculation evidence of the shown result (Story 2.9): a `계산 근거 보기` button and the region it
- * opens on this same screen — a state change, not a navigation, so a button and not a link.
+ * opens on this same screen — a state change, not a navigation, so a button and not a link. Since Story 2.12
+ * the region starts with the change part (what the shown version changed from the previous official version,
+ * and why), before the snapshots.
  *
  * Opening moves focus to the region's heading; `계산 근거 닫기` returns it to the button. When the region
  * closes for another reason (the shown bundle was replaced) while focus was inside it, focus also returns
@@ -578,6 +477,7 @@ export function CalculationEvidence({
             {view.kind === 'loading' ? <p>{copy.status.loading}</p> : null}
             {view.kind === 'ready' ? (
               <>
+                <EvidenceChange basisAt={result.basisAt} evidence={view.evidence} />
                 <Snapshots evidence={view.evidence} />
                 <Times evidence={view.evidence} />
                 <Inputs evidence={view.evidence} />

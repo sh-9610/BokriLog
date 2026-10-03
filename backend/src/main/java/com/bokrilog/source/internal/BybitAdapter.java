@@ -21,10 +21,12 @@ import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.security.MessageDigest;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -42,9 +44,11 @@ import tools.jackson.databind.json.JsonMapper;
  * 않는다. 키의 성질을 먼저 확인하기 전에 잔고를 묻는 것은 거절될 자격정보로 제공자를 한 번 더
  * 두드리는 일이다.
  *
- * <p><b>자동 재시도가 없다.</b> 시간초과·429·5xx를 포함해 한 번 실패하면 그대로 거절이며, 다시
- * 시작하는 것은 사용자의 조작이다. {@code ERD-1.0.0} §2.5의 3회 backoff는 sync page 수집의 계약이고
- * admission에는 적용하지 않는다(AC-5·AD-21, SPEC의 Design Notes가 그 범위를 못 박았다).
+ * <p><b>admission 호출은 자동 재시도하지 않는다.</b> 시간초과·429·5xx를 포함해 한 번 실패하면 그대로 거절이며,
+ * 다시 시작하는 것은 사용자의 조작이다. {@code ERD-1.0.0} §2.5의 3회 backoff는 sync page 수집의 계약이고
+ * ({@link #collectWindows}, Story 2.12) admission에는 적용하지 않는다(AC-5·AD-21). 호출 예산 — 자격정보별·공개
+ * token bucket, 동시 수집 2개, 잔여 헤더 대기, HTTP 403의 10분 회로 — 은 모든 Bybit 호출에 건다
+ * ({@link BybitCallBudget}).
  *
  * <p><b>모르는 값과 새 필드는 거부한다.</b> 허용 목록을 이 클래스가 소유하고 목록에 없으면 닫는다.
  * 낙관적 해석을 하지 않으므로 "아마 읽기 전용일 것"이라는 경로가 없다.
@@ -195,6 +199,17 @@ class BybitAdapter {
 
     private final Clock clock;
 
+    /** The process's call budget (Story 2.12): buckets, concurrent collections, limit headers and the IP circuit. */
+    private final BybitCallBudget budget;
+
+    /** Retry-After-like reset header of a signed answer, epoch milliseconds (ERD-1.0.0 §2.5). */
+    private static final String HEADER_LIMIT = "X-Bapi-Limit";
+    private static final String HEADER_LIMIT_STATUS = "X-Bapi-Limit-Status";
+    private static final String HEADER_LIMIT_RESET = "X-Bapi-Limit-Reset-Timestamp";
+
+    /** The one {@code retCode} this adapter reads apart: the provider's rate limit, retried on a collection page. */
+    private static final int RATE_LIMIT_RET_CODE = 10006;
+
     /**
      * 생성자가 하나다.
      *
@@ -208,6 +223,7 @@ class BybitAdapter {
         String ip = properties.bybit().reservedIp();
         this.reservedIp = ip == null || ip.isBlank() ? null : ip.trim();
         this.requestTimeout = properties.bybit().requestTimeoutOrDefault();
+        this.budget = new BybitCallBudget(properties.bybit().budgetOrDefault());
         this.http =
                 HttpClient.newBuilder()
                         // 리다이렉트를 따라가지 않는다. 서명된 요청이 다른 호스트로 재전송되면
@@ -337,7 +353,7 @@ class BybitAdapter {
     /** Captures one server cutoff and exhausts every required type, range, and cursor. */
     SourceConnectionApi.CollectionResult collectInitialInputs(SourceCredentials credentials, String expectedAccountRef, Instant t0,
             @Nullable Instant fixedTc, Consumer<Instant> scopeConsumer,
-            Consumer<SourceConnectionApi.CollectionPage> pageConsumer) {
+            Consumer<SourceConnectionApi.CollectionPage> pageConsumer, BooleanSupplier alive) {
         if (!isConfigured()) return rejectedCollection(SourceRejectionReason.UNAVAILABLE);
         if (!isHeaderSafe(credentials.apiKey()) || !isAcceptable(credentials.apiSecret()))
             return rejectedCollection(SourceRejectionReason.INVALID_FORMAT);
@@ -359,85 +375,148 @@ class BybitAdapter {
             if (!tc.isAfter(t0)) return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
             scopeConsumer.accept(tc);
         }
-        return collect(credentials, expectedAccountRef, t0, t0, tc, pageConsumer);
+        return collect(credentials, expectedAccountRef, t0, t0, tc, pageConsumer, alive);
     }
 
     /**
-     * The incremental collection of an active plan (Story 2.11). The cutoff {@code tc} was fixed by the
-     * caller from the server time before any signed call, so this never asks the time API; the windows start
-     * at {@code from} (never before {@code t0}) and still end at the fixed {@code tc}. Events are still judged
-     * against the whole {@code (t0, tc]} — a window that starts later only asks less of the provider.
-     */
-    SourceConnectionApi.CollectionResult collectIncrementalInputs(SourceCredentials credentials,
-            String expectedAccountRef, Instant t0, Instant from, Instant tc,
-            Consumer<SourceConnectionApi.CollectionPage> pageConsumer) {
-        if (!isConfigured()) return rejectedCollection(SourceRejectionReason.UNAVAILABLE);
-        if (!isHeaderSafe(credentials.apiKey()) || !isAcceptable(credentials.apiSecret()))
-            return rejectedCollection(SourceRejectionReason.INVALID_FORMAT);
-        if (from.isBefore(t0) || !tc.isAfter(from)) return rejectedCollection(SourceRejectionReason.INVALID_FORMAT);
-        return collect(credentials, expectedAccountRef, t0, from, tc, pageConsumer);
-    }
-
-    /**
-     * The collection core both collections share: key facts, account mode, the wallet's totalEquity, then
-     * every required type, window and cursor from {@code from} to {@code cutoff}.
-     *
-     * <p>A transport rejection is read first at every call. Without it a timeout, a rate limit or a 5xx folds
-     * into the call site's fallback — a timed-out key check would read as an authentication rejection.
+     * The Story 2.4 collection over the shared core: contiguous windows of at most seven days from {@code from} to
+     * {@code cutoff}, the wallet included, its waits and page retries bound to the caller's lease ({@code alive}). A
+     * collection that stopped because the lease no longer holds answers {@code UNAVAILABLE}: the caller checks its
+     * own lease first and does not act on it.
      */
     private SourceConnectionApi.CollectionResult collect(SourceCredentials credentials, String expectedAccountRef,
-            Instant t0, Instant from, Instant cutoff, Consumer<SourceConnectionApi.CollectionPage> pageConsumer) {
-        Call keyCall = call(credentials, QUERY_API_PATH, "");
-        if (keyCall.rejection() != null) return rejectedCollection(keyCall.rejection());
-        JsonNode keyFacts = resultOf(keyCall);
-        if (keyFacts == null) return rejectedCollection(reasonOf(keyCall, SourceRejectionReason.AUTHENTICATION_REJECTED));
-        SourceRejectionReason keyVerdict = judgeKey(keyFacts);
-        if (keyVerdict != null) return rejectedCollection(keyVerdict);
-        String accountRef = text(keyFacts, "userID");
-        if (accountRef == null || accountRef.isBlank()) return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
-        if (!expectedAccountRef.equals(accountRef)) return rejectedCollection(SourceRejectionReason.SUB_ACCOUNT);
+            Instant t0, Instant from, Instant cutoff, Consumer<SourceConnectionApi.CollectionPage> pageConsumer,
+            BooleanSupplier alive) {
+        var result = collectWindows(credentials, expectedAccountRef, t0, cutoff, contiguousWindows(from, cutoff), true,
+                pageConsumer, alive);
+        return switch (result) {
+            case SourceConnectionApi.WindowCollectionResult.Collected collected ->
+                    new SourceConnectionApi.CollectionResult.Collected(collected.value().observation());
+            case SourceConnectionApi.WindowCollectionResult.Rejected rejected -> rejectedCollection(rejected.reason());
+            case SourceConnectionApi.WindowCollectionResult.Stopped stopped ->
+                    rejectedCollection(SourceRejectionReason.UNAVAILABLE);
+        };
+    }
 
-        Call accountCall = call(credentials, ACCOUNT_INFO_PATH, "");
-        if (accountCall.rejection() != null) return rejectedCollection(accountCall.rejection());
-        JsonNode account = resultOf(accountCall);
-        if (account == null) return rejectedCollection(reasonOf(accountCall, SourceRejectionReason.AUTHENTICATION_REJECTED));
-        if (!isSupportedAccountMode(account)) return rejectedCollection(SourceRejectionReason.UNSUPPORTED_ACCOUNT_MODE);
-
-        Instant receivedAt = Instant.now(this.clock);
-        Call walletCall = call(credentials, WALLET_BALANCE_PATH, WALLET_BALANCE_QUERY);
-        if (walletCall.rejection() != null) return rejectedCollection(walletCall.rejection());
-        JsonNode wallet = resultOf(walletCall);
-        if (wallet == null) return rejectedCollection(reasonOf(walletCall, SourceRejectionReason.WALLET_UNAVAILABLE));
-        if (!hasUsableUnifiedEquity(wallet)) return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
-        JsonNode envelopeTime = walletCall.body().get("time");
-        if (envelopeTime == null || !envelopeTime.isIntegralNumber() || envelopeTime.asLong() <= 0)
-            return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
-
-        boolean review = false;
-        int completedPages = 0;
+    /** {@code [from, cutoff]} as contiguous windows of at most seven days, in order. */
+    static List<SourceConnectionApi.CollectionWindow> contiguousWindows(Instant from, Instant cutoff) {
+        List<SourceConnectionApi.CollectionWindow> windows = new ArrayList<>();
         Instant start = from;
         while (start.isBefore(cutoff)) {
             Instant end = start.plus(MAX_WINDOW_MILLIS, ChronoUnit.MILLIS);
             if (end.isAfter(cutoff)) end = cutoff;
+            windows.add(new SourceConnectionApi.CollectionWindow(start, end));
+            start = end;
+        }
+        return windows;
+    }
+
+    /**
+     * The collection core every sync purpose shares (Story 2.12): key facts, account mode, the wallet's totalEquity
+     * when asked, then every required type and cursor of exactly the given windows, in order.
+     *
+     * <p>A transport rejection is read first at every call. Without it a timeout, a rate limit or a 5xx folds into the
+     * call site's fallback — a timed-out key check would read as an authentication rejection.
+     *
+     * <p>A collection page — a Transaction Log page or the wallet — that times out, or answers 429, {@code 10006} or
+     * 5xx is asked again, the same page, up to the budget's three retries (2, 10 and 30 seconds plus jitter; after a
+     * {@code 10006}, never before its reset time). The key and account checks are not retried, nor is any
+     * authentication, permission, schema or semantic failure; an IP ban opens the circuit and ends the collection.
+     * Every retry and every wait checks {@code alive}: a caller that lost its lease stops, and a partial page is never
+     * handed on. At most two collections run at once in this process.
+     */
+    SourceConnectionApi.WindowCollectionResult collectWindows(SourceCredentials credentials, String expectedAccountRef,
+            Instant t0, Instant tc, List<SourceConnectionApi.CollectionWindow> windows, boolean includeWallet,
+            Consumer<SourceConnectionApi.CollectionPage> pageConsumer, BooleanSupplier alive) {
+        if (!isConfigured()) return rejectedWindows(SourceRejectionReason.UNAVAILABLE, 0, 0);
+        if (!isHeaderSafe(credentials.apiKey()) || !isAcceptable(credentials.apiSecret()))
+            return rejectedWindows(SourceRejectionReason.INVALID_FORMAT, 0, 0);
+        if (!tc.isAfter(t0) || (windows.isEmpty() && !includeWallet))
+            return rejectedWindows(SourceRejectionReason.INVALID_FORMAT, 0, 0);
+        for (SourceConnectionApi.CollectionWindow window : windows) {
+            if (window.start().isBefore(t0) || window.end().isAfter(tc) || !window.end().isAfter(window.start())
+                    || window.end().toEpochMilli() - window.start().toEpochMilli() > MAX_WINDOW_MILLIS)
+                return rejectedWindows(SourceRejectionReason.INVALID_FORMAT, 0, 0);
+        }
+        BybitCallBudget.Slot slot = this.budget.acquireCollection(alive);
+        if (slot == null) return new SourceConnectionApi.WindowCollectionResult.Stopped(0, 0);
+        try (slot) {
+            return collectWithin(credentials, expectedAccountRef, t0, tc, windows, includeWallet, pageConsumer, alive);
+        }
+    }
+
+    private SourceConnectionApi.WindowCollectionResult collectWithin(SourceCredentials credentials,
+            String expectedAccountRef, Instant t0, Instant tc, List<SourceConnectionApi.CollectionWindow> windows,
+            boolean includeWallet, Consumer<SourceConnectionApi.CollectionPage> pageConsumer, BooleanSupplier alive) {
+        Call keyCall = call(credentials, QUERY_API_PATH, "", alive);
+        if (keyCall.stopped()) return new SourceConnectionApi.WindowCollectionResult.Stopped(0, 0);
+        if (keyCall.rejection() != null) return rejectedWindows(keyCall.rejection(), 0, 0);
+        JsonNode keyFacts = resultOf(keyCall);
+        if (keyFacts == null)
+            return rejectedWindows(reasonOf(keyCall, SourceRejectionReason.AUTHENTICATION_REJECTED), 0, 0);
+        SourceRejectionReason keyVerdict = judgeKey(keyFacts);
+        if (keyVerdict != null) return rejectedWindows(keyVerdict, 0, 0);
+        String accountRef = text(keyFacts, "userID");
+        if (accountRef == null || accountRef.isBlank()) return rejectedWindows(SourceRejectionReason.RESPONSE_FORMAT, 0, 0);
+        if (!expectedAccountRef.equals(accountRef)) return rejectedWindows(SourceRejectionReason.SUB_ACCOUNT, 0, 0);
+
+        Call accountCall = call(credentials, ACCOUNT_INFO_PATH, "", alive);
+        if (accountCall.stopped()) return new SourceConnectionApi.WindowCollectionResult.Stopped(0, 0);
+        if (accountCall.rejection() != null) return rejectedWindows(accountCall.rejection(), 0, 0);
+        JsonNode account = resultOf(accountCall);
+        if (account == null)
+            return rejectedWindows(reasonOf(accountCall, SourceRejectionReason.AUTHENTICATION_REJECTED), 0, 0);
+        if (!isSupportedAccountMode(account)) return rejectedWindows(SourceRejectionReason.UNSUPPORTED_ACCOUNT_MODE, 0, 0);
+
+        int[] retries = {0};
+        String equity = null;
+        Instant measuredAt = null;
+        Instant receivedAt = null;
+        if (includeWallet) {
+            Call walletCall = collectionCall(credentials, WALLET_BALANCE_PATH, WALLET_BALANCE_QUERY, alive, retries);
+            if (walletCall.stopped()) return new SourceConnectionApi.WindowCollectionResult.Stopped(0, retries[0]);
+            if (walletCall.rejection() != null) return rejectedWindows(walletCall.rejection(), 0, retries[0]);
+            // The attempt that answered: a retried wallet was received after its last try, not its first.
+            receivedAt = walletCall.receivedAt();
+            JsonNode wallet = resultOf(walletCall);
+            if (wallet == null)
+                return rejectedWindows(reasonOf(walletCall, SourceRejectionReason.WALLET_UNAVAILABLE), 0, retries[0]);
+            if (!hasUsableUnifiedEquity(wallet)) return rejectedWindows(SourceRejectionReason.RESPONSE_FORMAT, 0, retries[0]);
+            JsonNode envelopeTime = walletCall.body().get("time");
+            if (envelopeTime == null || !envelopeTime.isIntegralNumber() || envelopeTime.asLong() <= 0)
+                return rejectedWindows(SourceRejectionReason.RESPONSE_FORMAT, 0, retries[0]);
+            equity = wallet.get("list").get(0).get("totalEquity").asString();
+            measuredAt = Instant.ofEpochMilli(envelopeTime.asLong());
+        }
+
+        boolean review = false;
+        int completedPages = 0;
+        for (SourceConnectionApi.CollectionWindow window : windows) {
+            Instant start = window.start();
+            Instant end = window.end();
             for (String type : List.of("TRANSFER_IN", "TRANSFER_OUT")) {
                 String cursor = null;
                 Set<String> cursors = new HashSet<>();
                 int pageCount = 0;
                 do {
-                    if (++pageCount > 10000) return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
+                    if (++pageCount > 10000)
+                        return rejectedWindows(SourceRejectionReason.RESPONSE_FORMAT, completedPages, retries[0]);
                     String query = transactionQuery(type, start, end, cursor);
-                    Instant requestedAt = Instant.now(this.clock);
-                    Call pageCall = call(credentials, TRANSACTION_LOG_PATH, query);
-                    Instant pageReceivedAt = Instant.now(this.clock);
-                    if (pageCall.rejection() != null) return rejectedCollection(pageCall.rejection());
+                    Call pageCall = collectionCall(credentials, TRANSACTION_LOG_PATH, query, alive, retries);
+                    if (pageCall.stopped())
+                        return new SourceConnectionApi.WindowCollectionResult.Stopped(completedPages, retries[0]);
+                    if (pageCall.rejection() != null)
+                        return rejectedWindows(pageCall.rejection(), completedPages, retries[0]);
                     JsonNode page = resultOf(pageCall);
-                    if (page == null) return rejectedCollection(reasonOf(pageCall, SourceRejectionReason.PROVIDER_UNAVAILABLE));
+                    if (page == null)
+                        return rejectedWindows(reasonOf(pageCall, SourceRejectionReason.PROVIDER_UNAVAILABLE),
+                                completedPages, retries[0]);
                     JsonNode list = page.get("list");
                     JsonNode next = page.get("nextPageCursor");
                     if (list == null || !list.isArray() || next == null || !next.isString())
-                        return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
+                        return rejectedWindows(SourceRejectionReason.RESPONSE_FORMAT, completedPages, retries[0]);
                     if (list.size()>TRANSACTION_PAGE_SIZE)
-                        return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
+                        return rejectedWindows(SourceRejectionReason.RESPONSE_FORMAT, completedPages, retries[0]);
                     Instant first = null;
                     Instant last = null;
                     int count = 0;
@@ -459,7 +538,7 @@ class BybitAdapter {
                                 || !("TRANSFER_IN".equals(eventType) || "TRANSFER_OUT".equals(eventType))) {
                             pageReview = true;
                         }
-                        if (eventAt != null && (eventAt.isAfter(t0) && !eventAt.isAfter(cutoff))) {
+                        if (eventAt != null && (eventAt.isAfter(t0) && !eventAt.isAfter(tc))) {
                             first = first == null || eventAt.isBefore(first) ? eventAt : first;
                             last = last == null || eventAt.isAfter(last) ? eventAt : last;
                         }
@@ -469,10 +548,12 @@ class BybitAdapter {
                     }
                     String nextCursor = next.asString();
                     boolean hasNext = !nextCursor.isBlank();
-                    if (hasNext && !cursors.add(nextCursor)) return rejectedCollection(SourceRejectionReason.RESPONSE_FORMAT);
+                    if (hasNext && !cursors.add(nextCursor))
+                        return rejectedWindows(SourceRejectionReason.RESPONSE_FORMAT, completedPages, retries[0]);
+                    // The times of the try that answered (a retried page's last one), not of the first try.
                     var pageEvidence = new SourceConnectionApi.PageEvidence(type, start, end,
-                            sha256(cursor == null ? "FIRST" : cursor), requestedAt, pageReceivedAt,
-                            count, first, last, hasNext);
+                            sha256(cursor == null ? "FIRST" : cursor), Objects.requireNonNull(pageCall.requestedAt()),
+                            Objects.requireNonNull(pageCall.receivedAt()), count, first, last, hasNext);
                     pageConsumer.accept(new SourceConnectionApi.CollectionPage(pageEvidence,
                             List.copyOf(events), pageReview));
                     review |= pageReview;
@@ -480,25 +561,51 @@ class BybitAdapter {
                     cursor = hasNext ? nextCursor : null;
                 } while (cursor != null);
             }
-            start = end;
         }
-        JsonNode equity = wallet.get("list").get(0).get("totalEquity");
-        return new SourceConnectionApi.CollectionResult.Collected(
-                new SourceConnectionApi.CollectionObservation(accountRef, equity.asString(),
-                        Instant.ofEpochMilli(envelopeTime.asLong()), receivedAt, cutoff, completedPages,
-                        review, review ? "UNKNOWN_OR_MALFORMED_EVENT" : null, POLICY_VERSION));
+        return new SourceConnectionApi.WindowCollectionResult.Collected(
+                new SourceConnectionApi.WindowCollection(accountRef, equity, measuredAt, receivedAt, tc, completedPages,
+                        retries[0], review, review ? "UNKNOWN_OR_MALFORMED_EVENT" : null, POLICY_VERSION));
+    }
+
+    /**
+     * One collection page, asked again on a retryable failure within the budget's retries (ERD-1.0.0 §2.5). A page
+     * waits first while the provider's own limit headers say the remaining budget is low. {@link Call#stoppedCall} when
+     * {@code alive} turned false during a wait: the caller stops and hands nothing on.
+     */
+    private Call collectionCall(SourceCredentials credentials, String path, String query,
+            BooleanSupplier alive, int[] retries) {
+        for (int attempt = 0; ; attempt++) {
+            if (!this.budget.awaitPageSlot(credentials.apiKey(), alive)) return Call.stoppedCall();
+            Call call = call(credentials, path, query, alive);
+            if (call.stopped() || call.rejection() == null || !call.retryable() || attempt >= this.budget.maxRetries())
+                return call;
+            if (!this.budget.pause(this.budget.retryDelay(attempt, call.resetAtMillis()), alive)) return Call.stoppedCall();
+            retries[0]++;
+        }
+    }
+
+    private static SourceConnectionApi.WindowCollectionResult rejectedWindows(SourceRejectionReason reason, int pages,
+            int retries) {
+        return new SourceConnectionApi.WindowCollectionResult.Rejected(reason, pages, retries);
     }
 
     private Call publicCall(String path) {
         return publicCall(path, "");
     }
 
-    /** An unsigned GET. No API key, timestamp or signature header is attached. */
+    /**
+     * An unsigned GET. No API key, timestamp or signature header is attached. It takes a token of the service-wide
+     * public bucket first and is held back without a request while the IP circuit is open.
+     */
     private Call publicCall(String path, String query) {
+        if (this.budget.circuitOpen()) return Call.refused(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        if (!this.budget.acquirePublic(() -> true)) return Call.refused(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        // A ban can open the circuit while the token was awaited: looked at again, nothing goes out.
+        if (this.budget.circuitOpen()) return Call.refused(SourceRejectionReason.PROVIDER_UNAVAILABLE);
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(this.baseUrl + path + (query.isEmpty() ? "" : "?" + query)))
                 .timeout(this.requestTimeout).header("Accept", "application/json").GET().build();
-        return send(request);
+        return send(request, null);
     }
 
     /**
@@ -796,16 +903,61 @@ class BybitAdapter {
         return value.matches("-?\\d+(\\.\\d+)?");
     }
 
-    /** 한 번의 호출과 그 결과. 거절이 정해졌으면 본문은 없다. */
-    private record Call(@Nullable JsonNode body, @Nullable SourceRejectionReason rejection) {}
+    /**
+     * 한 번의 호출과 그 결과. 거절이 정해졌으면 본문은 없다.
+     *
+     * @param retryable 수집 페이지라면 같은 페이지를 다시 물어도 되는 거절인가 — 시간초과·429·{@code 10006}·5xx
+     * @param resetAtMillis {@code 10006}이 알린 reset 시각(epoch ms). 그 앞에는 다시 묻지 않는다
+     */
+    private record Call(@Nullable JsonNode body, @Nullable SourceRejectionReason rejection, boolean retryable,
+            @Nullable Long resetAtMillis, boolean stopped, @Nullable Instant requestedAt, @Nullable Instant receivedAt) {
+        Call(@Nullable JsonNode body, @Nullable SourceRejectionReason rejection) {
+            this(body, rejection, false, null, false, null, null);
+        }
+
+        static Call refused(SourceRejectionReason reason) {
+            return new Call(null, reason, false, null, false, null, null);
+        }
+
+        static Call retryable(SourceRejectionReason reason, @Nullable Long resetAtMillis) {
+            return new Call(null, reason, true, resetAtMillis, false, null, null);
+        }
+
+        /** Nothing was sent: {@code alive} turned false while the call waited for its token or its retry. */
+        static Call stoppedCall() {
+            return new Call(null, null, false, null, true, null, null);
+        }
+
+        /** The same answer, with the moments the request went out and its answer came back. */
+        Call at(Instant requested, Instant received) {
+            return new Call(this.body, this.rejection, this.retryable, this.resetAtMillis, this.stopped, requested,
+                    received);
+        }
+    }
 
     /**
-     * 서명된 GET 하나. <b>재시도하지 않는다.</b>
-     *
-     * <p>전송 계층의 실패가 여기서 거절로 접힌다 — 시간초과·429·5xx·JSON 아님이 각각 다른 값이다.
-     * 제공자가 쓴 문장은 어느 경우에도 나르지 않는다.
+     * A signed call outside a collection (the connection admission, the equity read): no lease to watch, so it only
+     * waits for its token. A call that never went out — its token wait was interrupted — is {@code UNAVAILABLE}, never
+     * folded into the call site's fallback (an authentication rejection would blame the user's key for it).
      */
     private Call call(SourceCredentials credentials, String path, String query) {
+        Call call = call(credentials, path, query, () -> true);
+        return call.stopped() ? Call.refused(SourceRejectionReason.UNAVAILABLE) : call;
+    }
+
+    /**
+     * 서명된 GET 하나. <b>스스로 재시도하지 않는다</b> — 같은 페이지를 다시 묻는 것은 수집 루프의 몫이다
+     * ({@link #collectionCall}).
+     *
+     * <p>전송 계층의 실패가 여기서 거절로 접힌다 — 시간초과·429·5xx·JSON 아님이 각각 다른 값이다.
+     * 제공자가 쓴 문장은 어느 경우에도 나르지 않는다. 보내기 전에 그 자격정보의 token을 받고, IP 회로가
+     * 열려 있으면 요청 없이 거절한다.
+     */
+    private Call call(SourceCredentials credentials, String path, String query, BooleanSupplier alive) {
+        if (this.budget.circuitOpen()) return Call.refused(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        if (!this.budget.acquireSigned(credentials.apiKey(), alive)) return Call.stoppedCall();
+        // A ban can open the circuit while the token was awaited: looked at again, nothing goes out.
+        if (this.budget.circuitOpen()) return Call.refused(SourceRejectionReason.PROVIDER_UNAVAILABLE);
         String timestamp = Long.toString(this.clock.millis());
         String signature = sign(credentials.apiSecret(), timestamp + credentials.apiKey() + RECV_WINDOW + query);
         if (signature == null) {
@@ -822,44 +974,78 @@ class BybitAdapter {
                         .header("Accept", "application/json")
                         .GET()
                         .build();
-        return send(request);
+        return send(request, credentials.apiKey());
     }
 
-    private Call send(HttpRequest request) {
+    /**
+     * 요청 하나를 보내고 응답을 거절 값으로 접는다.
+     *
+     * <p>HTTP 403은 IP 차단이다(ERD-1.0.0 §2.5) — 모든 Bybit 호출에 회로를 열고 제공자 장애로 답한다. Bybit의 키
+     * 오류는 200 + {@code retCode}로 온다. 429와 {@code retCode 10006}은 rate limit, 시간초과·5xx는 제공자 장애이며
+     * 넷 다 수집 페이지라면 다시 물을 수 있다. 서명된 호출은 응답의 {@code X-Bapi-Limit*} 헤더를 예산에 남긴다.
+     *
+     * @param apiKey 서명된 호출의 자격정보, 공개 호출은 {@code null}
+     */
+    private Call send(HttpRequest request, @Nullable String apiKey) {
+        Instant requested = Instant.now(this.clock);
+        Call answer = exchange(request, apiKey);
+        return answer.at(requested, Instant.now(this.clock));
+    }
+
+    private Call exchange(HttpRequest request, @Nullable String apiKey) {
         HttpResponse<String> response;
         try {
             response = this.http.send(request, HttpResponse.BodyHandlers.ofString());
         } catch (HttpTimeoutException timeout) {
-            return new Call(null, SourceRejectionReason.TIMEOUT);
+            return Call.retryable(SourceRejectionReason.TIMEOUT, null);
         } catch (IOException failure) {
-            return new Call(null, SourceRejectionReason.PROVIDER_UNAVAILABLE);
+            return Call.refused(SourceRejectionReason.PROVIDER_UNAVAILABLE);
         } catch (InterruptedException interrupted) {
             // 인터럽트 상태를 되살린다. 삼키면 상위 스레드의 취소가 사라진다.
             Thread.currentThread().interrupt();
-            return new Call(null, SourceRejectionReason.PROVIDER_UNAVAILABLE);
+            return Call.refused(SourceRejectionReason.PROVIDER_UNAVAILABLE);
+        }
+        Long resetAt = headerNumber(response, HEADER_LIMIT_RESET);
+        if (apiKey != null) {
+            this.budget.observe(apiKey, headerNumber(response, HEADER_LIMIT), headerNumber(response, HEADER_LIMIT_STATUS),
+                    resetAt);
+        }
+        if (response.statusCode() == 403) {
+            // An IP rate ban: every Bybit call stops for the circuit's duration. Nothing of the body is read.
+            this.budget.openCircuit();
+            return Call.refused(SourceRejectionReason.PROVIDER_UNAVAILABLE);
         }
         if (response.statusCode() == 429) {
-            return new Call(null, SourceRejectionReason.RATE_LIMITED);
+            return Call.retryable(SourceRejectionReason.RATE_LIMITED, resetAt);
         }
         if (response.statusCode() >= 500) {
-            return new Call(null, SourceRejectionReason.PROVIDER_UNAVAILABLE);
+            return Call.retryable(SourceRejectionReason.PROVIDER_UNAVAILABLE, null);
         }
         if (response.statusCode() != 200) {
             /*
-             * 200도 429도 5xx도 아니다. 제공자가 자격정보를 거절하는 모양 중 하나이며, 본문을
+             * 200도 403도 429도 5xx도 아니다. 제공자가 자격정보를 거절하는 모양 중 하나이며, 본문을
              * 읽어 사유를 복원하지 않는다 — 그 문장은 우리 오류 계약의 값이 아니다.
              */
-            return new Call(null, SourceRejectionReason.AUTHENTICATION_REJECTED);
+            return Call.refused(SourceRejectionReason.AUTHENTICATION_REJECTED);
         }
         try {
             JsonNode body = JSON.readTree(response.body());
-            return body.isObject()
-                    ? new Call(body, null)
-                    : new Call(null, SourceRejectionReason.RESPONSE_FORMAT);
+            if (!body.isObject()) return Call.refused(SourceRejectionReason.RESPONSE_FORMAT);
+            JsonNode code = body.get("retCode");
+            if (code != null && code.isNumber() && code.asInt() == RATE_LIMIT_RET_CODE)
+                return Call.retryable(SourceRejectionReason.RATE_LIMITED, resetAt);
+            return new Call(body, null);
         } catch (JacksonException malformed) {
             // 원문을 로그에도 응답에도 싣지 않는다. 형식이 아니라는 사실 하나만 남는다.
-            return new Call(null, SourceRejectionReason.RESPONSE_FORMAT);
+            return Call.refused(SourceRejectionReason.RESPONSE_FORMAT);
         }
+    }
+
+    /** A header as a whole number, or {@code null} when it is missing or not one. */
+    private static @Nullable Long headerNumber(HttpResponse<String> response, String name) {
+        String value = response.headers().firstValue(name).orElse(null);
+        if (value == null || !value.trim().matches("[0-9]{1,18}")) return null;
+        return Long.parseLong(value.trim());
     }
 
     /**

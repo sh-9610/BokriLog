@@ -173,29 +173,47 @@ class DashboardTrustTest {
 
     /**
      * Story 2.11: the sync facts. No sync can run → stale, no action; a long gap → stale, a choice; the latest
-     * attempt needed review → stale, sync again, and the input reliability is review required for all six; the
-     * latest attempt failed or was blocked → stale, sync again. Each wins over recent times; a running job wins
-     * over all of them. A successful or no attempt leaves the times to decide.
+     * attempt failed or was blocked → stale, sync again. Each wins over recent times; a running job wins over all of
+     * them. A successful or no attempt leaves the times to decide.
+     *
+     * <p>Story 2.12: the latest sync needed review → stale, and a precision verification (not another sync) is the
+     * next action of both axes, the input reliability review required for all six. A verification of the current base
+     * that itself ended in a persistent review wins over the sync's review on both axes and over the long gap on the
+     * freshness axis (C3), with no action at all — unusable when the history is out of the provider's reach.
      */
-    @ParameterizedTest(name = "{0} / {1} / syncing={2}")
+    @ParameterizedTest(name = "{0} / {1} / syncing={2} / verification={3}")
     @CsvSource({
-        "UNAVAILABLE,,false,STALE,SYNC_UNAVAILABLE,NONE,CONFIRMED,INPUTS_VERIFIED",
-        "LONG_GAP,,false,STALE,LONG_GAP,CHOOSE_CONTINUATION,CONFIRMED,INPUTS_VERIFIED",
-        "LONG_GAP,BLOCKED,false,STALE,LONG_GAP,CHOOSE_CONTINUATION,CONFIRMED,INPUTS_VERIFIED",
-        "AVAILABLE,NEEDS_REVIEW,false,STALE,LAST_SYNC_NEEDS_REVIEW,SYNC,REVIEW_REQUIRED,SYNC_REVIEW_REQUIRED",
-        "COOLDOWN,FAILED,false,STALE,LAST_SYNC_UNSUCCESSFUL,SYNC,CONFIRMED,INPUTS_VERIFIED",
-        "AVAILABLE,BLOCKED,false,STALE,LAST_SYNC_UNSUCCESSFUL,SYNC,CONFIRMED,INPUTS_VERIFIED",
-        "AVAILABLE,SUCCEEDED,false,FRESH,BOTH_WITHIN_WINDOW,NONE,CONFIRMED,INPUTS_VERIFIED",
-        "COOLDOWN,SUCCEEDED,false,FRESH,BOTH_WITHIN_WINDOW,NONE,CONFIRMED,INPUTS_VERIFIED",
-        "IN_PROGRESS,RUNNING,true,SYNCING,JOB_IN_PROGRESS,WAIT_FOR_SYNC,CONFIRMED,INPUTS_VERIFIED",
-        "IN_PROGRESS,NEEDS_REVIEW,true,SYNCING,JOB_IN_PROGRESS,WAIT_FOR_SYNC,REVIEW_REQUIRED,SYNC_REVIEW_REQUIRED",
+        "UNAVAILABLE,,false,,STALE,SYNC_UNAVAILABLE,NONE,CONFIRMED,INPUTS_VERIFIED,NONE",
+        "LONG_GAP,,false,,STALE,LONG_GAP,CHOOSE_CONTINUATION,CONFIRMED,INPUTS_VERIFIED,NONE",
+        "LONG_GAP,BLOCKED,false,,STALE,LONG_GAP,CHOOSE_CONTINUATION,CONFIRMED,INPUTS_VERIFIED,NONE",
+        "AVAILABLE,NEEDS_REVIEW,false,,STALE,LAST_SYNC_NEEDS_REVIEW,VERIFY,REVIEW_REQUIRED,SYNC_REVIEW_REQUIRED,VERIFY",
+        "COOLDOWN,FAILED,false,,STALE,LAST_SYNC_UNSUCCESSFUL,SYNC,CONFIRMED,INPUTS_VERIFIED,NONE",
+        "AVAILABLE,BLOCKED,false,,STALE,LAST_SYNC_UNSUCCESSFUL,SYNC,CONFIRMED,INPUTS_VERIFIED,NONE",
+        "AVAILABLE,SUCCEEDED,false,,FRESH,BOTH_WITHIN_WINDOW,NONE,CONFIRMED,INPUTS_VERIFIED,NONE",
+        "COOLDOWN,SUCCEEDED,false,,FRESH,BOTH_WITHIN_WINDOW,NONE,CONFIRMED,INPUTS_VERIFIED,NONE",
+        "IN_PROGRESS,RUNNING,true,,SYNCING,JOB_IN_PROGRESS,WAIT_FOR_SYNC,CONFIRMED,INPUTS_VERIFIED,NONE",
+        "IN_PROGRESS,NEEDS_REVIEW,true,,SYNCING,JOB_IN_PROGRESS,WAIT_FOR_SYNC,REVIEW_REQUIRED,SYNC_REVIEW_REQUIRED,VERIFY",
+        "AVAILABLE,NEEDS_REVIEW,false,SOURCE_EVENT_MISSING,STALE,LAST_VERIFICATION_NEEDS_REVIEW,NONE,REVIEW_REQUIRED,"
+            + "VERIFICATION_REVIEW_REQUIRED,NONE",
+        "COOLDOWN,NEEDS_REVIEW,false,SOURCE_REQUIRES_REVIEW,STALE,LAST_VERIFICATION_NEEDS_REVIEW,NONE,REVIEW_REQUIRED,"
+            + "VERIFICATION_REVIEW_REQUIRED,NONE",
+        "AVAILABLE,NEEDS_REVIEW,false,HISTORY_OUT_OF_RANGE,STALE,LAST_VERIFICATION_NEEDS_REVIEW,NONE,UNUSABLE,"
+            + "HISTORY_OUT_OF_RANGE,NONE",
+        "IN_PROGRESS,RUNNING,true,SOURCE_EVENT_MISSING,SYNCING,JOB_IN_PROGRESS,WAIT_FOR_SYNC,REVIEW_REQUIRED,"
+            + "VERIFICATION_REVIEW_REQUIRED,NONE",
+        // C3: a persistent verification review wins over the long gap — the continuation is not offered.
+        "LONG_GAP,NEEDS_REVIEW,false,SOURCE_EVENT_MISSING,STALE,LAST_VERIFICATION_NEEDS_REVIEW,NONE,REVIEW_REQUIRED,"
+            + "VERIFICATION_REVIEW_REQUIRED,NONE",
+        "LONG_GAP,NEEDS_REVIEW,false,HISTORY_OUT_OF_RANGE,STALE,LAST_VERIFICATION_NEEDS_REVIEW,NONE,UNUSABLE,"
+            + "HISTORY_OUT_OF_RANGE,NONE",
+        "LONG_GAP,NEEDS_REVIEW,false,,STALE,LONG_GAP,CHOOSE_CONTINUATION,REVIEW_REQUIRED,SYNC_REVIEW_REQUIRED,VERIFY",
     })
     void theSyncFactsDecideAStaleCauseAndAReviewOverRecentTimes(String availability, String latestStatus,
-            boolean syncing, String state, String cause, String action, String reliability,
-            String reliabilityCause) {
+            boolean syncing, String verificationReview, String state, String cause, String action, String reliability,
+            String reliabilityCause, String reliabilityAction) {
         var trust = DashboardTrust.judge(new DashboardTrust.Input(new DashboardTrust.Freshness(syncing, true, true),
                 "CONFIRMED", false, 0, MEASURED, VERIFIED, BASIS, metrics("CONFIRMED", "OFFICIAL"),
-                new DashboardTrust.SyncFacts(availability, latestStatus))).orElseThrow();
+                new DashboardTrust.SyncFacts(availability, latestStatus, verificationReview))).orElseThrow();
         assertThat(trust.freshness().state()).isEqualTo(state);
         assertThat(trust.freshness().cause()).isEqualTo(cause);
         assertThat(trust.freshness().nextAction()).isEqualTo(action);
@@ -205,8 +223,35 @@ class DashboardTrustTest {
         assertThat(trust.inputReliability().cause()).isEqualTo(reliabilityCause);
         assertThat(trust.inputReliability().lastNormalAt()).isEqualTo(VERIFIED);
         assertThat(trust.inputReliability().affectedMetrics())
-                .isEqualTo(reliability.equals("REVIEW_REQUIRED") ? SIX : List.of());
-        assertThat(trust.inputReliability().nextAction()).isEqualTo("NONE");
+                .isEqualTo(reliability.equals("CONFIRMED") ? List.of() : SIX);
+        assertThat(trust.inputReliability().nextAction()).isEqualTo(reliabilityAction);
+    }
+
+    /**
+     * R5: a sync's review asks for a precision verification only when one can run (now or after its cooldown); in a
+     * long gap it asks for the continuation, otherwise for nothing — on both axes. R6: a sync held by a persistent
+     * verification review is named by that review, not as "no sync can run"; the guard's own reasons still are.
+     */
+    @ParameterizedTest(name = "sync {0}/{1}, verification {2}, review {3}")
+    @CsvSource({
+        "AVAILABLE,,AVAILABLE,,LAST_SYNC_NEEDS_REVIEW,VERIFY,SYNC_REVIEW_REQUIRED,VERIFY",
+        "COOLDOWN,,COOLDOWN,,LAST_SYNC_NEEDS_REVIEW,VERIFY,SYNC_REVIEW_REQUIRED,VERIFY",
+        "AVAILABLE,,UNAVAILABLE,,LAST_SYNC_NEEDS_REVIEW,NONE,SYNC_REVIEW_REQUIRED,NONE",
+        "COOLDOWN,,LONG_GAP,,LAST_SYNC_NEEDS_REVIEW,CHOOSE_CONTINUATION,SYNC_REVIEW_REQUIRED,CHOOSE_CONTINUATION",
+        "UNAVAILABLE,RESTRICTED,UNAVAILABLE,,SYNC_UNAVAILABLE,NONE,SYNC_REVIEW_REQUIRED,NONE",
+        "UNAVAILABLE,REVIEW_HELD,NOT_USEFUL,SOURCE_EVENT_MISSING,LAST_VERIFICATION_NEEDS_REVIEW,NONE,"
+            + "VERIFICATION_REVIEW_REQUIRED,NONE",
+        "UNAVAILABLE,RESTRICTED,UNAVAILABLE,SOURCE_EVENT_MISSING,SYNC_UNAVAILABLE,NONE,VERIFICATION_REVIEW_REQUIRED,NONE",
+    })
+    void aSyncReviewAsksOnlyForWhatCanRun(String availability, String reason, String verification, String review,
+            String freshnessCause, String freshnessAction, String reliabilityCause, String reliabilityAction) {
+        var trust = DashboardTrust.judge(new DashboardTrust.Input(new DashboardTrust.Freshness(false, true, true),
+                "CONFIRMED", false, 0, MEASURED, VERIFIED, BASIS, metrics("CONFIRMED", "OFFICIAL"),
+                new DashboardTrust.SyncFacts(availability, reason, "NEEDS_REVIEW", review, verification))).orElseThrow();
+        assertThat(trust.freshness().cause()).isEqualTo(freshnessCause);
+        assertThat(trust.freshness().nextAction()).isEqualTo(freshnessAction);
+        assertThat(trust.inputReliability().cause()).isEqualTo(reliabilityCause);
+        assertThat(trust.inputReliability().nextAction()).isEqualTo(reliabilityAction);
     }
 
     private static DashboardTrust.Input input(String freshness, String input, String nature) {

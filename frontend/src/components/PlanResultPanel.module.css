@@ -46,6 +46,14 @@
   overflow-wrap: anywhere;
 }
 
+/* The range a held input reaches (Story 2.12), one range per line inside the axis. */
+.ranges {
+  display: grid;
+  gap: var(--space-1);
+  padding: 0;
+  list-style: none;
+}
+
 .line {
   display: block;
 }

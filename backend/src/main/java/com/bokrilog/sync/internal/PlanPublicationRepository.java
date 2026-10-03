@@ -356,6 +356,82 @@ class PlanPublicationRepository {
     }
 
     /**
+     * The flow difference of a version ({@code :c}) from the one it replaced ({@code :p}) for user {@code :u}, one
+     * row per source event (Story 2.12): {@code ADDED} (late when not after the previous version's verification),
+     * {@code REMOVED} and {@code VALUE_CHANGED} (the USD value or the estimated flag moved), with both versions'
+     * values, the price evidence kind and when the event was first observed. One text for the publication's insert
+     * and the evidence's consistency check. V12's backfill carries a copy of it with the two ids as columns; a test
+     * runs that copy against rows this one wrote and requires the same rows.
+     */
+    static final String CHANGE_DIFF = "SELECT COALESCE(n.source_event_id,o.source_event_id) AS source_event_id,"
+            + "CASE WHEN o.source_event_id IS NULL THEN 'ADDED' WHEN n.source_event_id IS NULL THEN 'REMOVED' "
+            + "ELSE 'VALUE_CHANGED' END AS change_kind,"
+            + "COALESCE(n.occurred_at,o.occurred_at)<=prev.cashflow_verified_through AS late,"
+            + "COALESCE(n.occurred_at,o.occurred_at) AS occurred_at,o.usd_value AS previous_usd_value,"
+            + "o.estimated AS previous_estimated,n.usd_value AS new_usd_value,n.estimated AS new_estimated,"
+            + "COALESCE(n.evidence_type,o.evidence_type) AS evidence_type,se.first_observed_at AS discovered_at "
+            + "FROM (SELECT f.source_event_id FROM sync_plan_calculation_flow f WHERE f.calculation_id IN (:c,:p) "
+            + "GROUP BY f.source_event_id) pairs "
+            + "JOIN sync_plan_calculation prev ON prev.calculation_id=:p AND prev.user_id=:u "
+            + "LEFT JOIN sync_plan_calculation_flow n ON n.calculation_id=:c AND n.source_event_id=pairs.source_event_id "
+            + "LEFT JOIN sync_plan_calculation_flow o ON o.calculation_id=:p AND o.source_event_id=pairs.source_event_id "
+            + "JOIN sync_initial_source_event se ON se.event_id=pairs.source_event_id AND se.user_id=:u "
+            + "WHERE o.source_event_id IS NULL OR n.source_event_id IS NULL "
+            + "OR o.usd_value::numeric IS DISTINCT FROM n.usd_value::numeric OR o.estimated IS DISTINCT FROM n.estimated";
+
+    /** Writes a new version's change rows ({@link #CHANGE_DIFF}) in its publishing transaction. */
+    void insertChanges(UUID user, UUID calculationId, UUID previousCalculationId) {
+        jdbc.sql("INSERT INTO sync_plan_calculation_change(calculation_id,source_event_id,user_id,previous_calculation_id,"
+                + "change_kind,late,occurred_at,previous_usd_value,previous_estimated,new_usd_value,new_estimated,"
+                + "evidence_type,discovered_at) SELECT :c,d.source_event_id,:u,:p,d.change_kind,d.late,d.occurred_at,"
+                + "d.previous_usd_value,d.previous_estimated,d.new_usd_value,d.new_estimated,d.evidence_type,"
+                + "d.discovered_at FROM (" + CHANGE_DIFF + ") d")
+            .param("c", calculationId).param("u", user).param("p", previousCalculationId).update();
+    }
+
+    /** One change row of a version, with the event's Bybit id and type. */
+    record ChangeRow(UUID sourceEventId, String sourceId, String transactionType, Instant occurredAt, String kind,
+            boolean late, @Nullable String previousUsd, @Nullable Boolean previousEstimated, @Nullable String newUsd,
+            @Nullable Boolean newEstimated, String evidenceType, Instant discoveredAt, UUID previousCalculationId) {}
+
+    /** A version's change rows, in event order. Empty for a first publication. */
+    List<ChangeRow> changes(UUID user, UUID calculationId) {
+        return jdbc.sql("SELECT ch.source_event_id,se.source_id,se.event_type,ch.occurred_at,ch.change_kind,ch.late,"
+                + "ch.previous_usd_value,ch.previous_estimated,ch.new_usd_value,ch.new_estimated,ch.evidence_type,"
+                + "ch.discovered_at,ch.previous_calculation_id FROM sync_plan_calculation_change ch "
+                + "JOIN sync_initial_source_event se ON se.event_id=ch.source_event_id AND se.user_id=ch.user_id "
+                + "WHERE ch.calculation_id=:c AND ch.user_id=:u ORDER BY ch.occurred_at,se.source_id")
+            .param("c", calculationId).param("u", user)
+            .query((rs, n) -> new ChangeRow(uuid(rs, 1), rs.getString(2), rs.getString(3), instant(rs, 4),
+                    rs.getString(5), rs.getBoolean(6), rs.getString(7), (Boolean) rs.getObject(8), rs.getString(9),
+                    (Boolean) rs.getObject(10), rs.getString(11), instant(rs, 12), uuid(rs, 13)))
+            .list();
+    }
+
+    /**
+     * Whether a version's change rows are exactly its {@link #CHANGE_DIFF}: as many rows as the difference has, each
+     * one equal to it in every stored field — the predecessor, the kind, the late flag, the event time, both USD
+     * values and estimated flags, the price evidence kind and the discovery time. The evidence, the history and the
+     * dashboard's change marker rely on it.
+     */
+    boolean changesConsistent(UUID user, UUID calculationId, UUID previousCalculationId) {
+        return jdbc.sql("WITH diff AS (" + CHANGE_DIFF + ") "
+                + "SELECT (SELECT count(*) FROM diff)=(SELECT count(*) FROM sync_plan_calculation_change "
+                + "WHERE calculation_id=:c AND user_id=:u) AND NOT EXISTS (SELECT 1 FROM sync_plan_calculation_change ch "
+                + "LEFT JOIN diff d ON d.source_event_id=ch.source_event_id WHERE ch.calculation_id=:c AND ch.user_id=:u "
+                + "AND (d.source_event_id IS NULL OR ch.previous_calculation_id IS DISTINCT FROM :p "
+                + "OR ch.change_kind IS DISTINCT FROM d.change_kind OR ch.late IS DISTINCT FROM d.late "
+                + "OR ch.occurred_at IS DISTINCT FROM d.occurred_at "
+                + "OR ch.previous_usd_value::numeric IS DISTINCT FROM d.previous_usd_value::numeric "
+                + "OR ch.previous_estimated IS DISTINCT FROM d.previous_estimated "
+                + "OR ch.new_usd_value::numeric IS DISTINCT FROM d.new_usd_value::numeric "
+                + "OR ch.new_estimated IS DISTINCT FROM d.new_estimated "
+                + "OR ch.evidence_type IS DISTINCT FROM d.evidence_type "
+                + "OR ch.discovered_at IS DISTINCT FROM d.discovered_at))")
+            .param("c", calculationId).param("u", user).param("p", previousCalculationId).query(Boolean.class).single();
+    }
+
+    /**
      * The plan's first pointer: an expected-version CAS against "no pointer yet" (version 0). A second
      * writer for the same plan inserts nothing and the caller rolls its publication back.
      */

@@ -10,6 +10,7 @@ import {
   type MetricName,
 } from '../content/planResult'
 import { planSyncContent } from '../content/planSync'
+import { planVerificationContent, type ChangeCounts } from '../content/planVerification'
 import { formatSeoulTime, isCanonicalDecimal, isPlainNonNegative } from '../format/decimal'
 
 export interface PlanResultMetric {
@@ -206,10 +207,17 @@ export function isInstant(value: unknown): value is string {
 }
 
 /**
- * The three triggers that admit a sync (SYNC-UX-1.0). A job may carry a trigger this screen does not know:
- * it is kept as it came and folded to safe copy where it is shown.
+ * The three triggers that admit a sync (SYNC-UX-1.0). A job may carry a trigger this screen does not know
+ * (Story 2.12 adds `SYSTEM` for the jobs the service admits): it is kept as it came and folded to safe copy
+ * where it is shown.
  */
 export type SyncTrigger = 'ENTRY' | 'VISIBILITY' | 'MANUAL'
+
+/**
+ * What a job of the plan's single job table is for (Story 2.12): a sync, a precision verification, or the
+ * catch-up after a long gap. Whatever the purpose, a plan has at most one job in progress.
+ */
+export type SyncPurpose = 'SYNC' | 'VERIFY' | 'CATCH_UP'
 
 /** A sync job's status: in progress (`QUEUED`·`RUNNING`), or one of four endings. */
 export type SyncJobStatus =
@@ -224,12 +232,15 @@ const SYNC_JOB_STATUSES: readonly string[] = [
 ]
 
 /**
- * One sync job as the server shows it (Story 2.11): codes and server times only. Every code — the trigger,
- * the status, the stage and the failure code — may be one this screen does not know; it is kept as it came
- * and folded to safe copy where it is shown. A status it does not know is an ending (not in progress).
+ * One sync job as the server shows it (Story 2.11): codes and server times only. Every code — the purpose,
+ * the reason, the trigger, the status, the stage and the failure code — may be one this screen does not
+ * know; it is kept as it came and folded to safe copy where it is shown. A status it does not know is an
+ * ending (not in progress). A job without a purpose (a server before Story 2.12) is a sync.
  */
 export interface SyncJob {
   readonly jobId: string
+  readonly purpose: string
+  readonly reason: string | null
   readonly trigger: string
   readonly status: string
   readonly stage: string | null
@@ -241,6 +252,11 @@ export interface SyncJob {
 /** Whether the job has not ended yet. */
 export function inProgress(job: SyncJob): boolean {
   return job.status === 'QUEUED' || job.status === 'RUNNING'
+}
+
+/** The job's purpose as the screen groups it: a purpose it does not know is shown with the syncs. */
+export function purposeOf(job: SyncJob): SyncPurpose {
+  return job.purpose === 'VERIFY' || job.purpose === 'CATCH_UP' ? job.purpose : 'SYNC'
 }
 
 /** Whether a sync may be asked for now, as the server judged it for the shown plan. */
@@ -295,14 +311,19 @@ function positiveInteger(value: unknown): value is number {
 export function parseSyncJob(value: unknown): SyncJob | null {
   const row = record(value)
   if (row === null) return null
-  const { jobId, trigger, status, stage, failureCode, admittedAt, finishedAt } = row
+  const { jobId, purpose, reason, trigger, status, stage, failureCode, admittedAt, finishedAt } =
+    row
   if (typeof jobId !== 'string' || jobId === '') return null
   if (typeof trigger !== 'string' || typeof status !== 'string') return null
+  if (!absent(purpose) && typeof purpose !== 'string') return null
+  if (!absent(reason) && typeof reason !== 'string') return null
   if (!absent(stage) && typeof stage !== 'string') return null
   if (!absent(failureCode) && typeof failureCode !== 'string') return null
   if (!isInstant(admittedAt) || !(absent(finishedAt) || isInstant(finishedAt))) return null
   const job: SyncJob = {
     jobId,
+    purpose: absent(purpose) ? 'SYNC' : purpose,
+    reason: absent(reason) ? null : reason,
     trigger,
     status,
     stage: absent(stage) ? null : stage,
@@ -345,7 +366,301 @@ export function parseSyncStatus(value: unknown): SyncStatus {
   return status
 }
 
-/** One validated dashboard response. Only `READY` carries financial fields, and its sync block. */
+/** One range a verification read again or reused: its kind and its bounds, as server instants. */
+export interface VerificationRange {
+  readonly kind: string
+  readonly start: string
+  readonly end: string
+}
+
+/** How the reread events compared with the official ones (Story 2.12): five counts. */
+export interface VerificationCounts {
+  readonly new: number
+  readonly same: number
+  readonly missing: number
+  readonly superseded: number
+  readonly conflict: number
+}
+
+/**
+ * The plan's latest verification or catch-up job, with the ranges it planned and what it found. A list of
+ * ranges the screen could not read is `null` — never an empty list, which would say there was none.
+ * `holdsResult` is true only for the job whose review holds the shown result: the persistent review of the
+ * current basis (the input reliability's `VERIFICATION_REVIEW_REQUIRED` or `HISTORY_OUT_OF_RANGE`).
+ */
+export interface VerificationJob extends SyncJob {
+  readonly targets: readonly VerificationRange[] | null
+  readonly reused: readonly VerificationRange[] | null
+  readonly counts: VerificationCounts | null
+  readonly holdsResult: boolean
+}
+
+/** What a precision verification would read if asked for now: the server's plan, before any admission. */
+export interface VerificationPreview {
+  readonly rangeStart: string
+  readonly unconfirmedFrom: string
+  readonly anomalyCount: number
+  readonly reusedUntil: string | null
+}
+
+/** Whether a precision verification may be asked for now, as the server judged it for the shown plan. */
+export type VerificationAvailability =
+  'AVAILABLE' | 'IN_PROGRESS' | 'COOLDOWN' | 'UNAVAILABLE' | 'NOT_USEFUL' | 'LONG_GAP'
+const VERIFICATION_AVAILABILITIES: readonly string[] = [
+  'AVAILABLE',
+  'IN_PROGRESS',
+  'COOLDOWN',
+  'UNAVAILABLE',
+  'NOT_USEFUL',
+  'LONG_GAP',
+]
+
+/**
+ * The `verification` block of a `READY` answer (Story 2.12): whether a precision verification can be asked
+ * for, why not (`UNAVAILABLE` only), in how many seconds it — or, after a long gap, the catch-up — is admitted
+ * again (a relative duration), the reason the server would record, what it would read, where a catch-up would
+ * start (`LONG_GAP` only), and the plan's latest verification or catch-up job.
+ */
+export interface VerificationStatus {
+  readonly availability: VerificationAvailability
+  readonly reason: string | null
+  readonly retryAfterSeconds: number | null
+  readonly suggestedReason: string | null
+  readonly preview: VerificationPreview | null
+  readonly catchUpFrom: string | null
+  readonly latest: VerificationJob | null
+}
+
+/**
+ * The verification block this screen cannot read: a verification is not offered, for a reason not known. The
+ * financial bundle beside it is still shown — like the sync block, it never makes the bundle unacceptable.
+ */
+export const UNKNOWN_VERIFICATION: VerificationStatus = {
+  availability: 'UNAVAILABLE',
+  reason: null,
+  retryAfterSeconds: null,
+  suggestedReason: null,
+  preview: null,
+  catchUpFrom: null,
+  latest: null,
+}
+
+function count(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0
+}
+
+/**
+ * A list of ranges, or `null` when it is not one: each a string kind and two instants, the start not after the
+ * end. The calculation evidence's change part (Story 2.12) shares it.
+ */
+export function parseRanges(value: unknown): readonly VerificationRange[] | null {
+  if (!Array.isArray(value)) return null
+  const ranges: VerificationRange[] = []
+  for (const entry of value) {
+    const range = record(entry)
+    if (range === null || typeof range.kind !== 'string') return null
+    if (!isInstant(range.start) || !isInstant(range.end)) return null
+    if (Date.parse(range.start) > Date.parse(range.end)) return null
+    ranges.push({ kind: range.kind, start: range.start, end: range.end })
+  }
+  return ranges
+}
+
+function parseCounts(value: unknown): VerificationCounts | null {
+  const row = record(value)
+  if (row === null) return null
+  const { new: added, same, missing, superseded, conflict } = row
+  if (![added, same, missing, superseded, conflict].every(count)) return null
+  return row as unknown as VerificationCounts
+}
+
+/**
+ * The latest verification job, or `null` when it is not one whole job. Its ranges and counts are details: a
+ * list that is not whole is `null` (shown in safe words), never a reason to drop the job. Whether it holds the
+ * shown result is true only when the server says so in a boolean.
+ */
+export function parseVerificationJob(value: unknown): VerificationJob | null {
+  const job = parseSyncJob(value)
+  const row = record(value)
+  if (job === null || row === null) return null
+  return {
+    ...job,
+    targets: parseRanges(row.targets),
+    reused: parseRanges(row.reused),
+    counts: parseCounts(row.counts),
+    holdsResult: row.holdsResult === true,
+  }
+}
+
+/**
+ * The job whose review holds the shown result, or `null`: the latest verification or catch-up, ended in review,
+ * and marked by the server as the persistent review of the current basis. Another job — one in progress, one
+ * that published, one of an earlier basis — never names the range a held input reaches.
+ */
+export function heldBy(verification: VerificationStatus): VerificationJob | null {
+  const job = verification.latest
+  return job !== null && job.holdsResult && job.status === 'NEEDS_REVIEW' ? job : null
+}
+
+/**
+ * Whether the plan is in a long gap (more than 30 days since the last check), as the verification block says
+ * it: a long gap by name, or a catch-up start — which the server sends whenever the gap is long, even while
+ * another state (a job in progress, an unavailability, a basis that asking again cannot help) is the one named.
+ */
+export function inLongGap(verification: VerificationStatus): boolean {
+  return verification.availability === 'LONG_GAP' || verification.catchUpFrom !== null
+}
+
+function parsePreview(value: unknown): VerificationPreview | null {
+  const row = record(value)
+  if (row === null) return null
+  const { rangeStart, unconfirmedFrom, anomalyCount, reusedUntil } = row
+  if (!isInstant(rangeStart) || !isInstant(unconfirmedFrom) || !count(anomalyCount)) return null
+  if (!absent(reusedUntil) && !isInstant(reusedUntil)) return null
+  return {
+    rangeStart,
+    unconfirmedFrom,
+    anomalyCount,
+    reusedUntil: absent(reusedUntil) ? null : reusedUntil,
+  }
+}
+
+/**
+ * The `verification` block, always as something this screen can show (like `parseSyncStatus`, it never makes
+ * the financial bundle unacceptable). Each field is read where it means something — a reason while
+ * unavailable, seconds while cooling down (or after a long gap), the reason the server would record while a
+ * verification can be asked for (or is cooling down), a catch-up start whenever the gap may be long (a long gap
+ * by name, and the states the server judges before it: a job in progress, an unavailability, a basis that
+ * asking again cannot help) — and ignored elsewhere; a long gap without its start still blocks the catch-up,
+ * for a reason not known. A preview that is not whole is shown as none. An availability this screen does not
+ * know, a field of the wrong type, a cool-down without its seconds, or a block that is missing, is
+ * `UNKNOWN_VERIFICATION` (keeping the latest job when that job is whole).
+ */
+export function parseVerificationStatus(value: unknown): VerificationStatus {
+  const row = record(value)
+  if (row === null) return UNKNOWN_VERIFICATION
+  const { availability, reason, retryAfterSeconds, suggestedReason, catchUpFrom, latest } = row
+  const job = absent(latest) ? null : parseVerificationJob(latest)
+  if (job === null && !absent(latest)) return UNKNOWN_VERIFICATION
+  const folded: VerificationStatus = { ...UNKNOWN_VERIFICATION, latest: job }
+  if (typeof availability !== 'string' || !VERIFICATION_AVAILABILITIES.includes(availability)) {
+    return folded
+  }
+  if (!absent(reason) && typeof reason !== 'string') return folded
+  if (!absent(retryAfterSeconds) && !positiveInteger(retryAfterSeconds)) return folded
+  if (!absent(suggestedReason) && typeof suggestedReason !== 'string') return folded
+  if (!absent(catchUpFrom) && !isInstant(catchUpFrom)) return folded
+  // A cool-down cannot be counted down without its seconds; nothing else needs a field it may lack.
+  if (availability === 'COOLDOWN' && absent(retryAfterSeconds)) return folded
+  const seconds = availability === 'COOLDOWN' || availability === 'LONG_GAP'
+  // A verification can be asked for (now or after its cool-down): only then is the gap not long.
+  const askable = availability === 'AVAILABLE' || availability === 'COOLDOWN'
+  return {
+    availability: availability as VerificationAvailability,
+    // Each field only where it means something: a reason of an unavailability, the seconds of a cool-down
+    // (a catch-up after a long gap may be cooling down too), the reason a verification would be recorded with,
+    // the start of a catch-up whenever the gap may be long.
+    reason: availability === 'UNAVAILABLE' && !absent(reason) ? reason : null,
+    retryAfterSeconds: seconds && !absent(retryAfterSeconds) ? retryAfterSeconds : null,
+    suggestedReason: askable && !absent(suggestedReason) ? suggestedReason : null,
+    preview: parsePreview(row.preview),
+    catchUpFrom: !askable && !absent(catchUpFrom) ? catchUpFrom : null,
+    latest: job,
+  }
+}
+
+/**
+ * What the current official version changed (Story 2.12): `CORRECTED` when it differs from the previous official
+ * version by a late addition, a value change or a removal, `VERIFIED_NO_CHANGE` when a verification or a catch-up
+ * made it without any, `NONE` otherwise.
+ */
+export type VersionChangeKind = 'CORRECTED' | 'VERIFIED_NO_CHANGE' | 'NONE'
+
+/**
+ * The `change` block of a `READY` answer: the result marker of the shown version. Its three counts split what
+ * differs from the previous official version — added late, a USD value or estimated flag changed, removed from the
+ * applied flows (an addition after the last check is not a late change and is not counted) — and are said apart,
+ * so a value change (another user's price correction, say) is never called a late deposit or withdrawal.
+ */
+export interface VersionChange extends ChangeCounts {
+  readonly kind: VersionChangeKind
+  readonly purpose: string | null
+  readonly reason: string | null
+  readonly firstAffectedAt: string | null
+  readonly verifiedAt: string | null
+  readonly targets: readonly VerificationRange[]
+  readonly reused: readonly VerificationRange[]
+}
+
+/** No marker: the version says nothing about late changes, or the block could not be read. */
+export const NO_CHANGE: VersionChange = {
+  kind: 'NONE',
+  purpose: null,
+  reason: null,
+  lateAddedCount: 0,
+  valueChangedCount: 0,
+  removedCount: 0,
+  firstAffectedAt: null,
+  verifiedAt: null,
+  targets: [],
+  reused: [],
+}
+
+/**
+ * The `change` block, or `NO_CHANGE` when it is missing, not whole, of a kind this screen does not know, or
+ * contradicts itself — a marker it cannot vouch for is not shown, and never a reason to drop the bundle. Its three
+ * counts are whole numbers that add up to `lateChangeCount`, and the kind agrees with them: a correction has at
+ * least one, any other version none. A version without a late change (`VERIFIED_NO_CHANGE`, `NONE`) has no impact
+ * start either, and an impact starts no later than the shown basis time (`basisAt`, when given).
+ */
+export function parseVersionChange(value: unknown, basisAt: string | null = null): VersionChange {
+  const row = record(value)
+  if (row === null) return NO_CHANGE
+  const { kind, purpose, reason, firstAffectedAt, verifiedAt } = row
+  const { lateChangeCount, lateAddedCount, valueChangedCount, removedCount } = row
+  if (kind !== 'CORRECTED' && kind !== 'VERIFIED_NO_CHANGE' && kind !== 'NONE') return NO_CHANGE
+  if (!absent(purpose) && typeof purpose !== 'string') return NO_CHANGE
+  if (!absent(reason) && typeof reason !== 'string') return NO_CHANGE
+  if (![lateChangeCount, lateAddedCount, valueChangedCount, removedCount].every(count)) {
+    return NO_CHANGE
+  }
+  const counts: ChangeCounts = {
+    lateAddedCount: lateAddedCount as number,
+    valueChangedCount: valueChangedCount as number,
+    removedCount: removedCount as number,
+  }
+  const changed = counts.lateAddedCount + counts.valueChangedCount + counts.removedCount
+  if (changed !== lateChangeCount) return NO_CHANGE
+  if (!absent(firstAffectedAt) && !isInstant(firstAffectedAt)) return NO_CHANGE
+  if (!absent(verifiedAt) && !isInstant(verifiedAt)) return NO_CHANGE
+  if ((kind === 'CORRECTED') !== changed > 0) return NO_CHANGE
+  if (kind !== 'CORRECTED' && !absent(firstAffectedAt)) return NO_CHANGE
+  if (
+    !absent(firstAffectedAt) &&
+    isInstant(basisAt) &&
+    Date.parse(firstAffectedAt) > Date.parse(basisAt)
+  ) {
+    return NO_CHANGE
+  }
+  const targets = parseRanges(row.targets ?? [])
+  const reused = parseRanges(row.reused ?? [])
+  if (targets === null || reused === null) return NO_CHANGE
+  return {
+    kind,
+    purpose: absent(purpose) ? null : purpose,
+    reason: absent(reason) ? null : reason,
+    ...counts,
+    firstAffectedAt: absent(firstAffectedAt) ? null : firstAffectedAt,
+    verifiedAt: absent(verifiedAt) ? null : verifiedAt,
+    targets,
+    reused,
+  }
+}
+
+/**
+ * One validated dashboard response. Only `READY` carries financial fields, and its sync block, its
+ * verification block and its version change (Story 2.12).
+ */
 export type DashboardResponse =
   | { readonly state: 'NO_PLAN' | 'PREPARING'; readonly nextAction: string }
   | {
@@ -353,24 +668,28 @@ export type DashboardResponse =
       readonly nextAction: string
       readonly result: PlanResult
       readonly sync: SyncStatus
+      readonly verification: VerificationStatus
+      readonly change: VersionChange
     }
 
 /**
- * The screen-level next actions each state may carry: Story 2.8's closed set, and the two Story 2.11 added
- * to `READY` (`SYNC` when the result is not fresh, `CHOOSE_CONTINUATION` after a long gap). A pair outside
- * these is not an answer this screen understands.
+ * The screen-level next actions each state may carry: Story 2.8's closed set, the two Story 2.11 added to
+ * `READY` (`SYNC` when the result is not fresh, `CHOOSE_CONTINUATION` after a long gap) and the one Story 2.12
+ * added (`VERIFY` after a sync that ended in review). A pair outside these is not an answer this screen
+ * understands.
  */
 const NEXT_ACTIONS: Readonly<Record<DashboardResponse['state'], readonly string[]>> = {
   NO_PLAN: ['CREATE_PLAN'],
   PREPARING: ['WAIT_FOR_RESULT'],
-  READY: ['NONE', 'WAIT_FOR_SYNC', 'SYNC', 'CHOOSE_CONTINUATION'],
+  READY: ['NONE', 'WAIT_FOR_SYNC', 'SYNC', 'VERIFY', 'CHOOSE_CONTINUATION'],
 }
 
 /**
  * A `GET /api/dashboard` body, or `null` when it is not one whole answer. A state outside the three, a
  * next action that state cannot carry, a financial field on a state that has none, or a malformed bundle
- * all reject it. The sync block never does: on `READY` it is read as far as it can be (`parseSyncStatus`),
- * and on the states without a bundle it has no meaning and is ignored.
+ * all reject it. The sync block, the verification block and the version change never do: on `READY` each is
+ * read as far as it can be (`parseSyncStatus`, `parseVerificationStatus`, `parseVersionChange`), and on the
+ * states without a bundle they have no meaning and are ignored.
  */
 export function parseDashboard(value: unknown): DashboardResponse | null {
   const row = record(value)
@@ -387,6 +706,8 @@ export function parseDashboard(value: unknown): DashboardResponse | null {
     nextAction: row.nextAction,
     result: row.result,
     sync: parseSyncStatus(row.sync),
+    verification: parseVerificationStatus(row.verification),
+    change: parseVersionChange(row.change, row.result.basisAt),
   }
 }
 
@@ -401,11 +722,13 @@ export function supersedes(next: PlanResult, shown: PlanResult | null): boolean 
   return next.pointerVersion !== shown.pointerVersion || next.calculationId === shown.calculationId
 }
 
-/** The bundle last accepted, with the next action and the sync block it came with. */
+/** The bundle last accepted, with the next action and the sync and verification blocks it came with. */
 export interface Accepted {
   readonly result: PlanResult
   readonly nextAction: string
   readonly sync: SyncStatus
+  readonly verification: VerificationStatus
+  readonly change: VersionChange
 }
 
 /**
@@ -553,6 +876,8 @@ export function useDashboard(ready: boolean): Dashboard {
           result: parsed.result,
           nextAction: parsed.nextAction,
           sync: parsed.sync,
+          verification: parsed.verification,
+          change: parsed.change,
         }
         accepted.current = bundle
         settle({ kind: 'READY', ...bundle })
@@ -600,48 +925,99 @@ export function bundleOf(view: DashboardView): Accepted | null {
   return null
 }
 
-/**
- * The sentence the status region reads for a shown `READY` bundle while a sync is in its phase (Story
- * 2.11), or `null` when no sync has anything to say. The phase changes once when a sync starts and once
- * when it ends; a poll in between changes nothing, so nothing is read again.
- */
-function syncSentence(phase: SyncPhase, result: PlanResult): string | null {
-  const status = planSyncContent.status
+/** The reliability's name when it is not `확인됨`, or `null`: status sentences name it first when it matters. */
+function reliabilityName(result: PlanResult): string | null {
+  const reliability = result.trust.inputReliability.state
+  if (reliability === 'CONFIRMED') return null
+  return copyFor(copy.axes.reliability.states, reliability, copy.axes.unknownState)
+}
+
+/** The sentence a job of this purpose says in this phase, when the phase is one of its fixed sentences. */
+function fixedSentence(
+  phase: Exclude<SyncPhase, 'idle' | 'succeeded' | 'refreshed'>,
+  purpose: SyncPurpose,
+): string {
+  const sync = planSyncContent.status
+  const verify = planVerificationContent.status
+  const catchUp = planVerificationContent.catchUp.status
   switch (phase) {
-    case 'idle':
-      return null
     case 'running':
-      return status.syncing
-    case 'succeeded': {
-      const basis = formatSeoulTime(result.basisAt, copy.timeUnavailable)
-      const reliability = result.trust.inputReliability.state
-      if (reliability === 'CONFIRMED') return status.synced(basis)
-      return status.syncedWithReliability(
-        copyFor(copy.axes.reliability.states, reliability, copy.axes.unknownState),
-        basis,
-      )
-    }
+      return purpose === 'VERIFY'
+        ? verify.running
+        : purpose === 'CATCH_UP'
+          ? catchUp.running
+          : sync.syncing
+    case 'longGap':
+      // Whichever request met the long gap, the long gap is the plan's state and has one sentence.
+      return sync.longGap
+    case 'notLongGap':
+      return catchUp.notLongGap
     case 'failed':
     case 'review':
     case 'blocked':
     case 'cooldown':
-    case 'longGap':
     case 'unavailable':
     case 'error':
     case 'stalled':
-      return status[phase]
+      return purpose === 'VERIFY'
+        ? verify[phase]
+        : purpose === 'CATCH_UP'
+          ? catchUp[phase]
+          : sync[phase]
+    case 'notUseful':
+    case 'stale':
+    case 'busy':
+    case 'refused':
+      return purpose === 'CATCH_UP' ? catchUp[phase] : verify[phase]
   }
 }
 
 /**
+ * The sentence the status region reads for a shown `READY` bundle while a job is in its phase (Story 2.11),
+ * or `null` when no job has anything to say. The phase changes once when a job starts and once when it ends;
+ * a poll in between changes nothing, so nothing is read again. A precision verification or a catch-up (Story
+ * 2.12) says its own sentences; a verification that ended with a new bundle also says what the version changed.
+ */
+function syncSentence(phase: SyncPhase, purpose: SyncPurpose, bundle: Accepted): string | null {
+  if (phase === 'idle') return null
+  if (phase !== 'succeeded' && phase !== 'refreshed') return fixedSentence(phase, purpose)
+  const { result, change } = bundle
+  const basis = formatSeoulTime(result.basisAt, copy.timeUnavailable)
+  const reliability = reliabilityName(result)
+  // A refused request's own quiet read brought the current official result: said once, in its own words.
+  if (phase === 'refreshed') return planVerificationContent.status.refreshed(reliability, basis)
+  if (purpose === 'VERIFY') {
+    const marker = planVerificationContent.change
+    const changed =
+      change.kind === 'CORRECTED'
+        ? marker.correctedSentence(change)
+        : change.kind === 'VERIFIED_NO_CHANGE'
+          ? marker.verifiedSentence
+          : null
+    return planVerificationContent.status.succeeded(changed, reliability, basis)
+  }
+  if (purpose === 'CATCH_UP')
+    return planVerificationContent.catchUp.status.succeeded(reliability, basis)
+  const status = planSyncContent.status
+  return reliability === null
+    ? status.synced(basis)
+    : status.syncedWithReliability(reliability, basis)
+}
+
+/**
  * The single sentence the screen's status region reads for the dashboard. It knows about the sync (Story
- * 2.11): while the shown bundle is ready, the sync's phase has the say — one sentence when it starts, one
- * when it ends. A quiet read never makes the screen say it is reading again. While a sync is followed, or
- * after the screen stopped following one, the sync also has the say over a read that did not answer
+ * 2.11) and the precision verification and catch-up that share its job table (Story 2.12): while the shown
+ * bundle is ready, the job's phase has the say — one sentence when it starts, one when it ends — in the words
+ * of its purpose. A quiet read never makes the screen say it is reading again. While a job is followed, or
+ * after the screen stopped following one, the job also has the say over a read that did not answer
  * (`lastGood`, `retryable`): a failed poll does not end the following, so it does not change the sentence
  * either, and the one sentence that ends it is `stalled` whatever the view.
  */
-export function dashboardAnnouncement(dashboard: Dashboard, phase: SyncPhase = 'idle'): string {
+export function dashboardAnnouncement(
+  dashboard: Dashboard,
+  phase: SyncPhase = 'idle',
+  purpose: SyncPurpose = 'SYNC',
+): string {
   const { view } = dashboard
   if (dashboard.loading && view.kind !== 'checking') return copy.status.reloading
   switch (view.kind) {
@@ -652,20 +1028,16 @@ export function dashboardAnnouncement(dashboard: Dashboard, phase: SyncPhase = '
     case 'PREPARING':
       return copy.status.preparing
     case 'READY': {
-      const sync = syncSentence(phase, view.result)
+      const sync = syncSentence(phase, purpose, view)
       if (sync !== null) return sync
       const basis = formatSeoulTime(view.result.basisAt, copy.timeUnavailable)
-      const reliability = view.result.trust.inputReliability.state
-      if (reliability === 'CONFIRMED') return copy.status.ready(basis)
-      return copy.status.readyWithReliability(
-        copyFor(copy.axes.reliability.states, reliability, copy.axes.unknownState),
-        basis,
-      )
+      const reliability = reliabilityName(view.result)
+      if (reliability === null) return copy.status.ready(basis)
+      return copy.status.readyWithReliability(reliability, basis)
     }
     case 'lastGood':
     case 'retryable':
-      if (phase === 'running') return planSyncContent.status.syncing
-      if (phase === 'stalled') return planSyncContent.status.stalled
+      if (phase === 'running' || phase === 'stalled') return fixedSentence(phase, purpose)
       if (view.kind === 'lastGood') return copy.status.lastGood
       return view.kept === null ? copy.status.retryable : copy.status.versionConflict
     case 'denied':

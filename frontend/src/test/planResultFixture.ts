@@ -7,9 +7,11 @@
  * 아래 도우미가 그 일치를 기본값으로 지킨다.
  *
  * `READY`에는 동기화 블록(Story 2.11)이 함께 온다. 기본값은 "지금 동기화할 수 있고 지난 작업은 없다"이다.
+ * 정밀 검증 블록과 버전 변경(Story 2.12)도 함께 온다. 기본값은 "지금 정밀 검증을 요청할 수 있고, 늦은 변경은
+ * 없으며, 지난 검증 작업은 없다"이다.
  */
 
-import type { SyncStatus } from '../session/useDashboard'
+import type { SyncStatus, VerificationStatus } from '../session/useDashboard'
 import type { DashboardSync } from '../session/useDashboardSync'
 
 export const BASIS_AT = '2026-09-27T01:00:00Z'
@@ -118,6 +120,8 @@ export function planResultFixture(
 export function syncJobFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     jobId: '1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b',
+    purpose: 'SYNC',
+    reason: null,
     trigger: 'MANUAL',
     status: 'QUEUED',
     stage: null,
@@ -139,13 +143,105 @@ export function syncFixture(overrides: Record<string, unknown> = {}): Record<str
   }
 }
 
+/**
+ * The expected range of a precision verification (Story 2.12): the defaults of `verificationFixture`. The plan
+ * started less than 7 days before its last check, so everything from t0 is read again and nothing is reused.
+ */
+export const PREVIEW: {
+  readonly rangeStart: string
+  readonly unconfirmedFrom: string
+  readonly anomalyCount: number
+  readonly reusedUntil: string | null
+} = {
+  rangeStart: '2026-09-25T00:00:00Z',
+  unconfirmedFrom: '2026-09-25T00:00:00Z',
+  anomalyCount: 0,
+  reusedUntil: null,
+}
+
+/**
+ * One job of `verification.latest` or of a verification admission answer (Story 2.12): a precision verification
+ * the user asked for, in progress by default. Its ranges and counts are the latest job's details.
+ */
+export function verificationJobFixture(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...syncJobFixture({
+      jobId: '2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d',
+      purpose: 'VERIFY',
+      reason: 'USER_REQUEST',
+      trigger: 'MANUAL',
+    }),
+    targets: [
+      { kind: 'UNCONFIRMED', start: '2026-09-25T00:00:00Z', end: VERIFIED_THROUGH },
+      { kind: 'NEW', start: VERIFIED_THROUGH, end: '2026-09-27T01:10:05Z' },
+    ],
+    reused: [],
+    counts: { new: 0, same: 3, missing: 0, superseded: 0, conflict: 0 },
+    ...overrides,
+  }
+}
+
+/**
+ * The `verification` block of a `READY` answer (Story 2.12): a precision verification may be asked for now,
+ * with its expected range, and none ran before.
+ */
+export function verificationFixture(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    availability: 'AVAILABLE',
+    reason: null,
+    retryAfterSeconds: null,
+    suggestedReason: 'USER_REQUEST',
+    preview: { ...PREVIEW },
+    catchUpFrom: null,
+    latest: null,
+    ...overrides,
+  }
+}
+
+/**
+ * The `change` block of a `READY` answer (Story 2.12): no late change by default. The total `lateChangeCount` is
+ * the sum of the three counts unless given — a test of a contradiction gives it.
+ */
+export function changeFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const counts = {
+    lateAddedCount: 0,
+    valueChangedCount: 0,
+    removedCount: 0,
+    ...overrides,
+  }
+  const sum = [counts.lateAddedCount, counts.valueChangedCount, counts.removedCount].reduce<number>(
+    (total, value) => total + (typeof value === 'number' ? value : 0),
+    0,
+  )
+  return {
+    kind: 'NONE',
+    purpose: null,
+    reason: null,
+    lateChangeCount: sum,
+    lateAddedCount: 0,
+    valueChangedCount: 0,
+    removedCount: 0,
+    firstAffectedAt: null,
+    verifiedAt: null,
+    targets: [],
+    reused: [],
+    ...overrides,
+  }
+}
+
 /** A whole `READY` answer. */
 export function dashboardFixture(
   result: Record<string, unknown> = planResultFixture(),
   nextAction = 'NONE',
   sync: Record<string, unknown> = syncFixture(),
+  verification: Record<string, unknown> = verificationFixture(),
+  change: Record<string, unknown> = changeFixture(),
 ): Record<string, unknown> {
-  return { state: 'READY', nextAction, result, sync }
+  return { state: 'READY', nextAction, result, sync, verification, change }
 }
 
 /** The parsed default sync block, for views a test builds by hand. */
@@ -156,16 +252,33 @@ export const AVAILABLE_SYNC: SyncStatus = {
   latest: null,
 }
 
+/** The parsed default verification block, for views a test builds by hand. */
+export const AVAILABLE_VERIFICATION: VerificationStatus = {
+  availability: 'AVAILABLE',
+  reason: null,
+  retryAfterSeconds: null,
+  suggestedReason: 'USER_REQUEST',
+  preview: { ...PREVIEW },
+  catchUpFrom: null,
+  latest: null,
+}
+
 /** A sync with nothing to say: for panels a test renders without the sync hook. */
 export function idleSyncState(overrides: Partial<DashboardSync> = {}): DashboardSync {
   return {
     phase: 'idle',
+    purpose: 'SYNC',
     running: false,
     followingElsewhere: false,
     canRequest: true,
     cooldownSeconds: null,
+    canVerify: true,
+    canCatchUp: false,
+    admitting: false,
+    verificationCooldownSeconds: null,
     focus: null,
     request: () => undefined,
+    requestVerification: () => undefined,
     ...overrides,
   }
 }
@@ -318,8 +431,109 @@ export function calculationEvidenceFixture(
       ],
       unpublished: [],
     },
+    // The first official version has nothing to compare with (Story 2.12).
+    change: evidenceChangeFixture(),
     ...overrides,
   }
+}
+
+/**
+ * The change part of the evidence (Story 2.12): the first official version by default, with no previous one. Its
+ * three counts are those of the given changed flows unless given — a test of a contradiction gives them.
+ */
+export function evidenceChangeFixture(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const events = Array.isArray(overrides.events)
+    ? (overrides.events as Record<string, unknown>[])
+    : []
+  const of = (match: (event: Record<string, unknown>) => boolean): number =>
+    events.filter(match).length
+  return {
+    kind: 'NONE',
+    purpose: null,
+    reason: null,
+    lateAddedCount: of((event) => event.changeKind === 'ADDED' && event.late === true),
+    valueChangedCount: of((event) => event.changeKind === 'VALUE_CHANGED'),
+    removedCount: of((event) => event.changeKind === 'REMOVED'),
+    targets: [],
+    reused: [],
+    previous: null,
+    firstAffectedAt: null,
+    metrics: [],
+    events: [],
+    ...overrides,
+  }
+}
+
+/** The basis time of the official version right before a later one (`laterEvidenceFixture`). */
+export const PREVIOUS_BASIS_AT = '2026-09-26T01:00:00Z'
+
+/**
+ * The six compared metrics of a change part (Story 2.12): the given result's metrics as the new side, and the
+ * previous version's — the same values unless given, one per metric in the screen's order.
+ */
+export function comparedMetricsFixture(
+  result: Record<string, unknown>,
+  previous?: readonly (string | null)[],
+): Record<string, unknown>[] {
+  return (result.metrics as Record<string, unknown>[]).map((metric, index) => {
+    const before = previous === undefined ? (metric.value ?? null) : (previous[index] ?? null)
+    return {
+      metric: metric.metric,
+      previousValue: before,
+      previousUnavailableReason: before === null ? (metric.unavailableReason ?? 'X') : null,
+      value: metric.value ?? null,
+      unavailableReason: metric.unavailableReason ?? null,
+    }
+  })
+}
+
+/**
+ * The evidence of a later official version (Story 2.11·2.12): the given result as the current version, the
+ * version right before it in the official list, and a change part that names that version with the six compared
+ * metrics and no changed flow — the change of a sync without a late change. Overrides come last.
+ */
+export function laterEvidenceFixture(
+  result: Record<string, unknown>,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const pointer = result.pointerVersion as number
+  const previousId =
+    result.calculationId === EVIDENCE_IDS.calculation
+      ? EVIDENCE_IDS.newerCalculation
+      : EVIDENCE_IDS.calculation
+  return calculationEvidenceFixture(result, {
+    versions: {
+      official: [
+        {
+          pointerVersion: pointer - 1,
+          calculationId: previousId,
+          publishedAt: '2026-09-26T01:00:01Z',
+          appliedUntil: result.publishedAt,
+          current: false,
+        },
+        {
+          pointerVersion: pointer,
+          calculationId: result.calculationId,
+          publishedAt: result.publishedAt,
+          appliedUntil: null,
+          current: true,
+        },
+      ],
+      unpublished: [],
+    },
+    change: evidenceChangeFixture({
+      purpose: 'SYNC',
+      previous: {
+        pointerVersion: pointer - 1,
+        calculationId: previousId,
+        basisAt: PREVIOUS_BASIS_AT,
+      },
+      metrics: comparedMetricsFixture(result),
+    }),
+    ...overrides,
+  })
 }
 
 /** UUID-shaped ids, as a real server sends them — a `plan-1` would be a malformed reference there. */

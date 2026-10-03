@@ -73,9 +73,10 @@ class PlanSyncServiceTest {
             UUID.randomUUID(), "BYBIT-CASHFLOW-1.0", "bybit-readonly-uta-1.0", "DECIMAL128-HALF_EVEN", "Asia/Seoul",
             VERIFIED, VERIFIED, null);
     private final PlanSyncGuard.Base base = new PlanSyncGuard.Base(plan, pointer, calculation, lineage);
-    private final SyncJob queued = new SyncJob(JOB, "MANUAL", "QUEUED", null, null, PUBLISHED, null);
+    private final SyncJob queued = new SyncJob(JOB, "SYNC", null, "MANUAL", "QUEUED", null, null, PUBLISHED, null);
     private final PlanSyncRepository.Lease lease = new PlanSyncRepository.Lease(JOB, USER, PLAN, PORTFOLIO, INTENT,
-            MEMBERSHIP, CONNECTION, ACCOUNT, "MANUAL", CALCULATION, 1, CANDIDATE, VERIFIED, VERIFIED, T0, END, 1);
+            MEMBERSHIP, CONNECTION, ACCOUNT, "SYNC", null, "MANUAL", CALCULATION, 1, CANDIDATE, VERIFIED, VERIFIED, T0,
+            END, 1);
 
     private PlanSyncService service() {
         return new PlanSyncService(syncs, publications, collections, classifications, conversions, sources,
@@ -138,8 +139,8 @@ class PlanSyncServiceTest {
     @Test
     void theSameKeyReturnsItsAttemptOrConflictsBeforeAnythingElse() {
         eligible(PUBLISHED.plusSeconds(60));
-        SyncJob done = new SyncJob(JOB, "MANUAL", "SUCCEEDED", "PUBLICATION", null, PUBLISHED, PUBLISHED);
-        when(syncs.byKey(USER, KEY)).thenReturn(Optional.of(new PlanSyncRepository.KeyedJob("MANUAL", done)));
+        SyncJob done = new SyncJob(JOB, "SYNC", null, "MANUAL", "SUCCEEDED", "PUBLICATION", null, PUBLISHED, PUBLISHED);
+        when(syncs.byKey(USER, KEY)).thenReturn(Optional.of(done));
         // Even with no plan left, a replay answers what the key did.
         when(guard.base(USER)).thenReturn(Optional.empty());
         assertThat(service().admit(USER, SyncTrigger.MANUAL, KEY)).isEqualTo(new SyncAdmission.Joined(done));
@@ -158,7 +159,7 @@ class PlanSyncServiceTest {
     @Test
     void anAttemptInProgressIsJoinedEvenWhenNothingElseWouldBeAdmitted() {
         eligible(VERIFIED.plus(Duration.ofDays(40)));
-        SyncJob running = new SyncJob(JOB, "ENTRY", "RUNNING", "COLLECTION", null, PUBLISHED, null);
+        SyncJob running = new SyncJob(JOB, "SYNC", null, "ENTRY", "RUNNING", "COLLECTION", null, PUBLISHED, null);
         when(syncs.active(USER, PLAN)).thenReturn(Optional.of(running));
         when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any())).thenReturn("RESTRICTED");
         when(syncs.lastAdmission(USER, PLAN)).thenReturn(Optional.of(VERIFIED.plus(Duration.ofDays(40))));
@@ -173,6 +174,55 @@ class PlanSyncServiceTest {
         when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any())).thenReturn("PLAN_PERIOD_ENDED");
         assertThat(service().admit(USER, SyncTrigger.MANUAL, KEY)).isEqualTo(new SyncAdmission.Refused("SYNC_UNAVAILABLE"));
         verify(syncs, never()).insert(any());
+    }
+
+    /**
+     * R6: a persistent verification review of the base holds every sync at admission — no attempt is made (the worker
+     * would only end it as that review) — and the dashboard says so: unavailable, {@code REVIEW_HELD}, even in a long
+     * gap. An attempt already in progress is still joined.
+     */
+    @Test
+    void aPersistentVerificationReviewHoldsEverySyncAtAdmission() {
+        eligible(PUBLISHED.plusSeconds(600));
+        var review = new PlanSyncRepository.Review(UUID.randomUUID(), "SOURCE_EVENT_MISSING");
+        when(syncs.persistentlyReviewed(USER, PLAN, CALCULATION)).thenReturn(true);
+        when(syncs.verificationReview(USER, PLAN, CALCULATION)).thenReturn(Optional.of(review));
+        for (SyncTrigger trigger : SyncTrigger.values())
+            assertThat(service().admit(USER, trigger, KEY)).as(trigger.name())
+                    .isEqualTo(new SyncAdmission.Refused("SYNC_UNAVAILABLE"));
+        verify(syncs, never()).insert(any());
+        assertThat(service().state(USER, base)).isEqualTo(new SyncState("UNAVAILABLE", "REVIEW_HELD", null, null));
+        when(publications.databaseNow()).thenReturn(VERIFIED.plus(Duration.ofDays(31)));
+        assertThat(service().state(USER, base)).as("in a long gap too")
+                .isEqualTo(new SyncState("UNAVAILABLE", "REVIEW_HELD", null, null));
+        when(syncs.active(USER, PLAN)).thenReturn(Optional.of(queued));
+        assertThat(service().admit(USER, SyncTrigger.MANUAL, KEY)).isEqualTo(new SyncAdmission.Joined(queued));
+    }
+
+    /**
+     * R4: a verification's price hold is a review when any held flow's reason is one time does not resolve (no route,
+     * no candle within five minutes, a price not positive), and a failure the user retries when every one is (the event
+     * minute not closed yet, the market unreachable).
+     */
+    @Test
+    void aPriceHoldIsPermanentOnlyWhenAReasonIsNotRetryable() {
+        var input = new PriceConversionPolicy.FlowInput(UUID.randomUUID(), "held-01", "NOROUTE", "3", T0);
+        var notClosed = held(input, PriceConversionPolicy.Reason.PRICE_CANDLE_NOT_CLOSED);
+        var noRoute = held(input, PriceConversionPolicy.Reason.PRICE_ROUTE_UNAVAILABLE);
+        var unreachable = held(input,
+                PriceConversionPolicy.Reason.PRICE_PROVIDER_UNAVAILABLE);
+        assertThat(PlanSyncService.permanentlyHeld(java.util.List.of(notClosed, unreachable))).isFalse();
+        assertThat(PlanSyncService.permanentlyHeld(java.util.List.of(notClosed, noRoute))).isTrue();
+        assertThat(PlanSyncService.permanentlyHeld(java.util.List.of(held(input,
+                PriceConversionPolicy.Reason.PRICE_NON_POSITIVE)))).isTrue();
+        assertThat(PlanSyncService.permanentlyHeld(java.util.List.of(held(input,
+                PriceConversionPolicy.Reason.PRICE_CANDLE_MISSING)))).isTrue();
+    }
+
+    private static PriceConversionPolicy.FlowOutcome held(PriceConversionPolicy.FlowInput input,
+            PriceConversionPolicy.Reason reason) {
+        return new PriceConversionPolicy.FlowOutcome(input, reason.status(), reason, null, null, null, null,
+                java.util.List.of());
     }
 
     /** The long gap is judged on the database clock at admission: exactly 30 days is still admitted. */
@@ -202,7 +252,7 @@ class PlanSyncServiceTest {
     void aManualRequestWithinThirtySecondsOfTheLastAdmissionIsACooldown() {
         Instant admitted = PUBLISHED.plusSeconds(600);
         eligible(admitted.plusMillis(29_001));
-        SyncJob failed = new SyncJob(JOB, "MANUAL", "FAILED", "TIME", "PROVIDER_UNAVAILABLE", admitted, admitted);
+        SyncJob failed = new SyncJob(JOB, "SYNC", null, "MANUAL", "FAILED", "TIME", "PROVIDER_UNAVAILABLE", admitted, admitted);
         when(syncs.lastAdmission(USER, PLAN)).thenReturn(Optional.of(admitted));
         when(syncs.latest(USER, PLAN)).thenReturn(Optional.of(failed));
         // Whatever the last attempt's outcome: 999 ms left is one second to wait.
@@ -225,7 +275,7 @@ class PlanSyncServiceTest {
     @Test
     void aLostInsertRaceJoinsTheAttemptThatStood() {
         eligible(PUBLISHED.plusSeconds(3600));
-        SyncJob winner = new SyncJob(UUID.randomUUID(), "ENTRY", "QUEUED", null, null, PUBLISHED, null);
+        SyncJob winner = new SyncJob(UUID.randomUUID(), "SYNC", null, "ENTRY", "QUEUED", null, null, PUBLISHED, null);
         when(syncs.insert(any())).thenReturn(0);
         Optional<SyncJob> none = Optional.empty();
         when(syncs.active(USER, PLAN)).thenReturn(none).thenReturn(Optional.of(winner));
@@ -254,14 +304,14 @@ class PlanSyncServiceTest {
 
     @Test
     void aReclaimedRunningAttemptIsEndedAsInterruptedAndNotRunAgain() {
-        when(syncs.claim()).thenReturn(Optional.of(new PlanSyncRepository.Claimed(lease, true)));
+        when(syncs.claim()).thenReturn(Optional.of(new PlanSyncRepository.Claimed(lease, true, false)));
         when(syncs.finish(lease, "FAILED", "SYNC_INTERRUPTED")).thenReturn(Optional.of(new PlanSyncRepository.Ending(
-                JOB, "MANUAL", "NORMAL", "FAILED", "COLLECTION", "SYNC_INTERRUPTED", 31_000)));
+                JOB, "SYNC", null, "MANUAL", "NORMAL", "FAILED", "COLLECTION", "SYNC_INTERRUPTED", 31_000)));
         assertThat(service().claim()).isEmpty();
         verify(syncs).finish(lease, "FAILED", "SYNC_INTERRUPTED");
         verifyNoInteractions(sources);
 
-        when(syncs.claim()).thenReturn(Optional.of(new PlanSyncRepository.Claimed(lease, false)));
+        when(syncs.claim()).thenReturn(Optional.of(new PlanSyncRepository.Claimed(lease, false, false)));
         assertThat(service().claim()).contains(lease);
     }
 
@@ -273,7 +323,8 @@ class PlanSyncServiceTest {
         when(syncs.fixScope(eq(lease), anyString(), any())).thenReturn(true);
         when(guard.blocked(lease)).thenReturn(null);
         when(syncs.finish(eq(lease), anyString(), anyString())).thenAnswer(call -> Optional.of(
-                new PlanSyncRepository.Ending(JOB, "MANUAL", null, call.getArgument(1), "TIME", call.getArgument(2), 1)));
+                new PlanSyncRepository.Ending(JOB, "SYNC", null, "MANUAL", null, call.getArgument(1), "TIME",
+                        call.getArgument(2), 1)));
     }
 
     @Test
@@ -292,7 +343,7 @@ class PlanSyncServiceTest {
                 SourceRejectionReason.TIMEOUT));
         service().run(lease, () -> true);
         verify(syncs).finish(lease, "FAILED", "PROVIDER_UNAVAILABLE");
-        verify(sources, never()).collectIncrementalInputs(any(), any(), any(), any(), any(), any());
+        verify(sources, never()).collectWindows(any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean(), any(), any());
     }
 
     /**
@@ -311,13 +362,14 @@ class PlanSyncServiceTest {
         verify(syncs).fixTime(lease, Instant.parse(tc));
         verify(syncs).finish(lease, status, code);
         verify(syncs, never()).fixScope(any(), any(), any());
-        verify(sources, never()).collectIncrementalInputs(any(), any(), any(), any(), any(), any());
+        verify(sources, never()).collectWindows(any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean(), any(), any());
     }
 
     @Test
     void aTcAtThePlansEndEndsThePlanPeriodWithoutASignedCall() {
         var ending = new PlanSyncRepository.Lease(JOB, USER, PLAN, PORTFOLIO, INTENT, MEMBERSHIP, CONNECTION, ACCOUNT,
-                "MANUAL", CALCULATION, 1, CANDIDATE, VERIFIED, VERIFIED, T0, VERIFIED.plus(Duration.ofDays(1)), 1);
+                "SYNC", null, "MANUAL", CALCULATION, 1, CANDIDATE, VERIFIED, VERIFIED, T0,
+                VERIFIED.plus(Duration.ofDays(1)), 1);
         when(syncs.lockOwned(ending)).thenReturn(true);
         when(syncs.stage(eq(ending), anyString())).thenReturn(true);
         when(syncs.fixTime(eq(ending), any())).thenReturn(true);
@@ -328,7 +380,7 @@ class PlanSyncServiceTest {
         when(publications.databaseNow()).thenReturn(VERIFIED.plus(Duration.ofDays(1)));
         service().run(ending, () -> true);
         verify(syncs).finish(ending, "BLOCKED", "PLAN_PERIOD_ENDED");
-        verify(sources, never()).collectIncrementalInputs(any(), any(), any(), any(), any(), any());
+        verify(sources, never()).collectWindows(any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean(), any(), any());
     }
 
     /**
@@ -348,7 +400,7 @@ class PlanSyncServiceTest {
         verify(syncs).fixTime(lease, tc);
         verify(syncs).finish(lease, status, code);
         verify(syncs, never()).fixScope(any(), any(), any());
-        verify(sources, never()).collectIncrementalInputs(any(), any(), any(), any(), any(), any());
+        verify(sources, never()).collectWindows(any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean(), any(), any());
     }
 
     // ---------------------------------------------------------------- the collection stage
@@ -389,8 +441,9 @@ class PlanSyncServiceTest {
     void aCollectionRejectionEndsAtTheCollectionStageWithItsClosedCode(SourceRejectionReason reason, String status,
             String code, String childStatus) {
         collecting();
-        when(sources.collectIncrementalInputs(eq(USER), eq(CONNECTION), eq(T0), eq(VERIFIED.minus(Duration.ofHours(24))),
-                eq(TC), any())).thenReturn(new SourceConnectionApi.CollectionResult.Rejected(reason));
+        when(sources.collectWindows(eq(USER), eq(CONNECTION), eq(T0), eq(TC),
+                eq(java.util.List.of(new SourceConnectionApi.CollectionWindow(VERIFIED.minus(Duration.ofHours(24)), TC))),
+                eq(true), any(), any())).thenReturn(new SourceConnectionApi.WindowCollectionResult.Rejected(reason, 0, 0));
         service().run(lease, () -> true);
         verify(syncs).fixScope(lease, "NORMAL", VERIFIED.minus(Duration.ofHours(24)));
         verify(syncs).attachCollection(eq(lease), any());
@@ -409,19 +462,77 @@ class PlanSyncServiceTest {
         // TIME, the collection's entry, page one — then page two finds the account refused.
         when(guard.blocked(lease)).thenReturn(null, null, null, "NOT_PERMITTED");
         java.util.concurrent.atomic.AtomicInteger offered = new java.util.concurrent.atomic.AtomicInteger();
-        when(sources.collectIncrementalInputs(eq(USER), eq(CONNECTION), eq(T0), any(), eq(TC), any())).thenAnswer(call -> {
-            java.util.function.Consumer<SourceConnectionApi.CollectionPage> pages = call.getArgument(5);
-            for (int index = 1; index <= 3; index++) {
-                offered.incrementAndGet();
-                pages.accept(page(index));
-            }
-            return new SourceConnectionApi.CollectionResult.Rejected(SourceRejectionReason.PROVIDER_UNAVAILABLE);
-        });
+        when(sources.collectWindows(eq(USER), eq(CONNECTION), eq(T0), eq(TC), any(), eq(true), any(), any()))
+                .thenAnswer(call -> {
+                    java.util.function.Consumer<SourceConnectionApi.CollectionPage> pages = call.getArgument(6);
+                    for (int index = 1; index <= 3; index++) {
+                        offered.incrementAndGet();
+                        pages.accept(page(index));
+                    }
+                    return new SourceConnectionApi.WindowCollectionResult.Rejected(
+                            SourceRejectionReason.PROVIDER_UNAVAILABLE, 1, 0);
+                });
         service().run(lease, () -> true);
         verify(collections, org.mockito.Mockito.times(1)).storePage(eq(child), any(), any(), eq(false));
         assertThat(offered.get()).as("no page after the refused one is asked for").isEqualTo(2);
         verify(syncs).finish(lease, "BLOCKED", "NOT_PERMITTED");
         verify(classifications, never()).insertChild(any(), any(), any());
+    }
+
+    /**
+     * Interpretation C1: a persistent verification review of this very base holds a sync before any provider call —
+     * the time included — and ends it as that review; nothing is collected or published.
+     */
+    @Test
+    void aPersistentVerificationReviewHoldsTheSyncBeforeAnyProviderCall() {
+        running();
+        when(syncs.verificationReview(USER, PLAN, CALCULATION)).thenReturn(Optional.of(
+                new PlanSyncRepository.Review(UUID.randomUUID(), "SOURCE_EVENT_MISSING")));
+        service().run(lease, () -> true);
+        verify(syncs).finish(lease, "NEEDS_REVIEW", "SOURCE_EVENT_MISSING");
+        verify(syncs, never()).fixTime(any(), any());
+        verifyNoInteractions(sources);
+    }
+
+    private SourceConnectionApi.WindowCollection clean() {
+        return new SourceConnectionApi.WindowCollection("1", "1000", TC, TC, TC, 1, 0, false, null, "policy-1");
+    }
+
+    /**
+     * A page that asked for review is kept on the collection, so the completion reads it even when this holder's own
+     * pages were clean — an earlier holder's, or a continuation's first phase (patch 1).
+     */
+    @Test
+    void aStoredPageReviewMakesTheCompletionAReviewEvenWhenThisRunsPagesWereClean() {
+        collecting();
+        when(sources.collectWindows(eq(USER), eq(CONNECTION), eq(T0), eq(TC), any(), eq(true), any(), any()))
+                .thenReturn(new SourceConnectionApi.WindowCollectionResult.Collected(clean()));
+        when(sources.snapshotConnection(USER)).thenReturn(Optional.of(new SourceConnectionApi.SnapshotConnection(
+                CONNECTION, ACCOUNT, "policy-1")));
+        when(collections.pageReviewed(child.jobId())).thenReturn(true);
+        when(collections.completeTargets(eq(child), any(), eq(true), any(), any(), any(), any(),
+                org.mockito.ArgumentMatchers.anyBoolean()))
+                .thenReturn(new InitialCollectionRepository.StoredInput(null, "NEEDS_REVIEW", "SOURCE_REQUIRES_REVIEW"));
+        service().run(lease, () -> true);
+        verify(collections).completeTargets(eq(child), any(), eq(true), any(), any(), any(), any(),
+                org.mockito.ArgumentMatchers.anyBoolean());
+        verify(syncs).finish(lease, "NEEDS_REVIEW", "SOURCE_REQUIRES_REVIEW");
+    }
+
+    /**
+     * A collection that stopped because its lease stopped holding ends nothing: no provider code is written for a
+     * failure that did not happen, on the attempt or its child (patch 8).
+     */
+    @Test
+    void aStoppedCollectionEndsNothing() {
+        collecting();
+        when(sources.collectWindows(eq(USER), eq(CONNECTION), eq(T0), eq(TC), any(), eq(true), any(), any()))
+                .thenReturn(new SourceConnectionApi.WindowCollectionResult.Stopped(1, 2));
+        service().run(lease, () -> true);
+        verify(syncs, never()).finish(any(), any(), any());
+        verify(collections, never()).finish(any(), any(), any());
+        verify(collections, never()).completeTargets(any(), any(), org.mockito.ArgumentMatchers.anyBoolean(), any(),
+                any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
     }
 
     @Test
@@ -435,6 +546,77 @@ class PlanSyncServiceTest {
         running();
         service().run(lease, () -> false);
         verifyNoInteractions(sources);
+    }
+
+    // ---------------------------------------------------------------- verification and continuation (Story 2.12)
+
+    private PlanSyncRepository.Lease verifying(String purpose, String reason) {
+        return new PlanSyncRepository.Lease(JOB, USER, PLAN, PORTFOLIO, INTENT, MEMBERSHIP, CONNECTION, ACCOUNT, purpose,
+                reason, "MANUAL", CALCULATION, 1, CANDIDATE, VERIFIED, VERIFIED, T0, END, 1);
+    }
+
+    /** A verification or continuation that reaches its plan with a trusted {@code tc}. */
+    private void verifyingRun(PlanSyncRepository.Lease attempt, Instant tc, java.util.List<VerificationPlanner.Range> planned) {
+        when(syncs.progress(attempt)).thenReturn(new PlanSyncRepository.Progress(null, null, null, null, null, null, 0));
+        when(syncs.lockOwned(attempt)).thenReturn(true);
+        when(syncs.owns(attempt)).thenReturn(true);
+        when(syncs.stage(eq(attempt), anyString())).thenReturn(true);
+        when(syncs.fixTime(eq(attempt), any())).thenReturn(true);
+        when(syncs.fixScope(eq(attempt), anyString(), any())).thenReturn(true);
+        when(guard.blocked(attempt)).thenReturn(null);
+        when(publications.databaseNow()).thenReturn(tc);
+        when(sources.marketTime()).thenReturn(new SourceConnectionApi.MarketTimeResult.Observed(tc));
+        var withNew = new java.util.ArrayList<>(planned);
+        withNew.add(VerificationPlanner.newRange(VERIFIED, tc));
+        when(syncs.ranges(USER, JOB)).thenReturn(planned).thenReturn(withNew);
+        when(syncs.finish(eq(attempt), anyString(), anyString())).thenAnswer(call -> Optional.of(
+                new PlanSyncRepository.Ending(JOB, attempt.purpose(), attempt.reason(), "MANUAL", null,
+                        call.getArgument(1), "TIME", call.getArgument(2), 1)));
+    }
+
+    /**
+     * With the same {@code tc} more than 30 days past the verification, a precision verification is held back as a
+     * long gap before any signed call, while the continuation — which exists for exactly that gap — goes on to its
+     * first phase: the windows without the wallet.
+     */
+    @Test
+    void theLongGapHoldsAVerificationBackButNotTheContinuation() {
+        Instant tc = VERIFIED.plus(Duration.ofDays(31));
+        var unconfirmed = java.util.List.of(VerificationPlanner.unconfirmed(T0, VERIFIED));
+        var verify = verifying("VERIFY", "USER_REQUEST");
+        verifyingRun(verify, tc, unconfirmed);
+        service().run(verify, () -> true);
+        verify(syncs).finish(verify, "BLOCKED", "LONG_GAP");
+        verify(sources, never()).collectWindows(any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean(),
+                any(), any());
+
+        var catchUp = verifying("CATCH_UP", "LONG_GAP_CONTINUATION");
+        verifyingRun(catchUp, tc, unconfirmed);
+        when(collections.insertIncremental(any(), eq(catchUp), eq(tc), any())).thenReturn(child);
+        when(syncs.attachCollection(eq(catchUp), any())).thenReturn(true);
+        when(collections.lockOwned(child)).thenReturn(true);
+        when(sources.collectWindows(eq(USER), eq(CONNECTION), eq(T0), eq(tc), any(), eq(false), any(), any()))
+                .thenReturn(new SourceConnectionApi.WindowCollectionResult.Rejected(SourceRejectionReason.TIMEOUT, 0, 3));
+        service().run(catchUp, () -> true);
+        verify(syncs).insertRanges(USER, JOB, java.util.List.of(VerificationPlanner.newRange(VERIFIED, tc)));
+        verify(syncs).fixScope(catchUp, "CATCH_UP", VERIFIED.minus(Duration.ofDays(7)));
+        verify(sources).collectWindows(eq(USER), eq(CONNECTION), eq(T0), eq(tc), any(), eq(false), any(), any());
+        verify(syncs).finish(catchUp, "FAILED", "PROVIDER_UNAVAILABLE");
+    }
+
+    /** A target older than {@code tc - 730 days} ends the attempt in review before any signed call or scope. */
+    @Test
+    void aTargetOutOfTheHistoryEndsBeforeAnySignedCall() {
+        Instant tc = VERIFIED.plus(Duration.ofHours(1));
+        var attempt = verifying("VERIFY", "OPERATOR_INVESTIGATION");
+        verifyingRun(attempt, tc, java.util.List.of(VerificationPlanner.unconfirmed(T0, VERIFIED),
+                new VerificationPlanner.Range(VerificationPlanner.Kind.EXPLICIT, tc.minus(Duration.ofDays(731)),
+                        tc.minus(Duration.ofDays(730)))));
+        service().run(attempt, () -> true);
+        verify(syncs).finish(attempt, "NEEDS_REVIEW", "HISTORY_OUT_OF_RANGE");
+        verify(syncs, never()).fixScope(any(), any(), any());
+        verify(sources, never()).collectWindows(any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean(),
+                any(), any());
     }
 
     /**

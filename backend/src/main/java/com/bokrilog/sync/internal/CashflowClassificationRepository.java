@@ -21,6 +21,25 @@ class CashflowClassificationRepository {
 
     record Lease(UUID jobId, UUID userId, UUID portfolioId, UUID intentId, UUID connectionId,
             UUID providerAccountId, UUID candidateId, String policyVersion, long generation) {}
+
+    /**
+     * Every stored event of the candidate's {@code (t0, tc]} is accounted for exactly once: held by the candidate or
+     * excluded by it (Story 2.12's exclusions of events a complete collection did not observe again), never both. An
+     * exclusion must name a stored event of that very range, of the candidate's user and provider account: one that
+     * points anywhere else is a candidate that does not explain its range, not a row to ignore. An initial candidate
+     * excludes nothing, so this is Story 2.4's "the candidate holds every stored event of its range".
+     */
+    private static final String EXPLAINED_RANGE = "AND NOT EXISTS (SELECT 1 FROM sync_initial_candidate_excluded_event x "
+            + "JOIN sync_initial_candidate_event ce ON ce.candidate_id=x.candidate_id AND ce.event_id=x.event_id "
+            + "WHERE x.candidate_id=b.candidate_id) "
+            + "AND NOT EXISTS (SELECT 1 FROM sync_initial_candidate_excluded_event x LEFT JOIN sync_initial_source_event se "
+            + "ON se.event_id=x.event_id AND se.user_id=b.user_id AND se.provider_account_id=b.provider_account_id "
+            + "AND se.transaction_time>b.t0 AND se.transaction_time<=b.tc "
+            + "WHERE x.candidate_id=b.candidate_id AND se.event_id IS NULL) "
+            + "AND (SELECT count(*) FROM sync_initial_candidate_event ce WHERE ce.candidate_id=b.candidate_id)"
+            + "+(SELECT count(*) FROM sync_initial_candidate_excluded_event x WHERE x.candidate_id=b.candidate_id)="
+            + "(SELECT count(*) FROM sync_initial_source_event se WHERE se.user_id=b.user_id "
+            + "AND se.provider_account_id=b.provider_account_id AND se.transaction_time>b.t0 AND se.transaction_time<=b.tc)";
     record Input(UUID eventId, String sourceId, String semanticHash, String eventType,
             String currency, String cashFlow, Instant occurredAt, String accountType,
             UUID provenanceConnectionId) {}
@@ -63,9 +82,7 @@ class CashflowClassificationRepository {
                 + "OR se.user_id<>b.user_id OR se.provider_account_id<>b.provider_account_id "
                 + "OR ep.connection_id<>b.connection_id OR se.account_type<>'UNIFIED' "
                 + "OR se.transaction_time<=b.t0 OR se.transaction_time>b.tc)) "
-                + "AND (SELECT count(*) FROM sync_initial_candidate_event ce WHERE ce.candidate_id=b.candidate_id)="
-                + "(SELECT count(*) FROM sync_initial_source_event se WHERE se.user_id=b.user_id "
-                + "AND se.provider_account_id=b.provider_account_id AND se.transaction_time>b.t0 AND se.transaction_time<=b.tc) "
+                + EXPLAINED_RANGE + " "
                 + "ORDER BY b.completed_at DESC,b.candidate_id DESC LIMIT 1")
             .param("u",user).param("i",intent).param("p",portfolio).param("c",connection).param("a",account)
             .query(UUID.class).optional();
@@ -155,9 +172,7 @@ class CashflowClassificationRepository {
                 + "OR se.user_id<>b.user_id OR se.provider_account_id<>b.provider_account_id "
                 + "OR ep.connection_id<>b.connection_id OR se.account_type<>'UNIFIED' "
                 + "OR se.transaction_time<=b.t0 OR se.transaction_time>b.tc)) "
-                + "AND (SELECT count(*) FROM sync_initial_candidate_event ce WHERE ce.candidate_id=b.candidate_id)="
-                + "(SELECT count(*) FROM sync_initial_source_event se WHERE se.user_id=b.user_id "
-                + "AND se.provider_account_id=b.provider_account_id AND se.transaction_time>b.t0 AND se.transaction_time<=b.tc)")
+                + EXPLAINED_RANGE)
             .param("candidate",l.candidateId()).param("u",l.userId()).param("p",l.portfolioId())
             .param("i",l.intentId()).param("c",l.connectionId()).param("a",l.providerAccountId())
             .query((rs,n)->new CandidateEvidence(rs.getString(1),rs.getObject(2,UUID.class),rs.getObject(3,UUID.class),

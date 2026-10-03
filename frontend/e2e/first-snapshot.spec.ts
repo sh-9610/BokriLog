@@ -15,6 +15,7 @@ import {
   planResultContent,
 } from '../src/content/planResult'
 import { planSyncContent } from '../src/content/planSync'
+import { planVerificationContent } from '../src/content/planVerification'
 import {
   collectAndClassify,
   connectAndSavePlan,
@@ -149,10 +150,11 @@ async function expectFirstResult(page: Page, derived: 'OFFICIAL' | 'ESTIMATED'):
 }
 
 /**
- * The keyboard reaches the header and then the dashboard's four controls, in reading order, from a fresh
- * load of the landing screen: the sync button right after the freshness axis (Story 2.11), the calculation
- * evidence button beside the metrics heading (Story 2.9), the adjustment history button right after it
- * (Story 2.10), then the reload in the next-action section.
+ * The keyboard reaches the header and then the dashboard's five controls, in reading order, from a fresh
+ * load of the landing screen: the sync button right after the freshness axis (Story 2.11), the precision
+ * verification button right after it (Story 2.12), the calculation evidence button beside the metrics heading
+ * (Story 2.9), the adjustment history button right after it (Story 2.10), then the reload in the next-action
+ * section.
  */
 async function expectKeyboardOrder(page: Page): Promise<void> {
   await page.reload()
@@ -162,7 +164,7 @@ async function expectKeyboardOrder(page: Page): Promise<void> {
       .getByRole('region', { name: planResultContent.currentHeading }),
   ).toBeVisible({ timeout: 15_000 })
   const reached: string[] = []
-  for (let step = 0; step < 7; step += 1) {
+  for (let step = 0; step < 8; step += 1) {
     await page.keyboard.press('Tab')
     reached.push(await page.evaluate(() => document.activeElement?.textContent.trim() ?? ''))
   }
@@ -171,6 +173,7 @@ async function expectKeyboardOrder(page: Page): Promise<void> {
     authContent.settings.link,
     authContent.signOut.label,
     planSyncContent.action,
+    planVerificationContent.action,
     calculationEvidenceContent.open,
     adjustmentHistoryContent.open,
     planResultContent.reload,
@@ -178,6 +181,7 @@ async function expectKeyboardOrder(page: Page): Promise<void> {
   // The controls are real 44px targets.
   for (const name of [
     planSyncContent.action,
+    planVerificationContent.action,
     calculationEvidenceContent.open,
     adjustmentHistoryContent.open,
     planResultContent.reload,
@@ -239,7 +243,8 @@ async function expectEvidence(page: Page, derived: 'OFFICIAL' | 'ESTIMATED'): Pr
   })
   expect(probe).toMatchObject({ status: 200, stale: 404, staleCode: 'NOT_FOUND', bare: 404 })
   expect(probe.cacheControl).toContain('no-store')
-  expect(probe.keys).toEqual([
+  // Story 2.12 adds the change part; the lineage keys keep their order around it.
+  expect(probe.keys.filter((key) => key !== 'change')).toEqual([
     'planId',
     'pointerVersion',
     'calculationId',
@@ -250,6 +255,7 @@ async function expectEvidence(page: Page, derived: 'OFFICIAL' | 'ESTIMATED'): Pr
     'metrics',
     'versions',
   ])
+  expect(probe.keys).toContain('change')
   expect(probe.text).not.toMatch(/userId|providerAccount|secret|apiKey|credential/i)
 
   const panel = page.getByRole('region', { name: planResultContent.heading })
@@ -263,6 +269,8 @@ async function expectEvidence(page: Page, derived: 'OFFICIAL' | 'ESTIMATED'): Pr
   const { sections, times, metrics, versions } = calculationEvidenceContent
   await expect(evidence.getByRole('heading', { level: 5 })).toHaveText(
     [
+      // Story 2.12: what the version changed comes first; the first version has nothing to compare.
+      planVerificationContent.evidence.title,
       sections.snapshots,
       sections.times,
       sections.inputs,
@@ -288,6 +296,9 @@ async function expectEvidence(page: Page, derived: 'OFFICIAL' | 'ESTIMATED'): Pr
         : metrics.noEstimatedCause,
     )
   }
+  await expect(
+    evidence.getByRole('group', { name: planVerificationContent.evidence.title }),
+  ).toContainText(planVerificationContent.evidence.first)
   const versionList = evidence.getByRole('group', { name: sections.versions })
   await expect(versionList).toContainText(versions.current)
   await expect(versionList.getByText(versions.none, { exact: true })).toBeVisible()

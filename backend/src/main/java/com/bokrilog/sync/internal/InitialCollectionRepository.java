@@ -15,6 +15,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
@@ -32,7 +33,12 @@ class InitialCollectionRepository {
     InitialCollectionRepository(JdbcClient jdbc) { this.jdbc=jdbc; }
 
     record Lease(UUID jobId, UUID userId, UUID portfolioId, UUID intentId, UUID connectionId,
-            UUID providerAccountId, Instant t0, @Nullable Instant tc, long generation) {}
+            UUID providerAccountId, Instant t0, @Nullable Instant tc, long generation, @Nullable UUID planSyncJobId) {
+        Lease(UUID jobId, UUID userId, UUID portfolioId, UUID intentId, UUID connectionId, UUID providerAccountId,
+                Instant t0, @Nullable Instant tc, long generation) {
+            this(jobId, userId, portfolioId, intentId, connectionId, providerAccountId, t0, tc, generation, null);
+        }
+    }
     record StoredInput(@Nullable UUID candidateId, String status, @Nullable String failureCode) {}
 
     Optional<CollectionJob> byId(UUID userId, UUID jobId) {
@@ -102,7 +108,7 @@ class InitialCollectionRepository {
             .param("k","plan-sync:"+sync.jobId()+":collection").param("t0",utc(sync.t0())).param("tc",utc(tc))
             .param("sync",sync.jobId()).param("w",utc(windowStart)).param("base",sync.baseCandidateId()).update();
         return new Lease(childId,sync.userId(),sync.portfolioId(),sync.intentId(),sync.connectionId(),
-                sync.providerAccountId(),sync.t0(),tc,1);
+                sync.providerAccountId(),sync.t0(),tc,1,sync.jobId());
     }
     boolean fixScope(Lease l, Instant tc) {
         int updated=jdbc.sql("UPDATE sync_initial_collection_job SET tc=:tc,last_checked_at=now() WHERE job_id=:j "
@@ -227,7 +233,49 @@ class InitialCollectionRepository {
                 provenance.update();
             }
         }
+        if (review) {
+            // Marked on this page (Story 2.12): a resumed holder or a continuation's second phase still knows it, and
+            // a page discarded for a re-read takes its mark with it.
+            jdbc.sql("UPDATE sync_initial_page_evidence SET review_required=true WHERE evidence_id=:e AND job_id=:j")
+                .param("e",evidenceId).param("j",l.jobId()).update();
+        }
         return review;
+    }
+
+    /** Whether a page this collection still holds asked for review ({@link #storePage}), whichever holder stored it. */
+    boolean pageReviewed(UUID jobId) {
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_initial_page_evidence WHERE job_id=:j AND review_required)")
+            .param("j",jobId).query(Boolean.class).single();
+    }
+
+    /**
+     * Discards what an earlier holder left inside the windows a resumed collection reads again (Story 2.12): their page
+     * evidence — the page insert keeps the first row of a cursor, so an old {@code has_next_page} could mark a window
+     * complete that was not — with its diagnostics and review marks (the observation rows cascade), and the
+     * observations of events those pages saw. An observation (a provenance row this collection wrote, not one it
+     * carried from the base) goes when its event lies inside a discarded window and inside none of this collection's
+     * complete windows: otherwise an event the re-read no longer sees would still count as observed, and a
+     * reconciliation would call it {@code NEW} or {@code SAME} instead of {@code SUPERSEDED} or {@code MISSING}. The
+     * re-read writes the observations again for what it sees. Complete windows are never passed here. Fenced.
+     */
+    void discardPartialWindows(Lease l,List<VerificationPlanner.Interval> windows) {
+        for (VerificationPlanner.Interval window:windows) {
+            jdbc.sql("DELETE FROM sync_initial_event_provenance p USING sync_initial_source_event se,"
+                    + "sync_initial_collection_job c WHERE p.job_id=:j AND p.carried_from_candidate_id IS NULL "
+                    + "AND se.event_id=p.event_id AND se.transaction_time>=:start AND se.transaction_time<=:end "
+                    + "AND c.job_id=p.job_id AND c.status='RUNNING' AND c.fencing_generation=:g AND c.lease_until>now() "
+                    + "AND NOT EXISTS (SELECT 1 FROM (SELECT range_start,range_end FROM sync_initial_page_evidence "
+                    + "WHERE job_id=:j GROUP BY range_start,range_end HAVING count(DISTINCT event_type)=2 "
+                    + "AND count(*) FILTER (WHERE NOT has_next_page)=2) w "
+                    + "WHERE se.transaction_time>=w.range_start AND se.transaction_time<=w.range_end)")
+                .param("j",l.jobId()).param("start",utc(window.start())).param("end",utc(window.end()))
+                .param("g",l.generation()).update();
+            jdbc.sql("DELETE FROM sync_initial_page_evidence e USING sync_initial_collection_job c "
+                    + "WHERE e.job_id=:j AND e.range_start=:start AND e.range_end=:end AND c.job_id=e.job_id "
+                    + "AND c.status='RUNNING' AND c.fencing_generation=:g AND c.lease_until>now()")
+                .param("j",l.jobId()).param("start",utc(window.start())).param("end",utc(window.end()))
+                .param("g",l.generation()).update();
+        }
     }
 
     private record EventIdentity(String sourceId,UUID eventId,String semanticHash) {}
@@ -243,43 +291,239 @@ class InitialCollectionRepository {
     }
 
     /**
-     * Completes the collection stage of an incremental sync (Story 2.11). The windows must cover
-     * {@code [windowStart, tc]} without a gap, both types reaching their last page. The new candidate then covers
-     * {@code (t0, tc]} as a whole: the events this collection observed, and the events of the base candidate
-     * (the previous official version's) it did not observe again, carried over with a provenance marker — that
-     * candidate proved them complete. A stored event of the range that is neither is unexplained (a late event
-     * is Story 2.12's to reconcile): the stage needs review and no candidate is made.
+     * Completes the collection of a sync, a precision verification or a continuation (Stories 2.11 and 2.12) — one
+     * rule for all three.
+     *
+     * <p><b>Completeness.</b> The page evidence must be exactly the windows of the targets
+     * ({@link VerificationPlanner#windows}) — no window missing and no other — each with both types reaching their
+     * last page. A sync's one target is {@code [window start, tc]}; windows of two targets may overlap (a
+     * continuation's final sweep re-reads its first phase) but a target's own windows never do.
+     *
+     * <p><b>Reconciliation.</b> Every stored event of {@code (t0, tc]} is judged by its Bybit id and semantic hash
+     * against the base candidate (the official one this attempt continues): observed and official is {@code SAME};
+     * observed and not official is {@code NEW} (late when not after the base verification); official, inside a
+     * target and not observed is {@code MISSING} — the official result's own evidence moved, so the attempt needs
+     * review ({@code SOURCE_EVENT_MISSING}); not official, inside a target and not observed is {@code SUPERSEDED} —
+     * the new candidate excludes it, and every later one inherits the exclusion; the same id with another hash is
+     * {@code CONFLICT} (review). Outside the targets an official event is carried with a provenance marker and an
+     * excluded one stays excluded; any other stored event is unexplained (review). Source facts are never touched.
+     * The outcomes are recorded for a verification or continuation ({@code recordFor}), not for a sync.
+     *
+     * <p><b>The candidate</b> then covers {@code (t0, tc]}: the observed and carried events, and nothing it excludes.
+     *
+     * @param countPages whether every page the collection reported must be stored now — a sync's single run; a
+     *     resumed verification also stored pages of an earlier holder
      */
-    StoredInput completeIncremental(Lease l, CollectionObservation input, boolean needsReview, Instant windowStart,
-            UUID baseCandidateId) {
-        boolean complete=recordObservation(l,input)&&input.pageCount()==pageCount(l.jobId())
-                &&validCoverage(l.jobId(),windowStart,input.tc());
+    StoredInput completeTargets(Lease l, CollectionObservation input, boolean needsReview,
+            List<VerificationPlanner.Range> targets, UUID baseCandidateId, Instant baseVerifiedThrough,
+            @Nullable UUID recordFor, boolean countPages) {
+        boolean complete=recordObservation(l,input)&&(!countPages||input.pageCount()==pageCount(l.jobId()))
+                &&targetCoverage(l.jobId(),targets);
         String failure=needsReview?(input.failureCode()==null?"SOURCE_REQUIRES_REVIEW":input.failureCode()):null;
-        if (!complete&&failure==null) failure="SOURCE_REQUIRES_REVIEW";
-        if (failure==null) {
+        if (!complete) return new StoredInput(null,"NEEDS_REVIEW",failure==null?"SOURCE_REQUIRES_REVIEW":failure);
+        Reconciliation r=reconcile(l,input.tc(),targets,baseCandidateId,baseVerifiedThrough);
+        if (recordFor!=null) recordReconciliation(l.userId(),recordFor,r);
+        // A conflict needs no rule of its own here: it is always a diagnostic row, so the caller already asked for
+        // review (needsReview) and the failure is set above; its outcome is still recorded.
+        if (failure==null&&r.unexplained()) failure="SOURCE_REQUIRES_REVIEW";
+        if (failure==null&&!r.missing().isEmpty()) failure="SOURCE_EVENT_MISSING";
+        if (failure!=null) return new StoredInput(null,"NEEDS_REVIEW",failure);
+        if (!r.carried().isEmpty()) {
+            // One array parameter, not one bind per event: a long lineage carries many events.
             jdbc.sql("INSERT INTO sync_initial_event_provenance(job_id,event_id,connection_id,semantic_hash,"
                     + "carried_from_candidate_id) SELECT :j,se.event_id,:c,se.semantic_hash,:base "
-                    + "FROM sync_initial_candidate_event ce JOIN sync_initial_source_event se ON se.event_id=ce.event_id "
-                    + "WHERE ce.candidate_id=:base AND se.user_id=:u AND se.provider_account_id=:a "
-                    + "AND se.transaction_time>:t0 AND se.transaction_time<=:tc ON CONFLICT(job_id,event_id) DO NOTHING")
-                .param("j",l.jobId()).param("c",l.connectionId()).param("base",baseCandidateId).param("u",l.userId())
-                .param("a",l.providerAccountId()).param("t0",utc(l.t0())).param("tc",utc(input.tc())).update();
-            // Every base event is carried or observed again, and every stored event of the range is one of them.
-            boolean explained=jdbc.sql("SELECT (SELECT count(*) FROM sync_initial_candidate_event ce "
-                    + "WHERE ce.candidate_id=:base)=(SELECT count(*) FROM sync_initial_candidate_event ce "
-                    + "JOIN sync_initial_event_provenance ep ON ep.event_id=ce.event_id AND ep.job_id=:j "
-                    + "WHERE ce.candidate_id=:base) AND (SELECT count(*) FROM sync_initial_event_provenance ep "
-                    + "JOIN sync_initial_source_event se ON se.event_id=ep.event_id WHERE ep.job_id=:j "
-                    + "AND ep.semantic_hash=se.semantic_hash AND se.transaction_time>:t0 AND se.transaction_time<=:tc)="
-                    + "(SELECT count(*) FROM sync_initial_source_event se WHERE se.user_id=:u AND se.provider_account_id=:a "
-                    + "AND se.transaction_time>:t0 AND se.transaction_time<=:tc)")
-                .param("base",baseCandidateId).param("j",l.jobId()).param("u",l.userId())
-                .param("a",l.providerAccountId()).param("t0",utc(l.t0())).param("tc",utc(input.tc()))
-                .query(Boolean.class).single();
-            if (!explained) failure="SOURCE_REQUIRES_REVIEW";
+                    + "FROM sync_initial_source_event se WHERE se.event_id=ANY(CAST(:events AS uuid[])) AND se.user_id=:u "
+                    + "AND se.provider_account_id=:a ON CONFLICT(job_id,event_id) DO NOTHING")
+                .param("j",l.jobId()).param("c",l.connectionId()).param("base",baseCandidateId)
+                .param("events",uuidArray(r.carried())).param("u",l.userId()).param("a",l.providerAccountId()).update();
         }
-        if (failure!=null) return new StoredInput(null,"NEEDS_REVIEW",failure);
-        return new StoredInput(storeCandidate(l,input,baseCandidateId,windowStart),"INPUTS_COMPLETE",null);
+        UUID candidate=storeCandidate(l,input,baseCandidateId,VerificationPlanner.windowStart(targets),
+                r.excluded().keySet());
+        if (!r.excluded().isEmpty()) {
+            jdbc.sql("INSERT INTO sync_initial_candidate_excluded_event(candidate_id,event_id,user_id,excluded_by_job_id,"
+                    + "reason_code) SELECT :c,x.event_id,:u,x.job_id,'NOT_REOBSERVED' "
+                    + "FROM unnest(CAST(:events AS uuid[]),CAST(:jobs AS uuid[])) AS x(event_id,job_id)")
+                .param("c",candidate).param("u",l.userId())
+                .param("events",uuidArray(r.excluded().keySet())).param("jobs",uuidArray(r.excluded().values()))
+                .update();
+        }
+        return new StoredInput(candidate,"INPUTS_COMPLETE",null);
+    }
+
+    /** One stored event of the range. */
+    private record StoredEvent(UUID eventId,String sourceId,String semanticHash,Instant occurredAt) {}
+
+    /** One reconciliation outcome to record. */
+    private record Outcome(String sourceId,@Nullable UUID eventId,String outcome,boolean late,@Nullable Instant occurredAt,
+            @Nullable String storedHash,@Nullable String observedHash) {}
+
+    /**
+     * What the reconciliation found: the outcomes, the official events to carry, the events the new candidate
+     * excludes (with the attempt that excluded each), the missing ones, the conflicts, and whether any stored event
+     * stays unexplained.
+     */
+    private record Reconciliation(List<Outcome> outcomes,List<UUID> carried,Map<UUID,UUID> excluded,List<UUID> missing,
+            java.util.Set<String> conflicts,boolean unexplained) {}
+
+    private Reconciliation reconcile(Lease l,Instant tc,List<VerificationPlanner.Range> targets,UUID base,
+            Instant baseVerifiedThrough) {
+        List<StoredEvent> range=jdbc.sql("SELECT event_id,source_id,semantic_hash,transaction_time "
+                + "FROM sync_initial_source_event WHERE user_id=:u AND provider_account_id=:a AND transaction_time>:t0 "
+                + "AND transaction_time<=:tc ORDER BY transaction_time,source_id")
+            .param("u",l.userId()).param("a",l.providerAccountId()).param("t0",utc(l.t0())).param("tc",utc(tc))
+            .query((rs,n)->new StoredEvent(rs.getObject(1,UUID.class),rs.getString(2),rs.getString(3),instant(rs,4)))
+            .list();
+        java.util.Set<UUID> official=new java.util.HashSet<>(jdbc.sql("SELECT event_id FROM sync_initial_candidate_event "
+                + "WHERE candidate_id=:base").param("base",base).query(UUID.class).list());
+        Map<UUID,UUID> excludedBefore=new LinkedHashMap<>();
+        jdbc.sql("SELECT event_id,excluded_by_job_id FROM sync_initial_candidate_excluded_event WHERE candidate_id=:base "
+                + "AND user_id=:u").param("base",base).param("u",l.userId())
+            .query((rs,n)->Map.entry(rs.getObject(1,UUID.class),rs.getObject(2,UUID.class))).list()
+            .forEach(entry->excludedBefore.put(entry.getKey(),entry.getValue()));
+        java.util.Set<UUID> observed=new java.util.HashSet<>(jdbc.sql("SELECT event_id FROM sync_initial_event_provenance "
+                + "WHERE job_id=:j AND carried_from_candidate_id IS NULL").param("j",l.jobId()).query(UUID.class).list());
+        Map<String,String> conflicting=new LinkedHashMap<>();
+        jdbc.sql("SELECT DISTINCT ON (source_id) source_id,semantic_hash FROM sync_initial_event_observation "
+                + "WHERE job_id=:j AND diagnostic_code='PROVIDER_ID_CONFLICT' AND source_id IS NOT NULL "
+                + "AND semantic_hash IS NOT NULL ORDER BY source_id,observed_at")
+            .param("j",l.jobId()).query((rs,n)->Map.entry(rs.getString(1),rs.getString(2))).list()
+            .forEach(entry->conflicting.put(entry.getKey(),entry.getValue()));
+        Map<String,StoredEvent> bySource=new LinkedHashMap<>();
+        range.forEach(event->bySource.put(event.sourceId(),event));
+
+        List<Outcome> outcomes=new ArrayList<>();
+        List<UUID> carried=new ArrayList<>();
+        Map<UUID,UUID> excluded=new LinkedHashMap<>();
+        List<UUID> missing=new ArrayList<>();
+        java.util.Set<String> conflicts=new java.util.HashSet<>();
+        boolean unexplained=false;
+        for (Map.Entry<String,String> conflict:conflicting.entrySet()) {
+            StoredEvent stored=bySource.get(conflict.getKey());
+            String storedHash=stored==null?storedHash(l,conflict.getKey()):stored.semanticHash();
+            if (storedHash==null||storedHash.equals(conflict.getValue())) continue;
+            conflicts.add(conflict.getKey());
+            outcomes.add(new Outcome(conflict.getKey(),stored==null?null:stored.eventId(),"CONFLICT",false,
+                    stored==null?null:stored.occurredAt(),storedHash,conflict.getValue()));
+        }
+        for (StoredEvent event:range) {
+            // Its CONFLICT outcome stands for it (one outcome per Bybit id); the attempt needs review anyway.
+            if (conflicts.contains(event.sourceId())) continue;
+            boolean isOfficial=official.contains(event.eventId());
+            boolean inTarget=VerificationPlanner.covers(targets,event.occurredAt());
+            if (observed.contains(event.eventId())) {
+                if (isOfficial) outcomes.add(new Outcome(event.sourceId(),event.eventId(),"SAME",false,event.occurredAt(),
+                        event.semanticHash(),event.semanticHash()));
+                else outcomes.add(new Outcome(event.sourceId(),event.eventId(),"NEW",
+                        !event.occurredAt().isAfter(baseVerifiedThrough),event.occurredAt(),null,event.semanticHash()));
+            } else if (isOfficial) {
+                if (inTarget) {
+                    missing.add(event.eventId());
+                    outcomes.add(new Outcome(event.sourceId(),event.eventId(),"MISSING",false,event.occurredAt(),
+                            event.semanticHash(),null));
+                } else {
+                    carried.add(event.eventId());
+                }
+            } else if (excludedBefore.containsKey(event.eventId())) {
+                // An exclusion inherited from the lineage: explained, and excluded again.
+                excluded.put(event.eventId(),excludedBefore.get(event.eventId()));
+            } else if (inTarget) {
+                excluded.put(event.eventId(),Objects.requireNonNull(l.planSyncJobId()));
+                outcomes.add(new Outcome(event.sourceId(),event.eventId(),"SUPERSEDED",false,event.occurredAt(),
+                        event.semanticHash(),null));
+            } else {
+                unexplained=true;
+            }
+        }
+        return new Reconciliation(outcomes,carried,excluded,missing,conflicts,unexplained);
+    }
+
+    private @Nullable String storedHash(Lease l,String sourceId) {
+        return jdbc.sql("SELECT semantic_hash FROM sync_initial_source_event WHERE provider_account_id=:a AND source_id=:s "
+                + "AND user_id=:u").param("a",l.providerAccountId()).param("s",sourceId).param("u",l.userId())
+            .query(String.class).optional().orElse(null);
+    }
+
+    private void recordReconciliation(UUID user,UUID job,Reconciliation r) {
+        for (Outcome o:r.outcomes()) {
+            jdbc.sql("INSERT INTO sync_plan_verification_event(job_id,source_id,user_id,event_id,outcome,late,occurred_at,"
+                    + "stored_semantic_hash,observed_semantic_hash) VALUES (:j,:s,:u,:e,:o,:late,:at,:stored,:observed) "
+                    + "ON CONFLICT(job_id,source_id) DO NOTHING")
+                .param("j",job).param("s",o.sourceId()).param("u",user).param("e",o.eventId()).param("o",o.outcome())
+                .param("late",o.late()).param("at",o.occurredAt()==null?null:utc(o.occurredAt()))
+                .param("stored",o.storedHash()).param("observed",o.observedHash()).update();
+        }
+    }
+
+    /**
+     * Whether the page evidence is exactly the targets' windows, each read to the last page of both types. A window
+     * of the evidence that is none of them — a stray window, or a window a target does not ask for — fails it too.
+     */
+    private boolean targetCoverage(UUID jobId,List<VerificationPlanner.Range> targets) {
+        List<RangePair> rows=jdbc.sql("SELECT range_start,range_end,count(DISTINCT event_type),count(*) FILTER (WHERE NOT has_next_page) "
+                + "FROM sync_initial_page_evidence WHERE job_id=:j GROUP BY range_start,range_end ORDER BY range_start,range_end")
+            .param("j",jobId)
+            .query((rs,n)->new RangePair(instant(rs,1),instant(rs,2),rs.getInt(3),rs.getInt(4))).list();
+        java.util.Set<VerificationPlanner.Interval> expected=new java.util.HashSet<>(VerificationPlanner.windows(targets));
+        if (expected.isEmpty()||rows.size()!=expected.size()) return false;
+        for (RangePair r:rows) {
+            if (!expected.contains(new VerificationPlanner.Interval(r.start(),r.end()))||r.typeCount()!=2
+                    ||r.finalPageCount()!=2)
+                return false;
+        }
+        return true;
+    }
+
+    /** Whether the collection recorded any event diagnostic (a missing id, an unknown type, a conflict, ...). */
+    boolean hasDiagnostics(UUID jobId) {
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_initial_event_observation WHERE job_id=:j)")
+            .param("j",jobId).query(Boolean.class).single();
+    }
+
+    /** The windows of this collection already read to the last page of both types: a resumed one skips them. */
+    List<VerificationPlanner.Interval> completeWindows(UUID jobId) {
+        return jdbc.sql("SELECT range_start,range_end FROM sync_initial_page_evidence WHERE job_id=:j "
+                + "GROUP BY range_start,range_end HAVING count(DISTINCT event_type)=2 "
+                + "AND count(*) FILTER (WHERE NOT has_next_page)=2 ORDER BY range_start,range_end")
+            .param("j",jobId).query((rs,n)->new VerificationPlanner.Interval(instant(rs,1),instant(rs,2))).list();
+    }
+
+    /**
+     * The evidence the official lineage already proved (Story 2.12): {@code [COALESCE(window_start, t0), tc]} of the
+     * candidate and of every base candidate behind it. Each was complete when it was made, so their union covers
+     * {@code (t0, verified]}.
+     */
+    List<VerificationPlanner.Interval> lineageEvidence(UUID user,UUID candidateId) {
+        return jdbc.sql("WITH RECURSIVE lineage(candidate_id,base_candidate_id,start_at,tc,depth) AS ("
+                + "SELECT candidate_id,base_candidate_id,COALESCE(window_start,t0),tc,0 FROM sync_initial_candidate_bundle "
+                + "WHERE candidate_id=:c AND user_id=:u UNION ALL SELECT b.candidate_id,b.base_candidate_id,"
+                + "COALESCE(b.window_start,b.t0),b.tc,l.depth+1 FROM lineage l JOIN sync_initial_candidate_bundle b "
+                + "ON b.candidate_id=l.base_candidate_id AND b.user_id=:u WHERE l.depth<100000) "
+                + "SELECT start_at,tc FROM lineage WHERE tc>start_at")
+            .param("c",candidateId).param("u",user)
+            .query((rs,n)->new VerificationPlanner.Interval(instant(rs,1),instant(rs,2))).list();
+    }
+
+    /**
+     * The times of the stored events of {@code (t0, through]} the candidate neither holds nor excludes: events a
+     * failed attempt stored, late or in a gap (Story 2.12). Nothing but the times leaves here.
+     */
+    List<Instant> unexplainedEvents(UUID user,UUID providerAccountId,UUID candidateId,Instant t0,Instant through) {
+        return jdbc.sql("SELECT se.transaction_time FROM sync_initial_source_event se WHERE se.user_id=:u "
+                + "AND se.provider_account_id=:a AND se.transaction_time>:t0 AND se.transaction_time<=:through "
+                + "AND NOT EXISTS (SELECT 1 FROM sync_initial_candidate_event ce WHERE ce.candidate_id=:c "
+                + "AND ce.event_id=se.event_id) AND NOT EXISTS (SELECT 1 FROM sync_initial_candidate_excluded_event x "
+                + "WHERE x.candidate_id=:c AND x.event_id=se.event_id) ORDER BY se.transaction_time")
+            .param("u",user).param("a",providerAccountId).param("t0",utc(t0)).param("through",utc(through))
+            .param("c",candidateId).query((rs,n)->instant(rs,1)).list();
+    }
+
+    /** A collection child's cutoff moves to the continuation's final one, fenced, before its final sweep. */
+    boolean extendCutoff(Lease l,Instant tcFinal) {
+        // statement_timestamp(): the parent attempt's lease and claim clock, in the same transaction as its CAS.
+        return jdbc.sql("UPDATE sync_initial_collection_job SET tc=:f,last_checked_at=statement_timestamp() "
+                + "WHERE job_id=:j AND status='RUNNING' AND fencing_generation=:g "
+                + "AND lease_until>statement_timestamp() AND tc<:f")
+            .param("f",utc(tcFinal)).param("j",l.jobId()).param("g",l.generation()).update()==1;
     }
 
     /** Records the collection's observation of equity and time on the job, fenced. */
@@ -342,16 +586,28 @@ class InitialCollectionRepository {
     }
     private UUID storeCandidate(Lease l, CollectionObservation input, @Nullable UUID baseCandidateId,
             @Nullable Instant windowStart) {
+        return storeCandidate(l,input,baseCandidateId,windowStart,java.util.Set.of());
+    }
+
+    /**
+     * Stores the candidate of {@code (t0, tc]}: every stored event of the range but the excluded ones. The
+     * completeness hash reads the same events, so an initial candidate (nothing excluded) hashes as it always did.
+     */
+    private UUID storeCandidate(Lease l, CollectionObservation input, @Nullable UUID baseCandidateId,
+            @Nullable Instant windowStart, java.util.Set<UUID> excluded) {
+        String exclusion=excluded.isEmpty()?"":" AND NOT (event_id=ANY(CAST(:excluded AS uuid[])))";
         String pageEvidence=jdbc.sql("SELECT string_agg(event_type||'|'||range_start::text||'|'||range_end::text||'|'||"
                 + "cursor_hash||'|'||item_count||'|'||COALESCE(first_event_at::text,'')||'|'||"
                 + "COALESCE(last_event_at::text,'')||'|'||has_next_page::text,';' ORDER BY event_type,range_start,cursor_hash) "
                 + "FROM sync_initial_page_evidence WHERE job_id=:j").param("j",l.jobId())
             .query(String.class).single();
-        String eventEvidence=jdbc.sql("SELECT COALESCE(string_agg(source_id||'|'||semantic_hash,';' ORDER BY source_id),'') "
+        var evidenceQuery=jdbc.sql("SELECT COALESCE(string_agg(source_id||'|'||semantic_hash,';' ORDER BY source_id),'') "
                 + "FROM sync_initial_source_event WHERE user_id=:u AND provider_account_id=:a "
-                + "AND transaction_time>:t0 AND transaction_time<=:tc")
+                + "AND transaction_time>:t0 AND transaction_time<=:tc"+exclusion)
             .param("u",l.userId()).param("a",l.providerAccountId()).param("t0",utc(l.t0()))
-            .param("tc",utc(input.tc())).query(String.class).single();
+            .param("tc",utc(input.tc()));
+        if (!excluded.isEmpty()) evidenceQuery=evidenceQuery.param("excluded",uuidArray(excluded));
+        String eventEvidence=evidenceQuery.query(String.class).single();
         String digest=completenessDigest(l.jobId(),l.portfolioId(),l.intentId(),l.connectionId(),l.providerAccountId(),
                 l.t0(),input.tc(),input.equityDecimal(),input.measuredAt(),input.policyVersion(),pageEvidence,
                 eventEvidence,baseCandidateId,windowStart);
@@ -366,11 +622,13 @@ class InitialCollectionRepository {
             .param("measured",utc(input.measuredAt())).param("received",utc(input.receivedAt()))
             .param("policy",input.policyVersion()).param("hash",digest).param("base",baseCandidateId)
             .param("window",windowStart==null?null:utc(windowStart)).update();
-        jdbc.sql("INSERT INTO sync_initial_candidate_event(candidate_id,event_id) "
+        var events=jdbc.sql("INSERT INTO sync_initial_candidate_event(candidate_id,event_id) "
                 + "SELECT :candidate,event_id FROM sync_initial_source_event WHERE user_id=:u "
-                + "AND provider_account_id=:a AND transaction_time>:t0 AND transaction_time<=:tc")
+                + "AND provider_account_id=:a AND transaction_time>:t0 AND transaction_time<=:tc"+exclusion)
             .param("candidate",candidate).param("u",l.userId()).param("a",l.providerAccountId())
-            .param("t0",utc(l.t0())).param("tc",utc(input.tc())).update();
+            .param("t0",utc(l.t0())).param("tc",utc(input.tc()));
+        if (!excluded.isEmpty()) events=events.param("excluded",uuidArray(excluded));
+        events.update();
         return candidate;
     }
 
@@ -416,6 +674,7 @@ class InitialCollectionRepository {
         return rs.getObject(col,OffsetDateTime.class).toInstant();
     }
     int erase(UUID userId) {
+        jdbc.sql("DELETE FROM sync_initial_candidate_excluded_event WHERE user_id=:u").param("u",userId).update();
         jdbc.sql("DELETE FROM sync_initial_candidate_bundle WHERE user_id=:u").param("u",userId).update();
         jdbc.sql("DELETE FROM sync_initial_event_observation WHERE user_id=:u").param("u",userId).update();
         jdbc.sql("DELETE FROM sync_initial_event_provenance WHERE job_id IN "
@@ -425,4 +684,17 @@ class InitialCollectionRepository {
         return 0;
     }
     private static OffsetDateTime utc(Instant i) { return OffsetDateTime.ofInstant(i,ZoneOffset.UTC); }
+
+    /**
+     * A PostgreSQL {@code uuid[]} literal for one bind parameter ({@code CAST(:x AS uuid[])}): the statement stays one
+     * bind however many ids it carries (the driver's 65535-bind limit). A UUID's text has no character to escape.
+     */
+    static String uuidArray(java.util.Collection<UUID> ids) {
+        StringBuilder literal=new StringBuilder("{");
+        for (UUID id:ids) {
+            if (literal.length()>1) literal.append(',');
+            literal.append(id);
+        }
+        return literal.append('}').toString();
+    }
 }

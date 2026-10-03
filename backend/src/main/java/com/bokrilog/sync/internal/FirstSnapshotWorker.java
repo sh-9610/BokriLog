@@ -147,7 +147,9 @@ class FirstSnapshotWorker {
                         stage.set("PAGE_PERSIST_FAILED");
                         needsReview.compareAndSet(false,service.storeCollectionPage(lease,page));
                         stage.set("PROVIDER_CALL_FAILED");
-                    });
+                    },
+                    // The call budget's waits and page retries last only while this worker holds the job (Story 2.12).
+                    ()->lease.equals(initialInFlight.get(lease.jobId())));
             if (!lease.equals(initialInFlight.get(lease.jobId()))) return;
             if (result instanceof SourceConnectionApi.CollectionResult.Rejected rejected) {
                 if (rejected.reason()==com.bokrilog.source.SourceRejectionReason.RESPONSE_FORMAT)

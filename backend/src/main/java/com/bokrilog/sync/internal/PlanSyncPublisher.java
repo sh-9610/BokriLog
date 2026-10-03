@@ -28,9 +28,10 @@ import org.springframework.transaction.support.TransactionTemplate;
  * the membership, the connection, the plan's end and the attempt's own inputs (its own stages' results inside
  * the scope it fixed, else {@code INPUTS_CHANGED}); then the writes — the tc source
  * snapshot, the portfolio snapshot with its pointer CAS, the calculation version continuing the base one with
- * both watermarks, its six metrics and its cash flows, and the plan pointer CAS with its history row; and last a
- * final check and the fenced ending. Anything that fails rolls everything back. The plan row and its intent are
- * never touched.
+ * both watermarks, its six metrics and its cash flows, the flow differences from the version it replaced (Story
+ * 2.12: added, removed and changed events, every incremental publication), and the plan pointer CAS with its history
+ * row; and last a final check and the fenced ending. Anything that fails rolls everything back. The plan row and its
+ * intent are never touched.
  */
 @Component
 class PlanSyncPublisher {
@@ -138,6 +139,8 @@ class PlanSyncPublisher {
             if (flow == null) throw new IllegalStateException("applied cash flow without input");
             publications.insertFlow(calculationId, pinned.conversionId(), lease.providerAccountId(), flow, applied);
         }
+        // What changed from the base version: every incremental version records it, whatever its purpose.
+        publications.insertChanges(user, calculationId, lease.baseCalculationId());
         long version = lease.basePointerVersion() + 1;
         if (publications.pointNext(lease.planId(), user, lease.basePointerVersion(), lease.baseCalculationId(),
                 calculationId) != 1)
@@ -150,7 +153,8 @@ class PlanSyncPublisher {
     /**
      * Whether the inputs are exactly this attempt's: the candidate of its collection child, the bundle of its
      * classification child and of its conversion child, and a candidate whose window start and {@code tc} are the
-     * scope the attempt fixed before its first signed call.
+     * scope the attempt fixed. A verification's window start is its earliest target's; a continuation's {@code tc}
+     * is the {@code tcFinal} its final sweep fixed (Story 2.12) — the attempt row carries both, as a sync's does.
      */
     private boolean ownInputs(PlanSyncRepository.Lease lease, Pinned pinned, Candidate candidate) {
         var scope = syncs.creatingSync(lease.userId(), lease.jobId()).orElse(null);

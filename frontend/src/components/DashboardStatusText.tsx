@@ -16,7 +16,8 @@ import { dashboardAnnouncement, type Dashboard } from '../session/useDashboard'
  *
  * The dashboard's part knows about the sync (Story 2.11): while a sync starts, runs and ends, that one part
  * says so — once when it starts and once when it ends, never "reading again" while it polls. A sync that ends
- * with a new bundle changes only that part, so the new result and the sync's end are one sentence.
+ * with a new bundle changes only that part, so the new result and the sync's end are one sentence. A precision
+ * verification or a catch-up (Story 2.12) says so in the same part, in its own words — no new live region.
  *
  * Three elements, in a status region marked `aria-atomic="false"` (a `role="status"` region is atomic by
  * default): a change to one part is announced without the others being read again.
@@ -38,7 +39,7 @@ export function DashboardStatusText({
   const history = adjustmentAnnouncement(adjustments.view)
   return (
     <p className={className}>
-      <span>{dashboardAnnouncement(dashboard, sync.phase)}</span>
+      <span>{dashboardAnnouncement(dashboard, sync.phase, sync.purpose)}</span>
       {line === null ? null : (
         <>
           {' '}

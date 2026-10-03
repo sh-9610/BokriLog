@@ -37,6 +37,19 @@ export interface AdjustmentRevision {
 }
 
 /**
+ * How this flow differs from the previous official version (Story 2.12): added — found late, or new — or with
+ * another USD value, the previous value, and when it was discovered and applied. Only a late-added or
+ * value-changed flow of the shown version carries it.
+ */
+export interface AdjustmentVersionChange {
+  readonly change: string
+  readonly late: boolean
+  readonly previousUsdValue: string | null
+  readonly discoveredAt: string
+  readonly appliedAt: string
+}
+
+/**
  * One external cash flow the current official calculation version applied, in the reading order: event →
  * classification → price → discovery → references. Quantities, unit prices and closes are unrounded
  * canonical decimal strings; the USD value is too, and the screen rounds it once for display.
@@ -71,6 +84,8 @@ export interface Adjustment {
   }
   readonly changed: boolean
   readonly revisions: readonly AdjustmentRevision[]
+  /** Its change from the previous official version (Story 2.12), if any. */
+  readonly versionChange?: AdjustmentVersionChange | null
 }
 
 /** The summary of the whole filtered range: the server's exact sum, never one the screen adds up. */
@@ -121,6 +136,41 @@ function isLeg(value: unknown): boolean {
   )
 }
 
+/**
+ * A version change marker, whole and consistent with its row (Story 2.12): a change code (one this screen does
+ * not know folds to safe copy), whether it was found late, the previous USD value or none, and two instants.
+ * An added flow had no previous value and a changed one had; a removed flow is not a row this version applied;
+ * a previous value carries the row's direction as its sign; and the flow was discovered no later than applied.
+ * Absent means no marker.
+ */
+function isVersionChange(value: unknown, out: boolean): boolean {
+  if (value === null || value === undefined) return true
+  const change = record(value)
+  if (
+    change === null ||
+    typeof change.change !== 'string' ||
+    typeof change.late !== 'boolean' ||
+    !isInstant(change.discoveredAt) ||
+    !isInstant(change.appliedAt)
+  ) {
+    return false
+  }
+  const previous = change.previousUsdValue
+  const had = previous !== null && previous !== undefined
+  if (had && !(isCanonicalDecimal(previous) && previous.startsWith('-') === out)) return false
+  if (change.change === 'ADDED' && had) return false
+  if (change.change === 'VALUE_CHANGED' && !had) return false
+  if (change.change === 'REMOVED') return false
+  return Date.parse(change.discoveredAt) <= Date.parse(change.appliedAt)
+}
+
+/** The marker as the screen holds it: `null` for none, and a previous value that is absent held as `null`. */
+function normalized(row: Adjustment): Adjustment {
+  const change = row.versionChange
+  if (change === null || change === undefined) return { ...row, versionChange: null }
+  return { ...row, versionChange: { ...change, previousUsdValue: change.previousUsdValue ?? null } }
+}
+
 function isRevision(value: unknown): boolean {
   const revision = record(value)
   return (
@@ -135,8 +185,8 @@ function isRevision(value: unknown): boolean {
 
 /**
  * One row, whole: every field of its shape, the sign of its quantity and USD value agreeing with its
- * direction, the filter's direction, the shown calculation, and a change marker exactly when earlier
- * versions are listed.
+ * direction, the filter's direction, the shown calculation, a change marker exactly when earlier
+ * versions are listed, and a whole version change marker when it carries one (Story 2.12).
  */
 function isRow(value: unknown, shown: PlanResult, direction: AdjustmentDirection): boolean {
   const row = record(value)
@@ -184,7 +234,8 @@ function isRow(value: unknown, shown: PlanResult, direction: AdjustmentDirection
     refs.calculationId === shown.calculationId &&
     typeof row.changed === 'boolean' &&
     row.changed === revisions.length > 0 &&
-    revisions.every(isRevision)
+    revisions.every(isRevision) &&
+    isVersionChange(row.versionChange, out)
   )
 }
 
@@ -226,7 +277,8 @@ export function parseAdjustmentPage(
     rows.every((row) => isRow(row, shown, direction)) &&
     (next === null || (nonEmpty(next) && rows.length === ADJUSTMENT_PAGE_SIZE))
   if (!whole) return null
-  const parsed = page as unknown as AdjustmentPage
+  const raw = page as unknown as AdjustmentPage
+  const parsed: AdjustmentPage = { ...raw, rows: raw.rows.map(normalized) }
   const rising = parsed.rows.every(
     (row, index) => index === 0 || row.sequence > (parsed.rows[index - 1]?.sequence ?? 0),
   )

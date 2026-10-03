@@ -120,7 +120,8 @@ public interface SyncJobApi {
      *     (freshness), the cash-flow verification (input reliability) or the calculation basis (nature)
      * @param affectedMetrics the metrics this axis's state reaches, in the screen's order
      * @param nextAction what the axis leaves the user to do: {@code WAIT_FOR_SYNC} (freshness, while a
-     *     job runs), {@code SYNC} (freshness, when a new sync can refresh the result — Story 2.11),
+     *     job runs), {@code SYNC} (freshness, when a new sync can refresh the result — Story 2.11), {@code VERIFY}
+     *     (freshness and input reliability, after a sync that ended in review — Story 2.12),
      *     {@code CHOOSE_CONTINUATION} (freshness, after a long gap) or {@code NONE}. An axis never produces
      *     the screen-level {@code CREATE_PLAN} or {@code WAIT_FOR_RESULT} — those belong to
      *     {@link Dashboard.NoPlan} and {@link Dashboard.Preparing}
@@ -160,16 +161,23 @@ public interface SyncJobApi {
     enum SyncTrigger { ENTRY, VISIBILITY, MANUAL }
 
     /**
-     * One incremental sync attempt as the screen may see it: its trigger, its status, the stage it reached, its
-     * closed code and its two times. No plan, pointer, amount, time of an input, user or provider identifier.
+     * One incremental sync attempt as the screen may see it: its purpose and reason, its trigger, its status, the
+     * stage it reached, its closed code and its two times. No plan, pointer, amount, time of an input, user or
+     * provider identifier.
      *
+     * @param purpose {@code SYNC}, {@code VERIFY} (a precision verification, Story 2.12) or {@code CATCH_UP} (the
+     *     continuation of a plan after a long gap)
+     * @param reason {@code null} for a sync; for the other two one of {@link VerificationReason}
+     * @param trigger {@code ENTRY}, {@code VISIBILITY}, {@code MANUAL} or {@code SYSTEM} (the public verification
+     *     method's)
      * @param status {@code QUEUED}, {@code RUNNING}, {@code SUCCEEDED}, {@code FAILED}, {@code NEEDS_REVIEW}
      *     or {@code BLOCKED}
-     * @param stage {@code TIME}, {@code COLLECTION}, {@code CLASSIFICATION}, {@code CONVERSION},
-     *     {@code CALCULATION} or {@code PUBLICATION}; {@code null} before the first
+     * @param stage {@code TIME}, {@code COLLECTION}, {@code FINAL_SWEEP} (a continuation's last recent sweep),
+     *     {@code CLASSIFICATION}, {@code CONVERSION}, {@code CALCULATION} or {@code PUBLICATION}; {@code null}
+     *     before the first
      */
-    record SyncJob(UUID jobId, String trigger, String status, @Nullable String stage, @Nullable String failureCode,
-            Instant admittedAt, @Nullable Instant finishedAt) {}
+    record SyncJob(UUID jobId, String purpose, @Nullable String reason, String trigger, String status,
+            @Nullable String stage, @Nullable String failureCode, Instant admittedAt, @Nullable Instant finishedAt) {}
 
     /**
      * The sync part of a ready dashboard: whether a sync can be asked for now, why not, when a manual one can be
@@ -190,7 +198,10 @@ public interface SyncJobApi {
             SyncAdmission.NotPermitted, SyncAdmission.Refused {
         /** A new attempt was queued. */
         record Accepted(SyncJob job) implements SyncAdmission {}
-        /** The attempt in progress, or the one the same key already made with the same trigger. */
+        /**
+         * The attempt in progress — of any purpose: a sync joins a verification in progress (Story 2.12) — or the one
+         * the same key already made as a sync with the same trigger.
+         */
         record Joined(SyncJob job) implements SyncAdmission {}
         /**
          * No attempt was made: {@code COOLDOWN} (a manual request within 30 seconds of the last admission),
@@ -224,8 +235,8 @@ public interface SyncJobApi {
      * The dashboard read model (Story 2.8). One of five outcomes; only {@link Dashboard.Ready} carries
      * financial fields. The screen-level next action is a closed set per outcome: {@code CREATE_PLAN}
      * ({@link Dashboard.NoPlan}), {@code WAIT_FOR_RESULT} ({@link Dashboard.Preparing}), and
-     * {@code WAIT_FOR_SYNC}, {@code SYNC}, {@code CHOOSE_CONTINUATION} or {@code NONE} ({@link Dashboard.Ready},
-     * the freshness axis's own).
+     * {@code WAIT_FOR_SYNC}, {@code SYNC}, {@code VERIFY}, {@code CHOOSE_CONTINUATION} or {@code NONE}
+     * ({@link Dashboard.Ready}, the freshness axis's own).
      */
     sealed interface Dashboard permits Dashboard.NotPermitted, Dashboard.Unavailable, Dashboard.NoPlan,
             Dashboard.Preparing, Dashboard.Ready {
@@ -237,8 +248,12 @@ public interface SyncJobApi {
         record NoPlan(String nextAction) implements Dashboard {}
         /** No active plan yet, and one of the user's publication attempts is queued or running. */
         record Preparing(String nextAction) implements Dashboard {}
-        /** The active plan's official bundle, and its sync state (Story 2.11). */
-        record Ready(DashboardResult result, String nextAction, SyncState sync) implements Dashboard {}
+        /**
+         * The active plan's official bundle, its sync state (Story 2.11), its verification state and what its
+         * version changed (Story 2.12).
+         */
+        record Ready(DashboardResult result, String nextAction, SyncState sync, VerificationState verification,
+                VersionChange change) implements Dashboard {}
     }
 
     /**
@@ -292,7 +307,41 @@ public interface SyncJobApi {
             Times times, Connection connection, SourceRange sourceRange, Classification classification,
             Conversion conversion, Cashflows cashflows, Plan plan, Calculation calculation,
             List<MetricImpact> metrics, List<OfficialVersion> officialVersions,
-            List<UnpublishedAttempt> unpublishedAttempts) {
+            List<UnpublishedAttempt> unpublishedAttempts, EvidenceChange change) {
+
+        /**
+         * What this version changed from the one it replaced (Story 2.12): why the attempt that made it ran, the
+         * ranges it verified and the evidence it reused, the previous version and its basis, when the impact starts,
+         * the six metrics of both versions (both are immutable rows; the basis time moved too) and every changed
+         * event. A first publication has kind {@code NONE}, no previous version and no rows.
+         *
+         * @param kind {@code CORRECTED} (a late addition, a removal or a changed value), {@code VERIFIED_NO_CHANGE}
+         *     (a verification or continuation without one) or {@code NONE}
+         * @param lateAddedCount additions found late; {@code valueChangedCount} values changed (another user's
+         *     verification can correct a shared price under an ordinary sync); {@code removedCount} flows removed — the
+         *     three the dashboard's {@code lateChangeCount} sums
+         */
+        public record EvidenceChange(String kind, @Nullable String purpose, @Nullable String reason,
+                int lateAddedCount, int valueChangedCount, int removedCount, List<VerificationRange> targets,
+                List<VerificationRange> reused, @Nullable PreviousVersion previous, @Nullable Instant firstAffectedAt,
+                List<MetricDelta> metrics, List<ChangedEvent> events) {}
+
+        public record PreviousVersion(long pointerVersion, UUID calculationId, Instant basisAt) {}
+
+        /** One metric, as the previous version and this one hold it (a value or a reason each). */
+        public record MetricDelta(String metric, @Nullable String previousValue,
+                @Nullable String previousUnavailableReason, @Nullable String value, @Nullable String unavailableReason) {}
+
+        /**
+         * One changed event: its Bybit id, time and type, how it changed, both USD values and estimated flags, the
+         * price evidence kind, when BokriLog first observed it and when this version applied it.
+         *
+         * @param late whether it was not after the previous version's verification
+         */
+        public record ChangedEvent(String sourceId, Instant occurredAt, String changeKind, boolean late,
+                String transactionType, @Nullable String previousUsdValue, @Nullable Boolean previousEstimated,
+                @Nullable String usdValue, @Nullable Boolean estimated, String evidenceType, Instant discoveredAt,
+                Instant appliedAt) {}
 
         /**
          * @param portfolioSnapshotId the official portfolio snapshot the version was calculated on
@@ -445,10 +494,21 @@ public interface SyncJobApi {
          * @param changed whether the current conversion continues an earlier one in which this event's value
          *     was different
          * @param revisions the earlier conversion versions of this event, newest first; empty unless changed
+         * @param versionChange the marker of a row this version added late or whose value it changed (Story 2.12),
+         *     {@code null} otherwise
          */
         public record Adjustment(int sequence, Instant occurredAt, String direction, String asset,
                 String signedQuantity, String usdValue, Classification classification, Price price,
-                Instant discoveredAt, References references, boolean changed, List<Revision> revisions) {}
+                Instant discoveredAt, References references, boolean changed, List<Revision> revisions,
+                @Nullable VersionMark versionChange) {}
+
+        /**
+         * Why a row carries a version marker: added late ({@code ADDED}, {@code late}) or its value changed
+         * ({@code VALUE_CHANGED}), with the value the previous version applied, when the event was first observed and
+         * when this version was applied.
+         */
+        public record VersionMark(String change, boolean late, @Nullable String previousUsdValue, Instant discoveredAt,
+                Instant appliedAt) {}
 
         /** @param transactionType the Bybit transaction log type the event came with */
         public record Classification(String transactionType, String ruleId, String policyVersion) {}
@@ -470,9 +530,11 @@ public interface SyncJobApi {
          * shown as it was stored — never rewritten.
          *
          * <p>"Never used officially" holds because every official version has its own classification (Story
-         * 2.11 classifies each sync's candidate anew) and a conversion chain never leaves its classification:
-         * an earlier link of the chain was replaced before any version cited it. Stories 2.12 and 2.15, which may
-         * reconvert a classification an official version already cited, must revisit it.
+         * 2.11 classifies each sync's candidate anew, and so does every Story 2.12 verification and continuation —
+         * a price revision they find becomes a new classification's conversion, never a relink of a cited one) and a
+         * conversion chain never leaves its classification: an earlier link of the chain was replaced before any
+         * version cited it. Story 2.15, which may reconvert a classification an official version already cited,
+         * must revisit it.
          *
          * @param usdValue the value it had, or {@code null} when it had none (not converted then)
          * @param changeReason why the next version replaced it
@@ -509,6 +571,125 @@ public interface SyncJobApi {
      * failing read throws; nothing is returned in part.
      */
     AdjustmentRead adjustmentHistory(@Nullable UUID userId, @Nullable AdjustmentQuery query);
+
+    // -------------------------------------------------------------------- Story 2.12
+
+    /** What the user asks for: a precision verification, or the continuation of the plan after a long gap. */
+    enum VerificationKind { PRECISION, CATCH_UP }
+
+    /**
+     * Why a verification or continuation runs. The HTTP surface admits the user's two (the server derives which:
+     * {@code GAP_SUSPECTED} when unexplained stored events exist, else {@code USER_REQUEST}) and the continuation's
+     * own; the other four come only through {@link #admitSystemVerification}.
+     */
+    enum VerificationReason { USER_REQUEST, GAP_SUSPECTED, UNRECOGNIZED_EVENT, DUPLICATE_SUSPECTED,
+        LONG_GAP_CONTINUATION, PLAN_END_PREPARATION, OPERATOR_INVESTIGATION }
+
+    /**
+     * One range a verification planned: a target ({@code UNCONFIRMED}, {@code GAP}, {@code ANOMALY},
+     * {@code EXPLICIT}, {@code NEW}, {@code FINAL_SWEEP}) or evidence it reused ({@code REUSED}), closed.
+     */
+    record VerificationRange(String kind, Instant start, Instant end) {}
+
+    /** An explicit investigation range ({@code OPERATOR_INVESTIGATION} only), inside {@code (t0, verified]}. */
+    record InvestigationRange(Instant start, Instant end) {}
+
+    /** How a verification's reconciliation came out, by outcome. */
+    record VerificationCounts(int added, int same, int missing, int superseded, int conflict) {}
+
+    /**
+     * A verification or continuation attempt with its plan and its reconciliation counts.
+     *
+     * @param holdsResult whether this attempt is the persistent review of the current base — the one that holds the
+     *     input reliability axis ({@code VERIFICATION_REVIEW_REQUIRED} or {@code HISTORY_OUT_OF_RANGE}); false for an
+     *     attempt in progress, one that succeeded, one of another base, or a review asking again could change
+     */
+    record VerificationJob(SyncJob job, List<VerificationRange> targets, List<VerificationRange> reused,
+            VerificationCounts counts, boolean holdsResult) {}
+
+    /**
+     * What a precision verification would read now: from where, the unconfirmed range's start, how many unexplained
+     * stored events it would look around, and where the reused evidence ends ({@code null} without any).
+     */
+    record VerificationPreview(Instant rangeStart, Instant unconfirmedFrom, int anomalyCount,
+            @Nullable Instant reusedUntil) {}
+
+    /**
+     * The verification part of a ready dashboard, judged by the admission's own rules in the dashboard's one read.
+     *
+     * @param availability judged in this order: {@code IN_PROGRESS}, {@code UNAVAILABLE}, {@code NOT_USEFUL} (a
+     *     verification or continuation of this base already ended in a persistent review: asking again for either
+     *     changes nothing, even in a long gap), {@code LONG_GAP} (only the continuation can run), {@code COOLDOWN},
+     *     {@code AVAILABLE}
+     * @param reason with {@code UNAVAILABLE} only: {@code RESTRICTED}, {@code CONNECTION_UNAVAILABLE} or
+     *     {@code PLAN_PERIOD_ENDED}
+     * @param retryAfterSeconds with {@code COOLDOWN} (and with {@code LONG_GAP} while the continuation cools down)
+     * @param suggestedReason the reason a precision verification would be admitted with now; only with
+     *     {@code AVAILABLE} or {@code COOLDOWN}, {@code null} otherwise
+     * @param preview what a precision verification would read now; none while an attempt is in progress or the gap
+     *     is long
+     * @param catchUpFrom whenever the gap is long: where the continuation would start
+     */
+    record VerificationState(String availability, @Nullable String reason, @Nullable Long retryAfterSeconds,
+            @Nullable String suggestedReason, @Nullable VerificationPreview preview, @Nullable Instant catchUpFrom,
+            @Nullable VerificationJob latest) {}
+
+    /**
+     * What the current version changed (Story 2.12 AC-7): {@code CORRECTED} when it added an event late, removed one
+     * or changed a value; {@code VERIFIED_NO_CHANGE} when a verification or continuation made it without any;
+     * {@code NONE} otherwise. The count, the impact start and the ranges come from the version's change rows and the
+     * attempt that made it. A version whose change rows are not exactly its flow difference shows {@code NONE}: the
+     * marker is never drawn from rows the evidence would refuse (the evidence and the history answer 503 for it).
+     *
+     * @param lateChangeCount the sum of the three counts that follow it
+     * @param lateAddedCount additions found late (not after the previous verification)
+     * @param valueChangedCount flows whose USD value or estimated flag changed — a price correction, possibly by
+     *     another user's verification of a shared candle under this user's ordinary sync: a change, not a late event
+     * @param removedCount flows the version no longer applies
+     * @param verifiedAt when the verification or continuation that made the version finished (its attempt's
+     *     {@code finished_at}, to the millisecond); {@code null} for any other version
+     */
+    record VersionChange(String kind, @Nullable String purpose, @Nullable String reason, int lateChangeCount,
+            int lateAddedCount, int valueChangedCount, int removedCount, @Nullable Instant firstAffectedAt,
+            @Nullable Instant verifiedAt, List<VerificationRange> targets, List<VerificationRange> reused) {}
+
+    /** The admission of a verification or continuation. Nothing here calls the provider. */
+    sealed interface VerificationAdmission permits VerificationAdmission.Accepted, VerificationAdmission.Joined,
+            VerificationAdmission.Cooldown, VerificationAdmission.NotPermitted, VerificationAdmission.Refused {
+        record Accepted(SyncJob job) implements VerificationAdmission {}
+        /** The same key replayed with the same kind, or the attempt of the same purpose in progress. */
+        record Joined(SyncJob job) implements VerificationAdmission {}
+        /** Within 30 seconds of the plan's last admission, of any purpose. */
+        record Cooldown(@Nullable SyncJob latest, long retryAfterSeconds) implements VerificationAdmission {}
+        /** The account's own write access refused it. */
+        record NotPermitted() implements VerificationAdmission {}
+        /**
+         * @param code {@code BAD_REQUEST} (400), {@code IDEMPOTENCY_KEY_REQUIRED} (422), or one of
+         *     {@code NO_ACTIVE_PLAN}, {@code REFERENCE_STALE}, {@code JOB_IN_PROGRESS}, {@code VERIFICATION_UNAVAILABLE},
+         *     {@code LONG_GAP}, {@code NOT_LONG_GAP}, {@code VERIFICATION_NOT_USEFUL}, {@code IDEMPOTENCY_CONFLICT}
+         *     (409). The public method may also refuse with {@code INVALID_RANGE}.
+         */
+        record Refused(String code) implements VerificationAdmission {}
+    }
+
+    /**
+     * Admits the user's precision verification or continuation (Story 2.12), in one short transaction without any
+     * provider call, judging in order: the account's write access, the same key replayed, the active plan and whether
+     * {@code reference} is still its pointer (the user's choice token), an attempt in progress, unavailability, the
+     * kind's own condition (a precision verification needs no long gap and must still be useful; a continuation needs
+     * the long gap), the 30-second cooldown, then the plan of ranges is fixed with the attempt.
+     */
+    VerificationAdmission admitPlanVerification(@Nullable UUID userId, @Nullable VerificationKind kind,
+            @Nullable EvidenceReference reference, @Nullable String idempotencyKey);
+
+    /**
+     * Admits a system verification of the current official version (Stories 2.13, 2.14 and Epic 3): plan-end
+     * preparation, an unrecognized event, a suspected duplicate, or an operator's investigation of explicit ranges
+     * (1 to 10, inside {@code (t0, verified]}; the other reasons take none). No reference, usefulness or cooldown is
+     * judged: an operator must be able to verify the same base again once the cause is fixed.
+     */
+    VerificationAdmission admitSystemVerification(@Nullable UUID userId, VerificationReason reason,
+            List<InvestigationRange> ranges, @Nullable String idempotencyKey);
 
     /** portfolio 삭제 뒤, source 삭제 앞에 호출한다. 발행 결과·시도를 먼저 지운다. */
     void eraseSyncData(@Nullable UUID userId);

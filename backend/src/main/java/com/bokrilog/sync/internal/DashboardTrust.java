@@ -25,17 +25,27 @@ import org.jspecify.annotations.Nullable;
  * ({@code basisAt}).
  *
  * <p>The next actions are a closed set: {@link #CREATE_PLAN}, {@link #WAIT_FOR_RESULT}, {@link #WAIT_FOR_SYNC},
- * {@link #SYNC}, {@link #CHOOSE_CONTINUATION} and {@link #NONE}. Story 2.11 added the sync control: a stale
- * result is refreshed by a new sync ({@code SYNC}), unless the gap is long ({@code CHOOSE_CONTINUATION}) or no
- * sync can run ({@code NONE}). The latest sync attempt is one of the facts: a failed or review-required ending
- * keeps the result "not fresh" whatever its times, and a review-required ending makes the input reliability
- * "review required" for all six metrics.
+ * {@link #SYNC}, {@link #VERIFY}, {@link #CHOOSE_CONTINUATION} and {@link #NONE}. Story 2.11 added the sync
+ * control: a stale result is refreshed by a new sync ({@code SYNC}), unless the gap is long
+ * ({@code CHOOSE_CONTINUATION}) or no sync can run ({@code NONE}). The latest sync attempt is one of the facts: a
+ * failed or review-required ending keeps the result "not fresh" whatever its times, and a review-required ending
+ * makes the input reliability "review required" for all six metrics.
+ *
+ * <p>Story 2.12: a sync that ended in review is not asked to sync again — syncing cannot resolve it — but to run a
+ * precision verification ({@code VERIFY}) when one can run, to choose the continuation in a long gap, and otherwise
+ * nothing. A verification or continuation of the current base that itself ended in a
+ * persistent review ({@link PlanSyncRepository#verificationReview}) wins over the sync's review on both axes, and over
+ * the long gap on the freshness axis, for as long as that base is official: the input reliability is
+ * {@code VERIFICATION_REVIEW_REQUIRED} (or {@code UNUSABLE} / {@code HISTORY_OUT_OF_RANGE} when the history is out of
+ * the provider's reach), with no next action — asking again, for either a verification or a continuation, would not
+ * change it.
  */
 final class DashboardTrust {
     static final String CREATE_PLAN = "CREATE_PLAN";
     static final String WAIT_FOR_RESULT = "WAIT_FOR_RESULT";
     static final String WAIT_FOR_SYNC = "WAIT_FOR_SYNC";
     static final String SYNC = "SYNC";
+    static final String VERIFY = "VERIFY";
     static final String CHOOSE_CONTINUATION = "CHOOSE_CONTINUATION";
     static final String NONE = "NONE";
 
@@ -44,8 +54,9 @@ final class DashboardTrust {
             "REQUIRED_RATE", "GOAL_PROGRESS");
 
     /**
-     * The input reliability states a calculation version may carry in this story. {@code UNUSABLE} has no
-     * producer yet; any other value is not judged at all.
+     * The input reliability states a calculation version may carry. Any other stored value is not judged at all.
+     * {@code UNUSABLE} is never stored: it is the axis state a verification review out of the provider's history
+     * produces (Story 2.12), judged here from the sync facts.
      */
     static final Set<String> RELIABILITIES = Set.of("CONFIRMED", "REVIEW_REQUIRED");
 
@@ -67,13 +78,44 @@ final class DashboardTrust {
      * The sync facts of the plan (Story 2.11): the availability the admission would judge now, and the status of
      * the plan's latest attempt ({@code null} without one). Its closed code is the screen's to show; the axes
      * need only how it ended — a worker's long gap already reaches them through the availability.
+     *
+     * @param unavailableReason with {@code UNAVAILABLE}: why no sync can run — {@code REVIEW_HELD} when a persistent
+     *     verification review holds it (R6), which the verification review's own cause then names
+     * @param verificationReview the closed code of a verification or continuation of the current base that ended in a
+     *     persistent review (Story 2.12), {@code null} without one
+     * @param verificationAvailability what a precision verification can do now (the dashboard's verification part)
      */
-    record SyncFacts(String availability, @Nullable String latestStatus) {
+    record SyncFacts(String availability, @Nullable String unavailableReason, @Nullable String latestStatus,
+            @Nullable String verificationReview, String verificationAvailability) {
+        SyncFacts(String availability, @Nullable String latestStatus, @Nullable String verificationReview) {
+            this(availability, null, latestStatus, verificationReview, "AVAILABLE");
+        }
+
+        SyncFacts(String availability, @Nullable String latestStatus) {
+            this(availability, latestStatus, null);
+        }
+
         /** No attempt yet and nothing in the way. */
         static SyncFacts none() {
-            return new SyncFacts(SyncWindow.Availability.AVAILABLE.name(), null);
+            return new SyncFacts(SyncWindow.Availability.AVAILABLE.name(), null, null);
         }
     }
+
+    /**
+     * What a sync's review asks of the user (R5), by what a precision verification can do now: run it ({@code VERIFY},
+     * now or after its cooldown), or — in a long gap, where only the continuation runs — choose the continuation;
+     * otherwise nothing the user can press would resolve it.
+     */
+    private static String reviewAction(String verificationAvailability) {
+        return switch (verificationAvailability) {
+            case "AVAILABLE", "COOLDOWN" -> VERIFY;
+            case "LONG_GAP" -> CHOOSE_CONTINUATION;
+            default -> NONE;
+        };
+    }
+
+    /** The code of a verification review whose input is out of the provider's history: unusable, not reviewable. */
+    static final String HISTORY_OUT_OF_RANGE = "HISTORY_OUT_OF_RANGE";
 
     /** What the axes are judged from: the freshness and sync facts and one calculation version with its metrics. */
     record Input(Freshness freshness, String inputReliability, boolean estimated, int estimatedFlowCount,
@@ -132,12 +174,21 @@ final class DashboardTrust {
         SyncFacts sync = input.sync();
         if (facts.syncing())
             return new TrustAxis("SYNCING", "JOB_IN_PROGRESS", input.measuredAt(), METRICS, WAIT_FOR_SYNC);
-        if (SyncWindow.Availability.UNAVAILABLE.name().equals(sync.availability()))
+        // The guard's own reasons (restriction, connection, plan end) say nothing can run; a sync held by a persistent
+        // verification review (R6) is named by that review instead.
+        if (SyncWindow.Availability.UNAVAILABLE.name().equals(sync.availability())
+                && !PlanSyncService.REVIEW_HELD.equals(sync.unavailableReason()))
             return new TrustAxis("STALE", "SYNC_UNAVAILABLE", input.measuredAt(), METRICS, NONE);
+        // A persistent verification review of this base wins over the long gap (interpretation C3): the
+        // continuation would end the same way, so it is not offered.
+        if (sync.verificationReview() != null)
+            return new TrustAxis("STALE", "LAST_VERIFICATION_NEEDS_REVIEW", input.measuredAt(), METRICS, NONE);
         if (SyncWindow.Availability.LONG_GAP.name().equals(sync.availability()))
             return new TrustAxis("STALE", "LONG_GAP", input.measuredAt(), METRICS, CHOOSE_CONTINUATION);
+        // Syncing again cannot resolve a sync's review: the precision verification can (Story 2.12).
         if ("NEEDS_REVIEW".equals(sync.latestStatus()))
-            return new TrustAxis("STALE", "LAST_SYNC_NEEDS_REVIEW", input.measuredAt(), METRICS, SYNC);
+            return new TrustAxis("STALE", "LAST_SYNC_NEEDS_REVIEW", input.measuredAt(), METRICS,
+                    reviewAction(sync.verificationAvailability()));
         if ("FAILED".equals(sync.latestStatus()) || "BLOCKED".equals(sync.latestStatus()))
             return new TrustAxis("STALE", "LAST_SYNC_UNSUCCESSFUL", input.measuredAt(), METRICS, SYNC);
         if (facts.measurementRecent() && facts.verificationRecent())
@@ -148,13 +199,23 @@ final class DashboardTrust {
     }
 
     /**
-     * A review has two causes. The latest sync ended needing review (Story 2.11): its inputs are held, so every
-     * metric's next version is — all six. Otherwise, under CALC-1.0, the adjusted target is not positive: it
-     * reaches the target itself and every ratio that reason left undefined.
+     * A review has three causes. A verification of the current base ended needing review (Story 2.12): all six
+     * metrics are held and nothing the user can ask changes it. The latest sync ended needing review (Story 2.11):
+     * its inputs are held, so every metric's next version is — all six — and a precision verification is what can
+     * resolve it. Otherwise, under CALC-1.0, the adjusted target is not positive: it reaches the target itself and
+     * every ratio that reason left undefined.
      */
     private static TrustAxis reliability(Input input) {
+        // A verification of this base ended in review: it wins over any sync review, and asking again changes nothing.
+        String verification = input.sync().verificationReview();
+        if (HISTORY_OUT_OF_RANGE.equals(verification))
+            return new TrustAxis("UNUSABLE", HISTORY_OUT_OF_RANGE, input.verifiedThrough(), METRICS, NONE);
+        if (verification != null)
+            return new TrustAxis("REVIEW_REQUIRED", "VERIFICATION_REVIEW_REQUIRED", input.verifiedThrough(), METRICS,
+                    NONE);
         if ("NEEDS_REVIEW".equals(input.sync().latestStatus()))
-            return new TrustAxis("REVIEW_REQUIRED", "SYNC_REVIEW_REQUIRED", input.verifiedThrough(), METRICS, NONE);
+            return new TrustAxis("REVIEW_REQUIRED", "SYNC_REVIEW_REQUIRED", input.verifiedThrough(), METRICS,
+                    reviewAction(input.sync().verificationAvailability()));
         // Only the two known values reach here (judge refuses the rest).
         if ("REVIEW_REQUIRED".equals(input.inputReliability())) {
             List<String> affected = inOrder(input.metrics(), metric -> metric.metric().equals("ADJUSTED_TARGET")

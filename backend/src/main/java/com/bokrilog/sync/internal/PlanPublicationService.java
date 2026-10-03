@@ -81,14 +81,17 @@ class PlanPublicationService {
     /** The incremental sync (Story 2.11): the dashboard's sync state and the lineage of the versions it made. */
     private final PlanSyncService syncs;
     private final PlanSyncRepository syncAttempts;
+    /** The precision verification and continuation (Story 2.12): the dashboard's verification part and change. */
+    private final PlanVerificationService verifications;
 
     PlanPublicationService(PlanPublicationRepository repository, CashflowClassificationRepository classifications,
             CashflowConversionRepository conversions, SourceConnectionApi sources, PortfolioMembershipApi portfolios,
             AccountAccessApi accounts, OperationalRestrictionApi restrictions, PlanPublicationPort plans,
             CalculationConformance conformance, PlatformTransactionManager manager, PlanSyncService syncs,
-            PlanSyncRepository syncAttempts) {
+            PlanSyncRepository syncAttempts, PlanVerificationService verifications) {
         this.syncs = syncs;
         this.syncAttempts = syncAttempts;
+        this.verifications = verifications;
         this.repository = repository;
         this.classifications = classifications;
         this.conversions = conversions;
@@ -611,15 +614,23 @@ class PlanPublicationService {
         if (!DashboardTrust.wellFormed(metrics, calculation.estimated())) return new Dashboard.Unavailable();
         var lineage = repository.lineage(user, pointer.calculationId()).orElse(null);
         if (lineage == null) return new Dashboard.Unavailable();
-        // The sync state (Story 2.11), in the same consistent read and against the same database clock.
-        var sync = syncs.state(user, new PlanSyncGuard.Base(plan, pointer, calculation, lineage));
+        // The sync state (Story 2.11) and the verification state and change (Story 2.12), in the same consistent
+        // read and against the same database clock.
+        // The availability facts and the persistent review are read once and shared by both parts and the axes.
+        var base = new PlanSyncGuard.Base(plan, pointer, calculation, lineage);
+        var facts = syncs.facts(user, base);
+        var sync = syncs.state(facts);
         var latest = sync.latest();
+        var review = facts.review();
+        var verification = verifications.state(user, base, facts);
+        var change = verifications.change(user, base);
         // The axes fail closed: a reliability this story does not know is not shown as anything.
         var trust = DashboardTrust.judge(new DashboardTrust.Input(
                 repository.freshness(user, calculation.measuredAt(), calculation.verifiedThrough()),
                 calculation.inputReliability(), calculation.estimated(), calculation.estimatedFlowCount(),
                 calculation.measuredAt(), calculation.verifiedThrough(), calculation.basisAt(), metrics,
-                new DashboardTrust.SyncFacts(sync.availability(), latest == null ? null : latest.status())))
+                new DashboardTrust.SyncFacts(sync.availability(), sync.reason(), latest == null ? null : latest.status(),
+                        review == null ? null : review.code(), verification.availability())))
                 .orElse(null);
         if (trust == null) return new Dashboard.Unavailable();
         return new Dashboard.Ready(new DashboardResult(plan.planId(), "ACTIVE", notation(calculation.principal()),
@@ -629,7 +640,8 @@ class PlanPublicationService {
                 calculation.verifiedThrough(), calculation.calculationPolicy(), calculation.calendarPolicy(),
                 calculation.displayPolicy(), calculation.pricePolicy(), calculation.implementationVersion(),
                 calculation.inputHash(), calculation.resultHash(), calculation.flowCount(),
-                calculation.estimatedFlowCount(), trust, metrics), DashboardTrust.nextAction(trust), sync);
+                calculation.estimatedFlowCount(), trust, metrics), DashboardTrust.nextAction(trust), sync,
+                verification, change);
     }
 
     // ---------------------------------------------------------------- calculation evidence (Story 2.9)
@@ -671,10 +683,11 @@ class PlanPublicationService {
      *       snapshot, and its metrics are a whole six (the dashboard's own checks);
      *   <li>its creating attempt published exactly this plan and version, for the plan's intent: a first
      *       publication from the inputs it pinned at admission ({@link #calculatedFromPinned}), or an incremental
-     *       sync (Story 2.11) that continued the version it read — the previous calculation of the same plan and
-     *       terms, the next portfolio sequence, a candidate based on the previous one's, a window starting inside
-     *       {@code [t0, previous verification]} and both watermarks as its mode leaves them
-     *       ({@link #continuedFrom});
+     *       sync (Story 2.11), precision verification or continuation (Story 2.12) that continued the version it read
+     *       — the previous calculation of the same plan and terms, the next portfolio sequence, a candidate based on
+     *       the previous one's, a window starting inside {@code [t0, previous verification]} (a verification's
+     *       earliest target) and both watermarks as its mode leaves them ({@link #continuedFrom}) — with change rows
+     *       that are exactly the flow difference from that version;
      *   <li>its tc source snapshot was built from its candidate under the candidate's policy, and its basis
      *       source snapshot is the first snapshot of the same connection, measured at {@code t0};
      *   <li>the candidate, the classification and the conversion are one lineage — the same candidate, the
@@ -720,6 +733,7 @@ class PlanPublicationService {
         var attempt = repository.creatingAttempt(user, lineage.createdByJobId()).orElse(null);
         Instant windowStart;
         int expectedConversionFlows;
+        PlanSyncRepository.CreatingSync creatingSync = null;
         if (attempt != null) {
             if (!"PUBLISHED".equals(attempt.status()) || !plan.planId().equals(attempt.planId())
                     || !calculationId.equals(attempt.calculationId()) || lineage.previousCalculationId() != null
@@ -737,9 +751,14 @@ class PlanPublicationService {
                     || !continuedFrom(user, sync, children, plan, pointer, calculationId, calculation, lineage,
                             candidate))
                 return new EvidenceOutcome.Unavailable();
+            // The change rows are exactly the flow difference from the version it continued (Story 2.12).
+            if (lineage.previousCalculationId() == null
+                    || !repository.changesConsistent(user, calculationId, lineage.previousCalculationId()))
+                return new EvidenceOutcome.Unavailable();
             windowStart = Objects.requireNonNull(sync.windowStart());
             // The conversion converted every external flow its classification found.
             expectedConversionFlows = externalFlows;
+            creatingSync = sync;
         }
         var source = repository.sourceOrigin(user, lineage.sourceSnapshotId()).orElse(null);
         if (source == null || !lineage.candidateId().equals(source.candidateId())
@@ -799,6 +818,8 @@ class PlanPublicationService {
         List<CalculationEvidence.OfficialVersion> versions = officialVersions(user, plan.planId(), pointer,
                 calculation.portfolioId());
         if (versions == null) return new EvidenceOutcome.Unavailable();
+        var change = evidenceChange(user, calculationId, lineage, pointer, creatingSync, metrics, versions);
+        if (change == null) return new EvidenceOutcome.Unavailable();
 
         var evidence = new CalculationEvidence(plan.planId(), pointer.version(), calculationId,
                 new CalculationEvidence.Snapshots(calculation.portfolioSnapshotId(), calculation.portfolioSequence(),
@@ -821,8 +842,63 @@ class PlanPublicationService {
                         lineage.timeZone(), calculation.implementationVersion(), calculation.inputHash(),
                         calculation.resultHash(), lineage.createdAt()),
                 impacts(metrics, calculation.estimatedFlowCount(), evidenceType), versions,
-                repository.unpublished(user, plan.intentId()));
+                repository.unpublished(user, plan.intentId()), change);
         return new EvidenceOutcome.Found(evidence);
+    }
+
+    /**
+     * The version's change part (Story 2.12 AC-7): why its attempt ran and what it read and reused, the version it
+     * replaced — as the pointer's history records it (the version just before this one, which must be that
+     * predecessor) — with that version's basis and six metrics beside this one's (both immutable rows), when the
+     * impact starts — the earliest late change ({@link VersionChanges}), the same instant the dashboard's marker shows
+     * — and every changed event with its values, evidence and times. A first publication has none of it.
+     *
+     * @return the part, or {@code null} when the lineage does not hold: the predecessor or its six metrics are missing,
+     *     or the history's previous version is not it (the caller answers that the evidence is unavailable)
+     */
+    private CalculationEvidence.@Nullable EvidenceChange evidenceChange(UUID user, UUID calculationId,
+            PlanPublicationRepository.Lineage lineage, PlanPublicationRepository.Pointer pointer,
+            PlanSyncRepository.@Nullable CreatingSync sync, List<DashboardMetric> metrics,
+            List<CalculationEvidence.OfficialVersion> versions) {
+        UUID previousId = lineage.previousCalculationId();
+        if (sync == null || previousId == null)
+            return new CalculationEvidence.EvidenceChange(VersionChanges.NONE, null, null, 0, 0, 0, List.of(),
+                    List.of(), null, null, List.of(), List.of());
+        var previous = repository.calculation(user, previousId).orElse(null);
+        List<DashboardMetric> before = repository.metrics(previousId);
+        if (previous == null || before.size() != DashboardTrust.METRICS.size() || versions.size() < 2) return null;
+        var previousVersion = versions.get(versions.size() - 2);
+        if (previousVersion.pointerVersion() + 1 != pointer.version()
+                || !previousVersion.calculationId().equals(previousId))
+            return null;
+        List<CalculationEvidence.MetricDelta> deltas = new java.util.ArrayList<>();
+        for (int index = 0; index < metrics.size(); index++) {
+            DashboardMetric metric = metrics.get(index);
+            DashboardMetric old = before.get(index);
+            if (!old.metric().equals(metric.metric())) return null;
+            deltas.add(new CalculationEvidence.MetricDelta(metric.metric(), old.value(), old.unavailableReason(),
+                    metric.value(), metric.unavailableReason()));
+        }
+        var changes = repository.changes(user, calculationId);
+        var late = VersionChanges.late(changes);
+        var counts = VersionChanges.counts(changes);
+        boolean verifying = !"SYNC".equals(sync.purpose());
+        List<VerificationPlanner.Range> ranges = verifying ? syncAttempts.ranges(user, lineage.createdByJobId())
+                : List.of();
+        List<CalculationEvidence.ChangedEvent> events = changes.stream().map(change ->
+                new CalculationEvidence.ChangedEvent(change.sourceId(), change.occurredAt(), change.kind(), change.late(),
+                        change.transactionType(), change.previousUsd() == null ? null : notation(change.previousUsd()),
+                        change.previousEstimated(), change.newUsd() == null ? null : notation(change.newUsd()),
+                        change.newEstimated(), change.evidenceType(), change.discoveredAt(), pointer.publishedAt()))
+                .toList();
+        return new CalculationEvidence.EvidenceChange(VersionChanges.kind(late.size(), sync.purpose()), sync.purpose(),
+                sync.reason(), counts.lateAdded(), counts.valueChanged(), counts.removed(),
+                PlanVerificationService.targets(ranges), PlanVerificationService.reused(ranges),
+                new CalculationEvidence.PreviousVersion(previousVersion.pointerVersion(), previousId,
+                        previous.basisAt()),
+                late.stream().map(PlanPublicationRepository.ChangeRow::occurredAt).min(java.util.Comparator.naturalOrder())
+                        .orElse(null),
+                List.copyOf(deltas), events);
     }
 
     /**
@@ -859,8 +935,9 @@ class PlanPublicationService {
      * connection and provider account; the version's predecessor is the sync's base — a calculation of the same
      * plan and terms, one portfolio sequence before, whose verification and extended verification the sync read,
      * with the same basis — and its candidate is based on that one's; the window starts inside
-     * {@code [t0, previous verification]}; {@code tc} moved past the previous verification; and the extended
-     * watermark is {@code tc} after an extended sync and the previous one otherwise. The version's candidate,
+     * {@code [t0, previous verification]}; {@code tc} moved past the previous verification (a continuation's is its
+     * {@code tcFinal}); and the extended watermark is the previous one after a normal sync and {@code tc} after an
+     * extended sync, a verification or a continuation. The version's candidate,
      * classification and conversion are exactly what the sync's own stages produced, and the candidate's window
      * and {@code tc} are the scope the sync fixed.
      */
@@ -886,8 +963,14 @@ class PlanPublicationService {
                 || sync.tc() == null || !sync.tc().equals(calculation.basisAt()) || sync.windowStart() == null
                 || sync.mode() == null)
             return false;
-        Instant expectedExtended = "EXTENDED".equals(sync.mode()) ? sync.tc() : sync.baseExtendedAt();
-        if (!lineage.lastExtendedAt().equals(expectedExtended)) return false;
+        // A normal sync keeps the extended watermark; an extended sync, a precision verification and a continuation
+        // each move it to tc. Any other mode is not one this lineage can have.
+        Instant expectedExtended = switch (sync.mode()) {
+            case "NORMAL" -> sync.baseExtendedAt();
+            case "EXTENDED", "VERIFY", "CATCH_UP" -> sync.tc();
+            default -> null;
+        };
+        if (expectedExtended == null || !lineage.lastExtendedAt().equals(expectedExtended)) return false;
         var previous = repository.calculation(user, sync.baseCalculationId()).orElse(null);
         var previousLineage = repository.lineage(user, sync.baseCalculationId()).orElse(null);
         if (previous == null || previousLineage == null || !previous.planId().equals(plan.planId())

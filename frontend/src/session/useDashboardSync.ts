@@ -2,15 +2,20 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { CSRF_HEADER } from '../content/auth'
 import { DASHBOARD_SYNC_PATH } from '../content/planSync'
+import { DASHBOARD_VERIFICATION_PATH, type VerificationKind } from '../content/planVerification'
 import {
   bundleOf,
   inProgress,
   parseSyncJob,
+  purposeOf,
   record,
   type Dashboard,
   type DashboardView,
   type SyncJob,
+  type SyncPurpose,
+  type SyncStatus,
   type SyncTrigger,
+  type VerificationStatus,
 } from './useDashboard'
 import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
 
@@ -27,10 +32,15 @@ export const SYNC_POLL_LIMIT_MS = 3 * 60_000
 export const VISIBILITY_HIDDEN_MIN_MS = 5 * 60_000
 
 /**
- * What the sync is doing, as the screen says it. `running` from the moment the user presses `동기화` (before
- * the answer) until the followed job ends. The endings of a followed job are `succeeded`, `failed`, `review`
- * and `blocked`; the admission's own endings are `cooldown`, `longGap`, `unavailable` and `error`; `stalled`
- * is a job the screen stopped following (its 3 minutes of visible time ran out). `idle` has nothing to say.
+ * What the job is doing, as the screen says it. `running` from the moment the user presses `동기화`, `정밀
+ * 검증` or `기존 계획 계속` (before the answer) until the followed job ends. The endings of a followed job are
+ * `succeeded`, `failed`, `review` and `blocked`; the admission's own endings are `cooldown`, `longGap`,
+ * `unavailable` and `error`, and — for a verification or a catch-up (Story 2.12) — `notUseful` (the same basis
+ * already ended in review), `stale` (the shown result is no longer the current one), `busy` (another job is in
+ * progress), `notLongGap`, and `refused` (a refusal that does not fit what was asked: the screen's view is out of
+ * date). `refreshed` follows `stale` once the screen's own quiet read has brought the current official result.
+ * `stalled` is a job the screen stopped following (its 3 minutes of visible time ran out). `idle` has nothing to
+ * say.
  */
 export type SyncPhase =
   | 'idle'
@@ -44,18 +54,31 @@ export type SyncPhase =
   | 'unavailable'
   | 'error'
   | 'stalled'
+  | 'notUseful'
+  | 'stale'
+  | 'busy'
+  | 'notLongGap'
+  | 'refused'
+  | 'refreshed'
 
 type Outcome = Exclude<SyncPhase, 'idle' | 'running'>
 
-/** A request to move focus. Only a sync the user pressed asks for one (WCAG 3.2: no unexpected change of context). */
+/**
+ * A request to move focus. Only a job the user pressed asks for one (WCAG 3.2: no unexpected change of
+ * context): the dashboard heading after a new bundle, otherwise the summary of the control the job belongs
+ * to — the sync control's (`summary`, which also holds the long-gap explanation and the catch-up) or the
+ * verification control's (`verification`).
+ */
 export interface SyncFocus {
-  readonly target: 'heading' | 'summary'
+  readonly target: 'heading' | 'summary' | 'verification'
   readonly serial: number
 }
 
 export interface DashboardSync {
   readonly phase: SyncPhase
-  /** A manual request is in flight, or a job is followed: the control shows `동기화 중`. */
+  /** Whose phase it is: the job that runs, or the one whose outcome is said. */
+  readonly purpose: SyncPurpose
+  /** A manual request is in flight, or a job is followed: the control of its purpose shows it runs. */
   readonly running: boolean
   /** The followed job was found in progress, not asked for from this tab (another tab, a reload). */
   readonly followingElsewhere: boolean
@@ -66,10 +89,29 @@ export interface DashboardSync {
    * The screen never compares a server time with its own clock.
    */
   readonly cooldownSeconds: number | null
-  /** The last focus move the sync asked for. */
+  /**
+   * Whether pressing `정밀 검증` asks for a precision verification now (Story 2.12). Not while any job runs or any
+   * admission — an automatic sync's too — is in flight.
+   */
+  readonly canVerify: boolean
+  /** Whether pressing `기존 계획 계속` asks for the catch-up now (Story 2.12, after a long gap only; same rule). */
+  readonly canCatchUp: boolean
+  /**
+   * An automatic sync admission (`ENTRY`, `VISIBILITY`) is in flight: until it answers, a verification or a
+   * catch-up cannot be asked for, and the controls say why.
+   */
+  readonly admitting: boolean
+  /** Seconds until a verification (or, after a long gap, the catch-up) is admitted again. */
+  readonly verificationCooldownSeconds: number | null
+  /** The last focus move a job asked for. */
   readonly focus: SyncFocus | null
   /** Asks for a manual sync. Ignored when `canRequest` is false, or while a manual request is in flight. */
   readonly request: () => void
+  /**
+   * Asks for a precision verification (`PRECISION`) or the catch-up (`CATCH_UP`) of the shown result.
+   * Ignored when that one cannot be asked for now, or while a manual request is in flight.
+   */
+  readonly requestVerification: (kind: VerificationKind) => void
 }
 
 /** The admission's answer (`POST /api/dashboard/sync`). */
@@ -113,12 +155,52 @@ export function parseAdmission(value: unknown): SyncAdmission | null {
   return admission.outcome === 'COOLDOWN' && retry === null ? null : admission
 }
 
+/** The outcomes a verification admission shares with the sync admission (`POST /api/dashboard/verification`). */
+const VERIFICATION_OUTCOMES: readonly string[] = ['ACCEPTED', 'JOINED', 'COOLDOWN']
+
+/**
+ * A verification admission body (Story 2.12), or `null` when it is not one whole answer: an admitted or joined
+ * job with that job, or a cool-down with its seconds (and the latest job, if any).
+ */
+export function parseVerificationAdmission(value: unknown): SyncAdmission | null {
+  const admission = parseAdmission(value)
+  return admission !== null && VERIFICATION_OUTCOMES.includes(admission.outcome) ? admission : null
+}
+
+/** A 409 of the verification admission that tells the screen something it can say. */
+type Refusal = 'longGap' | 'notLongGap' | 'notUseful' | 'stale' | 'busy' | 'refused'
+
+/**
+ * The 409 codes each kind can meet, and what each says. A precision verification is refused after a long gap;
+ * a catch-up when the gap is not long. Either is refused when the same basis already ended in review (Story
+ * 2.12: a long gap with a persistent review of this basis makes the catch-up not useful either), when the shown
+ * result is stale, or when another job runs.
+ */
+const REFUSALS: Readonly<Record<VerificationKind, Readonly<Record<string, Refusal>>>> = {
+  PRECISION: {
+    LONG_GAP: 'longGap',
+    VERIFICATION_NOT_USEFUL: 'notUseful',
+    REFERENCE_STALE: 'stale',
+    JOB_IN_PROGRESS: 'busy',
+  },
+  CATCH_UP: {
+    NOT_LONG_GAP: 'notLongGap',
+    VERIFICATION_NOT_USEFUL: 'notUseful',
+    REFERENCE_STALE: 'stale',
+    JOB_IN_PROGRESS: 'busy',
+  },
+}
+
+/** Known codes that belong to the other kind: a stable refusal, said in general words, never an error. */
+const MISMATCHED_REFUSALS: readonly string[] = ['LONG_GAP', 'NOT_LONG_GAP']
+
 /** The screen's reading of one admission answer. */
 type Answer =
   | { readonly kind: 'admitted'; readonly admission: SyncAdmission }
   | { readonly kind: 'denied' }
   | { readonly kind: 'noPlan' }
   | { readonly kind: 'unavailable' }
+  | { readonly kind: 'refused'; readonly phase: Refusal }
   | { readonly kind: 'error' }
 
 async function jsonOf(response: Response): Promise<unknown> {
@@ -147,6 +229,52 @@ async function readAdmission(response: Response): Promise<Answer> {
 }
 
 /**
+ * What a verification admission answer means here (Story 2.12). Like the sync's, a refusal or a gone session
+ * is `denied`; a 409 is told apart by its stable code, read for the kind that was asked. A known code of the
+ * other kind (a precision verification told the gap is not long, a catch-up told it is) is a general refusal;
+ * a code this screen does not know — an idempotency conflict included, since every request carries a new key —
+ * is an `error`.
+ */
+async function readVerificationAdmission(
+  response: Response,
+  kind: VerificationKind,
+): Promise<Answer> {
+  if (response.status === 401 || response.status === 403) return { kind: 'denied' }
+  if (response.status === 409) {
+    const code = record(await jsonOf(response))?.code
+    if (code === 'NO_ACTIVE_PLAN') return { kind: 'noPlan' }
+    if (code === 'VERIFICATION_UNAVAILABLE') return { kind: 'unavailable' }
+    if (typeof code !== 'string') return { kind: 'error' }
+    const table = REFUSALS[kind]
+    const refusal = Object.hasOwn(table, code)
+      ? table[code]
+      : MISMATCHED_REFUSALS.includes(code)
+        ? 'refused'
+        : undefined
+    return refusal === undefined ? { kind: 'error' } : { kind: 'refused', phase: refusal }
+  }
+  if (response.status !== 200 && response.status !== 202) return { kind: 'error' }
+  const admission = parseVerificationAdmission(await jsonOf(response))
+  return admission === null ? { kind: 'error' } : { kind: 'admitted', admission }
+}
+
+/** The shown result's reference: the selection token a verification admission carries (2.9's reference). */
+interface Reference {
+  readonly planId: string
+  readonly pointerVersion: number
+  readonly calculationId: string
+}
+
+/** One admission to send: a sync with its trigger, or a verification of the shown result. */
+type Operation =
+  | { readonly kind: 'sync'; readonly trigger: SyncTrigger }
+  | {
+      readonly kind: 'verification'
+      readonly verification: VerificationKind
+      readonly reference: Reference
+    }
+
+/**
  * A job the screen is following, from its admission (or its discovery) to its ending. `budget` is the
  * identity of one following: the 3-minute limit belongs to it, so following the same job again later starts a
  * fresh budget, while a following that moves on to the next job in progress keeps its own.
@@ -154,7 +282,9 @@ async function readAdmission(response: Response): Promise<Answer> {
 interface Followed {
   readonly jobId: string
   readonly admittedAt: string
-  /** The user pressed `동기화` for it: its ending moves focus. */
+  /** What the job is for: which control shows it runs, and whose words its sentences use. */
+  readonly purpose: SyncPurpose
+  /** The user pressed `동기화`, `정밀 검증` or `기존 계획 계속` for it: its ending moves focus. */
   readonly manual: boolean
   /** Asked for from this tab (an admission answer), or found in progress in a read (another tab, a reload). */
   readonly origin: 'here' | 'elsewhere'
@@ -170,10 +300,24 @@ const ENDINGS: Readonly<Record<string, Outcome>> = {
   BLOCKED: 'blocked',
 }
 
-/** An outcome, and whether it outlives the next read the user or the session asks for (P12). */
+/**
+ * An outcome, the purpose of the job or request it belongs to, and whether it outlives the next read the user
+ * or the session asks for (P12). A refusal because another job runs (`busy`) also keeps the bundle shown when it
+ * was said, so the quiet read after it can tell whether that job replaced it.
+ */
 interface Said {
   readonly phase: Outcome
+  readonly purpose: SyncPurpose
   readonly survivesReload: boolean
+  readonly shown?: string | null
+}
+
+/** The identity of the bundle a view shows, or `null` when it shows none. */
+function shownBundle(view: DashboardView): string | null {
+  const result = bundleOf(view)?.result
+  return result === undefined
+    ? null
+    : `${result.planId}/${String(result.pointerVersion)}/${result.calculationId}`
 }
 
 /** What one new dashboard view changes about the sync. `undefined` fields are left as they are. */
@@ -181,7 +325,25 @@ interface Judgement {
   readonly followed: Followed | null
   readonly outcome?: Said | null
   readonly cooldown?: number | null
+  readonly verificationCooldown?: number | null
   readonly focus: SyncFocus['target'] | null
+}
+
+/** Where the summary of a job of this purpose is: the verification control's, or the sync control's. */
+function summaryTarget(purpose: SyncPurpose): SyncFocus['target'] {
+  return purpose === 'VERIFY' ? 'verification' : 'summary'
+}
+
+/**
+ * The plan's newest job the view shows. The sync block and the verification block each name a latest job
+ * (Story 2.12 keeps every purpose in one job table); the newer of the two is the one that decides.
+ */
+function newestJob(sync: SyncStatus, verification: VerificationStatus): SyncJob | null {
+  const { latest: synced } = sync
+  const { latest: verified } = verification
+  if (synced === null) return verified
+  if (verified === null || verified.jobId === synced.jobId) return verified ?? synced
+  return Date.parse(verified.admittedAt) > Date.parse(synced.admittedAt) ? verified : synced
 }
 
 /**
@@ -209,60 +371,107 @@ function judge(
     case 'denied':
     case 'NO_PLAN':
     case 'PREPARING':
-      return { followed: null, outcome: null, cooldown: null, focus: null }
+      return {
+        followed: null,
+        outcome: null,
+        cooldown: null,
+        verificationCooldown: null,
+        focus: null,
+      }
     case 'READY': {
-      const { sync } = view
+      const { sync, verification } = view
       const cooldown = sync.availability === 'COOLDOWN' ? sync.retryAfterSeconds : null
-      const outcome =
-        said?.phase === 'unavailable' && sync.availability !== 'UNAVAILABLE' ? null : undefined
-      const latest = sync.latest
+      const verificationCooldown =
+        verification.availability === 'COOLDOWN' || verification.availability === 'LONG_GAP'
+          ? verification.retryAfterSeconds
+          : null
+      const stillUnavailable =
+        said?.purpose === 'SYNC'
+          ? sync.availability === 'UNAVAILABLE'
+          : verification.availability === 'UNAVAILABLE'
+      const outcome = said?.phase === 'unavailable' && !stillUnavailable ? null : undefined
+      const blocks = { outcome, cooldown, verificationCooldown }
+      const latest = newestJob(sync, verification)
       if (followed === null) {
         const adopt =
-          sync.availability === 'IN_PROGRESS' &&
+          (sync.availability === 'IN_PROGRESS' || verification.availability === 'IN_PROGRESS') &&
           latest !== null &&
           inProgress(latest) &&
           !gaveUp.includes(latest.jobId)
-        if (!adopt) return { followed: null, outcome, cooldown, focus: null }
+        if (!adopt) return { followed: null, ...blocks, focus: null }
         return {
           followed: {
             jobId: latest.jobId,
             admittedAt: latest.admittedAt,
+            purpose: purposeOf(latest),
             manual: false,
             origin: 'elsewhere',
             since: view,
             budget: {},
           },
-          outcome,
-          cooldown,
+          ...blocks,
           focus: null,
         }
       }
-      if (view === followed.since || latest === null) return { ...keep, outcome, cooldown }
+      if (view === followed.since || latest === null) return { ...keep, ...blocks }
       const ours = latest.jobId === followed.jobId
       // An answer read before the job was admitted still shows an earlier job: it says nothing about ours.
       if (!ours && Date.parse(latest.admittedAt) < Date.parse(followed.admittedAt)) {
-        return { ...keep, outcome, cooldown }
+        return { ...keep, ...blocks }
       }
       if (inProgress(latest)) {
         return {
           followed: ours
             ? followed
-            : { ...followed, jobId: latest.jobId, admittedAt: latest.admittedAt },
-          outcome,
-          cooldown,
+            : {
+                ...followed,
+                jobId: latest.jobId,
+                admittedAt: latest.admittedAt,
+                purpose: purposeOf(latest),
+              },
+          ...blocks,
           focus: null,
         }
       }
       // An ending this screen does not know is one that published nothing it can vouch for.
       const ending = ENDINGS[latest.status] ?? 'failed'
+      const purpose = purposeOf(latest)
       return {
         followed: null,
-        outcome: { phase: ending, survivesReload: false },
+        outcome: { phase: ending, purpose, survivesReload: false },
         cooldown,
-        focus: followed.manual ? (ending === 'succeeded' ? 'heading' : 'summary') : null,
+        verificationCooldown,
+        focus: followed.manual
+          ? ending === 'succeeded'
+            ? 'heading'
+            : summaryTarget(purpose)
+          : null,
       }
     }
   }
+}
+
+/**
+ * The outcome after a new view: the judgement's, else what the view ends of the one said (`undefined` keeps
+ * it). A stale reference was said until the screen's own quiet read answered: this is that answer, so the
+ * summary goes — and a new bundle is said once (`refreshed`). A refusal because another job runs lasts until an
+ * answer shows the bundle: then that job is either followed (its own phase says it from now on) or over, and the
+ * summary goes — with the bundle it replaced said once (`refreshed`) when it published one. A cool-down the view
+ * no longer reports ends the cool-down outcome of its clock, like its countdown would.
+ */
+function settled(view: DashboardView, next: Judgement, said: Said | null): Said | null | undefined {
+  if (next.outcome !== undefined) return next.outcome
+  if (said === null || view.kind === 'checking') return undefined
+  if (said.phase === 'stale') return view.kind === 'READY' ? say('refreshed', said.purpose) : null
+  if (said.phase === 'busy') {
+    if (view.kind !== 'READY') return undefined
+    if (next.followed !== null) return null
+    return shownBundle(view) === said.shown ? null : say('refreshed', said.purpose)
+  }
+  if (said.phase !== 'cooldown') return undefined
+  const ended =
+    said.purpose === 'SYNC' ? next.cooldown === null : next.verificationCooldown === null
+  return ended ? null : undefined
 }
 
 /** The next focus request, numbered after the current one. */
@@ -270,42 +479,50 @@ function focusOn(target: SyncFocus['target']): (current: SyncFocus | null) => Sy
   return (current) => ({ target, serial: (current?.serial ?? 0) + 1 })
 }
 
-/** The outcome said once, and dropped by the next read the user or the session asks for. */
-function once(phase: Outcome): Said {
-  return { phase, survivesReload: false }
+/** An outcome of a job of this purpose, dropped by the next read the user or the session asks for unless it survives it. */
+function say(phase: Outcome, purpose: SyncPurpose, survivesReload = false): Said {
+  return { phase, purpose, survivesReload }
 }
 
 /**
- * The user-time incremental sync of the shown plan (Story 2.11), beside the dashboard it updates.
+ * The user-time incremental sync of the shown plan (Story 2.11), beside the dashboard it updates, and the
+ * precision verification and catch-up that share its job table (Story 2.12).
  *
  * Three triggers ask the server for one sync job (`POST /api/dashboard/sync`): the first `READY` answer of this
  * mount (`ENTRY`, once); the document becoming visible after it was hidden at least 5 minutes (`VISIBILITY`,
  * judged here — the server cannot know it — and only on the first ready answer after the return); and the
  * `동기화` button (`MANUAL`). The two automatic triggers are sent only while the shown bundle says a sync is
  * available; the server still decides whether they are due. There is no scheduled or background sync, and no
- * sync is retried automatically.
+ * sync is retried automatically. A precision verification (`정밀 검증`) and, after a long gap, the catch-up
+ * (`기존 계획 계속`) are asked for only by the user (`POST /api/dashboard/verification`), with the shown result's
+ * reference as the selection token; neither is ever sent by itself.
  *
- * A manual press shows `동기화 중` at once, before the answer, and blocks a second press (a ref, so even two
- * presses in one tick send one request). An admitted or joined job is followed — so is a job the server shows
- * in progress (another tab, a reload), unless the screen already gave up on it: the dashboard is read again
- * quietly every 2 seconds while the document is visible. A read that does not answer does not end the
+ * A manual press shows its job running at once, before the answer, and blocks a second press (a ref, so even
+ * two presses in one tick send one request). An admitted or joined job is followed — so is a job the server
+ * shows in progress (another tab, a reload), unless the screen already gave up on it: the dashboard is read
+ * again quietly every 2 seconds while the document is visible. A read that does not answer does not end the
  * following. It ends when an answer shows the job ended — a new bundle then replaces the view once (the
  * dashboard's own rule) — or when its budget of 3 minutes of visible time runs out (`stalled`, and that job is
- * not followed again by itself). A sync the user pressed moves focus when it ends: to the dashboard heading
- * after a new bundle, to the sync's error summary otherwise. The cool-down counts down from the server's
- * relative seconds. A refusal (403) or a gone session (401) asks the dashboard to read again, and the
- * dashboard's own read decides what stays on screen; a manual one also says it could not be handled (a CSRF or
- * Origin refusal leaves the account readable, and must not be silent).
+ * not followed again by itself). A job the user pressed moves focus when it ends: to the dashboard heading
+ * after a new bundle, to its control's summary otherwise. The cool-downs count down from the server's relative
+ * seconds. A refusal (403) or a gone session (401) asks the dashboard to read again, and the dashboard's own
+ * read decides what stays on screen; a manual one also says it could not be handled (a CSRF or Origin refusal
+ * leaves the account readable, and must not be silent). A verification refusal that changes what the server
+ * shows (a long gap, a basis whose verification cannot help, a stale reference, a job in progress) is said once
+ * and read once, quietly.
  *
  * The session's own re-check when a tab is shown again (Story 1.5) is left as it is: while it runs the view is
  * `checking`, following pauses, and it resumes with the next answer.
  */
 export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null): DashboardSync {
   const { view, loading } = dashboard
-  const [requesting, setRequesting] = useState(false)
+  const [requesting, setRequesting] = useState<SyncPurpose | null>(null)
+  // Automatic sync admissions (`ENTRY`, `VISIBILITY`) in flight: a verification or catch-up waits for them.
+  const [automatic, setAutomatic] = useState(0)
   const [followed, setFollowed] = useState<Followed | null>(null)
   const [said, setSaid] = useState<Said | null>(null)
   const [cooldown, setCooldown] = useState<number | null>(null)
+  const [verificationCooldown, setVerificationCooldown] = useState<number | null>(null)
   const [focus, setFocus] = useState<SyncFocus | null>(null)
   const [gaveUp, setGaveUp] = useState<readonly string[]>([])
   const [visible, setVisible] = useState(() => document.visibilityState !== 'hidden')
@@ -328,19 +545,22 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
 
   /*
    * Adjusting state to changed props during render (React's documented pattern, as `useDashboard` does).
-   * A read the user or the session asked for has started: the last sync's sentence has been said and is not
+   * A read the user or the session asked for has started: the last job's sentence has been said and is not
    * said again after it (unless it was said to outlive exactly this read). Then each new view is judged once.
    */
   if (loading !== wasLoading) {
     setWasLoading(loading)
-    if (loading && said !== null) setSaid(said.survivesReload ? once(said.phase) : null)
+    if (loading && said !== null)
+      setSaid(said.survivesReload ? say(said.phase, said.purpose) : null)
   }
   if (view !== seen) {
     setSeen(view)
     const next = judge(view, followed, said, gaveUp)
     if (next.followed !== followed) setFollowed(next.followed)
-    if (next.outcome !== undefined) setSaid(next.outcome)
+    const outcome = settled(view, next, said)
+    if (outcome !== undefined) setSaid(outcome)
     if (next.cooldown !== undefined) setCooldown(next.cooldown)
+    if (next.verificationCooldown !== undefined) setVerificationCooldown(next.verificationCooldown)
     if (next.focus !== null) setFocus(focusOn(next.focus))
   }
 
@@ -361,36 +581,61 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   }, [])
 
   /**
-   * Sends one admission. Every state change happens after the answer: this is also called from effects. A
-   * manual request marks itself in flight synchronously, so a second press in the same tick is dropped.
+   * Sends one admission. Every state change happens after the answer — or, for the count of automatic
+   * admissions in flight, in a microtask: this is also called from effects. A manual request marks itself in
+   * flight synchronously, so a second press in the same tick is dropped; any admission in flight (`posts`)
+   * drops a verification or catch-up press in the same tick.
    */
-  const post = useCallback((trigger: SyncTrigger): void => {
+  const admit = useCallback((operation: Operation): void => {
     const token = csrfRef.current
     if (token === null) return
-    const manual = trigger === 'MANUAL'
+    const manual = operation.kind === 'verification' || operation.trigger === 'MANUAL'
+    const purpose: SyncPurpose =
+      operation.kind === 'sync'
+        ? 'SYNC'
+        : operation.verification === 'PRECISION'
+          ? 'VERIFY'
+          : 'CATCH_UP'
     const controller = new AbortController()
     posts.current += 1
     if (manual) manualInFlight.current = true
+    // An automatic admission blocks a verification or a catch-up until it answers (`canVerify`, `canCatchUp`).
+    // Counted from microtasks: admissions are also sent from effects, which must not set state synchronously.
+    // The answer lowers the count from a microtask too, queued later, so the count never falls before it rose.
+    else
+      queueMicrotask(() => {
+        if (live.current) setAutomatic((current) => current + 1)
+      })
     const deadline = window.setTimeout(() => {
       controller.abort()
     }, SESSION_REQUEST_TIMEOUT_MS)
     void (async () => {
       let answer: Answer
       try {
-        const response = await fetch(DASHBOARD_SYNC_PATH, {
-          method: 'POST',
-          credentials: 'same-origin',
-          cache: 'no-store',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-            'Idempotency-Key': crypto.randomUUID(),
-            [CSRF_HEADER]: token,
+        const response = await fetch(
+          operation.kind === 'sync' ? DASHBOARD_SYNC_PATH : DASHBOARD_VERIFICATION_PATH,
+          {
+            method: 'POST',
+            credentials: 'same-origin',
+            cache: 'no-store',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              'Idempotency-Key': crypto.randomUUID(),
+              [CSRF_HEADER]: token,
+            },
+            body: JSON.stringify(
+              operation.kind === 'sync'
+                ? { trigger: operation.trigger }
+                : { kind: operation.verification, ...operation.reference },
+            ),
+            signal: controller.signal,
           },
-          body: JSON.stringify({ trigger }),
-          signal: controller.signal,
-        })
-        answer = await readAdmission(response)
+        )
+        answer =
+          operation.kind === 'sync'
+            ? await readAdmission(response)
+            : await readVerificationAdmission(response, operation.verification)
       } catch {
         // A network failure, a lost answer or the time limit: whether it was admitted is not known.
         answer = { kind: 'error' }
@@ -400,15 +645,21 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
         if (manual) manualInFlight.current = false
       }
       if (!live.current) return
-      if (manual) setRequesting(false)
+      if (manual) setRequesting(null)
+      else
+        queueMicrotask(() => {
+          setAutomatic((current) => Math.max(0, current - 1))
+        })
+      const here = summaryTarget(purpose)
       switch (answer.kind) {
         case 'denied':
           setFollowed(null)
           setCooldown(null)
+          setVerificationCooldown(null)
           if (manual) {
             // Said through the read below: if the account itself is refused, that read's denied view wins.
-            setSaid({ phase: 'error', survivesReload: true })
-            setFocus(focusOn('summary'))
+            setSaid(say('error', purpose, true))
+            setFocus(focusOn(here))
           } else {
             setSaid(null)
           }
@@ -423,29 +674,45 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
           // One quiet read brings the server's reason; the screen does not ask again by itself.
           dashboardRef.current.refresh()
           if (manual) {
-            setSaid(once('unavailable'))
-            setFocus(focusOn('summary'))
+            setSaid(say('unavailable', purpose))
+            setFocus(focusOn(here))
           }
+          return
+        case 'refused':
+          // Only a verification is refused this way, and only a pressed one: said once, then read once quietly
+          // for what the server shows now. A long gap is explained by the sync control, whoever met it. A stale
+          // reference's summary lasts until that read answers (then `refreshed` says the replacement once); so
+          // does another job's, which keeps the bundle shown now to tell whether that job replaced it.
+          setSaid({ ...say(answer.phase, purpose), shown: shownBundle(viewRef.current) })
+          setFocus(focusOn(answer.phase === 'longGap' ? 'summary' : here))
+          dashboardRef.current.refresh()
           return
         case 'error':
           // An automatic trigger says nothing: the dashboard's own trust state explains what is shown.
           if (manual) {
-            setSaid(once('error'))
-            setFocus(focusOn('summary'))
+            setSaid(say('error', purpose))
+            setFocus(focusOn(here))
           }
           return
         case 'admitted': {
           const { outcome: admitted, job, retryAfterSeconds } = answer.admission
           if ((admitted === 'ACCEPTED' || admitted === 'JOINED') && job !== null) {
             // Whatever the view is now: the next answer about the job decides. The same job already followed
-            // stays one following (a manual press is never forgotten by an automatic answer for it).
+            // stays one following (a manual press is never forgotten by an automatic answer for it). A sync
+            // may join a verification in progress: the job decides the purpose, not the request.
             const since = viewRef.current
             setFollowed((current) =>
               current?.jobId === job.jobId
-                ? { ...current, manual: current.manual || manual, origin: 'here' }
+                ? {
+                    ...current,
+                    purpose: purposeOf(job),
+                    manual: current.manual || manual,
+                    origin: 'here',
+                  }
                 : {
                     jobId: job.jobId,
                     admittedAt: job.admittedAt,
+                    purpose: purposeOf(job),
                     manual,
                     origin: 'here',
                     since,
@@ -455,15 +722,16 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
             return
           }
           if (admitted === 'COOLDOWN') {
-            setCooldown(retryAfterSeconds)
+            if (purpose === 'SYNC') setCooldown(retryAfterSeconds)
+            else setVerificationCooldown(retryAfterSeconds)
             if (manual) {
-              setSaid(once('cooldown'))
-              setFocus(focusOn('summary'))
+              setSaid(say('cooldown', purpose))
+              setFocus(focusOn(here))
             }
             return
           }
           if (admitted === 'LONG_GAP') {
-            setSaid(once('longGap'))
+            setSaid(say('longGap', purpose))
             if (manual) setFocus(focusOn('summary'))
             dashboardRef.current.refresh()
           }
@@ -478,8 +746,8 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   useEffect(() => {
     if (entrySent.current || view.kind !== 'READY' || loading || csrfToken === null) return
     entrySent.current = true
-    if (view.sync.availability === 'AVAILABLE') post('ENTRY')
-  }, [view, loading, csrfToken, post])
+    if (view.sync.availability === 'AVAILABLE') admit({ kind: 'sync', trigger: 'ENTRY' })
+  }, [view, loading, csrfToken, admit])
 
   // The document's visibility: polling and the budget pause while hidden; a long absence makes `VISIBILITY` due.
   useEffect(() => {
@@ -512,10 +780,10 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
     if (after === null || view === after || view.kind === 'checking' || loading) return
     visibilityDue.current = null
     if (view.kind !== 'READY' || csrfToken === null) return
-    if (view.sync.availability !== 'AVAILABLE' || followed !== null || requesting) return
+    if (view.sync.availability !== 'AVAILABLE' || followed !== null || requesting !== null) return
     if (posts.current > 0) return
-    post('VISIBILITY')
-  }, [view, loading, csrfToken, followed, requesting, post])
+    admit({ kind: 'sync', trigger: 'VISIBILITY' })
+  }, [view, loading, csrfToken, followed, requesting, admit])
 
   // Following: one quiet read 2 seconds after each answer — a failed one too — while visible.
   useEffect(() => {
@@ -550,9 +818,9 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
       if (job?.budget !== owner) return
       followedRef.current = null
       setFollowed(null)
-      setSaid(once('stalled'))
+      setSaid(say('stalled', job.purpose))
       setGaveUp((current) => [...current, job.jobId])
-      if (job.manual) setFocus(focusOn('summary'))
+      if (job.manual) setFocus(focusOn(summaryTarget(job.purpose)))
     }, slot.remaining)
     return () => {
       window.clearTimeout(timer)
@@ -560,22 +828,47 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
     }
   }, [owner, visible])
 
-  // The cool-down, one second at a time; when it ends, so does the cool-down outcome.
+  // The sync's cool-down, one second at a time; when it ends, so does the sync's cool-down outcome.
   useEffect(() => {
     if (cooldown === null) return
     const timer = window.setTimeout(() => {
       setCooldown(cooldown <= 1 ? null : cooldown - 1)
-      if (cooldown <= 1) setSaid((current) => (current?.phase === 'cooldown' ? null : current))
+      if (cooldown <= 1) {
+        setSaid((current) =>
+          current?.phase === 'cooldown' && current.purpose === 'SYNC' ? null : current,
+        )
+      }
     }, 1_000)
     return () => {
       window.clearTimeout(timer)
     }
   }, [cooldown])
 
+  // The verification's (or the catch-up's) cool-down, the same way.
+  useEffect(() => {
+    if (verificationCooldown === null) return
+    const timer = window.setTimeout(() => {
+      setVerificationCooldown(verificationCooldown <= 1 ? null : verificationCooldown - 1)
+      if (verificationCooldown <= 1) {
+        setSaid((current) =>
+          current?.phase === 'cooldown' && current.purpose !== 'SYNC' ? null : current,
+        )
+      }
+    }, 1_000)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [verificationCooldown])
+
   const outcome = said?.phase ?? null
-  const running = requesting || followed !== null
+  const running = requesting !== null || followed !== null
   const phase: SyncPhase = running ? 'running' : (outcome ?? 'idle')
-  const availability = bundleOf(view)?.sync.availability ?? null
+  const purpose: SyncPurpose = running
+    ? (followed?.purpose ?? requesting ?? 'SYNC')
+    : (said?.purpose ?? 'SYNC')
+  const shown = bundleOf(view)
+  const availability = shown?.sync.availability ?? null
+  const verification = shown?.verification ?? null
   const canRequest =
     availability !== null &&
     !running &&
@@ -584,26 +877,77 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
     availability !== 'UNAVAILABLE' &&
     availability !== 'LONG_GAP' &&
     outcome !== 'longGap'
+  const canVerify =
+    verification !== null &&
+    !running &&
+    automatic === 0 &&
+    verificationCooldown === null &&
+    // A cool-down the server reported ends with this screen's own countdown of its seconds.
+    (verification.availability === 'AVAILABLE' || verification.availability === 'COOLDOWN') &&
+    outcome !== 'longGap' &&
+    outcome !== 'notUseful'
+  const canCatchUp =
+    verification !== null &&
+    !running &&
+    automatic === 0 &&
+    verificationCooldown === null &&
+    verification.availability === 'LONG_GAP' &&
+    verification.catchUpFrom !== null &&
+    outcome !== 'notLongGap' &&
+    outcome !== 'notUseful'
 
   const request = useCallback((): void => {
     if (manualInFlight.current || !canRequest) return
     if (csrfRef.current === null) {
-      setSaid(once('error'))
+      setSaid(say('error', 'SYNC'))
       setFocus(focusOn('summary'))
       return
     }
     setSaid(null)
-    setRequesting(true)
-    post('MANUAL')
-  }, [canRequest, post])
+    setRequesting('SYNC')
+    admit({ kind: 'sync', trigger: 'MANUAL' })
+  }, [canRequest, admit])
+
+  const requestVerification = useCallback(
+    (kind: VerificationKind): void => {
+      // Not while any admission is in flight (an automatic one too), even within the same tick.
+      if (posts.current > 0 || !(kind === 'PRECISION' ? canVerify : canCatchUp)) return
+      const asked: SyncPurpose = kind === 'PRECISION' ? 'VERIFY' : 'CATCH_UP'
+      // The reference of the result shown right now: the selection the user made by pressing.
+      const result = bundleOf(viewRef.current)?.result ?? null
+      if (csrfRef.current === null || result === null) {
+        setSaid(say('error', asked))
+        setFocus(focusOn(summaryTarget(asked)))
+        return
+      }
+      setSaid(null)
+      setRequesting(asked)
+      admit({
+        kind: 'verification',
+        verification: kind,
+        reference: {
+          planId: result.planId,
+          pointerVersion: result.pointerVersion,
+          calculationId: result.calculationId,
+        },
+      })
+    },
+    [canVerify, canCatchUp, admit],
+  )
 
   return {
     phase,
+    purpose,
     running,
     followingElsewhere: followed?.origin === 'elsewhere',
     canRequest,
     cooldownSeconds: cooldown,
+    canVerify,
+    canCatchUp,
+    admitting: automatic > 0,
+    verificationCooldownSeconds: verificationCooldown,
     focus,
     request,
+    requestVerification,
   }
 }

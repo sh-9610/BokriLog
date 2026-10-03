@@ -6,6 +6,7 @@ import {
   calculationEvidenceFixture,
   EVIDENCE_IDS,
   evidenceResultFixture,
+  laterEvidenceFixture,
 } from '../test/planResultFixture'
 import {
   getObservedAllowedRequests,
@@ -256,7 +257,7 @@ describe('useCalculationEvidence', () => {
       () =>
         Promise.resolve(
           json(
-            calculationEvidenceFixture(
+            laterEvidenceFixture(
               evidenceResultFixture({
                 pointerVersion: 2,
                 calculationId: EVIDENCE_IDS.newerCalculation,

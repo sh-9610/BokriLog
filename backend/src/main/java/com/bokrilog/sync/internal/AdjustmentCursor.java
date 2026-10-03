@@ -29,10 +29,10 @@ final class AdjustmentCursor {
     /**
      * The ordering the sequence realizes: the version's {@code sequence}, which is the calculation's own
      * {@code (event time, provider account, source id)} order. One conversion version per event within a
-     * calculation version, so the third key of the approved order never ties. That premise still holds with
-     * Story 2.11's later versions: each cites one conversion of its own classification, and a cursor names one
-     * version (its reference is in the digest). Stories 2.12 and 2.15, which may reconvert within a version's
-     * lineage, must revisit it.
+     * calculation version, so the third key of the approved order never ties. That premise holds for every
+     * incremental version: a Story 2.11 sync and a Story 2.12 verification or continuation each classify their
+     * candidate anew and cite one conversion of that classification, and a cursor names one version (its reference
+     * is in the digest). Story 2.15, which may reconvert within a version's lineage, must revisit it.
      */
     static final String ORDER_POLICY = "ADJUSTMENT-ORDER-1.0";
 

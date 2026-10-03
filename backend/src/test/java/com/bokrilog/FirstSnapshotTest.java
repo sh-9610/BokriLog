@@ -2629,9 +2629,12 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         var result=get(AuthSecurityConfig.DASHBOARD_PATH,cookie);
         assertThat(result.statusCode()).isEqualTo(200);
         assertThat(result.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
-        // Story 2.11: a ready dashboard carries its sync state beside the result.
-        assertThat(topLevelFieldsOf(result.body())).containsOnlyKeys("state","nextAction","result","sync")
-                .containsEntry("nextAction","NONE");
+        // Story 2.11: a ready dashboard carries its sync state beside the result; Story 2.12 its verification state
+        // and what the version changed (a first publication: nothing).
+        assertThat(topLevelFieldsOf(result.body())).containsOnlyKeys("state","nextAction","result","sync",
+                "verification","change").containsEntry("nextAction","NONE");
+        assertThat(nested(topLevelFieldsOf(result.body()),"change")).containsEntry("kind","NONE")
+                .containsEntry("purpose",null).containsEntry("lateChangeCount",0);
         var fields=resultOf(result.body());
         assertThat(fields).containsKeys("planId","conditions","basisAt","measuredAt","cashflowVerifiedThrough",
                 "trust","metrics","policies","pointerVersion");
@@ -3091,7 +3094,10 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertThat(answer.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
         var fields=topLevelFieldsOf(answer.body());
         assertThat(fields.keySet()).as("the screen's order").containsExactly("planId","pointerVersion","calculationId",
-                "snapshots","times","inputs","calculation","metrics","versions");
+                "snapshots","times","inputs","calculation","metrics","versions","change");
+        // Story 2.12: a first publication changed nothing from a version before it.
+        assertThat(nested(fields,"change")).containsEntry("kind","NONE").containsEntry("previous",null)
+                .containsEntry("metrics",java.util.List.of()).containsEntry("events",java.util.List.of());
         assertThat(fields).containsEntry("planId",shown.get("planId")).containsEntry("pointerVersion",1)
                 .containsEntry("calculationId",shown.get("calculationId"));
 
@@ -3753,7 +3759,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                                 base.plusSeconds(60),"65000.25","EVENT_MINUTE",0))),
                 firstObservedAt(user,"adj-current-05"),new SyncJobApi.AdjustmentHistory.References(
                         eventIdOf(user,"adj-current-05"),"adj-current-05",classification,conversion,shown.calculationId()),
-                false,java.util.List.of()));
+                false,java.util.List.of(),null));
         var withdrawal=first.rows().get(3);
         assertThat(withdrawal).isEqualTo(new SyncJobApi.AdjustmentHistory.Adjustment(4,base.plusSeconds(4),"OUT","USDT",
                 "-1.25","-1.25",new SyncJobApi.AdjustmentHistory.Classification("TRANSFER_OUT","EXTERNAL_TRANSFER_OUT",
@@ -3762,7 +3768,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                         java.util.List.of()),
                 firstObservedAt(user,"adj-current-04"),new SyncJobApi.AdjustmentHistory.References(
                         eventIdOf(user,"adj-current-04"),"adj-current-04",classification,conversion,shown.calculationId()),
-                false,java.util.List.of()));
+                false,java.util.List.of(),null));
         assertThat(first.rows().getFirst().usdValue()).as("unrounded").isEqualTo("0.005");
 
         // FILTER: the direction's rows and the direction's own exact summary.
@@ -3796,7 +3802,9 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         var rows=(java.util.List<java.util.Map<String,Object>>)fields.get("rows");
         assertThat(rows).hasSize(20);
         assertThat(rows.get(4).keySet()).as("the reading order").containsExactly("sequence","occurredAt","direction",
-                "asset","signedQuantity","usdValue","classification","price","discoveredAt","refs","changed","revisions");
+                "asset","signedQuantity","usdValue","classification","price","discoveredAt","refs","changed","revisions",
+                "versionChange");
+        assertThat(rows.get(4)).as("a first publication marks no row").containsEntry("versionChange",null);
         assertThat(rows.get(4)).containsEntry("signedQuantity","0.01").containsEntry("usdValue","650.0025")
                 .containsEntry("changed",false).containsEntry("revisions",java.util.List.of());
         // The nested contract the screen validates (`isLeg`): exactly these keys, in this order.
@@ -4307,26 +4315,27 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         var own=ready(user);
         String path=adjustmentsPath(own,"");
 
-        // A read that throws: a table only the history reads is hidden for one request.
+        // A read that throws: a table only the history reads is hidden for one request. (The candidate's event
+        // table no longer is: since Story 2.12 the dashboard's verification preview reads it too.)
         int before=adjustmentLogLines(output).size();
         java.net.http.HttpResponse<String> failed;
         java.net.http.HttpResponse<String> dashboard;
-        jdbc().sql("ALTER TABLE sync_initial_candidate_event RENAME TO sync_initial_candidate_event_hidden").update();
+        jdbc().sql("ALTER TABLE sync_cashflow_conversion_leg RENAME TO sync_cashflow_conversion_leg_hidden").update();
         try {
             failed=send("GET",path,cookie,"X-Request-Id","adjustments-error-probe");
             dashboard=get(AuthSecurityConfig.DASHBOARD_PATH,cookie);
         } finally {
-            jdbc().sql("ALTER TABLE sync_initial_candidate_event_hidden RENAME TO sync_initial_candidate_event").update();
+            jdbc().sql("ALTER TABLE sync_cashflow_conversion_leg_hidden RENAME TO sync_cashflow_conversion_leg").update();
         }
         assertThat(failed.statusCode()).isEqualTo(500);
         assertThat(failed.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
         assertThat(topLevelFieldsOf(failed.body())).containsOnlyKeys("code","message","correlationId")
                 .containsEntry("code","INTERNAL_ERROR").containsEntry("correlationId","adjustments-error-probe");
-        assertThat(failed.body()).doesNotContain("deletion-in").doesNotContain("sync_initial_candidate_event");
+        assertThat(failed.body()).doesNotContain("deletion-in").doesNotContain("sync_cashflow_conversion_leg");
         assertThat(dashboard.statusCode()).as("the dashboard does not read that table").isEqualTo(200);
         assertThat(adjustmentLogLines(output).subList(before,adjustmentLogLines(output).size())).singleElement()
                 .asString().matches(".*adjustment history read: state=ERROR status=500 latencyMs=\\d+ consistent=unknown$");
-        assertThat(output.getAll()).doesNotContain("sync_initial_candidate_event_hidden");
+        assertThat(output.getAll()).doesNotContain("sync_cashflow_conversion_leg_hidden");
         assertThat(get(path,cookie).statusCode()).as("whole again").isEqualTo(200);
 
         // After: the read is past its first check and holds its snapshot when the deletion commits.
