@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import {
   authContent,
@@ -456,10 +456,14 @@ export function useSessionGate(expected: ScreenDestination): SessionGateResult {
    * 인증을 관측한 뒤에만 듣는다. 폴링이 아니고(가시성이 바뀔 때 한 번), 진입 화면으로 이미
    * 수렴한 뒤에는 다시 확인할 이유가 없다 — 확인해도 답은 같고 요청만 하나 늘어난다.
    * 단일 in-flight·abort 규율은 `recheck`가 그대로 지킨다.
+   *
+   * 인증된 화면이 커밋되는 그 순간에 듣기 시작한다(layout effect). passive effect는 그리기 뒤
+   * 별도 작업으로 돌아서, 화면이 이미 보이는데 아직 듣지 않는 틈이 생긴다. 그 틈에 탭이 다시
+   * 보이면 재확인을 놓치고, 시험에서는 부하가 걸린 러너에서만 그 틈이 드러났다(Story 2.12 CI).
    */
   const observing = state === 'authenticated'
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!observing) {
       return
     }
