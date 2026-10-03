@@ -667,6 +667,8 @@ final class DevBybitStub {
         serverTimeMode.set(ServerTimeMode.NORMAL);
     }
     long lastWalletEnvelopeTime() { return lastWalletEnvelopeTime.get(); }
+    /** {@link Scenario#INCREMENTAL}'s base time of this UID (its first wallet read), or -1 before that read. */
+    long incrementalBase(String uid) { return incrementalBase.getOrDefault(uid,-1L); }
 
     private Response queryApi(Scenario scenario, String uid) {
         return switch (scenario) {

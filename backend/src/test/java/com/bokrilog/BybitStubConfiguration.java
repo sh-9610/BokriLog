@@ -9,6 +9,7 @@ import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -120,6 +121,26 @@ final class BybitStubConfiguration {
     }
 
     static long lastWalletEnvelopeTime() { return Front.STUB.lastWalletEnvelopeTime(); }
+
+    /**
+     * {@link DevBybitStub.Scenario#INCREMENTAL}에서 그 UID의 {@code after} 뒤 첫 입금 시각(Story 2.11).
+     *
+     * <p>입금은 UID의 기준 시각(첫 지갑 조회) 뒤 {@link DevBybitStub#INCREMENTAL_SPACING_MILLIS}마다 하나씩
+     * 생긴다. 시험이 "다음 입금이 올 때까지"를 고정 대기 대신 이 시각으로 기다린다. 기준 시각이 아직 없거나
+     * 남은 입금이 없으면 시험 배선이 틀린 것이다.
+     */
+    static Instant nextIncrementalDeposit(String uid, Instant after) {
+        long base = Front.STUB.incrementalBase(uid);
+        if (base < 0) {
+            throw new IllegalStateException("no incremental base: the UID's wallet was never read");
+        }
+        long k = Math.max(1,
+                Math.floorDiv(after.toEpochMilli() - base, DevBybitStub.INCREMENTAL_SPACING_MILLIS) + 1);
+        if (k > DevBybitStub.INCREMENTAL_FLOWS) {
+            throw new IllegalStateException("no incremental deposit left after " + after);
+        }
+        return Instant.ofEpochMilli(base + DevBybitStub.INCREMENTAL_SPACING_MILLIS * k);
+    }
 
     /** One Transaction Log request as the stub received it: its type and its window, in epoch milliseconds. */
     record TransactionQuery(String type, long startTime, long endTime) {}
