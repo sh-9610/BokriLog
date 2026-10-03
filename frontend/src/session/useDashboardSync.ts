@@ -96,6 +96,11 @@ export interface DashboardSync {
   readonly canVerify: boolean
   /** Whether pressing `기존 계획 계속` asks for the catch-up now (Story 2.12, after a long gap only; same rule). */
   readonly canCatchUp: boolean
+  /**
+   * An automatic sync admission (`ENTRY`, `VISIBILITY`) is in flight: until it answers, a verification or a
+   * catch-up cannot be asked for, and the controls say why.
+   */
+  readonly admitting: boolean
   /** Seconds until a verification (or, after a long gap, the catch-up) is admitted again. */
   readonly verificationCooldownSeconds: number | null
   /** The last focus move a job asked for. */
@@ -297,12 +302,22 @@ const ENDINGS: Readonly<Record<string, Outcome>> = {
 
 /**
  * An outcome, the purpose of the job or request it belongs to, and whether it outlives the next read the user
- * or the session asks for (P12).
+ * or the session asks for (P12). A refusal because another job runs (`busy`) also keeps the bundle shown when it
+ * was said, so the quiet read after it can tell whether that job replaced it.
  */
 interface Said {
   readonly phase: Outcome
   readonly purpose: SyncPurpose
   readonly survivesReload: boolean
+  readonly shown?: string | null
+}
+
+/** The identity of the bundle a view shows, or `null` when it shows none. */
+function shownBundle(view: DashboardView): string | null {
+  const result = bundleOf(view)?.result
+  return result === undefined
+    ? null
+    : `${result.planId}/${String(result.pointerVersion)}/${result.calculationId}`
 }
 
 /** What one new dashboard view changes about the sync. `undefined` fields are left as they are. */
@@ -439,13 +454,20 @@ function judge(
 /**
  * The outcome after a new view: the judgement's, else what the view ends of the one said (`undefined` keeps
  * it). A stale reference was said until the screen's own quiet read answered: this is that answer, so the
- * summary goes — and a new bundle is said once (`refreshed`). A cool-down the view no longer reports ends the
- * cool-down outcome of its clock, like its countdown would.
+ * summary goes — and a new bundle is said once (`refreshed`). A refusal because another job runs lasts until an
+ * answer shows the bundle: then that job is either followed (its own phase says it from now on) or over, and the
+ * summary goes — with the bundle it replaced said once (`refreshed`) when it published one. A cool-down the view
+ * no longer reports ends the cool-down outcome of its clock, like its countdown would.
  */
 function settled(view: DashboardView, next: Judgement, said: Said | null): Said | null | undefined {
   if (next.outcome !== undefined) return next.outcome
   if (said === null || view.kind === 'checking') return undefined
   if (said.phase === 'stale') return view.kind === 'READY' ? say('refreshed', said.purpose) : null
+  if (said.phase === 'busy') {
+    if (view.kind !== 'READY') return undefined
+    if (next.followed !== null) return null
+    return shownBundle(view) === said.shown ? null : say('refreshed', said.purpose)
+  }
   if (said.phase !== 'cooldown') return undefined
   const ended =
     said.purpose === 'SYNC' ? next.cooldown === null : next.verificationCooldown === null
@@ -659,8 +681,9 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
         case 'refused':
           // Only a verification is refused this way, and only a pressed one: said once, then read once quietly
           // for what the server shows now. A long gap is explained by the sync control, whoever met it. A stale
-          // reference's summary lasts until that read answers (then `refreshed` says the replacement once).
-          setSaid(say(answer.phase, purpose))
+          // reference's summary lasts until that read answers (then `refreshed` says the replacement once); so
+          // does another job's, which keeps the bundle shown now to tell whether that job replaced it.
+          setSaid({ ...say(answer.phase, purpose), shown: shownBundle(viewRef.current) })
           setFocus(focusOn(answer.phase === 'longGap' ? 'summary' : here))
           dashboardRef.current.refresh()
           return
@@ -921,6 +944,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
     cooldownSeconds: cooldown,
     canVerify,
     canCatchUp,
+    admitting: automatic > 0,
     verificationCooldownSeconds: verificationCooldown,
     focus,
     request,

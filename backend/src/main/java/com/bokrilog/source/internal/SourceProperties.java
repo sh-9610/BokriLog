@@ -105,7 +105,9 @@ record SourceProperties(Credential credential, Bybit bybit) {
      * 않는다).
      *
      * <p>초당 요청 수는 {@link #MIN_RATE}(0.1/s) 밑이면 기본값이다 — 그보다 느린 bucket은 토큰 하나에 10초를 넘게
-     * 기다리게 해 수집을 멈춘 것과 구별되지 않는다. 동시 수집 수는 정수만 받는다(소수를 잘라 읽지 않는다).
+     * 기다리게 해 수집을 멈춘 것과 구별되지 않는다. 동시 수집 수는 정수만 받는다(소수를 잘라 읽지 않는다). 시간 값에는
+     * 상한이 있다 — 재시도 간격 10분, 회로 1일, 잔여 대기 상한 1분. 그보다 긴 값({@code 110000d} 같은)은 나노초가
+     * {@code long}을 넘쳐 회로가 열리지 않거나 재시도가 실패로 끝나므로 기본값으로 접는다.
      *
      * @param authPerSecond 서명 호출의 자격정보(UID)당 초당 요청 수. 기본 5
      * @param publicPerSecond 공개 Market 호출의 서비스 전체 초당 요청 수. 기본 10
@@ -129,9 +131,9 @@ record SourceProperties(Credential credential, Bybit bybit) {
                     rate(this.authPerSecond, defaults.authPerSecond()),
                     rate(this.publicPerSecond, defaults.publicPerSecond()),
                     positiveInteger(this.maxConcurrentCollections, defaults.maxCollections()),
-                    positiveDuration(this.circuitOpen, defaults.circuitOpen()),
+                    positiveDuration(this.circuitOpen, defaults.circuitOpen(), MAX_CIRCUIT_OPEN),
                     ratio(this.lowRemainingRatio, defaults.lowRemainingRatio()),
-                    positiveDuration(this.lowRemainingWaitCap, defaults.lowRemainingWaitCap()),
+                    positiveDuration(this.lowRemainingWaitCap, defaults.lowRemainingWaitCap(), MAX_LOW_REMAINING_WAIT),
                     delays(this.retryDelays, defaults.retryDelays()),
                     ratio(this.retryJitter, defaults.retryJitter()));
         }
@@ -162,12 +164,22 @@ record SourceProperties(Credential credential, Bybit bybit) {
             }
         }
 
-        private static Duration positiveDuration(@Nullable String value, Duration fallback) {
+        /** The longest retry delay, circuit and low-remaining wait a configuration may set (R10). */
+        static final Duration MAX_RETRY_DELAY = Duration.ofMinutes(10);
+        static final Duration MAX_CIRCUIT_OPEN = Duration.ofDays(1);
+        static final Duration MAX_LOW_REMAINING_WAIT = Duration.ofMinutes(1);
+
+        /**
+         * A positive duration no longer than {@code max}, or the fallback. A huge value ({@code 110000d}) is not read as
+         * "wait forever": its nanoseconds overflow a {@code long}, and a circuit or a retry built on it would never open
+         * or would fail the collection instead of waiting.
+         */
+        private static Duration positiveDuration(@Nullable String value, Duration fallback, Duration max) {
             if (value == null || value.isBlank()) return fallback;
             try {
                 Duration parsed = DurationStyle.detectAndParse(value.trim());
-                return parsed.isZero() || parsed.isNegative() ? fallback : parsed;
-            } catch (IllegalArgumentException unreadable) {
+                return parsed.isZero() || parsed.isNegative() || parsed.compareTo(max) > 0 ? fallback : parsed;
+            } catch (IllegalArgumentException | ArithmeticException unreadable) {
                 return fallback;
             }
         }
@@ -176,7 +188,7 @@ record SourceProperties(Credential credential, Bybit bybit) {
             if (value == null || value.isBlank()) return fallback;
             java.util.List<Duration> parsed = new java.util.ArrayList<>();
             for (String part : value.split(",")) {
-                Duration delay = positiveDuration(part, Duration.ZERO);
+                Duration delay = positiveDuration(part, Duration.ZERO, MAX_RETRY_DELAY);
                 if (delay.isZero()) return fallback;
                 parsed.add(delay);
             }

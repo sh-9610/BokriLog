@@ -317,10 +317,14 @@ public interface SyncJobApi {
          *
          * @param kind {@code CORRECTED} (a late addition, a removal or a changed value), {@code VERIFIED_NO_CHANGE}
          *     (a verification or continuation without one) or {@code NONE}
+         * @param lateAddedCount additions found late; {@code valueChangedCount} values changed (another user's
+         *     verification can correct a shared price under an ordinary sync); {@code removedCount} flows removed — the
+         *     three the dashboard's {@code lateChangeCount} sums
          */
         public record EvidenceChange(String kind, @Nullable String purpose, @Nullable String reason,
-                List<VerificationRange> targets, List<VerificationRange> reused, @Nullable PreviousVersion previous,
-                @Nullable Instant firstAffectedAt, List<MetricDelta> metrics, List<ChangedEvent> events) {}
+                int lateAddedCount, int valueChangedCount, int removedCount, List<VerificationRange> targets,
+                List<VerificationRange> reused, @Nullable PreviousVersion previous, @Nullable Instant firstAffectedAt,
+                List<MetricDelta> metrics, List<ChangedEvent> events) {}
 
         public record PreviousVersion(long pointerVersion, UUID calculationId, Instant basisAt) {}
 
@@ -637,12 +641,17 @@ public interface SyncJobApi {
      * attempt that made it. A version whose change rows are not exactly its flow difference shows {@code NONE}: the
      * marker is never drawn from rows the evidence would refuse (the evidence and the history answer 503 for it).
      *
+     * @param lateChangeCount the sum of the three counts that follow it
+     * @param lateAddedCount additions found late (not after the previous verification)
+     * @param valueChangedCount flows whose USD value or estimated flag changed — a price correction, possibly by
+     *     another user's verification of a shared candle under this user's ordinary sync: a change, not a late event
+     * @param removedCount flows the version no longer applies
      * @param verifiedAt when the verification or continuation that made the version finished (its attempt's
      *     {@code finished_at}, to the millisecond); {@code null} for any other version
      */
     record VersionChange(String kind, @Nullable String purpose, @Nullable String reason, int lateChangeCount,
-            @Nullable Instant firstAffectedAt, @Nullable Instant verifiedAt, List<VerificationRange> targets,
-            List<VerificationRange> reused) {}
+            int lateAddedCount, int valueChangedCount, int removedCount, @Nullable Instant firstAffectedAt,
+            @Nullable Instant verifiedAt, List<VerificationRange> targets, List<VerificationRange> reused) {}
 
     /** The admission of a verification or continuation. Nothing here calls the provider. */
     sealed interface VerificationAdmission permits VerificationAdmission.Accepted, VerificationAdmission.Joined,

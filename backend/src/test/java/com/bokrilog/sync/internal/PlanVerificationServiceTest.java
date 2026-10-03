@@ -188,13 +188,17 @@ class PlanVerificationServiceTest {
         when(syncs.persistentlyReviewed(USER, PLAN, CALCULATION)).thenReturn(true);
         assertThat(service().admit(USER, VerificationKind.PRECISION, shown, KEY))
                 .isEqualTo(new VerificationAdmission.Refused("VERIFICATION_NOT_USEFUL"));
+        assertThat(service().admit(USER, VerificationKind.CATCH_UP, shown, KEY)).as("before the long-gap condition")
+                .isEqualTo(new VerificationAdmission.Refused("VERIFICATION_NOT_USEFUL"));
+        // R7: the persistent review is judged before the long gap, in the dashboard's order (C3), for both kinds.
         when(planSyncs.longGap(eq(USER), any(), any())).thenReturn(true);
         assertThat(service().admit(USER, VerificationKind.PRECISION, shown, KEY))
-                .isEqualTo(new VerificationAdmission.Refused("LONG_GAP"));
-        // Interpretation C3: a continuation after a persistent review of the same base would end the same way.
+                .isEqualTo(new VerificationAdmission.Refused("VERIFICATION_NOT_USEFUL"));
         assertThat(service().admit(USER, VerificationKind.CATCH_UP, shown, KEY))
                 .isEqualTo(new VerificationAdmission.Refused("VERIFICATION_NOT_USEFUL"));
         when(syncs.persistentlyReviewed(USER, PLAN, CALCULATION)).thenReturn(false);
+        assertThat(service().admit(USER, VerificationKind.PRECISION, shown, KEY))
+                .isEqualTo(new VerificationAdmission.Refused("LONG_GAP"));
         // The cooldown holds whatever purpose the last admission had: 29.001 seconds is one second to wait.
         Instant admitted = PUBLISHED.plusSeconds(30);
         when(publications.databaseNow()).thenReturn(admitted.plusMillis(29_001));
@@ -313,42 +317,68 @@ class PlanVerificationServiceTest {
 
     // ------------------------------------------------------------------ the dashboard part (patches 24, 25, C3)
 
-    private PlanSyncService.Facts facts(boolean inProgress, boolean longGap, Duration wait) {
-        return new PlanSyncService.Facts(PUBLISHED.plusSeconds(60), inProgress, null, longGap, wait, null);
+    private PlanSyncService.Facts facts(boolean inProgress, boolean longGap, Duration wait,
+            PlanSyncRepository.Review review) {
+        return new PlanSyncService.Facts(PUBLISHED.plusSeconds(60), inProgress, null, longGap, wait, null, review);
     }
 
     @Test
     void theStateSuggestsAReasonOnlyWhenAVerificationCouldBeAskedFor() {
         eligible(PUBLISHED.plusSeconds(60));
         when(syncs.latestVerification(USER, PLAN)).thenReturn(Optional.empty());
-        var available = service().state(USER, base, facts(false, false, null), null);
+        var available = service().state(USER, base, facts(false, false, null, null));
         assertThat(available.availability()).isEqualTo("AVAILABLE");
         assertThat(available.suggestedReason()).isEqualTo("USER_REQUEST");
         assertThat(available.preview()).isNotNull();
-        var cooling = service().state(USER, base, facts(false, false, Duration.ofSeconds(12)), null);
+        var cooling = service().state(USER, base, facts(false, false, Duration.ofSeconds(12), null));
         assertThat(cooling.availability()).isEqualTo("COOLDOWN");
         assertThat(cooling.suggestedReason()).isEqualTo("USER_REQUEST");
         assertThat(cooling.retryAfterSeconds()).isEqualTo(12L);
-        var longGap = service().state(USER, base, facts(false, true, null), null);
+        var longGap = service().state(USER, base, facts(false, true, null, null));
         assertThat(longGap.availability()).isEqualTo("LONG_GAP");
         assertThat(longGap.suggestedReason()).as("a long gap asks for the continuation").isNull();
         assertThat(longGap.preview()).isNull();
         assertThat(longGap.catchUpFrom()).isEqualTo(VERIFIED.minus(Duration.ofDays(7)));
         var review = new PlanSyncRepository.Review(UUID.randomUUID(), "SOURCE_EVENT_MISSING");
-        var notUseful = service().state(USER, base, facts(false, false, null), review);
+        var notUseful = service().state(USER, base, facts(false, false, null, review));
         assertThat(notUseful.availability()).isEqualTo("NOT_USEFUL");
         assertThat(notUseful.suggestedReason()).isNull();
         // C3: the persistent review wins over the long gap; where the continuation would start is still said.
-        var reviewedGap = service().state(USER, base, facts(false, true, null), review);
+        var reviewedGap = service().state(USER, base, facts(false, true, null, review));
         assertThat(reviewedGap.availability()).isEqualTo("NOT_USEFUL");
         assertThat(reviewedGap.catchUpFrom()).isEqualTo(VERIFIED.minus(Duration.ofDays(7)));
+    }
+
+    /**
+     * R3: a continuation plans the same anomaly ranges as a precision verification — an unexplained stored event older
+     * than the unconfirmed week is read again — and the dashboard says it starts there.
+     */
+    @Test
+    void aContinuationPlansTheAnomalyRangesAndStartsAtTheEarliest() {
+        eligible(PUBLISHED.plusSeconds(60));
+        when(planSyncs.longGap(eq(USER), any(), any())).thenReturn(true);
+        Instant old = T0.plus(Duration.ofDays(3));
+        when(collections.unexplainedEvents(USER, ACCOUNT, CANDIDATE, T0, VERIFIED)).thenReturn(List.of(old));
+        assertThat(service().admit(USER, VerificationKind.CATCH_UP, shown, KEY))
+                .isInstanceOf(VerificationAdmission.Accepted.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<VerificationPlanner.Range>> ranges = ArgumentCaptor.forClass(List.class);
+        verify(syncs).insertRanges(eq(USER), any(), ranges.capture());
+        assertThat(ranges.getValue()).contains(new VerificationPlanner.Range(VerificationPlanner.Kind.ANOMALY,
+                old.minus(Duration.ofHours(24)), old.plus(Duration.ofHours(24))));
+        when(syncs.latestVerification(USER, PLAN)).thenReturn(Optional.empty());
+        var gap = service().state(USER, base, facts(false, true, null, null));
+        assertThat(gap.catchUpFrom()).isEqualTo(old.minus(Duration.ofHours(24)));
+        // While an attempt runs nothing is scanned: the start is its unconfirmed week's.
+        assertThat(service().state(USER, base, facts(true, true, null, null)).catchUpFrom())
+                .isEqualTo(VERIFIED.minus(Duration.ofDays(7)));
     }
 
     @Test
     void nothingIsPreviewedWhileAnAttemptIsInProgress() {
         eligible(PUBLISHED.plusSeconds(60));
         when(syncs.latestVerification(USER, PLAN)).thenReturn(Optional.empty());
-        var running = service().state(USER, base, facts(true, false, null), null);
+        var running = service().state(USER, base, facts(true, false, null, null));
         assertThat(running.availability()).isEqualTo("IN_PROGRESS");
         assertThat(running.preview()).isNull();
         assertThat(running.suggestedReason()).isNull();
@@ -363,13 +393,13 @@ class PlanVerificationServiceTest {
         when(syncs.latestVerification(USER, PLAN)).thenReturn(Optional.of(reviewed));
         when(syncs.ranges(USER, reviewed.jobId())).thenReturn(List.of());
         when(syncs.reconciliationCounts(USER, reviewed.jobId())).thenReturn(new int[] {0, 0, 1, 0, 0});
-        var holding = service().state(USER, base, facts(false, false, null),
-                new PlanSyncRepository.Review(reviewed.jobId(), "SOURCE_EVENT_MISSING"));
+        var holding = service().state(USER, base, facts(false, false, null,
+                new PlanSyncRepository.Review(reviewed.jobId(), "SOURCE_EVENT_MISSING")));
         assertThat(holding.latest()).isNotNull();
         assertThat(holding.latest().holdsResult()).isTrue();
-        var other = service().state(USER, base, facts(false, false, null),
-                new PlanSyncRepository.Review(UUID.randomUUID(), "SOURCE_EVENT_MISSING"));
+        var other = service().state(USER, base, facts(false, false, null,
+                new PlanSyncRepository.Review(UUID.randomUUID(), "SOURCE_EVENT_MISSING")));
         assertThat(other.latest().holdsResult()).as("a later attempt that did not hold it").isFalse();
-        assertThat(service().state(USER, base, facts(false, false, null), null).latest().holdsResult()).isFalse();
+        assertThat(service().state(USER, base, facts(false, false, null, null)).latest().holdsResult()).isFalse();
     }
 }

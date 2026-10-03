@@ -158,8 +158,65 @@ describe('EvidenceChange', () => {
     const late = change.querySelectorAll(`time[datetime="${LATE_AT}"]`)
     expect(late.length).toBeGreaterThanOrEqual(2)
     expect(change).toHaveTextContent(copy.firstAffectedHelp)
+    // R8: the correction's late changes by kind — here one found late, and no zero counts.
+    expect(change).toHaveTextContent(
+      `${copy.counts}${copy.countsValue({ lateAddedCount: 1, valueChangedCount: 0, removedCount: 0 })}`,
+    )
+    expect(change).not.toHaveTextContent('0건')
     // Never the claim that the whole history was read again.
     expect(change.textContent).not.toMatch(/전체 이력을 다시 읽었/)
+  })
+
+  it('F1: a version a sync made has no lines of ranges read again or reused, which a sync does not have', () => {
+    renderChange(
+      evidence(
+        v2Evidence({
+          purpose: 'SYNC',
+          reason: 'USER_REQUEST',
+          targets: [],
+          reused: [],
+          events: [
+            lateEvent({
+              changeKind: 'VALUE_CHANGED',
+              late: false,
+              previousUsdValue: '24.5',
+              previousEstimated: true,
+              usdValue: '25',
+              estimated: true,
+            }),
+          ],
+        }),
+      ),
+    )
+    const change = part()
+    expect(change).toHaveTextContent(planVerificationContent.purposes.SYNC ?? 'missing')
+    expect(change).not.toHaveTextContent(copy.targets)
+    expect(change).not.toHaveTextContent(copy.reused)
+    expect(change).not.toHaveTextContent(planVerificationContent.none)
+    // R8: a value change another user's price correction caused is never called late.
+    expect(change).toHaveTextContent(
+      `${copy.counts}${copy.countsValue({ lateAddedCount: 0, valueChangedCount: 1, removedCount: 0 })}`,
+    )
+    expect(change).not.toHaveTextContent('늦게 확인된 입출금')
+  })
+
+  it('F2: a verification without a late change does not deny the flows that are new since the last check', () => {
+    renderChange(
+      evidence(
+        v2Evidence({
+          kind: 'VERIFIED_NO_CHANGE',
+          firstAffectedAt: null,
+          events: [lateEvent({ late: false, occurredAt: '2026-09-26T12:00:00Z' })],
+        }),
+      ),
+    )
+    const change = part()
+    expect(change).toHaveTextContent(copy.kinds.VERIFIED_NO_CHANGE ?? 'missing')
+    expect(copy.kinds.VERIFIED_NO_CHANGE).not.toMatch(/입출금 변경은 없/)
+    expect(eventItem('late-event-01')).toHaveTextContent(copy.eventNotes.added)
+    expect(copy.eventNotes.added).toBe('마지막 확인 뒤 새로 반영된 입출금입니다.')
+    // No count line: only a correction has late changes to count.
+    expect(change).not.toHaveTextContent(copy.counts)
   })
 
   it('shows the six metrics before and after, and says the basis time moved too', () => {
@@ -421,6 +478,39 @@ describe('EvidenceChange', () => {
       const body =
         typeof broken === 'string' ? v2Evidence(variants[broken]) : { ...v2Evidence(), ...broken }
       expect(parseEvidence(body, shown())).toBeNull()
+    })
+
+    it('R8: counts that are missing, not whole, or not those of the listed flows drop the whole lineage', () => {
+      const late = [lateEvent()]
+      for (const counts of [
+        { lateAddedCount: undefined },
+        { lateAddedCount: 1.5 },
+        { valueChangedCount: -1 },
+        { removedCount: '0' },
+        // Not the listed flows: one late addition is listed.
+        { lateAddedCount: 2 },
+        { lateAddedCount: 0, valueChangedCount: 1 },
+      ]) {
+        expect(parseEvidence(v2Evidence({ events: late, ...counts }), shown())).toBeNull()
+      }
+      // A correction with nothing late in it, and a version of no change with something late in it.
+      expect(
+        parseEvidence(
+          v2Evidence({
+            events: [lateEvent({ late: false, occurredAt: '2026-09-26T12:00:00Z' })],
+            firstAffectedAt: null,
+          }),
+          shown(),
+        ),
+      ).toBeNull()
+      expect(
+        parseEvidence(v2Evidence({ kind: 'NONE', purpose: 'SYNC', events: late }), shown()),
+      ).toBeNull()
+      expect(evidence().change).toMatchObject({
+        lateAddedCount: 1,
+        valueChangedCount: 0,
+        removedCount: 0,
+      })
     })
 
     it('a verification without change may list flows that are new since the last check', () => {

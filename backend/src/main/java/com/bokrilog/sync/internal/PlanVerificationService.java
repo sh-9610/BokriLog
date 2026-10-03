@@ -31,9 +31,9 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <p><b>Admission</b> is one short transaction without a provider call. For the user's two kinds it judges, in order:
  * the account's write access; the same key replayed (the same kind joins, another is a conflict); the active plan and
  * whether the reference the screen sent is still its pointer (the user's choice token); an attempt in progress (the
- * same purpose joins, another refuses); a reason nothing can run; the kind's own condition — a precision verification
- * needs no long gap, a continuation needs the long gap, and neither may follow a persistent review of this very base
- * ({@link PlanSyncRepository#persistentlyReviewed}: it would only end the same way); the 30-second cooldown after the
+ * same purpose joins, another refuses); a reason nothing can run; a persistent review of this very base
+ * ({@link PlanSyncRepository#persistentlyReviewed}: either kind would only end the same way); the kind's own condition
+ * — a precision verification needs no long gap, a continuation needs the long gap; the 30-second cooldown after the
  * plan's last admission of any purpose; and then the plan of ranges ({@link VerificationPlanner}) is fixed with the
  * attempt. The system's four reasons skip the reference, the usefulness and the cooldown: an operator who fixed the
  * cause must be able to verify the same base again. A system request joins an attempt in progress only when it is the
@@ -98,12 +98,13 @@ class PlanVerificationService {
         Instant now = publications.databaseNow();
         if (planSyncs.unavailableReason(user, base, now) != null)
             return new VerificationAdmission.Refused("VERIFICATION_UNAVAILABLE");
+        // Interpretations C2/C3: after a persistent review of this base, neither kind can change anything. It is judged
+        // before the long gap, in the dashboard's order, so the answer and the screen never disagree.
+        if (syncs.persistentlyReviewed(user, planId, base.pointer().calculationId()))
+            return new VerificationAdmission.Refused("VERIFICATION_NOT_USEFUL");
         boolean longGap = planSyncs.longGap(user, base, now);
         if (kind == VerificationKind.PRECISION && longGap) return new VerificationAdmission.Refused("LONG_GAP");
         if (kind == VerificationKind.CATCH_UP && !longGap) return new VerificationAdmission.Refused("NOT_LONG_GAP");
-        // Interpretations C2/C3: after a persistent review of this base, neither kind can change anything.
-        if (syncs.persistentlyReviewed(user, planId, base.pointer().calculationId()))
-            return new VerificationAdmission.Refused("VERIFICATION_NOT_USEFUL");
         Duration wait = cooldown(user, base, now);
         if (wait != null)
             return new VerificationAdmission.Cooldown(syncs.latest(user, planId).orElse(null), SyncWindow.seconds(wait));
@@ -117,7 +118,7 @@ class PlanVerificationService {
         } else {
             reason = VerificationReason.LONG_GAP_CONTINUATION;
             plan = VerificationPlanner.catchUp(base.calculation().t0(), base.calculation().verifiedThrough(),
-                    evidence(user, base));
+                    evidence(user, base), anomalies(user, base));
         }
         return insert(user, base, purpose, reason, "MANUAL", key, plan, List.of());
     }
@@ -265,16 +266,15 @@ class PlanVerificationService {
 
     /**
      * The verification part of the dashboard, judged by the admission's own rules against the facts the caller read
-     * once ({@link PlanSyncService#facts}), in the caller's one consistent read: the availability, what a precision
-     * verification would read now, where a continuation would start, and the plan's latest verification with its plan
-     * and reconciliation counts. The preview — the lineage's evidence and a scan for unexplained events — is not
-     * computed while an attempt is in progress (nothing can be asked then) or when the gap is long.
-     *
-     * @param review the base's persistent review ({@link #review}), read once by the caller for the trust axes too
+     * once ({@link PlanSyncService#facts}, the base's persistent review among them), in the caller's one consistent
+     * read: the availability, what a precision verification would read now, where a continuation would start, and the
+     * plan's latest verification with its plan and reconciliation counts. Nothing is scanned while an attempt is in
+     * progress — no preview (the lineage's evidence and the unexplained events), and the continuation's start is then
+     * its unconfirmed range's.
      */
-    VerificationState state(UUID user, PlanSyncGuard.Base base, PlanSyncService.Facts facts,
-            PlanSyncRepository.@Nullable Review review) {
+    VerificationState state(UUID user, PlanSyncGuard.Base base, PlanSyncService.Facts facts) {
         UUID planId = base.plan().planId();
+        var review = facts.review();
         Duration wait = facts.manualWait();
         String availability = facts.inProgress() ? "IN_PROGRESS" : facts.unavailableReason() != null ? "UNAVAILABLE"
                 : review != null ? "NOT_USEFUL" : facts.longGap() ? "LONG_GAP" : wait != null ? "COOLDOWN" : "AVAILABLE";
@@ -284,8 +284,13 @@ class PlanVerificationService {
         Instant verified = base.calculation().verifiedThrough();
         VerificationPreview preview = null;
         String suggested = null;
-        Instant catchUpFrom = facts.longGap() ? VerificationPlanner.unconfirmed(t0, verified).start() : null;
-        if (!facts.inProgress() && !facts.longGap()) {
+        Instant catchUpFrom = null;
+        if (facts.longGap()) {
+            // Where the continuation's own plan starts: its unconfirmed week or an earlier anomaly range.
+            catchUpFrom = facts.inProgress() ? VerificationPlanner.unconfirmed(t0, verified).start()
+                    : VerificationPlanner.windowStart(VerificationPlanner.catchUp(t0, verified, List.of(),
+                            anomalies(user, base)).targets());
+        } else if (!facts.inProgress()) {
             List<Instant> anomalies = anomalies(user, base);
             var plan = VerificationPlanner.precision(t0, verified, evidence(user, base), anomalies, List.of());
             int anomalyCount = (int) anomalies.stream().filter(at -> at.isAfter(t0) && !at.isAfter(verified)).count();
@@ -306,7 +311,7 @@ class PlanVerificationService {
 
     /** The verification part alone, reading its facts (for callers without the dashboard's shared read). */
     VerificationState state(UUID user, PlanSyncGuard.Base base) {
-        return state(user, base, planSyncs.facts(user, base), review(user, base));
+        return state(user, base, planSyncs.facts(user, base));
     }
 
     /** A verification attempt with its planned ranges and reconciliation counts. */
@@ -334,8 +339,10 @@ class PlanVerificationService {
         UUID calculationId = base.pointer().calculationId();
         var sync = syncs.creatingSync(user, base.lineage().createdByJobId()).orElse(null);
         if (sync != null && !publications.changesConsistent(user, calculationId, sync.baseCalculationId()))
-            return new VersionChange(VersionChanges.NONE, null, null, 0, null, null, List.of(), List.of());
-        var late = VersionChanges.late(publications.changes(user, calculationId));
+            return new VersionChange(VersionChanges.NONE, null, null, 0, 0, 0, 0, null, null, List.of(), List.of());
+        var changes = publications.changes(user, calculationId);
+        var late = VersionChanges.late(changes);
+        var counts = VersionChanges.counts(changes);
         Instant firstAffected = late.stream().map(PlanPublicationRepository.ChangeRow::occurredAt)
                 .min(Comparator.naturalOrder()).orElse(null);
         String kind = VersionChanges.kind(late.size(), sync == null ? null : sync.purpose());
@@ -343,7 +350,7 @@ class PlanVerificationService {
         List<VerificationPlanner.Range> ranges = verifying ? syncs.ranges(user, base.lineage().createdByJobId())
                 : List.of();
         return new VersionChange(kind, sync == null ? null : sync.purpose(), sync == null ? null : sync.reason(),
-                late.size(), firstAffected, verifying ? sync.finishedAt() : null, targets(ranges), reused(ranges));
+                counts.total(), counts.lateAdded(), counts.valueChanged(), counts.removed(), firstAffected, verifying ? sync.finishedAt() : null, targets(ranges), reused(ranges));
     }
 
     static List<VerificationRange> targets(List<VerificationPlanner.Range> ranges) {

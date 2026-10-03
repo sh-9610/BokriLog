@@ -75,8 +75,12 @@ class PlanSyncService {
     private final PlanSyncPublisher publisher;
     private final TransactionTemplate transactions;
     private final CashflowConversionMarket market;
-    /** What each running attempt's collection did, for its one ending line (windows, pages, page retries). */
-    private final java.util.Map<UUID, RunStats> runs = new java.util.concurrent.ConcurrentHashMap<>();
+    /**
+     * What each running holder's collection did, for its attempt's one ending line (windows, pages, page retries). Keyed
+     * by the holder's lease — the job and its fencing generation — so an earlier holder in this process and the one
+     * that resumed its attempt never share or remove each other's counters.
+     */
+    private final java.util.Map<PlanSyncRepository.Lease, RunStats> runs = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** An attempt's collection counters. Written by its one worker thread, read when it ends. */
     static final class RunStats {
@@ -138,6 +142,10 @@ class PlanSyncService {
         if (active != null) return new SyncAdmission.Joined(active);
         Instant now = publications.databaseNow();
         if (unavailableReason(user, base, now) != null) return new SyncAdmission.Refused("SYNC_UNAVAILABLE");
+        // A persistent verification review of this base holds every sync (R6): it could only end as that review, so
+        // nothing is made — no attempt row, no provider call — and the dashboard says why (REVIEW_HELD).
+        if (syncs.persistentlyReviewed(user, planId, base.pointer().calculationId()))
+            return new SyncAdmission.Refused("SYNC_UNAVAILABLE");
         SyncJob latest = syncs.latest(user, planId).orElse(null);
         if (longGap(user, base, now)) return new SyncAdmission.Deferred("LONG_GAP", latest, null);
         Duration wait = SyncWindow.wait(SyncWindow.Trigger.valueOf(trigger.name()), now,
@@ -187,7 +195,10 @@ class PlanSyncService {
      * long gap, the manual cooldown after the plan's last admission of any purpose, and the plan's latest attempt.
      */
     record Facts(Instant now, boolean inProgress, @Nullable String unavailableReason, boolean longGap,
-            @Nullable Duration manualWait, @Nullable SyncJob latest) {}
+            @Nullable Duration manualWait, @Nullable SyncJob latest, PlanSyncRepository.@Nullable Review review) {}
+
+    /** Why a sync cannot run while a persistent verification review holds its base (R6). */
+    static final String REVIEW_HELD = "REVIEW_HELD";
 
     Facts facts(UUID user, PlanSyncGuard.Base base) {
         UUID planId = base.plan().planId();
@@ -195,7 +206,8 @@ class PlanSyncService {
         return new Facts(now, syncs.active(user, planId).isPresent(), unavailableReason(user, base, now),
                 longGap(user, base, now), SyncWindow.wait(SyncWindow.Trigger.MANUAL, now,
                         syncs.lastAdmission(user, planId).orElse(null), base.pointer().publishedAt()),
-                syncs.latest(user, planId).orElse(null));
+                syncs.latest(user, planId).orElse(null),
+                syncs.verificationReview(user, planId, base.pointer().calculationId()).orElse(null));
     }
 
     /**
@@ -208,10 +220,12 @@ class PlanSyncService {
 
     SyncState state(Facts facts) {
         Duration manualWait = facts.manualWait();
-        SyncWindow.Availability availability = SyncWindow.availability(facts.inProgress(), facts.unavailableReason(),
-                facts.longGap(), manualWait);
-        return new SyncState(availability.name(),
-                availability == SyncWindow.Availability.UNAVAILABLE ? facts.unavailableReason() : null,
+        // The guard's own reasons first; then a persistent verification review holds the sync (R6).
+        String reason = facts.unavailableReason() != null ? facts.unavailableReason()
+                : facts.review() != null ? REVIEW_HELD : null;
+        SyncWindow.Availability availability = SyncWindow.availability(facts.inProgress(), reason, facts.longGap(),
+                manualWait);
+        return new SyncState(availability.name(), availability == SyncWindow.Availability.UNAVAILABLE ? reason : null,
                 availability == SyncWindow.Availability.COOLDOWN && manualWait != null ? SyncWindow.seconds(manualWait)
                         : null,
                 facts.latest());
@@ -248,7 +262,8 @@ class PlanSyncService {
      * attempt before the next provider call and nothing more is written.
      */
     void run(PlanSyncRepository.Lease lease, BooleanSupplier alive) {
-        RunStats stats = runs.computeIfAbsent(lease.jobId(), ignored -> new RunStats());
+        RunStats stats = new RunStats();
+        runs.put(lease, stats);
         try {
             if (!alive.getAsBoolean()) return;
             if (lease.verifying()) {
@@ -301,7 +316,7 @@ class PlanSyncService {
         } finally {
             // The ending line took the counters if this holder ended the attempt; a holder that did not (its lease
             // was lost, it stopped) leaves nothing behind either — a resumed holder counts afresh.
-            runs.remove(lease.jobId(), stats);
+            runs.remove(lease, stats);
         }
     }
 
@@ -734,7 +749,13 @@ class PlanSyncService {
                         yield null;
                     }
                     case "REVIEW_REQUIRED" -> new String[] {"NEEDS_REVIEW", "CONVERSION_REQUIRES_REVIEW"};
-                    default -> new String[] {"FAILED", "CONVERSION_REQUIRED"};
+                    // A verification or continuation whose price is held for good (no route, no candle within five
+                    // minutes, a price that is not positive) needs review — a persistent one: asking again reads the
+                    // same market. Only a hold that time resolves (the event minute's candle not closed yet, the
+                    // market unreachable) is a failure the user retries. A sync keeps Story 2.11's ending.
+                    default -> lease.verifying() && permanentlyHeld(outcomes)
+                            ? new String[] {"NEEDS_REVIEW", "CONVERSION_REQUIRES_REVIEW"}
+                            : new String[] {"FAILED", "CONVERSION_REQUIRED"};
                 };
             });
         } catch (CashflowConversionRepository.PublicationBlocked blocked) {
@@ -742,6 +763,12 @@ class PlanSyncService {
             return null;
         }
         return converted.get();
+    }
+
+    /** Whether a held flow's reason is one time does not resolve ({@link PriceConversionPolicy.Reason#retryable}). */
+    static boolean permanentlyHeld(List<PriceConversionPolicy.FlowOutcome> outcomes) {
+        return outcomes.stream().anyMatch(outcome -> outcome.status() == PriceConversionPolicy.Status.CONVERSION_REQUIRED
+                && outcome.reason() != null && !outcome.reason().retryable());
     }
 
     /**
@@ -778,7 +805,7 @@ class PlanSyncService {
         if (!alive.getAsBoolean()) return;
         if (!enter(lease, "PUBLICATION")) return;
         try {
-            logEnding(publisher.publish(lease, prepared, (PlanCalculator.Result.Calculated) result));
+            logEnding(lease, publisher.publish(lease, prepared, (PlanCalculator.Result.Calculated) result));
         } catch (PublicationBlocked blocked) {
             end(lease, "BLOCKED", blocked.code());
         } catch (DuplicateKeyException racing) {
@@ -839,7 +866,7 @@ class PlanSyncService {
                     .orElseThrow(PlanSyncPublisher.LeaseLost::new));
         });
         if (ended.get() != null) {
-            logEnding(ended.get());
+            logEnding(lease, ended.get());
             throw new Ended();
         }
     }
@@ -886,7 +913,7 @@ class PlanSyncService {
     private void end(PlanSyncRepository.Lease lease, String status, String code) {
         var ended = transactions.execute(state -> syncs.lockOwned(lease) ? syncs.finish(lease, status, code)
                 : Optional.<PlanSyncRepository.Ending>empty());
-        if (ended != null) ended.ifPresent(this::logEnding);
+        if (ended != null) ended.ifPresent(ending -> logEnding(lease, ending));
     }
 
     /** A stage's own permission check refused a publication: the guard says why, or the inputs moved. */
@@ -902,7 +929,15 @@ class PlanSyncService {
      * and the policies. No user, amount, credential, provider text or Bybit id.
      */
     void logEnding(PlanSyncRepository.Ending e) {
-        RunStats stats = runs.remove(e.jobId());
+        logEnding(null, e);
+    }
+
+    /**
+     * The ending line of an attempt a holder ended, with that holder's own collection counters (a resumed holder counts
+     * what it read itself; the holder before it in this process keeps and drops its own).
+     */
+    private void logEnding(PlanSyncRepository.@Nullable Lease holder, PlanSyncRepository.Ending e) {
+        RunStats stats = holder == null ? null : runs.remove(holder);
         int[] facts;
         try {
             facts = Objects.requireNonNull(transactions.execute(status -> syncs.endingFacts(e.jobId())));

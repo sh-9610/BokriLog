@@ -40,17 +40,27 @@ export const planSyncContent = {
     CONNECTION_UNAVAILABLE:
       'Bybit 연결을 확인할 수 없어 동기화할 수 없습니다. 설정 화면에서 연결 상태를 확인해 주세요.',
     PLAN_PERIOD_ENDED: '계획 종료 시각이 지나 이 계획은 더 동기화하지 않습니다.',
+    // Story 2.12: 같은 기준 계산의 검증 작업이 검토 필요로 끝나 결과를 보류하고 있다. 동기화해도 바뀌지 않으므로
+    // 받지 않는다. 사용자가 풀 수 없는 원인이라 다시 요청하라고 권하지 않는다.
+    REVIEW_HELD:
+      '같은 기준 계산에서 입력 검토가 필요한 상태로 끝난 작업이 결과를 보류하고 있어 동기화를 받지 않습니다. 다시 요청해도 바뀌지 않으며, 원인과 확인 대상 구간은 신뢰 상태의 입력 신뢰도에 있습니다.',
   },
   /** 사유를 모르거나 동기화 블록을 읽을 수 없을 때. 금융 결과는 그대로 보이고 동기화만 막는다. */
   unknownReason: '동기화할 수 있는지 확인하지 못했습니다. 다시 불러오기로 다시 확인할 수 있습니다.',
   /**
    * 버튼이 진행 중인 작업 때문에 막혔을 때의 이유(`aria-describedby`). 다른 탭·자동 트리거가 시작한 작업을
-   * 이 화면이 따라가는 중이거나, 이 화면이 더 따라가지 않는 작업이 아직 진행 중일 때다.
+   * 이 화면이 따라가는 중이거나, 이 화면이 더 따라가지 않는 작업이 아직 진행 중일 때다. 더 따라가지 않는 작업은
+   * 그 목적으로 부른다(Story 2.12: 같은 작업 표에 정밀 검증·기존 계획 계속도 있다).
    */
   inProgressElsewhere:
     '다른 곳에서 시작한 동기화가 진행 중입니다. 끝날 때까지 새로 요청할 수 없고, 끝나면 이 화면이 결과를 표시합니다.',
-  inProgressUnfollowed:
-    '동기화가 아직 진행 중이라 새로 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+  inProgressUnfollowed: {
+    SYNC: '동기화가 아직 진행 중이라 새로 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+    VERIFY:
+      '정밀 검증이 아직 진행 중이라 동기화를 새로 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+    CATCH_UP:
+      '기존 계획 계속이 아직 진행 중이라 동기화를 새로 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+  },
   /** 정밀 검증·기존 계획 계속이 진행 중일 때(Story 2.12). 목적과 무관하게 진행 작업은 하나다. */
   inProgressOther:
     '정밀 검증이나 기존 계획 계속이 진행 중이라 동기화를 새로 요청할 수 없습니다. 끝나면 이 화면이 결과를 표시합니다.',
@@ -202,7 +212,7 @@ export const planSyncCopyStrings: readonly string[] = [
   ...Object.values(planSyncContent.reasons),
   planSyncContent.unknownReason,
   planSyncContent.inProgressElsewhere,
-  planSyncContent.inProgressUnfollowed,
+  ...Object.values(planSyncContent.inProgressUnfollowed),
   planSyncContent.inProgressOther,
   ...Object.values(planSyncContent.summary.statuses),
   planSyncContent.summary.unknownStatus,

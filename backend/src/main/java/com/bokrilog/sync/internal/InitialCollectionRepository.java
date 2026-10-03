@@ -234,28 +234,42 @@ class InitialCollectionRepository {
             }
         }
         if (review) {
-            // Kept on the collection (Story 2.12): a resumed holder, or a continuation's second phase, still knows it.
-            jdbc.sql("UPDATE sync_initial_collection_job SET page_review=true WHERE job_id=:j AND status='RUNNING' "
-                    + "AND fencing_generation=:g AND lease_until>now()")
-                .param("j",l.jobId()).param("g",l.generation()).update();
+            // Marked on this page (Story 2.12): a resumed holder or a continuation's second phase still knows it, and
+            // a page discarded for a re-read takes its mark with it.
+            jdbc.sql("UPDATE sync_initial_page_evidence SET review_required=true WHERE evidence_id=:e AND job_id=:j")
+                .param("e",evidenceId).param("j",l.jobId()).update();
         }
         return review;
     }
 
-    /** Whether a page of this collection asked for review ({@link #storePage}), whichever holder stored it. */
+    /** Whether a page this collection still holds asked for review ({@link #storePage}), whichever holder stored it. */
     boolean pageReviewed(UUID jobId) {
-        return jdbc.sql("SELECT page_review FROM sync_initial_collection_job WHERE job_id=:j")
-            .param("j",jobId).query(Boolean.class).optional().orElse(false);
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_initial_page_evidence WHERE job_id=:j AND review_required)")
+            .param("j",jobId).query(Boolean.class).single();
     }
 
     /**
-     * Discards the page evidence of windows a resumed collection reads again (Story 2.12): an earlier holder stopped
-     * inside them, and its pages would otherwise stay beside the new ones — the page insert keeps the first row of a
-     * cursor, so an old {@code has_next_page} could mark a window complete that was not. Their diagnostics go with
-     * them (the observation rows cascade). Complete windows are never passed here. Fenced.
+     * Discards what an earlier holder left inside the windows a resumed collection reads again (Story 2.12): their page
+     * evidence — the page insert keeps the first row of a cursor, so an old {@code has_next_page} could mark a window
+     * complete that was not — with its diagnostics and review marks (the observation rows cascade), and the
+     * observations of events those pages saw. An observation (a provenance row this collection wrote, not one it
+     * carried from the base) goes when its event lies inside a discarded window and inside none of this collection's
+     * complete windows: otherwise an event the re-read no longer sees would still count as observed, and a
+     * reconciliation would call it {@code NEW} or {@code SAME} instead of {@code SUPERSEDED} or {@code MISSING}. The
+     * re-read writes the observations again for what it sees. Complete windows are never passed here. Fenced.
      */
     void discardPartialWindows(Lease l,List<VerificationPlanner.Interval> windows) {
         for (VerificationPlanner.Interval window:windows) {
+            jdbc.sql("DELETE FROM sync_initial_event_provenance p USING sync_initial_source_event se,"
+                    + "sync_initial_collection_job c WHERE p.job_id=:j AND p.carried_from_candidate_id IS NULL "
+                    + "AND se.event_id=p.event_id AND se.transaction_time>=:start AND se.transaction_time<=:end "
+                    + "AND c.job_id=p.job_id AND c.status='RUNNING' AND c.fencing_generation=:g AND c.lease_until>now() "
+                    + "AND NOT EXISTS (SELECT 1 FROM (SELECT range_start,range_end FROM sync_initial_page_evidence "
+                    + "WHERE job_id=:j GROUP BY range_start,range_end HAVING count(DISTINCT event_type)=2 "
+                    + "AND count(*) FILTER (WHERE NOT has_next_page)=2) w "
+                    + "WHERE se.transaction_time>=w.range_start AND se.transaction_time<=w.range_end)")
+                .param("j",l.jobId()).param("start",utc(window.start())).param("end",utc(window.end()))
+                .param("g",l.generation()).update();
             jdbc.sql("DELETE FROM sync_initial_page_evidence e USING sync_initial_collection_job c "
                     + "WHERE e.job_id=:j AND e.range_start=:start AND e.range_end=:end AND c.job_id=e.job_id "
                     + "AND c.status='RUNNING' AND c.fencing_generation=:g AND c.lease_until>now()")

@@ -227,6 +227,33 @@ class DashboardTrustTest {
         assertThat(trust.inputReliability().nextAction()).isEqualTo(reliabilityAction);
     }
 
+    /**
+     * R5: a sync's review asks for a precision verification only when one can run (now or after its cooldown); in a
+     * long gap it asks for the continuation, otherwise for nothing — on both axes. R6: a sync held by a persistent
+     * verification review is named by that review, not as "no sync can run"; the guard's own reasons still are.
+     */
+    @ParameterizedTest(name = "sync {0}/{1}, verification {2}, review {3}")
+    @CsvSource({
+        "AVAILABLE,,AVAILABLE,,LAST_SYNC_NEEDS_REVIEW,VERIFY,SYNC_REVIEW_REQUIRED,VERIFY",
+        "COOLDOWN,,COOLDOWN,,LAST_SYNC_NEEDS_REVIEW,VERIFY,SYNC_REVIEW_REQUIRED,VERIFY",
+        "AVAILABLE,,UNAVAILABLE,,LAST_SYNC_NEEDS_REVIEW,NONE,SYNC_REVIEW_REQUIRED,NONE",
+        "COOLDOWN,,LONG_GAP,,LAST_SYNC_NEEDS_REVIEW,CHOOSE_CONTINUATION,SYNC_REVIEW_REQUIRED,CHOOSE_CONTINUATION",
+        "UNAVAILABLE,RESTRICTED,UNAVAILABLE,,SYNC_UNAVAILABLE,NONE,SYNC_REVIEW_REQUIRED,NONE",
+        "UNAVAILABLE,REVIEW_HELD,NOT_USEFUL,SOURCE_EVENT_MISSING,LAST_VERIFICATION_NEEDS_REVIEW,NONE,"
+            + "VERIFICATION_REVIEW_REQUIRED,NONE",
+        "UNAVAILABLE,RESTRICTED,UNAVAILABLE,SOURCE_EVENT_MISSING,SYNC_UNAVAILABLE,NONE,VERIFICATION_REVIEW_REQUIRED,NONE",
+    })
+    void aSyncReviewAsksOnlyForWhatCanRun(String availability, String reason, String verification, String review,
+            String freshnessCause, String freshnessAction, String reliabilityCause, String reliabilityAction) {
+        var trust = DashboardTrust.judge(new DashboardTrust.Input(new DashboardTrust.Freshness(false, true, true),
+                "CONFIRMED", false, 0, MEASURED, VERIFIED, BASIS, metrics("CONFIRMED", "OFFICIAL"),
+                new DashboardTrust.SyncFacts(availability, reason, "NEEDS_REVIEW", review, verification))).orElseThrow();
+        assertThat(trust.freshness().cause()).isEqualTo(freshnessCause);
+        assertThat(trust.freshness().nextAction()).isEqualTo(freshnessAction);
+        assertThat(trust.inputReliability().cause()).isEqualTo(reliabilityCause);
+        assertThat(trust.inputReliability().nextAction()).isEqualTo(reliabilityAction);
+    }
+
     private static DashboardTrust.Input input(String freshness, String input, String nature) {
         var facts = switch (freshness) {
             case "SYNCING" -> new DashboardTrust.Freshness(true, true, true);

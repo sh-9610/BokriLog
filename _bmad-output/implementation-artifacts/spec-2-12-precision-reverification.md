@@ -607,7 +607,7 @@ context:
 **구현에서 확정한 것 (frozen 블록 밖, 리뷰 뒤 포함):**
 - 지속성 검증 검토(리뷰 뒤 확정). 같은 기준 계산에서 VERIFY나 CATCH_UP(사용자·SYSTEM 모두)이 `NEEDS_REVIEW`로 끝났고 다음 중 하나이면 "지속성"이다:
   - 코드가 `SOURCE_EVENT_MISSING`·`HISTORY_OUT_OF_RANGE`·`CLASSIFICATION_REQUIRES_REVIEW`·`CONVERSION_REQUIRES_REVIEW`다.
-  - 코드가 `SOURCE_REQUIRES_REVIEW`이고, 그 수집 자식에 진단 행·page review 표시(`page_review`)·CONFLICT 대조 행 중 하나가 있다.
+  - 코드가 `SOURCE_REQUIRES_REVIEW`이고, 그 수집 자식에 진단 행·review 표시된 page(`sync_initial_page_evidence.review_required`)·CONFLICT 대조 행 중 하나가 있다. 표시는 page 행 단위라, 재개가 버린 page의 표시는 함께 사라진다(2차 검토).
   - 형식 오류 같은 일시적 거절만으로 끝난 검토는 지속성이 아니다.
   - admission의 쓸모없음 판정과 대시보드 신뢰 축은 SQL 조각 하나(`PERSISTENT_REVIEW`)를 공유한다.
 - 지속성 검토가 있는 기준에서는 SYNC도 시간 API를 부르기 전에 그 코드로 `NEEDS_REVIEW`가 된다(리뷰 뒤 확정). 다음 동기화의 24시간 창이 사라진 공식 사건에 닿지 않으면, 그 사건을 조용히 이어받아 검토를 지워 버리기 때문이다.
@@ -621,7 +621,8 @@ context:
   - `collectIncrementalInputs`는 호출자가 없어져 지웠다. 최초 수집도 `collectWindows` 위의 얇은 호출이다.
   - 모든 수집은 작업의 lease 확인을 alive로 넘기고, 멈춘 수집(`Stopped`)은 아무것도 끝내지 않는다.
 - 재개 경로:
-  - 미완료 창의 page evidence를 지우고 다시 읽는다. 완료된 창과 provenance는 둔다.
+  - 미완료 창의 page evidence를 지우고 다시 읽는다. 완료된 창은 둔다.
+  - 버린 창에서만 관측된 사건의 provenance도 함께 지운다(carried가 아니고, 시각이 버린 창 안이며, 이 자식의 완료 창 어디에도 들지 않는 행). 그래야 재독에서 사라진 사건이 `SUPERSEDED`·`MISSING`으로 갈린다(2차 검토).
   - lease 인수는 `enterWith`가 guard를 먼저 확인한다.
   - `tc`·`tcFinal`은 60초 신뢰 판정과 같은 트랜잭션에서 저장한다.
 - V12:
@@ -632,6 +633,15 @@ context:
   - "늦은 변경"과 `CORRECTED`·`VERIFIED_NO_CHANGE`·`NONE` 도출은 `VersionChanges` 하나가 소유한다.
   - 대시보드는 변경 행이 흐름 차이와 맞지 않으면 표지를 `NONE`으로 접는다. 근거·이력은 503이다.
 - 운영 경로 admission: 같은 사유·같은 EXPLICIT 구간일 때만 합친다. 그 밖에는 `JOB_IN_PROGRESS`·`IDEMPOTENCY_CONFLICT`다.
+- 2차 검토(최종 트리 재검토) 뒤 확정:
+  - CATCH_UP도 PRECISION과 같은 `ANOMALY` 대상(±24시간, 병합, 상한 50)을 더한다. frozen의 "CATCH_UP 대상은 둘뿐"을 보완한 결정이다. 오래된 설명되지 않는 저장 사건이 있으면 계속하기가 매번 검토로 끝나고, 장기 공백에서는 정밀 검증도 운영 경로도 거절돼 풀 수단이 없었기 때문이다.
+  - VERIFY·CATCH_UP의 환산 보류는 사유로 가른다. 하나라도 영구 사유(경로 없음·candle 결측·0 이하 가격)면 `NEEDS_REVIEW`/`CONVERSION_REQUIRES_REVIEW`(지속성)이고, 전부 일시적(아직 닫히지 않은 candle·제공자 불가)이면 `FAILED`/`CONVERSION_REQUIRED`다. frozen "미해소"의 가격 결측 = `검토 필요`를 따른 것이다. SYNC는 2.11 그대로다.
+  - 지속성 검토가 있으면 sync availability는 `UNAVAILABLE`/`REVIEW_HELD`이고, sync admission은 작업을 만들지 않고 409 `SYNC_UNAVAILABLE`이다. 그래야 자동 트리거가 5분마다 검토 행을 쌓지 않는다. 신선도 원인은 그 사유일 때 검증 검토를 따른다. Worker의 사전 검사는 방어로 남긴다.
+  - 두 kind의 admission 모두 지속성 검토를 LONG_GAP·NOT_LONG_GAP보다 먼저 본다(대시보드 순서와 같다).
+  - 동기화 검토의 다음 행동은 verification availability로 정한다. AVAILABLE·COOLDOWN이면 `VERIFY`, LONG_GAP이면 `CHOOSE_CONTINUATION`, 그 밖에는 `NONE`이다.
+  - 대시보드·근거 `change`에 `lateAddedCount`·`valueChangedCount`·`removedCount`를 더했다(`lateChangeCount`는 합계). 공유 candle 정정이 다른 사용자의 일상 동기화에 만든 값 변경은 "늦게 확인된 입출금"이 아니라 "값이 바뀐 입출금"으로 보인다.
+  - 예산 Duration 상한: 재시도 간격 10분, 회로 1일, 잔여 대기 1분. 넘거나 overflow면 기본값이다. lease가 없는 서명 호출이 대기 중 interrupt되면 `UNAVAILABLE`이고, 인증 거절로 접지 않는다.
+  - 화면 원인 문구는 목적 중립이다("같은 기준에서 끝난 검증 작업", "마지막 작업"). 동기화로 만든 버전은 구간 행을 보이지 않는다. 늦지 않은 추가는 "마지막 확인 뒤 새로 반영된 입출금"이다. `busy`는 진행 작업이 사라지면 지워진다.
 - 예산 속성은 `BOKRILOG_BYBIT_*` 여덟 개다(`application.yml`, `DEVELOPMENT.md`의 "Bybit 호출 예산"). 값이 비정상이면 기본값으로 돌아간다. 한도와 회로는 프로세스 전용이다(미룬 항목).
 - 화면:
   - 발행하지 못한 작업의 구간은 `확인 대상 구간`, 재사용은 `재사용하려던 기존 수집 증거`로 부른다. 다 읽었다고 말하지 않는다.
@@ -639,35 +649,39 @@ context:
 - CI: `backend-quality`를 20분에서 25분으로 올렸다(`ci.yml`, `DEVELOPMENT.md`, CLAUDE.md). 근거는 로컬 `clean build` 16분 59초다. 주입 origin 회귀는 2.1분이라 그대로다.
 - 이 스토리와 Story 2.11의 통합 시험이 통과했다. 그래서 epics.md의 M2-3 `반복 증분 동기화·지연 correction·버전 추적`을 충족한 것으로 기록한다.
 
-**실행 결과 (리뷰 patch 반영 뒤 최종 트리):**
-- 백엔드 `clean build`(`--no-parallel --max-workers=1`): 968 tests 통과, 실패·skip 0, 16분 59초.
-  - patch 전 트리는 독립 재실행에서 939/939, 16분 4초였다.
-- 프런트엔드(Node 24): `typecheck`·`lint`·`lint:css`·`format:check`·`build` 통과. Vitest 27파일 848/848이고 독립 재실행에서도 같았다.
-- 새 compose 스택(migrate V1~V12): `verify-same-origin.sh --keep-stack` 959/959. 이어서 같은 스택의 주입 origin e2e가 61/61(2.1분)이다. 스택은 정리했다.
+**실행 결과 (2차 검토 patch 반영 뒤 최종 트리):**
+- 백엔드 `clean build`(`--no-parallel --max-workers=1`): 987 tests 통과, 실패·skip 0, 15분 57초.
+  - 1차 patch 뒤 트리는 968/968(16분 59초)이었고 PR #54 첫 CI에서 `backend-quality` 16분 34초였다. 그 전 트리의 독립 재실행은 939/939(16분 4초)였다.
+- 프런트엔드(Node 24): `typecheck`·`lint`·`lint:css`·`format:check`·`build` 통과. Vitest 27파일 866/866이고 독립 재실행에서도 같았다.
+- 새 compose 스택(migrate V1~V12): `verify-same-origin.sh --keep-stack` 959/959. 이어서 같은 스택의 주입 origin e2e가 61/61(2.6분)이다. 스택은 정리했다.
 - `test-ci-scripts.sh` 147/147, `git diff --check` 통과.
 - 리뷰: 리뷰어 6명(blind·edge·verification × 백엔드·프런트엔드).
   - patch: 백엔드 33건, 프런트엔드 23건, 해석 확정 4건(C1~C4). 전부 반영했다.
   - defer 4건: CSS 44×44 사본, `measured_at`−`tc` 간격, 프로세스 전용 예산, heartbeat `SKIP LOCKED`.
   - reject: 계획이 730일을 넘는 가정, 운영 제한 명령 신설 요구, 검증 후보의 `window_start` 표기(SPEC 정의대로), e2e 예산(실측 2.1분).
+- 2차 검토: PR #54의 CI가 통과한 최종 트리를 리뷰어 3명(동기화 엔진, 예산·마이그레이션·신뢰 축, 프런트엔드)이 다시 봤다.
+  - patch: 백엔드 11건, 프런트엔드 8건. 전부 반영했다.
+  - defer 1건: V12 backfill과 배포 순서(Story 3.8).
+  - 결함 없음으로 확인된 영역: 원자 발행, lease·fencing, 멱등 키, 삭제 순서, 로그 민감값, 예산의 재시도·회로·동시 수집, V12 CHECK 보존.
 
 ## Suggested Review Order
 
 **검증 실행 (입구)**
 
 - 목적별 갈래: SYNC는 지속성 검토면 호출 전에 멈추고, 검증은 대상 창을 수집한다.
-  [`PlanSyncService.java:250`](../../backend/src/main/java/com/bokrilog/sync/internal/PlanSyncService.java#L250)
+  [`PlanSyncService.java:264`](../../backend/src/main/java/com/bokrilog/sync/internal/PlanSyncService.java#L264)
 
 - VERIFY·CATCH_UP 실행: 730일 판정, 재개, FINAL_SWEEP까지 lease 하나로 차례로 돈다.
-  [`PlanSyncService.java:324`](../../backend/src/main/java/com/bokrilog/sync/internal/PlanSyncService.java#L324)
+  [`PlanSyncService.java:339`](../../backend/src/main/java/com/bokrilog/sync/internal/PlanSyncService.java#L339)
 
 - `tcFinal` 고정은 신뢰 판정·저장·자식 상한 연장을 한 트랜잭션에서 한다.
-  [`PlanSyncService.java:464`](../../backend/src/main/java/com/bokrilog/sync/internal/PlanSyncService.java#L464)
+  [`PlanSyncService.java:479`](../../backend/src/main/java/com/bokrilog/sync/internal/PlanSyncService.java#L479)
 
 - admission: 쓰기 접근 → key → 참조 → 진행 → 사용 불가 → 목적별 → 쿨다운 → 구간 계획 저장.
   [`PlanVerificationService.java:86`](../../backend/src/main/java/com/bokrilog/sync/internal/PlanVerificationService.java#L86)
 
 - 운영 경로: 같은 사유·구간만 합치고 참조·쓸모없음·쿨다운을 건너뛴다.
-  [`PlanVerificationService.java:160`](../../backend/src/main/java/com/bokrilog/sync/internal/PlanVerificationService.java#L160)
+  [`PlanVerificationService.java:161`](../../backend/src/main/java/com/bokrilog/sync/internal/PlanVerificationService.java#L161)
 
 **구간 계획과 대조**
 
@@ -675,13 +689,13 @@ context:
   [`VerificationPlanner.java:89`](../../backend/src/main/java/com/bokrilog/sync/internal/VerificationPlanner.java#L89)
 
 - 대조 다섯 갈래와 제외 목록 이어받기. SYNC도 같은 완료 규칙을 쓴다.
-  [`InitialCollectionRepository.java:303`](../../backend/src/main/java/com/bokrilog/sync/internal/InitialCollectionRepository.java#L303)
+  [`InitialCollectionRepository.java:317`](../../backend/src/main/java/com/bokrilog/sync/internal/InitialCollectionRepository.java#L317)
 
 - 계보 증명 구간(재귀 CTE)과 설명되지 않는 저장 사건이 계획의 입력이다.
-  [`InitialCollectionRepository.java:481`](../../backend/src/main/java/com/bokrilog/sync/internal/InitialCollectionRepository.java#L481)
+  [`InitialCollectionRepository.java:495`](../../backend/src/main/java/com/bokrilog/sync/internal/InitialCollectionRepository.java#L495)
 
 - 지속성 검토 술어 하나를 admission과 신뢰 축이 공유한다.
-  [`PlanSyncRepository.java:147`](../../backend/src/main/java/com/bokrilog/sync/internal/PlanSyncRepository.java#L147)
+  [`PlanSyncRepository.java:148`](../../backend/src/main/java/com/bokrilog/sync/internal/PlanSyncRepository.java#L148)
 
 **발행과 변경 기록**
 
@@ -700,10 +714,10 @@ context:
 **신뢰 축과 HTTP**
 
 - 검증 검토가 LONG_GAP보다 우선하고, 동기화 검토의 다음 행동은 `VERIFY`다.
-  [`DashboardTrust.java:150`](../../backend/src/main/java/com/bokrilog/sync/internal/DashboardTrust.java#L150)
+  [`DashboardTrust.java:172`](../../backend/src/main/java/com/bokrilog/sync/internal/DashboardTrust.java#L172)
 
 - `POST /api/dashboard/verification`: 202·200·400·403·409·422, 모르는 코드는 500.
-  [`DashboardController.java:412`](../../backend/src/main/java/com/bokrilog/DashboardController.java#L412)
+  [`DashboardController.java:413`](../../backend/src/main/java/com/bokrilog/DashboardController.java#L413)
 
 **호출 예산**
 
@@ -722,27 +736,27 @@ context:
   [`V12__plan_verification.sql:17`](../../backend/src/main/resources/db/migration/V12__plan_verification.sql#L17)
 
 - 구간·대조·제외·변경 네 표와 기존 증분 버전의 변경 행 backfill.
-  [`V12__plan_verification.sql:89`](../../backend/src/main/resources/db/migration/V12__plan_verification.sql#L89)
+  [`V12__plan_verification.sql:91`](../../backend/src/main/resources/db/migration/V12__plan_verification.sql#L91)
 
 **화면**
 
 - 목적·비용·예상 범위, 버튼과 마지막 검증 요약(발행하지 못했으면 계획한 구간).
-  [`VerificationControl.tsx:185`](../../frontend/src/components/VerificationControl.tsx#L185)
+  [`VerificationControl.tsx:197`](../../frontend/src/components/VerificationControl.tsx#L197)
 
 - 두 요청(PRECISION·CATCH_UP)을 2.11의 따라가기·초점 규칙에 잇는다.
-  [`useDashboardSync.ts:233`](../../frontend/src/session/useDashboardSync.ts#L233)
+  [`useDashboardSync.ts:238`](../../frontend/src/session/useDashboardSync.ts#L238)
 
 - 장기 공백의 `기존 계획 계속`과 그 범위, 지속성 검토면 안내로 바뀐다.
   [`SyncControl.tsx:41`](../../frontend/src/components/SyncControl.tsx#L41)
 
 - 결과 표지: 늦은 변경 N건 또는 `필요 구간 검증 완료`와 구간.
-  [`VersionChangeNote.tsx:84`](../../frontend/src/components/VersionChangeNote.tsx#L84)
+  [`VersionChangeNote.tsx:102`](../../frontend/src/components/VersionChangeNote.tsx#L102)
 
 - 근거의 `변경 근거`: 직전 버전, 지표 이전→새, 변경 사건.
-  [`EvidenceChange.tsx:160`](../../frontend/src/components/EvidenceChange.tsx#L160)
+  [`EvidenceChange.tsx:162`](../../frontend/src/components/EvidenceChange.tsx#L162)
 
 - 파서는 모순 조합과 바로 앞이 아닌 직전 버전을 거부한다.
-  [`useCalculationEvidence.ts:392`](../../frontend/src/session/useCalculationEvidence.ts#L392)
+  [`useCalculationEvidence.ts:408`](../../frontend/src/session/useCalculationEvidence.ts#L408)
 
 - 조정 이력 행의 버전 변경 표지.
   [`AdjustmentHistory.tsx:519`](../../frontend/src/components/AdjustmentHistory.tsx#L519)
@@ -756,10 +770,10 @@ context:
   [`PlanVerificationTest.java:338`](../../backend/src/test/java/com/bokrilog/PlanVerificationTest.java#L338)
 
 - CATCH_UP: `verified−7일`부터 FINAL_SWEEP까지, 한 번 발행, 두 워터마크 `tcFinal`.
-  [`PlanVerificationTest.java:471`](../../backend/src/test/java/com/bokrilog/PlanVerificationTest.java#L471)
+  [`PlanVerificationTest.java:473`](../../backend/src/test/java/com/bokrilog/PlanVerificationTest.java#L473)
 
 - 실 스택: 정밀 검증 → v2, 표지·변경 근거·이력이 같은 사건을 가리킨다.
-  [`precision-verification.spec.ts:83`](../../frontend/e2e/precision-verification.spec.ts#L83)
+  [`precision-verification.spec.ts:99`](../../frontend/e2e/precision-verification.spec.ts#L99)
 
 - CI 예산: `backend-quality` 25분.
   [`ci.yml:281`](../../.github/workflows/ci.yml#L281)

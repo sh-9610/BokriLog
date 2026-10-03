@@ -153,13 +153,26 @@ class VerificationPlannerTest {
         assertThat(VerificationPlanner.covers(targets, TC.plusMillis(1))).isFalse();
     }
 
+    /** R3: a continuation reads the same anomaly ranges as a precision verification, before its unconfirmed week. */
+    @Test
+    void theContinuationReadsTheAnomaliesToo() {
+        Instant verified = T0.plus(Duration.ofDays(40));
+        Instant old = T0.plus(Duration.ofDays(5));
+        var plan = VerificationPlanner.catchUp(T0, verified, List.of(interval(T0, verified)), List.of(old));
+        assertThat(plan.targets()).containsExactly(
+                new Range(Kind.ANOMALY, old.minus(Duration.ofHours(24)), old.plus(Duration.ofHours(24))),
+                new Range(Kind.UNCONFIRMED, verified.minus(Duration.ofDays(7)), verified));
+        assertThat(VerificationPlanner.windowStart(plan.targets())).isEqualTo(old.minus(Duration.ofHours(24)));
+        assertThat(plan.reused()).hasSize(2);
+    }
+
     /** The continuation: the unconfirmed week, then its final sweep of the last seven days to tcFinal, split apart. */
     @Test
     void theContinuationSweepsTheLastSevenDaysAgainOnItsOwn() {
         Instant verified = T0.plus(Duration.ofDays(40));
         Instant tc = verified.plus(Duration.ofDays(31));
         Instant tcFinal = tc.plus(Duration.ofSeconds(90));
-        var plan = VerificationPlanner.catchUp(T0, verified, List.of(interval(T0, verified)));
+        var plan = VerificationPlanner.catchUp(T0, verified, List.of(interval(T0, verified)), List.of());
         assertThat(plan.targets()).containsExactly(new Range(Kind.UNCONFIRMED, verified.minus(Duration.ofDays(7)),
                 verified));
         assertThat(plan.reused()).containsExactly(new Range(Kind.REUSED, T0, verified.minus(Duration.ofDays(7))));

@@ -140,7 +140,8 @@ class PlanSyncRepository {
      * <p>Persistent: the attempt ended {@code NEEDS_REVIEW} with {@code SOURCE_EVENT_MISSING},
      * {@code HISTORY_OUT_OF_RANGE}, {@code CLASSIFICATION_REQUIRES_REVIEW} or {@code CONVERSION_REQUIRES_REVIEW}; or
      * with {@code SOURCE_REQUIRES_REVIEW} while its collection kept a diagnostic — an event observation row, or a page
-     * the adapter itself flagged — or its reconciliation recorded a {@code CONFLICT}. A review that only a transient
+     * still marked for review — or its reconciliation recorded a {@code CONFLICT}. Discarded pages (a resumed holder's
+     * re-read) take their marks and diagnostics with them, so a transient flag of a stopped holder never persists. A review that only a transient
      * rejection produced (a malformed answer, {@code RESPONSE_FORMAT}) or an unexplained event outside the targets
      * (which the next verification reads as an anomaly range) is not: asking again can change it.
      */
@@ -148,8 +149,8 @@ class PlanSyncRepository {
             + "AND j.purpose IN ('VERIFY','CATCH_UP') AND j.status='NEEDS_REVIEW' AND (j.failure_code IN "
             + "('SOURCE_EVENT_MISSING','HISTORY_OUT_OF_RANGE','CLASSIFICATION_REQUIRES_REVIEW','CONVERSION_REQUIRES_REVIEW') "
             + "OR (j.failure_code='SOURCE_REQUIRES_REVIEW' AND (EXISTS (SELECT 1 FROM sync_initial_event_observation o "
-            + "WHERE o.job_id=j.collection_job_id) OR EXISTS (SELECT 1 FROM sync_initial_collection_job c "
-            + "WHERE c.job_id=j.collection_job_id AND c.page_review) OR EXISTS (SELECT 1 FROM sync_plan_verification_event v "
+            + "WHERE o.job_id=j.collection_job_id) OR EXISTS (SELECT 1 FROM sync_initial_page_evidence e "
+            + "WHERE e.job_id=j.collection_job_id AND e.review_required) OR EXISTS (SELECT 1 FROM sync_plan_verification_event v "
             + "WHERE v.job_id=j.job_id AND v.outcome='CONFLICT'))))";
 
     /** The persistent review of a base: the attempt that ended so and its closed code. */

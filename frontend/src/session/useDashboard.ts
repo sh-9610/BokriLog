@@ -10,7 +10,7 @@ import {
   type MetricName,
 } from '../content/planResult'
 import { planSyncContent } from '../content/planSync'
-import { planVerificationContent } from '../content/planVerification'
+import { planVerificationContent, type ChangeCounts } from '../content/planVerification'
 import { formatSeoulTime, isCanonicalDecimal, isPlainNonNegative } from '../format/decimal'
 
 export interface PlanResultMetric {
@@ -570,17 +570,22 @@ export function parseVerificationStatus(value: unknown): VerificationStatus {
 }
 
 /**
- * What the current official version changed (Story 2.12): `CORRECTED` when it applied late or changed
- * cash flows, `VERIFIED_NO_CHANGE` when a verification found none, `NONE` otherwise.
+ * What the current official version changed (Story 2.12): `CORRECTED` when it differs from the previous official
+ * version by a late addition, a value change or a removal, `VERIFIED_NO_CHANGE` when a verification or a catch-up
+ * made it without any, `NONE` otherwise.
  */
 export type VersionChangeKind = 'CORRECTED' | 'VERIFIED_NO_CHANGE' | 'NONE'
 
-/** The `change` block of a `READY` answer: the result marker of the shown version. */
-export interface VersionChange {
+/**
+ * The `change` block of a `READY` answer: the result marker of the shown version. Its three counts split what
+ * differs from the previous official version — added late, a USD value or estimated flag changed, removed from the
+ * applied flows (an addition after the last check is not a late change and is not counted) — and are said apart,
+ * so a value change (another user's price correction, say) is never called a late deposit or withdrawal.
+ */
+export interface VersionChange extends ChangeCounts {
   readonly kind: VersionChangeKind
   readonly purpose: string | null
   readonly reason: string | null
-  readonly lateChangeCount: number
   readonly firstAffectedAt: string | null
   readonly verifiedAt: string | null
   readonly targets: readonly VerificationRange[]
@@ -592,7 +597,9 @@ export const NO_CHANGE: VersionChange = {
   kind: 'NONE',
   purpose: null,
   reason: null,
-  lateChangeCount: 0,
+  lateAddedCount: 0,
+  valueChangedCount: 0,
+  removedCount: 0,
   firstAffectedAt: null,
   verifiedAt: null,
   targets: [],
@@ -601,22 +608,33 @@ export const NO_CHANGE: VersionChange = {
 
 /**
  * The `change` block, or `NO_CHANGE` when it is missing, not whole, of a kind this screen does not know, or
- * contradicts itself — a marker it cannot vouch for is not shown, and never a reason to drop the bundle. A
- * correction names how many late changes it applied; one with none (only values changed) says it changed,
- * without a count. A version without a late change (`VERIFIED_NO_CHANGE`, `NONE`) has neither a late change
- * count nor an impact start, and an impact starts no later than the shown basis time (`basisAt`, when given).
+ * contradicts itself — a marker it cannot vouch for is not shown, and never a reason to drop the bundle. Its three
+ * counts are whole numbers that add up to `lateChangeCount`, and the kind agrees with them: a correction has at
+ * least one, any other version none. A version without a late change (`VERIFIED_NO_CHANGE`, `NONE`) has no impact
+ * start either, and an impact starts no later than the shown basis time (`basisAt`, when given).
  */
 export function parseVersionChange(value: unknown, basisAt: string | null = null): VersionChange {
   const row = record(value)
   if (row === null) return NO_CHANGE
-  const { kind, purpose, reason, lateChangeCount, firstAffectedAt, verifiedAt } = row
+  const { kind, purpose, reason, firstAffectedAt, verifiedAt } = row
+  const { lateChangeCount, lateAddedCount, valueChangedCount, removedCount } = row
   if (kind !== 'CORRECTED' && kind !== 'VERIFIED_NO_CHANGE' && kind !== 'NONE') return NO_CHANGE
   if (!absent(purpose) && typeof purpose !== 'string') return NO_CHANGE
   if (!absent(reason) && typeof reason !== 'string') return NO_CHANGE
-  if (!count(lateChangeCount)) return NO_CHANGE
+  if (![lateChangeCount, lateAddedCount, valueChangedCount, removedCount].every(count)) {
+    return NO_CHANGE
+  }
+  const counts: ChangeCounts = {
+    lateAddedCount: lateAddedCount as number,
+    valueChangedCount: valueChangedCount as number,
+    removedCount: removedCount as number,
+  }
+  const changed = counts.lateAddedCount + counts.valueChangedCount + counts.removedCount
+  if (changed !== lateChangeCount) return NO_CHANGE
   if (!absent(firstAffectedAt) && !isInstant(firstAffectedAt)) return NO_CHANGE
   if (!absent(verifiedAt) && !isInstant(verifiedAt)) return NO_CHANGE
-  if (kind !== 'CORRECTED' && (lateChangeCount > 0 || !absent(firstAffectedAt))) return NO_CHANGE
+  if ((kind === 'CORRECTED') !== changed > 0) return NO_CHANGE
+  if (kind !== 'CORRECTED' && !absent(firstAffectedAt)) return NO_CHANGE
   if (
     !absent(firstAffectedAt) &&
     isInstant(basisAt) &&
@@ -631,7 +649,7 @@ export function parseVersionChange(value: unknown, basisAt: string | null = null
     kind,
     purpose: absent(purpose) ? null : purpose,
     reason: absent(reason) ? null : reason,
-    lateChangeCount,
+    ...counts,
     firstAffectedAt: absent(firstAffectedAt) ? null : firstAffectedAt,
     verifiedAt: absent(verifiedAt) ? null : verifiedAt,
     targets,
@@ -972,7 +990,7 @@ function syncSentence(phase: SyncPhase, purpose: SyncPurpose, bundle: Accepted):
     const marker = planVerificationContent.change
     const changed =
       change.kind === 'CORRECTED'
-        ? marker.correctedSentence(change.lateChangeCount)
+        ? marker.correctedSentence(change)
         : change.kind === 'VERIFIED_NO_CHANGE'
           ? marker.verifiedSentence
           : null

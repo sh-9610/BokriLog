@@ -21,9 +21,9 @@ import java.util.TreeSet;
  *       {@code GAP} — the part of {@code (t0, verified]} the evidence does not cover (a guard: the lineage covers it
  *       by construction); {@code ANOMALY} — 24 hours either side of each unexplained stored event, clipped to
  *       {@code (t0, verified]}, merged and bridged to at most {@link #MAX_ANOMALY_RANGES}; {@code EXPLICIT} — an
- *       operator's investigation ranges; {@code NEW}
- *       {@code (verified, tc]} once the worker fixed {@code tc}; and for a continuation only {@code UNCONFIRMED},
- *       {@code NEW} and its {@code FINAL_SWEEP} {@code [max(t0, min(tc, tcFinal - 7 days)), tcFinal]}.
+ *       operator's investigation ranges; {@code NEW} {@code (verified, tc]} once the worker fixed {@code tc}; and
+ *       for a continuation {@code UNCONFIRMED}, the same {@code ANOMALY} ranges, {@code NEW} and its
+ *       {@code FINAL_SWEEP} {@code [max(t0, min(tc, tcFinal - 7 days)), tcFinal]}.
  *   <li>The <b>reused</b> ranges are the evidence minus the targets: read never again, not even for a plan's end.
  *   <li>The <b>windows</b> split each merged target into contiguous windows of at most seven days — the same split
  *       as a sync's, so a verification reads the provider exactly as a sync would read the same range. The final
@@ -93,6 +93,29 @@ final class VerificationPlanner {
         List<Interval> covered = merge(clip(evidence, t0, verified));
         for (Interval gap : subtract(List.of(new Interval(t0, verified)), covered))
             targets.add(new Range(Kind.GAP, gap.start(), gap.end()));
+        targets.addAll(anomalyRanges(t0, verified, anomalies));
+        for (Interval range : explicit) targets.add(new Range(Kind.EXPLICIT, range.start(), range.end()));
+        return new Plan(sorted(targets), reused(covered, targets));
+    }
+
+    /**
+     * A continuation's plan up to {@code verified}: the unconfirmed range and the same anomaly ranges a precision
+     * verification would read ({@code NEW} follows at tc, the final sweep at tcFinal). Without the anomalies an
+     * unexplained stored event older than the unconfirmed week would end every continuation in review — and in a long
+     * gap nothing else can read it.
+     */
+    static Plan catchUp(Instant t0, Instant verified, List<Interval> evidence, List<Instant> anomalies) {
+        List<Range> targets = new ArrayList<>();
+        targets.add(unconfirmed(t0, verified));
+        targets.addAll(anomalyRanges(t0, verified, anomalies));
+        return new Plan(sorted(targets), reused(merge(clip(evidence, t0, verified)), targets));
+    }
+
+    /**
+     * 24 hours either side of each unexplained stored event inside {@code (t0, verified]}, clipped to it, merged and
+     * bridged to at most {@link #MAX_ANOMALY_RANGES}.
+     */
+    static List<Range> anomalyRanges(Instant t0, Instant verified, List<Instant> anomalies) {
         List<Interval> around = new ArrayList<>();
         for (Instant at : new TreeSet<>(anomalies)) {
             if (!at.isAfter(t0) || at.isAfter(verified)) continue;
@@ -100,16 +123,8 @@ final class VerificationPlanner {
             Instant end = min(verified, at.plus(ANOMALY_SPAN));
             if (end.isAfter(start)) around.add(new Interval(start, end));
         }
-        for (Interval range : bridged(merge(around), MAX_ANOMALY_RANGES))
-            targets.add(new Range(Kind.ANOMALY, range.start(), range.end()));
-        for (Interval range : explicit) targets.add(new Range(Kind.EXPLICIT, range.start(), range.end()));
-        return new Plan(sorted(targets), reused(covered, targets));
-    }
-
-    /** A continuation's plan up to {@code verified}: the unconfirmed range only ({@code NEW} follows it at tc). */
-    static Plan catchUp(Instant t0, Instant verified, List<Interval> evidence) {
-        List<Range> targets = List.of(unconfirmed(t0, verified));
-        return new Plan(targets, reused(merge(clip(evidence, t0, verified)), targets));
+        return bridged(merge(around), MAX_ANOMALY_RANGES).stream()
+                .map(range -> new Range(Kind.ANOMALY, range.start(), range.end())).toList();
     }
 
     /** {@code [max(t0, verified - 7 days), verified]}. */

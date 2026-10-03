@@ -287,3 +287,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-12-precision-reverification.md`
   summary: 동기화 작업 heartbeat가 `SKIP LOCKED`라서, 긴 page 저장 트랜잭션이 작업·자식 행을 잡고 있는 동안 lease 갱신이 건너뛰어진다. CATCH_UP처럼 page가 많은 작업은 재개(최대 2회)를 소진할 수 있다.
   evidence: Story 2.11이 물려준 heartbeat 관용이다(항목 85와 같은 원인). 단계 트랜잭션 안의 lease 연장은 이력 규모가 보이는 시점에 함께 정할 일이다(Story 2.12 리뷰).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-12-precision-reverification.md`
+  summary: V12의 변경 행 backfill은 마이그레이션 시점에 있던 증분 버전만 덮는다. `migrate` 역할이 V12를 적용한 뒤에도 2.11 바이너리가 발행을 계속하면, 그 버전에는 변경 행이 없어 근거·조정 이력이 다음 발행까지 503이다. 옛 바이너리가 VERIFY 작업을 집으면 V12 CHECK에 걸린다.
+  evidence: AD-12가 마이그레이션을 API 기동과 분리했고, 아직 운영 배포가 없어 단일 인스턴스에서는 생기지 않는다. 새 바이너리 전환과 expand 마이그레이션의 순서는 Blue-green 배포(Story 3.8)가 정할 일이다(Story 2.12 2차 검토).

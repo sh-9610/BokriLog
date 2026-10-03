@@ -63,9 +63,13 @@ const RANGE_KINDS: Readonly<Record<string, string>> = {
 
 /**
  * 대시보드 `verification.reason`(사용 불가 사유). 키 집합은 동기화의 사용 불가 사유(`planSync.ts`의 `reasons`)를
- * 그대로 따른다 — 타입이 두 집합을 하나로 묶는다. 문장은 정밀 검증과 기존 계획 계속에 함께 맞는 말이다.
+ * 그대로 따른다 — 타입이 두 집합을 하나로 묶는다. 다만 `REVIEW_HELD`는 동기화에만 있다: 같은 기준의 지속성 검토가
+ * 결과를 보류하면 검증 블록은 사용 불가가 아니라 `NOT_USEFUL`로 그 사실을 말한다. 문장은 정밀 검증과 기존 계획
+ * 계속에 함께 맞는 말이다.
  */
-const UNAVAILABLE_REASONS: Readonly<Record<keyof typeof planSyncContent.reasons, string>> = {
+const UNAVAILABLE_REASONS: Readonly<
+  Record<Exclude<keyof typeof planSyncContent.reasons, 'REVIEW_HELD'>, string>
+> = {
   RESTRICTED: '운영 제한으로 지금은 받지 않습니다.',
   CONNECTION_UNAVAILABLE:
     'Bybit 연결을 확인할 수 없어 받을 수 없습니다. 설정 화면에서 연결 상태를 확인해 주세요.',
@@ -152,6 +156,38 @@ const UNKNOWN_STAGE = '확인할 수 없는 단계'
  */
 const PLANNED_TARGETS = '확인 대상 구간'
 
+/**
+ * 한 공식 버전이 직전 공식 버전과 달라진 입출금의 세 갈래(대시보드 `change`와 근거 `change`의 세 수). 늦게 확인된
+ * 것은 새로 반영한 사건 가운데 마지막 확인 시각 앞의 것뿐이다 — 값만 바뀐 사건(다른 사용자의 가격 정정이 일으킨
+ * 것일 수 있다)이나 반영에서 빠진 사건을 "늦게 확인된 입출금"이라 부르지 않는다. 마지막 확인 뒤의 새 사건은 늦은
+ * 변경이 아니어서 세지 않는다.
+ */
+export interface ChangeCounts {
+  readonly lateAddedCount: number
+  readonly valueChangedCount: number
+  readonly removedCount: number
+}
+
+/** 세 갈래의 이름. 화면의 정보 순서이기도 하다. */
+const CHANGE_PARTS: readonly (readonly [keyof ChangeCounts, string])[] = [
+  ['lateAddedCount', '늦게 확인된 입출금'],
+  ['valueChangedCount', '값이 바뀐 입출금'],
+  ['removedCount', '반영에서 빠진 입출금'],
+]
+
+/** 0이 아닌 갈래만 "이름 N건"으로, 정보 순서대로. 0건인 갈래는 말하지 않는다. */
+function changeParts(counts: ChangeCounts): string {
+  return CHANGE_PARTS.filter(([key]) => counts[key] > 0)
+    .map(([key, name]) => `${name} ${String(counts[key])}건`)
+    .join(', ')
+}
+
+/** 늦은 변경이 없었다는 사실. 세 갈래를 모두 부정하고, 마지막 확인 뒤의 새 입출금은 부정하지 않는다. */
+const NO_LATE_CHANGE = '늦게 확인되거나 값이 바뀌거나 반영에서 빠진 입출금'
+
+/** 늦지 않은 새 입출금의 이름. 마지막 확인 뒤의 새 구간에서 들어와 이 버전에 처음 반영된 것이다. */
+const NEWLY_APPLIED = '마지막 확인 뒤 새로 반영된 입출금'
+
 export const planVerificationContent = {
   /** 목록이 비었을 때, 값이 없을 때. 한 벌씩만 둔다. */
   none: '없습니다.',
@@ -206,8 +242,19 @@ export const planVerificationContent = {
     '다른 동기화 작업이 진행 중이라 정밀 검증을 요청할 수 없습니다. 끝나면 이 화면이 결과를 표시합니다.',
   inProgressElsewhere:
     '다른 곳에서 시작한 정밀 검증이 진행 중입니다. 끝날 때까지 새로 요청할 수 없고, 끝나면 이 화면이 결과를 표시합니다.',
-  inProgressUnfollowed:
-    '작업이 아직 진행 중이라 정밀 검증을 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+  /**
+   * 이 화면이 더 따라가지 않는 작업이 아직 진행 중일 때, 그 작업의 목적마다(목적을 모르면 동기화로 묶는다).
+   */
+  inProgressUnfollowed: {
+    SYNC: '동기화가 아직 진행 중이라 정밀 검증을 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+    VERIFY:
+      '정밀 검증이 아직 진행 중이라 새로 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+    CATCH_UP:
+      '기존 계획 계속이 아직 진행 중이라 정밀 검증을 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+  },
+  /** 화면을 열거나 탭으로 돌아올 때 이 화면이 보낸 동기화 요청이 아직 답을 받지 못했을 때. 잠깐이다. */
+  admitting:
+    '화면을 열거나 탭으로 돌아올 때 보낸 동기화 요청을 확인하는 중이라 잠시 정밀 검증을 요청할 수 없습니다. 확인이 끝나면 다시 요청할 수 있습니다.',
   /**
    * 재요청이 쓸모없을 때 버튼 대신 두는 안내(대시보드 `NOT_USEFUL`). 같은 기준 계산의 정밀 검증이 입력 검토가
    * 필요한 상태로 끝났다. 사용자가 풀 수 없는 원인이라 반복 요청을 권하지 않는다. 입력 신뢰도 축의 안내
@@ -370,8 +417,15 @@ export const planVerificationContent = {
       '다른 동기화 작업이 진행 중이라 기존 계획 계속을 요청할 수 없습니다. 끝나면 이 화면이 결과를 표시합니다.',
     inProgressElsewhere:
       '다른 곳에서 시작한 기존 계획 계속이 진행 중입니다. 끝날 때까지 새로 요청할 수 없고, 끝나면 이 화면이 결과를 표시합니다.',
-    inProgressUnfollowed:
-      '작업이 아직 진행 중이라 기존 계획 계속을 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+    inProgressUnfollowed: {
+      SYNC: '동기화가 아직 진행 중이라 기존 계획 계속을 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+      VERIFY:
+        '정밀 검증이 아직 진행 중이라 기존 계획 계속을 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+      CATCH_UP:
+        '기존 계획 계속이 아직 진행 중이라 새로 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+    },
+    admitting:
+      '화면을 열거나 탭으로 돌아올 때 보낸 동기화 요청을 확인하는 중이라 잠시 기존 계획 계속을 요청할 수 없습니다. 확인이 끝나면 다시 요청할 수 있습니다.',
     /**
      * 같은 기준 계산에서 기존 계획 계속이나 정밀 검증이 입력 검토가 필요한 상태로 끝나 결과를 보류하고 있을 때,
      * `기존 계획 계속` 버튼 대신 두는 안내(장기 미동기화 + 대시보드 `NOT_USEFUL`).
@@ -455,44 +509,43 @@ export const planVerificationContent = {
     },
   },
   /**
-   * 현재 공식 버전의 결과 표지(대시보드 `change`). 늦게 확인된 변경을 담았으면 그 수와 영향 시작을, 변경 없는
-   * 검증이면 검증 구간·재사용 구간·시각을 보인다. 전체 이력을 다시 읽었다고 말하지 않는다. 표지의 첫 줄이 그
-   * 묶음의 이름이다.
+   * 현재 공식 버전의 결과 표지(대시보드 `change`). 직전 공식 버전과 달라진 입출금이 있으면 세 갈래의 수와 영향
+   * 시작을, 변경 없는 검증이면 검증 구간·재사용 구간·시각을 보인다. 전체 이력을 다시 읽었다고 말하지 않는다.
+   * 표지의 첫 줄이 그 묶음의 이름이다.
    */
   change: {
     /**
-     * 표지의 앞머리. 영향 시작 시각이 있으면 `impactStart`와 그 시각이 뒤따른다. 늦게 확인된 입출금이 없이
-     * 값만 바뀐 버전(가격 정정·제외)은 건수 대신 변경 사실만 말한다 — 0건이라고 말하면 아무것도 바뀌지 않은
-     * 것처럼 읽힌다.
+     * 표지의 앞머리: 달라진 입출금의 세 갈래 가운데 0이 아닌 것만. 영향 시작 시각이 있으면 `impactStart`와 그
+     * 시각이 뒤따른다. 이 표지는 세 수의 합이 0보다 클 때만 그려진다(대시보드 응답이 그것을 보장하고, 어긋나면
+     * 표지를 그리지 않는다).
      */
-    corrected: (count: number) =>
-      count > 0 ? `늦게 확인된 입출금 ${String(count)}건 반영` : '입출금 변경 반영',
+    corrected: (counts: ChangeCounts) => `입출금 변경 반영: ${changeParts(counts)}`,
     impactStart: '영향 시작',
     correctedHelp:
-      '이전 공식 버전은 그대로 남아 있고, 이 버전이 그 입출금을 반영한 새 공식 버전입니다. 무엇이 바뀌었는지는 계산 근거의 변경 근거에서 볼 수 있습니다.',
+      '이전 공식 버전은 그대로 남아 있고, 이 버전이 그 변경을 반영한 새 공식 버전입니다. 무엇이 바뀌었는지는 계산 근거의 변경 근거에서 볼 수 있습니다.',
     verified: '필요 구간 검증 완료',
-    verifiedHelp:
-      '다시 읽은 구간에서 입출금 변경은 없었습니다. 계산 기준 시각과 현재가치는 이번에 새로 확인한 값입니다.',
+    verifiedHelp: `다시 읽은 구간에서 ${NO_LATE_CHANGE}은 없었습니다. ${NEWLY_APPLIED}은 늦은 변경이 아니며 조정 이력에서 볼 수 있습니다. 계산 기준 시각과 현재가치는 이번에 새로 확인한 값입니다.`,
     purposeLabel: '작업',
     reasonLabel: '사유',
     targetsLabel: '다시 읽은 구간',
     reusedLabel: '다시 쓴 기존 수집 증거',
     verifiedAtLabel: '검증 시각',
     /** 상태 리전 문장에 끼우는 짧은 형태. */
-    correctedSentence: (count: number) =>
-      count > 0
-        ? `늦게 확인된 입출금 ${String(count)}건을 반영했습니다.`
-        : '입출금 변경을 반영했습니다.',
-    verifiedSentence: '필요 구간 검증을 마쳤고 입출금 변경은 없었습니다.',
+    correctedSentence: (counts: ChangeCounts) =>
+      `직전 공식 버전과 달라진 입출금은 ${changeParts(counts)}입니다.`,
+    verifiedSentence: `필요 구간 검증을 마쳤고 ${NO_LATE_CHANGE}은 없었습니다.`,
   },
   /** 계산 근거의 `변경 근거` 부분(근거 `change`). 직전 공식 버전과 비교해 무엇이 왜 바뀌었는지를 보인다. */
   evidence: {
     title: '변경 근거',
     kinds: {
-      CORRECTED: '늦게 확인되거나 값이 바뀐 입출금을 반영한 버전입니다.',
-      VERIFIED_NO_CHANGE: '필요 구간을 다시 읽어 검증했고 입출금 변경은 없는 버전입니다.',
-      NONE: '직전 공식 버전과 비교해 늦게 확인된 변경이 없는 버전입니다.',
+      CORRECTED: `직전 공식 버전과 비교해 ${NO_LATE_CHANGE}이 있어 그 변경을 반영한 버전입니다.`,
+      VERIFIED_NO_CHANGE: `필요 구간을 다시 읽어 검증했고 ${NO_LATE_CHANGE}은 없는 버전입니다.`,
+      NONE: `직전 공식 버전과 비교해 ${NO_LATE_CHANGE}이 없는 버전입니다.`,
     } as Record<string, string>,
+    /** 늦은 변경의 세 갈래(근거의 세 수). 반영한 버전에만 보인다. */
+    counts: '반영한 변경',
+    countsValue: (counts: ChangeCounts) => changeParts(counts),
     unknownKind: '변경 종류를 확인할 수 없습니다.',
     first: '첫 공식 버전이라 비교할 직전 버전이 없습니다.',
     purpose: '만든 작업',
@@ -505,25 +558,26 @@ export const planVerificationContent = {
     previousBasis: '직전 계산 기준 시각',
     firstAffected: '영향 시작 시각',
     firstAffectedHelp:
-      '늦게 확인됐거나 값이 바뀐 입출금 가운데 가장 이른 사건 시각입니다. 이 시각부터의 계획선이 변경을 반영합니다.',
+      '늦게 확인됐거나 값이 바뀌었거나 반영에서 빠진 입출금 가운데 가장 이른 사건 시각입니다. 이 시각부터의 계획선이 변경을 반영합니다.',
     metrics: '지표 이전 값 → 새 값',
     /** 두 버전의 기준 시각이 함께 바뀌었다는 사실. 가상의 세 번째 계산값을 만들지 않는다. */
     metricsHelp: (previous: string, next: string) =>
       `두 버전은 계산 기준 시각도 다릅니다(${previous} → ${next}). 입출금 변경이 없어도 기준 시각과 현재가치가 바뀌어 값이 달라질 수 있습니다.`,
     previousValue: '이전 값',
     newValue: '새 값',
-    events: '변경된 입출금',
-    noEvents: '변경된 입출금이 없습니다.',
+    /** 직전 공식 버전과 다른 모든 입출금: 세 갈래에 마지막 확인 뒤 새로 반영된 입출금을 더한 것이다. */
+    events: '직전 공식 버전과 달라진 입출금',
+    noEvents: '직전 공식 버전과 달라진 입출금이 없습니다.',
     eventKinds: {
       ADDED: '새로 반영',
       REMOVED: '반영에서 제외',
       VALUE_CHANGED: '값 변경',
     } as Record<string, string>,
     unknownEventKind: '확인할 수 없는 변경',
-    /** 변경 사건마다 한 문장. 늦게 확인된 것은 새로 반영한 사건만이다. */
+    /** 변경 사건마다 한 문장. 늦게 확인된 것은 새로 반영한 사건 가운데 마지막 확인 시각 앞의 것뿐이다. */
     eventNotes: {
       lateAdded: '늦게 확인돼 이 버전에서 새로 반영한 사건입니다.',
-      added: '마지막 확인 뒤의 새 사건입니다.',
+      added: `${NEWLY_APPLIED}입니다.`,
       valueChanged: 'USD 가치나 추정 여부가 바뀐 사건입니다.',
       removed: '이 버전의 반영에서 빠진 사건입니다.',
       unknown: '직전 공식 버전과 달라진 사건입니다.',
@@ -553,7 +607,7 @@ export const planVerificationContent = {
   /** 조정 이력 행의 버전 변경 표지(이력 행 `versionChange`). 색만으로 말하지 않고 문장으로 말한다. */
   history: {
     lateAdded: '늦게 확인된 표지: 이 버전에서 늦게 확인돼 새로 반영한 입출금입니다.',
-    added: '새로 반영한 표지: 이 버전에서 새로 반영한 입출금입니다.',
+    added: `새로 반영한 표지: ${NEWLY_APPLIED}입니다.`,
     valueChanged: '값 변경 표지: 이 버전에서 USD 가치나 추정 여부가 바뀌었습니다.',
     unknown: '버전 변경 표지: 이 버전에서 바뀐 입출금입니다.',
     previousValue: '직전 공식 버전의 값',
@@ -561,6 +615,9 @@ export const planVerificationContent = {
     appliedAt: '반영 시각',
   },
 } as const
+
+/** 세 갈래가 모두 있는 표본. 금지어 검사가 모든 갈래의 이름을 한 번에 본다. */
+const SAMPLE_COUNTS: ChangeCounts = { lateAddedCount: 1, valueChangedCount: 2, removedCount: 1 }
 
 /** 화면에 나올 수 있는 정밀 검증 카피 전부. 시험이 금지어를 한 번에 검사한다. */
 export const planVerificationCopyStrings: readonly string[] = [
@@ -582,7 +639,8 @@ export const planVerificationCopyStrings: readonly string[] = [
   ...Object.values(planVerificationContent.longGap),
   planVerificationContent.inProgressOther,
   planVerificationContent.inProgressElsewhere,
-  planVerificationContent.inProgressUnfollowed,
+  ...Object.values(planVerificationContent.inProgressUnfollowed),
+  planVerificationContent.admitting,
   planVerificationContent.notUseful.label,
   planVerificationContent.notUseful.text,
   planVerificationContent.latest.heading,
@@ -616,7 +674,7 @@ export const planVerificationCopyStrings: readonly string[] = [
   planVerificationContent.status.running,
   planVerificationContent.status.succeeded(null, null, '2026-09-29 10:00'),
   planVerificationContent.status.succeeded(
-    planVerificationContent.change.correctedSentence(1),
+    planVerificationContent.change.correctedSentence(SAMPLE_COUNTS),
     '검토 필요',
     '2026-09-29 10:00',
   ),
@@ -640,7 +698,8 @@ export const planVerificationCopyStrings: readonly string[] = [
   planVerificationContent.catchUp.unknownReason,
   planVerificationContent.catchUp.inProgressOther,
   planVerificationContent.catchUp.inProgressElsewhere,
-  planVerificationContent.catchUp.inProgressUnfollowed,
+  ...Object.values(planVerificationContent.catchUp.inProgressUnfollowed),
+  planVerificationContent.catchUp.admitting,
   planVerificationContent.catchUp.notUseful.label,
   planVerificationContent.catchUp.notUseful.text,
   ...Object.values(planVerificationContent.catchUp.summary.statuses),
@@ -671,9 +730,12 @@ export const planVerificationCopyStrings: readonly string[] = [
   planVerificationContent.catchUp.status.stale,
   planVerificationContent.catchUp.status.busy,
   planVerificationContent.catchUp.status.refused,
-  planVerificationContent.change.corrected(1),
-  planVerificationContent.change.corrected(0),
-  planVerificationContent.change.correctedSentence(0),
+  planVerificationContent.change.corrected(SAMPLE_COUNTS),
+  planVerificationContent.change.corrected({
+    lateAddedCount: 0,
+    valueChangedCount: 1,
+    removedCount: 0,
+  }),
   planVerificationContent.change.impactStart,
   planVerificationContent.change.correctedHelp,
   planVerificationContent.change.verified,
@@ -683,12 +745,14 @@ export const planVerificationCopyStrings: readonly string[] = [
   planVerificationContent.change.targetsLabel,
   planVerificationContent.change.reusedLabel,
   planVerificationContent.change.verifiedAtLabel,
-  planVerificationContent.change.correctedSentence(1),
+  planVerificationContent.change.correctedSentence(SAMPLE_COUNTS),
   planVerificationContent.change.verifiedSentence,
   ...Object.values(planVerificationContent.evidence).flatMap((entry) => {
     if (typeof entry === 'string') return [entry]
-    if (typeof entry === 'function') return [entry('2026-09-28 10:00', '2026-09-29 10:00')]
+    if (typeof entry === 'function') return []
     return Object.values(entry)
   }),
+  planVerificationContent.evidence.metricsHelp('2026-09-28 10:00', '2026-09-29 10:00'),
+  planVerificationContent.evidence.countsValue(SAMPLE_COUNTS),
   ...Object.values(planVerificationContent.history),
 ]

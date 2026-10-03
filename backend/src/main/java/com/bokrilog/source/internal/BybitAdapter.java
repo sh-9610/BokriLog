@@ -935,8 +935,14 @@ class BybitAdapter {
         }
     }
 
+    /**
+     * A signed call outside a collection (the connection admission, the equity read): no lease to watch, so it only
+     * waits for its token. A call that never went out — its token wait was interrupted — is {@code UNAVAILABLE}, never
+     * folded into the call site's fallback (an authentication rejection would blame the user's key for it).
+     */
     private Call call(SourceCredentials credentials, String path, String query) {
-        return call(credentials, path, query, () -> true);
+        Call call = call(credentials, path, query, () -> true);
+        return call.stopped() ? Call.refused(SourceRejectionReason.UNAVAILABLE) : call;
     }
 
     /**

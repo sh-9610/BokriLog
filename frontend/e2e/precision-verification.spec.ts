@@ -27,8 +27,14 @@ interface Probe {
   readonly verification: string
   readonly change: string
   readonly lateChangeCount: number
+  readonly lateAddedCount: number
+  readonly valueChangedCount: number
+  readonly removedCount: number
   readonly firstAffectedAt: string | null
 }
+
+/** The `lateevent` scenario's one late deposit: found late, no value changed, nothing removed (Story 2.12 R8). */
+const ONE_LATE = { lateAddedCount: 1, valueChangedCount: 0, removedCount: 0 }
 
 async function probe(page: Page): Promise<Probe> {
   return page.evaluate(async () => {
@@ -36,7 +42,14 @@ async function probe(page: Page): Promise<Probe> {
     const body = (await answer.json()) as {
       result: { pointerVersion: number; calculationId: string; flowCount: number; basisAt: string }
       verification: { availability: string }
-      change: { kind: string; lateChangeCount: number; firstAffectedAt: string | null }
+      change: {
+        kind: string
+        lateChangeCount: number
+        lateAddedCount: number
+        valueChangedCount: number
+        removedCount: number
+        firstAffectedAt: string | null
+      }
     }
     return {
       pointerVersion: body.result.pointerVersion,
@@ -46,6 +59,9 @@ async function probe(page: Page): Promise<Probe> {
       verification: body.verification.availability,
       change: body.change.kind,
       lateChangeCount: body.change.lateChangeCount,
+      lateAddedCount: body.change.lateAddedCount,
+      valueChangedCount: body.change.valueChangedCount,
+      removedCount: body.change.removedCount,
       firstAffectedAt: body.change.firstAffectedAt,
     }
   })
@@ -153,7 +169,7 @@ test.describe('필요 구간 정밀 검증과 늦은 사건의 새 버전', () =
     // sentence: `toHaveText` compares textContent, which never equals the innerText captured above, so a negated
     // text match on the card would pass at once.)
     await expect(page.getByRole('status')).toContainText(
-      planVerificationContent.change.correctedSentence(1),
+      planVerificationContent.change.correctedSentence(ONE_LATE),
       { timeout: 45_000 },
     )
     expect((await cards.nth(1).innerText()).trim()).not.toBe(planAmountBefore)
@@ -163,6 +179,11 @@ test.describe('필요 구간 정밀 검증과 늦은 사건의 새 버전', () =
     expect(second.flowCount).toBe(1)
     expect(second.change).toBe('CORRECTED')
     expect(second.lateChangeCount).toBe(1)
+    expect({
+      lateAddedCount: second.lateAddedCount,
+      valueChangedCount: second.valueChangedCount,
+      removedCount: second.removedCount,
+    }).toEqual(ONE_LATE)
     expect(second.firstAffectedAt).not.toBeNull()
     const impact = second.firstAffectedAt ?? ''
     await expect(
@@ -172,18 +193,20 @@ test.describe('필요 구간 정밀 검증과 늦은 사건의 새 버전', () =
     // One sentence when it started, one when it ended: never "reading again", never busy while it polled.
     expect(record.texts).toHaveLength(2)
     expect(record.texts[0]).toBe(planVerificationContent.status.running)
-    expect(record.texts[1]).toContain(planVerificationContent.change.correctedSentence(1))
+    expect(record.texts[1]).toContain(planVerificationContent.change.correctedSentence(ONE_LATE))
     expect(record.busy).toBe(false)
     await expect(page.getByRole('status')).toHaveCount(1)
     await expect(page.locator('[aria-live]')).toHaveCount(1)
 
     // The result marker: one late deposit and where its impact starts, as a group named by that line.
-    const marker = panel.locator('p', { hasText: planVerificationContent.change.corrected(1) })
+    const marker = panel.locator('p', {
+      hasText: planVerificationContent.change.corrected(ONE_LATE),
+    })
     await expect(marker).toContainText(planVerificationContent.change.impactStart)
     await expect(marker.locator(`time[datetime="${impact}"]`)).toHaveCount(1)
     await expect(
       panel.getByRole('group', {
-        name: new RegExp(`^${planVerificationContent.change.corrected(1)}`),
+        name: new RegExp(`^${planVerificationContent.change.corrected(ONE_LATE)}`),
       }),
     ).toHaveAttribute('id', 'plan-version-change')
 
@@ -198,6 +221,8 @@ test.describe('필요 구간 정밀 검증과 늦은 사건의 새 버전', () =
     await expect(change).toContainText('late-event-01')
     await expect(change).toContainText(planVerificationContent.evidence.eventKinds.ADDED ?? '')
     await expect(change).toContainText(planVerificationContent.evidence.eventNotes.lateAdded)
+    // The same three counts as the marker: one found late, nothing else.
+    await expect(change).toContainText(planVerificationContent.evidence.countsValue(ONE_LATE))
     // The type in words (the history's own name), never Bybit's raw code.
     await expect(change).toContainText(adjustmentHistoryContent.filter.options.IN)
     await expect(change).not.toContainText('TRANSFER_IN')

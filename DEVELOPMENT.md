@@ -311,7 +311,7 @@ Story 2.12가 ERD-1.0.0 §2.5의 호출 예산을 `source` 모듈의 `BybitCallB
 | `low-remaining-ratio` | `BOKRILOG_BYBIT_LOW_REMAINING_RATIO` | `0.2` | `X-Bapi-Limit-Status`가 한도의 이 비율 이하면 다음 페이지를 reset 시각까지 늦춘다 |
 | `low-remaining-wait-cap` | `BOKRILOG_BYBIT_LOW_REMAINING_WAIT_CAP` | `5s` | 그 대기의 상한 |
 
-예산은 **프로세스 하나의 것**이다 — bucket·동시 수집 수·회로가 JVM 메모리에 살고 인스턴스끼리 나누지 않으므로, API 프로세스를 둘 이상 띄우면 제공자가 보는 호출 수는 그 배수가 된다(이 한계는 `deferred-work.md`가 소유한다). 모든 대기와 재시도는 호출자의 lease가 살아 있는 동안만 이어지고, lease를 잃어 멈춘 수집은 제공자 오류 코드를 남기지 않는다.
+예산은 **프로세스 하나의 것**이다 — bucket·동시 수집 수·회로가 JVM 메모리에 살고 인스턴스끼리 나누지 않으므로, API 프로세스를 둘 이상 띄우면 제공자가 보는 호출 수는 그 배수가 된다(이 한계는 `deferred-work.md`가 소유한다). 수집의 대기(token·동시 수집·잔여 한도)와 페이지 재시도는 호출자의 lease가 살아 있는 동안만 이어지고, lease를 잃어 멈춘 수집은 제공자 오류 코드를 남기지 않는다. 연결 admission과 현재가치 조회·공개 시세 호출은 lease가 없어 token 대기만 하고 재시도하지 않으며, 대기가 끊긴 호출은 인증 거절이 아니라 `UNAVAILABLE`이다. 시간 값에는 상한이 있다 — 재시도 간격 10분, 회로 1일, 잔여 대기 상한 1분이며 넘는 값은 기본값으로 접힌다.
 
 ## 동일 출처 실행 (`deploy/`)
 

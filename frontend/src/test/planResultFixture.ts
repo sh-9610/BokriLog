@@ -202,13 +202,29 @@ export function verificationFixture(
   }
 }
 
-/** The `change` block of a `READY` answer (Story 2.12): no late change by default. */
+/**
+ * The `change` block of a `READY` answer (Story 2.12): no late change by default. The total `lateChangeCount` is
+ * the sum of the three counts unless given — a test of a contradiction gives it.
+ */
 export function changeFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const counts = {
+    lateAddedCount: 0,
+    valueChangedCount: 0,
+    removedCount: 0,
+    ...overrides,
+  }
+  const sum = [counts.lateAddedCount, counts.valueChangedCount, counts.removedCount].reduce<number>(
+    (total, value) => total + (typeof value === 'number' ? value : 0),
+    0,
+  )
   return {
     kind: 'NONE',
     purpose: null,
     reason: null,
-    lateChangeCount: 0,
+    lateChangeCount: sum,
+    lateAddedCount: 0,
+    valueChangedCount: 0,
+    removedCount: 0,
     firstAffectedAt: null,
     verifiedAt: null,
     targets: [],
@@ -258,6 +274,7 @@ export function idleSyncState(overrides: Partial<DashboardSync> = {}): Dashboard
     cooldownSeconds: null,
     canVerify: true,
     canCatchUp: false,
+    admitting: false,
     verificationCooldownSeconds: null,
     focus: null,
     request: () => undefined,
@@ -420,14 +437,25 @@ export function calculationEvidenceFixture(
   }
 }
 
-/** The change part of the evidence (Story 2.12): the first official version by default, with no previous one. */
+/**
+ * The change part of the evidence (Story 2.12): the first official version by default, with no previous one. Its
+ * three counts are those of the given changed flows unless given — a test of a contradiction gives them.
+ */
 export function evidenceChangeFixture(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
+  const events = Array.isArray(overrides.events)
+    ? (overrides.events as Record<string, unknown>[])
+    : []
+  const of = (match: (event: Record<string, unknown>) => boolean): number =>
+    events.filter(match).length
   return {
     kind: 'NONE',
     purpose: null,
     reason: null,
+    lateAddedCount: of((event) => event.changeKind === 'ADDED' && event.late === true),
+    valueChangedCount: of((event) => event.changeKind === 'VALUE_CHANGED'),
+    removedCount: of((event) => event.changeKind === 'REMOVED'),
     targets: [],
     reused: [],
     previous: null,

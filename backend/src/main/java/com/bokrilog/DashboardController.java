@@ -143,7 +143,8 @@ class DashboardController {
             @Nullable VerificationJobView latest) {}
     /** What the version changed. Every key is sent; absent values are {@code null}. */
     record ChangeView(String kind,@Nullable String purpose,@Nullable String reason,int lateChangeCount,
-            @Nullable String firstAffectedAt,@Nullable String verifiedAt,List<RangeView> targets,List<RangeView> reused) {}
+            int lateAddedCount,int valueChangedCount,int removedCount,@Nullable String firstAffectedAt,
+            @Nullable String verifiedAt,List<RangeView> targets,List<RangeView> reused) {}
     /** The ready dashboard's sync state. Every key is sent; absent values are {@code null}. */
     record SyncView(String availability,@Nullable String reason,@Nullable Long retryAfterSeconds,
             @Nullable SyncJobView latest) {}
@@ -272,8 +273,8 @@ class DashboardController {
     }
 
     static ChangeView changeView(SyncJobApi.VersionChange c) {
-        return new ChangeView(c.kind(),c.purpose(),c.reason(),c.lateChangeCount(),
-                c.firstAffectedAt()==null ? null : c.firstAffectedAt().toString(),
+        return new ChangeView(c.kind(),c.purpose(),c.reason(),c.lateChangeCount(),c.lateAddedCount(),
+                c.valueChangedCount(),c.removedCount(),c.firstAffectedAt()==null ? null : c.firstAffectedAt().toString(),
                 c.verifiedAt()==null ? null : c.verifiedAt().toString(),rangeViews(c.targets()),rangeViews(c.reused()));
     }
 
@@ -559,9 +560,10 @@ class DashboardController {
             @Nullable String previousUsdValue,@Nullable Boolean previousEstimated,@Nullable String usdValue,
             @Nullable Boolean estimated,String evidenceType,String discoveredAt,String appliedAt) {}
     /** What the version changed (Story 2.12). Every key is sent; absent values are {@code null}. */
-    record EvidenceChangeView(String kind,@Nullable String purpose,@Nullable String reason,List<RangeView> targets,
-            List<RangeView> reused,@Nullable EvidencePreviousView previous,@Nullable String firstAffectedAt,
-            List<MetricDeltaView> metrics,List<ChangedEventView> events) {}
+    record EvidenceChangeView(String kind,@Nullable String purpose,@Nullable String reason,int lateAddedCount,
+            int valueChangedCount,int removedCount,List<RangeView> targets,List<RangeView> reused,
+            @Nullable EvidencePreviousView previous,@Nullable String firstAffectedAt,List<MetricDeltaView> metrics,
+            List<ChangedEventView> events) {}
     /**
      * The evidence in the screen's order: snapshots → times → input versions → calculation version →
      * metric impact → versions, with the change part (Story 2.12). The reference repeats the three values the
@@ -705,7 +707,8 @@ class DashboardController {
 
     static EvidenceChangeView evidenceChangeView(SyncJobApi.CalculationEvidence.EvidenceChange c) {
         var previous=c.previous();
-        return new EvidenceChangeView(c.kind(),c.purpose(),c.reason(),rangeViews(c.targets()),rangeViews(c.reused()),
+        return new EvidenceChangeView(c.kind(),c.purpose(),c.reason(),c.lateAddedCount(),c.valueChangedCount(),
+                c.removedCount(),rangeViews(c.targets()),rangeViews(c.reused()),
                 previous==null ? null : new EvidencePreviousView(previous.pointerVersion(),previous.calculationId(),
                         previous.basisAt().toString()),
                 c.firstAffectedAt()==null ? null : c.firstAffectedAt().toString(),

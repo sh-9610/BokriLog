@@ -1,5 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 
+import type { ChangeCounts } from '../content/planVerification'
+
 import { calculationEvidenceContent as copy, evidencePath } from '../content/calculationEvidence'
 import { METRIC_ORDER, type MetricName } from '../content/planResult'
 import { isCanonicalDecimal, isPlainNonNegative } from '../format/decimal'
@@ -76,11 +78,12 @@ export interface EvidenceChangeEvent {
 
 /**
  * What changed from the previous official version and why (Story 2.12): the kind, the job's purpose and
- * reason, the ranges read again and reused, the previous version and its basis time, where the impact starts,
- * the six metrics before and after, and the changed cash flows. The first official version has no previous
- * one, and then no metrics to compare.
+ * reason, the three counts of late changes (added late, value changed, removed — the dashboard marker's), the
+ * ranges read again and reused, the previous version and its basis time, where the impact starts, the six metrics
+ * before and after, and the changed cash flows. The first official version has no previous one, and then no
+ * metrics to compare.
  */
-export interface EvidenceChange {
+export interface EvidenceChange extends ChangeCounts {
   readonly kind: string
   readonly purpose: string | null
   readonly reason: string | null
@@ -345,15 +348,26 @@ function isChangeEvent(value: unknown): boolean {
   return Date.parse(row.discoveredAt) <= Date.parse(row.appliedAt)
 }
 
-/** The change kinds that count as late (the dashboard marker's own rule): a late addition, a removal, a change. */
-function lateChange(event: unknown): boolean {
-  const row = record(event)
-  return (
-    row !== null &&
-    ((row.changeKind === 'ADDED' && row.late === true) ||
-      row.changeKind === 'REMOVED' ||
-      row.changeKind === 'VALUE_CHANGED')
-  )
+/**
+ * How many of the changed flows fall in each of the three late-change counts (the dashboard marker's own rule):
+ * a late addition, a value change, a removal. An addition after the last check is in none of them.
+ */
+function countedChanges(events: readonly unknown[]): ChangeCounts {
+  const of = (late: (row: Record<string, unknown>) => boolean): number =>
+    events.filter((event) => {
+      const row = record(event)
+      return row !== null && late(row)
+    }).length
+  return {
+    lateAddedCount: of((row) => row.changeKind === 'ADDED' && row.late === true),
+    valueChangedCount: of((row) => row.changeKind === 'VALUE_CHANGED'),
+    removedCount: of((row) => row.changeKind === 'REMOVED'),
+  }
+}
+
+/** Whole numbers that are not negative. */
+function isCount(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0
 }
 
 /**
@@ -386,8 +400,10 @@ function isPrevious(
  * Only the first official version — `pointerVersion` 1, the only one in the list — has no previous version,
  * and then nothing to compare: no metrics, no changed flow, and not a correction or a verification. Every later
  * version names the one right before it, with exactly the six compared metrics. Each changed flow is whole and
- * appears once. A verification that found no change has no late change and no impact start; an impact starts no
- * later than the shown basis time.
+ * appears once. The three counts are exactly the changed flows of each late kind (so the marker, the status
+ * sentence and this list never disagree), and a correction has at least one while a version of a kind this screen
+ * knows otherwise has none. A verification that found no change has no impact start; an impact starts no later
+ * than the shown basis time.
  */
 function parseChange(
   value: unknown,
@@ -416,6 +432,16 @@ function parseChange(
         metrics.length === METRIC_ORDER.length &&
         metrics.every((metric, index) => isChangeMetric(metric, shown, index))
   const ids = events.map((event) => record(event)?.sourceId)
+  const counted = countedChanges(events)
+  const { lateAddedCount, valueChangedCount, removedCount } = row
+  const counts =
+    isCount(lateAddedCount) &&
+    isCount(valueChangedCount) &&
+    isCount(removedCount) &&
+    lateAddedCount === counted.lateAddedCount &&
+    valueChangedCount === counted.valueChangedCount &&
+    removedCount === counted.removedCount
+  const changed = counted.lateAddedCount + counted.valueChangedCount + counted.removedCount
   const whole =
     typeof row.kind === 'string' &&
     optional(row.purpose, isString) &&
@@ -424,8 +450,11 @@ function parseChange(
     compared &&
     events.every(isChangeEvent) &&
     new Set(ids).size === ids.length &&
-    (row.kind !== 'VERIFIED_NO_CHANGE' ||
-      (!present(row.firstAffectedAt) && !events.some(lateChange))) &&
+    counts &&
+    (row.kind === 'CORRECTED'
+      ? changed > 0
+      : !(row.kind === 'VERIFIED_NO_CHANGE' || row.kind === 'NONE') || changed === 0) &&
+    (row.kind !== 'VERIFIED_NO_CHANGE' || !present(row.firstAffectedAt)) &&
     (!isInstant(row.firstAffectedAt) ||
       Date.parse(row.firstAffectedAt) <= Date.parse(shown.basisAt))
   if (!whole) return null
@@ -433,6 +462,7 @@ function parseChange(
     kind: row.kind as string,
     purpose: (row.purpose ?? null) as string | null,
     reason: (row.reason ?? null) as string | null,
+    ...counted,
     targets,
     reused,
     previous:

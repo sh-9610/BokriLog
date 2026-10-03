@@ -361,19 +361,21 @@ class PlanVerificationTest extends PlanSyncTestBase {
         assertThat(sync.admitPlanVerification(user, SyncJobApi.VerificationKind.PRECISION, reference(v1),
                 "verify-missing-02-key")).isEqualTo(new SyncJobApi.VerificationAdmission.Refused("VERIFICATION_NOT_USEFUL"));
 
-        // Interpretation C1: a manual and an automatic sync of the same base end as that review before any Bybit call
-        // — the time included — so the missing event is never carried silently and the version stays.
+        // Interpretation C1 and R6: the review holds every sync of the same base at admission — a manual and an
+        // automatic one are refused as unavailable (REVIEW_HELD) with no attempt row and no Bybit call, so the missing
+        // event is never carried silently and the version stays. (The worker's own C1 check stays as a defence.)
         // Counted, not reset: a reset would also forget which reads of this UID the stub already answered.
         int calls = BybitStubConfiguration.requestCount();
-        UUID manual = manualSync(user, "verify-missing-sync-01");
-        assertThat(awaitSync(manual)).isEqualTo("NEEDS_REVIEW");
-        assertThat(jdbc().sql("SELECT failure_code||'|'||COALESCE(stage,'-')||'|'||(tc IS NULL) FROM sync_plan_sync_job "
-                + "WHERE job_id=:j").param("j", manual).query(String.class).single())
-                .isEqualTo("SOURCE_EVENT_MISSING|-|true");
+        int attempts = countOf("sync_plan_sync_job", user);
+        assertThat(readyDashboard(user).sync()).isEqualTo(new SyncJobApi.SyncState("UNAVAILABLE", "REVIEW_HELD", null,
+                readyDashboard(user).sync().latest()));
+        assertThat(sync.admitPlanSync(user, SyncJobApi.SyncTrigger.MANUAL, "verify-missing-sync-01"))
+                .isEqualTo(new SyncJobApi.SyncAdmission.Refused("SYNC_UNAVAILABLE"));
         automaticDue(user);
-        var automatic = sync.admitPlanSync(user, SyncJobApi.SyncTrigger.ENTRY, "verify-missing-auto-01");
-        assertThat(automatic).isInstanceOf(SyncJobApi.SyncAdmission.Accepted.class);
-        assertThat(awaitSync(((SyncJobApi.SyncAdmission.Accepted) automatic).job().jobId())).isEqualTo("NEEDS_REVIEW");
+        for (var trigger : List.of(SyncJobApi.SyncTrigger.ENTRY, SyncJobApi.SyncTrigger.VISIBILITY))
+            assertThat(sync.admitPlanSync(user, trigger, "verify-missing-auto-" + trigger))
+                    .isEqualTo(new SyncJobApi.SyncAdmission.Refused("SYNC_UNAVAILABLE"));
+        assertThat(countOf("sync_plan_sync_job", user)).as("no attempt row").isEqualTo(attempts);
         assertThat(BybitStubConfiguration.requestCount()).as("no Bybit call, not even the time").isEqualTo(calls);
         assertStillV1(user, v1);
         assertVerificationHeld(user, "REVIEW_REQUIRED", "VERIFICATION_REVIEW_REQUIRED");
@@ -1020,7 +1022,9 @@ class PlanVerificationTest extends PlanSyncTestBase {
     @Test
     void aChangeRowThatIsNotTheFlowDifferenceMakesTheEvidenceAndHistoryUnavailable() throws Exception {
         UUID user = connect(DevBybitStub.Scenario.REVISED_PRICE);
-        publishedPlan(user, "verify-tamper", Instant.now().minus(Duration.ofDays(3)), "CONVERTED_ESTIMATED");
+        // A minute of its own: the REV candle cache and the stub's per-minute reads are shared by this JVM's tests.
+        publishedPlan(user, "verify-tamper", Instant.now().minus(Duration.ofDays(3)).minus(Duration.ofHours(2)),
+                "CONVERTED_ESTIMATED");
         var v1 = ready(user);
         UUID job = precision(user, v1, "verify-tamper-01-key", "USER_REQUEST");
         assertThat(awaitSync(job)).isEqualTo("SUCCEEDED");
@@ -1249,6 +1253,176 @@ class PlanVerificationTest extends PlanSyncTestBase {
                     "verify-system-busy-02")).isEqualTo(new SyncJobApi.VerificationAdmission.Refused("JOB_IN_PROGRESS"));
         }
         assertThat(awaitSync(job)).isEqualTo("SUCCEEDED");
+    }
+
+    // ------------------------------------------------------------------------------------------ SECOND REVIEW (R1~R8)
+
+    /**
+     * Starts a precision verification whose first holder stores the window's first page and then loses its lease
+     * while the window is still incomplete (the stub answers that holder's second page slowly); the resumed holder
+     * reads the window again. Returns the attempt once it ended.
+     */
+    private UUID verifiedAcrossALostWindow(UUID user, SyncJobApi.DashboardResult v1, String key) throws Exception {
+        UUID job = precision(user, v1, key, "USER_REQUEST");
+        awaitPages(job, 1);
+        expireLease(job);
+        awaitSync(job, 60);
+        assertThat(jdbc().sql("SELECT resume_count FROM sync_plan_sync_job WHERE job_id=:j").param("j", job)
+                .query(Integer.class).single()).as("resumed once").isEqualTo(1);
+        return job;
+    }
+
+    /**
+     * R1: an event the first holder's partial page saw, which the resumed holder's re-read of that window no longer
+     * sees, is not observed — its observation went with the discarded page. Not official, it is superseded (excluded)
+     * and the verification publishes without it.
+     */
+    @Test
+    void anEventOnlyADiscardedPageSawIsSupersededNotNew() throws Exception {
+        UUID user = connect(DevBybitStub.Scenario.FLICKER_NEW);
+        publishedPlan(user, "verify-flicker-new", Instant.now().minus(Duration.ofDays(3)));
+        var v1 = ready(user);
+        UUID job = verifiedAcrossALostWindow(user, v1, "verify-flicker-new-01");
+        assertThat(jdbc().sql("SELECT status FROM sync_plan_sync_job WHERE job_id=:j").param("j", job)
+                .query(String.class).single()).isEqualTo("SUCCEEDED");
+        assertThat(outcomes(job)).containsExactly("flicker-01|SUPERSEDED|false");
+        var v2 = ready(user);
+        assertThat(v2.flowCount()).isEqualTo(v1.flowCount());
+        assertThat(exclusions(v2.calculationId())).hasSize(1);
+    }
+
+    /** R1: an official event the re-read no longer sees is missing, even though a discarded page saw it. */
+    @Test
+    void anOfficialEventOnlyADiscardedPageSawIsMissing() throws Exception {
+        UUID user = connect(DevBybitStub.Scenario.FLICKER_OFFICIAL);
+        publishedPlan(user, "verify-flicker-official", Instant.now().minus(Duration.ofDays(3)));
+        var v1 = ready(user);
+        assertThat(v1.flowCount()).isEqualTo(1);
+        UUID job = verifiedAcrossALostWindow(user, v1, "verify-flicker-official-01");
+        assertThat(jdbc().sql("SELECT status||'|'||failure_code FROM sync_plan_sync_job WHERE job_id=:j")
+                .param("j", job).query(String.class).single()).isEqualTo("NEEDS_REVIEW|SOURCE_EVENT_MISSING");
+        assertThat(outcomes(job)).containsExactly("flicker-01|MISSING|false");
+        assertStillV1(user, v1);
+    }
+
+    /**
+     * R2: a review mark lives on its page — a page the first holder stored with an item that is not an object, which
+     * the resumed holder discarded and read again clean, leaves no review behind, persistent or not.
+     */
+    @Test
+    void aReviewMarkOfADiscardedPageDoesNotOutliveIt() throws Exception {
+        UUID user = connect(DevBybitStub.Scenario.FLICKER_JUNK);
+        publishedPlan(user, "verify-flicker-junk", Instant.now().minus(Duration.ofDays(3)));
+        var v1 = ready(user);
+        UUID job = verifiedAcrossALostWindow(user, v1, "verify-flicker-junk-01");
+        assertThat(jdbc().sql("SELECT status FROM sync_plan_sync_job WHERE job_id=:j").param("j", job)
+                .query(String.class).single()).isEqualTo("SUCCEEDED");
+        assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_page_evidence e JOIN sync_plan_sync_job j "
+                + "ON j.collection_job_id=e.job_id WHERE j.job_id=:j AND e.review_required").param("j", job)
+                .query(Integer.class).single()).isZero();
+        assertThat(ready(user).pointerVersion()).isEqualTo(2);
+        assertThat(readyDashboard(user).verification().availability()).isNotEqualTo("NOT_USEFUL");
+    }
+
+    /**
+     * R3: in a long gap the continuation reads the same anomaly ranges a precision verification would — an unexplained
+     * stored event older than the unconfirmed week is read again. Seen again it is a late addition the continuation
+     * publishes; the dashboard said the continuation starts there.
+     */
+    @Test
+    void aContinuationReadsAnOldUnexplainedEventAndPublishesItWhenSeen() throws Exception {
+        UUID user = connect(DevBybitStub.Scenario.LATE_EVENT);
+        publishedPlan(user, "verify-catchup-late", Instant.now().minus(Duration.ofDays(45)));
+        moveVerification(user, ready(user).calculationId(), "31 days");
+        var v1 = ready(user);
+        Instant lateAt = v1.startAt().plusMillis(1000).truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+        insertSourceEvent(user, "late-event-01", "TRANSFER_IN", "USDT", "25", lateAt);
+        assertThat(readyDashboard(user).verification().catchUpFrom()).isEqualTo(v1.startAt());
+        UUID job = continuation(user, v1, "verify-catchup-late-01");
+        assertThat(awaitSync(job, 90)).isEqualTo("SUCCEEDED");
+        assertThat(ranges(job)).anySatisfy(range -> assertThat(range).startsWith("ANOMALY|" + v1.startAt() + "|"));
+        assertThat(outcomes(job)).containsExactly("late-event-01|NEW|true");
+        var v2 = ready(user);
+        assertThat(v2.flowCount()).isEqualTo(v1.flowCount() + 1);
+        assertThat(readyDashboard(user).change().lateAddedCount()).isEqualTo(1);
+    }
+
+    /** R3: not seen again, the old stored event is superseded and the continuation still publishes. */
+    @Test
+    void aContinuationSupersedesAnOldUnexplainedEventThatIsGone() throws Exception {
+        UUID user = connect(DevBybitStub.Scenario.UTA2);
+        publishedPlan(user, "verify-catchup-ghost", Instant.now().minus(Duration.ofDays(45)));
+        moveVerification(user, ready(user).calculationId(), "31 days");
+        var v1 = ready(user);
+        insertSourceEvent(user, "catchup-ghost-01", "TRANSFER_IN", "USDT", "2", v1.startAt().plus(Duration.ofDays(2)));
+        UUID job = continuation(user, v1, "verify-catchup-ghost-01");
+        assertThat(awaitSync(job, 90)).isEqualTo("SUCCEEDED");
+        assertThat(outcomes(job)).containsExactly("catchup-ghost-01|SUPERSEDED|false");
+        var v2 = ready(user);
+        assertThat(v2.pointerVersion()).isEqualTo(2);
+        assertThat(exclusions(v2.calculationId())).hasSize(1);
+    }
+
+    /**
+     * R4: a verification whose late event has no price route ends in a persistent review (CONVERSION_REQUIRES_REVIEW)
+     * — asking again reads the same market — so the sync is held (REVIEW_HELD, 409) and asking again is not useful.
+     */
+    @Test
+    void aPermanentPriceHoldEndsTheVerificationInAPersistentReview() throws Exception {
+        UUID user = connect(DevBybitStub.Scenario.LATE_UNPRICED);
+        publishedPlan(user, "verify-unpriced", Instant.now().minus(Duration.ofDays(3)));
+        var v1 = ready(user);
+        UUID job = precision(user, v1, "verify-unpriced-01", "USER_REQUEST");
+        assertThat(awaitSync(job)).isEqualTo("NEEDS_REVIEW");
+        assertThat(jdbc().sql("SELECT failure_code||'|'||stage FROM sync_plan_sync_job WHERE job_id=:j").param("j", job)
+                .query(String.class).single()).isEqualTo("CONVERSION_REQUIRES_REVIEW|CONVERSION");
+        assertStillV1(user, v1);
+        assertVerificationHeld(user, "REVIEW_REQUIRED", "VERIFICATION_REVIEW_REQUIRED");
+        var dashboard = readyDashboard(user);
+        assertThat(dashboard.verification().availability()).isEqualTo("NOT_USEFUL");
+        assertThat(dashboard.sync().availability()).isEqualTo("UNAVAILABLE");
+        assertThat(dashboard.sync().reason()).isEqualTo("REVIEW_HELD");
+        cooldownPassed(user);
+        assertThat(sync.admitPlanSync(user, SyncJobApi.SyncTrigger.MANUAL, "verify-unpriced-sync-01"))
+                .isEqualTo(new SyncJobApi.SyncAdmission.Refused("SYNC_UNAVAILABLE"));
+        assertThat(sync.admitPlanVerification(user, SyncJobApi.VerificationKind.PRECISION, reference(v1),
+                "verify-unpriced-02")).isEqualTo(new SyncJobApi.VerificationAdmission.Refused("VERIFICATION_NOT_USEFUL"));
+    }
+
+    /**
+     * R8: another user's verification corrects a price both users' flows share; this user's ordinary sync then
+     * converts at the corrected close. The version is CORRECTED by one changed value — not a late event.
+     */
+    @Test
+    void aSharedPriceCorrectionUnderAnOrdinarySyncIsAChangedValueNotALateEvent() throws Exception {
+        // Both plans start at the same instant, so both deposits fall in the same minute and share its candle. The
+        // minute is one no other test of this JVM uses (the candle cache and the stub's per-minute reads are shared).
+        Instant start = Instant.now().minus(Duration.ofDays(4)).minus(Duration.ofMinutes(37))
+                .truncatedTo(java.time.temporal.ChronoUnit.MINUTES).plusSeconds(10);
+        UUID user = connect(DevBybitStub.Scenario.REVISED_PRICE);
+        publishedPlan(user, "verify-shared-a", start, "CONVERTED_ESTIMATED");
+        var v1 = ready(user);
+        UUID other = connect(DevBybitStub.Scenario.REVISED_PRICE);
+        publishedPlan(other, "verify-shared-b", start, "CONVERTED_ESTIMATED");
+        UUID corrected = precision(other, ready(other), "verify-shared-b-verify", "USER_REQUEST");
+        assertThat(awaitSync(corrected)).isEqualTo("SUCCEEDED");
+        assertThat(flowUsd(ready(other).calculationId(), "revised-01")).isEqualTo("2.5");
+
+        assertThat(awaitSync(manualSync(user, "verify-shared-a-sync"))).isEqualTo("SUCCEEDED");
+        var v2 = ready(user);
+        assertThat(flowUsd(v1.calculationId(), "revised-01")).isEqualTo("2");
+        assertThat(flowUsd(v2.calculationId(), "revised-01")).isEqualTo("2.5");
+        var change = readyDashboard(user).change();
+        assertThat(change.kind()).isEqualTo("CORRECTED");
+        assertThat(change.purpose()).isEqualTo("SYNC");
+        assertThat(change.lateChangeCount()).isEqualTo(1);
+        assertThat(change.valueChangedCount()).isEqualTo(1);
+        assertThat(change.lateAddedCount()).isZero();
+        assertThat(change.removedCount()).isZero();
+        var evidence = ((SyncJobApi.EvidenceOutcome.Found) sync.calculationEvidence(user, reference(v2)).outcome())
+                .evidence().change();
+        assertThat(evidence.valueChangedCount()).isEqualTo(1);
+        assertThat(evidence.lateAddedCount()).isZero();
     }
 
     // ------------------------------------------------------------------------------------------ helpers

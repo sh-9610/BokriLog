@@ -153,25 +153,57 @@ function summaryOf(
 }
 
 /**
+ * The purpose of the job in progress that this screen no longer follows, as the two blocks show it: the newest
+ * latest job that has not ended (the sync block's latest is the plan's latest job of any purpose). A job of a
+ * purpose this screen does not know — or none whole enough to say — is named with the syncs.
+ */
+function unfollowedPurpose(
+  status: SyncStatus,
+  verification: VerificationStatus,
+): 'SYNC' | 'VERIFY' | 'CATCH_UP' {
+  const job = [status.latest, verification.latest].find(
+    (candidate) => candidate !== null && inProgress(candidate),
+  )
+  return job === undefined || job === null ? 'SYNC' : purposeOf(job)
+}
+
+/**
  * Why the sync button is blocked by a job in progress that is not this tab's own sync, or `null`: a
  * verification or catch-up in progress (Story 2.12), one found in a read and followed (another tab, a reload),
- * or one still in progress that this screen no longer follows.
+ * or one still in progress that this screen no longer follows — named by its own purpose.
  */
-function busyOf(status: SyncStatus, sync: DashboardSync): string | null {
+function busyOf(
+  status: SyncStatus,
+  verification: VerificationStatus,
+  sync: DashboardSync,
+): string | null {
   if (sync.running) {
     if (sync.purpose !== 'SYNC') return copy.inProgressOther
     return sync.followingElsewhere ? copy.inProgressElsewhere : null
   }
-  return status.availability === 'IN_PROGRESS' ? copy.inProgressUnfollowed : null
+  if (status.availability !== 'IN_PROGRESS') return null
+  return copy.inProgressUnfollowed[unfollowedPurpose(status, verification)]
 }
 
-/** Why the catch-up button is blocked by a job in progress, or `null` when this tab's own catch-up runs. */
-function catchUpBusyOf(verification: VerificationStatus, sync: DashboardSync): string | null {
+/**
+ * Why the catch-up button is blocked by a job in progress, or `null` when this tab's own catch-up runs: one this
+ * screen follows, one it no longer follows (named by its own purpose), or an automatic sync admission that has not
+ * answered yet.
+ */
+function catchUpBusyOf(
+  status: SyncStatus,
+  verification: VerificationStatus,
+  sync: DashboardSync,
+): string | null {
   if (sync.running) {
     if (sync.purpose !== 'CATCH_UP') return catchUp.inProgressOther
     return sync.followingElsewhere ? catchUp.inProgressElsewhere : null
   }
-  return verification.availability === 'IN_PROGRESS' ? catchUp.inProgressUnfollowed : null
+  if (verification.availability === 'IN_PROGRESS') {
+    return catchUp.inProgressUnfollowed[unfollowedPurpose(status, verification)]
+  }
+  // Only where the catch-up could otherwise be asked for: elsewhere another line already says why not.
+  return sync.admitting && verification.availability === 'LONG_GAP' ? catchUp.admitting : null
 }
 
 /**
@@ -242,7 +274,7 @@ function SummaryBlock({
  *
  * When what held focus inside the control goes away (a summary that is no longer true), focus moves to the
  * button — the sync button, or the catch-up button — or to that notice, rather than falling to the document
- * body.
+ * body; unless the same change asked for the dashboard heading, which the panel then focuses.
  *
  * No live region of its own: the screen's single status region says what the job did, once.
  */
@@ -262,6 +294,8 @@ export function SyncControl({
   const noticeRef = useRef<HTMLDivElement>(null)
   // A focus request made before this control was mounted is not replayed.
   const handled = useRef(sync.focus?.serial ?? 0)
+  // The last focus request this control has seen, of any target.
+  const seen = useRef(sync.focus?.serial ?? 0)
   // The element inside the control that last had focus, until focus leaves the control for another element.
   const lastFocused = useRef<Element | null>(null)
   const { focus, phase } = sync
@@ -275,13 +309,21 @@ export function SyncControl({
     ;(target ?? summaryRef.current ?? noticeRef.current ?? explanationRef.current)?.focus()
   }, [focus, phase])
 
-  // After every render: focus that was inside the control on something that went away is not dropped.
+  /*
+   * After every render: focus that was inside the control on something that went away is not dropped. Except
+   * when the same render brought a new request to focus the dashboard heading (a pressed catch-up that ended with
+   * a new bundle, which also ends the long-gap form and its button): the panel moves focus there, after this
+   * control's effects, so recovering here first would send focus to the sync button and then away again.
+   */
   useEffect(() => {
+    const fresh = focus !== null && focus.serial !== seen.current
+    if (focus !== null) seen.current = focus.serial
     const last = lastFocused.current
     const active = document.activeElement
     const lost = active === null || active === document.body || !active.isConnected
     if (last === null || last.isConnected || !lost) return
     lastFocused.current = null
+    if (fresh && focus.target === 'heading') return
     ;(
       buttonRef.current ??
       catchUpRef.current ??
@@ -314,7 +356,7 @@ export function SyncControl({
     // The same basis already ended in review: the catch-up cannot help either (Story 2.12, a long gap with a
     // persistent review of this basis). The notice takes the button's place; it is never shown while one runs.
     const held = verification.availability === 'NOT_USEFUL' && !catchingUp
-    const busy = held ? null : catchUpBusyOf(verification, sync)
+    const busy = held ? null : catchUpBusyOf(status, verification, sync)
     const cooling = sync.verificationCooldownSeconds !== null && !sync.running && !held
     const reason = catchUpReasonOf(verification, sync)
     const summary = catchUpSummaryOf(status, verification, sync)
@@ -400,7 +442,7 @@ export function SyncControl({
   const running = sync.running && sync.purpose === 'SYNC'
   const unavailable = status.availability === 'UNAVAILABLE'
   const cooling = sync.cooldownSeconds !== null && !sync.running
-  const busy = busyOf(status, sync)
+  const busy = busyOf(status, verification, sync)
   const summary = summaryOf(status, verification, sync)
   const described = [
     running ? STATE_ID : null,

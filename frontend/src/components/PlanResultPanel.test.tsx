@@ -993,7 +993,7 @@ describe('PlanResultPanel', () => {
             kind: 'CORRECTED',
             purpose: 'VERIFY',
             reason: 'GAP_SUSPECTED',
-            lateChangeCount: 1,
+            lateAddedCount: 1,
             firstAffectedAt: '2026-09-25T00:00:01Z',
           }),
         ),
@@ -1007,7 +1007,11 @@ describe('PlanResultPanel', () => {
         marker.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy()
       expect(screen.getByRole('region', { name: copy.heading })).toHaveTextContent(
-        planVerificationContent.change.corrected(1),
+        planVerificationContent.change.corrected({
+          lateAddedCount: 1,
+          valueChangedCount: 0,
+          removedCount: 0,
+        }),
       )
     })
 

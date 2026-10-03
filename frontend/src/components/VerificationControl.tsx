@@ -6,7 +6,7 @@ import type { DashboardSync } from '../session/useDashboardSync'
 import { calculationEvidenceContent } from '../content/calculationEvidence'
 import { copyFor } from '../content/planResult'
 import { planVerificationContent as copy } from '../content/planVerification'
-import { inLongGap, inProgress } from '../session/useDashboard'
+import { inLongGap, inProgress, purposeOf } from '../session/useDashboard'
 import { Time } from './EvidenceParts'
 import styles from './VerificationControl.module.css'
 import { RangeList } from './VerificationRanges'
@@ -49,13 +49,25 @@ function localOf(
   }
 }
 
-/** Why the button is blocked by a job in progress, or `null` when this tab's own verification runs. */
+/**
+ * Why the button is blocked by a job in progress, or `null` when this tab's own verification runs: one this
+ * screen follows, one it no longer follows — named by its own purpose (the block's latest job is the plan's latest
+ * verification or catch-up; when that one has ended, the job in progress is a sync) — or an automatic sync
+ * admission that has not answered yet.
+ */
 function busyOf(status: VerificationStatus, sync: DashboardSync): string | null {
   if (sync.running) {
     if (sync.purpose !== 'VERIFY') return copy.inProgressOther
     return sync.followingElsewhere ? copy.inProgressElsewhere : null
   }
-  return status.availability === 'IN_PROGRESS' ? copy.inProgressUnfollowed : null
+  if (status.availability === 'IN_PROGRESS') {
+    const { latest } = status
+    const purpose = latest !== null && inProgress(latest) ? purposeOf(latest) : 'SYNC'
+    return copy.inProgressUnfollowed[purpose]
+  }
+  // Only where a verification could otherwise be asked for: elsewhere another line already says why not.
+  const askable = status.availability === 'AVAILABLE' || status.availability === 'COOLDOWN'
+  return sync.admitting && askable ? copy.admitting : null
 }
 
 /** Why a verification is not offered now, as the server says it. */
@@ -166,10 +178,10 @@ function LatestJob({
  * reusing earlier evidence ends. One secondary `정밀 검증` button, at least 44px, whose name stays the action.
  * While a verification runs, `정밀 검증 중` and a progress marker appear beside it — static under reduced motion
  * — and the button is `aria-disabled`: it keeps its place and the keyboard focus, and a press does nothing. The
- * same blocking holds while another job is in progress, during the cool-down and while the server says a
- * verification is unavailable; each has its reason line, which describes the button. When asking again cannot
- * help — the same basis already ended in review — there is no button: the notice that asking again will not
- * change it takes its place (EXPERIENCE UJ-3).
+ * same blocking holds while another job is in progress, while an automatic sync admission has not answered yet,
+ * during the cool-down and while the server says a verification is unavailable; each has its reason line, which
+ * describes the button. When asking again cannot help — the same basis already ended in review — there is no
+ * button: the notice that asking again will not change it takes its place (EXPERIENCE UJ-3).
  *
  * During a long gap a verification is not taken at all: instead of its purpose and cost, one short sentence
  * points to the catch-up by its button's name (or, when the catch-up cannot help either, says only that a

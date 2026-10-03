@@ -38,6 +38,29 @@ final class VersionChanges {
     }
 
     /**
+     * The late rows of a version, by what they are: additions found late, changed values and removals. They sum to
+     * the late rows' count; the screen names each kind for what it is — a value another user's price correction moved
+     * under an ordinary sync is not a "late event".
+     */
+    record Counts(int lateAdded, int valueChanged, int removed) {
+        int total() {
+            return this.lateAdded + this.valueChanged + this.removed;
+        }
+    }
+
+    static Counts counts(List<PlanPublicationRepository.ChangeRow> changes) {
+        int added = 0;
+        int changed = 0;
+        int removed = 0;
+        for (var change : changes) {
+            if ("ADDED".equals(change.kind()) && change.late()) added++;
+            else if ("VALUE_CHANGED".equals(change.kind())) changed++;
+            else if ("REMOVED".equals(change.kind())) removed++;
+        }
+        return new Counts(added, changed, removed);
+    }
+
+    /**
      * The marker of a version.
      *
      * @param lateCount how many of its change rows are late

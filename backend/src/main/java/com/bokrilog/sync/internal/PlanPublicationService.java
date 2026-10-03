@@ -621,16 +621,16 @@ class PlanPublicationService {
         var facts = syncs.facts(user, base);
         var sync = syncs.state(facts);
         var latest = sync.latest();
-        var review = verifications.review(user, base);
-        var verification = verifications.state(user, base, facts, review);
+        var review = facts.review();
+        var verification = verifications.state(user, base, facts);
         var change = verifications.change(user, base);
         // The axes fail closed: a reliability this story does not know is not shown as anything.
         var trust = DashboardTrust.judge(new DashboardTrust.Input(
                 repository.freshness(user, calculation.measuredAt(), calculation.verifiedThrough()),
                 calculation.inputReliability(), calculation.estimated(), calculation.estimatedFlowCount(),
                 calculation.measuredAt(), calculation.verifiedThrough(), calculation.basisAt(), metrics,
-                new DashboardTrust.SyncFacts(sync.availability(), latest == null ? null : latest.status(),
-                        review == null ? null : review.code())))
+                new DashboardTrust.SyncFacts(sync.availability(), sync.reason(), latest == null ? null : latest.status(),
+                        review == null ? null : review.code(), verification.availability())))
                 .orElse(null);
         if (trust == null) return new Dashboard.Unavailable();
         return new Dashboard.Ready(new DashboardResult(plan.planId(), "ACTIVE", notation(calculation.principal()),
@@ -862,8 +862,8 @@ class PlanPublicationService {
             List<CalculationEvidence.OfficialVersion> versions) {
         UUID previousId = lineage.previousCalculationId();
         if (sync == null || previousId == null)
-            return new CalculationEvidence.EvidenceChange(VersionChanges.NONE, null, null, List.of(), List.of(), null,
-                    null, List.of(), List.of());
+            return new CalculationEvidence.EvidenceChange(VersionChanges.NONE, null, null, 0, 0, 0, List.of(),
+                    List.of(), null, null, List.of(), List.of());
         var previous = repository.calculation(user, previousId).orElse(null);
         List<DashboardMetric> before = repository.metrics(previousId);
         if (previous == null || before.size() != DashboardTrust.METRICS.size() || versions.size() < 2) return null;
@@ -881,6 +881,7 @@ class PlanPublicationService {
         }
         var changes = repository.changes(user, calculationId);
         var late = VersionChanges.late(changes);
+        var counts = VersionChanges.counts(changes);
         boolean verifying = !"SYNC".equals(sync.purpose());
         List<VerificationPlanner.Range> ranges = verifying ? syncAttempts.ranges(user, lineage.createdByJobId())
                 : List.of();
@@ -891,7 +892,8 @@ class PlanPublicationService {
                         change.newEstimated(), change.evidenceType(), change.discoveredAt(), pointer.publishedAt()))
                 .toList();
         return new CalculationEvidence.EvidenceChange(VersionChanges.kind(late.size(), sync.purpose()), sync.purpose(),
-                sync.reason(), PlanVerificationService.targets(ranges), PlanVerificationService.reused(ranges),
+                sync.reason(), counts.lateAdded(), counts.valueChanged(), counts.removed(),
+                PlanVerificationService.targets(ranges), PlanVerificationService.reused(ranges),
                 new CalculationEvidence.PreviousVersion(previousVersion.pointerVersion(), previousId,
                         previous.basisAt()),
                 late.stream().map(PlanPublicationRepository.ChangeRow::occurredAt).min(java.util.Comparator.naturalOrder())

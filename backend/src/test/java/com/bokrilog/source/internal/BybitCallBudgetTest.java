@@ -207,6 +207,17 @@ class BybitCallBudgetTest {
         assertThat(slow.authPerSecond()).isEqualTo(5);
         assertThat(slow.publicPerSecond()).isEqualTo(10);
         assertThat(slow.maxCollections()).isEqualTo(2);
+        // R10: a duration past its bound (a day of circuit, ten minutes of retry delay, a minute of low-remaining wait)
+        // is the default, not a near-infinite wait whose nanoseconds overflow.
+        var huge = new SourceProperties.Budget(null, null, null, "2s,110000d,30s", null, "110000d", null, "2m")
+                .settings();
+        assertThat(huge.retryDelays()).isEqualTo(BybitCallBudget.Settings.defaults().retryDelays());
+        assertThat(huge.circuitOpen()).isEqualTo(Duration.ofMinutes(10));
+        assertThat(huge.lowRemainingWaitCap()).isEqualTo(Duration.ofSeconds(5));
+        var bounded = new SourceProperties.Budget(null, null, null, "10m", null, "1d", null, "1m").settings();
+        assertThat(bounded.retryDelays()).containsExactly(Duration.ofMinutes(10));
+        assertThat(bounded.circuitOpen()).isEqualTo(Duration.ofDays(1));
+        assertThat(bounded.lowRemainingWaitCap()).isEqualTo(Duration.ofMinutes(1));
         var floor = new SourceProperties.Budget("0.1", "0.5", "3", null, null, null, null, null).settings();
         assertThat(floor.authPerSecond()).isEqualTo(0.1);
         assertThat(floor.publicPerSecond()).isEqualTo(0.5);

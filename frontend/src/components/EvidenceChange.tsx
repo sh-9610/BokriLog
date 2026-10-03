@@ -148,8 +148,10 @@ function EventChange({ event }: { readonly event: EvidenceChangeEvent }): ReactE
 
 /**
  * The change part of the calculation evidence (Story 2.12), before the snapshots: what the shown version
- * changed from the previous official version and why. It reads kind → job and reason → ranges read again and
- * reused → previous version and its basis time → where the impact starts → the six metrics before and after
+ * changed from the previous official version and why. It reads kind → job and reason → for a correction, its late
+ * changes by kind (added late, value changed, removed; the kinds with none left out) → ranges read again and
+ * reused (not for a sync, which reads none: it collects from its own start, shown in the times part) → previous
+ * version and its basis time → where the impact starts → the six metrics before and after
  * (and the fact that the basis time moved too, so a metric may differ without any cash-flow change) → each
  * changed cash flow with its Bybit id, time, type (in words: an external deposit or withdrawal), USD value and
  * character before and after, price evidence, and discovery and application times. The first official version
@@ -168,6 +170,8 @@ export function EvidenceChange({
   const verification = planVerificationContent
   const { previous } = change
   const first = evidence.versions.official.length === 1
+  // A sync reads no planned range again and reuses none: it collects from its own start (the times part).
+  const ranges = change.purpose !== 'SYNC'
   return (
     <Part id="change" title={copy.title}>
       <p>{first ? copy.first : copyFor(copy.kinds, change.kind, copy.unknownKind)}</p>
@@ -187,22 +191,33 @@ export function EvidenceChange({
                 ? ABSENT
                 : copyFor(verification.jobReasons, change.reason, verification.unknownJobReason),
           },
-          {
-            label: copy.targets,
-            value: (
-              <RangeList
-                className={styles.list}
-                empty={verification.none}
-                ranges={change.targets}
-              />
-            ),
-          },
-          {
-            label: copy.reused,
-            value: (
-              <RangeList className={styles.list} empty={verification.none} ranges={change.reused} />
-            ),
-          },
+          ...(change.kind === 'CORRECTED'
+            ? [{ label: copy.counts, value: copy.countsValue(change) }]
+            : []),
+          ...(ranges
+            ? [
+                {
+                  label: copy.targets,
+                  value: (
+                    <RangeList
+                      className={styles.list}
+                      empty={verification.none}
+                      ranges={change.targets}
+                    />
+                  ),
+                },
+                {
+                  label: copy.reused,
+                  value: (
+                    <RangeList
+                      className={styles.list}
+                      empty={verification.none}
+                      ranges={change.reused}
+                    />
+                  ),
+                },
+              ]
+            : []),
         ]}
       />
       {previous === null ? null : (

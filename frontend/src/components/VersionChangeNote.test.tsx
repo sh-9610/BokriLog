@@ -10,6 +10,7 @@ import { VERSION_CHANGE_NOTE_ID, VersionChangeNote } from './VersionChangeNote'
 
 const copy = planVerificationContent.change
 const LATE_AT = '2026-09-25T00:00:01Z'
+const ONE_LATE = { lateAddedCount: 1, valueChangedCount: 0, removedCount: 0 }
 
 describe('VersionChangeNote', () => {
   it('a corrected version says how many late cash flows it applied and where their impact starts', () => {
@@ -20,7 +21,7 @@ describe('VersionChangeNote', () => {
             kind: 'CORRECTED',
             purpose: 'VERIFY',
             reason: 'GAP_SUSPECTED',
-            lateChangeCount: 1,
+            lateAddedCount: 1,
             firstAffectedAt: LATE_AT,
             targets: [
               { kind: 'ANOMALY', start: '2026-09-25T00:00:00Z', end: '2026-09-26T00:00:01Z' },
@@ -35,9 +36,10 @@ describe('VersionChangeNote', () => {
         (_, element) =>
           element?.tagName === 'P' &&
           element.textContent ===
-            `${copy.corrected(1)}, ${copy.impactStart} ${start} · ${planResultContent.timeZone}`,
+            `${copy.corrected(ONE_LATE)}, ${copy.impactStart} ${start} · ${planResultContent.timeZone}`,
       ),
     ).toBeInTheDocument()
+    expect(copy.corrected(ONE_LATE)).toBe('입출금 변경 반영: 늦게 확인된 입출금 1건')
     // eslint-disable-next-line testing-library/no-node-access -- 시각의 기계값은 `time` 요소의 속성으로만 읽을 수 있다.
     expect(document.querySelector(`time[datetime="${LATE_AT}"]`)).not.toBeNull()
     expect(screen.getByText(copy.correctedHelp)).toBeInTheDocument()
@@ -48,7 +50,7 @@ describe('VersionChangeNote', () => {
     expect(container).toHaveTextContent(`${copy.reusedLabel}${planVerificationContent.none}`)
     // A named group: its first line is its name, so assistive technology can find and name the marker.
     const group = screen.getByRole('group', {
-      name: `${copy.corrected(1)}, ${copy.impactStart} ${start} · ${planResultContent.timeZone}`,
+      name: `${copy.corrected(ONE_LATE)}, ${copy.impactStart} ${start} · ${planResultContent.timeZone}`,
     })
     expect(group).toHaveAttribute('id', VERSION_CHANGE_NOTE_ID)
     expect(group).toHaveTextContent(copy.correctedHelp)
@@ -95,7 +97,67 @@ describe('VersionChangeNote', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  it('R8: names each kind of late change apart and leaves out the kinds with none', () => {
+    const { rerender } = render(
+      <VersionChangeNote
+        change={parseVersionChange(
+          changeFixture({
+            kind: 'CORRECTED',
+            purpose: 'VERIFY',
+            lateAddedCount: 1,
+            valueChangedCount: 2,
+            removedCount: 1,
+            firstAffectedAt: LATE_AT,
+          }),
+        )}
+      />,
+    )
+    const all = { lateAddedCount: 1, valueChangedCount: 2, removedCount: 1 }
+    expect(copy.corrected(all)).toBe(
+      '입출금 변경 반영: 늦게 확인된 입출금 1건, 값이 바뀐 입출금 2건, 반영에서 빠진 입출금 1건',
+    )
+    expect(screen.getByRole('group', { name: new RegExp(`^${copy.corrected(all)}`) })).toBeVisible()
+    // Only a removal: never a count of zero, never "found late".
+    const removed = { lateAddedCount: 0, valueChangedCount: 0, removedCount: 1 }
+    rerender(
+      <VersionChangeNote
+        change={parseVersionChange(
+          changeFixture({ kind: 'CORRECTED', purpose: 'VERIFY', ...removed }),
+        )}
+      />,
+    )
+    expect(screen.getByRole('group', { name: copy.corrected(removed) })).toBeVisible()
+    expect(copy.corrected(removed)).toBe('입출금 변경 반영: 반영에서 빠진 입출금 1건')
+    expect(copy.corrected(removed)).not.toMatch(/0건|늦게/)
+  })
+
+  it('F1·R8: a sync that changed only a value says so, without late wording or range lines it did not read', () => {
+    const valueOnly = { lateAddedCount: 0, valueChangedCount: 1, removedCount: 0 }
+    const { container } = render(
+      <VersionChangeNote
+        change={parseVersionChange(
+          changeFixture({
+            kind: 'CORRECTED',
+            purpose: 'SYNC',
+            reason: 'USER_REQUEST',
+            ...valueOnly,
+            firstAffectedAt: LATE_AT,
+          }),
+        )}
+      />,
+    )
+    const group = screen.getByRole('group', { name: new RegExp(`^${copy.corrected(valueOnly)}`) })
+    expect(group).toHaveTextContent('값이 바뀐 입출금 1건')
+    expect(group.textContent).not.toMatch(/늦게 확인된/)
+    expect(group).toHaveTextContent(planVerificationContent.purposes.SYNC ?? 'missing')
+    // A sync reads no planned range again and reuses none: no "없습니다" lines that would contradict its collection.
+    expect(container).not.toHaveTextContent(copy.targetsLabel)
+    expect(container).not.toHaveTextContent(copy.reusedLabel)
+    expect(container).not.toHaveTextContent(planVerificationContent.none)
+  })
+
   it('folds an unknown purpose and reason to safe copy, and a correction without a start names none', () => {
+    const two = { lateAddedCount: 2, valueChangedCount: 0, removedCount: 0 }
     const { container } = render(
       <VersionChangeNote
         change={parseVersionChange(
@@ -103,12 +165,12 @@ describe('VersionChangeNote', () => {
             kind: 'CORRECTED',
             purpose: 'NEW_PURPOSE',
             reason: 'NEW_REASON',
-            lateChangeCount: 2,
+            ...two,
           }),
         )}
       />,
     )
-    expect(screen.getByText(copy.corrected(2))).toBeInTheDocument()
+    expect(screen.getByText(copy.corrected(two))).toBeInTheDocument()
     expect(container).not.toHaveTextContent(copy.impactStart)
     expect(container).toHaveTextContent(planVerificationContent.unknownPurpose)
     expect(container).toHaveTextContent(planVerificationContent.unknownJobReason)

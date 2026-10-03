@@ -72,11 +72,13 @@ ALTER TABLE sync_plan_sync_job
     -- A queued attempt has no first-phase cutoff either (V11's queued check, kept, knows no initial_tc).
     ADD CONSTRAINT sync_plan_sync_job_queued_initial_tc_check CHECK (status<>'QUEUED' OR initial_tc IS NULL);
 
--- sync: whether a collection page itself asked for review (Story 2.12) ------------------------------------------
+-- sync: whether a collection page asked for review (Story 2.12) -------------------------------------------------
 
--- A page the adapter flagged (an item that is not an object, say) is recorded on its collection, so a resumed
--- holder — or a continuation's second phase — still knows it, and the persistent-review rule can read it.
-ALTER TABLE sync_initial_collection_job ADD COLUMN page_review boolean NOT NULL DEFAULT false;
+-- A page that asked for review (an item that is not an object, an event the collection could not take) is marked on
+-- its own evidence row, so a resumed holder — or a continuation's second phase — still knows it, and the
+-- persistent-review rule can read it. The mark lives and dies with the page: a page a resumed holder discards (it
+-- reads that window again) takes its mark with it.
+ALTER TABLE sync_initial_page_evidence ADD COLUMN review_required boolean NOT NULL DEFAULT false;
 
 -- The "same base verification" lookups: whether a precision verification of this base already ended in review.
 CREATE INDEX sync_plan_sync_base_idx ON sync_plan_sync_job(user_id,plan_id,base_calculation_id,purpose);

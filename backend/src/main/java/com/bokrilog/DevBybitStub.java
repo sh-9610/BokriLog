@@ -324,7 +324,29 @@ final class DevBybitStub {
         LOG_LOW_LIMIT("loglowlimit"),
 
         /** 첫 TRANSFER_IN 읽기 뒤로는 언제나 503이다. 재시도 셋을 다 써도 실패한다. */
-        LOG_DOWN("logdown");
+        LOG_DOWN("logdown"),
+
+        /**
+         * 두 번째 TRANSFER_IN 읽기에만 보이는 입금 {@code flicker-01}(+6 USDT, 기준 시각)(R1). 최초 수집은 보지 못하고,
+         * 정밀 검증의 첫 holder가 저장한 뒤 재개 holder의 재독에서는 사라진다 — 비공식 사건의 깜박임이다. 세 깜박임
+         * 시나리오 모두 그 첫 holder의 TRANSFER_OUT 응답을 1.5초 늦게 내 창이 미완료인 채 lease를 잃게 한다.
+         */
+        FLICKER_NEW("flickernew"),
+
+        /** 첫 두 번의 TRANSFER_IN 읽기에만 보이는 입금 {@code flicker-01}(R1). 공식 사건이 재독에서 사라진다. */
+        FLICKER_OFFICIAL("flickerofficial"),
+
+        /**
+         * 두 번째 TRANSFER_IN 읽기에만 객체가 아닌 항목 하나를 싣는다(R2). page review가 서지만 사건 진단 행은 없고,
+         * 재독은 깨끗하다.
+         */
+        FLICKER_JUNK("flickerjunk"),
+
+        /**
+         * {@link #LATE_EVENT}와 같지만 경로가 없는 자산 {@code NOROUTE}의 입금 {@code unpriced-01}이다(R4). 시세 경로가
+         * 없어 환산이 영구히 보류된다.
+         */
+        LATE_UNPRICED("lateunpriced");
 
         private final String token;
 
@@ -531,7 +553,9 @@ final class DevBybitStub {
         if (scenario==Scenario.LATE_EVENT||scenario==Scenario.VANISHING||scenario==Scenario.REVISED_PRICE
                 ||scenario==Scenario.LATE_WITHDRAWAL
                 ||scenario==Scenario.LOG_FLAKY||scenario==Scenario.LOG_RATE_LIMITED||scenario==Scenario.LOG_IP_BAN
-                ||scenario==Scenario.LOG_LOW_LIMIT||scenario==Scenario.LOG_DOWN) {
+                ||scenario==Scenario.LOG_LOW_LIMIT||scenario==Scenario.LOG_DOWN||scenario==Scenario.FLICKER_NEW
+                ||scenario==Scenario.FLICKER_OFFICIAL||scenario==Scenario.FLICKER_JUNK
+                ||scenario==Scenario.LATE_UNPRICED) {
             String end=query.get("endTime");
             return verificationPage(scenario,uid,type,Long.parseLong(query.get("startTime")),
                     end==null?Long.MAX_VALUE:Long.parseLong(end));
@@ -621,6 +645,16 @@ final class DevBybitStub {
     private Response verificationPage(Scenario scenario,String uid,String type,long start,long end) {
         if (!"TRANSFER_IN".equals(type)) {
             int reads=transferInReads.getOrDefault(uid,new AtomicInteger()).get();
+            if ((scenario==Scenario.FLICKER_NEW||scenario==Scenario.FLICKER_OFFICIAL||scenario==Scenario.FLICKER_JUNK)
+                    &&reads==2) {
+                // The first verification holder's TRANSFER_OUT answer comes slowly: its window is still incomplete
+                // when a test takes its lease away (R1, R2).
+                try {
+                    Thread.sleep(1500);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             if (scenario==Scenario.LOG_LOW_LIMIT&&reads>=2)
                 return lowLimit(ok("{\"list\":[],\"nextPageCursor\":\"\"}"));
             Long outAt=verificationEventAt.get(uid);
@@ -636,6 +670,10 @@ final class DevBybitStub {
         boolean visible=at>=start&&at<=end&&at<=System.currentTimeMillis();
         return switch (scenario) {
             case LATE_EVENT -> visible&&read>=2 ? singleEvent("late-event-01","USDT","25",at) : emptyPage();
+            case LATE_UNPRICED -> visible&&read>=2 ? singleEvent("unpriced-01","NOROUTE","3",at) : emptyPage();
+            case FLICKER_NEW -> visible&&read==2 ? singleEvent("flicker-01","USDT","6",at) : emptyPage();
+            case FLICKER_OFFICIAL -> visible&&read<=2 ? singleEvent("flicker-01","USDT","6",at) : emptyPage();
+            case FLICKER_JUNK -> read==2 ? ok("{\"list\":[1],\"nextPageCursor\":\"\"}") : emptyPage();
             case VANISHING -> visible&&read==1 ? singleEvent("vanishing-01","USDT","7",at) : emptyPage();
             case REVISED_PRICE -> visible ? singleEvent("revised-01","REV","1",at) : emptyPage();
             case LOG_FLAKY -> read==2||read==3 ? new Response(503,JSON,"{\"retCode\":10016,\"retMsg\":\"\"}")

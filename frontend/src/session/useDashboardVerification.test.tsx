@@ -193,11 +193,12 @@ const inProgress: Blocks = {
   sync: syncFixture({ availability: 'IN_PROGRESS', latest: running }),
   verification: verificationFixture({ availability: 'IN_PROGRESS', latest: running }),
 }
+const ONE_LATE = { lateAddedCount: 1, valueChangedCount: 0, removedCount: 0 }
 const corrected = changeFixture({
   kind: 'CORRECTED',
   purpose: 'VERIFY',
   reason: 'GAP_SUSPECTED',
-  lateChangeCount: 1,
+  ...ONE_LATE,
   firstAffectedAt: LATE_AT,
   targets: [{ kind: 'ANOMALY', start: '2026-09-25T00:00:00Z', end: '2026-09-26T00:00:01Z' }],
 })
@@ -350,14 +351,14 @@ describe('parsing the verification block, the version change and the admission',
     expect(parseVersionChange(changeFixture())).toEqual(NO_CHANGE)
     expect(parseVersionChange(corrected)).toMatchObject({
       kind: 'CORRECTED',
-      lateChangeCount: 1,
+      ...ONE_LATE,
       firstAffectedAt: LATE_AT,
       targets: [{ kind: 'ANOMALY' }],
     })
     for (const broken of [
       undefined,
       changeFixture({ kind: 'SOMETHING_NEW' }),
-      changeFixture({ kind: 'CORRECTED', lateChangeCount: 1, firstAffectedAt: 'soon' }),
+      changeFixture({ kind: 'CORRECTED', ...ONE_LATE, firstAffectedAt: 'soon' }),
       changeFixture({ kind: 'VERIFIED_NO_CHANGE', targets: [{ kind: 'NEW' }] }),
       changeFixture({ lateChangeCount: -1 }),
     ]) {
@@ -371,16 +372,17 @@ describe('parsing the verification block, the version change and the admission',
 
   it('P4: a version change that contradicts itself shows no marker', () => {
     for (const broken of [
-      changeFixture({ kind: 'VERIFIED_NO_CHANGE', lateChangeCount: 1 }),
+      changeFixture({ kind: 'VERIFIED_NO_CHANGE', ...ONE_LATE }),
       changeFixture({ kind: 'VERIFIED_NO_CHANGE', firstAffectedAt: LATE_AT }),
-      changeFixture({ kind: 'NONE', lateChangeCount: 2 }),
+      changeFixture({ kind: 'NONE', valueChangedCount: 2 }),
+      changeFixture({ kind: 'NONE', removedCount: 1 }),
     ]) {
       expect(parseVersionChange(broken)).toEqual(NO_CHANGE)
     }
     // An impact that starts after the shown basis time.
     const late = changeFixture({
       kind: 'CORRECTED',
-      lateChangeCount: 1,
+      ...ONE_LATE,
       firstAffectedAt: '2026-09-27T01:00:01Z',
     })
     expect(parseVersionChange(late, planResultFixture().basisAt as string)).toEqual(NO_CHANGE)
@@ -398,12 +400,58 @@ describe('parsing the verification block, the version change and the admission',
     ).toMatchObject({ kind: 'CORRECTED' })
   })
 
-  it('a correction without a late cash flow is still a correction, said without a count', () => {
+  it('R8: reads the three counts apart, and a correction made by a sync that only changed a value', () => {
+    const valueOnly = changeFixture({
+      kind: 'CORRECTED',
+      purpose: 'SYNC',
+      valueChangedCount: 1,
+      firstAffectedAt: LATE_AT,
+    })
+    expect(valueOnly.lateChangeCount).toBe(1)
+    expect(parseVersionChange(valueOnly)).toMatchObject({
+      kind: 'CORRECTED',
+      purpose: 'SYNC',
+      lateAddedCount: 0,
+      valueChangedCount: 1,
+      removedCount: 0,
+    })
+    const sentence = planVerificationContent.change.correctedSentence(parseVersionChange(valueOnly))
+    expect(sentence).toBe('직전 공식 버전과 달라진 입출금은 값이 바뀐 입출금 1건입니다.')
+    expect(sentence).not.toMatch(/늦게|0건/)
     expect(
-      parseVersionChange(changeFixture({ kind: 'CORRECTED', lateChangeCount: 0 })),
-    ).toMatchObject({ kind: 'CORRECTED', lateChangeCount: 0 })
-    expect(planVerificationContent.change.corrected(0)).not.toMatch(/\d/)
-    expect(planVerificationContent.change.correctedSentence(0)).not.toMatch(/\d/)
+      planVerificationContent.change.correctedSentence({
+        lateAddedCount: 2,
+        valueChangedCount: 0,
+        removedCount: 1,
+      }),
+    ).toBe(
+      '직전 공식 버전과 달라진 입출금은 늦게 확인된 입출금 2건, 반영에서 빠진 입출금 1건입니다.',
+    )
+  })
+
+  it('R8: counts that are missing, not whole numbers, negative or not adding up to the total show no marker', () => {
+    const base = { kind: 'CORRECTED', purpose: 'VERIFY', firstAffectedAt: LATE_AT }
+    for (const broken of [
+      // A correction with none of the three: not a correction this screen can name.
+      changeFixture({ ...base }),
+      changeFixture({ ...base, ...ONE_LATE, lateChangeCount: 2 }),
+      changeFixture({ ...base, ...ONE_LATE, lateChangeCount: 0 }),
+      changeFixture({ ...base, lateAddedCount: 1.5, lateChangeCount: 1.5 }),
+      changeFixture({ ...base, valueChangedCount: -1, lateAddedCount: 2, lateChangeCount: 1 }),
+      changeFixture({ ...base, removedCount: '1', lateChangeCount: 1 }),
+      Object.fromEntries(
+        Object.entries(changeFixture({ ...base, ...ONE_LATE })).filter(
+          ([key]) => key !== 'removedCount',
+        ),
+      ),
+      Object.fromEntries(
+        Object.entries(changeFixture({ ...base, ...ONE_LATE })).filter(
+          ([key]) => key !== 'lateChangeCount',
+        ),
+      ),
+    ]) {
+      expect(parseVersionChange(broken)).toEqual(NO_CHANGE)
+    }
   })
 
   it('accepts the VERIFY next action and a job without a purpose as a sync', () => {
@@ -507,7 +555,7 @@ describe('useDashboardSync: a precision verification', () => {
     expect(result.current.dashboard.view).toMatchObject({
       kind: 'READY',
       result: { pointerVersion: 2 },
-      change: { kind: 'CORRECTED', lateChangeCount: 1 },
+      change: { kind: 'CORRECTED', ...ONE_LATE },
     })
     expect(result.current.sync.phase).toBe('succeeded')
     expect(result.current.sync.purpose).toBe('VERIFY')
@@ -520,7 +568,7 @@ describe('useDashboardSync: a precision verification', () => {
     expect(said).toEqual([
       planVerificationContent.status.running,
       planVerificationContent.status.succeeded(
-        planVerificationContent.change.correctedSentence(1),
+        planVerificationContent.change.correctedSentence(ONE_LATE),
         null,
         basis,
       ),
@@ -612,7 +660,6 @@ describe('useDashboardSync: a precision verification', () => {
     ['VERIFICATION_NOT_USEFUL', 'notUseful', 'verification', 1, {}],
     // The stale summary lasts until its own quiet read answers; then the replacement is said once.
     ['REFERENCE_STALE', 'refreshed', 'verification', 1, {}],
-    ['JOB_IN_PROGRESS', 'busy', 'verification', 1, {}],
     ['VERIFICATION_UNAVAILABLE', 'unavailable', 'verification', 1, unavailable],
     ['LONG_GAP', 'longGap', 'summary', 1, {}],
     // A catch-up's refusal met by a precision verification: a general refusal, never an error.
@@ -678,6 +725,99 @@ describe('useDashboardSync: a precision verification', () => {
     })
     await flush()
     expect(result.current.sync.phase).toBe('idle')
+  })
+
+  it('F4: another job is said until its own quiet read answers; with that job over and the same bundle, it goes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    let release: (() => void) | undefined
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    dashboards(ready(), () => held.then(() => ready()()))
+    syncs(admitted('NOT_DUE', null, 240))
+    verifications(refused(409, 'JOB_IN_PROGRESS'))
+    const { result } = render()
+    await flush()
+    act(() => {
+      result.current.sync.requestVerification('PRECISION')
+    })
+    await flush()
+    expect(result.current.sync.phase).toBe('busy')
+    expect(announce(result)).toBe(planVerificationContent.status.busy)
+    expect(result.current.sync.focus).toMatchObject({ target: 'verification' })
+    release?.()
+    await flush()
+    // Nothing runs and nothing was replaced: the refusal no longer holds, and nothing more is said.
+    expect(result.current.sync.phase).toBe('idle')
+    expect(result.current.sync.running).toBe(false)
+    expect(result.current.sync.canVerify).toBe(true)
+    expect(announce(result)).not.toBe(planVerificationContent.status.busy)
+    await steps(5, SYNC_POLL_INTERVAL_MS)
+    expect(verificationPosts()).toBe(1)
+  })
+
+  it('F4: when the job that refused it published in the meantime, its bundle is said once', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    dashboards(ready(), ready({}, 2))
+    syncs(admitted('NOT_DUE', null, 240))
+    verifications(refused(409, 'JOB_IN_PROGRESS'))
+    const { result } = render()
+    await flush()
+    act(() => {
+      result.current.sync.requestVerification('PRECISION')
+    })
+    await flush()
+    expect(result.current.dashboard.view).toMatchObject({ result: { pointerVersion: 2 } })
+    expect(result.current.sync.phase).toBe('refreshed')
+    const basis = formatSeoulTime(
+      planResultFixture().basisAt as string,
+      planResultContent.timeUnavailable,
+    )
+    expect(announce(result)).toBe(planVerificationContent.status.refreshed(null, basis))
+    expect(result.current.sync.canVerify).toBe(true)
+    // A read the user asks for lets the sentence go.
+    act(() => {
+      result.current.dashboard.reload()
+    })
+    await flush()
+    expect(result.current.sync.phase).toBe('idle')
+  })
+
+  it('F4: when the quiet read shows the job still in progress, it is followed until it ends', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const other = syncJobFixture({ status: 'RUNNING', stage: 'COLLECTION', trigger: 'VISIBILITY' })
+    const done = syncJobFixture({
+      status: 'SUCCEEDED',
+      stage: null,
+      trigger: 'VISIBILITY',
+      finishedAt: '2026-09-27T01:10:40Z',
+    })
+    dashboards(
+      ready(),
+      ready({
+        sync: syncFixture({ availability: 'IN_PROGRESS', latest: other }),
+        verification: verificationFixture({ availability: 'IN_PROGRESS' }),
+      }),
+      ready({ sync: syncFixture({ latest: done }) }, 2),
+    )
+    syncs(admitted('NOT_DUE', null, 240))
+    verifications(refused(409, 'JOB_IN_PROGRESS'))
+    const { result } = render()
+    await flush()
+    act(() => {
+      result.current.sync.requestVerification('PRECISION')
+    })
+    await flush()
+    // The job in progress is followed: its own phase speaks, not the refusal.
+    expect(result.current.sync.phase).toBe('running')
+    expect(result.current.sync.purpose).toBe('SYNC')
+    expect(result.current.sync.followingElsewhere).toBe(true)
+    await advance(SYNC_POLL_INTERVAL_MS)
+    expect(result.current.dashboard.view).toMatchObject({ result: { pointerVersion: 2 } })
+    expect(result.current.sync.phase).toBe('succeeded')
+    expect(result.current.sync.running).toBe(false)
+    expect(result.current.sync.canVerify).toBe(true)
+    expect(verificationPosts()).toBe(1)
   })
 
   it('P15: a quiet read that no longer reports the cool-down ends the cool-down outcome', async () => {
@@ -762,6 +902,8 @@ describe('useDashboardSync: a precision verification', () => {
     expect(result.current.sync.running).toBe(false)
     expect(result.current.sync.phase).toBe('idle')
     expect(result.current.sync.canVerify).toBe(false)
+    // F7: the controls can say why (the admission is what blocks them).
+    expect(result.current.sync.admitting).toBe(true)
     act(() => {
       result.current.sync.requestVerification('PRECISION')
     })
@@ -770,6 +912,7 @@ describe('useDashboardSync: a precision verification', () => {
     expect(result.current.sync.phase).toBe('idle')
     answer?.(json({ outcome: 'NOT_DUE', job: null, retryAfterSeconds: null }))
     await flush()
+    expect(result.current.sync.admitting).toBe(false)
     expect(result.current.sync.canVerify).toBe(true)
     act(() => {
       result.current.sync.requestVerification('PRECISION')

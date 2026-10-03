@@ -148,6 +148,54 @@ describe('VerificationControl', () => {
     expect(button()).toHaveAccessibleDescription(copy.inProgressOther)
   })
 
+  it('F7: while an automatic sync admission has not answered, the blocked button says why in one sentence', () => {
+    const requestVerification = vi.fn()
+    const { rerender } = render(
+      <VerificationControl
+        status={AVAILABLE_VERIFICATION}
+        sync={idleSyncState({ admitting: true, canVerify: false, requestVerification })}
+      />,
+    )
+    expect(button()).toHaveAttribute('aria-disabled', 'true')
+    expect(button()).toHaveAccessibleDescription(copy.admitting)
+    fireEvent.click(button())
+    expect(requestVerification).not.toHaveBeenCalled()
+    // Once it answered, the reason goes with the block.
+    rerender(
+      <VerificationControl
+        status={AVAILABLE_VERIFICATION}
+        sync={idleSyncState({ requestVerification })}
+      />,
+    )
+    expect(screen.queryByText(copy.admitting)).not.toBeInTheDocument()
+    expect(button()).toHaveAttribute('aria-disabled', 'false')
+    expect(button()).not.toHaveAttribute('aria-describedby')
+  })
+
+  it.each([
+    ['a sync', null, copy.inProgressUnfollowed.SYNC],
+    ['a precision verification', 'VERIFY', copy.inProgressUnfollowed.VERIFY],
+    ['a catch-up', 'CATCH_UP', copy.inProgressUnfollowed.CATCH_UP],
+  ] as const)(
+    'F7: %s still in progress that this screen no longer follows is named by its own purpose',
+    (_name, purpose, text) => {
+      render(
+        <VerificationControl
+          status={status({
+            availability: 'IN_PROGRESS',
+            latest:
+              purpose === null
+                ? ended({ status: 'SUCCEEDED' })
+                : verificationJobFixture({ purpose, status: 'RUNNING' }),
+          })}
+          sync={idleSyncState({ phase: 'stalled', purpose: 'SYNC', canVerify: false })}
+        />,
+      )
+      expect(button()).toHaveAttribute('aria-disabled', 'true')
+      expect(button()).toHaveAccessibleDescription(text)
+    },
+  )
+
   it('counts the cool-down down and blocks the button meanwhile', () => {
     const requestVerification = vi.fn()
     render(
@@ -639,6 +687,8 @@ describe('VerificationControl', () => {
       planSyncContent.summary.codes.HISTORY_OUT_OF_RANGE,
       planSyncContent.summary.stages.FINAL_SWEEP,
       planSyncContent.inProgressOther,
+      ...Object.values(planSyncContent.inProgressUnfollowed),
+      planSyncContent.reasons.REVIEW_HELD,
       ...Object.values(planSyncContent.longGap),
       nextActionCopy('VERIFY', '2026-09-29 10:00'),
       nextActionCopy('VERIFY', null),

@@ -237,15 +237,15 @@ class PlanPublicationServiceTest {
         when(repository.lineage(USER, CALCULATION)).thenReturn(Optional.of(lineageRow("BYBIT")));
         when(repository.history(USER, PLAN)).thenReturn(List.of(
                 new PlanPublicationRepository.HistoryRow(1, CALCULATION, PORTFOLIO, TC)));
-        var facts = new PlanSyncService.Facts(TC, false, null, false, null, null);
+        var facts = new PlanSyncService.Facts(TC, false, null, false, null, null, null);
         when(planSyncs.facts(eq(USER), any())).thenReturn(facts);
         when(planSyncs.state(facts)).thenReturn(
                 new com.bokrilog.sync.SyncJobApi.SyncState("AVAILABLE", null, null, null));
-        when(planVerifications.state(eq(USER), any(), eq(facts), any())).thenReturn(
+        when(planVerifications.state(eq(USER), any(), eq(facts))).thenReturn(
                 new com.bokrilog.sync.SyncJobApi.VerificationState("AVAILABLE", null, null, "USER_REQUEST", null, null,
                         null));
         when(planVerifications.change(eq(USER), any())).thenReturn(new com.bokrilog.sync.SyncJobApi.VersionChange(
-                "NONE", null, null, 0, null, null, List.of(), List.of()));
+                "NONE", null, null, 0, 0, 0, 0, null, null, List.of(), List.of()));
     }
 
     @Test

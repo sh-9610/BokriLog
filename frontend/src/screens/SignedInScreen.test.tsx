@@ -80,6 +80,9 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
 /** The admission's answer to an automatic trigger within 5 minutes of the last one (Story 2.11). */
 const NOT_DUE = { outcome: 'NOT_DUE', job: null, retryAfterSeconds: 240 }
 
+/** One late deposit or withdrawal, nothing else changed (Story 2.12 R8). */
+const ONE_LATE = { lateAddedCount: 1, valueChangedCount: 0, removedCount: 0 }
+
 /** 응답이 아직 오지 않은 상태. `checking` 분기를 관측하기 위한 의도된 무기한 대기다. */
 function pendingResponse(): Promise<Response> {
   return new Promise<Response>(() => {
@@ -1075,7 +1078,7 @@ describe('SignedInScreen', () => {
                   kind: 'CORRECTED',
                   purpose: 'VERIFY',
                   reason: 'GAP_SUSPECTED',
-                  lateChangeCount: 1,
+                  lateAddedCount: 1,
                   firstAffectedAt: lateAt,
                 }),
               ),
@@ -1140,7 +1143,7 @@ describe('SignedInScreen', () => {
       ).toHaveFocus()
       const basis = formatSeoulTime('2026-09-27T01:20:00Z', planResultContent.timeUnavailable)
       const closing = planVerificationContent.status.succeeded(
-        planVerificationContent.change.correctedSentence(1),
+        planVerificationContent.change.correctedSentence(ONE_LATE),
         null,
         basis,
       )
@@ -1148,7 +1151,7 @@ describe('SignedInScreen', () => {
       // The result marker: one late deposit, and where its impact starts.
       const start = formatSeoulTime(lateAt, planResultContent.timeUnavailable)
       expect(screen.getByRole('region', { name: planResultContent.heading })).toHaveTextContent(
-        `${planVerificationContent.change.corrected(1)}, ${planVerificationContent.change.impactStart} ${start}`,
+        `${planVerificationContent.change.corrected(ONE_LATE)}, ${planVerificationContent.change.impactStart} ${start}`,
       )
       expect(screen.getByText(planVerificationContent.cooldown(25))).toBeInTheDocument()
       recorder.stop()

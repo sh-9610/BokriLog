@@ -545,6 +545,26 @@ class BybitAdapterTest {
         assertThat(this.paths).as("nothing more while the circuit is open").hasSize(1);
     }
 
+    /**
+     * R11: an admission call that never went out — its wait for a token was interrupted — is unavailable, not the
+     * user's key rejected.
+     */
+    @Test
+    void anInterruptedAdmissionCallIsUnavailableNotARejectedKey() throws Exception {
+        // A tenth of a token a second: the second signed call of the admission waits ten seconds for its token.
+        BybitAdapter adapter = adapter(this.origin, RESERVED_IP, Duration.ofSeconds(1),
+                new SourceProperties.Budget("0.1", null, null, "20ms,40ms,60ms", "0", "5s", null, "200ms"));
+        var answer = new AtomicReference<SourceVerification>();
+        Thread caller = Thread.ofVirtual().start(() -> answer.set(adapter.verify(credentials())));
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (sizeOfPaths() < 1 && System.nanoTime() < deadline) Thread.sleep(5);
+        Thread.sleep(100);
+        caller.interrupt();
+        caller.join(5_000);
+        assertThat(reasonOf(answer.get())).isEqualTo(SourceRejectionReason.UNAVAILABLE);
+        assertThat(this.paths).containsExactly(BybitAdapter.QUERY_API_PATH);
+    }
+
     /** The admission's calls are never retried, whatever the failure. */
     @Test
     void anAdmissionCallIsNeverRetried() {

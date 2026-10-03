@@ -176,6 +176,55 @@ class PlanSyncServiceTest {
         verify(syncs, never()).insert(any());
     }
 
+    /**
+     * R6: a persistent verification review of the base holds every sync at admission — no attempt is made (the worker
+     * would only end it as that review) — and the dashboard says so: unavailable, {@code REVIEW_HELD}, even in a long
+     * gap. An attempt already in progress is still joined.
+     */
+    @Test
+    void aPersistentVerificationReviewHoldsEverySyncAtAdmission() {
+        eligible(PUBLISHED.plusSeconds(600));
+        var review = new PlanSyncRepository.Review(UUID.randomUUID(), "SOURCE_EVENT_MISSING");
+        when(syncs.persistentlyReviewed(USER, PLAN, CALCULATION)).thenReturn(true);
+        when(syncs.verificationReview(USER, PLAN, CALCULATION)).thenReturn(Optional.of(review));
+        for (SyncTrigger trigger : SyncTrigger.values())
+            assertThat(service().admit(USER, trigger, KEY)).as(trigger.name())
+                    .isEqualTo(new SyncAdmission.Refused("SYNC_UNAVAILABLE"));
+        verify(syncs, never()).insert(any());
+        assertThat(service().state(USER, base)).isEqualTo(new SyncState("UNAVAILABLE", "REVIEW_HELD", null, null));
+        when(publications.databaseNow()).thenReturn(VERIFIED.plus(Duration.ofDays(31)));
+        assertThat(service().state(USER, base)).as("in a long gap too")
+                .isEqualTo(new SyncState("UNAVAILABLE", "REVIEW_HELD", null, null));
+        when(syncs.active(USER, PLAN)).thenReturn(Optional.of(queued));
+        assertThat(service().admit(USER, SyncTrigger.MANUAL, KEY)).isEqualTo(new SyncAdmission.Joined(queued));
+    }
+
+    /**
+     * R4: a verification's price hold is a review when any held flow's reason is one time does not resolve (no route,
+     * no candle within five minutes, a price not positive), and a failure the user retries when every one is (the event
+     * minute not closed yet, the market unreachable).
+     */
+    @Test
+    void aPriceHoldIsPermanentOnlyWhenAReasonIsNotRetryable() {
+        var input = new PriceConversionPolicy.FlowInput(UUID.randomUUID(), "held-01", "NOROUTE", "3", T0);
+        var notClosed = held(input, PriceConversionPolicy.Reason.PRICE_CANDLE_NOT_CLOSED);
+        var noRoute = held(input, PriceConversionPolicy.Reason.PRICE_ROUTE_UNAVAILABLE);
+        var unreachable = held(input,
+                PriceConversionPolicy.Reason.PRICE_PROVIDER_UNAVAILABLE);
+        assertThat(PlanSyncService.permanentlyHeld(java.util.List.of(notClosed, unreachable))).isFalse();
+        assertThat(PlanSyncService.permanentlyHeld(java.util.List.of(notClosed, noRoute))).isTrue();
+        assertThat(PlanSyncService.permanentlyHeld(java.util.List.of(held(input,
+                PriceConversionPolicy.Reason.PRICE_NON_POSITIVE)))).isTrue();
+        assertThat(PlanSyncService.permanentlyHeld(java.util.List.of(held(input,
+                PriceConversionPolicy.Reason.PRICE_CANDLE_MISSING)))).isTrue();
+    }
+
+    private static PriceConversionPolicy.FlowOutcome held(PriceConversionPolicy.FlowInput input,
+            PriceConversionPolicy.Reason reason) {
+        return new PriceConversionPolicy.FlowOutcome(input, reason.status(), reason, null, null, null, null,
+                java.util.List.of());
+    }
+
     /** The long gap is judged on the database clock at admission: exactly 30 days is still admitted. */
     @ParameterizedTest(name = "{0} ms beyond 30 days → {1}")
     @CsvSource({"0,ACCEPTED", "1,LONG_GAP"})
