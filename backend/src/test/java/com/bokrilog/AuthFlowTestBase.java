@@ -23,6 +23,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
@@ -71,6 +73,26 @@ abstract class AuthFlowTestBase {
     /** {@code application.yml}이 정한 세션 쿠키 이름. 값이 갈라지면 여기서 먼저 드러난다. */
     static final String SESSION_COOKIE_NAME = "BOKRILOG_SESSION";
 
+    /**
+     * 시험 컨텍스트의 워커 dispatch 간격. 운영은 {@code application.yml}의 1초다.
+     *
+     * <p>실제 파이프라인(첫 스냅샷 → 수집 → 판정 → 환산 → 발행 → 증분 동기화)을 모는 시험은 단계마다 최대
+     * 한 tick을 기다린다. 1초 tick이면 그 대기가 시험 시간의 대부분이 된다. heartbeat(5초)는 줄이지 않는다
+     * — 늦은 워커가 DB fence까지 가는 창이 그 간격에 묶여 있다({@code FirstSnapshotWorker}).
+     */
+    static final Duration WORKER_TICK = Duration.ofMillis(100);
+
+    /**
+     * "일어나지 않음"을 증명하는 창. tick 다섯 개 길이다. {@code fixedDelay}는 각 실행이 끝난 뒤부터 세므로
+     * 이 창이 주는 dispatch 기회는 정확히 다섯 번이 아니라 네다섯 번이다. 원래 창(1.2~2.5초)이 1초 간격에서 준
+     * 기회는 한 번에서 세 번이었으므로 창이 짧아져도 증명은 약해지지 않는다. 관측 가능한 조건을 기다리는 데
+     * 쓰지 않는다.
+     */
+    static final Duration QUIET_WINDOW = WORKER_TICK.multipliedBy(5);
+
+    /** {@link #pollUntil}의 조회 간격. */
+    static final Duration POLL = Duration.ofMillis(20);
+
     @DynamicPropertySource
     static void authProperties(DynamicPropertyRegistry registry) {
         OidcStubConfiguration.registerProperties(registry);
@@ -80,6 +102,26 @@ abstract class AuthFlowTestBase {
          * wall-clock이다.
          */
         BybitStubConfiguration.registerProperties(registry);
+        // 워커 dispatch 간격도 같은 근거로 여기서 준다.
+        registry.add("bokrilog.sync.worker.dispatch-interval", () -> WORKER_TICK.toMillis() + "ms");
+    }
+
+    /**
+     * {@code done}이 참이 되거나 {@code timeout}이 지날 때까지 {@link #POLL}마다 {@code read}를 다시 읽고,
+     * 마지막으로 읽은 값을 돌려준다.
+     *
+     * <p>단정하지 않는다. 시간이 다 돼도 예외 없이 그때의 값을 돌려주므로, 그 값이 무엇이어야 하는지는
+     * 호출하는 시험이 자기 계약으로 쓴다.
+     */
+    static <T> T pollUntil(Duration timeout, Supplier<? extends T> read, Predicate<? super T> done)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        T value = read.get();
+        while (!done.test(value) && System.nanoTime() - deadline < 0) {
+            Thread.sleep(POLL);
+            value = read.get();
+        }
+        return value;
     }
 
     @LocalServerPort

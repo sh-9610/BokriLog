@@ -646,13 +646,14 @@ context:
 - 화면:
   - 발행하지 못한 작업의 구간은 `확인 대상 구간`, 재사용은 `재사용하려던 기존 수집 증거`로 부른다. 다 읽었다고 말하지 않는다.
   - 입력 신뢰도의 구간은 보류를 일으킨 작업일 때만 보인다.
-- CI: `backend-quality`를 20분에서 25분으로 올렸다(`ci.yml`, `DEVELOPMENT.md`, CLAUDE.md). 근거는 로컬 `clean build` 16분 59초다. 주입 origin 회귀는 2.1분이라 그대로다.
+- CI: 한때 `backend-quality`를 20분에서 25분으로 올렸으나(로컬 `clean build` 16분 59초) 되돌렸다. PR #55(`spec-backend-test-speed.md`, 시험의 워커 dispatch 100ms·조건 대기)를 합친 뒤 로컬 `clean build`가 4분 41초(989건)라 20분 그대로 충분하다. 주입 origin 회귀는 2.6분이라 그대로다.
 - 이 스토리와 Story 2.11의 통합 시험이 통과했다. 그래서 epics.md의 M2-3 `반복 증분 동기화·지연 correction·버전 추적`을 충족한 것으로 기록한다.
 
 **실행 결과 (2차 검토 patch 반영 뒤 최종 트리):**
 - 백엔드 `clean build`(`--no-parallel --max-workers=1`): 987 tests 통과, 실패·skip 0, 15분 57초.
   - 1차 patch 뒤 트리는 968/968(16분 59초)이었고 PR #54 첫 CI에서 `backend-quality` 16분 34초였다. 그 전 트리의 독립 재실행은 939/939(16분 4초)였다.
 - 프런트엔드(Node 24): `typecheck`·`lint`·`lint:css`·`format:check`·`build` 통과. Vitest 27파일 866/866이고 독립 재실행에서도 같았다.
+- PR #55 병합 뒤(develop `633e768` 합침): 백엔드 `clean build` 989/989, 4분 41초. 탭 재표시 리스너를 layout effect로 옮긴 수정(PR #54 CI의 `OnboardingScreen` 재인증 시험 실패 원인) 뒤 Vitest 866/866.
 - 새 compose 스택(migrate V1~V12): `verify-same-origin.sh --keep-stack` 959/959. 이어서 같은 스택의 주입 origin e2e가 61/61(2.6분)이다. 스택은 정리했다.
 - `test-ci-scripts.sh` 147/147, `git diff --check` 통과.
 - 리뷰: 리뷰어 6명(blind·edge·verification × 백엔드·프런트엔드).
@@ -775,5 +776,5 @@ context:
 - 실 스택: 정밀 검증 → v2, 표지·변경 근거·이력이 같은 사건을 가리킨다.
   [`precision-verification.spec.ts:99`](../../frontend/e2e/precision-verification.spec.ts#L99)
 
-- CI 예산: `backend-quality` 25분.
-  [`ci.yml:281`](../../.github/workflows/ci.yml#L281)
+- CI 예산: `backend-quality` 20분 유지(PR #55 병합 뒤 4분 41초).
+  [`ci.yml:282`](../../.github/workflows/ci.yml#L282)

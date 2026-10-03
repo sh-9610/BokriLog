@@ -43,13 +43,16 @@ abstract class PlanSyncTestBase extends AuthFlowTestBase {
     record HttpResponseView(int statusCode, String body, java.net.http.HttpHeaders headers) {}
 
     String awaitSync(UUID job) throws InterruptedException {
-        for (int i = 0; i < 300; i++) {
-            String status = jdbc().sql("SELECT status FROM sync_plan_sync_job WHERE job_id=:j").param("j", job)
-                    .query(String.class).optional().orElse("GONE");
-            if (!status.equals("QUEUED") && !status.equals("RUNNING")) return status;
-            Thread.sleep(100);
-        }
-        throw new AssertionError("plan sync did not finish");
+        String status = pollUntil(Duration.ofSeconds(30), () -> jdbc().sql("SELECT status FROM sync_plan_sync_job "
+                + "WHERE job_id=:j").param("j", job).query(String.class).optional().orElse("GONE"),
+                PlanSyncTestBase::finished);
+        if (!finished(status)) throw new AssertionError("plan sync did not finish");
+        return status;
+    }
+
+    /** A job status that no worker will move any more: neither waiting for a claim nor claimed. */
+    static boolean finished(String status) {
+        return !status.equals("QUEUED") && !status.equals("RUNNING");
     }
 
     /** The windows cover [start, tc] contiguously, each at most seven days, both types in each window. */
@@ -153,8 +156,8 @@ abstract class PlanSyncTestBase extends AuthFlowTestBase {
     /** {@link #publishedPlan(UUID, String, Instant)} whose conversion ends with {@code conversionStatus}. */
     UUID publishedPlan(UUID user, String prefix, @Nullable Instant start, String conversionStatus) throws Exception {
         UUID firstJob = sync.admit(user, prefix + "-seed").orElseThrow().jobId();
-        for (int i = 0; i < 100 && !"SUCCEEDED".equals(sync.job(user, firstJob).orElseThrow().status()); i++)
-            Thread.sleep(100);
+        pollUntil(Duration.ofSeconds(10), () -> sync.job(user, firstJob).orElseThrow().status(),
+                PlanSyncTestBase::finished);
         assertThat(sync.job(user, firstJob).orElseThrow().status()).isEqualTo("SUCCEEDED");
         var snapshot = plans.state(user).snapshot();
         String end = LocalDateTime.ofInstant(snapshot.measuredAt(), ZoneId.of("Asia/Seoul")).plusDays(30)
@@ -178,13 +181,8 @@ abstract class PlanSyncTestBase extends AuthFlowTestBase {
     }
 
     void awaitTable(String table, UUID job, String expected) throws InterruptedException {
-        String status = null;
-        for (int i = 0; i < 150; i++) {
-            status = jdbc().sql("SELECT status FROM " + table + " WHERE job_id=:j").param("j", job)
-                    .query(String.class).single();
-            if (!status.equals("QUEUED") && !status.equals("RUNNING")) break;
-            Thread.sleep(100);
-        }
+        String status = pollUntil(Duration.ofSeconds(15), () -> jdbc().sql("SELECT status FROM " + table
+                + " WHERE job_id=:j").param("j", job).query(String.class).single(), PlanSyncTestBase::finished);
         assertThat(status).as(table).isEqualTo(expected);
     }
 
@@ -249,5 +247,20 @@ abstract class PlanSyncTestBase extends AuthFlowTestBase {
             Thread.sleep(50);
         }
         throw new AssertionError("the sync never reached the plan lock");
+    }
+
+    /**
+     * Waits until no advisory lock is held or awaited. Called after the holder let go: the late worker took the
+     * plan lock inside its publishing transaction, so an empty {@code pg_locks} means that transaction ended.
+     *
+     * <p>Preconditions: the caller saw the late worker waiting on the plan lock ({@link #awaitBlockedOnPlanLock})
+     * and the holder has been joined ({@link #holdPlanLock}'s close). These tests hold no other advisory lock,
+     * so counting every advisory lock rather than the plan lock's key can only make the wait longer, never
+     * shorter; a key filter could pass vacuously if its arithmetic were off.
+     */
+    void awaitPlanLockReleased() throws InterruptedException {
+        int left = pollUntil(Duration.ofSeconds(10), () -> jdbc().sql("SELECT count(*) FROM pg_locks "
+                + "WHERE locktype='advisory'").query(Integer.class).single(), count -> count == 0);
+        if (left > 0) throw new AssertionError("the late worker never let go of the plan lock");
     }
 }

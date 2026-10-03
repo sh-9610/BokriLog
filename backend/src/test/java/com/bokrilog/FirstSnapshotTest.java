@@ -10,6 +10,7 @@ import com.bokrilog.source.SourceCredentials;
 import com.bokrilog.source.SourceProvider;
 import com.bokrilog.source.SourceVerification;
 import com.bokrilog.sync.SyncJobApi;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -488,7 +489,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         var failed=sync.cashflowConversionState(outage,outageIntent).job();
         assertThat(failed.retryable()).isTrue();
         assertThat(failed.reasonCode()).isEqualTo("PRICE_PROVIDER_UNAVAILABLE");
-        Thread.sleep(1200);
+        Thread.sleep(QUIET_WINDOW);
         assertThat(BybitStubConfiguration.requestCount(DevBybitStub.KLINE_PATH,"DOWNUSDT"))
                 .as("no automatic retry").isEqualTo(1);
         UUID retried=sync.admitCashflowConversion(outage,outageIntent,"conversion-outage-command-002").orElseThrow().jobId();
@@ -892,7 +893,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertThat(sync.admitCashflowConversion(replaced,replacedIntent,"conversion-replaced-command-001")).isEmpty();
         assertThat(sync.cashflowConversionState(replaced,replacedIntent).permitted()).isFalse();
         assertThat(jdbc().sql("SELECT count(*) FROM sync_cashflow_conversion_job").query(Integer.class).single()).isZero();
-        Thread.sleep(1200);
+        Thread.sleep(QUIET_WINDOW);
         assertThat(BybitStubConfiguration.requestCount()).isZero();
     }
 
@@ -978,7 +979,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                     .query(Integer.class).single()).isZero();
             assertNoConversionRowsFor(job);
             int calls=BybitStubConfiguration.requestCount();
-            Thread.sleep(1500);
+            Thread.sleep(QUIET_WINDOW);
             assertThat(BybitStubConfiguration.requestCount()).as("no automatic retry").isEqualTo(calls);
             assertThat(output.getAll()).contains("cash-flow conversion interrupted: job="+job)
                     .doesNotContain("injected conversion failure detail");
@@ -1137,13 +1138,10 @@ class FirstSnapshotTest extends AuthFlowTestBase {
     }
 
     private String awaitConversion(UUID job) throws InterruptedException {
-        for (int i=0;i<150;i++) {
-            String status=jdbc().sql("SELECT status FROM sync_cashflow_conversion_job WHERE job_id=:j")
-                    .param("j",job).query(String.class).single();
-            if (!status.equals("QUEUED")&&!status.equals("RUNNING")) return status;
-            Thread.sleep(100);
-        }
-        throw new AssertionError("cash-flow conversion did not finish");
+        String status=pollUntil(Duration.ofSeconds(15),()->jdbc().sql("SELECT status FROM sync_cashflow_conversion_job "
+                + "WHERE job_id=:j").param("j",job).query(String.class).single(),FirstSnapshotTest::finished);
+        if (!finished(status)) throw new AssertionError("cash-flow conversion did not finish");
+        return status;
     }
 
     private void awaitKlineCall(String symbol,int calls) throws InterruptedException {
@@ -1618,7 +1616,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 .param("u",user).query(Integer.class).single()).isZero();
         assertThat(jdbc().sql("SELECT count(*) FROM portfolio_snapshot WHERE user_id=:u")
                 .param("u",user).query(Integer.class).single()).isZero();
-        Thread.sleep(1200);
+        Thread.sleep(QUIET_WINDOW);
         assertThat(sync.job(user,job).orElseThrow().status()).isEqualTo("FAILED");
         assertThat(BybitStubConfiguration.requestCount()).isEqualTo(calls);
     }
@@ -1671,7 +1669,10 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 + "VALUES (:id,'first-snapshot')").param("id",UUID.randomUUID()).update();
         assertThat(sync.state(user).orElseThrow().restricted()).isTrue();
         assertThat(sync.state(user).orElseThrow().officialValue()).isNull();
-        Thread.sleep(2200);
+        // The next claim ends the attempt as BLOCKED (or, had a claim come first, its publication does).
+        String ended=pollUntil(Duration.ofSeconds(10),()->jdbc().sql("SELECT status FROM sync_job WHERE job_id=:j")
+                .param("j",job).query(String.class).single(),FirstSnapshotTest::finished);
+        if (!finished(ended)) throw new AssertionError("the restricted attempt was never claimed");
         assertThat(jdbc().sql("SELECT count(*) FROM sync_source_snapshot WHERE user_id=:u")
                 .param("u",user).query(Integer.class).single()).isZero();
         assertThat(jdbc().sql("SELECT status FROM sync_job WHERE job_id=:j")
@@ -1686,7 +1687,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         portfolio.erasePortfolioData(user);
         sync.eraseSyncData(user);
         source.eraseSourceData(user);
-        Thread.sleep(1200);
+        Thread.sleep(QUIET_WINDOW);
         assertThat(sync.admit(user,"after-erase")).isEmpty();
         assertThat(jdbc().sql("SELECT count(*) FROM portfolio_snapshot WHERE user_id=:u")
                 .param("u",user).query(Integer.class).single()).isZero();
@@ -2152,7 +2153,8 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         } finally {
             lock.close();
         }
-        Thread.sleep(2500);
+        awaitPlanLockReleased();
+        Thread.sleep(QUIET_WINDOW);
         assertThat(jdbc().sql("SELECT status||'|'||fencing_generation||'|'||(finished_at IS NULL) FROM "
                 + "sync_plan_publication_job WHERE job_id=:j").param("j",job).query(String.class).single())
                 .isEqualTo("RUNNING|"+(claimed+1)+"|true");
@@ -2199,7 +2201,8 @@ class FirstSnapshotTest extends AuthFlowTestBase {
             lock.close();
         }
         if (change.equals("DELETION")) {
-            Thread.sleep(2500);
+            awaitPlanLockReleased();
+            Thread.sleep(QUIET_WINDOW);
             for (String table : new String[] {"plan_definition","plan_condition_intent","portfolio_snapshot",
                     "sync_plan_calculation","sync_official_plan_result","sync_plan_publication_job","sync_source_snapshot",
                     "sync_calculable_cashflow","sync_initial_candidate_bundle"}) {
@@ -2277,7 +2280,8 @@ class FirstSnapshotTest extends AuthFlowTestBase {
             awaitBlockedOnPlanLock();
             jdbc().sql("UPDATE plan_condition_intent SET end_at=clock_timestamp()+interval '300 milliseconds' "
                     + "WHERE intent_id=:i").param("i",intent).update();
-            Thread.sleep(800);
+            awaitDatabaseClockPast(jdbc().sql("SELECT end_at FROM plan_condition_intent WHERE intent_id=:i")
+                    .param("i",intent).query(java.time.OffsetDateTime.class).single());
         } finally {
             lock.close();
         }
@@ -2352,7 +2356,10 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                     job,() -> jdbc().sql("UPDATE sync_plan_publication_job SET lease_until=clock_timestamp()"
                             + "+interval '1 second' WHERE job_id=:j").param("j",job).update());
             try {
-                Thread.sleep(2500);
+                // The holder's lease_until is invisible until it lets go, but it was set before this read:
+                // a second after this read is past it.
+                awaitDatabaseClockPast(jdbc().sql("SELECT clock_timestamp()+interval '1 second'")
+                        .query(java.time.OffsetDateTime.class).single());
             } finally {
                 rowLock.close();
             }
@@ -4619,13 +4626,10 @@ class FirstSnapshotTest extends AuthFlowTestBase {
     }
 
     private String awaitPublication(UUID job) throws InterruptedException {
-        for (int i=0;i<150;i++) {
-            String status=jdbc().sql("SELECT status FROM sync_plan_publication_job WHERE job_id=:j")
-                    .param("j",job).query(String.class).single();
-            if (!status.equals("QUEUED")&&!status.equals("RUNNING")) return status;
-            Thread.sleep(100);
-        }
-        throw new AssertionError("plan publication did not finish");
+        String status=pollUntil(Duration.ofSeconds(15),()->jdbc().sql("SELECT status FROM sync_plan_publication_job "
+                + "WHERE job_id=:j").param("j",job).query(String.class).single(),FirstSnapshotTest::finished);
+        if (!finished(status)) throw new AssertionError("plan publication did not finish");
+        return status;
     }
 
     /** No plan, calculation, pointer or tc snapshot; the portfolio pointer is still the first; the intent is open. */
@@ -4754,6 +4758,28 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         throw new AssertionError("the publication never reached the plan lock");
     }
 
+    /**
+     * Waits until no advisory lock is held or awaited. Called after the holder let go: the late worker took the
+     * plan lock inside its publishing transaction, so an empty {@code pg_locks} means that transaction ended.
+     *
+     * <p>Preconditions: the caller saw the late worker waiting on the plan lock ({@link #awaitBlockedOnPlanLock})
+     * and the holder has been joined ({@link #holdPlanLock}'s close). These tests hold no other advisory lock,
+     * so counting every advisory lock rather than the plan lock's key can only make the wait longer, never
+     * shorter; a key filter could pass vacuously if its arithmetic were off.
+     */
+    private void awaitPlanLockReleased() throws InterruptedException {
+        int left=pollUntil(Duration.ofSeconds(10),()->jdbc().sql("SELECT count(*) FROM pg_locks "
+                + "WHERE locktype='advisory'").query(Integer.class).single(),count->count==0);
+        if (left>0) throw new AssertionError("the late worker never let go of the plan lock");
+    }
+
+    /** Waits until the database clock, the one the publication judges by, is past {@code deadline}. */
+    private void awaitDatabaseClockPast(java.time.OffsetDateTime deadline) throws InterruptedException {
+        boolean passed=pollUntil(Duration.ofSeconds(10),()->jdbc().sql("SELECT clock_timestamp()>:d")
+                .param("d",deadline).query(Boolean.class).single(),Boolean::booleanValue);
+        if (!passed) throw new AssertionError("the database clock never passed "+deadline);
+    }
+
     private UUID connect(DevBybitStub.Scenario scenario) {
         UUID user=accountLifecycle().createAccount();
         store(user,scenario);
@@ -4773,28 +4799,26 @@ class FirstSnapshotTest extends AuthFlowTestBase {
     }
 
     private String await(UUID user,UUID job) throws InterruptedException {
-        for (int i=0;i<100;i++) {
-            String status=sync.job(user,job).orElseThrow().status();
-            if (!status.equals("QUEUED") && !status.equals("RUNNING")) return status;
-            Thread.sleep(100);
-        }
-        throw new AssertionError("job did not finish");
+        String status=pollUntil(Duration.ofSeconds(10),()->sync.job(user,job).orElseThrow().status(),
+                FirstSnapshotTest::finished);
+        if (!finished(status)) throw new AssertionError("job did not finish");
+        return status;
     }
     private String awaitInitial(UUID user,UUID job) throws InterruptedException {
-        for(int i=0;i<100;i++) {
-            String status=sync.initialCollectionJob(user,job).orElseThrow().status();
-            if(!status.equals("QUEUED")&&!status.equals("RUNNING")) return status;
-            Thread.sleep(100);
-        }
-        throw new AssertionError("initial input collection did not finish");
+        String status=pollUntil(Duration.ofSeconds(10),()->sync.initialCollectionJob(user,job).orElseThrow().status(),
+                FirstSnapshotTest::finished);
+        if (!finished(status)) throw new AssertionError("initial input collection did not finish");
+        return status;
     }
     private String awaitClassification(UUID job) throws InterruptedException {
-        for(int i=0;i<100;i++) {
-            String status=jdbc().sql("SELECT status FROM sync_cashflow_classification_job WHERE job_id=:j")
-                    .param("j",job).query(String.class).single();
-            if(!status.equals("QUEUED")&&!status.equals("RUNNING")) return status;
-            Thread.sleep(100);
-        }
-        throw new AssertionError("cash-flow classification did not finish");
+        String status=pollUntil(Duration.ofSeconds(10),()->jdbc().sql("SELECT status FROM "
+                + "sync_cashflow_classification_job WHERE job_id=:j").param("j",job).query(String.class).single(),
+                FirstSnapshotTest::finished);
+        if (!finished(status)) throw new AssertionError("cash-flow classification did not finish");
+        return status;
+    }
+    /** A job status that no worker will move any more: neither waiting for a claim nor claimed. */
+    private static boolean finished(String status) {
+        return !status.equals("QUEUED")&&!status.equals("RUNNING");
     }
 }

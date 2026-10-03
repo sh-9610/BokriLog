@@ -60,13 +60,15 @@ class IncrementalSyncTest extends PlanSyncTestBase {
         String subject = "incremental-manual-" + UUID.randomUUID();
         String cookie = sessionCookieOf(signIn(subject)).orElseThrow();
         UUID user = userIdOf(OidcStubConfiguration.issuer(), subject).orElseThrow();
-        store(user, DevBybitStub.Scenario.INCREMENTAL);
+        String uid = store(user, DevBybitStub.Scenario.INCREMENTAL);
         UUID intent = publishedPlan(user, "incremental-manual", null);
         var v1 = ready(user);
         assertThat(v1.pointerVersion()).isEqualTo(1);
         String planRow = planRow(user);
-        // New deposits arrive every 10 seconds: wait for at least one past the first version's tc.
-        Thread.sleep(Math.max(0, Duration.between(Instant.now(), v1.basisAt().plusSeconds(11)).toMillis()));
+        // New deposits arrive every 10 seconds: wait for the first one past the first version's tc, and a second —
+        // the same margin the old fixed wait (tc1 + 11 s) kept past the latest deposit it waited for (tc1 + 10 s).
+        Instant deposit = BybitStubConfiguration.nextIncrementalDeposit(uid, v1.basisAt());
+        Thread.sleep(Math.max(0, Duration.between(Instant.now(), deposit.plusSeconds(1)).toMillis()));
         String csrf = csrfTokenOf(cookie);
         // Not reset: the scenario's deposits are counted from this UID's first wallet read.
         int queriesBefore = BybitStubConfiguration.transactionLogQueries().size();
@@ -500,7 +502,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
                 .param("j", collection).update();
         jdbc().sql("UPDATE sync_cashflow_conversion_job SET lease_until=now()-interval '1 second' WHERE job_id=:j")
                 .param("j", conversion).update();
-        Thread.sleep(2_500);
+        Thread.sleep(QUIET_WINDOW);
         for (var child : List.of(new Object[] {"sync_initial_collection_job", collection},
                 new Object[] {"sync_cashflow_conversion_job", conversion})) {
             assertThat(jdbc().sql("SELECT status||'|'||fencing_generation FROM " + child[0] + " WHERE job_id=:j")
@@ -627,7 +629,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
         assertThat(dashboard.nextAction()).isEqualTo("SYNC");
         // No automatic retry.
         int calls = BybitStubConfiguration.requestCount();
-        Thread.sleep(1_500);
+        Thread.sleep(QUIET_WINDOW);
         assertThat(countOf("sync_plan_sync_job", user)).isEqualTo(1);
         assertThat(BybitStubConfiguration.requestCount()).isEqualTo(calls);
     }
@@ -707,7 +709,8 @@ class IncrementalSyncTest extends PlanSyncTestBase {
                     + "WHERE job_id=:j").param("j", job).update();
             assertThat(awaitSync(job)).isEqualTo("FAILED");
         }
-        Thread.sleep(1_000);
+        awaitPlanLockReleased();
+        Thread.sleep(QUIET_WINDOW);
         assertThat(jdbc().sql("SELECT status||'|'||failure_code FROM sync_plan_sync_job WHERE job_id=:j")
                 .param("j", job).query(String.class).single()).isEqualTo("FAILED|SYNC_INTERRUPTED");
         assertUnchanged(user, v1);
@@ -814,7 +817,12 @@ class IncrementalSyncTest extends PlanSyncTestBase {
             portfolio.erasePortfolioData(user);
             sync.eraseSyncData(user);
         }
-        Thread.sleep(1_500);
+        // The erasure ended the attempt with its one line. The late worker, woken when the holder let go, then
+        // ends its publishing transaction (the plan lock goes away) and writes nothing after it.
+        String ending = "plan sync finished: job=" + late + " ";
+        pollUntil(Duration.ofSeconds(10), () -> lines(output, ending), found -> !found.isEmpty());
+        awaitPlanLockReleased();
+        Thread.sleep(QUIET_WINDOW);
         for (String table : List.of("sync_plan_sync_job", "sync_initial_collection_job", "sync_cashflow_classification_job",
                 "sync_cashflow_conversion_job", "sync_initial_candidate_bundle", "sync_plan_calculation",
                 "sync_official_plan_result", "sync_official_plan_result_history")) {

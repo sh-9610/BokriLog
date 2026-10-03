@@ -275,6 +275,18 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-11-incremental-plan-sync.md`
   summary: `SyncControl.module.css`가 44×44 최소 조작 영역 규칙(`min-block-size`·`min-inline-size: var(--space-target-min)`)의 여섯 번째 사본이 됐다.
   evidence: Story 2.10이 다섯 번째 사본을 기록했다. 공통 규칙을 한 곳으로 모으는 일은 여러 화면 CSS 모듈을 함께 바꾸는 별도 정리다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-backend-test-speed.md`
+  summary: `FirstSnapshotTest.staleFenceCannotPublishAfterLeaseOwnershipChanges`의 `Thread.sleep(2000)`이 `SLOW_WALLET` 스텁 지연 2000ms와 같아, 단정이 늦은 워커가 스텁에서 돌아오기 전에 실행될 수 있다. 그러면 fence가 막는 쓰기를 한 번도 시도하지 않은 채 통과한다.
+  evidence: fence 증가는 `RUNNING`을 본 직후이고 지갑 호출은 claim보다 조금 늦게 시작하므로 2초 창이 스텁의 2초 응답을 덮지 못한다. 다른 느린 스텁 대기(582·627·1175·1197)는 500~1000ms 여유가 있다. 이 변경 전부터 있던 창이며 `spec-backend-test-speed.md`는 이 대기를 유지로 분류했다(리뷰).
+- source_spec: `_bmad-output/implementation-artifacts/spec-backend-test-speed.md`
+  summary: 느린 스텁 호출 중의 늦은 워커를 기다리는 고정 대기(`FirstSnapshotTest` 582·627·1175·1197·1659, 실행당 약 12.5초)는 시험 표면(`BybitStubConfiguration`)의 "느린 응답을 보냈다" 계수기와 `QUIET_WINDOW`로 바꾸면 결정적이고 짧아진다.
+  evidence: 스텁의 응답·지연은 바꾸지 않고 시험 표면에 계수기만 더하면 되지만, 이번 SPEC은 "끝이 관측되지 않는다"로 보고 유지했다. 남은 백엔드 시험 시간에서 가장 큰 고정 대기 묶음이다(리뷰).
+- source_spec: `_bmad-output/implementation-artifacts/spec-backend-test-speed.md`
+  summary: 세 fence 시험(`FirstSnapshotTest` 614·1167·1649)은 heartbeat가 스텁 지연 2초 창을 놓친 실행(약 60%)에서만 DB fence(`fencing_generation=:g`)를 지나고, 나머지는 heartbeat가 in-flight lease를 지운 메모리 guard에서 끝난다. DB fence 회귀는 확률적으로만 잡힌다.
+  evidence: `FirstSnapshotWorker.heartbeat`가 5초마다 fenced lease를 지우고 워커는 제공자 호출 뒤 메모리 guard를 먼저 본다. `spec-backend-test-speed.md`는 이 확률을 떨어뜨리지 않으려고 시험 heartbeat를 줄이지 않았다. 메모리 guard를 건너뛰고 DB fence만 보는 결정적 시험은 별도 작업이다(리뷰).
+- source_spec: `_bmad-output/implementation-artifacts/spec-backend-test-speed.md`
+  summary: 개발·CI compose 스택은 워커 dispatch를 운영 기본 1초로 돌려 `same-origin-integration`의 동기화 왕복(Story 2.11이 회귀 단계를 4 → 6분으로 올린 원인)이 단계마다 실제 tick을 기다린다.
+  evidence: `bokrilog.sync.worker.dispatch-interval`은 이제 설정이므로 production이 아닌 compose(`deploy/compose/compose.yaml`)만 짧게 줄 수 있다. 이번 범위는 백엔드 시험이라 compose와 E2E 예산은 건드리지 않았다(리뷰).
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-12-precision-reverification.md`
   summary: 44×44 최소 조작 영역 규칙의 일곱·여덟 번째 사본이 생겼다(`SyncControl.module.css`의 `.secondary`, `VerificationControl.module.css`의 `.button`). `.ranges`는 세 CSS 모듈에, `.facts`·진행 표지 `@keyframes`는 두 곳에 같은 모양으로 있다.
   evidence: Story 2.10·2.11이 다섯·여섯 번째 사본을 기록했다. 공통 규칙을 한 곳으로 모으는 일은 여러 화면 CSS 모듈을 함께 바꾸는 별도 정리다(Story 2.12 리뷰).
