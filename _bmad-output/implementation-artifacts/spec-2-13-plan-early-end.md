@@ -514,6 +514,13 @@ context:
   - 응답을 못 받은 확정 뒤에 취소하면 "확인하지 못했다" 표지와 함께 다시 읽는다.
   - 표시 계획이나 참조가 무장과 달라지면 대화상자를 닫는다. 확정 중일 때는 닫지 않는다.
 - **이름.** 루트 흐름 서비스는 `PlanEndCommandService`, plan 모듈은 `PlanEndService`다. plan 쪽 이름(상태·사유·완료 비교·사용 불가 사유)과 sync 사본은 `SyncCommandNamesTest`가 대조한다.
+- **초점 이동은 layout effect다(PR #57 CI 뒤).**
+  - 대상: `PlanResultPanel`의 세 초점 이동, `PlanEndDialog`의 기본 초점·키 처리기, `PlanEndControl`의 표지 초점.
+  - 원인: 이 초점 이동이 passive effect였을 때는 커밋 뒤 scheduler의 다음 작업에서 돌았다. 부하 아래에서는 새 DOM을 이미 본 시험 단정이 그보다 먼저 실행됐다.
+    - PR #57의 첫 CI가 실패한 시험은 `SignedInScreen` AC-13(401 뒤 초점)이었다.
+    - 로컬에서 CPU 부하를 걸자 대화상자의 기본 초점 시험도 재현됐다.
+  - layout effect로 옮긴 뒤에는 그 DOM을 바꾸는 같은 커밋 안에서 초점이 옮겨진다. 2.12가 탭 재표시 리스너를 옮긴 것과 같은 해결이다.
+  - 같은 부하에서 남은 간헐 실패 둘은 이 스토리 전부터 `develop`에 있던 같은 종류다. passive effect 안의 `replaceLocation`(목적지 이동 시험)과 passive effect가 거는 폴링 타이머(`InitialInputsCollection` 403 시험)이고, 별도 정리 대상이다.
 
 **실행 결과 (리뷰 patch 반영 뒤 최종 트리):**
 - 백엔드 `clean build`(`--no-parallel --max-workers=1`): 1044 tests 통과, 실패·skip 0, 5분 11초(독립 재실행에서도 같았다).

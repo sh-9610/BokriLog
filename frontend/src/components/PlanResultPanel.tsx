@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactElement, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, type ReactElement, type ReactNode } from 'react'
 
 import type { AdjustmentHistoryState } from '../session/useAdjustmentHistory'
 import type { EvidenceState } from '../session/useCalculationEvidence'
@@ -520,8 +520,12 @@ export function PlanResultPanel({
    * Focus on something inside the panel that went away is not dropped: when the view changes to a state without
    * the next-action block or without a bundle, or to the record of a plan ended early (which takes the sync,
    * verification and end controls with it).
+   *
+   * The three focus moves are layout effects: they run in the commit that removes or replaces the content, so focus
+   * never rests on the body for a frame. As passive effects they ran after the commit on the scheduler's own task,
+   * and under load that came after code that had already seen the new content (PR #57's CI).
    */
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (hasNextAction && hasResult && !ended) return
     const last = lastFocused.current
     const active = document.activeElement
@@ -530,7 +534,7 @@ export function PlanResultPanel({
   }, [hasNextAction, hasResult, ended])
 
   // A sync the user pressed ended with a new bundle: focus goes to the heading of what replaced the old one.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (syncFocus === null || syncFocus.serial === handledFocus.current) return
     if (syncFocus.target !== 'heading') return
     handledFocus.current = syncFocus.serial
@@ -542,7 +546,7 @@ export function PlanResultPanel({
    * goes to this heading — the record replaces the panel's content under it. A notice the end area would take while
    * the area is not shown (the record is) comes here too.
    */
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (endFocus === null || endFocus.serial === handledEndFocus.current) return
     // Every request is seen once: a notice request the end area took is never replayed here later.
     handledEndFocus.current = endFocus.serial

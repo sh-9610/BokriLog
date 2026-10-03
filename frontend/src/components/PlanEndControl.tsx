@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactElement } from 'react'
+import { useLayoutEffect, useRef, type ReactElement } from 'react'
 
 import type { Accepted } from '../session/useDashboard'
 import type { DashboardSync } from '../session/useDashboardSync'
@@ -65,7 +65,8 @@ export function PlanEndControl({
   const { focus, notice } = planEnd
   const { availability, reason } = bundle.planEnd
 
-  useEffect(() => {
+  // A layout effect, like the panel's focus moves: focus reaches the notice in the commit that shows it.
+  useLayoutEffect(() => {
     if (focus === null || focus.serial === handled.current || focus.target !== 'notice') return
     handled.current = focus.serial
     ;(noticeRef.current ?? buttonRef.current)?.focus()

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactElement } from 'react'
+import { useLayoutEffect, useRef, type ReactElement } from 'react'
 
 import type { PlanEndDialogView } from '../session/usePlanEnd'
 
@@ -59,11 +59,13 @@ export function PlanEndDialog({
    */
   const reason = dialog.reason
   const latest = useRef({ onCancel, pending, restoreFocus, reason })
-  useEffect(() => {
+  useLayoutEffect(() => {
     latest.current = { onCancel, pending, restoreFocus, reason }
   })
 
-  useEffect(() => {
+  // A layout effect: the default focus and the key handler are in place in the commit that shows the dialog, not on
+  // a later task that a keypress or a reader of the new dialog can come before.
+  useLayoutEffect(() => {
     const opener = document.activeElement
 
     // The default focus is cancel: one `Enter` must not end the plan.
