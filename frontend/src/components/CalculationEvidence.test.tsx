@@ -8,6 +8,7 @@ import {
   DASHBOARD_EVIDENCE_PATH,
   evidencePath,
 } from '../content/calculationEvidence'
+import { planEndContent } from '../content/planEnd'
 import { METRIC_ORDER, planPublicationContent, planResultContent } from '../content/planResult'
 import { planVerificationContent } from '../content/planVerification'
 import { formatSeoulTime } from '../format/decimal'
@@ -20,18 +21,28 @@ import {
 import {
   isPlanResult,
   NO_CHANGE,
+  parseDashboard,
+  UNKNOWN_PLAN_END,
+  UNKNOWN_SYNC,
+  UNKNOWN_VERIFICATION,
   type DashboardView,
   type PlanResult,
 } from '../session/useDashboard'
 import {
+  AVAILABLE_PLAN_END,
   AVAILABLE_SYNC,
   AVAILABLE_VERIFICATION,
   calculationEvidenceFixture,
   comparedMetricsFixture,
+  ENDED_AT,
+  endedDashboardFixture,
+  endRecordFixture,
   estimatedUndefinedFixture,
   EVIDENCE_IDS,
   evidenceChangeFixture,
   evidenceResultFixture,
+  idlePlanEnd,
+  idleReauthentication,
   idleSyncState,
   MEASURED_AT,
   PREVIOUS_BASIS_AT,
@@ -65,6 +76,8 @@ function ready(body: Record<string, unknown> = evidenceResultFixture()): Dashboa
     sync: AVAILABLE_SYNC,
     verification: AVAILABLE_VERIFICATION,
     change: NO_CHANGE,
+    planEnd: AVAILABLE_PLAN_END,
+    end: null,
   }
 }
 
@@ -97,6 +110,8 @@ function Harness({
     <>
       <p data-testid="announcement">{evidenceAnnouncement(evidence.view) ?? ''}</p>
       <PlanResultPanel
+        planEnd={idlePlanEnd()}
+        reauthentication={idleReauthentication()}
         adjustments={adjustments}
         dashboard={dashboard}
         evidence={evidence}
@@ -207,7 +222,8 @@ describe('CalculationEvidence', () => {
       copy.sections.metrics,
       copy.sections.versions,
     ])
-    // The panel's own sections are unchanged: the evidence sits inside the metrics section.
+    // The panel's own sections are unchanged: the evidence sits inside the metrics section (and the plan-end
+    // area of Story 2.13 closes the panel).
     expect(
       within(screen.getByRole('region', { name: planResultContent.heading }))
         .getAllByRole('heading', { level: 3 })
@@ -218,6 +234,7 @@ describe('CalculationEvidence', () => {
       planResultContent.metricsHeading,
       planResultContent.nextActionHeading,
       planResultContent.conditionsHeading,
+      planEndContent.area.heading,
     ])
     // No live region of its own and nothing that navigates.
     // eslint-disable-next-line testing-library/no-node-access -- 역할 없는 live region은 역할 조회로 보이지 않는다. 속성으로만 찾을 수 있다.
@@ -731,6 +748,8 @@ describe('CalculationEvidence', () => {
           sync: AVAILABLE_SYNC,
           verification: AVAILABLE_VERIFICATION,
           change: NO_CHANGE,
+          planEnd: AVAILABLE_PLAN_END,
+          end: null,
         }}
       />,
     )
@@ -745,6 +764,8 @@ describe('CalculationEvidence', () => {
           sync: AVAILABLE_SYNC,
           verification: AVAILABLE_VERIFICATION,
           change: NO_CHANGE,
+          planEnd: AVAILABLE_PLAN_END,
+          end: null,
         }}
       />,
     )
@@ -1106,5 +1127,51 @@ describe('CalculationEvidence', () => {
     expect(
       getObservedAllowedRequests().filter((entry) => entry.includes(DASHBOARD_EVIDENCE_PATH)),
     ).toEqual([])
+  })
+})
+
+describe('the evidence of a plan ended early (Story 2.13)', () => {
+  it('opens from the record, and names when the last official version stopped being applied: the end time', async () => {
+    const result = evidenceResultFixture({
+      planStatus: 'ENDED_EARLY',
+      trust: trustFixture({ freshness: { state: 'ENDED', cause: 'PLAN_ENDED_EARLY' } }),
+    })
+    const parsed = parseDashboard(endedDashboardFixture(result, endRecordFixture(result)))
+    if (parsed?.state !== 'ENDED') throw new Error('a malformed ENDED fixture')
+    const view: DashboardView = {
+      kind: 'ENDED',
+      result: parsed.result,
+      nextAction: parsed.nextAction,
+      sync: UNKNOWN_SYNC,
+      verification: UNKNOWN_VERIFICATION,
+      change: NO_CHANGE,
+      planEnd: UNKNOWN_PLAN_END,
+      end: parsed.end,
+    }
+    const evidence = calculationEvidenceFixture(result, {
+      versions: {
+        official: [
+          {
+            pointerVersion: result.pointerVersion,
+            calculationId: result.calculationId,
+            publishedAt: result.publishedAt,
+            appliedUntil: ENDED_AT,
+            current: true,
+          },
+        ],
+        unpublished: [],
+      },
+    })
+    const { urls } = answers(() => Promise.resolve(json(evidence)))
+    render(<Harness view={view} />)
+    await openEvidence()
+    const query = new URL(urls[0] ?? '', 'http://localhost').searchParams
+    expect(query.get('planId')).toBe(EVIDENCE_IDS.plan)
+    const [official] = within(part(copy.sections.versions)).getAllByRole('list')
+    if (official === undefined) throw new Error('the official list')
+    expect(official).toHaveTextContent(copy.versions.endedCurrent)
+    expect(official).not.toHaveTextContent(copy.versions.current)
+    // eslint-disable-next-line testing-library/no-node-access -- 기계 값은 `time` 요소의 속성에만 있다.
+    expect(official.querySelector(`time[datetime="${ENDED_AT}"]`)).not.toBeNull()
   })
 })

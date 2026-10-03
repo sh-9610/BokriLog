@@ -7,6 +7,7 @@ import { calculationEvidenceContent } from '../src/content/calculationEvidence'
 import { entryContent } from '../src/content/entry'
 import { firstSnapshotContent } from '../src/content/firstSnapshot'
 import { planConditionContent } from '../src/content/planConditions'
+import { planEndContent } from '../src/content/planEnd'
 import {
   activePlanContent,
   METRIC_ORDER,
@@ -75,12 +76,14 @@ async function expectFirstResult(page: Page, derived: 'OFFICIAL' | 'ESTIMATED'):
   // Right after the first publication the result is fresh (or a sync is running): `SYNC` cannot occur here.
   expect(['NONE', 'WAIT_FOR_SYNC']).toContain(probe.nextAction)
 
+  // Story 2.13: the plan-end area closes the active plan's panel, after the plan terms.
   await expect(panel.getByRole('heading', { level: 3 })).toHaveText([
     planResultContent.currentHeading,
     planResultContent.trustHeading,
     planResultContent.metricsHeading,
     planResultContent.nextActionHeading,
     planResultContent.conditionsHeading,
+    planEndContent.area.heading,
   ])
   const trust = panel.getByRole('region', { name: planResultContent.trustHeading })
   const axes = trust.getByRole('group')

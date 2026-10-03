@@ -8,6 +8,7 @@ import { adjustmentHistoryContent } from '../content/adjustmentHistory'
 import { ENTRY_PATH } from '../content/auth'
 import { calculationEvidenceContent } from '../content/calculationEvidence'
 import { planConditionContent } from '../content/planConditions'
+import { planEndContent } from '../content/planEnd'
 import {
   axisActionCopy,
   planResultContent as copy,
@@ -22,6 +23,7 @@ import {
   isPlanResult,
   NO_CHANGE,
   parseDashboard,
+  parsePlanEndStatus,
   parseSyncStatus,
   parseVerificationStatus,
   parseVersionChange,
@@ -31,15 +33,21 @@ import {
   type PlanResult,
 } from '../session/useDashboard'
 import {
+  AVAILABLE_PLAN_END,
   AVAILABLE_SYNC,
   AVAILABLE_VERIFICATION,
   BASIS_AT,
   changeFixture,
   dashboardFixture,
+  endedDashboardFixture,
+  endedResultFixture,
   estimatedUndefinedFixture,
+  idlePlanEnd,
+  idleReauthentication,
   idleSyncState,
   MEASURED_AT,
   NO_PLAN_FIXTURE,
+  planEndFixture,
   planResultFixture,
   PREPARING_FIXTURE,
   syncFixture,
@@ -66,6 +74,8 @@ function ready(
     sync: AVAILABLE_SYNC,
     verification: AVAILABLE_VERIFICATION,
     change: NO_CHANGE,
+    planEnd: AVAILABLE_PLAN_END,
+    end: null,
   }
 }
 
@@ -93,6 +103,8 @@ function closedAdjustments(): AdjustmentHistoryState {
 function renderPanel(view: DashboardView, loading = false): void {
   render(
     <PlanResultPanel
+      planEnd={idlePlanEnd()}
+      reauthentication={idleReauthentication()}
       adjustments={closedAdjustments()}
       evidence={closedEvidence()}
       dashboard={dashboard(view, loading)}
@@ -151,12 +163,14 @@ describe('PlanResultPanel', () => {
   it('AC-3/AC-11: leads with the current value, then the axes, the other five metrics, the next action and the terms', () => {
     renderPanel(ready())
 
+    // Story 2.13: the plan-end area closes the active plan's panel, after the terms.
     expect(sectionOrder()).toEqual([
       copy.currentHeading,
       copy.trustHeading,
       copy.metricsHeading,
       copy.nextActionHeading,
       copy.conditionsHeading,
+      planEndContent.area.heading,
     ])
     // Six cards in the metric order; the current value is the first and appears once.
     expect(cards().map((each) => within(each).getByRole('heading').textContent)).toEqual(NAMES)
@@ -551,6 +565,8 @@ describe('PlanResultPanel', () => {
       sync: AVAILABLE_SYNC,
       verification: AVAILABLE_VERIFICATION,
       change: NO_CHANGE,
+      planEnd: AVAILABLE_PLAN_END,
+      end: null,
     })
 
     expect(nextAction()).toHaveTextContent(nextActionCopy('NONE', null))
@@ -637,6 +653,8 @@ describe('PlanResultPanel', () => {
         sync: AVAILABLE_SYNC,
         verification: AVAILABLE_VERIFICATION,
         change: NO_CHANGE,
+        planEnd: AVAILABLE_PLAN_END,
+        end: null,
       })
 
       expect(screen.getByText(copy.lastGoodLabel)).toBeInTheDocument()
@@ -654,6 +672,8 @@ describe('PlanResultPanel', () => {
         sync: AVAILABLE_SYNC,
         verification: AVAILABLE_VERIFICATION,
         change: NO_CHANGE,
+        planEnd: AVAILABLE_PLAN_END,
+        end: null,
       }
       renderPanel({ kind: 'retryable', kept })
 
@@ -710,6 +730,8 @@ describe('PlanResultPanel', () => {
     const reload = vi.fn()
     const { rerender } = render(
       <PlanResultPanel
+        planEnd={idlePlanEnd()}
+        reauthentication={idleReauthentication()}
         adjustments={closedAdjustments()}
         evidence={closedEvidence()}
         dashboard={dashboard(ready(), false, reload)}
@@ -722,6 +744,8 @@ describe('PlanResultPanel', () => {
 
     rerender(
       <PlanResultPanel
+        planEnd={idlePlanEnd()}
+        reauthentication={idleReauthentication()}
         adjustments={closedAdjustments()}
         evidence={closedEvidence()}
         dashboard={dashboard(ready(), true, reload)}
@@ -737,6 +761,8 @@ describe('PlanResultPanel', () => {
     button.focus()
     rerender(
       <PlanResultPanel
+        planEnd={idlePlanEnd()}
+        reauthentication={idleReauthentication()}
         adjustments={closedAdjustments()}
         evidence={closedEvidence()}
         dashboard={dashboard(
@@ -747,6 +773,8 @@ describe('PlanResultPanel', () => {
             sync: AVAILABLE_SYNC,
             verification: AVAILABLE_VERIFICATION,
             change: NO_CHANGE,
+            planEnd: AVAILABLE_PLAN_END,
+            end: null,
           },
           false,
           reload,
@@ -767,6 +795,8 @@ describe('PlanResultPanel', () => {
     (_name, next) => {
       const { rerender } = render(
         <PlanResultPanel
+          planEnd={idlePlanEnd()}
+          reauthentication={idleReauthentication()}
           adjustments={closedAdjustments()}
           evidence={closedEvidence()}
           dashboard={dashboard(ready())}
@@ -777,6 +807,8 @@ describe('PlanResultPanel', () => {
 
       rerender(
         <PlanResultPanel
+          planEnd={idlePlanEnd()}
+          reauthentication={idleReauthentication()}
           adjustments={closedAdjustments()}
           evidence={closedEvidence()}
           dashboard={dashboard(next)}
@@ -794,6 +826,8 @@ describe('PlanResultPanel', () => {
       <>
         <button type="button">outside</button>
         <PlanResultPanel
+          planEnd={idlePlanEnd()}
+          reauthentication={idleReauthentication()}
           adjustments={closedAdjustments()}
           evidence={closedEvidence()}
           dashboard={dashboard(ready())}
@@ -809,6 +843,8 @@ describe('PlanResultPanel', () => {
       <>
         <button type="button">outside</button>
         <PlanResultPanel
+          planEnd={idlePlanEnd()}
+          reauthentication={idleReauthentication()}
           adjustments={closedAdjustments()}
           evidence={closedEvidence()}
           dashboard={dashboard({ kind: 'denied', cause: 'refused' })}
@@ -1191,6 +1227,8 @@ describe('PlanResultPanel', () => {
       } as DashboardView
       render(
         <PlanResultPanel
+          planEnd={idlePlanEnd()}
+          reauthentication={idleReauthentication()}
           adjustments={closedAdjustments()}
           dashboard={dashboard(view)}
           evidence={closedEvidence()}
@@ -1249,6 +1287,8 @@ describe('PlanResultPanel', () => {
       } as DashboardView
       render(
         <PlanResultPanel
+          planEnd={idlePlanEnd()}
+          reauthentication={idleReauthentication()}
           adjustments={closedAdjustments()}
           dashboard={dashboard(view)}
           evidence={closedEvidence()}
@@ -1259,7 +1299,12 @@ describe('PlanResultPanel', () => {
       expect(
         within(trust).queryByRole('button', { name: planSyncContent.longGap.continueAction }),
       ).not.toBeInTheDocument()
-      expect(within(trust).queryAllByRole('button')).toHaveLength(0)
+      // Story 2.13: the catch-up cannot help, but ending the plan with the gap recorded still can be asked for.
+      expect(
+        within(trust)
+          .getAllByRole('button')
+          .map((button) => button.textContent),
+      ).toEqual([planSyncContent.longGap.newPlanAction])
       expect(
         within(trust).getAllByText(planVerificationContent.catchUp.notUseful.label),
       ).toHaveLength(1)
@@ -1318,4 +1363,108 @@ describe('PlanResultPanel', () => {
       )
     })
   })
+})
+
+describe('Story 2.13: the long-gap choice 새 계획 시작 is wired to the end flow', () => {
+  function longGap(): DashboardView {
+    return {
+      ...ready(planResultFixture(), 'CHOOSE_CONTINUATION'),
+      sync: parseSyncStatus(syncFixture({ availability: 'LONG_GAP' })),
+      verification: parseVerificationStatus(
+        verificationFixture({
+          availability: 'LONG_GAP',
+          preview: null,
+          catchUpFrom: '2026-08-20T01:00:00Z',
+        }),
+      ),
+      planEnd: parsePlanEndStatus(planEndFixture({ availability: 'NEW_PLAN_CHOICE' })),
+    } as DashboardView
+  }
+
+  function renderLongGap(pending: boolean, request: (reason: string) => void): void {
+    render(
+      <PlanResultPanel
+        adjustments={closedAdjustments()}
+        dashboard={dashboard(longGap())}
+        evidence={closedEvidence()}
+        planEnd={idlePlanEnd({ request })}
+        reauthentication={idleReauthentication({ pending })}
+        sync={idleSyncState({ canRequest: false, canCatchUp: true })}
+      />,
+    )
+  }
+
+  function newPlan(): HTMLElement {
+    return screen.getByRole('button', { name: planSyncContent.longGap.newPlanAction })
+  }
+
+  it('is enabled and starts the end flow with the long-gap reason; the end area only names it', () => {
+    const request = vi.fn()
+    renderLongGap(false, request)
+    expect(newPlan()).toHaveAttribute('aria-disabled', 'false')
+    fireEvent.click(newPlan())
+    expect(request).toHaveBeenCalledWith('LONG_GAP_NEW_PLAN')
+    const area = screen.getByRole('region', { name: planEndContent.area.heading })
+    expect(area).toHaveTextContent(planEndContent.area.newPlanChoice)
+    expect(within(area).queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('is blocked while a reauthentication is leaving, and says why', () => {
+    const request = vi.fn()
+    renderLongGap(true, request)
+    expect(newPlan()).toHaveAttribute('aria-disabled', 'true')
+    expect(newPlan()).toHaveAccessibleDescription(planEndContent.area.leaving)
+    fireEvent.click(newPlan())
+    expect(request).not.toHaveBeenCalled()
+  })
+})
+
+describe('Story 2.13: the record says nothing it cannot act on', () => {
+  it.each([
+    ['REVIEW_REQUIRED', 'VERIFICATION_REVIEW_REQUIRED'],
+    ['UNUSABLE', 'HISTORY_OUT_OF_RANGE'],
+    ['REVIEW_REQUIRED', 'SYNC_REVIEW_REQUIRED'],
+  ])(
+    'an ended plan whose input reliability is %s (%s) shows the state and cause, no held notice, and nothing to do',
+    (state, cause) => {
+      const result = endedResultFixture({
+        trust: trustFixture({
+          freshness: {
+            state: 'ENDED',
+            cause: 'PLAN_ENDED_EARLY',
+            affectedMetrics: METRIC_ORDER,
+          },
+          inputReliability: { state, cause, nextAction: 'VERIFY' },
+          calculationNature: { nextAction: 'VERIFY' },
+        }),
+      })
+      const parsed = parseDashboard(endedDashboardFixture(result))
+      if (parsed?.state !== 'ENDED') throw new Error('a malformed ENDED fixture')
+      renderPanel({
+        kind: 'ENDED',
+        result: parsed.result,
+        nextAction: parsed.nextAction,
+        sync: AVAILABLE_SYNC,
+        verification: AVAILABLE_VERIFICATION,
+        change: NO_CHANGE,
+        planEnd: AVAILABLE_PLAN_END,
+        end: parsed.end,
+      })
+      const trust = screen.getByRole('region', { name: copy.trustHeading })
+      const [reliability, nature] = within(trust).getAllByRole('group')
+      if (reliability === undefined || nature === undefined) throw new Error('two axes')
+      expect(within(trust).getAllByRole('group')).toHaveLength(2)
+      expect(reliability).toHaveAccessibleName(named('reliability', state))
+      expect(reliability).toHaveTextContent(copy.axes.reliability.causes[cause] ?? 'missing')
+      expect(reliability).not.toHaveTextContent(planVerificationContent.held.notice)
+      for (const notice of Object.values(planVerificationContent.held.notices)) {
+        expect(reliability).not.toHaveTextContent(notice)
+      }
+      for (const axis of [reliability, nature]) {
+        expect(axis).toHaveTextContent(axisActionCopy('NONE'))
+        expect(axis).not.toHaveTextContent(axisActionCopy('VERIFY'))
+      }
+      expect(within(trust).queryAllByRole('button')).toHaveLength(0)
+    },
+  )
 })

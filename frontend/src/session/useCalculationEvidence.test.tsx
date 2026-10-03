@@ -7,13 +7,14 @@ import {
   EVIDENCE_IDS,
   evidenceResultFixture,
   laterEvidenceFixture,
+  trustFixture,
 } from '../test/planResultFixture'
 import {
   getObservedAllowedRequests,
   getObservedStorageEntries,
   stubCalculationEvidence,
 } from '../test/setup'
-import { useCalculationEvidence, type EvidenceState } from './useCalculationEvidence'
+import { parseEvidence, useCalculationEvidence, type EvidenceState } from './useCalculationEvidence'
 import { isPlanResult, type PlanResult } from './useDashboard'
 
 /** No dashboard to ask: these cases are about the evidence alone. */
@@ -295,6 +296,91 @@ describe('useCalculationEvidence', () => {
     )
 
     rerender({ shown: null })
+    expect(result.current.view).toEqual({ kind: 'closed' })
+  })
+})
+
+describe('the evidence of a plan ended early (Story 2.13)', () => {
+  const ENDED = '2026-09-28T03:04:05.678Z'
+
+  function endedBundle(): PlanResult {
+    return bundle({
+      planStatus: 'ENDED_EARLY',
+      trust: trustFixture({
+        freshness: { state: 'ENDED', cause: 'PLAN_ENDED_EARLY' },
+      }),
+    })
+  }
+
+  /** The evidence of the shown version, its current version applied until `appliedUntil`. */
+  function evidenceUntil(result: PlanResult, appliedUntil: string | null): Record<string, unknown> {
+    const body = result as unknown as Record<string, unknown>
+    return calculationEvidenceFixture(body, {
+      versions: {
+        official: [
+          {
+            pointerVersion: result.pointerVersion,
+            calculationId: result.calculationId,
+            publishedAt: result.publishedAt,
+            appliedUntil,
+            current: true,
+          },
+        ],
+        unpublished: [],
+      },
+    })
+  }
+
+  it('the current version of an ended plan is applied until exactly its end time', () => {
+    const shown = endedBundle()
+    expect(parseEvidence(evidenceUntil(shown, ENDED), shown, ENDED)).not.toBeNull()
+    // Still applied, another time, or no end time to compare with: not the lineage of this record.
+    expect(parseEvidence(evidenceUntil(shown, null), shown, ENDED)).toBeNull()
+    expect(parseEvidence(evidenceUntil(shown, '2026-09-28T03:04:05Z'), shown, ENDED)).toBeNull()
+    expect(parseEvidence(evidenceUntil(shown, ENDED), shown, null)).toBeNull()
+  })
+
+  it('an active plan’s current version is still applied', () => {
+    const shown = bundle()
+    expect(parseEvidence(evidenceUntil(shown, null), shown)).not.toBeNull()
+    expect(parseEvidence(evidenceUntil(shown, ENDED), shown)).toBeNull()
+  })
+
+  it('reads the record’s evidence with the same three reference values', async () => {
+    const shown = endedBundle()
+    let asked = ''
+    stubCalculationEvidence((url) => {
+      asked = url
+      return Promise.resolve(json(evidenceUntil(shown, ENDED)))
+    })
+    const { result } = renderHook(() => useCalculationEvidence(shown, noop, ENDED))
+    act(() => {
+      result.current.open()
+    })
+    await waitFor(() => {
+      expect(result.current.view.kind).toBe('ready')
+    })
+    const query = new URL(asked, 'http://localhost').searchParams
+    expect(query.get('planId')).toBe(shown.planId)
+    expect(query.get('pointerVersion')).toBe(String(shown.pointerVersion))
+    expect(query.get('calculationId')).toBe(shown.calculationId)
+  })
+
+  it('closes the evidence read while the plan was active when the same version becomes the record', async () => {
+    const active = bundle()
+    answers(() => Promise.resolve(json(evidenceUntil(active, null))))
+    const { result, rerender } = renderHook(
+      ({ shown, endedAt }: { shown: PlanResult; endedAt: string | null }) =>
+        useCalculationEvidence(shown, noop, endedAt),
+      { initialProps: { shown: active, endedAt: null as string | null } },
+    )
+    act(() => {
+      result.current.open()
+    })
+    await waitFor(() => {
+      expect(result.current.view.kind).toBe('ready')
+    })
+    rerender({ shown: endedBundle(), endedAt: ENDED })
     expect(result.current.view).toEqual({ kind: 'closed' })
   })
 })

@@ -14,6 +14,7 @@ import {
 } from '../content/auth'
 import { calculationEvidenceContent } from '../content/calculationEvidence'
 import { entryContent } from '../content/entry'
+import { planEndContent } from '../content/planEnd'
 import { DASHBOARD_PATH, METRIC_ORDER, planResultContent } from '../content/planResult'
 import { DASHBOARD_SYNC_PATH, planSyncContent } from '../content/planSync'
 import { formatSeoulTime } from '../format/decimal'
@@ -24,6 +25,8 @@ import {
   BASIS_AT,
   calculationEvidenceFixture,
   dashboardFixture,
+  ENDED_AT,
+  endedDashboardFixture,
   EVIDENCE_IDS,
   evidenceResultFixture,
   NO_PLAN_FIXTURE,
@@ -37,6 +40,8 @@ import {
   stubDashboard,
   stubDashboardSync,
   stubLogoutRequest,
+  stubPlanEndConfirm,
+  stubPlanEndPrepare,
   stubReauthenticationRequest,
   stubSessionRequest,
 } from '../test/setup'
@@ -934,5 +939,111 @@ describe('OnboardingScreen', () => {
      * 주소는 누구나 적을 수 있으므로 거름은 화면의 일이고, 타입이 그 거름을 강제한다.
      */
     expect(screen.queryByText(authContent.notices.loggedOut)).not.toBeInTheDocument()
+  })
+})
+
+describe('OnboardingScreen: 계획 중도 종료 (Story 2.13)', () => {
+  const TOKEN = 'onboarding-csrf-token'
+
+  function signedIn(): Promise<Response> {
+    return Promise.resolve(
+      jsonResponse({ authenticated: true, destination: 'onboarding', csrfToken: TOKEN }),
+    )
+  }
+
+  function syncPosts(): number {
+    return getObservedAllowedRequests().filter((entry) => entry === `POST ${DASHBOARD_SYNC_PATH}`)
+      .length
+  }
+
+  it('a first-login session ends its plan from the same panel: the dialog over an inert page, then the record', async () => {
+    stubSessionRequest(signedIn)
+    let ended = false
+    stubDashboard(() =>
+      Promise.resolve(jsonResponse(ended ? endedDashboardFixture() : dashboardFixture())),
+    )
+    stubPlanEndPrepare(() =>
+      Promise.resolve(
+        jsonResponse({
+          reason: 'USER_REQUEST',
+          planId: 'plan-1',
+          pointerVersion: 1,
+          calculationId: 'calculation-1',
+          confirmation: 'plan-end|USER_REQUEST|plan-1|1|calculation-1',
+        }),
+      ),
+    )
+    stubPlanEndConfirm(() => {
+      ended = true
+      return Promise.resolve(
+        jsonResponse({
+          outcome: 'ENDED',
+          planId: 'plan-1',
+          reason: 'USER_REQUEST',
+          endedAt: ENDED_AT,
+        }),
+      )
+    })
+    render(<OnboardingScreen />)
+    // The entry sync's automatic admission blocks the button until it answers.
+    const end = await screen.findByRole('button', { name: planEndContent.area.action })
+    await waitFor(() => {
+      expect(end).toHaveAttribute('aria-disabled', 'false')
+    })
+    fireEvent.click(end)
+    const dialog = await screen.findByRole('dialog')
+    // eslint-disable-next-line testing-library/no-node-access -- `inert`는 역할 조회로 드러나지 않는 속성이다.
+    const page = document.querySelector('[inert]')
+    expect(page).toContainElement(screen.getByRole('main'))
+    expect(page).not.toContainElement(dialog)
+    expect(within(dialog).getByRole('button', { name: planEndContent.dialog.cancel })).toHaveFocus()
+    fireEvent.click(within(dialog).getByRole('button', { name: planEndContent.dialog.confirm }))
+    expect(await screen.findByRole('region', { name: planEndContent.record.heading })).toBeVisible()
+    expect(screen.getByRole('heading', { level: 2, name: planResultContent.heading })).toHaveFocus()
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    // The onboarding's own section stays below the panel.
+    expect(
+      screen.getByRole('heading', { level: 2, name: authContent.onboarding.heading }),
+    ).toBeVisible()
+    expect(getObservedStorageEntries()).toEqual([])
+  })
+
+  it('without a recent reauthentication: the provider buttons in the end area, and a press says it is leaving', async () => {
+    stubSessionRequest(signedIn)
+    stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture())))
+    stubPlanEndPrepare(() =>
+      Promise.resolve(
+        jsonResponse({ code: 'REAUTHENTICATION_REQUIRED', message: 'x', correlationId: 'c' }, 403),
+      ),
+    )
+    stubReauthenticationRequest('kakao', () => Promise.resolve(new Response(null, { status: 204 })))
+    render(<OnboardingScreen />)
+    const end = await screen.findByRole('button', { name: planEndContent.area.action })
+    await waitFor(() => {
+      expect(end).toHaveAttribute('aria-disabled', 'false')
+    })
+    fireEvent.click(end)
+    expect(await screen.findByText(planEndContent.reauth.text)).toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(planEndContent.status.reauthRequired)
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.reauth.labels.kakao }))
+    await waitFor(() => {
+      expect(navigateTo).toHaveBeenCalledWith(authorizePath('kakao'))
+    })
+    expect(screen.getByRole('status')).toHaveTextContent(authContent.reauth.pending)
+    // The end button says why it is blocked while the reauthentication leaves.
+    expect(end).toHaveAttribute('aria-disabled', 'true')
+    expect(end).toHaveAccessibleDescription(planEndContent.area.leaving)
+  })
+
+  it('the record asks for no sync, and keeps the title and its disclaimer side by side', async () => {
+    stubSessionRequest(signedIn)
+    stubDashboard(() => Promise.resolve(jsonResponse(endedDashboardFixture())))
+    render(<OnboardingScreen />)
+    expect(await screen.findByRole('region', { name: planEndContent.record.heading })).toBeVisible()
+    await new Promise((settle) => setTimeout(settle, 30))
+    expect(syncPosts()).toBe(0)
+    const title = screen.getByRole('heading', { level: 1 })
+    expect(title.nextElementSibling?.textContent).toBe(authContent.disclaimer)
   })
 })

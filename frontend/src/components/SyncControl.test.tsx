@@ -8,6 +8,7 @@ import type { DashboardSync } from '../session/useDashboardSync'
 
 import { calculationEvidenceContent } from '../content/calculationEvidence'
 import { entryContent } from '../content/entry'
+import { planEndContent } from '../content/planEnd'
 import { axisActionCopy, nextActionCopy, planResultContent } from '../content/planResult'
 import { planSyncContent as copy, planSyncCopyStrings } from '../content/planSync'
 import { planVerificationContent } from '../content/planVerification'
@@ -15,6 +16,7 @@ import { formatSeoulTime } from '../format/decimal'
 import {
   isPlanResult,
   NO_CHANGE,
+  parsePlanEndStatus,
   parseSyncStatus,
   parseVerificationStatus,
   UNKNOWN_SYNC,
@@ -23,9 +25,13 @@ import {
   type VerificationStatus,
 } from '../session/useDashboard'
 import {
+  AVAILABLE_PLAN_END,
   AVAILABLE_SYNC,
   AVAILABLE_VERIFICATION,
+  idlePlanEnd,
+  idleReauthentication,
   idleSyncState,
+  planEndFixture,
   planResultFixture,
   syncFixture,
   syncJobFixture,
@@ -34,7 +40,7 @@ import {
 } from '../test/planResultFixture'
 import { getObservedStorageEntries } from '../test/setup'
 import { PlanResultPanel } from './PlanResultPanel'
-import { SyncControl } from './SyncControl'
+import { SyncControl, type NewPlanChoice } from './SyncControl'
 
 function status(overrides: Record<string, unknown> = {}): SyncStatus {
   const parsed = parseSyncStatus(syncFixture(overrides))
@@ -321,8 +327,16 @@ describe('SyncControl', () => {
       // Story 2.12: the catch-up runs from here; the old "cannot choose here" wording is gone.
       expect(explanation).not.toHaveTextContent('선택할 수 없습니다')
       expect(screen.getByRole('button', { name: copy.longGap.continueAction })).toBeVisible()
-      // `새 계획 시작` is explained only: one button, and nothing links to a screen that does not exist.
-      expect(screen.getAllByRole('button')).toHaveLength(1)
+      // Story 2.13: both ways to continue are buttons, the catch-up first; nothing links to a screen that does not
+      // exist. Without the end flow (a test of another part) `새 계획 시작` is blocked, for a reason not known.
+      expect(screen.getAllByRole('button').map((each) => each.textContent)).toEqual([
+        copy.longGap.continueAction,
+        copy.longGap.newPlanAction,
+      ])
+      expect(screen.getByRole('button', { name: copy.longGap.newPlanAction })).toHaveAttribute(
+        'aria-disabled',
+        'true',
+      )
       expect(screen.queryByRole('link')).not.toBeInTheDocument()
     },
   )
@@ -525,6 +539,8 @@ describe('the sync control in the dashboard panel', () => {
     expect(isPlanResult(body)).toBe(true)
     return (
       <PlanResultPanel
+        planEnd={idlePlanEnd()}
+        reauthentication={idleReauthentication()}
         adjustments={{
           view: { kind: 'closed' },
           open: vi.fn(),
@@ -541,6 +557,8 @@ describe('the sync control in the dashboard panel', () => {
             sync: AVAILABLE_SYNC,
             verification: AVAILABLE_VERIFICATION,
             change: NO_CHANGE,
+            planEnd: AVAILABLE_PLAN_END,
+            end: null,
           },
           loading: false,
           reload: vi.fn(),
@@ -809,7 +827,10 @@ describe('the catch-up after a long gap (Story 2.12)', () => {
     expect(
       screen.queryByRole('button', { name: copy.longGap.continueAction }),
     ).not.toBeInTheDocument()
-    expect(screen.queryAllByRole('button')).toHaveLength(0)
+    // Story 2.13: ending the plan with the gap recorded is still a way out; it is the one button left.
+    expect(screen.getAllByRole('button').map((each) => each.textContent)).toEqual([
+      copy.longGap.newPlanAction,
+    ])
     const notice = summaryWith(catchUp.notUseful.label)
     expect(notice).toHaveTextContent(catchUp.notUseful.text)
     expect(notice).toHaveAttribute('tabindex', '-1')
@@ -958,6 +979,8 @@ describe('the catch-up after a long gap (Story 2.12)', () => {
       const body = planResultFixture()
       return (
         <PlanResultPanel
+          planEnd={idlePlanEnd()}
+          reauthentication={idleReauthentication()}
           adjustments={{
             view: { kind: 'closed' },
             open: vi.fn(),
@@ -974,6 +997,8 @@ describe('the catch-up after a long gap (Story 2.12)', () => {
               sync: syncStatus,
               verification,
               change: NO_CHANGE,
+              planEnd: AVAILABLE_PLAN_END,
+              end: null,
             },
             loading: false,
             reload: vi.fn(),
@@ -1099,5 +1124,254 @@ describe('the sync control beside a precision verification (Story 2.12)', () => 
       />,
     )
     expect(screen.queryByText(copy.local.error.label)).not.toBeInTheDocument()
+  })
+})
+
+describe('새 계획 시작 in the long-gap choice (Story 2.13)', () => {
+  const FROM = '2026-08-20T01:00:00Z'
+  const longGapStatus = (): SyncStatus => status({ availability: 'LONG_GAP' })
+
+  function gap(overrides: Record<string, unknown> = {}): VerificationStatus {
+    return parseVerificationStatus(
+      verificationFixture({
+        availability: 'LONG_GAP',
+        preview: null,
+        catchUpFrom: FROM,
+        ...overrides,
+      }),
+    )
+  }
+
+  function choice(overrides: Partial<NewPlanChoice> = {}): NewPlanChoice {
+    return {
+      status: parsePlanEndStatus(planEndFixture({ availability: 'NEW_PLAN_CHOICE' })),
+      flow: idlePlanEnd(),
+      leaving: false,
+      ...overrides,
+    }
+  }
+
+  function newPlanButton(): HTMLElement {
+    return screen.getByRole('button', { name: copy.longGap.newPlanAction })
+  }
+
+  it('sits right after 기존 계획 계속 and starts the end flow with the long-gap reason', () => {
+    const request = vi.fn()
+    render(
+      <SyncControl
+        newPlan={choice({ flow: idlePlanEnd({ request }) })}
+        status={longGapStatus()}
+        sync={idleSyncState({ canRequest: false, canCatchUp: true })}
+        verification={gap()}
+      />,
+    )
+    expect(screen.getAllByRole('button').map((each) => each.textContent)).toEqual([
+      copy.longGap.continueAction,
+      copy.longGap.newPlanAction,
+    ])
+    expect(newPlanButton()).toHaveAttribute('aria-disabled', 'false')
+    expect(newPlanButton()).not.toHaveAttribute('aria-describedby')
+    fireEvent.click(newPlanButton())
+    expect(request).toHaveBeenCalledWith('LONG_GAP_NEW_PLAN')
+    // The explanation says what it does: the gap is not collected, and the plan ends rather than continues.
+    expect(copy.longGap.newPlanText).toContain('수집하지 않습니다')
+    expect(copy.longGap.newPlanText).toContain(
+      planEndContent.record.completions.UNAVAILABLE_DATA_GAP ?? 'missing',
+    )
+    expect(getObservedStorageEntries()).toEqual([])
+  })
+
+  it.each([
+    [
+      'this tab’s catch-up runs: its progress line',
+      idleSyncState({ running: true, purpose: 'CATCH_UP', phase: 'running' }),
+      planVerificationContent.catchUp.running,
+    ],
+    [
+      'another job this tab follows: the shared busy line',
+      idleSyncState({ running: true, purpose: 'SYNC', phase: 'running' }),
+      planVerificationContent.catchUp.inProgressOther,
+    ],
+    [
+      'an automatic admission in flight: the shared busy line',
+      idleSyncState({ admitting: true }),
+      planVerificationContent.catchUp.admitting,
+    ],
+  ])(
+    'shares the catch-up’s busy gate (%s), described by the same line as the catch-up',
+    (_name, sync, line) => {
+      const request = vi.fn()
+      render(
+        <SyncControl
+          newPlan={choice({ flow: idlePlanEnd({ request }) })}
+          status={longGapStatus()}
+          sync={{ ...sync, canRequest: false }}
+          verification={gap()}
+        />,
+      )
+      expect(newPlanButton()).toHaveAttribute('aria-disabled', 'true')
+      expect(newPlanButton()).toHaveAccessibleDescription(line)
+      // One line for both buttons, never a second near-identical one.
+      expect(screen.queryByText(planEndContent.area.busy)).not.toBeInTheDocument()
+      expect(screen.getAllByText(line)).toHaveLength(1)
+      fireEvent.click(newPlanButton())
+      expect(request).not.toHaveBeenCalled()
+    },
+  )
+
+  it('a job in progress while the catch-up cannot help is said once, for the new-plan button', () => {
+    const review = verificationJobFixture({
+      status: 'NEEDS_REVIEW',
+      failureCode: 'SOURCE_EVENT_MISSING',
+      finishedAt: '2026-09-27T01:12:00Z',
+      holdsResult: true,
+    })
+    render(
+      <SyncControl
+        newPlan={choice()}
+        status={status({ availability: 'IN_PROGRESS', latest: syncJobFixture() })}
+        sync={idleSyncState({ canRequest: false })}
+        verification={gap({ availability: 'NOT_USEFUL', latest: review })}
+      />,
+    )
+    expect(newPlanButton()).toHaveAttribute('aria-disabled', 'true')
+    expect(newPlanButton()).toHaveAccessibleDescription(planVerificationContent.catchUp.inProgress)
+  })
+
+  it.each([
+    [
+      'the prepare runs',
+      { flow: idlePlanEnd({ busy: true, preparing: true }), leaving: false },
+      planEndContent.area.preparing,
+    ],
+    [
+      'the dialog is open',
+      {
+        flow: idlePlanEnd({
+          busy: true,
+          dialog: {
+            reason: 'LONG_GAP_NEW_PLAN',
+            startAt: '2026-09-25T00:00:00Z',
+            endAt: '2026-10-25T04:00:00Z',
+            confirming: false,
+            uncertain: false,
+          },
+        }),
+        leaving: false,
+      },
+      planEndContent.area.dialogOpen,
+    ],
+    [
+      'a reauthentication is leaving',
+      { flow: idlePlanEnd(), leaving: true },
+      planEndContent.area.leaving,
+    ],
+  ])('is blocked while %s, and says why', (_name, overrides, line) => {
+    const request = vi.fn()
+    render(
+      <SyncControl
+        newPlan={choice({ ...overrides, flow: { ...overrides.flow, request } })}
+        status={longGapStatus()}
+        sync={idleSyncState({ canRequest: false })}
+        verification={gap()}
+      />,
+    )
+    expect(newPlanButton()).toHaveAttribute('aria-disabled', 'true')
+    expect(newPlanButton()).toHaveAccessibleDescription(line)
+    fireEvent.click(newPlanButton())
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('is not blocked by the catch-up’s cool-down: ending collects nothing', () => {
+    render(
+      <SyncControl
+        newPlan={choice()}
+        status={longGapStatus()}
+        sync={idleSyncState({ canRequest: false, verificationCooldownSeconds: 9 })}
+        verification={gap({ retryAfterSeconds: 9 })}
+      />,
+    )
+    expect(newPlanButton()).toHaveAttribute('aria-disabled', 'false')
+  })
+
+  it.each([
+    [
+      'RESTRICTED',
+      planEndFixture({ availability: 'UNAVAILABLE', reason: 'RESTRICTED' }),
+      planEndContent.area.reasons.RESTRICTED,
+    ],
+    [
+      'an unknown reason',
+      planEndFixture({ availability: 'UNAVAILABLE', reason: 'NEW_RULE' }),
+      planEndContent.area.unknownReason,
+    ],
+    // The sync block met a long gap the end block no longer sees: the end area's early end is the way.
+    ['not a long gap for the server', planEndFixture(), planEndContent.notLongGapReason],
+    [
+      'a result newer than the server clock',
+      planEndFixture({ availability: 'UNAVAILABLE', reason: 'RESULT_TOO_RECENT' }),
+      planEndContent.area.reasons.RESULT_TOO_RECENT,
+    ],
+  ])(
+    'blocked when the server does not take the choice (%s), with the reason beside it',
+    (_name, block, reason) => {
+      const request = vi.fn()
+      render(
+        <SyncControl
+          newPlan={choice({ status: parsePlanEndStatus(block), flow: idlePlanEnd({ request }) })}
+          status={longGapStatus()}
+          sync={idleSyncState({ canRequest: false })}
+          verification={gap()}
+        />,
+      )
+      const line = `${copy.longGap.newPlanUnavailableLabel}: ${reason ?? 'missing'}`
+      expect(screen.getByText(line)).toBeVisible()
+      expect(newPlanButton()).toHaveAttribute('aria-disabled', 'true')
+      expect(newPlanButton()).toHaveAccessibleDescription(line)
+      fireEvent.click(newPlanButton())
+      expect(request).not.toHaveBeenCalled()
+    },
+  )
+
+  it('takes focus when what held it inside the control goes away and the catch-up button is not there', () => {
+    const review = verificationJobFixture({
+      status: 'NEEDS_REVIEW',
+      failureCode: 'SOURCE_EVENT_MISSING',
+      finishedAt: '2026-09-27T01:12:00Z',
+      holdsResult: true,
+    })
+    const { rerender } = render(
+      <SyncControl
+        newPlan={choice()}
+        status={longGapStatus()}
+        sync={idleSyncState({ phase: 'error', purpose: 'CATCH_UP', canRequest: false })}
+        verification={gap({ availability: 'NOT_USEFUL', latest: review })}
+      />,
+    )
+    // The catch-up's own summary holds focus, then goes (the outcome was said).
+    summaryWith(planVerificationContent.catchUp.local.error.label).focus()
+    rerender(
+      <SyncControl
+        newPlan={choice()}
+        status={longGapStatus()}
+        sync={idleSyncState({ canRequest: false })}
+        verification={gap({ availability: 'NOT_USEFUL', latest: review })}
+      />,
+    )
+    expect(newPlanButton()).toHaveFocus()
+  })
+
+  it('is not part of the sync control outside a long gap', () => {
+    render(
+      <SyncControl
+        newPlan={choice({ status: parsePlanEndStatus(planEndFixture()) })}
+        status={AVAILABLE_SYNC}
+        sync={idleSyncState()}
+        verification={AVAILABLE_VERIFICATION}
+      />,
+    )
+    expect(
+      screen.queryByRole('button', { name: copy.longGap.newPlanAction }),
+    ).not.toBeInTheDocument()
   })
 })

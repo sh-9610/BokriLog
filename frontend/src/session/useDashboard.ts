@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { SyncPhase } from './useDashboardSync'
 
+import { planEndContent } from '../content/planEnd'
 import {
   planResultContent as copy,
   copyFor,
@@ -658,8 +659,133 @@ export function parseVersionChange(value: unknown, basisAt: string | null = null
 }
 
 /**
- * One validated dashboard response. Only `READY` carries financial fields, and its sync block, its
- * verification block and its version change (Story 2.12).
+ * Whether the shown active plan may be ended now, as the server judged it in the same read (Story 2.13):
+ * `AVAILABLE` (the user may end it early), `NEW_PLAN_CHOICE` (a long gap: only the long-gap choice `새 계획
+ * 시작` ends it, with the gap recorded) or `UNAVAILABLE` (with a reason when known: `RESTRICTED`,
+ * `PLAN_PERIOD_ENDED`).
+ */
+export type PlanEndAvailability = 'AVAILABLE' | 'NEW_PLAN_CHOICE' | 'UNAVAILABLE'
+
+/** The `planEnd` block of a `READY` answer (Story 2.13). */
+export interface PlanEndStatus {
+  readonly availability: PlanEndAvailability
+  readonly reason: string | null
+}
+
+/**
+ * The plan-end block this screen cannot read: ending is not offered, for a reason not known. Like the sync block
+ * it never makes the financial bundle unacceptable.
+ */
+export const UNKNOWN_PLAN_END: PlanEndStatus = { availability: 'UNAVAILABLE', reason: null }
+
+/**
+ * The `planEnd` block, always as something this screen can show. An availability this screen does not know, a
+ * reason of the wrong type, or a missing block, is `UNKNOWN_PLAN_END`. A reason is kept only while unavailable
+ * (an unknown one is folded to safe copy where it is shown).
+ */
+export function parsePlanEndStatus(value: unknown): PlanEndStatus {
+  const row = record(value)
+  if (row === null) return UNKNOWN_PLAN_END
+  const { availability, reason } = row
+  if (
+    availability !== 'AVAILABLE' &&
+    availability !== 'NEW_PLAN_CHOICE' &&
+    availability !== 'UNAVAILABLE'
+  ) {
+    return UNKNOWN_PLAN_END
+  }
+  if (!absent(reason) && typeof reason !== 'string') return UNKNOWN_PLAN_END
+  return { availability, reason: availability === 'UNAVAILABLE' && !absent(reason) ? reason : null }
+}
+
+/**
+ * The end record of a plan ended early (Story 2.13), as `GET /api/dashboard` sends it with `ENDED`: why and when
+ * it ended (the server's time), its scheduled end `T`, the last normal measurement it ended on and how long before
+ * the end that was (the server's milliseconds — this screen never compares a server time with its own clock), the
+ * completion comparison, and — after a long gap — the range that was never collected. The reason and the
+ * completion may be codes this screen does not know; they are kept and folded to safe copy where shown.
+ */
+export interface PlanEndRecord {
+  readonly reason: string
+  readonly endedAt: string
+  readonly scheduledEndAt: string
+  readonly lastNormalMeasuredAt: string
+  readonly lastNormalDelayMillis: number
+  readonly completion: string
+  readonly uncollectedFrom: string | null
+  readonly uncollectedUntil: string | null
+}
+
+/** Whether two server instants name the same millisecond (notation such as `.000` aside). */
+function sameInstant(left: string, right: string): boolean {
+  return Date.parse(left) === Date.parse(right)
+}
+
+/** How each known end reason records the completion comparison and the uncollected range. */
+const END_COMPLETIONS: Readonly<Record<string, string>> = {
+  USER_REQUEST: 'NOT_APPLICABLE',
+  LONG_GAP_NEW_PLAN: 'UNAVAILABLE_DATA_GAP',
+}
+
+/**
+ * The `end` record of an `ENDED` answer, or `null` when it is not one whole record that agrees with the bundle it
+ * came with: every key present, the times server instants; the scheduled end is the plan's `T` and the last normal
+ * measurement the bundle's own; the end is not before that measurement and before `T` (an early end); the delay is
+ * exactly the end minus that measurement, in milliseconds (both are the server's millisecond instants); the
+ * uncollected range is both instants or neither, and when present runs from before the end exactly to the end. A known reason records what the contract fixes for it — no range and no comparison
+ * for an early end the user asked for; for a long gap, the range from the last check to the end and a comparison
+ * that cannot be calculated. A reason or completion this screen does not know is not checked against them.
+ */
+export function parsePlanEndRecord(value: unknown, result: PlanResult): PlanEndRecord | null {
+  const row = record(value)
+  if (row === null) return null
+  const { reason, endedAt, scheduledEndAt, lastNormalMeasuredAt, lastNormalDelayMillis } = row
+  const { completion, uncollectedFrom, uncollectedUntil } = row
+  if (typeof reason !== 'string' || typeof completion !== 'string') return null
+  if (!isInstant(endedAt) || !isInstant(scheduledEndAt) || !isInstant(lastNormalMeasuredAt)) {
+    return null
+  }
+  if (!count(lastNormalDelayMillis)) return null
+  if (!(uncollectedFrom === null || isInstant(uncollectedFrom))) return null
+  if (!(uncollectedUntil === null || isInstant(uncollectedUntil))) return null
+  if (!sameInstant(scheduledEndAt, result.conditions.endAt)) return null
+  if (!sameInstant(lastNormalMeasuredAt, result.measuredAt)) return null
+  if (Date.parse(endedAt) < Date.parse(lastNormalMeasuredAt)) return null
+  if (Date.parse(endedAt) >= Date.parse(scheduledEndAt)) return null
+  if (lastNormalDelayMillis !== Date.parse(endedAt) - Date.parse(lastNormalMeasuredAt)) return null
+  if ((uncollectedFrom === null) !== (uncollectedUntil === null)) return null
+  if (uncollectedFrom !== null && uncollectedUntil !== null) {
+    if (Date.parse(uncollectedFrom) >= Date.parse(uncollectedUntil)) return null
+    if (!sameInstant(uncollectedUntil, endedAt)) return null
+  }
+  const expected = END_COMPLETIONS[reason]
+  if (expected !== undefined) {
+    if (Object.values(END_COMPLETIONS).includes(completion) && completion !== expected) return null
+    if (reason === 'USER_REQUEST' && uncollectedFrom !== null) return null
+    if (
+      reason === 'LONG_GAP_NEW_PLAN' &&
+      (uncollectedFrom === null || !sameInstant(uncollectedFrom, result.cashflowVerifiedThrough))
+    ) {
+      return null
+    }
+  }
+  return {
+    reason,
+    endedAt,
+    scheduledEndAt,
+    lastNormalMeasuredAt,
+    lastNormalDelayMillis,
+    completion,
+    uncollectedFrom,
+    uncollectedUntil,
+  }
+}
+
+/**
+ * One validated dashboard response. `READY` carries the active plan's financial fields, its sync block, its
+ * verification block and its version change (Story 2.12), and whether it may be ended (Story 2.13). `ENDED`
+ * (Story 2.13) carries the same bundle of a plan ended early — its last official result, read-only — with its end
+ * record, and nothing about syncs or verifications.
  */
 export type DashboardResponse =
   | { readonly state: 'NO_PLAN' | 'PREPARING'; readonly nextAction: string }
@@ -670,26 +796,43 @@ export type DashboardResponse =
       readonly sync: SyncStatus
       readonly verification: VerificationStatus
       readonly change: VersionChange
+      readonly planEnd: PlanEndStatus
+    }
+  | {
+      readonly state: 'ENDED'
+      readonly nextAction: string
+      readonly result: PlanResult
+      readonly end: PlanEndRecord
     }
 
 /**
  * The screen-level next actions each state may carry: Story 2.8's closed set, the two Story 2.11 added to
- * `READY` (`SYNC` when the result is not fresh, `CHOOSE_CONTINUATION` after a long gap) and the one Story 2.12
- * added (`VERIFY` after a sync that ended in review). A pair outside these is not an answer this screen
- * understands.
+ * `READY` (`SYNC` when the result is not fresh, `CHOOSE_CONTINUATION` after a long gap), the one Story 2.12
+ * added (`VERIFY` after a sync that ended in review), and the one of a plan ended early (Story 2.13). A pair
+ * outside these is not an answer this screen understands.
  */
 const NEXT_ACTIONS: Readonly<Record<DashboardResponse['state'], readonly string[]>> = {
   NO_PLAN: ['CREATE_PLAN'],
   PREPARING: ['WAIT_FOR_RESULT'],
   READY: ['NONE', 'WAIT_FOR_SYNC', 'SYNC', 'VERIFY', 'CHOOSE_CONTINUATION'],
+  ENDED: ['PREPARE_NEXT_PLAN'],
 }
 
+/** The plan status an `ENDED` bundle carries (Story 2.13), and the one a `READY` bundle carries. */
+const ENDED_EARLY = 'ENDED_EARLY'
+const ACTIVE = 'ACTIVE'
+
+/** The freshness an ended plan's bundle carries: it is no longer synced (Story 2.13). */
+const ENDED_FRESHNESS = 'ENDED'
+
 /**
- * A `GET /api/dashboard` body, or `null` when it is not one whole answer. A state outside the three, a
+ * A `GET /api/dashboard` body, or `null` when it is not one whole answer. A state outside the four, a
  * next action that state cannot carry, a financial field on a state that has none, or a malformed bundle
- * all reject it. The sync block, the verification block and the version change never do: on `READY` each is
- * read as far as it can be (`parseSyncStatus`, `parseVerificationStatus`, `parseVersionChange`), and on the
- * states without a bundle they have no meaning and are ignored.
+ * all reject it. The sync block, the verification block, the version change and the plan-end block never do:
+ * on `READY` each is read as far as it can be (`parseSyncStatus`, `parseVerificationStatus`,
+ * `parseVersionChange`, `parsePlanEndStatus`), and on the states without them they have no meaning and are
+ * ignored. A `READY` bundle is an active plan's. An `ENDED` bundle is a plan ended early, its freshness folded to
+ * `ENDED`, whose end record agrees with it (`parsePlanEndRecord`).
  */
 export function parseDashboard(value: unknown): DashboardResponse | null {
   const row = record(value)
@@ -699,8 +842,17 @@ export function parseDashboard(value: unknown): DashboardResponse | null {
       ? { state: row.state, nextAction: row.nextAction }
       : null
   }
+  if (row.state === 'ENDED') {
+    if (!NEXT_ACTIONS.ENDED.includes(row.nextAction) || !isPlanResult(row.result)) return null
+    if (row.result.planStatus !== ENDED_EARLY) return null
+    if (row.result.trust.freshness.state !== ENDED_FRESHNESS) return null
+    const end = parsePlanEndRecord(row.end, row.result)
+    return end === null
+      ? null
+      : { state: 'ENDED', nextAction: row.nextAction, result: row.result, end }
+  }
   if (row.state !== 'READY' || !NEXT_ACTIONS.READY.includes(row.nextAction)) return null
-  if (!isPlanResult(row.result)) return null
+  if (!isPlanResult(row.result) || row.result.planStatus !== ACTIVE) return null
   return {
     state: 'READY',
     nextAction: row.nextAction,
@@ -708,40 +860,56 @@ export function parseDashboard(value: unknown): DashboardResponse | null {
     sync: parseSyncStatus(row.sync),
     verification: parseVerificationStatus(row.verification),
     change: parseVersionChange(row.change, row.result.basisAt),
+    planEnd: parsePlanEndStatus(row.planEnd),
   }
 }
 
 /**
  * Whether `next` may replace `shown` (AC-9). Within one plan the pointer only moves forward, and one
  * pointer version names one calculation: a version that goes back, or the same version with another
- * calculation, is not a newer bundle.
+ * calculation, is not a newer bundle. A plan ended early (Story 2.13) never becomes active again: within one
+ * plan an active bundle after an ended one is not a newer bundle either.
  */
-export function supersedes(next: PlanResult, shown: PlanResult | null): boolean {
+export function supersedes(
+  next: PlanResult,
+  shown: PlanResult | null,
+  nextEnded = false,
+  shownEnded = false,
+): boolean {
   if (shown?.planId !== next.planId) return true
+  if (shownEnded && !nextEnded) return false
   if (next.pointerVersion < shown.pointerVersion) return false
   return next.pointerVersion !== shown.pointerVersion || next.calculationId === shown.calculationId
 }
 
-/** The bundle last accepted, with the next action and the sync and verification blocks it came with. */
+/**
+ * The bundle last accepted, with the next action and the blocks it came with. A plan ended early (Story 2.13)
+ * has its end record, and the sync, verification, change and plan-end blocks of a plan that is not active: no
+ * sync, no verification, no change marker and no end to ask for.
+ */
 export interface Accepted {
   readonly result: PlanResult
   readonly nextAction: string
   readonly sync: SyncStatus
   readonly verification: VerificationStatus
   readonly change: VersionChange
+  readonly planEnd: PlanEndStatus
+  /** The end record of a plan ended early (Story 2.13); `null` while the plan is active. */
+  readonly end: PlanEndRecord | null
 }
 
 /**
- * What the screen shows. `checking` (no answer yet) is never "no plan". After a failed read the last
- * accepted bundle stays unchanged as `lastGood` (READ_FAIL). `retryable` is a read to retry: with
- * nothing kept it has no financial value at all; after a response whose version may not replace the
- * shown bundle it keeps that bundle unswapped (RACE). `denied` has dropped the bundle from memory — a
- * refusal (403), or a session that is gone (401).
+ * What the screen shows. `checking` (no answer yet) is never "no plan". `ENDED` is the record of a plan ended
+ * early (Story 2.13). After a failed read the last accepted bundle stays unchanged as `lastGood` (READ_FAIL).
+ * `retryable` is a read to retry: with nothing kept it has no financial value at all; after a response whose
+ * version may not replace the shown bundle it keeps that bundle unswapped (RACE). `denied` has dropped the
+ * bundle from memory — a refusal (403), or a session that is gone (401).
  */
 export type DashboardView =
   | { readonly kind: 'checking' }
   | { readonly kind: 'NO_PLAN' | 'PREPARING'; readonly nextAction: string }
   | ({ readonly kind: 'READY' } & Accepted)
+  | ({ readonly kind: 'ENDED' } & Accepted & { readonly end: PlanEndRecord })
   | ({ readonly kind: 'lastGood' } & Accepted)
   | { readonly kind: 'retryable'; readonly kept: Accepted | null }
   | { readonly kind: 'denied'; readonly cause: 'refused' | 'signedOut' }
@@ -862,14 +1030,37 @@ export function useDashboard(ready: boolean): Dashboard {
           settle(failed())
           return
         }
-        if (parsed.state !== 'READY') {
+        if (parsed.state !== 'READY' && parsed.state !== 'ENDED') {
           accepted.current = null
           settle({ kind: parsed.state, nextAction: parsed.nextAction })
           return
         }
-        if (!supersedes(parsed.result, accepted.current?.result ?? null)) {
+        const kept = accepted.current
+        if (
+          !supersedes(
+            parsed.result,
+            kept?.result ?? null,
+            parsed.state === 'ENDED',
+            (kept?.end ?? null) !== null,
+          )
+        ) {
           // Not swapped in: the shown bundle stays, as a read to retry.
-          settle({ kind: 'retryable', kept: accepted.current })
+          settle({ kind: 'retryable', kept })
+          return
+        }
+        if (parsed.state === 'ENDED') {
+          // A plan ended early (Story 2.13): its last official bundle, read-only, with its end record.
+          const ended: Accepted & { readonly end: PlanEndRecord } = {
+            result: parsed.result,
+            nextAction: parsed.nextAction,
+            sync: UNKNOWN_SYNC,
+            verification: UNKNOWN_VERIFICATION,
+            change: NO_CHANGE,
+            planEnd: UNKNOWN_PLAN_END,
+            end: parsed.end,
+          }
+          accepted.current = ended
+          settle({ kind: 'ENDED', ...ended })
           return
         }
         const bundle: Accepted = {
@@ -878,6 +1069,8 @@ export function useDashboard(ready: boolean): Dashboard {
           sync: parsed.sync,
           verification: parsed.verification,
           change: parsed.change,
+          planEnd: parsed.planEnd,
+          end: null,
         }
         accepted.current = bundle
         settle({ kind: 'READY', ...bundle })
@@ -918,9 +1111,12 @@ export function useDashboard(ready: boolean): Dashboard {
   }
 }
 
-/** The bundle a view shows, if any: ready, kept after a failure, or kept unswapped after a conflict. */
+/**
+ * The bundle a view shows, if any: ready, the record of a plan ended early (Story 2.13 — the calculation evidence
+ * and the adjustment history read it like any other), kept after a failure, or kept unswapped after a conflict.
+ */
 export function bundleOf(view: DashboardView): Accepted | null {
-  if (view.kind === 'READY' || view.kind === 'lastGood') return view
+  if (view.kind === 'READY' || view.kind === 'ENDED' || view.kind === 'lastGood') return view
   if (view.kind === 'retryable') return view.kept
   return null
 }
@@ -1035,6 +1231,9 @@ export function dashboardAnnouncement(
       if (reliability === null) return copy.status.ready(basis)
       return copy.status.readyWithReliability(reliability, basis)
     }
+    case 'ENDED':
+      // Said once, when the record comes on screen — the end flow itself says nothing more (Story 2.13).
+      return planEndContent.status.ended(formatSeoulTime(view.end.endedAt, copy.timeUnavailable))
     case 'lastGood':
     case 'retryable':
       if (phase === 'running' || phase === 'stalled') return fixedSentence(phase, purpose)

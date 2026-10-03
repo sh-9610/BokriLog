@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { DASHBOARD_PATH } from '../content/auth'
+import { planConditionContent } from '../content/planConditions'
 import { activePlanContent } from '../content/planResult'
 import { PlanConditionPanel } from './PlanConditionPanel'
 
@@ -329,5 +331,85 @@ describe('PlanConditionPanel', () => {
       '현재 계획 조건을 확인할 수 없습니다',
     )
     expect(screen.queryByLabelText('목표 주기율 (%)')).not.toBeInTheDocument()
+  })
+
+  describe('a plan ended early (Story 2.13)', () => {
+    const ended = {
+      eligible: false,
+      reason: 'PLAN_ENDED',
+      snapshot: null,
+      openIntent: null,
+      activePlan: null,
+    }
+
+    it('takes no new conditions and points to the record of the ended plan', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(ended)))
+      render(<PlanConditionPanel csrfToken="csrf-value" ready />)
+      expect(await screen.findByText(planConditionContent.planEnded.label)).toBeVisible()
+      expect(screen.getByText(planConditionContent.planEnded.text)).toBeVisible()
+      expect(
+        screen.getByRole('link', { name: planConditionContent.planEnded.dashboardLink }),
+      ).toHaveAttribute('href', DASHBOARD_PATH)
+      expect(screen.queryByLabelText('종료 시각 (T)')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button')).not.toBeInTheDocument()
+      // It does not promise a new plan, nor judge the ended one.
+      expect(planConditionContent.planEnded.text).not.toMatch(/성공|실패|완료|곧|예정입니다/)
+    })
+
+    it('reloads into the ended-plan notice when a preview is refused with PLAN_ENDED', async () => {
+      const fetchMock = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(response({ eligible: true, snapshot }))
+        .mockResolvedValueOnce(
+          response({ code: 'PLAN_ENDED', message: 'x', correlationId: 'c' }, 409),
+        )
+        .mockResolvedValueOnce(response(ended))
+      vi.stubGlobal('fetch', fetchMock)
+      render(<PlanConditionPanel csrfToken="csrf-value" ready />)
+      fireEvent.change(await screen.findByLabelText('종료 시각 (T)'), {
+        target: { value: '2026-10-25T13:00' },
+      })
+      fireEvent.change(screen.getByLabelText('목표 주기율 (%)'), { target: { value: '10' } })
+      fireEvent.click(screen.getByRole('button', { name: '조건 검토' }))
+      expect(await screen.findByText(planConditionContent.planEnded.label)).toBeVisible()
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+      expect(fetchMock.mock.calls[2]?.[0]).toBe('/api/plans/conditions')
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('reloads into the ended-plan notice when a confirmation is refused with PLAN_ENDED', async () => {
+      const fetchMock = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(response({ eligible: true, snapshot }))
+        .mockResolvedValueOnce(
+          response({
+            confirmationRef: 'opaque-reference',
+            expiresAt: '2026-09-25T00:10:00Z',
+            snapshot,
+            endAt: '2026-10-25T04:00:00Z',
+            period: 'DAILY',
+            targetRate: '0.1',
+            calendarPolicy: 'CALENDAR-SEOUL-1.0',
+            calculationPolicy: 'CALC-1.0',
+          }),
+        )
+        .mockResolvedValueOnce(
+          response({ code: 'PLAN_ENDED', message: 'x', correlationId: 'c' }, 409),
+        )
+        .mockResolvedValueOnce(response(ended))
+      vi.stubGlobal('fetch', fetchMock)
+      vi.stubGlobal('crypto', { randomUUID: () => 'plan-confirm-key-ended' })
+      render(<PlanConditionPanel csrfToken="csrf-value" ready />)
+      fireEvent.change(await screen.findByLabelText('종료 시각 (T)'), {
+        target: { value: '2026-10-25T13:00' },
+      })
+      fireEvent.change(screen.getByLabelText('목표 주기율 (%)'), { target: { value: '10' } })
+      fireEvent.click(screen.getByRole('button', { name: '조건 검토' }))
+      fireEvent.click(await screen.findByRole('button', { name: '이 조건 확인' }))
+      expect(await screen.findByText(planConditionContent.planEnded.label)).toBeVisible()
+      expect(fetchMock.mock.calls[2]?.[0]).toBe('/api/plans/conditions/confirm')
+      expect(fetchMock.mock.calls[3]?.[0]).toBe('/api/plans/conditions')
+      expect(screen.queryByRole('heading', { name: '계획 조건 검증 완료' })).not.toBeInTheDocument()
+    })
   })
 })

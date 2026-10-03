@@ -50,6 +50,8 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
     private static final long CONFIRMATION_LIFETIME_SECONDS=600;
 
     private final PlanConditionRepository repository;
+    /** The early end's rows (Story 2.13): whether a plan ended, and the latest plan the dashboard shows. */
+    private final PlanEndRepository ends;
     private final PortfolioMembershipApi portfolios;
     private final SyncJobApi sync;
     private final SourceConnectionApi sources;
@@ -57,10 +59,10 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
     private final OperationalRestrictionApi restrictions;
     private final TransactionTemplate transactions;
 
-    PlanConditionService(PlanConditionRepository repository, PortfolioMembershipApi portfolios,
+    PlanConditionService(PlanConditionRepository repository, PlanEndRepository ends, PortfolioMembershipApi portfolios,
             @Lazy SyncJobApi sync, SourceConnectionApi sources, AccountAccessApi accounts,
             OperationalRestrictionApi restrictions, PlatformTransactionManager manager) {
-        this.repository=repository; this.portfolios=portfolios; this.sync=sync; this.sources=sources;
+        this.repository=repository; this.ends=ends; this.portfolios=portfolios; this.sync=sync; this.sources=sources;
         this.accounts=accounts; this.restrictions=restrictions;
         this.transactions=new TransactionTemplate(manager);
     }
@@ -78,6 +80,9 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
             }
             var active=repository.activePlan(userId).orElse(null);
             if (active!=null) return new State(false,ACTIVE_PLAN_EXISTS,null,null,view(active));
+            // A plan that ended early takes no new conditions until Story 2.15 opens the following plan: the first
+            // official snapshot is the ended plan's P0 and t0, and a plan made from it would continue the old baseline.
+            if (ends.endedPlanExists(userId)) return new State(false,PLAN_ENDED,null,null,null);
             FirstOfficialSnapshot s=eligibleSnapshot(userId).orElse(null);
             if (s==null) {
                 repository.invalidateOpen(userId);
@@ -97,7 +102,8 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
             @Nullable PreviewInput input) {
         if (userId==null || sessionId==null || sessionId.isBlank() || input==null
                 || input.period()==null || input.targetRate()==null || input.endAtSeoul()==null
-                || !eligibleUser(userId) || repository.activePlan(userId).isPresent()) return Optional.empty();
+                || !eligibleUser(userId) || repository.activePlan(userId).isPresent()
+                || ends.endedPlanExists(userId)) return Optional.empty();
         var s=eligibleSnapshot(userId).orElse(null);
         if (s==null) return Optional.empty();
         Period period;
@@ -125,8 +131,8 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
                     repository.invalidateOpen(userId);
                     return false;
                 }
-                // Checked again under the lock: a publication that committed after the check above wins.
-                if (repository.activePlan(userId).isPresent()) return false;
+                // Checked again under the lock: a publication or an end that committed after the check above wins.
+                if (repository.activePlan(userId).isPresent() || ends.endedPlanExists(userId)) return false;
                 repository.insertConfirmation(sha256(ref),userId,sha256(sessionId),hash,s,end,period,rate,expires);
                 return true;
             });
@@ -153,6 +159,8 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
                 // committed a moment ago is seen here.
                 if (repository.activePlan(userId).isPresent())
                     return new Confirmation(false,false,null,ACTIVE_PLAN_EXISTS);
+                // The same for an ended plan (Story 2.13): it answers its own state, before the reference is read.
+                if (ends.endedPlanExists(userId)) return new Confirmation(false,false,null,PLAN_ENDED);
                 var c=repository.confirmation(confirmationHash,userId,sha256(sessionId)).orElse(null);
                 if (c==null
                         || !c.calendarPolicy().equals(CALENDAR_POLICY)
@@ -239,6 +247,12 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
         if (userId==null) return Optional.empty();
         return repository.activePlan(userId).map(p -> new PlanPublicationPort.ActivePlan(p.planId(),p.intentId(),
                 p.portfolioId(),p.p0(),p.t0(),p.endAt(),p.period().name(),p.rate(),p.createdAt()));
+    }
+
+    @Override
+    public Optional<PlanPublicationPort.LatestPlan> latestPlan(@Nullable UUID userId) {
+        if (userId==null) return Optional.empty();
+        return ends.latestPlan(userId);
     }
 
     @Override

@@ -121,6 +121,21 @@ class ActionGrantRepository {
     }
 
     /**
+     * 그 사용자의 그 참조가 아직 소비되지 않았으면 지운다. 다른 참조·다른 사용자·소비된 행은 건드리지 않는다.
+     *
+     * @return 무효화한 행 수(0 또는 1)
+     */
+    int invalidateUnconsumed(UUID userId, String reference) {
+        return this.jdbc
+                .sql(
+                        "DELETE FROM action_grant "
+                                + "WHERE user_id = :userId AND grant_id = :reference AND consumed_at IS NULL")
+                .param("userId", userId)
+                .param("reference", reference)
+                .update();
+    }
+
+    /**
      * 허가를 소비한다. <b>조건부 UPDATE 한 문장</b>이다.
      *
      * <p>술어가 다섯 귀속과 미소비와 미만료를 함께 본다. 그래서 판정과 소비 사이에 창이 없고, 같은

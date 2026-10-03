@@ -163,7 +163,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
         // The ready dashboard carries the sync state beside the result, and a manual sync now cools down.
         var dashboard = get(AuthSecurityConfig.DASHBOARD_PATH, cookie);
         assertThat(topLevelFieldsOf(dashboard.body())).containsOnlyKeys("state", "nextAction", "result", "sync",
-                "verification", "change");
+                "verification", "change", "planEnd");
         var syncView = nested(topLevelFieldsOf(dashboard.body()), "sync");
         assertThat(syncView).containsOnlyKeys("availability", "reason", "retryAfterSeconds", "latest")
                 .containsEntry("availability", "COOLDOWN").containsEntry("reason", null);
@@ -637,13 +637,14 @@ class IncrementalSyncTest extends PlanSyncTestBase {
     // ------------------------------------------------------------------------------------------ RACE
 
     /**
-     * AC-8: a deletion, restriction, connection removal, ended membership or moved pointer that lands while the
-     * attempt waits to publish wins: nothing is published, no watermark moves, and the attempt is blocked with
-     * the closed code.
+     * AC-8: a deletion, restriction, connection removal, ended membership, moved pointer or — Story 2.13 — an early end
+     * of the plan that lands while the attempt waits to publish wins: nothing is published, no watermark moves, and
+     * the attempt is blocked with the closed code. The end is committed here as the end's own two rows (the status and
+     * the end record) while the plan lock is held, which is the order the end's transaction would leave them in.
      */
     @ParameterizedTest(name = "{0}")
     @CsvSource({"DELETION,NOT_PERMITTED", "RESTRICTION,NOT_PERMITTED", "CONNECTION,NOT_PERMITTED",
-        "MEMBERSHIP,MEMBERSHIP_CHANGED", "POINTER,POINTER_CONFLICT"})
+        "MEMBERSHIP,MEMBERSHIP_CHANGED", "POINTER,POINTER_CONFLICT", "PLAN_END,PLAN_CHANGED"})
     void aChangeBeforeThePublicationWinsOverTheLateWorker(String change, String code) throws Exception {
         UUID user = connect(DevBybitStub.Scenario.UTA2);
         publishedPlan(user, "incremental-race-" + change.toLowerCase(java.util.Locale.ROOT), null);
@@ -660,6 +661,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
                         .param("u", user).update();
                 case "MEMBERSHIP" -> jdbc().sql("UPDATE portfolio_source_membership SET ended_at=now() WHERE portfolio_id "
                         + "IN (SELECT portfolio_id FROM portfolio WHERE user_id=:u)").param("u", user).update();
+                case "PLAN_END" -> endedBySql(user, v1);
                 default -> jdbc().sql("UPDATE sync_official_plan_result SET pointer_version=pointer_version+10 "
                         + "WHERE user_id=:u").param("u", user).update();
             }
@@ -680,6 +682,13 @@ class IncrementalSyncTest extends PlanSyncTestBase {
             assertThat(sync.dashboard(user).dashboard()).isInstanceOf(SyncJobApi.Dashboard.NotPermitted.class);
             assertThat(sync.admitPlanSync(user, SyncJobApi.SyncTrigger.MANUAL, "incremental-race-02"))
                     .isInstanceOf(SyncJobApi.SyncAdmission.NotPermitted.class);
+        } else if (change.equals("PLAN_END")) {
+            // The record of the ended plan is its last official version, untouched by the late worker.
+            var record = (SyncJobApi.Dashboard.Ended) sync.dashboard(user).dashboard();
+            assertThat(record.result().calculationId()).isEqualTo(v1.calculationId());
+            assertThat(record.result().pointerVersion()).isEqualTo(1);
+            assertThat(sync.admitPlanSync(user, SyncJobApi.SyncTrigger.MANUAL, "incremental-race-02"))
+                    .isEqualTo(new SyncJobApi.SyncAdmission.Refused("NO_ACTIVE_PLAN"));
         } else if (!change.equals("POINTER")) {
             var dashboard = (SyncJobApi.Dashboard.Ready) sync.dashboard(user).dashboard();
             assertThat(dashboard.result().calculationId()).isEqualTo(v1.calculationId());
@@ -838,6 +847,22 @@ class IncrementalSyncTest extends PlanSyncTestBase {
     }
 
     // ------------------------------------------------------------------------------------------ helpers
+
+    /** The two rows an early end (Story 2.13) commits: the plan's ENDED_EARLY and its end record on v1. */
+    private void endedBySql(UUID user, SyncJobApi.DashboardResult v1) {
+        jdbc().sql("UPDATE plan_definition SET status='ENDED_EARLY' WHERE user_id=:u AND status='ACTIVE'")
+                .param("u", user).update();
+        jdbc().sql("INSERT INTO plan_end(plan_id,user_id,reason,ended_at,official_calculation_id,official_pointer_version,"
+                + "official_portfolio_snapshot_id,last_measured_at,cashflow_verified_through,completion,idempotency_key,"
+                + "request_hash) VALUES (:p,:u,'USER_REQUEST',date_trunc('milliseconds',statement_timestamp()),:c,1,:s,"
+                + ":m,:v,'NOT_APPLICABLE','incremental-race-end-key',:h)")
+                .param("p", v1.planId()).param("u", user).param("c", v1.calculationId())
+                .param("s", v1.portfolioSnapshotId())
+                .param("m", java.time.OffsetDateTime.ofInstant(v1.measuredAt(), java.time.ZoneOffset.UTC))
+                .param("v", java.time.OffsetDateTime.ofInstant(v1.cashflowVerifiedThrough(), java.time.ZoneOffset.UTC))
+                .param("h", "0".repeat(64)).update();
+    }
+
     private HttpResponseView postSync(String cookie, @Nullable String csrf, String trigger, String key)
             throws Exception {
         var response = sendJson("POST", SYNC_PATH, "{\"trigger\":\"" + trigger + "\"}", cookie, "Origin",

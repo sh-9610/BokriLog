@@ -254,6 +254,81 @@ class DashboardTrustTest {
         assertThat(trust.inputReliability().nextAction()).isEqualTo(reliabilityAction);
     }
 
+    /**
+     * Story 2.13: an ended plan's record folds freshness into {@code ENDED} — all six metrics, no next action — and
+     * judges the input reliability and the nature from the version alone; no sync fact can reach them, so the record
+     * says nothing about a sync that will never run. An unknown reliability is still not judged.
+     */
+    @ParameterizedTest(name = "{0} + {1}")
+    @CsvSource({"CONFIRMED,OFFICIAL,CONFIRMED,INPUTS_VERIFIED,OFFICIAL", "CONFIRMED,ESTIMATED,CONFIRMED,INPUTS_VERIFIED,"
+            + "ESTIMATED", "REVIEW_REQUIRED,NOT_COMPUTABLE,REVIEW_REQUIRED,TARGET_NOT_POSITIVE,NOT_COMPUTABLE"})
+    void anEndedPlansRecordIsJudgedFromItsVersionAlone(String input, String nature, String reliabilityState,
+            String reliabilityCause, String natureState) {
+        var trust = DashboardTrust.judgeEnded(input, nature.equals("ESTIMATED"), nature.equals("ESTIMATED") ? 1 : 0,
+                MEASURED, VERIFIED, BASIS, metrics(input, nature), null).orElseThrow();
+        assertThat(trust.freshness()).isEqualTo(new com.bokrilog.sync.SyncJobApi.TrustAxis("ENDED", "PLAN_ENDED_EARLY",
+                MEASURED, SIX, "NONE"));
+        assertThat(trust.inputReliability().state()).isEqualTo(reliabilityState);
+        assertThat(trust.inputReliability().cause()).isEqualTo(reliabilityCause);
+        assertThat(trust.inputReliability().nextAction()).isEqualTo("NONE");
+        assertThat(trust.inputReliability().lastNormalAt()).isEqualTo(VERIFIED);
+        assertThat(trust.calculationNature().axis().state()).isEqualTo(natureState);
+        assertThat(trust.calculationNature().axis().lastNormalAt()).isEqualTo(BASIS);
+        assertThat(DashboardTrust.nextAction(trust)).isEqualTo("NONE");
+        assertThat(DashboardTrust.judgeEnded("UNKNOWN", false, 0, MEASURED, VERIFIED, BASIS,
+                metrics("CONFIRMED", "OFFICIAL"), null)).isEmpty();
+    }
+
+    /**
+     * B1: the version's own persistent verification review (Story 2.12) still holds the ended record's inputs — the
+     * same states and causes as on the ready dashboard, with no next action. Freshness stays ENDED.
+     */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({"SOURCE_EVENT_MISSING,REVIEW_REQUIRED,VERIFICATION_REVIEW_REQUIRED",
+        "CONVERSION_REQUIRES_REVIEW,REVIEW_REQUIRED,VERIFICATION_REVIEW_REQUIRED",
+        "HISTORY_OUT_OF_RANGE,UNUSABLE,HISTORY_OUT_OF_RANGE"})
+    void anEndedRecordKeepsItsVersionsPersistentReview(String review, String state, String cause) {
+        var trust = DashboardTrust.judgeEnded("CONFIRMED", false, 0, MEASURED, VERIFIED, BASIS,
+                metrics("CONFIRMED", "OFFICIAL"), review).orElseThrow();
+        assertThat(trust.inputReliability()).isEqualTo(new com.bokrilog.sync.SyncJobApi.TrustAxis(state, cause, VERIFIED,
+                SIX, "NONE"));
+        assertThat(trust.freshness().state()).isEqualTo("ENDED");
+        assertThat(DashboardTrust.nextAction(trust)).isEqualTo("NONE");
+    }
+
+    /** B3: the end time (the clock to the millisecond) before the measurement or the verification is too recent. */
+    @Test
+    void aResultAheadOfTheClockIsTooRecent() {
+        Instant measured = Instant.parse("2027-01-04T01:00:00.500Z");
+        assertThat(DashboardTrust.resultTooRecent(measured, measured, measured)).isFalse();
+        assertThat(DashboardTrust.resultTooRecent(measured.plusNanos(999_999), measured, measured)).isFalse();
+        assertThat(DashboardTrust.resultTooRecent(measured.minusNanos(1), measured, measured.minusSeconds(1))).isTrue();
+        assertThat(DashboardTrust.resultTooRecent(measured, measured.minusSeconds(1), measured.plusMillis(1))).isTrue();
+    }
+
+    /**
+     * Story 2.13: whether a ready plan can be ended now, in the end's own order — the restriction, then the database
+     * clock at {@code T} (to the millisecond), then a result too recent to end on, then the long gap (the new-plan
+     * choice only).
+     */
+    @Test
+    void thePlanEndAvailabilityFollowsTheEndsOrder() {
+        Instant end = Instant.parse("2027-02-01T00:00:00Z");
+        Instant before = end.minusMillis(1);
+        assertThat(DashboardTrust.planEnd(false, before, end, false, false))
+                .isEqualTo(new com.bokrilog.sync.SyncJobApi.PlanEndAvailability("AVAILABLE", null));
+        assertThat(DashboardTrust.planEnd(false, before, end, false, true))
+                .isEqualTo(new com.bokrilog.sync.SyncJobApi.PlanEndAvailability("NEW_PLAN_CHOICE", null));
+        assertThat(DashboardTrust.planEnd(false, before, end, true, true))
+                .isEqualTo(new com.bokrilog.sync.SyncJobApi.PlanEndAvailability("UNAVAILABLE", "RESULT_TOO_RECENT"));
+        assertThat(DashboardTrust.planEnd(false, end, end, true, true))
+                .isEqualTo(new com.bokrilog.sync.SyncJobApi.PlanEndAvailability("UNAVAILABLE", "PLAN_PERIOD_ENDED"));
+        assertThat(DashboardTrust.planEnd(true, end, end, true, true))
+                .isEqualTo(new com.bokrilog.sync.SyncJobApi.PlanEndAvailability("UNAVAILABLE", "RESTRICTED"));
+        assertThat(DashboardTrust.planEnd(true, before, end, false, false))
+                .isEqualTo(new com.bokrilog.sync.SyncJobApi.PlanEndAvailability("UNAVAILABLE", "RESTRICTED"));
+    }
+
     private static DashboardTrust.Input input(String freshness, String input, String nature) {
         var facts = switch (freshness) {
             case "SYNCING" -> new DashboardTrust.Freshness(true, true, true);

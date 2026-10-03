@@ -5,6 +5,7 @@ import { DASHBOARD_PATH, planResultContent } from '../content/planResult'
 import { planSyncContent } from '../content/planSync'
 import { formatSeoulTime } from '../format/decimal'
 import {
+  AVAILABLE_PLAN_END,
   AVAILABLE_VERIFICATION,
   dashboardFixture,
   NO_PLAN_FIXTURE,
@@ -482,6 +483,8 @@ describe('useDashboard', () => {
       sync: { availability: 'AVAILABLE', reason: null, retryAfterSeconds: null, latest: null },
       verification: AVAILABLE_VERIFICATION,
       change: NO_CHANGE,
+      planEnd: AVAILABLE_PLAN_END,
+      end: null,
     } as const
     const views: DashboardView[] = [
       { kind: 'lastGood', ...kept },

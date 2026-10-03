@@ -2,6 +2,7 @@ package com.bokrilog.sync.internal;
 
 import com.bokrilog.sync.SyncJobApi.DashboardMetric;
 import com.bokrilog.sync.SyncJobApi.NatureAxis;
+import com.bokrilog.sync.SyncJobApi.PlanEndAvailability;
 import com.bokrilog.sync.SyncJobApi.TrustAxes;
 import com.bokrilog.sync.SyncJobApi.TrustAxis;
 import java.time.Instant;
@@ -39,6 +40,15 @@ import org.jspecify.annotations.Nullable;
  * {@code VERIFICATION_REVIEW_REQUIRED} (or {@code UNUSABLE} / {@code HISTORY_OUT_OF_RANGE} when the history is out of
  * the provider's reach), with no next action — asking again, for either a verification or a continuation, would not
  * change it.
+ *
+ * <p>Story 2.13: a plan that ended early keeps its last official bundle as a read-only record. Freshness means nothing
+ * there — the plan is not synced any more — so the axis folds into one state, {@code ENDED} ({@code PLAN_ENDED_EARLY},
+ * all six metrics, no next action), and the end facts take its place on the screen. The input reliability and the
+ * calculation nature are judged from that calculation version ({@link #judgeEnded}) and one fact about it: a persistent
+ * verification review of that very version (Story 2.12) still holds its inputs, so the record says so as the ready
+ * dashboard did — with no next action. A sync's own review concerns later inputs, not the version, and stays out. The
+ * screen-level next action of the record is {@link #PREPARE_NEXT_PLAN}. Whether a ready plan can be ended now is
+ * {@link #planEnd}, judged by the end's own order.
  */
 final class DashboardTrust {
     static final String CREATE_PLAN = "CREATE_PLAN";
@@ -48,6 +58,24 @@ final class DashboardTrust {
     static final String VERIFY = "VERIFY";
     static final String CHOOSE_CONTINUATION = "CHOOSE_CONTINUATION";
     static final String NONE = "NONE";
+    /** The ended plan's screen-level next action (Story 2.13): the following plan is prepared apart (Story 2.15). */
+    static final String PREPARE_NEXT_PLAN = "PREPARE_NEXT_PLAN";
+    /** The freshness state and cause of an ended plan's record. */
+    static final String ENDED = "ENDED";
+    static final String PLAN_ENDED_EARLY = "PLAN_ENDED_EARLY";
+
+    /** The plan-end availabilities of a ready dashboard (Story 2.13). */
+    static final String END_AVAILABLE = "AVAILABLE";
+    static final String END_NEW_PLAN_CHOICE = "NEW_PLAN_CHOICE";
+    static final String END_UNAVAILABLE = "UNAVAILABLE";
+    /**
+     * The plan end's own unavailability reasons (Story 2.13), sync's copies of the plan module's names
+     * ({@code SyncCommandNamesTest} pins them): the {@code plan-end} restriction, {@code T} reached, and a result too
+     * recent to end on now.
+     */
+    static final String END_RESTRICTED = "RESTRICTED";
+    static final String END_PERIOD_ENDED = "PLAN_PERIOD_ENDED";
+    static final String END_RESULT_TOO_RECENT = "RESULT_TOO_RECENT";
 
     /** The screen's order of the six metrics. The repository reads them in this order. */
     static final List<String> METRICS = List.of("CURRENT_VALUE", "PLAN_AMOUNT", "PLAN_DIFFERENCE", "ADJUSTED_TARGET",
@@ -137,6 +165,51 @@ final class DashboardTrust {
     static Optional<TrustAxes> judge(Input input) {
         if (!RELIABILITIES.contains(input.inputReliability())) return Optional.empty();
         return Optional.of(new TrustAxes(freshness(input), reliability(input), nature(input)));
+    }
+
+    /**
+     * The three axes of an ended plan's record (Story 2.13), or empty when the version's input reliability is not one
+     * this story knows. Freshness is {@code ENDED}; the input reliability and the nature are judged from the version
+     * alone, without any sync fact — no attempt runs on an ended plan, and none of its endings reaches the record.
+     */
+    static Optional<TrustAxes> judgeEnded(String inputReliability, boolean estimated, int estimatedFlowCount,
+            Instant measuredAt, Instant verifiedThrough, Instant basisAt, List<DashboardMetric> metrics,
+            @Nullable String verificationReview) {
+        if (!RELIABILITIES.contains(inputReliability)) return Optional.empty();
+        // Only the version's own persistent review; no attempt status, availability or long gap reaches the record.
+        SyncFacts recordedFacts = new SyncFacts(SyncWindow.Availability.AVAILABLE.name(), null, null, verificationReview,
+                SyncWindow.Availability.AVAILABLE.name());
+        Input recorded = new Input(new Freshness(false, false, false), inputReliability, estimated, estimatedFlowCount,
+                measuredAt, verifiedThrough, basisAt, metrics, recordedFacts);
+        return Optional.of(new TrustAxes(new TrustAxis(ENDED, PLAN_ENDED_EARLY, measuredAt, METRICS, NONE),
+                reliability(recorded), nature(recorded)));
+    }
+
+    /**
+     * Whether an official result is too recent to end on now (Story 2.13): the end time — the database clock to the
+     * millisecond — would precede its measurement or its cash-flow verification. Bybit's time is trusted up to 60
+     * seconds from the database clock, so for a moment after a publication this can hold; the last normal result is
+     * never moved to the end time, so the end waits. The plan end's own judgment reads this same value.
+     */
+    static boolean resultTooRecent(Instant now, Instant measuredAt, Instant verifiedThrough) {
+        Instant endedAt = now.truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+        return endedAt.isBefore(measuredAt) || endedAt.isBefore(verifiedThrough);
+    }
+
+    /**
+     * Whether a ready plan can be ended now (Story 2.13), in the end's own order after the plan and its reference:
+     * unavailable first — the {@code plan-end} restriction ({@code RESTRICTED}), then the database clock at {@code T}
+     * ({@code PLAN_PERIOD_ENDED}), then a result too recent to end on ({@code RESULT_TOO_RECENT},
+     * {@link #resultTooRecent}) — then the long gap, judged by the sync admission's own function, which leaves only the
+     * long-gap choice's "start a new plan" ({@code NEW_PLAN_CHOICE}).
+     */
+    static PlanEndAvailability planEnd(boolean restricted, Instant now, Instant endAt, boolean tooRecent,
+            boolean longGap) {
+        if (restricted) return new PlanEndAvailability(END_UNAVAILABLE, END_RESTRICTED);
+        if (!now.isBefore(endAt)) return new PlanEndAvailability(END_UNAVAILABLE, END_PERIOD_ENDED);
+        if (tooRecent) return new PlanEndAvailability(END_UNAVAILABLE, END_RESULT_TOO_RECENT);
+        if (longGap) return new PlanEndAvailability(END_NEW_PLAN_CHOICE, null);
+        return new PlanEndAvailability(END_AVAILABLE, null);
     }
 
     /** The screen's next action for a ready dashboard: the freshness axis's own. */

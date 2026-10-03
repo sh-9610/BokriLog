@@ -7,6 +7,7 @@ import {
   adjustmentRowFixture,
   EVIDENCE_IDS,
   evidenceResultFixture,
+  trustFixture,
 } from '../test/planResultFixture'
 import {
   getObservedAllowedRequests,
@@ -216,5 +217,50 @@ describe('useAdjustmentHistory', () => {
     await new Promise((settle) => setTimeout(settle, 20))
     expect(result.current.view).toEqual({ kind: 'closed' })
     expect(reads()).toHaveLength(0)
+  })
+})
+
+describe('the history of a plan ended early (Story 2.13)', () => {
+  /** The same plan and version, ended: its status and the freshness of a plan no longer synced. */
+  function endedBundle(): PlanResult {
+    return bundle({
+      planStatus: 'ENDED_EARLY',
+      trust: trustFixture({ freshness: { state: 'ENDED', cause: 'PLAN_ENDED_EARLY' } }),
+    })
+  }
+
+  it('closes the history read while the plan was active when the same version becomes the record', async () => {
+    answers(() => Promise.resolve(json(page())))
+    let shown = bundle()
+    const { result, rerender } = renderHook(() => useAdjustmentHistory(shown, noop))
+    act(() => {
+      result.current.open()
+    })
+    await waitFor(() => {
+      expect(kindOf(result.current.view)).toBe('open:ALL:ready')
+    })
+    shown = endedBundle()
+    rerender()
+    expect(result.current.view).toEqual({ kind: 'closed' })
+  })
+
+  it('drops a read in flight when the same version becomes the record, and never takes its answer', async () => {
+    const pending = deferred()
+    const inits = answers(() => pending.promise)
+    let shown = bundle()
+    const { result, rerender } = renderHook(() => useAdjustmentHistory(shown, noop))
+    act(() => {
+      result.current.open()
+    })
+    shown = endedBundle()
+    rerender()
+    expect(result.current.view).toEqual({ kind: 'closed' })
+    expect(inits[0]?.signal?.aborted).toBe(true)
+    await act(async () => {
+      pending.resolve(json(page()))
+      await Promise.resolve()
+    })
+    expect(result.current.view).toEqual({ kind: 'closed' })
+    expect(reads()).toHaveLength(1)
   })
 })

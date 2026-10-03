@@ -232,29 +232,94 @@ public interface SyncJobApi {
     SyncAdmission admitPlanSync(@Nullable UUID userId, @Nullable SyncTrigger trigger, @Nullable String idempotencyKey);
 
     /**
-     * The dashboard read model (Story 2.8). One of five outcomes; only {@link Dashboard.Ready} carries
-     * financial fields. The screen-level next action is a closed set per outcome: {@code CREATE_PLAN}
-     * ({@link Dashboard.NoPlan}), {@code WAIT_FOR_RESULT} ({@link Dashboard.Preparing}), and
+     * The dashboard read model (Story 2.8). One of six outcomes; only {@link Dashboard.Ready} and
+     * {@link Dashboard.Ended} (Story 2.13) carry financial fields. The screen-level next action is a closed set per
+     * outcome: {@code CREATE_PLAN} ({@link Dashboard.NoPlan}), {@code WAIT_FOR_RESULT} ({@link Dashboard.Preparing}),
      * {@code WAIT_FOR_SYNC}, {@code SYNC}, {@code VERIFY}, {@code CHOOSE_CONTINUATION} or {@code NONE}
-     * ({@link Dashboard.Ready}, the freshness axis's own).
+     * ({@link Dashboard.Ready}, the freshness axis's own), and {@code PREPARE_NEXT_PLAN} ({@link Dashboard.Ended}).
+     *
+     * <p>The plan shown is one choice (Story 2.13): the active plan; without one, "being prepared" while a first
+     * publication is in progress; otherwise the most recent plan when it ended early. The evidence and the adjustment
+     * history judge their reference against the same plan's current pointer.
      */
     sealed interface Dashboard permits Dashboard.NotPermitted, Dashboard.Unavailable, Dashboard.NoPlan,
-            Dashboard.Preparing, Dashboard.Ready {
+            Dashboard.Preparing, Dashboard.Ready, Dashboard.Ended {
         /** The account's own access refused it before or after the read (its deletion began or ended). */
         record NotPermitted() implements Dashboard {}
         /** The pointer's bundle did not agree with itself; nothing is returned in part. */
         record Unavailable() implements Dashboard {}
-        /** No active plan and no publication in progress. */
+        /** No active plan, no publication in progress and no ended plan. */
         record NoPlan(String nextAction) implements Dashboard {}
         /** No active plan yet, and one of the user's publication attempts is queued or running. */
         record Preparing(String nextAction) implements Dashboard {}
         /**
          * The active plan's official bundle, its sync state (Story 2.11), its verification state and what its
-         * version changed (Story 2.12).
+         * version changed (Story 2.12), and whether it can be ended now (Story 2.13).
          */
         record Ready(DashboardResult result, String nextAction, SyncState sync, VerificationState verification,
-                VersionChange change) implements Dashboard {}
+                VersionChange change, PlanEndAvailability planEnd) implements Dashboard {}
+        /**
+         * The read-only record of the user's plan that ended early (Story 2.13): its last official bundle — the
+         * result's shape is the ready one's, its plan status {@code ENDED_EARLY} and its freshness axis
+         * {@code ENDED} — and the end facts. No sync, verification or change part: an ended plan is not synced.
+         * The next action is {@code PREPARE_NEXT_PLAN}.
+         */
+        record Ended(DashboardResult result, String nextAction, PlanEndRecord end) implements Dashboard {}
     }
+
+    // -------------------------------------------------------------------- Story 2.13
+
+    /**
+     * Whether the ready dashboard's plan can be ended now, judged by the end's own rules in the dashboard's one read.
+     *
+     * @param availability {@code AVAILABLE}, {@code NEW_PLAN_CHOICE} (the gap is long: only the long-gap choice's
+     *     "start a new plan" ends it) or {@code UNAVAILABLE}
+     * @param reason with {@code UNAVAILABLE} only: {@code RESTRICTED}, {@code PLAN_PERIOD_ENDED} or
+     *     {@code RESULT_TOO_RECENT} (the official result's measurement or cash-flow verification lies ahead of the
+     *     database clock — Bybit's time is trusted up to 60 seconds from it — so it cannot be recorded as the last
+     *     normal result before an end now; a moment later it can)
+     */
+    record PlanEndAvailability(String availability, @Nullable String reason) {}
+
+    /**
+     * The end facts of an ended plan's record, as the end stored them: the reason, the server's end time, the planned
+     * end {@code T}, the last normal measurement and its delay to the end ({@code endedAt − lastNormalMeasuredAt}), the
+     * completion comparison state and — for a long-gap end — the uncollected range {@code (verified, endedAt]}.
+     */
+    record PlanEndRecord(String reason, Instant endedAt, Instant scheduledEndAt, Instant lastNormalMeasuredAt,
+            long lastNormalDelayMillis, String completion, @Nullable Instant uncollectedFrom,
+            @Nullable Instant uncollectedUntil) {}
+
+    /**
+     * What an early end reads of the plan's official result (Story 2.13): its basis, or why there is none — the plan is
+     * not the user's active plan any more ({@link NotActive}), or its official result does not agree with itself by
+     * the ready dashboard's own checks ({@link Unavailable}), so an end recorded on it would be a record nobody could
+     * read.
+     */
+    sealed interface PlanEndBasisRead permits PlanEndBasisRead.NotActive, PlanEndBasisRead.Unavailable, PlanEndBasis {
+        record NotActive() implements PlanEndBasisRead {}
+
+        record Unavailable() implements PlanEndBasisRead {}
+    }
+
+    /**
+     * The official basis an early end judges and records (Story 2.13): the active plan's pointer, the calculation it
+     * cites (agreeing with the plan, its terms, the portfolio pointer and its six metrics — the ready dashboard's own
+     * checks), that calculation's two times, the plan's end {@code T}, the database clock, the long gap judged at that
+     * clock by the sync admission's own function, and whether the result is too recent to end on now — the end time
+     * (that clock to the millisecond) would precede its measurement or verification. The dashboard's plan-end part
+     * judges the last two the same way.
+     */
+    record PlanEndBasis(UUID planId, long pointerVersion, UUID calculationId, UUID portfolioSnapshotId,
+            Instant measuredAt, Instant cashflowVerifiedThrough, Instant endAt, Instant now, boolean longGap,
+            boolean resultTooRecent) implements PlanEndBasisRead {}
+
+    /**
+     * The basis of the user's active plan {@code planId}. <b>Joins the caller's transaction only</b>
+     * ({@code MANDATORY}): the plan module reads it under its own locks, inside the end's transaction, and in the
+     * preparation's one read-only repeatable read.
+     */
+    PlanEndBasisRead planEndBasis(@Nullable UUID userId, UUID planId);
 
     /**
      * Accepts the first publication of the intent's active plan and official result. Its inputs are
@@ -402,8 +467,9 @@ public interface SyncJobApi {
 
         /**
          * One official version: its publication order (the pointer version), the time it became official, the
-         * time it stopped being official ({@code null} for the current one — the next version's publication) and
-         * whether it is the current one.
+         * time it stopped being official (the next version's publication; {@code null} for the current one of an
+         * active plan, and the end time for the current one of a plan that ended early — Story 2.13) and whether it
+         * is the current one.
          */
         public record OfficialVersion(long pointerVersion, UUID calculationId, Instant publishedAt,
                 @Nullable Instant appliedUntil, boolean current) {}
@@ -419,7 +485,8 @@ public interface SyncJobApi {
         record NotPermitted() implements EvidenceOutcome {}
         /**
          * The reference is not the user's current official pointer — another user's, an earlier version,
-         * an unknown or malformed id, a missing value, or no active plan at all. One answer for all of them.
+         * an unknown or malformed id, a missing value, or no plan shown at all (the shown plan is the active one, or
+         * the most recent one that ended early — Story 2.13). One answer for all of them.
          */
         record NotFound() implements EvidenceOutcome {}
         /** The current pointer's lineage did not agree with itself; nothing is returned in part. */

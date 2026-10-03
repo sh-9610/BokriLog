@@ -324,9 +324,16 @@ function Versions({ evidence }: { readonly evidence: Evidence }): ReactElement {
               facts={[
                 { label: copy.versions.order, value: <Id value={version.pointerVersion} /> },
                 { label: copy.versions.effectiveFrom, value: <Time value={version.publishedAt} /> },
-                // "Current" comes from the version's own flag and from nothing else.
+                // "Current" comes from the version's own flag and from nothing else. The current version of a
+                // plan ended early (Story 2.13) names when it stopped being applied: the end time.
                 version.current
-                  ? { label: copy.versions.effectiveUntil, value: copy.versions.current }
+                  ? typeof version.appliedUntil !== 'string'
+                    ? { label: copy.versions.effectiveUntil, value: copy.versions.current }
+                    : {
+                        label: copy.versions.effectiveUntil,
+                        value: <Time value={version.appliedUntil} />,
+                        help: copy.versions.endedCurrent,
+                      }
                   : {
                       label: copy.versions.effectiveUntil,
                       value: <Time value={version.appliedUntil ?? ''} />,
