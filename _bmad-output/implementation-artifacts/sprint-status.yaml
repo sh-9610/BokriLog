@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 2026-10-01
+last_updated: 2026-10-03
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -61,7 +61,7 @@ development_status:
   2-9-현재-공식-계산의-입력과-버전-근거-확인하기: done
   2-10-계획에-반영된-외부-자금흐름-조정-이력-확인하기: done
   2-11-활성-계획을-사용자-시점에-증분-동기화하고-공식-결과-갱신하기: done
-  2-12-필요한-이력-구간을-정밀-재검증하고-늦은-사건을-새-버전으로-반영하기: review
+  2-12-필요한-이력-구간을-정밀-재검증하고-늦은-사건을-새-버전으로-반영하기: done
   2-13-활성-계획을-명시적으로-중도-종료하고-기록-보존하기: backlog
   2-14-자연-만료-계획의-첫-종료-후-관측값과-완료-결과-확정하기: backlog
   2-15-새-정상-스냅샷을-기준으로-후속-계획-생성하기: backlog
