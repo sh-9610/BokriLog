@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -13,6 +14,17 @@ import org.springframework.stereotype.Component;
 @Component
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 class FirstSnapshotWorker {
+    /**
+     * The pause between two claims of each dispatch below. Its one default is {@code application.yml}'s
+     * {@code 1s}; the Docker-backed tests shorten it so a pipeline test does not wait a second per stage. The
+     * heartbeat stays fixed at five seconds: shortening it would also shorten the window in which a late worker
+     * reaches the database fence instead of the in-memory guard.
+     *
+     * <p>The constructor refuses a value that is not positive. Spring rejects a negative delay but accepts zero,
+     * and zero makes the six claims spin on the one scheduler thread the heartbeat also runs on; the environment
+     * can still set the value through relaxed binding, so the guard is here rather than in the file.
+     */
+    private static final String DISPATCH_INTERVAL="${bokrilog.sync.worker.dispatch-interval}";
     private final SyncJobService service;
     private final SourceConnectionApi sources;
     private final PlanPublicationService publications;
@@ -23,10 +35,12 @@ class FirstSnapshotWorker {
     private final Map<java.util.UUID,PlanSyncRepository.Lease> planSyncInFlight=new ConcurrentHashMap<>();
     private final PlanSyncService planSyncs;
     FirstSnapshotWorker(SyncJobService service,SourceConnectionApi sources,PlanPublicationService publications,
-            PlanSyncService planSyncs) {
+            PlanSyncService planSyncs,@Value(DISPATCH_INTERVAL) java.time.Duration dispatchInterval) {
+        if (dispatchInterval.isZero()||dispatchInterval.isNegative())
+            throw new IllegalStateException("bokrilog.sync.worker.dispatch-interval must be positive");
         this.service=service; this.sources=sources; this.publications=publications; this.planSyncs=planSyncs;
     }
-    @Scheduled(fixedDelay=1000)
+    @Scheduled(fixedDelayString=DISPATCH_INTERVAL)
     void dispatch() {
         service.claim().ifPresent(lease -> {
             inFlight.put(lease.jobId(),lease);
@@ -58,7 +72,7 @@ class FirstSnapshotWorker {
         }
     }
     /** One conversion claim per tick. Provider calls run on the virtual thread without a transaction. */
-    @Scheduled(fixedDelay=1000)
+    @Scheduled(fixedDelayString=DISPATCH_INTERVAL)
     void dispatchCashflowConversion() {
         service.claimConversion().ifPresent(lease->{
             conversionInFlight.put(lease.jobId(),lease);
@@ -75,7 +89,7 @@ class FirstSnapshotWorker {
      * One first-publication claim per tick (Story 2.7). The pure calculation runs on the virtual thread
      * between the input read and the publishing transaction; no transaction spans it.
      */
-    @Scheduled(fixedDelay=1000)
+    @Scheduled(fixedDelayString=DISPATCH_INTERVAL)
     void dispatchPlanPublication() {
         publications.claim().ifPresent(lease->{
             publicationInFlight.put(lease.jobId(),lease);
@@ -93,7 +107,7 @@ class FirstSnapshotWorker {
      * calls and the pure calculation run between short transactions, and its heartbeat also renews the leases of
      * the stage rows it owns.
      */
-    @Scheduled(fixedDelay=1000)
+    @Scheduled(fixedDelayString=DISPATCH_INTERVAL)
     void dispatchPlanSync() {
         planSyncs.claim().ifPresent(lease->{
             planSyncInFlight.put(lease.jobId(),lease);
@@ -106,14 +120,14 @@ class FirstSnapshotWorker {
             });
         });
     }
-    @Scheduled(fixedDelay=1000)
+    @Scheduled(fixedDelayString=DISPATCH_INTERVAL)
     void dispatchInitialInputs() {
         service.claimInitial().ifPresent(lease->{
             initialInFlight.put(lease.jobId(),lease);
             Thread.ofVirtual().name("initial-inputs-"+lease.jobId()).start(()->runInitial(lease));
         });
     }
-    @Scheduled(fixedDelay=1000)
+    @Scheduled(fixedDelayString=DISPATCH_INTERVAL)
     void dispatchCashflowClassification() {
         service.claimClassification().ifPresent(lease ->
                 Thread.ofVirtual().name("cashflow-classification-"+lease.jobId())

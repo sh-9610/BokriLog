@@ -65,13 +65,15 @@ class IncrementalSyncTest extends AuthFlowTestBase {
         String subject = "incremental-manual-" + UUID.randomUUID();
         String cookie = sessionCookieOf(signIn(subject)).orElseThrow();
         UUID user = userIdOf(OidcStubConfiguration.issuer(), subject).orElseThrow();
-        store(user, DevBybitStub.Scenario.INCREMENTAL);
+        String uid = store(user, DevBybitStub.Scenario.INCREMENTAL);
         UUID intent = publishedPlan(user, "incremental-manual", null);
         var v1 = ready(user);
         assertThat(v1.pointerVersion()).isEqualTo(1);
         String planRow = planRow(user);
-        // New deposits arrive every 10 seconds: wait for at least one past the first version's tc.
-        Thread.sleep(Math.max(0, Duration.between(Instant.now(), v1.basisAt().plusSeconds(11)).toMillis()));
+        // New deposits arrive every 10 seconds: wait for the first one past the first version's tc, and a second —
+        // the same margin the old fixed wait (tc1 + 11 s) kept past the latest deposit it waited for (tc1 + 10 s).
+        Instant deposit = BybitStubConfiguration.nextIncrementalDeposit(uid, v1.basisAt());
+        Thread.sleep(Math.max(0, Duration.between(Instant.now(), deposit.plusSeconds(1)).toMillis()));
         String csrf = csrfTokenOf(cookie);
         // Not reset: the scenario's deposits are counted from this UID's first wallet read.
         int queriesBefore = BybitStubConfiguration.transactionLogQueries().size();
@@ -484,7 +486,7 @@ class IncrementalSyncTest extends AuthFlowTestBase {
                 .param("j", collection).update();
         jdbc().sql("UPDATE sync_cashflow_conversion_job SET lease_until=now()-interval '1 second' WHERE job_id=:j")
                 .param("j", conversion).update();
-        Thread.sleep(2_500);
+        Thread.sleep(QUIET_WINDOW);
         for (var child : List.of(new Object[] {"sync_initial_collection_job", collection},
                 new Object[] {"sync_cashflow_conversion_job", conversion})) {
             assertThat(jdbc().sql("SELECT status||'|'||fencing_generation FROM " + child[0] + " WHERE job_id=:j")
@@ -564,11 +566,14 @@ class IncrementalSyncTest extends AuthFlowTestBase {
         publishedPlan(user, "incremental-fail-" + stage.toLowerCase(java.util.Locale.ROOT), null);
         var v1 = ready(user);
         if (stage.equals("CONVERSION")) {
-            // A carried withdrawal of an asset without a trading route: its conversion is held.
+            // A carried withdrawal of an asset without a trading route: its conversion is held. It lies inside
+            // (t0, tc1] — halfway, not a fixed offset before tc1: the first version can be published well within
+            // a second of t0, and an event at or before t0 is not carried but unexplained (review, not this case).
             UUID candidate = jdbc().sql("SELECT candidate_id FROM sync_plan_calculation WHERE calculation_id=:c")
                     .param("c", v1.calculationId()).query(UUID.class).single();
-            UUID event = insertSourceEvent(user, "halt-carried", "TRANSFER_OUT", "HALT", "-2.5",
-                    v1.basisAt().minusMillis(500));
+            Instant carriedAt = v1.startAt().plus(Duration.between(v1.startAt(), v1.basisAt()).dividedBy(2))
+                    .truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+            UUID event = insertSourceEvent(user, "halt-carried", "TRANSFER_OUT", "HALT", "-2.5", carriedAt);
             jdbc().sql("INSERT INTO sync_initial_candidate_event(candidate_id,event_id) VALUES (:c,:e)")
                     .param("c", candidate).param("e", event).update();
         }
@@ -602,7 +607,7 @@ class IncrementalSyncTest extends AuthFlowTestBase {
         assertThat(dashboard.nextAction()).isEqualTo("SYNC");
         // No automatic retry.
         int calls = BybitStubConfiguration.requestCount();
-        Thread.sleep(1_500);
+        Thread.sleep(QUIET_WINDOW);
         assertThat(countOf("sync_plan_sync_job", user)).isEqualTo(1);
         assertThat(BybitStubConfiguration.requestCount()).isEqualTo(calls);
     }
@@ -682,7 +687,8 @@ class IncrementalSyncTest extends AuthFlowTestBase {
                     + "WHERE job_id=:j").param("j", job).update();
             assertThat(awaitSync(job)).isEqualTo("FAILED");
         }
-        Thread.sleep(1_000);
+        awaitPlanLockReleased();
+        Thread.sleep(QUIET_WINDOW);
         assertThat(jdbc().sql("SELECT status||'|'||failure_code FROM sync_plan_sync_job WHERE job_id=:j")
                 .param("j", job).query(String.class).single()).isEqualTo("FAILED|SYNC_INTERRUPTED");
         assertUnchanged(user, v1);
@@ -789,7 +795,12 @@ class IncrementalSyncTest extends AuthFlowTestBase {
             portfolio.erasePortfolioData(user);
             sync.eraseSyncData(user);
         }
-        Thread.sleep(1_500);
+        // The erasure ended the attempt with its one line. The late worker, woken when the holder let go, then
+        // ends its publishing transaction (the plan lock goes away) and writes nothing after it.
+        String ending = "plan sync finished: job=" + late + " ";
+        pollUntil(Duration.ofSeconds(10), () -> lines(output, ending), found -> !found.isEmpty());
+        awaitPlanLockReleased();
+        Thread.sleep(QUIET_WINDOW);
         for (String table : List.of("sync_plan_sync_job", "sync_initial_collection_job", "sync_cashflow_classification_job",
                 "sync_cashflow_conversion_job", "sync_initial_candidate_bundle", "sync_plan_calculation",
                 "sync_official_plan_result", "sync_official_plan_result_history")) {
@@ -823,13 +834,16 @@ class IncrementalSyncTest extends AuthFlowTestBase {
     }
 
     private String awaitSync(UUID job) throws InterruptedException {
-        for (int i = 0; i < 300; i++) {
-            String status = jdbc().sql("SELECT status FROM sync_plan_sync_job WHERE job_id=:j").param("j", job)
-                    .query(String.class).optional().orElse("GONE");
-            if (!status.equals("QUEUED") && !status.equals("RUNNING")) return status;
-            Thread.sleep(100);
-        }
-        throw new AssertionError("plan sync did not finish");
+        String status = pollUntil(Duration.ofSeconds(30), () -> jdbc().sql("SELECT status FROM sync_plan_sync_job "
+                + "WHERE job_id=:j").param("j", job).query(String.class).optional().orElse("GONE"),
+                IncrementalSyncTest::finished);
+        if (!finished(status)) throw new AssertionError("plan sync did not finish");
+        return status;
+    }
+
+    /** A job status that no worker will move any more: neither waiting for a claim nor claimed. */
+    private static boolean finished(String status) {
+        return !status.equals("QUEUED") && !status.equals("RUNNING");
     }
 
     /** The windows cover [start, tc] contiguously, each at most seven days, both types in each window. */
@@ -944,8 +958,8 @@ class IncrementalSyncTest extends AuthFlowTestBase {
      */
     private UUID publishedPlan(UUID user, String prefix, @Nullable Instant start) throws Exception {
         UUID firstJob = sync.admit(user, prefix + "-seed").orElseThrow().jobId();
-        for (int i = 0; i < 100 && !"SUCCEEDED".equals(sync.job(user, firstJob).orElseThrow().status()); i++)
-            Thread.sleep(100);
+        pollUntil(Duration.ofSeconds(10), () -> sync.job(user, firstJob).orElseThrow().status(),
+                IncrementalSyncTest::finished);
         assertThat(sync.job(user, firstJob).orElseThrow().status()).isEqualTo("SUCCEEDED");
         var snapshot = plans.state(user).snapshot();
         String end = LocalDateTime.ofInstant(snapshot.measuredAt(), ZoneId.of("Asia/Seoul")).plusDays(30)
@@ -969,13 +983,8 @@ class IncrementalSyncTest extends AuthFlowTestBase {
     }
 
     private void awaitTable(String table, UUID job, String expected) throws InterruptedException {
-        String status = null;
-        for (int i = 0; i < 150; i++) {
-            status = jdbc().sql("SELECT status FROM " + table + " WHERE job_id=:j").param("j", job)
-                    .query(String.class).single();
-            if (!status.equals("QUEUED") && !status.equals("RUNNING")) break;
-            Thread.sleep(100);
-        }
+        String status = pollUntil(Duration.ofSeconds(15), () -> jdbc().sql("SELECT status FROM " + table
+                + " WHERE job_id=:j").param("j", job).query(String.class).single(), IncrementalSyncTest::finished);
         assertThat(status).as(table).isEqualTo(expected);
     }
 
@@ -999,7 +1008,8 @@ class IncrementalSyncTest extends AuthFlowTestBase {
         return user;
     }
 
-    private void store(UUID user, DevBybitStub.Scenario scenario) {
+    /** Stores a verified connection of {@code scenario} for a new UID and returns that UID. */
+    private String store(UUID user, DevBybitStub.Scenario scenario) {
         Instant start = Instant.now().minusSeconds(2);
         String uid = "incremental-" + UUID.randomUUID();
         var credentials = new SourceCredentials(BybitStubConfiguration.apiKey(scenario, uid),
@@ -1009,6 +1019,7 @@ class IncrementalSyncTest extends AuthFlowTestBase {
                     new SourceVerification.Verified(uid, start, "bybit-readonly-uta-1.0"), credentials);
             portfolio.attachActiveSource(user, stored.connectionId(), stored.providerAccountId(), start);
         });
+        return uid;
     }
 
     /** Holds the user's plan write lock (the first lock of the publishing transaction) until closed. */
@@ -1039,5 +1050,20 @@ class IncrementalSyncTest extends AuthFlowTestBase {
             Thread.sleep(50);
         }
         throw new AssertionError("the sync never reached the plan lock");
+    }
+
+    /**
+     * Waits until no advisory lock is held or awaited. Called after the holder let go: the late worker took the
+     * plan lock inside its publishing transaction, so an empty {@code pg_locks} means that transaction ended.
+     *
+     * <p>Preconditions: the caller saw the late worker waiting on the plan lock ({@link #awaitBlockedOnPlanLock})
+     * and the holder has been joined ({@link #holdPlanLock}'s close). These tests hold no other advisory lock,
+     * so counting every advisory lock rather than the plan lock's key can only make the wait longer, never
+     * shorter; a key filter could pass vacuously if its arithmetic were off.
+     */
+    private void awaitPlanLockReleased() throws InterruptedException {
+        int left = pollUntil(Duration.ofSeconds(10), () -> jdbc().sql("SELECT count(*) FROM pg_locks "
+                + "WHERE locktype='advisory'").query(Integer.class).single(), count -> count == 0);
+        if (left > 0) throw new AssertionError("the late worker never let go of the plan lock");
     }
 }

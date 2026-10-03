@@ -191,6 +191,16 @@ bokrilog:
       reserved-ip: ${BOKRILOG_BYBIT_RESERVED_IP:}
       # 빈 문자열은 Duration으로 읽히지 않는다. 값을 주지 않는 스택의 바닥을 여기서 정한다.
       request-timeout: ${BOKRILOG_BYBIT_REQUEST_TIMEOUT:5s}
+  # 워커 dispatch 간격. `FirstSnapshotWorker`의 여섯 dispatch(첫 스냅샷·수집·판정·환산·발행·증분 동기화)가
+  # 한 번 claim한 뒤 다음 claim까지 쉬는 시간이며, 이 값이 유일한 기본값이다(애너테이션에 기본값을 두지 않는다).
+  # 운영은 1초다. 설정으로 연 이유는 시험 하나뿐이다 — 실제 파이프라인을 모는 시험이 단계마다 최대 한 tick을
+  # 기다리므로 `AuthFlowTestBase`가 100ms로 줄인다. 이 파일이 값을 환경 변수로 받지는 않지만, 아래 세션 절대
+  # 수명과 같은 relaxed binding 경로로 환경 변수가 이 값을 덮을 수 있고, 0 이하의 값이면 워커가 기동을 거부한다.
+  # heartbeat 5초는 설정으로 열지 않는다. 줄이면 늦은 워커가 DB fence까지 가지 못하고 메모리 guard에서 끝나
+  # fence 시험의 검증력이 준다. lease 30초도 그대로다.
+  sync:
+    worker:
+      dispatch-interval: 1s
   # 세션 수명의 두 번째 축(Story 1.5).
   #
   # 절대 수명이다. 세션 `CREATION_TIME`을 기준으로 세고 재요청·세션 ID 회전으로 늘어나지 않는다.
