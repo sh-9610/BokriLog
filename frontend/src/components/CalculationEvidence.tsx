@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactElement } from 'react'
+import { useLayoutEffect, useRef, type ReactElement } from 'react'
 
 import type {
   CalculationEvidence as Evidence,
@@ -412,6 +412,10 @@ function Failure({
  * keyboard user's focus stays on it; when what held focus inside the region goes away while it stays open
  * (the retry control once the lineage arrives), focus moves to the region's heading. The region has no
  * live region: the screen's single status region says what happened.
+ *
+ * The focus moves are a layout effect: focus follows in the commit that opens, closes or replaces the content,
+ * so it never rests on the document body for a frame. As a passive effect it ran after the commit on the
+ * scheduler's own task, and under load that came after code that had already seen the new content.
  */
 export function CalculationEvidence({
   evidence,
@@ -430,7 +434,7 @@ export function CalculationEvidence({
   const lastFocused = useRef<Element | null>(null)
   const wasExpanded = useRef(expanded)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const opened = expanded && !wasExpanded.current
     wasExpanded.current = expanded
     if (opened) {

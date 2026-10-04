@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { CSRF_HEADER } from '../content/auth'
 import { DASHBOARD_SYNC_PATH } from '../content/planSync'
@@ -566,15 +566,25 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
     if (next.focus !== null) setFocus(focusOn(next.focus))
   }
 
-  // The latest values for the callbacks below. First, so every later effect of this commit sees them.
-  useEffect(() => {
+  /*
+   * The latest values for the callbacks below. First, so every later effect of this commit sees them — a layout
+   * effect, because the timers and the listener below are layout effects too: they start and stop in the commit
+   * that changes what is followed (and a test that has seen that commit can advance its clock at once), and they
+   * and their callbacks read the values of that same commit. As passive effects they came on a later task, which
+   * under load came after code that had already seen the new state.
+   *
+   * What stays passive: the `live` marker and the two automatic admissions (`ENTRY`, `VISIBILITY`). Starting a
+   * request is not something the commit shows, and its answer comes on a later task anyway.
+   */
+  useLayoutEffect(() => {
     viewRef.current = view
     dashboardRef.current = dashboard
     csrfRef.current = csrfToken
     followedRef.current = followed
   })
 
-  // An answer that arrives after unmount changes nothing (the request itself is left to finish).
+  // An answer that arrives after unmount changes nothing (the request itself is left to finish). Passive: it
+  // guards answers that come on later tasks, not anything a commit shows.
   useEffect(() => {
     live.current = true
     return () => {
@@ -745,6 +755,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   }, [])
 
   // ENTRY: once per mount, on the first ready answer — never on the record of a plan ended early (Story 2.13).
+  // Passive: it starts a request.
   useEffect(() => {
     if (entrySent.current || view.kind !== 'READY' || loading || csrfToken === null) return
     entrySent.current = true
@@ -752,7 +763,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   }, [view, loading, csrfToken, admit])
 
   // The document's visibility: polling and the budget pause while hidden; a long absence makes `VISIBILITY` due.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (document.visibilityState === 'hidden') hiddenAt.current = Date.now()
     const onVisibilityChange = (): void => {
       if (document.visibilityState === 'hidden') {
@@ -775,7 +786,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
 
   /*
    * VISIBILITY: after a long absence, decided on the first answer read after the tab came back — and only on
-   * that one, sent or not, so it can never fire on a much later, unrelated answer.
+   * that one, sent or not, so it can never fire on a much later, unrelated answer. Passive: it starts a request.
    */
   useEffect(() => {
     const after = visibilityDue.current
@@ -788,7 +799,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   }, [view, loading, csrfToken, followed, requesting, admit])
 
   // Following: one quiet read 2 seconds after each answer — a failed one too — while visible.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (followed === null || !visible || loading) return
     if (view.kind === 'checking' || view.kind === 'denied') return
     const timer = window.setTimeout(() => {
@@ -805,7 +816,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
    * time does not count; following the same job again later is a new following with a new budget.
    */
   const owner = followed?.budget ?? null
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (owner === null || !visible) return
     let left = budget.current
     if (left?.owner !== owner) {
@@ -831,7 +842,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   }, [owner, visible])
 
   // The sync's cool-down, one second at a time; when it ends, so does the sync's cool-down outcome.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (cooldown === null) return
     const timer = window.setTimeout(() => {
       setCooldown(cooldown <= 1 ? null : cooldown - 1)
@@ -847,7 +858,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   }, [cooldown])
 
   // The verification's (or the catch-up's) cool-down, the same way.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (verificationCooldown === null) return
     const timer = window.setTimeout(() => {
       setVerificationCooldown(verificationCooldown <= 1 ? null : verificationCooldown - 1)

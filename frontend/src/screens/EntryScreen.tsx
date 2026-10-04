@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactElement } from 'react'
+import { useLayoutEffect, useRef, type ReactElement } from 'react'
 
 import { ProviderMark } from '../components/ProviderMark'
 import {
@@ -55,11 +55,15 @@ interface EntryScreenProps {
  * 다른 화면에서의 전환(로그아웃, 세션 만료, 실패한 인증 왕복) 뒤이고, 그때 포커스가 문서 처음에
  * 남아 있으면 키보드·보조기술 사용자는 무엇이 바뀌었는지 알 수 없다. 표지가 없는 첫 방문에서는
  * 포커스를 옮기지 않는다 — 옮길 이유가 없고, 그러면 건너뛰기 링크가 첫 `Tab`이라는 계약도 그대로다.
+ *
+ * 그 이동은 layout effect다. 표지와 함께 화면을 그린 커밋 안에서 포커스가 제목에 닿으므로 한
+ * 프레임도 `<body>`에 머물지 않는다. passive effect는 그리기 뒤 별도 작업으로 돌아, 부하가 걸리면
+ * 새 화면을 이미 본 코드보다 늦게 왔다.
  */
 export function EntryScreen({ notice = null }: EntryScreenProps = {}): ReactElement {
   const title = useRef<HTMLHeadingElement>(null)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (notice !== null) {
       title.current?.focus()
     }

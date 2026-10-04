@@ -198,6 +198,8 @@ export function PlanConditionPanel({
   const [lostToActivePlan, setLostToActivePlan] = useState(false)
   const retryKey = useRef<string | null>(null)
 
+  // The read stays a passive effect: starting a request is not something the commit shows, and its answer comes
+  // on a later task anyway.
   useEffect(() => {
     if (!ready) return
     let live = true

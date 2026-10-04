@@ -1,4 +1,4 @@
-import { useEffect, useRef, type FocusEvent, type ReactElement, type Ref } from 'react'
+import { useLayoutEffect, useRef, type FocusEvent, type ReactElement, type Ref } from 'react'
 
 import type {
   PlanEndStatus,
@@ -346,7 +346,14 @@ export function SyncControl({
   const lastFocused = useRef<Element | null>(null)
   const { focus, phase } = sync
 
-  useEffect(() => {
+  /*
+   * Both focus moves are layout effects: focus follows in the commit that changes the content, so it never rests
+   * on the document body for a frame. As passive effects they ran after the commit on the scheduler's own task,
+   * and under load that came after code that had already seen the new content. The order below still holds —
+   * a child's layout effects run before its parent's, as passive ones did — so the panel's heading focus comes
+   * after this control's recovery.
+   */
+  useLayoutEffect(() => {
     if (focus === null || focus.serial === handled.current) return
     if (focus.target !== 'summary') return
     handled.current = focus.serial
@@ -361,7 +368,7 @@ export function SyncControl({
    * a new bundle, which also ends the long-gap form and its button): the panel moves focus there, after this
    * control's effects, so recovering here first would send focus to the sync button and then away again.
    */
-  useEffect(() => {
+  useLayoutEffect(() => {
     const fresh = focus !== null && focus.serial !== seen.current
     if (focus !== null) seen.current = focus.serial
     const last = lastFocused.current

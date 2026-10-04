@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react'
 
 import { BybitConnectionForm } from '../components/BybitConnectionForm'
 import { ProviderMark } from '../components/ProviderMark'
@@ -172,6 +172,9 @@ export function SettingsScreen(): ReactElement {
    * 미인증·확인 중·표시된 세션에서 이 요청을 보내면 서버가 403으로 답하는 상태 조회가 하나
    * 늘어날 뿐이고, 그 응답으로 화면이 할 일도 달라지지 않는다. 자동 재시도하지 않는 것은 세션
    * 확인과 같은 규율이다.
+   *
+   * 요청을 시작하는 effect라 passive로 둔다. 커밋이 보여 주는 결과가 아니고 답은 어차피 뒤
+   * 작업에서 온다. 아래 두 포커스 이동은 커밋과 함께 성립해야 하므로 layout effect다.
    */
   useEffect(() => {
     if (!ready) {
@@ -202,9 +205,13 @@ export function SettingsScreen(): ReactElement {
    *
    * `activeElement`를 보고 정하지 않는다. 대화상자가 닫히는 시점에는 호출점 버튼이 아직 문서에
    * 있어 그 판정이 언제나 거짓이 되고, 실제 포커스 상실은 그 뒤 목록이 갱신될 때 일어난다.
+   *
+   * 이 effect와 아래 연결 성공의 이동은 layout effect다. 결과 문장을 그린 커밋 안에서 포커스가
+   * 그 문장에 닿으므로 한 프레임도 `<body>`에 머물지 않는다. passive effect는 그리기 뒤 별도
+   * 작업으로 돌아, 부하가 걸리면 새 문장을 이미 본 코드보다 늦게 왔다.
    */
   const unlinkNotice = unlinking.notice
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (unlinkNotice === 'unlinkSucceeded') {
       unlinkNoticeRef.current?.focus()
     }
@@ -219,7 +226,7 @@ export function SettingsScreen(): ReactElement {
    * 폼이 남아 있어 그 안의 Secret 필드가 포커스를 받는다.
    */
   const connectionNotice = connection.notice
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (connectionNotice?.kind === 'succeeded') {
       unlinkNoticeRef.current?.focus()
     }

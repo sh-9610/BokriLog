@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactElement } from 'react'
+import { useEffect, useLayoutEffect, useRef, type ReactElement } from 'react'
 
 import { authContent, type SignInProvider } from '../content/auth'
 import styles from './UnlinkDialog.module.css'
@@ -60,14 +60,27 @@ export function UnlinkDialog({
    * 의존성에 넣어 매 렌더 다시 붙이면 그 사이에 도착한 키 입력이 사라질 수 있고, 닫는 조작이 바로
    * 그 입력이다. 그래서 값은 상자에 담아 나르고 상자는 렌더가 아니라 effect가 채운다 — 렌더 중에
    * ref를 쓰면 같은 커밋을 두 번 그리는 모드에서 값이 갈린다.
+   *
+   * 상자를 채우는 effect와 아래 첫 effect는 layout effect다. 대화상자는 해제 준비의 응답 뒤에 열리고,
+   * 기본 포커스와 키 처리기가 대화상자를 그린 그 커밋 안에서 자리를 잡아야 한다 — passive effect였을
+   * 때는 그리기 뒤 별도 작업으로 돌아, 부하가 걸리면 새 대화상자를 이미 본 코드나 키 입력보다 늦게
+   * 왔다. 상자도 같은 커밋에 채운다 — 키 처리기와 정리가 읽는 값이 그 커밋의 값이어야 한다.
    */
   const latest = useRef({ onCancel, pending, restoreFocus })
-  useEffect(() => {
+  useLayoutEffect(() => {
     latest.current = { onCancel, pending, restoreFocus }
   })
 
-  useEffect(() => {
-    const opener = document.activeElement
+  // 대화상자를 연 요소. 열린 커밋에서 기록하고 닫힌 뒤 돌려준다(아래 두 번째 effect).
+  const opener = useRef<Element | null>(null)
+
+  useLayoutEffect(() => {
+    /*
+     * 한 번만 기록한다. 개발 빌드의 `StrictMode`는 이 effect를 정리했다가 다시 돌리는데, 그때는 이미
+     * 아래 줄이 취소 버튼으로 포커스를 옮긴 뒤라 다시 기록하면 호출점이 대화상자 자신의 버튼이 된다 —
+     * 닫힌 뒤 돌려줄 곳이 사라진 요소라 포커스가 `<body>`로 떨어진다.
+     */
+    opener.current ??= document.activeElement
 
     // 기본 포커스는 취소다. 비가역 조작의 대화상자에서 `Enter` 한 번이 실행이 되면 안 된다.
     cancelButton.current?.focus()
@@ -135,18 +148,44 @@ export function UnlinkDialog({
     return () => {
       document.removeEventListener('keydown', onKeyDown, true)
       document.body.style.overflow = previousOverflow
-      /*
-       * 호출점으로 돌려준다 — 화면이 그러라고 했고 그 요소가 아직 문서에 있을 때만.
-       *
-       * 해제에 성공하면 그 버튼은 곧 사라진다(그 제공자가 더 이상 연결돼 있지 않다). 그때 여기서
-       * 포커스를 돌려주면 사라지는 요소에 얹는 셈이고 포커스는 잠시 뒤 `<body>`로 떨어진다 —
-       * 그 경우의 복구는 화면이 결과 문장으로 옮겨 받는다(`SettingsScreen`).
-       */
-      if (latest.current.restoreFocus && opener instanceof HTMLElement && opener.isConnected) {
-        opener.focus()
-      }
     }
   }, [])
+
+  /*
+   * 닫히면 호출점으로 돌려준다 — 화면이 그러라고 했고, 그 요소가 아직 문서에 있고, 포커스가 갈 곳을
+   * 잃었을 때만.
+   *
+   * 해제에 성공하면 그 버튼은 곧 사라진다(그 제공자가 더 이상 연결돼 있지 않다). 그때 여기서
+   * 포커스를 돌려주면 사라지는 요소에 얹는 셈이고 포커스는 잠시 뒤 `<body>`로 떨어진다 —
+   * 그 경우의 복구는 화면이 결과 문장으로 옮겨 받는다(`SettingsScreen`). 대화상자는 그 성공을 알리는
+   * 커밋에서 바로 사라지므로 상자의 `restoreFocus`는 마지막으로 열려 있던 렌더의 값이다. 그래서 화면이
+   * 이미 포커스를 옮겨 받았으면(잃지 않았으면) 돌려주지 않는다.
+   *
+   * 이 복귀만 passive effect의 정리다. 호출점은 대화상자가 열린 동안 배경의 `inert` 아래에 있고, 닫는
+   * 커밋이 그 속성을 걷어야 포커스를 받을 수 있다. layout effect의 정리는 그 커밋의 DOM 변경 단계에서
+   * 대화상자 삭제와 함께 도는데 React는 부모의 자식 삭제를 형제 갱신보다 먼저 처리한다 — 아직 비활성인
+   * 버튼의 `focus()`를 브라우저가 무시해 포커스가 `<body>`로 떨어진다(jsdom은 `inert`를 모르므로
+   * Playwright만 이것을 본다). passive 정리는 그 커밋이 끝난 뒤에 돌고, `Esc`·취소 같은 이산 입력이
+   * 닫으면 React가 그 커밋 끝에서 바로 비우므로 늦지도 않다. 응답이 닫는 경우(최종 확인의 실패)에는
+   * 복귀가 Scheduler의 다음 작업 하나만큼 늦게 온다 — 이 변경 전의 passive effect와 같은 시점이고,
+   * 그 복귀를 동기로 단정하는 시험은 없다.
+   */
+  useEffect(
+    () => () => {
+      const target = opener.current
+      const active = document.activeElement
+      const lost = active === null || active === document.body || !active.isConnected
+      if (
+        latest.current.restoreFocus &&
+        lost &&
+        target instanceof HTMLElement &&
+        target.isConnected
+      ) {
+        target.focus()
+      }
+    },
+    [],
+  )
 
   return (
     /*

@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
+import { StrictMode, useLayoutEffect, useRef, useState, type ReactElement } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { authContent, unlinkDialogCopyStrings } from '../content/auth'
@@ -57,6 +58,17 @@ function renderWithOpener(
     />,
   )
   return { onCancel, onConfirm, opener, unmount }
+}
+
+/** 문서에 붙인 호출점 버튼 하나. 포커스를 얹은 채로 돌려준다. */
+function focusedOpener(): HTMLButtonElement {
+  const opener = document.createElement('button')
+  opener.textContent = authContent.settings.unlinkLabels.naver
+  document.body.append(opener)
+  openers.push(opener)
+  opener.focus()
+  expect(opener).toHaveFocus()
+  return opener
 }
 
 describe('UnlinkDialog', () => {
@@ -240,6 +252,84 @@ describe('UnlinkDialog', () => {
      */
     expect(opener).not.toHaveFocus()
     unmount()
+  })
+
+  it('`StrictMode`가 effect를 다시 돌려도 `Esc`로 닫으면 호출점으로 돌아온다', () => {
+    const opener = focusedOpener()
+    /*
+     * 앱의 진입점(`main.tsx`)이 `StrictMode`로 감싼다. 개발 빌드는 열린 effect를 정리했다가 다시 돌리고,
+     * 그때 포커스는 이미 취소에 있다. 호출점을 다시 기록하면 돌려줄 곳이 대화상자 자신의 버튼이 된다.
+     */
+    function Screen(): ReactElement | null {
+      const [open, setOpen] = useState(true)
+      return open ? (
+        <UnlinkDialog
+          onCancel={() => {
+            setOpen(false)
+          }}
+          onConfirm={vi.fn()}
+          pending={false}
+          provider="naver"
+          restoreFocus
+        />
+      ) : null
+    }
+    render(
+      <StrictMode>
+        <Screen />
+      </StrictMode>,
+    )
+    expect(
+      screen.getByRole('button', { name: authContent.settings.unlinkDialog.cancel }),
+    ).toHaveFocus()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(opener).toHaveFocus()
+  })
+
+  it('화면이 같은 커밋에서 결과 문장으로 포커스를 옮겨 받으면 호출점으로 되돌리지 않는다', () => {
+    const opener = focusedOpener()
+    /*
+     * 해제 성공이 대화상자를 닫는 커밋이다. 대화상자는 그 커밋에서 바로 사라지므로 마지막 렌더의
+     * `restoreFocus`는 아직 참이고, 화면은 자기 layout effect에서 결과 문장으로 포커스를 옮긴다
+     * (`SettingsScreen`). 복귀는 포커스가 갈 곳을 잃었을 때만이다 — 아니면 그 문장에서 포커스를 빼앗는다.
+     */
+    function Screen(): ReactElement {
+      const [open, setOpen] = useState(true)
+      const [done, setDone] = useState(false)
+      const notice = useRef<HTMLParagraphElement>(null)
+      useLayoutEffect(() => {
+        if (done) notice.current?.focus()
+      }, [done])
+      return (
+        <>
+          <p ref={notice} tabIndex={-1}>
+            {done ? authContent.notices.unlinkSucceeded : ''}
+          </p>
+          {open ? (
+            <UnlinkDialog
+              onCancel={vi.fn()}
+              onConfirm={() => {
+                setOpen(false)
+                setDone(true)
+              }}
+              pending={false}
+              provider="naver"
+              restoreFocus
+            />
+          ) : null}
+        </>
+      )
+    }
+    render(<Screen />)
+
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkDialog.confirm }))
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByText(authContent.notices.unlinkSucceeded)).toHaveFocus()
+    expect(opener).not.toHaveFocus()
   })
 
   it('진행 중에는 두 조작이 모두 막히고 탭 순서에는 남는다', () => {

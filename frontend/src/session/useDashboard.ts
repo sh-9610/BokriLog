@@ -978,6 +978,8 @@ export function useDashboard(ready: boolean): Dashboard {
     else setView({ kind: 'checking' })
   }
 
+  // The read stays a passive effect: starting a request is not something the commit shows, and its answer comes
+  // on a later task anyway. Its time limit is that request's own and goes with it.
   useEffect(() => {
     if (!ready) {
       accepted.current = null

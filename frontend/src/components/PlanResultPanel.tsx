@@ -523,7 +523,7 @@ export function PlanResultPanel({
    *
    * The three focus moves are layout effects: they run in the commit that removes or replaces the content, so focus
    * never rests on the body for a frame. As passive effects they ran after the commit on the scheduler's own task,
-   * and under load that came after code that had already seen the new content (PR #57's CI).
+   * and under load that came after code that had already seen the new content (a loaded CI runner, run 37134688361).
    */
   useLayoutEffect(() => {
     if (hasNextAction && hasResult && !ended) return

@@ -95,6 +95,9 @@ export function useBybitConnection(
    * 미인증·확인 중·표시된 세션에서 이 요청을 보내면 서버가 401로 답하는 조회가 하나 늘어날
    * 뿐이고, 그 응답으로 화면이 할 일도 달라지지 않는다. 자동 재시도하지 않는 것은 세션 확인·
    * 연결 목록과 같은 규율이다(`SettingsScreen`).
+   *
+   * 요청을 시작하는 effect라 passive로 둔다. 커밋이 보여 주는 결과가 아니고 답은 어차피 뒤 작업에서
+   * 온다.
    */
   useEffect(() => {
     if (!ready) {

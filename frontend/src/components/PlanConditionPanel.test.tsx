@@ -314,9 +314,9 @@ describe('PlanConditionPanel', () => {
     )
     render(<PlanConditionPanel csrfToken="csrf-value" ready />)
 
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      '현재 계획 조건을 확인할 수 없습니다',
-    )
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent('현재 계획 조건을 확인할 수 없습니다')
+    })
     expect(screen.queryByRole('heading', { name: '활성 계획' })).not.toBeInTheDocument()
   })
 
@@ -327,9 +327,9 @@ describe('PlanConditionPanel', () => {
     )
     render(<PlanConditionPanel csrfToken="csrf-value" ready />)
 
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      '현재 계획 조건을 확인할 수 없습니다',
-    )
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent('현재 계획 조건을 확인할 수 없습니다')
+    })
     expect(screen.queryByLabelText('목표 주기율 (%)')).not.toBeInTheDocument()
   })
 
