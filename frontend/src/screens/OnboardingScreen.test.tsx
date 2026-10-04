@@ -413,7 +413,9 @@ describe('OnboardingScreen', () => {
     render(<OnboardingScreen />)
 
     expect(await screen.findByText(authContent.session.redirecting)).toBeInTheDocument()
-    expect(vi.mocked(replaceLocation)).toHaveBeenCalledWith('/dashboard')
+    await waitFor(() => {
+      expect(vi.mocked(replaceLocation)).toHaveBeenCalledWith('/dashboard')
+    })
     expect(screen.queryByText(authContent.onboarding.heading)).not.toBeInTheDocument()
     for (const item of authContent.onboarding.items) {
       expect(screen.queryByText(item)).not.toBeInTheDocument()

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactElement, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, type ReactElement, type ReactNode } from 'react'
 
 import type { AdjustmentHistoryState } from '../session/useAdjustmentHistory'
 import type { EvidenceState } from '../session/useCalculationEvidence'
@@ -464,7 +464,12 @@ export function PlanResultPanel({
   const handledFocus = useRef(sync.focus?.serial ?? 0)
   const syncFocus = sync.focus
 
-  useEffect(() => {
+  /*
+   * The two focus moves are layout effects: they run in the commit that removes or replaces the content, so focus
+   * never rests on the body for a frame. As passive effects they ran after the commit on the scheduler's own task,
+   * and under load that came after code that had already seen the new content (a loaded CI runner, run 37134688361).
+   */
+  useLayoutEffect(() => {
     if (hasNextAction && hasResult) return
     const last = lastFocused.current
     const active = document.activeElement
@@ -473,7 +478,7 @@ export function PlanResultPanel({
   }, [hasNextAction, hasResult])
 
   // A sync the user pressed ended with a new bundle: focus goes to the heading of what replaced the old one.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (syncFocus === null || syncFocus.serial === handledFocus.current) return
     if (syncFocus.target !== 'heading') return
     handledFocus.current = syncFocus.serial

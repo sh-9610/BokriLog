@@ -1,4 +1,4 @@
-import { useEffect, useRef, type FocusEvent, type ReactElement, type Ref } from 'react'
+import { useLayoutEffect, useRef, type FocusEvent, type ReactElement, type Ref } from 'react'
 
 import type { VerificationJob, VerificationStatus } from '../session/useDashboard'
 import type { DashboardSync } from '../session/useDashboardSync'
@@ -193,6 +193,10 @@ function LatestJob({
  * control goes away, focus moves to the button, or to the notice, rather than falling to the document body.
  *
  * No live region of its own: the screen's single status region says what the verification did, once.
+ *
+ * Both focus moves are layout effects, like the sync control's: focus follows in the commit that changes the
+ * content, so it never rests on the document body for a frame. As passive effects they ran after the commit on
+ * the scheduler's own task, and under load that came after code that had already seen the new content.
  */
 export function VerificationControl({
   status,
@@ -210,7 +214,7 @@ export function VerificationControl({
   const lastFocused = useRef<Element | null>(null)
   const { focus } = sync
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (focus === null || focus.serial === handled.current) return
     if (focus.target !== 'verification') return
     handled.current = focus.serial
@@ -218,7 +222,7 @@ export function VerificationControl({
   }, [focus])
 
   // After every render: focus that was inside the control on something that went away is not dropped.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const last = lastFocused.current
     const active = document.activeElement
     const lost = active === null || active === document.body || !active.isConnected

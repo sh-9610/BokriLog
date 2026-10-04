@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
 
 import type {
   Adjustment,
@@ -552,7 +552,13 @@ function Rows({
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set())
   const titles = useRef(new Map<number, HTMLHeadingElement>())
 
-  useEffect(() => {
+  /*
+   * A layout effect, like the region's own focus moves (`AdjustmentHistory`). Its `onFocused()` is the parent's
+   * state update, so from here it re-renders synchronously before paint; that is acceptable because it only
+   * clears a one-shot marker (`focusFrom`) and changes nothing painted. A parent update that changes what is
+   * shown stays out of layout effects (`DEVELOPMENT.md`, `effect 시점`).
+   */
+  useLayoutEffect(() => {
     if (focusFrom === null || list.rows.length <= focusFrom) return
     titles.current.get(focusFrom)?.focus()
     onFocused()
@@ -664,6 +670,11 @@ function slotOf(
  * region reads: description and the term's help → review guidance → summary → excluded count → filter → rows →
  * `더 보기`.
  * The region has no live region: the screen's single status region says what happened.
+ *
+ * Its focus moves — this one and the rows' after `더 보기` — are layout effects: focus follows in the commit that
+ * opens, closes or replaces the content, so it never rests on the document body for a frame. As passive effects
+ * they ran after the commit on the scheduler's own task, and under load that came after code that had already
+ * seen the new content.
  */
 export function AdjustmentHistory({
   history,
@@ -682,7 +693,7 @@ export function AdjustmentHistory({
   const [focusFrom, setFocusFrom] = useState<number | null>(null)
   const loading = view.kind === 'open' && view.read.kind === 'loading'
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const opened = expanded && !wasExpanded.current
     wasExpanded.current = expanded
     if (opened) {

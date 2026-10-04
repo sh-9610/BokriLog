@@ -62,6 +62,8 @@ export function useFirstSnapshot(
     setRevision((n) => n + 1)
   }, [])
 
+  // The read stays a passive effect: starting a request is not something the commit shows, and its answer comes
+  // on a later task anyway. The next read's timer is set from that answer, as part of the same chain of requests.
   useEffect(() => {
     if (!ready) return
     let current = true

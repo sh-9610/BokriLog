@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { atFirstSight, deferred } from '../test/firstSight'
 import { InitialInputsCollection } from './InitialInputsCollection'
 
 function response(body: unknown, status = 200): Response {
@@ -384,7 +385,9 @@ describe('InitialInputsCollection conversion', () => {
     const section = await screen.findByRole('region', { name: '사건 시점 USD 환산' })
 
     const status = await within(section).findByRole('status')
-    expect(status).toHaveTextContent('추정값 포함')
+    await waitFor(() => {
+      expect(status).toHaveTextContent('추정값 포함')
+    })
     expect(status).toHaveTextContent('체결가격이 아니므로')
     expect(
       within(section).getByText(
@@ -423,7 +426,9 @@ describe('InitialInputsCollection conversion', () => {
     const section = await screen.findByRole('region', { name: '사건 시점 USD 환산' })
 
     const status = await within(section).findByRole('status')
-    expect(status).toHaveTextContent('환산 필요')
+    await waitFor(() => {
+      expect(status).toHaveTextContent('환산 필요')
+    })
     expect(status).toHaveTextContent('공식 갱신은 보류되고 마지막 정상 결과가 유지됩니다')
     expect(status).not.toHaveTextContent('GAP')
     const gap = within(section).getByText('GAP 2건')
@@ -526,7 +531,9 @@ describe('InitialInputsCollection conversion', () => {
     render(<InitialInputsCollection csrfToken="csrf" intentId="intent-1" />)
     const section = await screen.findByRole('region', { name: '사건 시점 USD 환산' })
     const status = await within(section).findByRole('status')
-    expect(status).toHaveTextContent('검토 필요')
+    await waitFor(() => {
+      expect(status).toHaveTextContent('검토 필요')
+    })
     expect(status).toHaveTextContent('환산 상태를 확인하지 못했습니다')
     expect(section).not.toHaveTextContent('raw-provider-detail')
     expect(
@@ -741,7 +748,9 @@ describe('InitialInputsCollection conversion', () => {
     render(<InitialInputsCollection csrfToken="csrf" intentId="intent-1" />)
     const section = await screen.findByRole('region', { name: '사건 시점 USD 환산' })
     const status = await within(section).findByRole('status')
-    expect(status).toHaveTextContent('처리가 중간에 멈춰 환산 결과를 만들지 못했습니다')
+    await waitFor(() => {
+      expect(status).toHaveTextContent('처리가 중간에 멈춰 환산 결과를 만들지 못했습니다')
+    })
     expect(status).not.toHaveTextContent('승인된 가격 근거가 없는')
     expect(section).not.toHaveTextContent(/입출금 \d+건/)
     expect(within(section).getByRole('button', { name: '환산 다시 시도' })).toBeInTheDocument()
@@ -1069,6 +1078,12 @@ describe('InitialInputsCollection publication', () => {
   })
 
   it('stops following an attempt once its state read is refused (403)', async () => {
+    /*
+     * This test leans on the interval being set and cleared by a layout effect (`PlanPublicationSection`): the
+     * clock is advanced right after `계산·발행 중` is seen, and the reads are counted right after the refusal is
+     * seen. As a passive effect the interval could be set after the first advance, or still be set during the
+     * second (the baseline's `reads` 7 ≠ 2 under load).
+     */
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     try {
       let reads = 0
@@ -1102,6 +1117,40 @@ describe('InitialInputsCollection publication', () => {
       expect(
         within(publication).queryByRole('button', { name: '최초 계획 계산·발행' }),
       ).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  /*
+   * A deliberate first-sight guard (`DEVELOPMENT.md`, `시험의 대기`): it records the intervals at the first
+   * sight of an attempt in progress, without CPU load (`test/firstSight.ts`). It fails if the polling goes
+   * back to a passive `useEffect` — the test above only shows it as a flake under load.
+   */
+  it('already follows an attempt when `계산·발행 중` first appears (first sight)', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const first = deferred<Response>()
+      vi.stubGlobal(
+        'fetch',
+        completeFetch(
+          () => Promise.resolve(response(conversion())),
+          () => first.promise,
+        ),
+      )
+      render(<InitialInputsCollection csrfToken="csrf" intentId="intent-1" />)
+      const publication = await screen.findByRole('region', { name: '최초 계획 계산·발행' })
+
+      const intervals = await atFirstSight(
+        () => within(publication).queryByText('계산·발행 중') !== null,
+        () => vi.getTimerCount(),
+        () => {
+          first.resolve(response({ job: publicationJob('RUNNING'), startable: false }))
+        },
+      )
+
+      // The publication's polling is the only interval, set in the commit that shows the attempt.
+      expect(intervals).toBe(1)
     } finally {
       vi.useRealTimers()
     }

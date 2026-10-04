@@ -2,7 +2,7 @@
 title: 'Deferred Work 해소 원장'
 status: living
 created: '2026-09-02'
-updated: '2026-09-09'
+updated: '2026-10-04'
 applies_to: '_bmad-output/implementation-artifacts/deferred-work.md'
 decision_baseline: 'ERD-1.0.0'
 ---
@@ -17,9 +17,12 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 14 |
+| 해소 | 16 |
 | 부분 해소 | 4 |
-| 미해소 | 32 |
+| 미해소 | 31 |
+| 미판정 | 46 |
+
+**2026-10-04 갱신(frontend-effect-timing 라운드).** 표를 `deferred-work.md`의 **97건** 전체로 맞췄다. 판정을 가진 것은 51건이다 — 항목 1~50과 이 라운드가 새로 판정한 83이다. 항목 **50이 해소**로 넘어갔고 **83이 해소**로 새로 들어왔다. 둘은 같은 원인(부하 아래 늦게 도는 passive effect)이었다. 그래서 해소 14→16, 미해소 32→31이다. 나머지 46건(51~82와 84~97)은 아직 판정이 없어 `미판정`으로 따로 센다. 이 라운드의 범위가 아니어서 판정하지 않았다.
 
 **2026-09-09 갱신(Story 1.7 라운드).** 표를 **50건** 기준으로 맞췄다. 항목 **42가 해소**로 넘어갔고(세 루프 모두 완주 수 가드를 갖췄고 `verify-same-origin.sh` 526/526 exit 0으로 확인했다) 항목 **41이 부분 해소**가 됐다(판단하는 층은 생겼으나 그 등식이 44px 바닥 아래에서만 성립한다는 취약성은 그대로다). 이 라운드가 append한 여섯(45~50)은 전부 미해소다. 그래서 해소 13→14, 부분 해소 3→4, 미해소 28→32다.
 
@@ -398,3 +401,18 @@ Docker 없는 정적 리터럴 비교 시험은 이 저장소에 전례가 없�
 **미해소(2026-09-09).** Story 1.7 라운드의 검증 중 백엔드 Gradle 빌드와 프런트엔드 Vitest를 동시에 돌렸을 때 `OnboardingScreen.test.tsx:162`의 `replaceLocation('/dashboard')`가 호출 0건으로 실패했고, 부하 없는 재실행에서는 157/157이 통과했다. 이 파일은 Story 1.7이 논리를 바꾸지 않았으므로 `develop`에 이미 있던 취약성이며 CI 러너가 붐빌 때 같은 방식으로 붉게 나올 수 있다.
 
 **미해소 잔여:** 대기 조건을 명시적으로 바꾸는 것(`findBy*`의 타임아웃이 아니라 이동이 일어나는 사건 자체를 기다리는 형태)이 처방이지만, 재현이 부하에 의존해 고친 뒤 확인하기가 어렵다. 비결정적 실패는 재실행으로 덮이면서 신뢰를 갉아먹으므로 방치할 항목은 아니다. 소유 스토리는 정해지지 않았다.
+
+**해소(2026-10-04, frontend-effect-timing).** 원인은 대기 조건이 아니라 이동의 시점이었다. `replaceLocation`이 `useSessionGate`의 passive effect에 있었고, 세션 응답이 만든 갱신의 passive effect는 Scheduler의 다음 작업으로 미뤄져 부하가 걸리면 `findByText(redirecting)` 직후의 동기 단정보다 늦게 돌았다. 두 이동(서버가 고른 목적지, 만료 표지)을 layout effect로 옮겨 "이동 중"을 그린 커밋에서 떠나게 했다(`frontend/src/session/useSessionState.ts:498`·`:506`). 원문의 처방대로 단정은 이동 자체를 기다린다(`frontend/src/screens/OnboardingScreen.test.tsx:416-418`, 같은 모양의 `frontend/src/screens/SignedInScreen.test.tsx:1368-1370`). 기대값은 바뀌지 않았다.
+
+확인은 두 겹이다.
+
+- **결정적 가드.** `frontend/src/screens/SignedInScreen.test.tsx:1849`의 첫 관측 가드가 "이동 중" 문장이 처음 보이는 순간 `replaceLocation`이 이미 불렸는지를 부하 없이 단정한다(`frontend/src/test/firstSight.ts`). 이 effect 하나를 `useEffect`로 되돌리면 그 파일 10회 중 10회 이 가드가 실패했고, 복원하면 10회 중 10회 통과했다. 이 가드는 CI `frontend-quality`가 PR마다 돌리는 Vitest에 들어 있으므로 effect가 passive로 돌아가면 부하와 무관하게 붉게 나온다.
+- **로컬 부하 반복.** `frontend/scripts/stress-test.sh`(`yes` 16개)로 리뷰를 반영한 최종 트리의 전체 Vitest(871건)를 36회 돌려 모두 통과했다. 리뷰 반영 전 구현 트리(866건)도 12회·24회 모두 통과했다. 같은 스크립트·같은 부하에서 수정 전 트리(`7245371`)는 12회 중 1회 실패했다(`SignedInScreen` AC-13의 초점 단정, 같은 원인의 다른 효과). `_bmad-output/implementation-artifacts/spec-frontend-effect-timing.md` `## 측정`의 기준선은 12회 중 2회 실패였다. 가드 파일만 3회 돈 부하 반복도 통과했다.
+
+### 83. `InitialInputsCollection.test.tsx`의 403 시험이 전체 실행 부하 아래 간헐적으로 실패한다
+
+**해소(2026-10-04, frontend-effect-timing).** Story 2.8이 append했다(시험은 Story 2.7이 더했다). 원인은 시험이 아니라 `PlanPublicationSection`의 폴링 interval이 passive effect에서 걸리고 풀리던 것이다. 시험은 `계산·발행 중`을 본 직후 시계를 2초 당기고, 거절 문장을 본 직후 읽기 수를 센다. 부하가 걸리면 interval이 그 당김보다 늦게 걸리거나 거절을 그린 뒤에도 남아 읽기를 계속했다. `spec-frontend-effect-timing.md` `## 측정`의 기준선 1회차가 이 시험의 `reads` 7 ≠ 2였다.
+
+interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 풀리게 했다(`frontend/src/components/PlanPublicationSection.tsx:150`). 같은 파일군의 세 폴링도 같게 옮겼다(`frontend/src/components/InitialInputsCollection.tsx:364`·`:758`·`:768`). 시험의 대기와 기대값은 바꾸지 않았고 그 의존을 주석으로 적었다(`frontend/src/components/InitialInputsCollection.test.tsx:1081-1086`).
+
+확인은 항목 50과 같은 두 겹이다. 결정적 가드는 `frontend/src/components/InitialInputsCollection.test.tsx:1130`이다 — `계산·발행 중`이 처음 보이는 순간 interval이 이미 걸려 있는지를 가짜 `setInterval`의 수로 단정한다. 이 effect 하나를 `useEffect`로 되돌리면 그 파일 10회 중 10회 이 가드가 실패했고 복원하면 10회 중 10회 통과했으며, CI `frontend-quality`가 PR마다 돌린다. 로컬 부하 반복은 항목 50의 전체 Vitest 실행과 같고, 이 파일만 `stress-test.sh --runs 3`으로 돈 실행도 통과했다.
