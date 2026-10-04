@@ -1,0 +1,14 @@
+/*
+ * `종료 후 현재가치` (Story 2.14): the value later syncs measured after the first observation, with the sync control
+ * that asks for it. A region of its own, framed apart from the completion result; it never judges the value. The sync
+ * control keeps its own rules (`SyncControl.module.css`), so its 44px target is not copied here.
+ */
+.region {
+  display: grid;
+  gap: var(--space-3);
+  min-inline-size: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  overflow-wrap: anywhere;
+}

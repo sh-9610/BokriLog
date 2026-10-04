@@ -146,6 +146,9 @@ public interface SyncJobApi {
      * The active plan's official bundle, read through its pointer in one consistent read: the plan terms,
      * the pointer, the calculation version it cites, that version's six metrics and the three axes.
      * Nothing is assembled from another version or from candidate, held or review data.
+     *
+     * <p>{@code calculationKind} is {@code PROGRESS}, or {@code COMPLETION} for the completion version of a completed
+     * plan (Story 2.14): the screen tells the two apart by it, never by comparing times.
      */
     record DashboardResult(UUID planId, String planStatus, String principal, Instant startAt, Instant endAt,
             String period, String targetRate, long pointerVersion, Instant publishedAt, UUID calculationId,
@@ -153,7 +156,23 @@ public interface SyncJobApi {
             Instant cashflowVerifiedThrough, String calculationPolicy, String calendarPolicy,
             String displayPolicy, String pricePolicy, String implementationVersion, String inputHash,
             String resultHash, int flowCount, int estimatedFlowCount, TrustAxes trust,
-            List<DashboardMetric> metrics) {}
+            List<DashboardMetric> metrics, String calculationKind) {
+
+        /** A progress version's result (every version before Story 2.14). */
+        public DashboardResult(UUID planId, String planStatus, String principal, Instant startAt, Instant endAt,
+                String period, String targetRate, long pointerVersion, Instant publishedAt, UUID calculationId,
+                UUID portfolioSnapshotId, UUID basisPortfolioSnapshotId, Instant basisAt, Instant measuredAt,
+                Instant cashflowVerifiedThrough, String calculationPolicy, String calendarPolicy,
+                String displayPolicy, String pricePolicy, String implementationVersion, String inputHash,
+                String resultHash, int flowCount, int estimatedFlowCount, TrustAxes trust,
+                List<DashboardMetric> metrics) {
+            this(planId, planStatus, principal, startAt, endAt, period, targetRate, pointerVersion, publishedAt,
+                    calculationId, portfolioSnapshotId, basisPortfolioSnapshotId, basisAt, measuredAt,
+                    cashflowVerifiedThrough, calculationPolicy, calendarPolicy, displayPolicy, pricePolicy,
+                    implementationVersion, inputHash, resultHash, flowCount, estimatedFlowCount, trust, metrics,
+                    "PROGRESS");
+        }
+    }
 
     // -------------------------------------------------------------------- Story 2.11
 
@@ -165,14 +184,18 @@ public interface SyncJobApi {
      * stage it reached, its closed code and its two times. No plan, pointer, amount, time of an input, user or
      * provider identifier.
      *
-     * @param purpose {@code SYNC}, {@code VERIFY} (a precision verification, Story 2.12) or {@code CATCH_UP} (the
-     *     continuation of a plan after a long gap)
-     * @param reason {@code null} for a sync; for the other two one of {@link VerificationReason}
+     * @param purpose {@code SYNC}, {@code VERIFY} (a precision verification, Story 2.12), {@code CATCH_UP} (the
+     *     continuation of a plan after a long gap), {@code COMPLETION} (the first post-end observation and the
+     *     completion result of a plan that reached its end, Story 2.14) or {@code POST_END_VALUE} (the wallet only,
+     *     after the completion was judged)
+     * @param reason {@code null} for a sync, a completion and a post-end value; for a verification and a continuation
+     *     one of {@link VerificationReason}
      * @param trigger {@code ENTRY}, {@code VISIBILITY}, {@code MANUAL} or {@code SYSTEM} (the public verification
      *     method's)
      * @param status {@code QUEUED}, {@code RUNNING}, {@code SUCCEEDED}, {@code FAILED}, {@code NEEDS_REVIEW}
      *     or {@code BLOCKED}
-     * @param stage {@code TIME}, {@code COLLECTION}, {@code FINAL_SWEEP} (a continuation's last recent sweep),
+     * @param stage {@code TIME}, {@code OBSERVATION} (a completion's or post-end value's wallet read),
+     *     {@code COLLECTION}, {@code FINAL_SWEEP} (a continuation's last recent sweep),
      *     {@code CLASSIFICATION}, {@code CONVERSION}, {@code CALCULATION} or {@code PUBLICATION}; {@code null}
      *     before the first
      */
@@ -226,24 +249,28 @@ public interface SyncJobApi {
     /**
      * Admits one sync request for the user's active plan (Story 2.11): the account's write access, the same key
      * replayed, the active plan and its pointer, an attempt in progress, unavailability, the long gap, the
-     * cooldown and automatic interval, in that order, in one short transaction without any provider call. A
+     * cooldown and automatic interval, in that order, in one short transaction without any provider call. When the
+     * database clock reached the active plan's end {@code T} and nothing is in progress, the same transaction completes
+     * the plan (Story 2.14) and admits its completion attempt; a completed plan's request admits the completion attempt
+     * while its comparison is not judged, else a post-end value attempt. A
      * {@code null} trigger is not admitted; the HTTP surface answers it as a malformed request.
      */
     SyncAdmission admitPlanSync(@Nullable UUID userId, @Nullable SyncTrigger trigger, @Nullable String idempotencyKey);
 
     /**
-     * The dashboard read model (Story 2.8). One of six outcomes; only {@link Dashboard.Ready} and
-     * {@link Dashboard.Ended} (Story 2.13) carry financial fields. The screen-level next action is a closed set per
+     * The dashboard read model (Story 2.8). One of seven outcomes; only {@link Dashboard.Ready},
+     * {@link Dashboard.Ended} (Story 2.13) and {@link Dashboard.Completed} (Story 2.14) carry financial fields. The screen-level next action is a closed set per
      * outcome: {@code CREATE_PLAN} ({@link Dashboard.NoPlan}), {@code WAIT_FOR_RESULT} ({@link Dashboard.Preparing}),
      * {@code WAIT_FOR_SYNC}, {@code SYNC}, {@code VERIFY}, {@code CHOOSE_CONTINUATION} or {@code NONE}
-     * ({@link Dashboard.Ready}, the freshness axis's own), and {@code PREPARE_NEXT_PLAN} ({@link Dashboard.Ended}).
+     * ({@link Dashboard.Ready}, the freshness axis's own), {@code PREPARE_NEXT_PLAN} ({@link Dashboard.Ended}), and
+     * {@code SYNC_FOR_OBSERVATION} or {@code PREPARE_NEXT_PLAN} ({@link Dashboard.Completed}).
      *
      * <p>The plan shown is one choice (Story 2.13): the active plan; without one, "being prepared" while a first
-     * publication is in progress; otherwise the most recent plan when it ended early. The evidence and the adjustment
-     * history judge their reference against the same plan's current pointer.
+     * publication is in progress; otherwise the most recent plan when it ended early or completed (Story 2.14). The
+     * evidence and the adjustment history judge their reference against the same plan's current pointer.
      */
     sealed interface Dashboard permits Dashboard.NotPermitted, Dashboard.Unavailable, Dashboard.NoPlan,
-            Dashboard.Preparing, Dashboard.Ready, Dashboard.Ended {
+            Dashboard.Preparing, Dashboard.Ready, Dashboard.Ended, Dashboard.Completed {
         /** The account's own access refused it before or after the read (its deletion began or ended). */
         record NotPermitted() implements Dashboard {}
         /** The pointer's bundle did not agree with itself; nothing is returned in part. */
@@ -265,7 +292,40 @@ public interface SyncJobApi {
          * The next action is {@code PREPARE_NEXT_PLAN}.
          */
         record Ended(DashboardResult result, String nextAction, PlanEndRecord end) implements Dashboard {}
+        /**
+         * A plan that reached its end {@code T} (Story 2.14): its current official bundle — the completion version once
+         * the comparison is judged on complete inputs, else the last progress version — with the plan status
+         * {@code COMPLETED} and the freshness axis {@code COMPLETED}, the completion record, the value published after
+         * the first observation (if any) and the sync part of the post-end syncs. An active plan whose {@code T} the
+         * database clock reached is shown so before its transition, with a comparison not judged yet: never as an active
+         * plan that keeps accruing. The next action is {@code SYNC_FOR_OBSERVATION} while the first observation is
+         * missing or the comparison is pending or held, else {@code PREPARE_NEXT_PLAN}.
+         */
+        record Completed(DashboardResult result, String nextAction, PlanCompletionRecord completion,
+                @Nullable PostEndValue postEnd, SyncState sync, VersionChange change) implements Dashboard {}
     }
+
+    // -------------------------------------------------------------------- Story 2.14
+
+    /**
+     * The completion facts of a completed plan: the planned end {@code T}, the comparison and its reason, the first
+     * post-end observation (value, measurement time, delay {@code measured − T} in milliseconds — all three or none;
+     * never the valuation at {@code T}), the completion target of the completion version and how many confirmed
+     * external flows lie in {@code (T, measured]} (both only with a completion version).
+     *
+     * @param comparison {@code PENDING}, {@code CONFIRMED}, {@code UNAVAILABLE} or {@code HELD}
+     * @param reason {@code OBSERVATION_DELAY_EXCEEDED}, {@code POST_END_CASHFLOW}, {@code HISTORY_OUT_OF_RANGE},
+     *     {@code DATA_GAP} ({@code UNAVAILABLE}) or {@code INPUT_REVIEW_REQUIRED} ({@code HELD}); {@code null} otherwise
+     * @param retryable whether a sync request runs the completion again: no first observation yet, a pending
+     *     comparison, or one held by a review that is not persistent. A comparison held by a persistent review of the
+     *     same base stays held (Story 2.12's rule) and a sync then only refreshes the post-end value
+     */
+    record PlanCompletionRecord(Instant scheduledEndAt, String comparison, @Nullable String reason,
+            @Nullable String observedValue, @Nullable Instant observedMeasuredAt, @Nullable Long observationDelayMillis,
+            @Nullable String completionTarget, @Nullable Integer postEndCashflowCount, boolean retryable) {}
+
+    /** The portfolio's official value published after the first observation: the "post-end current value". */
+    record PostEndValue(String value, Instant measuredAt) {}
 
     // -------------------------------------------------------------------- Story 2.13
 
@@ -450,9 +510,22 @@ public interface SyncJobApi {
         public record Plan(UUID planId, String principal, Instant startAt, Instant endAt, String period,
                 String targetRate) {}
 
+        /**
+         * @param calculationKind {@code PROGRESS}, or {@code COMPLETION} for the completion version at {@code u = T}
+         *     (Story 2.14)
+         */
         public record Calculation(UUID calculationId, String calculationPolicy, String calendarPolicy,
                 String displayPolicy, String precisionPolicy, String timeZone, String implementationVersion,
-                String inputHash, String resultHash, Instant createdAt) {}
+                String inputHash, String resultHash, Instant createdAt, String calculationKind) {
+
+            /** A progress version's calculation. */
+            public Calculation(UUID calculationId, String calculationPolicy, String calendarPolicy,
+                    String displayPolicy, String precisionPolicy, String timeZone, String implementationVersion,
+                    String inputHash, String resultHash, Instant createdAt) {
+                this(calculationId, calculationPolicy, calendarPolicy, displayPolicy, precisionPolicy, timeZone,
+                        implementationVersion, inputHash, resultHash, createdAt, "PROGRESS");
+            }
+        }
 
         /**
          * One metric's character and why: an undefined metric's reason code, and — for a defined derived

@@ -54,6 +54,20 @@ class AdjustmentHistoryRepository {
     }
 
     /**
+     * The events the classification excluded inside {@code (from, through]} (Story 2.14): a completion version shows
+     * the range it applies, {@code (t0, T]}, while its classification covers {@code (t0, U]}.
+     */
+    int excludedWithin(UUID user, UUID classificationId, java.time.Instant from, java.time.Instant through) {
+        return jdbc.sql("SELECT count(*) FROM sync_cashflow_classification_event e JOIN sync_cashflow_classification_bundle b "
+                + "ON b.classification_id=e.classification_id WHERE e.classification_id=:c AND b.user_id=:u "
+                + "AND e.verdict='EXCLUDED' AND e.occurred_at>:f AND e.occurred_at<=:t")
+            .param("c", classificationId).param("u", user)
+            .param("f", java.time.OffsetDateTime.ofInstant(from, java.time.ZoneOffset.UTC))
+            .param("t", java.time.OffsetDateTime.ofInstant(through, java.time.ZoneOffset.UTC))
+            .query(Integer.class).single();
+    }
+
+    /**
      * What the version's whole applied history adds up to, judged over every row — never one page.
      *
      * @param total every applied row
@@ -135,9 +149,10 @@ class AdjustmentHistoryRepository {
             + "AND pf.source_id=cc.source_id AND cc.source_id=cf.source_id AND cf.source_id=ce.source_id "
             + "AND ce.source_id=se.source_id AND cc.semantic_hash=cf.semantic_hash "
             + "AND cf.semantic_hash=ce.semantic_hash AND ce.semantic_hash=se.semantic_hash "
-            // the event time, inside (t0, cashflow_verified_through] — the range the answer shows as its coverage
+            // the event time, inside (t0, basis] — the range the answer shows as its coverage: the cash-flow
+            // verification of a progress version (its basis), T of a completion version (Story 2.14)
             + "AND pf.occurred_at=cc.occurred_at AND cc.occurred_at=cf.occurred_at AND cf.occurred_at=ce.occurred_at "
-            + "AND ce.occurred_at=se.transaction_time AND pf.occurred_at>c.t0 AND pf.occurred_at<=c.cashflow_verified_through "
+            + "AND ce.occurred_at=se.transaction_time AND pf.occurred_at>c.t0 AND pf.occurred_at<=c.basis_at "
             // the asset and the signed quantity (the source's raw cash flow is cast only when it is plain)
             + "AND cc.asset_code=cf.asset_code AND cf.asset_code=ce.asset_code AND ce.asset_code=se.currency "
             + "AND ce.signed_amount IS NOT NULL AND cc.signed_quantity::numeric=cf.signed_quantity::numeric "

@@ -57,11 +57,13 @@ class AdjustmentHistoryService {
     private final PortfolioMembershipApi portfolios;
     private final AccountAccessApi accounts;
     private final PlanPublicationPort plans;
+    private final ShownPlanAgreement agreement;
     private final TransactionTemplate reads;
 
     AdjustmentHistoryService(PlanPublicationRepository publications, AdjustmentHistoryRepository history,
             PortfolioMembershipApi portfolios, AccountAccessApi accounts, PlanPublicationPort plans,
-            PlatformTransactionManager manager) {
+            ShownPlanAgreement agreement, PlatformTransactionManager manager) {
+        this.agreement = agreement;
         this.publications = publications;
         this.history = history;
         this.portfolios = portfolios;
@@ -136,18 +138,16 @@ class AdjustmentHistoryService {
         var calculation = publications.calculation(user, calculationId).orElse(null);
         if (calculation == null || !PlanPublicationService.belongs(calculation, plan, pointer))
             return new AdjustmentOutcome.Unavailable();
-        var end = shown.end();
-        if (end == null) {
-            var portfolio = portfolios.officialValue(user).orElse(null);
-            if (portfolio == null || !portfolio.snapshotId().equals(calculation.portfolioSnapshotId())
-                    || portfolio.publicationSequence() != calculation.portfolioSequence())
-                return new AdjustmentOutcome.Unavailable();
-        } else if (!PlanPublicationService.endAgrees(end, plan, pointer, calculation)) {
-            // An ended plan's record names its snapshot; the portfolio's pointer may move on (Story 2.15).
-            return new AdjustmentOutcome.Unavailable();
-        }
+        // The dashboard's and the evidence's own judgment: the portfolio pointer for an active plan, the end record for
+        // a plan ended early, the completion record and its observation for a completed one (Story 2.14).
+        if (!agreement.agrees(user, shown, pointer, calculation)) return new AdjustmentOutcome.Unavailable();
         var lineage = publications.lineage(user, calculationId).orElse(null);
         if (lineage == null) return new AdjustmentOutcome.Unavailable();
+        // The flows the version applies (Story 2.14): every external flow of its classification for a progress version;
+        // for a completion version only those of (t0, T] — its classification and conversion cover (t0, U].
+        var applied = calculation.completion()
+                ? publications.calculableWithin(user, lineage.conversionId(), calculation.t0(), calculation.basisAt())
+                : null;
         var classification = publications.classificationBundle(user, lineage.classificationId()).orElse(null);
         var counts = history.classificationCounts(user, lineage.classificationId()).orElse(null);
         if (classification == null || counts == null || !"COMPLETE".equals(classification.status())
@@ -157,7 +157,8 @@ class AdjustmentHistoryService {
                 || !classification.portfolioId().equals(calculation.portfolioId())
                 || !classification.connectionId().equals(lineage.connectionId())
                 || !classification.providerAccountId().equals(lineage.providerAccountId())
-                || counts.review() != 0 || counts.deposits() + counts.withdrawals() != calculation.flowCount()
+                || counts.review() != 0
+                || (applied == null && counts.deposits() + counts.withdrawals() != calculation.flowCount())
                 // The excluded count shown is the classification's own record, and its events must say the same.
                 || counts.excluded() != counts.excludedEvents())
             return new AdjustmentOutcome.Unavailable();
@@ -170,17 +171,25 @@ class AdjustmentHistoryService {
                 || !conversion.portfolioId().equals(calculation.portfolioId())
                 || !conversion.connectionId().equals(lineage.connectionId())
                 || !conversion.providerAccountId().equals(lineage.providerAccountId())
-                || conversion.flowCount() != calculation.flowCount()
-                || conversion.estimatedCount() != calculation.estimatedFlowCount())
+                || (applied == null ? conversion.flowCount() != calculation.flowCount()
+                        || conversion.estimatedCount() != calculation.estimatedFlowCount()
+                        : conversion.flowCount() != counts.deposits() + counts.withdrawals()
+                        || applied.count() != calculation.flowCount()
+                        || applied.estimated() != calculation.estimatedFlowCount()))
             return new AdjustmentOutcome.Unavailable();
+        int expectedInbound = applied == null ? counts.deposits() : applied.inbound();
+        int expectedOutbound = applied == null ? counts.withdrawals() : applied.count() - applied.inbound();
 
         var totals = history.totals(user, calculationId, query.direction());
         if (totals.total() != calculation.flowCount() || totals.broken() != 0 || totals.disordered() != 0
                 || totals.estimated() != calculation.estimatedFlowCount()
                 || (totals.total() > 0 && (totals.firstSequence() != 1 || totals.lastSequence() != totals.total()))
-                || totals.inbound() != counts.deposits() || totals.total() - totals.inbound() != counts.withdrawals())
+                || totals.inbound() != expectedInbound || totals.total() - totals.inbound() != expectedOutbound)
             return new AdjustmentOutcome.Unavailable();
         String net = PlanPublicationService.notation(totals.selectedSum());
+        // The excluded count shown is that of the range the rows cover: (t0, T] for a completion version (Story 2.14).
+        int excluded = applied == null ? counts.excluded()
+                : history.excludedWithin(user, lineage.classificationId(), calculation.t0(), calculation.basisAt());
         if (!canonical(net)) return new AdjustmentOutcome.Unavailable();
 
         // The version's change rows (Story 2.12) must be exactly its flow difference from the one it replaced; its
@@ -214,8 +223,9 @@ class AdjustmentHistoryService {
                 ? AdjustmentCursor.encode(user, query, rows.getLast().sequence()) : null;
         return new AdjustmentOutcome.Found(new AdjustmentHistory(plan.planId(), pointer.version(), calculationId,
                 query.direction(), pointer.publishedAt(),
-                new AdjustmentHistory.Coverage(calculation.t0(), calculation.verifiedThrough()),
-                new AdjustmentHistory.Summary(totals.selected(), net, counts.excluded()), List.copyOf(adjustments),
+                // (t0, cashflowVerifiedThrough] for a progress version; (t0, T] for a completion version (Story 2.14).
+                new AdjustmentHistory.Coverage(calculation.t0(), calculation.appliedThrough()),
+                new AdjustmentHistory.Summary(totals.selected(), net, excluded), List.copyOf(adjustments),
                 next));
     }
 

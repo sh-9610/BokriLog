@@ -199,6 +199,12 @@ export const calculationEvidenceContent = {
     current: '현재 공식 버전입니다.',
     /** Story 2.13: 중도 종료된 계획의 현재 버전은 종료 시각에 적용이 끝났다. */
     endedCurrent: '이 계획의 마지막 공식 버전이며, 계획이 중도 종료된 시각에 적용이 끝났습니다.',
+    /** Story 2.14: 자연 만료된 계획의 현재 버전. 이후 동기화는 이 버전을 바꾸지 않는다. */
+    completedCurrent:
+      '이 계획의 마지막 공식 버전이며, 예정 종료 시각에 끝난 계획의 기록으로 이후 동기화로 바뀌지 않습니다.',
+    /** Story 2.14: 완료 계획이 아직 진행 버전을 보일 때(비교 확인 중·보류). */
+    completedProgressCurrent:
+      '예정 종료 시각이 지난 계획의 현재 공식 버전입니다. 완료 결과가 정해지면 완료 계산 버전으로 바뀔 수 있습니다.',
     earlier: '이전 공식 버전입니다.',
     calculationId: '계산 ID',
     unpublished: '발행되지 않은 시도',

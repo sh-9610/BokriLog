@@ -8,6 +8,7 @@ import {
 import { isCanonicalDecimal } from '../format/decimal'
 import {
   bundleOf,
+  isCompletionVersion,
   isInstant,
   record,
   strings,
@@ -242,7 +243,8 @@ function isRow(value: unknown, shown: PlanResult, direction: AdjustmentDirection
 /**
  * A `GET /api/dashboard/adjustments` body, or `null` when it is not one whole page of the shown bundle under
  * the asked filter. The three reference values must be the shown pointer's and the direction the asked one;
- * the application time is the shown publication, the range the shown `(t0, cashflowVerifiedThrough]`; the
+ * the application time is the shown publication, the range the shown `(t0, cashflowVerifiedThrough]` — or, for the
+ * completion version of a completed plan (Story 2.14), `(t0, T]`; the
  * summary is whole (under `ALL`, the shown flow count); the rows are at most one page, in strictly rising
  * sequence, each whole; a next page is announced only after a full page. Anything else is dropped whole,
  * never rendered in part.
@@ -267,7 +269,10 @@ export function parseAdjustmentPage(
     isInstant(page.appliedAt) &&
     page.appliedAt === shown.publishedAt &&
     coverage.from === shown.conditions.startAt &&
-    coverage.through === shown.cashflowVerifiedThrough &&
+    // A completion version (Story 2.14) applies the flows of (t0, T]: its range ends at its basis time `T`, not at the
+    // later check of the observation.
+    coverage.through ===
+      (isCompletionVersion(shown) ? shown.basisAt : shown.cashflowVerifiedThrough) &&
     count(summary.count) &&
     isCanonicalDecimal(summary.netUsdValue) &&
     count(summary.excludedCount) &&

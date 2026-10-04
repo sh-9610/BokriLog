@@ -351,10 +351,10 @@ class PlanEndTest extends PlanSyncTestBase {
                 .update();
         jdbc().sql("UPDATE sync_plan_calculation SET end_at=:e WHERE user_id=:u").param("e", end)
                 .param("u", late.user()).update();
-        var period = (SyncJobApi.Dashboard.Ready) sync.dashboard(late.user()).dashboard();
-        assertThat(period.planEnd()).isEqualTo(new SyncJobApi.PlanEndAvailability("UNAVAILABLE", "PLAN_PERIOD_ENDED"));
-        assertThat(planEndOf(late.cookie())).isEqualTo(planEndView("UNAVAILABLE", "PLAN_PERIOD_ENDED"));
-        var reached = prepare(late, "USER_REQUEST", ready(late.user()));
+        // Story 2.14: a plan whose T the clock reached is shown completed (not judged yet), not as a ready plan to end.
+        var period = (SyncJobApi.Dashboard.Completed) sync.dashboard(late.user()).dashboard();
+        assertThat(period.completion().comparison()).isEqualTo("PENDING");
+        var reached = prepare(late, "USER_REQUEST", period.result());
         assertThat(reached.statusCode()).isEqualTo(409);
         assertThat(topLevelFieldsOf(reached.body())).containsEntry("code", "PLAN_END_UNAVAILABLE")
                 .containsEntry("reason", "PLAN_PERIOD_ENDED");

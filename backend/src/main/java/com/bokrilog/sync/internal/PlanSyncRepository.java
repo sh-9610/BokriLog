@@ -41,11 +41,28 @@ class PlanSyncRepository {
             UUID baseCalculationId, long basePointerVersion, UUID baseCandidateId, Instant baseVerifiedThrough,
             Instant baseExtendedAt, Instant t0, Instant endAt, long generation) {
 
-        /** A precision verification or a continuation (Story 2.12), as opposed to a sync. */
+        /**
+         * Not a plain sync: a precision verification or a continuation (Story 2.12), or a completion (Story 2.14) — the
+         * attempts whose permanently held price needs review rather than a retry.
+         */
         boolean verifying() {
-            return !"SYNC".equals(this.purpose);
+            return !"SYNC".equals(this.purpose) && !POST_END_VALUE.equals(this.purpose);
+        }
+
+        /** The first post-end observation and the completion result of a plan that reached its end (Story 2.14). */
+        boolean completing() {
+            return COMPLETION.equals(this.purpose);
+        }
+
+        /** A completed plan's wallet-only sync (Story 2.14). */
+        boolean postEnd() {
+            return POST_END_VALUE.equals(this.purpose);
         }
     }
+
+    /** The two purposes of a plan that reached its end (Story 2.14). */
+    static final String COMPLETION = "COMPLETION";
+    static final String POST_END_VALUE = "POST_END_VALUE";
 
     /** A new attempt, as the admission pinned it. {@code reason} is {@code null} for a sync. */
     record Admission(UUID jobId, UUID userId, UUID planId, UUID portfolioId, UUID intentId, UUID membershipId,
@@ -145,13 +162,32 @@ class PlanSyncRepository {
      * rejection produced (a malformed answer, {@code RESPONSE_FORMAT}) or an unexplained event outside the targets
      * (which the next verification reads as an anomaly range) is not: asking again can change it.
      */
-    private static final String PERSISTENT_REVIEW = "j.user_id=:u AND j.plan_id=:plan AND j.base_calculation_id=:calc "
-            + "AND j.purpose IN ('VERIFY','CATCH_UP') AND j.status='NEEDS_REVIEW' AND (j.failure_code IN "
+    private static final String PERSISTENT_REVIEW = persistentReview("'VERIFY','CATCH_UP'");
+
+    /**
+     * {@link #PERSISTENT_REVIEW} of a completed plan's completion attempts (Story 2.14): the same predicate over the
+     * same base. A completion held by it would only be held again; one held by a transient review may be asked again.
+     */
+    private static final String PERSISTENT_COMPLETION_REVIEW = persistentReview("'COMPLETION'");
+
+    private static String persistentReview(String purposes) {
+        return "j.user_id=:u AND j.plan_id=:plan AND j.base_calculation_id=:calc "
+            + "AND j.purpose IN (" + purposes + ") AND j.status='NEEDS_REVIEW' AND (j.failure_code IN "
             + "('SOURCE_EVENT_MISSING','HISTORY_OUT_OF_RANGE','CLASSIFICATION_REQUIRES_REVIEW','CONVERSION_REQUIRES_REVIEW') "
             + "OR (j.failure_code='SOURCE_REQUIRES_REVIEW' AND (EXISTS (SELECT 1 FROM sync_initial_event_observation o "
             + "WHERE o.job_id=j.collection_job_id) OR EXISTS (SELECT 1 FROM sync_initial_page_evidence e "
             + "WHERE e.job_id=j.collection_job_id AND e.review_required) OR EXISTS (SELECT 1 FROM sync_plan_verification_event v "
             + "WHERE v.job_id=j.job_id AND v.outcome='CONFLICT'))))";
+    }
+
+    /**
+     * Whether a completion attempt of this base ended in a persistent review (Story 2.14,
+     * {@link #PERSISTENT_COMPLETION_REVIEW}): the held comparison is not asked again from the same base.
+     */
+    boolean completionPersistentlyReviewed(UUID user, UUID planId, UUID baseCalculationId) {
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_plan_sync_job j WHERE " + PERSISTENT_COMPLETION_REVIEW + ")")
+            .param("u", user).param("plan", planId).param("calc", baseCalculationId).query(Boolean.class).single();
+    }
 
     /** The persistent review of a base: the attempt that ended so and its closed code. */
     record Review(UUID jobId, String code) {}
@@ -361,6 +397,38 @@ class PlanSyncRepository {
             .query((rs, n) -> ending(rs)).optional();
         ended.ifPresent(done -> endChildren(done.jobId(), code));
         return ended;
+    }
+
+    /**
+     * Ends the attempt as succeeded without a calculation version (Story 2.14): a completion that only fixed the first
+     * observation (after a data gap), or a post-end value. Fenced.
+     */
+    Optional<Ending> finishWithoutResult(Lease lease) {
+        return jdbc.sql("UPDATE sync_plan_sync_job SET status='SUCCEEDED',lease_until=NULL,"
+                + "finished_at=date_trunc('milliseconds',statement_timestamp())" + FENCE
+                + " AND purpose IN ('COMPLETION','POST_END_VALUE')" + ENDING)
+            .param("j", lease.jobId()).param("g", lease.generation()).query((rs, n) -> ending(rs)).optional();
+    }
+
+    /** Records the wallet observation this attempt published (Story 2.14), once. Fenced. */
+    boolean recordObservation(Lease lease, UUID sourceSnapshotId, UUID portfolioSnapshotId, long sequence) {
+        return jdbc.sql("UPDATE sync_plan_sync_job SET observation_source_snapshot_id=:s,"
+                + "observation_portfolio_snapshot_id=:p,observation_portfolio_sequence=:q" + FENCE
+                + " AND observation_source_snapshot_id IS NULL")
+            .param("s", sourceSnapshotId).param("p", portfolioSnapshotId).param("q", sequence)
+            .param("j", lease.jobId()).param("g", lease.generation()).update() == 1;
+    }
+
+    /** The attempt that published a portfolio snapshot from its own wallet observation, with its source snapshot. */
+    record Observation(UUID jobId, String purpose, UUID sourceSnapshotId, UUID portfolioSnapshotId, long sequence) {}
+
+    Optional<Observation> observation(UUID user, UUID portfolioSnapshotId) {
+        return jdbc.sql("SELECT job_id,purpose,observation_source_snapshot_id,observation_portfolio_snapshot_id,"
+                + "observation_portfolio_sequence FROM sync_plan_sync_job WHERE user_id=:u "
+                + "AND observation_portfolio_snapshot_id=:p")
+            .param("u", user).param("p", portfolioSnapshotId)
+            .query((rs, n) -> new Observation(uuid(rs, 1), rs.getString(2), uuid(rs, 3), uuid(rs, 4), rs.getLong(5)))
+            .optional();
     }
 
     /** Ends the attempt as published, fenced. Its children already finished with their own endings. */

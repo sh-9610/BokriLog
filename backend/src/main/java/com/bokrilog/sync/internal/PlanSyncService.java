@@ -1,8 +1,10 @@
 package com.bokrilog.sync.internal;
 
 import com.bokrilog.calculation.PlanCalculator;
+import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.source.SourceRejectionReason;
+import com.bokrilog.sync.PlanPublicationPort;
 import com.bokrilog.sync.SyncJobApi.SyncAdmission;
 import com.bokrilog.sync.SyncJobApi.SyncJob;
 import com.bokrilog.sync.SyncJobApi.SyncState;
@@ -75,6 +77,9 @@ class PlanSyncService {
     private final PlanSyncPublisher publisher;
     private final TransactionTemplate transactions;
     private final CashflowConversionMarket market;
+    /** The plan module's port (Story 2.14): the natural completion's transition and its completion record. */
+    private final PlanPublicationPort plans;
+    private final AccountAccessApi accounts;
     /**
      * What each running holder's collection did, for its attempt's one ending line (windows, pages, page retries). Keyed
      * by the holder's lease — the job and its fencing generation — so an earlier holder in this process and the one
@@ -98,7 +103,10 @@ class PlanSyncService {
     PlanSyncService(PlanSyncRepository syncs, PlanPublicationRepository publications,
             InitialCollectionRepository collections, CashflowClassificationRepository classifications,
             CashflowConversionRepository conversions, SourceConnectionApi sources, CalculationConformance conformance,
-            PlanSyncGuard guard, PlanSyncPublisher publisher, PlatformTransactionManager manager) {
+            PlanSyncGuard guard, PlanSyncPublisher publisher, PlanPublicationPort plans, AccountAccessApi accounts,
+            PlatformTransactionManager manager) {
+        this.plans = plans;
+        this.accounts = accounts;
         this.syncs = syncs;
         this.publications = publications;
         this.collections = collections;
@@ -134,13 +142,20 @@ class PlanSyncService {
         if (keyed != null) return sameSync(keyed, trigger) ? new SyncAdmission.Joined(keyed)
                 : new SyncAdmission.Refused("IDEMPOTENCY_CONFLICT");
         var base = guard.base(user).orElse(null);
-        if (base == null) return new SyncAdmission.Refused("NO_ACTIVE_PLAN");
+        if (base == null) {
+            // A plan that reached its end and completed (Story 2.14): its post-end syncs.
+            var completed = guard.completedBase(user).orElse(null);
+            if (completed == null) return new SyncAdmission.Refused("NO_ACTIVE_PLAN");
+            return admitCompleted(user, trigger, key, completed);
+        }
         UUID planId = base.plan().planId();
         // Asymmetric on purpose (Story 2.12): a sync joins a verification in progress — it publishes with a new tc,
-        // which is what the sync wanted — but a verification never joins a sync.
+        // which is what the sync wanted — but a verification never joins a sync. An attempt in progress at T is joined
+        // too, without the transition: it ends PLAN_PERIOD_ENDED by its guard, and the next request completes the plan.
         var active = syncs.active(user, planId).orElse(null);
         if (active != null) return new SyncAdmission.Joined(active);
         Instant now = publications.databaseNow();
+        if (!now.isBefore(base.calculation().endAt())) return complete(user, trigger, key, base, now);
         if (unavailableReason(user, base, now) != null) return new SyncAdmission.Refused("SYNC_UNAVAILABLE");
         // A persistent verification review of this base holds every sync (R6): it could only end as that review, so
         // nothing is made — no attempt row, no provider call — and the dashboard says why (REVIEW_HELD).
@@ -172,9 +187,131 @@ class PlanSyncService {
         return new SyncAdmission.Accepted(syncs.byId(user, jobId).orElseThrow());
     }
 
-    /** A key replayed for a sync names the same request only if it made a sync with the same trigger. */
+    /**
+     * A key replayed for a sync names the same request only if it made an attempt of a sync request — a sync, or a
+     * completed plan's completion or post-end value (Story 2.14) — with the same trigger.
+     */
     private static boolean sameSync(SyncJob keyed, SyncTrigger trigger) {
-        return "SYNC".equals(keyed.purpose()) && keyed.trigger().equals(trigger.name());
+        return SYNC_REQUEST_PURPOSES.contains(keyed.purpose()) && keyed.trigger().equals(trigger.name());
+    }
+
+    /** The purposes a sync request admits. */
+    private static final Set<String> SYNC_REQUEST_PURPOSES = Set.of("SYNC", PlanSyncRepository.COMPLETION,
+            PlanSyncRepository.POST_END_VALUE);
+
+    /**
+     * The natural completion (Story 2.14, AC-1): the database clock reached the active plan's end {@code T} and nothing
+     * is in progress. In this same transaction and in the publishers' lock order — the plan lock, then the account
+     * lifecycle — the plan module locks the plan row, judges {@code T} again and writes {@code ACTIVE → COMPLETED} with
+     * its completion record: not judged yet, or after a long gap (the sync admission's own judgment) not computable
+     * for the data gap. Then the completed plan's own admission follows. An early end or another tab's transition that
+     * won the locks leaves this one nothing to write: the plan is then answered as it now is.
+     */
+    private SyncAdmission complete(UUID user, SyncTrigger trigger, String key, PlanSyncGuard.Base base, Instant now) {
+        plans.lockPlanWrites(user);
+        if (!accounts.lockWriteAccess(user)) return new SyncAdmission.NotPermitted();
+        plans.completePlan(user, base.plan().planId(), longGap(user, base, now));
+        var completed = guard.completedBase(user).orElse(null);
+        if (completed == null || !completed.base().plan().planId().equals(base.plan().planId()))
+            return new SyncAdmission.Refused("NO_ACTIVE_PLAN");
+        return admitCompleted(user, trigger, key, completed);
+    }
+
+    /**
+     * A completed plan's sync request (Story 2.14, AC-7): an attempt in progress is joined; a restriction or a
+     * connection or membership that is not the plan's own refuses it (the transition, if this request made it, still
+     * commits); the manual cooldown and the automatic interval apply after the plan's last admission. The attempt is a
+     * completion while the first observation is missing or the comparison is pending or held, else a post-end value.
+     */
+    private SyncAdmission admitCompleted(UUID user, SyncTrigger trigger, String key,
+            PlanSyncGuard.CompletedBase completed) {
+        var base = completed.base();
+        UUID planId = base.plan().planId();
+        var active = syncs.active(user, planId).orElse(null);
+        if (active != null) return new SyncAdmission.Joined(active);
+        if (completedUnavailableReason(user, base) != null) return new SyncAdmission.Refused("SYNC_UNAVAILABLE");
+        Instant now = publications.databaseNow();
+        Duration wait = completedWait(SyncWindow.Trigger.valueOf(trigger.name()), now,
+                syncs.lastAdmission(user, planId).orElse(null), completed.completion().transitionedAt());
+        if (wait != null) return new SyncAdmission.Deferred(trigger == SyncTrigger.MANUAL ? "COOLDOWN" : "NOT_DUE",
+                syncs.latest(user, planId).orElse(null), SyncWindow.seconds(wait));
+        String purpose = completionRetryable(user, completed) ? PlanSyncRepository.COMPLETION
+                : PlanSyncRepository.POST_END_VALUE;
+        UUID jobId = UUID.randomUUID();
+        var calculation = base.calculation();
+        var lineage = base.lineage();
+        int inserted = syncs.insert(new PlanSyncRepository.Admission(jobId, user, planId, calculation.portfolioId(),
+                base.plan().intentId(), lineage.membershipId(), lineage.connectionId(), lineage.providerAccountId(),
+                purpose, null, trigger.name(), key, base.pointer().calculationId(), base.pointer().version(),
+                lineage.candidateId(), calculation.verifiedThrough(), lineage.lastExtendedAt(), calculation.t0(),
+                calculation.endAt()));
+        if (inserted != 1) {
+            var raced = syncs.byKey(user, key).orElse(null);
+            if (raced != null) return sameSync(raced, trigger) ? new SyncAdmission.Joined(raced)
+                    : new SyncAdmission.Refused("IDEMPOTENCY_CONFLICT");
+            return syncs.active(user, planId).<SyncAdmission>map(SyncAdmission.Joined::new)
+                    .orElse(new SyncAdmission.Deferred(trigger == SyncTrigger.MANUAL ? "COOLDOWN" : "NOT_DUE",
+                            syncs.latest(user, planId).orElse(null), 1L));
+        }
+        return new SyncAdmission.Accepted(syncs.byId(user, jobId).orElseThrow());
+    }
+
+    /**
+     * Whether a completed plan's completion would run again (Story 2.14): no first observation yet, a comparison
+     * pending, or one held by a review that is not persistent. A persistent review of the same base
+     * ({@code completionHeldForGood}) holds the comparison for as long as that base is official — Story 2.12's rule:
+     * asking again would only end the same way, so nothing re-collects it, and a sync only refreshes the post-end value.
+     */
+    static boolean completionOpen(PlanPublicationPort.PlanCompletion completion, boolean completionHeldForGood) {
+        if (!completion.observed() || PlanPublicationService.COMPARISON_PENDING.equals(completion.comparison()))
+            return true;
+        return PlanPublicationService.COMPARISON_HELD.equals(completion.comparison()) && !completionHeldForGood;
+    }
+
+    /** {@link #completionOpen} of a completed plan, with the persistent review of its base read here. */
+    boolean completionRetryable(UUID user, PlanSyncGuard.CompletedBase completed) {
+        var completion = completed.completion();
+        boolean held = PlanPublicationService.COMPARISON_HELD.equals(completion.comparison())
+                && syncs.completionPersistentlyReviewed(user, completed.base().plan().planId(),
+                        completed.base().pointer().calculationId());
+        return completionOpen(completion, held);
+    }
+
+    /**
+     * The wait of a completed plan's request (Story 2.14): 2.11's rules after the plan's last admission since its
+     * completion only. Neither the official publication (its result lies before {@code T}) nor an admission before the
+     * transition (a progress sync's) holds back the first post-end observation.
+     */
+    static @Nullable Duration completedWait(SyncWindow.Trigger trigger, Instant now, @Nullable Instant lastAdmission,
+            Instant transitionedAt) {
+        Instant since = lastAdmission != null && !lastAdmission.isBefore(transitionedAt) ? lastAdmission : null;
+        return SyncWindow.wait(trigger, now, since, Instant.EPOCH);
+    }
+
+    @Nullable String completedUnavailableReason(UUID user, PlanSyncGuard.Base base) {
+        var lineage = base.lineage();
+        return guard.completionUnavailableReason(user, lineage.membershipId(), base.calculation().portfolioId(),
+                lineage.connectionId(), lineage.providerAccountId());
+    }
+
+    /**
+     * The sync part of a completed plan's dashboard (Story 2.14), by the completed plan's own admission: an attempt in
+     * progress, a reason none can run, then the manual cooldown. There is no long gap here: a completed plan's request
+     * never waits for a continuation.
+     */
+    SyncState completedState(UUID user, PlanSyncGuard.Base base, @Nullable Instant transitionedAt) {
+        UUID planId = base.plan().planId();
+        Instant now = publications.databaseNow();
+        boolean inProgress = syncs.active(user, planId).isPresent();
+        String reason = completedUnavailableReason(user, base);
+        // Before the transition (an active plan whose T the clock reached) nothing was admitted since it.
+        Duration manualWait = transitionedAt == null ? null : completedWait(SyncWindow.Trigger.MANUAL, now,
+                syncs.lastAdmission(user, planId).orElse(null), transitionedAt);
+        SyncWindow.Availability availability = SyncWindow.availability(inProgress, reason, false, manualWait);
+        return new SyncState(availability.name(), availability == SyncWindow.Availability.UNAVAILABLE ? reason : null,
+                availability == SyncWindow.Availability.COOLDOWN && manualWait != null ? SyncWindow.seconds(manualWait)
+                        : null,
+                syncs.latest(user, planId).orElse(null));
     }
 
     @Nullable String unavailableReason(UUID user, PlanSyncGuard.Base base, Instant now) {
@@ -266,6 +403,14 @@ class PlanSyncService {
         runs.put(lease, stats);
         try {
             if (!alive.getAsBoolean()) return;
+            if (lease.completing()) {
+                runCompletion(lease, alive, stats);
+                return;
+            }
+            if (lease.postEnd()) {
+                runPostEnd(lease, alive);
+                return;
+            }
             if (lease.verifying()) {
                 runVerification(lease, alive, stats);
                 return;
@@ -434,6 +579,265 @@ class PlanSyncService {
                 java.util.Set.copyOf(scope.stream().map(VerificationPlanner.Range::interval).toList()));
     }
 
+    // ---------------------------------------------------------------- the completion (Story 2.14)
+
+    /**
+     * A completed plan's completion attempt (Story 2.14, AC-2·AC-3·AC-6):
+     *
+     * <ol>
+     *   <li>Without a first observation yet: Bybit's time must have reached {@code T} (trusted as a sync's {@code tc});
+     *       the wallet is read once, a value measured at or after {@code T} is published as the next portfolio snapshot
+     *       and fixed on the completion record — the earliest user-owned post-end snapshot, since no other path makes
+     *       one. A fixed observation is never read again, by a retry or after a held comparison. After a data gap the
+     *       attempt ends here: no history is collected.
+     *   <li>{@code U} is fixed from Bybit's time again, at or after the observation's measurement, so that
+     *       {@code T < ti <= measured} is judged on a complete history.
+     *   <li>Story 2.12's plan of ranges up to the base verification — the unconfirmed week, any gap, the unexplained
+     *       stored events — with {@code NEW} {@code (verified, U]}; the evidence the lineage already proved is reused.
+     *       A target out of Bybit's history ends it, the comparison not computable.
+     *   <li>The targets' windows, classification, conversion, the comparison and the completion calculation at
+     *       {@code u = T}, and the atomic publication ({@link PlanSyncPublisher#publishCompletion}).
+     * </ol>
+     */
+    private void runCompletion(PlanSyncRepository.Lease lease, BooleanSupplier alive, RunStats stats) {
+        var record = completionOf(lease);
+        if (record == null) {
+            end(lease, "BLOCKED", "PLAN_CHANGED");
+            return;
+        }
+        boolean dataGap = PlanPublicationService.COMPLETION_REASON_DATA_GAP.equals(record.reason());
+        if (!record.observed()) {
+            if (!timeReachedEnd(lease, alive)) return;
+            if (!enter(lease, "OBSERVATION") || !alive.getAsBoolean()) return;
+            var observation = readWallet(lease);
+            if (observation == null || !alive.getAsBoolean()) return;
+            var ending = publisher.publishObservation(lease, observation, dataGap);
+            if (ending != null) {
+                logEnding(lease, ending);
+                return;
+            }
+            record = completionOf(lease);
+            if (record == null || !record.observed()) {
+                end(lease, "BLOCKED", "PLAN_CHANGED");
+                return;
+            }
+        }
+        if (dataGap) {
+            // Only the observation is owed after a data gap; another attempt fixed it.
+            var ended = transactions.execute(status -> syncs.lockOwned(lease) ? syncs.finishWithoutResult(lease)
+                    : Optional.<PlanSyncRepository.Ending>empty());
+            if (ended != null) ended.ifPresent(ending -> logEnding(lease, ending));
+            return;
+        }
+        var fixed = fixedObservation(lease, record);
+        if (fixed == null) {
+            end(lease, "FAILED", "SYNC_FAILED");
+            return;
+        }
+        Instant cutoff = fixCompletionTime(lease, alive, Objects.requireNonNull(record.observedMeasuredAt()));
+        if (cutoff == null) return;
+        Instant verified = lease.baseVerifiedThrough();
+        List<VerificationPlanner.Range> planned = Objects.requireNonNull(transactions.execute(status -> {
+            if (!syncs.lockOwned(lease)) throw new PlanSyncPublisher.LeaseLost();
+            var plan = VerificationPlanner.precision(lease.t0(), verified,
+                    collections.lineageEvidence(lease.userId(), lease.baseCandidateId()),
+                    collections.unexplainedEvents(lease.userId(), lease.providerAccountId(), lease.baseCandidateId(),
+                            lease.t0(), verified), List.of());
+            List<VerificationPlanner.Range> ranges = new ArrayList<>(plan.targets());
+            ranges.add(VerificationPlanner.newRange(verified, cutoff));
+            ranges.addAll(plan.reused());
+            syncs.insertRanges(lease.userId(), lease.jobId(), ranges);
+            return syncs.ranges(lease.userId(), lease.jobId());
+        }));
+        List<VerificationPlanner.Range> targets = planned.stream()
+                .filter(range -> range.kind() != VerificationPlanner.Kind.REUSED).toList();
+        if (VerificationPlanner.outOfRange(targets, cutoff)) {
+            end(lease, "NEEDS_REVIEW", PlanPublicationService.COMPLETION_HISTORY_OUT_OF_RANGE);
+            return;
+        }
+        Instant windowStart = VerificationPlanner.windowStart(targets);
+        if (!inTransaction(lease, () -> syncs.fixScope(lease, PlanSyncRepository.COMPLETION, windowStart))) return;
+        InitialCollectionRepository.Lease child = newChild(lease, cutoff, windowStart);
+        if (child == null) return;
+        UUID candidateId = collectAndComplete(lease, alive, stats, child, cutoff, targets, false, true, false, fixed);
+        if (candidateId == null || !alive.getAsBoolean()) return;
+        UUID classificationId = classify(lease, candidateId);
+        if (classificationId == null || !alive.getAsBoolean()) return;
+        UUID conversionId = convert(lease, alive, classificationId, cutoff,
+                Set.copyOf(targets.stream().map(VerificationPlanner.Range::interval).toList()));
+        if (conversionId == null || !alive.getAsBoolean()) return;
+        calculateAndPublishCompletion(lease, alive, candidateId, classificationId, conversionId, cutoff, record);
+    }
+
+    /**
+     * A completion's Bybit time or wallet measurement has not reached {@code T} yet (Story 2.14): the ordinary clock
+     * difference right after {@code T}, trusted but early. Retryable; not an untrusted clock.
+     */
+    static final String PROVIDER_END_NOT_REACHED = "PROVIDER_END_NOT_REACHED";
+
+    /** The completion record of the attempt's plan, read in a transaction of its own. */
+    private PlanPublicationPort.@Nullable PlanCompletion completionOf(PlanSyncRepository.Lease lease) {
+        return transactions.execute(status -> plans.completion(lease.userId(), lease.planId(), false).orElse(null));
+    }
+
+    /**
+     * The first observation as the collection carries it: the value, times and policy of the source snapshot the
+     * completion published it from. {@code null} when that snapshot is not the record's.
+     */
+    private PlanSyncPublisher.@Nullable WalletObservation fixedObservation(PlanSyncRepository.Lease lease,
+            PlanPublicationPort.PlanCompletion record) {
+        return transactions.execute(status -> {
+            var observation = syncs.observation(lease.userId(),
+                    Objects.requireNonNull(record.observedPortfolioSnapshotId())).orElse(null);
+            if (observation == null) return null;
+            var source = publications.sourceOrigin(lease.userId(), observation.sourceSnapshotId()).orElse(null);
+            if (source == null || !source.measuredAt().equals(record.observedMeasuredAt())) return null;
+            return new PlanSyncPublisher.WalletObservation(source.equity(), source.measuredAt(), source.receivedAt(),
+                    source.policyVersion());
+        });
+    }
+
+    /**
+     * Stage TIME before the first observation: Bybit's time, trusted as a sync's {@code tc} (60 seconds from the
+     * database clock), must have reached {@code T} — otherwise no wallet is read and the attempt ends retryable. The
+     * time is not kept: the cutoff {@code U} is fixed after the observation.
+     */
+    private boolean timeReachedEnd(PlanSyncRepository.Lease lease, BooleanSupplier alive) {
+        if (!enter(lease, "TIME") || !alive.getAsBoolean()) return false;
+        var time = sources.marketTime();
+        if (time instanceof SourceConnectionApi.MarketTimeResult.Rejected) {
+            end(lease, "FAILED", "PROVIDER_UNAVAILABLE");
+            return false;
+        }
+        Instant now = ((SourceConnectionApi.MarketTimeResult.Observed) time).serverTime();
+        try {
+            finishWith(lease, () -> SyncWindow.untrustedTime(now, publications.databaseNow())
+                    ? new String[] {"FAILED", "PROVIDER_TIME_UNTRUSTED"}
+                    : now.isBefore(lease.endAt()) ? new String[] {"FAILED", PROVIDER_END_NOT_REACHED} : null);
+        } catch (Ended ended) {
+            return false;
+        }
+        return alive.getAsBoolean();
+    }
+
+    /**
+     * Stage TIME after the first observation: the cutoff {@code U}, fixed on the attempt once and judged in the same
+     * transaction — trusted, and at or after the observation's measurement.
+     */
+    private @Nullable Instant fixCompletionTime(PlanSyncRepository.Lease lease, BooleanSupplier alive,
+            Instant measuredAt) {
+        if (!enter(lease, "TIME") || !alive.getAsBoolean()) return null;
+        var time = sources.marketTime();
+        if (time instanceof SourceConnectionApi.MarketTimeResult.Rejected) {
+            end(lease, "FAILED", "PROVIDER_UNAVAILABLE");
+            return null;
+        }
+        Instant cutoff = ((SourceConnectionApi.MarketTimeResult.Observed) time).serverTime();
+        try {
+            finishWith(lease, () -> {
+                if (!syncs.fixTime(lease, cutoff)) throw new PlanSyncPublisher.LeaseLost();
+                return SyncWindow.untrustedTime(cutoff, publications.databaseNow()) || cutoff.isBefore(measuredAt)
+                        ? new String[] {"FAILED", "PROVIDER_TIME_UNTRUSTED"} : null;
+            });
+        } catch (Ended ended) {
+            return null;
+        }
+        return cutoff;
+    }
+
+    /**
+     * Stage OBSERVATION: the wallet, read once outside any transaction, as a value measured at or after {@code T} on a
+     * time trusted like {@code tc}. A provider refusal ends the attempt with its closed code; a measurement before
+     * {@code T} or out of trust ends it retryable. {@code null} when the attempt ended.
+     */
+    private PlanSyncPublisher.@Nullable WalletObservation readWallet(PlanSyncRepository.Lease lease) {
+        var result = sources.readEquity(lease.userId(), lease.connectionId());
+        if (result instanceof SourceConnectionApi.EquityResult.Rejected rejected) {
+            String[] ending = rejection(rejected.reason());
+            end(lease, ending[0], ending[1]);
+            return null;
+        }
+        var value = ((SourceConnectionApi.EquityResult.Observed) result).value();
+        // To the millisecond before anything is stored or judged: the delay is then one exact number in SQL, in Java
+        // and in the record's CHECK (the database keeps microseconds; Bybit's time is in milliseconds anyway).
+        Instant measuredAt = value.measuredAt().truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+        Instant receivedAt = value.receivedAt().truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+        try {
+            finishWith(lease, () -> SyncWindow.untrustedTime(measuredAt, publications.databaseNow())
+                    ? new String[] {"FAILED", "PROVIDER_TIME_UNTRUSTED"}
+                    : measuredAt.isBefore(lease.endAt()) ? new String[] {"FAILED", PROVIDER_END_NOT_REACHED} : null);
+        } catch (Ended ended) {
+            return null;
+        }
+        return new PlanSyncPublisher.WalletObservation(value.decimal(), measuredAt, receivedAt, value.policyVersion());
+    }
+
+    /**
+     * Stages CALCULATION and PUBLICATION of a completion: the comparison (CV-11's order), the completion calculation at
+     * {@code u = T} with the first observation as {@code E}, then the atomic publication.
+     */
+    private void calculateAndPublishCompletion(PlanSyncRepository.Lease lease, BooleanSupplier alive,
+            UUID candidateId, UUID classificationId, UUID conversionId, Instant cutoff,
+            PlanPublicationPort.PlanCompletion record) {
+        AtomicReference<PlanSyncPublisher.Prepared> holder = new AtomicReference<>();
+        if (!enterWith(lease, "CALCULATION", () -> holder.set(prepare(lease, candidateId, classificationId,
+                conversionId, cutoff)))) return;
+        PlanSyncPublisher.Prepared prepared = holder.get();
+        if (!conformance.verified()) {
+            end(lease, "FAILED", "CALCULATION_POLICY_UNVERIFIED");
+            return;
+        }
+        var judgment = CompletionComparison.judge(lease.endAt(), Objects.requireNonNull(record.observedMeasuredAt()),
+                prepared.flows().stream().map(Flow::occurredAt).toList());
+        PlanCalculator.Result result = PlanCalculator.complete(PlanPublicationService.completionInput(
+                prepared.pinned(), prepared.flows(), judgment.postEndCashflowCount() > 0));
+        if (result instanceof PlanCalculator.Result.Rejected rejected) {
+            end(lease, "FAILED", rejected.reason() == PlanCalculator.RejectionReason.CALCULATION_RANGE_EXCEEDED
+                    ? "CALCULATION_RANGE_EXCEEDED" : "CALCULATION_INPUT_INVALID");
+            return;
+        }
+        var calculated = (PlanCalculator.Result.Calculated) result;
+        // The calculator judged the comparability from the same facts; a different answer is not one result.
+        boolean comparable = calculated.metric(PlanCalculator.Metric.PLAN_DIFFERENCE).unavailableReason()
+                != PlanCalculator.UnavailableReason.COMPLETION_NOT_COMPARABLE;
+        if (comparable != judgment.comparable()) {
+            end(lease, "FAILED", "CALCULATION_INPUT_INVALID");
+            return;
+        }
+        if (!alive.getAsBoolean()) return;
+        if (!enter(lease, "PUBLICATION")) return;
+        try {
+            logEnding(lease, publisher.publishCompletion(lease, prepared, calculated, judgment,
+                    Objects.requireNonNull(record.observedPortfolioSnapshotId()), lease.endAt()));
+        } catch (PublicationBlocked blocked) {
+            end(lease, "BLOCKED", blocked.code());
+        } catch (DuplicateKeyException racing) {
+            end(lease, "BLOCKED", "POINTER_CONFLICT");
+        } catch (org.springframework.dao.DataIntegrityViolationException refused) {
+            // A schema rule refused the completion (V14's checks): it all rolled back; the attempt ends retryable now
+            // rather than with its lease. The class name only: a message can carry SQL or values.
+            LOG.warn("plan completion refused: job={} failure={}", lease.jobId(), refused.getClass().getName());
+            end(lease, "FAILED", "SYNC_FAILED");
+        }
+    }
+
+    /**
+     * A completed plan's post-end value (Story 2.14, AC-7): Bybit's time ({@code tc}, trusted) and the wallet only,
+     * published as the next portfolio snapshot. No history, calculation or plan pointer; the completion record and
+     * the completion version stay as they are.
+     */
+    private void runPostEnd(PlanSyncRepository.Lease lease, BooleanSupplier alive) {
+        if (fixTime(lease, alive) == null) return;
+        if (!enter(lease, "OBSERVATION") || !alive.getAsBoolean()) return;
+        var observation = readWallet(lease);
+        if (observation == null || !alive.getAsBoolean()) return;
+        try {
+            logEnding(lease, publisher.publishPostEnd(lease, observation));
+        } catch (PublicationBlocked blocked) {
+            end(lease, "BLOCKED", blocked.code());
+        }
+    }
+
     /** Inserts and attaches the attempt's collection child. {@code null} when the attempt ended. */
     private InitialCollectionRepository.@Nullable Lease newChild(PlanSyncRepository.Lease lease, Instant tc,
             Instant windowStart) {
@@ -513,9 +917,24 @@ class PlanSyncService {
     private @Nullable UUID collectAndComplete(PlanSyncRepository.Lease lease, BooleanSupplier alive, RunStats stats,
             InitialCollectionRepository.Lease child, Instant tc, List<VerificationPlanner.Range> targets,
             boolean includeWallet, boolean record, boolean countPages) {
+        return collectAndComplete(lease, alive, stats, child, tc, targets, includeWallet, record, countPages, null);
+    }
+
+    /**
+     * @param fixed a completion's first post-end observation (Story 2.14): the candidate carries it as its equity
+     *     instead of a new wallet read — the observation is fixed once and never read again — with the collection's
+     *     own cutoff {@code U}
+     */
+    private @Nullable UUID collectAndComplete(PlanSyncRepository.Lease lease, BooleanSupplier alive, RunStats stats,
+            InitialCollectionRepository.Lease child, Instant tc, List<VerificationPlanner.Range> targets,
+            boolean includeWallet, boolean record, boolean countPages,
+            PlanSyncPublisher.@Nullable WalletObservation fixed) {
         var result = collectWindows(lease, alive, stats, child, tc, targets, includeWallet);
         if (result == null) return null;
-        var value = result.observation();
+        var value = fixed == null ? result.observation()
+                : new SourceConnectionApi.CollectionObservation(result.providerAccountRef(), fixed.equity(),
+                        fixed.measuredAt(), fixed.receivedAt(), result.tc(), result.pageCount(), result.reviewRequired(),
+                        result.failureCode(), result.policyVersion());
         AtomicReference<UUID> candidate = new AtomicReference<>();
         finishWith(lease, () -> {
             if (!collections.lockOwned(child)) throw new PlanSyncPublisher.LeaseLost();
@@ -862,7 +1281,7 @@ class PlanSyncService {
         transactions.executeWithoutResult(status -> {
             if (!syncs.lockOwned(lease)) throw new PlanSyncPublisher.LeaseLost();
             String[] ending = body.run();
-            if (ending != null) ended.set(syncs.finish(lease, ending[0], ending[1])
+            if (ending != null) ended.set(finishAttempt(lease, ending[0], ending[1])
                     .orElseThrow(PlanSyncPublisher.LeaseLost::new));
         });
         if (ended.get() != null) {
@@ -911,9 +1330,29 @@ class PlanSyncService {
 
     /** Ends the attempt in a transaction of its own, fenced, and writes its one line. */
     private void end(PlanSyncRepository.Lease lease, String status, String code) {
-        var ended = transactions.execute(state -> syncs.lockOwned(lease) ? syncs.finish(lease, status, code)
+        var ended = transactions.execute(state -> syncs.lockOwned(lease) ? finishAttempt(lease, status, code)
                 : Optional.<PlanSyncRepository.Ending>empty());
         if (ended != null) ended.ifPresent(ending -> logEnding(lease, ending));
+    }
+
+    /**
+     * Ends the attempt with a closed code, in the caller's transaction under the lease. A completion that ends in review
+     * (Story 2.14, AC-2) writes its comparison in the same transaction: out of the provider's history it is not
+     * computable ({@code HISTORY_OUT_OF_RANGE}), any other review holds it ({@code INPUT_REVIEW_REQUIRED}) — the plan
+     * stays completed and its last official result as it was. Every other ending leaves the comparison as it is.
+     */
+    private Optional<PlanSyncRepository.Ending> finishAttempt(PlanSyncRepository.Lease lease, String status,
+            String code) {
+        var ended = syncs.finish(lease, status, code);
+        if (ended.isPresent() && lease.completing() && "NEEDS_REVIEW".equals(status)) {
+            boolean outOfRange = PlanPublicationService.COMPLETION_HISTORY_OUT_OF_RANGE.equals(code);
+            plans.recordCompletionComparison(lease.userId(), lease.planId(),
+                    outOfRange ? PlanPublicationService.COMPARISON_UNAVAILABLE : PlanPublicationService.COMPARISON_HELD,
+                    outOfRange ? PlanPublicationService.COMPLETION_HISTORY_OUT_OF_RANGE
+                            : PlanPublicationService.COMPLETION_INPUT_REVIEW,
+                    null, null);
+        }
+        return ended;
     }
 
     /** A stage's own permission check refused a publication: the guard says why, or the inputs moved. */

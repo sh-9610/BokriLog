@@ -88,12 +88,15 @@ class PlanPublicationService {
     private final PlanSyncRepository syncAttempts;
     /** The precision verification and continuation (Story 2.12): the dashboard's verification part and change. */
     private final PlanVerificationService verifications;
+    /** The shown plan's record against its pointer and version (Story 2.14): the dashboard's, evidence's and history's. */
+    private final ShownPlanAgreement agreement;
 
     PlanPublicationService(PlanPublicationRepository repository, CashflowClassificationRepository classifications,
             CashflowConversionRepository conversions, SourceConnectionApi sources, PortfolioMembershipApi portfolios,
             AccountAccessApi accounts, OperationalRestrictionApi restrictions, PlanPublicationPort plans,
             CalculationConformance conformance, PlatformTransactionManager manager, PlanSyncService syncs,
-            PlanSyncRepository syncAttempts, PlanVerificationService verifications) {
+            PlanSyncRepository syncAttempts, PlanVerificationService verifications, ShownPlanAgreement agreement) {
+        this.agreement = agreement;
         this.syncs = syncs;
         this.syncAttempts = syncAttempts;
         this.verifications = verifications;
@@ -499,6 +502,22 @@ class PlanPublicationService {
                 pinned.calculationPolicy(), pinned.calendarPolicy());
     }
 
+    /**
+     * The completion calculator's input (Story 2.14): the plan's terms, the first post-end observation as {@code E} with
+     * its measurement time (the pinned current value and measurement — the completion's candidate carries them),
+     * whether a confirmed post-end flow exists, and every calculable flow of {@code (t0, U]}; the calculator applies only
+     * {@code t0 < ti <= T} and judges the comparability itself.
+     */
+    static PlanCalculator.CompletionInput completionInput(Pinned pinned, List<Flow> flows, boolean postEndCashflow) {
+        String namespace = pinned.providerAccountId().toString();
+        return new PlanCalculator.CompletionInput(notation(pinned.principal()), pinned.t0(), pinned.endAt(),
+                PlanCalculator.Period.valueOf(pinned.period()), notation(pinned.targetRate()),
+                notation(pinned.currentValue()), pinned.measuredAt(), postEndCashflow,
+                flows.stream().map(flow -> new PlanCalculator.Cashflow(flow.occurredAt(), namespace, flow.sourceId(),
+                        notation(flow.usdValue()), flow.estimated())).toList(),
+                pinned.calculationPolicy(), pinned.calendarPolicy());
+    }
+
     /** The lossless canonical notation, or the raw text when it is not a plain decimal (the calculator refuses it). */
     static String notation(String raw) {
         String canonical = PlanCalculator.plainDecimal(raw);
@@ -601,9 +620,15 @@ class PlanPublicationService {
             if (repository.publicationInProgress(user)) return new Dashboard.Preparing(DashboardTrust.WAIT_FOR_RESULT);
             var latest = plans.latestPlan(user).orElse(null);
             if (latest == null) return new Dashboard.NoPlan(DashboardTrust.CREATE_PLAN);
+            if (COMPLETED.equals(latest.status()))
+                return latest.completion() == null ? new Dashboard.Unavailable()
+                        : completedBundle(user, latest.plan(), latest.completion());
             // Any other status without an active plan is not one this story knows: shown as nothing, never in part.
             return ENDED_EARLY.equals(latest.status()) ? endedBundle(user, latest) : new Dashboard.Unavailable();
         }
+        // The database clock reached T (Story 2.14): the plan is not shown as an active plan that keeps accruing, even
+        // before a sync request completes it — a GET writes nothing, so it only shows the completion not judged yet.
+        if (!repository.databaseNow().isBefore(plan.endAt())) return completedBundle(user, plan, null);
         // Active plans and their pointers are published atomically: a plan without one is inconsistent.
         var pointer = repository.pointer(user, plan.planId()).orElse(null);
         if (pointer == null) return new Dashboard.Unavailable();
@@ -653,7 +678,8 @@ class PlanPublicationService {
                 calculation.verifiedThrough(), calculation.calculationPolicy(), calculation.calendarPolicy(),
                 calculation.displayPolicy(), calculation.pricePolicy(), calculation.implementationVersion(),
                 calculation.inputHash(), calculation.resultHash(), calculation.flowCount(),
-                calculation.estimatedFlowCount(), trust, metrics), DashboardTrust.nextAction(trust), sync,
+                calculation.estimatedFlowCount(), trust, metrics, calculation.kind()), DashboardTrust.nextAction(trust),
+                sync,
                 verification, change, planEnd);
     }
 
@@ -664,6 +690,17 @@ class PlanPublicationService {
      */
     static final String ACTIVE = "ACTIVE";
     static final String ENDED_EARLY = "ENDED_EARLY";
+    /** The natural completion (Story 2.14) and its comparison states and reasons, sync's copies. */
+    static final String COMPLETED = "COMPLETED";
+    static final String COMPARISON_PENDING = "PENDING";
+    static final String COMPARISON_CONFIRMED = "CONFIRMED";
+    static final String COMPARISON_UNAVAILABLE = "UNAVAILABLE";
+    static final String COMPARISON_HELD = "HELD";
+    static final String COMPLETION_DELAY_EXCEEDED = "OBSERVATION_DELAY_EXCEEDED";
+    static final String COMPLETION_POST_END_CASHFLOW = "POST_END_CASHFLOW";
+    static final String COMPLETION_HISTORY_OUT_OF_RANGE = "HISTORY_OUT_OF_RANGE";
+    static final String COMPLETION_REASON_DATA_GAP = "DATA_GAP";
+    static final String COMPLETION_INPUT_REVIEW = "INPUT_REVIEW_REQUIRED";
     static final String END_USER_REQUEST = "USER_REQUEST";
     static final String END_LONG_GAP_NEW_PLAN = "LONG_GAP_NEW_PLAN";
     static final String COMPLETION_NOT_APPLICABLE = "NOT_APPLICABLE";
@@ -705,7 +742,108 @@ class PlanPublicationService {
                 calculation.verifiedThrough(), calculation.calculationPolicy(), calculation.calendarPolicy(),
                 calculation.displayPolicy(), calculation.pricePolicy(), calculation.implementationVersion(),
                 calculation.inputHash(), calculation.resultHash(), calculation.flowCount(),
-                calculation.estimatedFlowCount(), trust, metrics), DashboardTrust.PREPARE_NEXT_PLAN, record);
+                calculation.estimatedFlowCount(), trust, metrics, calculation.kind()), DashboardTrust.PREPARE_NEXT_PLAN,
+                record);
+    }
+
+    /**
+     * A completed plan's bundle (Story 2.14), inside the same consistent read: its current official version through its
+     * pointer — the completion version once the comparison was judged on complete inputs, else the last progress
+     * version — the completion record, the post-end value and the post-end sync part. {@code completion} is
+     * {@code null} for an active plan whose {@code T} the database clock reached before any sync request completed it:
+     * it is shown with a comparison not judged yet and nothing observed.
+     *
+     * <p>The record must agree with the version and with the observation the completion attempt published
+     * ({@link #completionAgrees}, and the observation's own source snapshot) or nothing is returned. The portfolio's
+     * current pointer is not compared with the version: the first observation and every post-end value move it.
+     */
+    private Dashboard completedBundle(UUID user, PlanPublicationPort.ActivePlan plan,
+            PlanPublicationPort.@Nullable PlanCompletion completion) {
+        var pointer = repository.pointer(user, plan.planId()).orElse(null);
+        if (pointer == null) return new Dashboard.Unavailable();
+        var calculation = repository.calculation(user, pointer.calculationId()).orElse(null);
+        if (calculation == null || !belongs(calculation, plan, pointer)) return new Dashboard.Unavailable();
+        if (completion == null ? calculation.completion() : !completionAgrees(completion, plan, pointer, calculation))
+            return new Dashboard.Unavailable();
+        List<DashboardMetric> metrics = repository.metrics(pointer.calculationId());
+        if (!DashboardTrust.wellFormed(metrics, calculation.estimated())) return new Dashboard.Unavailable();
+        var lineage = repository.lineage(user, pointer.calculationId()).orElse(null);
+        if (lineage == null) return new Dashboard.Unavailable();
+        String completionTarget = null;
+        if (calculation.completion()) {
+            // The completion version's current value is the observation, and its target is defined.
+            String current = metrics.getFirst().value();
+            completionTarget = metrics.get(DashboardTrust.METRICS.indexOf("ADJUSTED_TARGET")).value();
+            if (current == null || completion == null || completion.observedValue() == null
+                    || !sameDecimal(current, completion.observedValue()) || completionTarget == null)
+                return new Dashboard.Unavailable();
+        }
+        if (completion != null && completion.observed() && !agreement.observationAgrees(user, completion))
+            return new Dashboard.Unavailable();
+        var review = syncAttempts.verificationReview(user, plan.planId(), pointer.calculationId()).orElse(null);
+        boolean held = completion != null && COMPARISON_HELD.equals(completion.comparison());
+        // A held comparison holds the inputs of the version shown: the input reliability says so, as a verification's
+        // persistent review would (no next action on the axis — the screen-level action says whether to sync again).
+        String heldBy = review != null ? review.code() : held ? COMPLETION_INPUT_REVIEW : null;
+        var trust = DashboardTrust.judgeCompleted(calculation.inputReliability(), calculation.estimated(),
+                calculation.estimatedFlowCount(), calculation.measuredAt(), calculation.verifiedThrough(),
+                calculation.basisAt(), metrics, heldBy).orElse(null);
+        if (trust == null) return new Dashboard.Unavailable();
+        var base = new PlanSyncGuard.Base(plan, pointer, calculation, lineage);
+        var sync = syncs.completedState(user, base, completion == null ? null : completion.transitionedAt());
+        // What the version changed from the one it replaced (Story 2.12's marker): a completion version is an
+        // incremental publication too.
+        var change = verifications.change(user, base);
+        com.bokrilog.sync.SyncJobApi.PostEndValue postEnd = null;
+        if (completion != null && completion.observed()) {
+            var portfolio = portfolios.officialValue(user).orElse(null);
+            if (portfolio != null && !portfolio.snapshotId().equals(completion.observedPortfolioSnapshotId())
+                    && portfolio.measuredAt().isAfter(Objects.requireNonNull(completion.observedMeasuredAt())))
+                postEnd = new com.bokrilog.sync.SyncJobApi.PostEndValue(notation(portfolio.decimal()), portfolio.measuredAt());
+        }
+        boolean open = completion == null || PlanSyncService.completionOpen(completion, held
+                && syncAttempts.completionPersistentlyReviewed(user, plan.planId(), pointer.calculationId()));
+        var record = completion == null
+                ? new com.bokrilog.sync.SyncJobApi.PlanCompletionRecord(plan.endAt(), COMPARISON_PENDING, null, null,
+                        null, null, null, null, true)
+                : new com.bokrilog.sync.SyncJobApi.PlanCompletionRecord(plan.endAt(), completion.comparison(),
+                        completion.reason(), completion.observedValue(), completion.observedMeasuredAt(),
+                        completion.observationDelayMillis(), completionTarget, completion.postEndCashflowCount(), open);
+        return new Dashboard.Completed(new DashboardResult(plan.planId(), COMPLETED, notation(calculation.principal()),
+                calculation.t0(), calculation.endAt(), calculation.period(), notation(calculation.targetRate()),
+                pointer.version(), pointer.publishedAt(), pointer.calculationId(), calculation.portfolioSnapshotId(),
+                calculation.basisPortfolioSnapshotId(), calculation.basisAt(), calculation.measuredAt(),
+                calculation.verifiedThrough(), calculation.calculationPolicy(), calculation.calendarPolicy(),
+                calculation.displayPolicy(), calculation.pricePolicy(), calculation.implementationVersion(),
+                calculation.inputHash(), calculation.resultHash(), calculation.flowCount(),
+                calculation.estimatedFlowCount(), trust, metrics, calculation.kind()),
+                open ? DashboardTrust.SYNC_FOR_OBSERVATION : DashboardTrust.PREPARE_NEXT_PLAN, record, postEnd, sync,
+                change);
+    }
+
+    /**
+     * Whether a completion record agrees with the plan's pointer and the version it cites (Story 2.14): completed at the
+     * plan's {@code T}; a fixed observation measured at or after {@code T} with its delay exactly the difference; and
+     * a completion version exactly when the record names one — the pointer's own, of the completion kind, at
+     * {@code u = T} on that observation (its measurement and its portfolio snapshot). A record without one has the plan
+     * pointer still on a progress version.
+     */
+    static boolean completionAgrees(PlanPublicationPort.PlanCompletion completion, PlanPublicationPort.ActivePlan plan,
+            PlanPublicationRepository.Pointer pointer, PlanPublicationRepository.CalculationView calculation) {
+        if (!completion.completedAt().equals(plan.endAt())) return false;
+        if (completion.observed()) {
+            Instant measured = completion.observedMeasuredAt();
+            Long delay = completion.observationDelayMillis();
+            if (measured == null || delay == null || completion.observedValue() == null || measured.isBefore(plan.endAt())
+                    || java.time.Duration.between(plan.endAt(), measured).toMillis() != delay)
+                return false;
+        }
+        UUID completionCalculation = completion.completionCalculationId();
+        if (completionCalculation == null) return !calculation.completion();
+        return completion.observed() && pointer.calculationId().equals(completionCalculation)
+                && calculation.completion() && calculation.basisAt().equals(plan.endAt())
+                && calculation.measuredAt().equals(completion.observedMeasuredAt())
+                && calculation.portfolioSnapshotId().equals(completion.observedPortfolioSnapshotId());
     }
 
     /**
@@ -742,14 +880,27 @@ class PlanPublicationService {
      * whose record is missing comes back with {@code broken}, so the caller answers "unavailable" once the reference
      * named it, never "not found".
      */
-    record Shown(PlanPublicationPort.ActivePlan plan, PlanPublicationPort.@Nullable PlanEnd end, boolean broken) {}
+    record Shown(PlanPublicationPort.ActivePlan plan, PlanPublicationPort.@Nullable PlanEnd end,
+            PlanPublicationPort.@Nullable PlanCompletion completion, boolean broken) {
+
+        /**
+         * Whether the plan is terminal (ended early or completed): its record, not the portfolio's current pointer,
+         * names the snapshot of its version — a post-end value or a following plan moves that pointer on.
+         */
+        boolean terminal() {
+            return this.end != null || this.completion != null || this.broken;
+        }
+    }
 
     static @Nullable Shown shown(PlanPublicationPort plans, UUID user) {
         var active = plans.activePlan(user).orElse(null);
-        if (active != null) return new Shown(active, null, false);
+        if (active != null) return new Shown(active, null, null, false);
         var latest = plans.latestPlan(user).orElse(null);
-        if (latest == null || !ENDED_EARLY.equals(latest.status())) return null;
-        return new Shown(latest.plan(), latest.end(), latest.end() == null);
+        if (latest == null) return null;
+        if (ENDED_EARLY.equals(latest.status())) return new Shown(latest.plan(), latest.end(), null, latest.end() == null);
+        if (COMPLETED.equals(latest.status()))
+            return new Shown(latest.plan(), null, latest.completion(), latest.completion() == null);
+        return null;
     }
 
     // ---------------------------------------------------------------- the plan end's basis (Story 2.13)
@@ -859,16 +1010,10 @@ class PlanPublicationService {
         var calculation = repository.calculation(user, calculationId).orElse(null);
         if (calculation == null || !belongs(calculation, plan, pointer)) return new EvidenceOutcome.Unavailable();
         var end = shown.end();
-        if (end == null) {
-            // The same AD-23 reliance as the dashboard: both pointers advance in one publication transaction.
-            var portfolio = portfolios.officialValue(user).orElse(null);
-            if (portfolio == null || !portfolio.snapshotId().equals(calculation.portfolioSnapshotId())
-                    || portfolio.publicationSequence() != calculation.portfolioSequence())
-                return new EvidenceOutcome.Unavailable();
-        } else if (!endAgrees(end, plan, pointer, calculation)) {
-            // An ended plan's record names its snapshot instead; the portfolio's pointer may move on (Story 2.15).
-            return new EvidenceOutcome.Unavailable();
-        }
+        // The same AD-23 reliance as the dashboard for an active plan: both pointers advance in one publication
+        // transaction. A terminal plan's record names its snapshot instead; the portfolio's pointer may move on (a
+        // post-end value, Story 2.14; a following plan, Story 2.15).
+        if (!agreement.agrees(user, shown, pointer, calculation)) return new EvidenceOutcome.Unavailable();
         List<DashboardMetric> metrics = repository.metrics(calculationId);
         if (!DashboardTrust.wellFormed(metrics, calculation.estimated())) return new EvidenceOutcome.Unavailable();
         var lineage = repository.lineage(user, calculationId).orElse(null);
@@ -879,7 +1024,10 @@ class PlanPublicationService {
                 || !candidate.portfolioId().equals(calculation.portfolioId())
                 || !candidate.connectionId().equals(lineage.connectionId())
                 || !candidate.providerAccountId().equals(lineage.providerAccountId())
-                || !candidate.t0().equals(calculation.t0()) || !candidate.tc().equals(calculation.basisAt())
+                || !candidate.t0().equals(calculation.t0())
+                // The collection's cutoff is the version's cash-flow verification: its basis for a progress version,
+                // the completion's U (after T) for a completion version (Story 2.14).
+                || !candidate.tc().equals(calculation.verifiedThrough())
                 || !candidate.measuredAt().equals(calculation.measuredAt())
                 || !candidate.policyVersion().equals(lineage.sourcePolicy()))
             return new EvidenceOutcome.Unavailable();
@@ -915,7 +1063,10 @@ class PlanPublicationService {
             creatingSync = sync;
         }
         var source = repository.sourceOrigin(user, lineage.sourceSnapshotId()).orElse(null);
-        if (source == null || !lineage.candidateId().equals(source.candidateId())
+        // A progress version's source snapshot was built from its candidate; a completion version's is the first
+        // post-end observation its completion attempt read and published as the version's portfolio snapshot.
+        if (source == null || !(calculation.completion() ? completionSource(user, calculation, lineage, source)
+                        : lineage.candidateId().equals(source.candidateId()))
                 || !source.connectionId().equals(lineage.connectionId())
                 || !source.providerAccountId().equals(lineage.providerAccountId())
                 || !source.measuredAt().equals(calculation.measuredAt())
@@ -935,7 +1086,7 @@ class PlanPublicationService {
         // The collection's own windows covered exactly [window start, tc]; together with the carried events of
         // an incremental candidate that is the whole (t0, tc].
         var range = repository.collectionRange(user, lineage.candidateId()).orElse(null);
-        if (range == null || !range.start().equals(windowStart) || !range.end().equals(calculation.basisAt()))
+        if (range == null || !range.start().equals(windowStart) || !range.end().equals(calculation.verifiedThrough()))
             return new EvidenceOutcome.Unavailable();
         var classification = repository.classificationBundle(user, lineage.classificationId()).orElse(null);
         if (classification == null || !"COMPLETE".equals(classification.status())
@@ -969,6 +1120,7 @@ class PlanPublicationService {
         } else if (!flows.estimatedEvidence().isEmpty()) {
             return new EvidenceOutcome.Unavailable();
         }
+        // A completed plan's current version stays current (its next action is a following plan, not a version).
         List<CalculationEvidence.OfficialVersion> versions = officialVersions(user, plan.planId(), pointer,
                 calculation.portfolioId(), end == null ? null : end.endedAt());
         if (versions == null) return new EvidenceOutcome.Unavailable();
@@ -994,7 +1146,7 @@ class PlanPublicationService {
                 new CalculationEvidence.Calculation(calculationId, calculation.calculationPolicy(),
                         calculation.calendarPolicy(), calculation.displayPolicy(), lineage.precisionPolicy(),
                         lineage.timeZone(), calculation.implementationVersion(), calculation.inputHash(),
-                        calculation.resultHash(), lineage.createdAt()),
+                        calculation.resultHash(), lineage.createdAt(), calculation.kind()),
                 impacts(metrics, calculation.estimatedFlowCount(), evidenceType), versions,
                 repository.unpublished(user, plan.intentId()), change);
         return new EvidenceOutcome.Found(evidence);
@@ -1117,14 +1269,14 @@ class PlanPublicationService {
                 || !sync.connectionId().equals(lineage.connectionId())
                 || !sync.providerAccountId().equals(lineage.providerAccountId())
                 || !sync.baseCalculationId().equals(lineage.previousCalculationId())
-                || sync.tc() == null || !sync.tc().equals(calculation.basisAt()) || sync.windowStart() == null
+                || sync.tc() == null || !sync.tc().equals(calculation.verifiedThrough()) || sync.windowStart() == null
                 || sync.mode() == null)
             return false;
         // A normal sync keeps the extended watermark; an extended sync, a precision verification and a continuation
         // each move it to tc. Any other mode is not one this lineage can have.
         Instant expectedExtended = switch (sync.mode()) {
             case "NORMAL" -> sync.baseExtendedAt();
-            case "EXTENDED", "VERIFY", "CATCH_UP" -> sync.tc();
+            case "EXTENDED", "VERIFY", "CATCH_UP", "COMPLETION" -> sync.tc();
             default -> null;
         };
         if (expectedExtended == null || !lineage.lastExtendedAt().equals(expectedExtended)) return false;
@@ -1148,6 +1300,20 @@ class PlanPublicationService {
                 && windowStart.equals(candidate.windowStart()) && !windowStart.isBefore(calculation.t0())
                 && !windowStart.isAfter(previous.verifiedThrough())
                 && calculation.basisAt().isAfter(previous.verifiedThrough());
+    }
+
+    /**
+     * The source snapshot of a completion version (Story 2.14): the observation its own completion attempt — or an
+     * earlier completion attempt of the same plan, whose observation was fixed once and reused — published as the
+     * version's portfolio snapshot, measured when the version says and in the source policy of its candidate.
+     */
+    private boolean completionSource(UUID user, PlanPublicationRepository.CalculationView calculation,
+            PlanPublicationRepository.Lineage lineage, PlanPublicationRepository.SourceOrigin source) {
+        var observation = syncAttempts.observation(user, calculation.portfolioSnapshotId()).orElse(null);
+        return observation != null && PlanSyncRepository.COMPLETION.equals(observation.purpose())
+                && observation.sourceSnapshotId().equals(lineage.sourceSnapshotId())
+                && observation.sequence() == calculation.portfolioSequence()
+                && observation.jobId().equals(source.planSyncJobId()) && source.candidateId() == null;
     }
 
     /**

@@ -109,6 +109,9 @@ export const planSyncContent = {
       INPUTS_CHANGED: '동기화 입력이 그사이 바뀌어 발행하지 않았습니다. 다시 동기화할 수 있습니다.',
       LONG_GAP: '마지막 외부 자금흐름 확인 뒤 30일이 넘게 지나 동기화하지 않았습니다.',
       PLAN_PERIOD_ENDED: '계획 종료 시각이 지나 동기화하지 않았습니다.',
+      // Story 2.14: 예정 종료 직후, Bybit 기준 시각이나 현재가치 측정 시각이 아직 예정 종료 시각에 이르지 않았다.
+      PROVIDER_END_NOT_REACHED:
+        'Bybit 기준 시각이 아직 예정 종료 시각에 이르지 않아 종료 후 현재가치를 확인하지 않았습니다. 잠시 후 다시 동기화할 수 있습니다.',
       // Story 2.12: 공식 사건의 소실은 이제 검토 필요다. 조회 가능 범위 밖의 구간은 다시 구성하지 않는다.
       SOURCE_EVENT_MISSING:
         '이미 공식 계산에 쓴 입출금 기록이 다시 읽은 구간에서 보이지 않아 입력을 검토해야 합니다.',
@@ -125,6 +128,8 @@ export const planSyncContent = {
       CONVERSION: '사건 시점 USD 환산',
       CALCULATION: '계획 계산',
       PUBLICATION: '공식 결과 발행',
+      // Story 2.14: 예정 종료 뒤 첫 정상 현재가치를 확인하는 단계.
+      OBSERVATION: '종료 후 첫 현재가치 관측',
     },
     unknownStage: '확인할 수 없는 단계',
     /** 작업을 접수한 트리거. */

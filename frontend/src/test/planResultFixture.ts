@@ -92,6 +92,7 @@ export function planResultFixture(
     pointerVersion: 1,
     publishedAt: '2026-09-27T01:00:01Z',
     calculationId: 'calculation-1',
+    calculationKind: 'PROGRESS',
     portfolioSnapshotId: 'portfolio-snapshot-2',
     basisPortfolioSnapshotId: 'portfolio-snapshot-1',
     basisAt: BASIS_AT,
@@ -335,6 +336,182 @@ export function endedDashboardFixture(
   return { state: 'ENDED', nextAction: 'PREPARE_NEXT_PLAN', result, end }
 }
 
+/** The scheduled end `T` of the default plan (Story 2.14): its `conditions.endAt`. */
+export const SCHEDULED_END_AT = '2026-10-25T04:00:00Z'
+
+/** The first normal observation after `T` of the default completed plan: one hour after `T`. */
+export const OBSERVED_AT = '2026-10-25T05:00:00Z'
+
+/** The check after the observation that bounds the completion version's flows check (`U`). */
+export const COMPLETION_VERIFIED_THROUGH = '2026-10-25T05:00:05Z'
+
+/** The default first observed value, and the completion target of the default completion version. */
+export const OBSERVED_VALUE = '1300'
+export const COMPLETION_TARGET = '1331'
+
+/**
+ * The `result` of a `COMPLETED` answer whose pointer is still the last progress version (Story 2.14): the default
+ * bundle, `COMPLETED`, its freshness folded to `COMPLETED` (every metric affected, nothing to do). This is the shape of
+ * a plan whose `T` has passed before the first observation, and of a comparison still checking or held.
+ */
+export function completedProgressResultFixture(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return planResultFixture({
+    planStatus: 'COMPLETED',
+    trust: trustFixture({
+      freshness: {
+        state: 'COMPLETED',
+        cause: 'PLAN_COMPLETED',
+        affectedMetrics: ALL_METRICS,
+        nextAction: 'NONE',
+      },
+    }),
+    ...overrides,
+  })
+}
+
+/**
+ * The `result` of a `COMPLETED` answer whose pointer is the completion version (Story 2.14): calculated at `T`, its
+ * current value the first observation (measured at `OBSERVED_AT`), its plan amount the completion target, its required
+ * rate not computable (no period left). When the comparison cannot be calculated (`comparable: false`), the plan
+ * difference and the goal progress are not computable either.
+ */
+export function completionVersionResultFixture(
+  options: { readonly comparable?: boolean; readonly observedAt?: string } = {},
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const comparable = options.comparable ?? true
+  const measuredAt = options.observedAt ?? OBSERVED_AT
+  const verifiedThrough = options.observedAt ?? COMPLETION_VERIFIED_THROUGH
+  const unavailable = comparable
+    ? ['REQUIRED_RATE']
+    : ['PLAN_DIFFERENCE', 'REQUIRED_RATE', 'GOAL_PROGRESS']
+  const notComparable = (metric: string): Record<string, unknown> => ({
+    metric,
+    nature: 'OFFICIAL',
+    unavailableReason: 'COMPLETION_NOT_COMPARABLE',
+  })
+  return planResultFixture({
+    planStatus: 'COMPLETED',
+    pointerVersion: 2,
+    calculationId: 'calculation-completion',
+    calculationKind: 'COMPLETION',
+    portfolioSnapshotId: 'portfolio-snapshot-observation',
+    publishedAt: '2026-10-25T05:00:06Z',
+    basisAt: SCHEDULED_END_AT,
+    measuredAt,
+    cashflowVerifiedThrough: verifiedThrough,
+    trust: trustFixture({
+      freshness: {
+        state: 'COMPLETED',
+        cause: 'PLAN_COMPLETED',
+        lastNormalAt: measuredAt,
+        measuredAt,
+        cashflowVerifiedThrough: verifiedThrough,
+        affectedMetrics: ALL_METRICS,
+        nextAction: 'NONE',
+      },
+      inputReliability: { lastNormalAt: verifiedThrough },
+      calculationNature: {
+        state: 'NOT_COMPUTABLE',
+        cause: 'METRIC_UNDEFINED',
+        lastNormalAt: SCHEDULED_END_AT,
+        affectedMetrics: unavailable,
+        unavailableMetrics: unavailable,
+      },
+    }),
+    metrics: [
+      { metric: 'CURRENT_VALUE', value: OBSERVED_VALUE, nature: 'OFFICIAL' },
+      { metric: 'PLAN_AMOUNT', value: COMPLETION_TARGET, nature: 'OFFICIAL' },
+      comparable
+        ? { metric: 'PLAN_DIFFERENCE', value: '-31', nature: 'OFFICIAL' }
+        : notComparable('PLAN_DIFFERENCE'),
+      { metric: 'ADJUSTED_TARGET', value: COMPLETION_TARGET, nature: 'OFFICIAL' },
+      {
+        metric: 'REQUIRED_RATE',
+        nature: 'OFFICIAL',
+        unavailableReason: 'REMAINING_PERIOD_NOT_POSITIVE',
+      },
+      comparable
+        ? { metric: 'GOAL_PROGRESS', value: '0.6785566155122355868933', nature: 'OFFICIAL' }
+        : notComparable('GOAL_PROGRESS'),
+    ],
+    ...overrides,
+  })
+}
+
+/**
+ * The `completion` record of a `COMPLETED` answer (Story 2.14), made for the given result. On a completion version
+ * (calculated at `T`) it is confirmed by default, with the result's observation and target and no flow after `T`; on a
+ * progress version it is still checking, with nothing observed yet. Overrides come last.
+ */
+export function completionRecordFixture(
+  result: Record<string, unknown> = completedProgressResultFixture(),
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const scheduledEndAt = (result.conditions as Record<string, unknown>).endAt as string
+  const completion = result.calculationKind === 'COMPLETION'
+  const observedMeasuredAt = completion ? (result.measuredAt as string) : null
+  const metrics = result.metrics as readonly Record<string, unknown>[]
+  return {
+    scheduledEndAt,
+    comparison: completion ? 'CONFIRMED' : 'PENDING',
+    reason: null,
+    observedValue: completion ? metrics[0]?.value : null,
+    observedMeasuredAt,
+    observationDelayMillis:
+      observedMeasuredAt === null
+        ? null
+        : Date.parse(observedMeasuredAt) - Date.parse(scheduledEndAt),
+    completionTarget: completion ? metrics[1]?.value : null,
+    postEndCashflowCount: completion ? 0 : null,
+    // A sync runs the completion again while it is checking; a confirmed one is final.
+    retryable: !completion,
+    ...overrides,
+  }
+}
+
+/** The observation part of a completion record observed at the given time with the given value, for a progress version. */
+export function observedFixture(
+  observedMeasuredAt: string = OBSERVED_AT,
+  observedValue: string = OBSERVED_VALUE,
+): Record<string, unknown> {
+  return {
+    observedValue,
+    observedMeasuredAt,
+    observationDelayMillis: Date.parse(observedMeasuredAt) - Date.parse(SCHEDULED_END_AT),
+  }
+}
+
+/**
+ * A whole `COMPLETED` answer (Story 2.14): the bundle, its completion record, the later value (none by default) and
+ * the sync block (a sync may be asked for now by default) and the version change (none). The next action follows the
+ * record: a sync for the observation exactly while a sync runs the completion again (`retryable`).
+ */
+export function completedDashboardFixture(
+  result: Record<string, unknown> = completedProgressResultFixture(),
+  completion: Record<string, unknown> = completionRecordFixture(result),
+  extras: {
+    readonly postEnd?: Record<string, unknown> | null
+    readonly sync?: Record<string, unknown>
+    readonly nextAction?: string
+    readonly change?: Record<string, unknown>
+  } = {},
+): Record<string, unknown> {
+  return {
+    state: 'COMPLETED',
+    nextAction:
+      extras.nextAction ??
+      (completion.retryable === true ? 'SYNC_FOR_OBSERVATION' : 'PREPARE_NEXT_PLAN'),
+    result,
+    completion,
+    postEnd: extras.postEnd ?? null,
+    sync: extras.sync ?? syncFixture(),
+    change: extras.change ?? changeFixture(),
+  }
+}
+
 /** The parsed default sync block, for views a test builds by hand. */
 export const AVAILABLE_SYNC: SyncStatus = {
   availability: 'AVAILABLE',
@@ -514,6 +691,7 @@ export function calculationEvidenceFixture(
     },
     calculation: {
       calculationId: result.calculationId,
+      calculationKind: result.calculationKind,
       calculationPolicy: 'CALC-1.0',
       calendarPolicy: 'CALENDAR-SEOUL-1.0',
       displayPolicy: 'DISPLAY-1.0',

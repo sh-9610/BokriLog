@@ -124,7 +124,23 @@ class DashboardController {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record DashboardView(String state,String nextAction,@Nullable ResultView result,@Nullable SyncView sync,
             @Nullable VerificationView verification,@Nullable ChangeView change,@Nullable PlanEndView planEnd,
-            @Nullable EndView end) {}
+            @Nullable EndView end,@Nullable CompletionView completion,@Nullable PostEndView postEnd) {
+
+        DashboardView(String state,String nextAction,@Nullable ResultView result,@Nullable SyncView sync,
+                @Nullable VerificationView verification,@Nullable ChangeView change,@Nullable PlanEndView planEnd,
+                @Nullable EndView end) {
+            this(state,nextAction,result,sync,verification,change,planEnd,end,null,null);
+        }
+    }
+    /**
+     * A completed plan's completion facts (Story 2.14). Every key is sent; absent values are {@code null}. The observed
+     * value is the first normal value after {@code T}, never the valuation at {@code T}.
+     */
+    record CompletionView(String scheduledEndAt,String comparison,@Nullable String reason,
+            @Nullable String observedValue,@Nullable String observedMeasuredAt,@Nullable Long observationDelayMillis,
+            @Nullable String completionTarget,@Nullable Integer postEndCashflowCount,boolean retryable) {}
+    /** The value published after the first observation (Story 2.14): the "post-end current value". */
+    record PostEndView(String value,String measuredAt) {}
     /** Whether the ready plan can be ended now (Story 2.13). Every key is sent; absent values are {@code null}. */
     record PlanEndView(String availability,@Nullable String reason) {}
     /**
@@ -191,7 +207,8 @@ class DashboardController {
     record ResultView(UUID planId,String planStatus,ConditionsView conditions,long pointerVersion,
             String publishedAt,UUID calculationId,UUID portfolioSnapshotId,UUID basisPortfolioSnapshotId,
             String basisAt,String measuredAt,String cashflowVerifiedThrough,PolicyView policies,String inputHash,
-            String resultHash,int flowCount,int estimatedFlowCount,TrustView trust,List<MetricView> metrics) {}
+            String resultHash,int flowCount,int estimatedFlowCount,TrustView trust,List<MetricView> metrics,
+            String calculationKind) {}
 
     /**
      * One read, one operational line. The line is written here because only here is the answered status
@@ -238,6 +255,12 @@ class DashboardController {
             case SyncJobApi.Dashboard.Ended ended ->
                     ok(new DashboardView("ENDED",ended.nextAction(),view(ended.result()),null,null,null,null,
                             endView(ended.end())));
+            case SyncJobApi.Dashboard.Completed completed ->
+                    ok(new DashboardView("COMPLETED",completed.nextAction(),view(completed.result()),
+                            syncView(completed.sync()),null,changeView(completed.change()),null,null,
+                            completionView(completed.completion()),
+                            completed.postEnd()==null ? null : new PostEndView(completed.postEnd().value(),
+                                    completed.postEnd().measuredAt().toString())));
         };
         String state=switch (read.dashboard()) {
             case SyncJobApi.Dashboard.NotPermitted denied -> "DENIED";
@@ -246,6 +269,7 @@ class DashboardController {
             case SyncJobApi.Dashboard.Preparing preparing -> "PREPARING";
             case SyncJobApi.Dashboard.Ready ready -> "READY";
             case SyncJobApi.Dashboard.Ended ended -> "ENDED";
+            case SyncJobApi.Dashboard.Completed completed -> "COMPLETED";
         };
         String consistent=switch (read.consistency()) {
             case CONSISTENT -> "true";
@@ -266,6 +290,12 @@ class DashboardController {
                 e.lastNormalMeasuredAt().toString(),e.lastNormalDelayMillis(),e.completion(),
                 e.uncollectedFrom()==null ? null : e.uncollectedFrom().toString(),
                 e.uncollectedUntil()==null ? null : e.uncollectedUntil().toString());
+    }
+
+    static CompletionView completionView(SyncJobApi.PlanCompletionRecord c) {
+        return new CompletionView(c.scheduledEndAt().toString(),c.comparison(),c.reason(),c.observedValue(),
+                c.observedMeasuredAt()==null ? null : c.observedMeasuredAt().toString(),c.observationDelayMillis(),
+                c.completionTarget(),c.postEndCashflowCount(),c.retryable());
     }
 
     // ------------------------------------------------------------------ sync (Story 2.11)
@@ -564,7 +594,7 @@ class DashboardController {
             EvidencePlanView plan) {}
     record EvidenceCalculationView(UUID calculationId,String calculationPolicy,String calendarPolicy,
             String displayPolicy,String precisionPolicy,String timeZone,String implementationVersion,String inputHash,
-            String resultHash,String createdAt) {}
+            String resultHash,String createdAt,String calculationKind) {}
     record EstimatedCauseView(String evidenceType,int flowCount) {}
     /** No value: the evidence explains a metric's character; the value itself is the dashboard's. */
     @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -716,7 +746,7 @@ class DashboardController {
                 new EvidenceCalculationView(calculation.calculationId(),calculation.calculationPolicy(),
                         calculation.calendarPolicy(),calculation.displayPolicy(),calculation.precisionPolicy(),
                         calculation.timeZone(),calculation.implementationVersion(),calculation.inputHash(),
-                        calculation.resultHash(),calculation.createdAt().toString()),
+                        calculation.resultHash(),calculation.createdAt().toString(),calculation.calculationKind()),
                 e.metrics().stream().map(m -> new MetricImpactView(m.metric(),m.nature(),m.unavailableReason(),
                         m.estimatedCause()==null ? null
                                 : new EstimatedCauseView(m.estimatedCause().evidenceType(),m.estimatedCause().flowCount())))
@@ -921,7 +951,7 @@ class DashboardController {
                                 nature.axis().lastNormalAt().toString(),nature.axis().affectedMetrics(),
                                 nature.unavailableMetrics(),nature.estimatedFlowCount(),nature.axis().nextAction())),
                 r.metrics().stream().map(m -> new MetricView(m.metric(),m.value(),m.nature(),m.unavailableReason()))
-                        .toList());
+                        .toList(),r.calculationKind());
     }
 
     private static @Nullable UUID currentUserId() {

@@ -311,3 +311,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-13-plan-early-end.md`
   summary: 모달의 기본 동작(문서 capture `keydown`의 Tab 가둠, Esc, `body` 스크롤 잠금, 초점 복귀)이 `UnlinkDialog`와 `PlanEndDialog`에 손으로 두 벌 있다. 둘을 맞춰 줄 공유 훅이나 시험이 없다.
   evidence: `PlanEndDialog`는 SPEC대로 `UnlinkDialog` 관용을 따랐다. 공유 훅으로 묶는 일은 Story 1.11의 대화상자를 함께 바꾸는 정리라 이 스토리 범위 밖이다(Story 2.13 리뷰).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-14-plan-natural-completion.md`
+  summary: 완료 비교 상태 넷과 이유 다섯(보류 이유 포함)이 `content/planCompletion.ts`의 카피 맵과 `session/useDashboard.ts`의 파싱 목록, 백엔드 상수 사본에 따로 적혀 있고 세 목록이 같은지 보는 검사가 없다.
+  evidence: 한쪽에만 값을 더해도 타입 검사·시험이 잡지 못한다. Story 2.8이 대시보드 코드 목록에 대해 기록한 "계층을 넘는 리터럴 대조 부재"의 새 사례이며, 대조 검사는 여러 목록을 함께 묶는 별도 정리다(Story 2.14 리뷰).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-14-plan-natural-completion.md`
+  summary: 새 CSS 모듈 둘(`PlanCompletionResult.module.css`, `PostEndValue.module.css`)의 `.region`이 테두리 토큰 하나만 다른 같은 패널 프레이밍 규칙이고, 기존 영역 모듈 규칙의 또 다른 사본이다.
+  evidence: Story 2.10~2.13이 같은 종류의 CSS 사본을 기록했다. 공통 규칙을 한 곳으로 모으는 일은 여러 화면 CSS 모듈을 함께 바꾸는 별도 정리다(Story 2.14 리뷰).

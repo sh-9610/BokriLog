@@ -91,6 +91,17 @@ abstract class PlanSyncTestBase extends AuthFlowTestBase {
                 + "' WHERE calculation_id=:c AND user_id=:u").param("c", calculation).param("u", user).update();
     }
 
+    /**
+     * Moves the plan's end {@code T} (Story 2.14): the plan row and every calculation version of it, so the version still
+     * belongs to its plan. Callers keep {@code T} after each progress version's basis (V10's check).
+     */
+    void moveEnd(UUID user, Instant end) {
+        var at = OffsetDateTime.ofInstant(end.truncatedTo(java.time.temporal.ChronoUnit.MILLIS), ZoneOffset.UTC);
+        jdbc().sql("UPDATE plan_definition SET end_at=:e WHERE user_id=:u").param("e", at).param("u", user).update();
+        jdbc().sql("UPDATE sync_plan_calculation SET end_at=:e WHERE user_id=:u").param("e", at).param("u", user)
+                .update();
+    }
+
     UUID insertSourceEvent(UUID user, String sourceId, String type, String currency, String cashFlow,
             Instant at) {
         var connection = jdbc().sql("SELECT connection_id,provider_account_id FROM source_connection WHERE user_id=:u "

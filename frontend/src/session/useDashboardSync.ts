@@ -380,8 +380,26 @@ function judge(
         verificationCooldown: null,
         focus: null,
       }
-    case 'READY': {
+    // A plan completed at its scheduled end (Story 2.14) is still synced — for its first observation, then for its
+    // later value — through the same job table: it is judged like a ready plan (its verification block is unknown).
+    case 'READY':
+    case 'COMPLETED': {
       const { sync, verification } = view
+      // A precision verification or a catch-up a ready plan started cannot run on a completed one: its following ends
+      // with the completion (the server ends that job too), and nothing more is said about it.
+      if (
+        view.kind === 'COMPLETED' &&
+        followed !== null &&
+        (followed.purpose === 'VERIFY' || followed.purpose === 'CATCH_UP')
+      ) {
+        return {
+          followed: null,
+          outcome: null,
+          cooldown: sync.availability === 'COOLDOWN' ? sync.retryAfterSeconds : null,
+          verificationCooldown: null,
+          focus: null,
+        }
+      }
       const cooldown = sync.availability === 'COOLDOWN' ? sync.retryAfterSeconds : null
       const verificationCooldown =
         verification.availability === 'COOLDOWN' || verification.availability === 'LONG_GAP'
@@ -464,9 +482,11 @@ function judge(
 function settled(view: DashboardView, next: Judgement, said: Said | null): Said | null | undefined {
   if (next.outcome !== undefined) return next.outcome
   if (said === null || view.kind === 'checking') return undefined
-  if (said.phase === 'stale') return view.kind === 'READY' ? say('refreshed', said.purpose) : null
+  // A plan completed at its scheduled end (Story 2.14) answers like a ready one here.
+  const answered = view.kind === 'READY' || view.kind === 'COMPLETED'
+  if (said.phase === 'stale') return answered ? say('refreshed', said.purpose) : null
   if (said.phase === 'busy') {
-    if (view.kind !== 'READY') return undefined
+    if (!answered) return undefined
     if (next.followed !== null) return null
     return shownBundle(view) === said.shown ? null : say('refreshed', said.purpose)
   }
@@ -491,7 +511,8 @@ function say(phase: Outcome, purpose: SyncPurpose, survivesReload = false): Said
  * precision verification and catch-up that share its job table (Story 2.12).
  *
  * Three triggers ask the server for one sync job (`POST /api/dashboard/sync`): the first `READY` answer of this
- * mount (`ENTRY`, once); the document becoming visible after it was hidden at least 5 minutes (`VISIBILITY`,
+ * mount — or `COMPLETED`, a plan completed at its scheduled end whose first observation after the end only a sync
+ * fixes (Story 2.14) — (`ENTRY`, once); the document becoming visible after it was hidden at least 5 minutes (`VISIBILITY`,
  * judged here — the server cannot know it — and only on the first ready answer after the return); and the
  * `동기화` button (`MANUAL`). The two automatic triggers are sent only while the shown bundle says a sync is
  * available; the server still decides whether they are due. There is no scheduled or background sync, and no
@@ -537,6 +558,9 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   const csrfRef = useRef(csrfToken)
   const followedRef = useRef(followed)
   const entrySent = useRef(false)
+  // The kind of view the entry sync was decided on, and whether the one observation sync after it was decided.
+  const entryOn = useRef<DashboardView['kind'] | null>(null)
+  const observationEntryDecided = useRef(false)
   const manualInFlight = useRef(false)
   const posts = useRef(0)
   const hiddenAt = useRef<number | null>(null)
@@ -754,11 +778,33 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
     })()
   }, [])
 
-  // ENTRY: once per mount, on the first ready answer — never on the record of a plan ended early (Story 2.13).
+  // ENTRY: once per mount, on the first ready answer — never on the record of a plan ended early (Story 2.13), but on a
+  // plan completed at its scheduled end (Story 2.14), whose first observation after the end only a sync fixes.
   // Passive: it starts a request.
   useEffect(() => {
-    if (entrySent.current || view.kind !== 'READY' || loading || csrfToken === null) return
+    if (loading || csrfToken === null) return
+    if (view.kind !== 'READY' && view.kind !== 'COMPLETED') return
+    if (entrySent.current) {
+      /*
+       * The one exception to once per mount: a plan this mount saw ready that completed at its scheduled end, before
+       * its first observation — only a sync fixes that observation. Decided once, on the first such answer.
+       */
+      if (
+        view.kind !== 'COMPLETED' ||
+        entryOn.current !== 'READY' ||
+        observationEntryDecided.current ||
+        view.completion.observedValue !== null
+      ) {
+        return
+      }
+      observationEntryDecided.current = true
+      if (view.sync.availability !== 'AVAILABLE' || followedRef.current !== null) return
+      if (posts.current > 0) return
+      admit({ kind: 'sync', trigger: 'ENTRY' })
+      return
+    }
     entrySent.current = true
+    entryOn.current = view.kind
     if (view.sync.availability === 'AVAILABLE') admit({ kind: 'sync', trigger: 'ENTRY' })
   }, [view, loading, csrfToken, admit])
 
@@ -792,7 +838,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
     const after = visibilityDue.current
     if (after === null || view === after || view.kind === 'checking' || loading) return
     visibilityDue.current = null
-    if (view.kind !== 'READY' || csrfToken === null) return
+    if ((view.kind !== 'READY' && view.kind !== 'COMPLETED') || csrfToken === null) return
     if (view.sync.availability !== 'AVAILABLE' || followed !== null || requesting !== null) return
     if (posts.current > 0) return
     admit({ kind: 'sync', trigger: 'VISIBILITY' })

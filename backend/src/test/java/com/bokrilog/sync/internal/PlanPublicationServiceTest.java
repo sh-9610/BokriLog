@@ -95,7 +95,8 @@ class PlanPublicationServiceTest {
     private PlanPublicationService service(boolean conformant) {
         return new PlanPublicationService(repository, classifications, conversions, sources, portfolios, accounts,
                 restrictions, plans, new CalculationConformance(() -> conformant),
-                mock(PlatformTransactionManager.class), planSyncs, planSyncAttempts, planVerifications);
+                mock(PlatformTransactionManager.class), planSyncs, planSyncAttempts, planVerifications,
+                new ShownPlanAgreement(repository, planSyncAttempts, portfolios));
     }
 
     /** One eligible lineage: the account may write, nothing is restricted, and every input lines up. */
@@ -227,6 +228,8 @@ class PlanPublicationServiceTest {
     /** A consistent bundle behind the pointer. */
     private void bundle() {
         when(plans.activePlan(USER)).thenReturn(Optional.of(plan));
+        // Before the plan's end T (Story 2.14: a plan whose T the clock reached is shown completed).
+        when(repository.databaseNow()).thenReturn(TC);
         when(repository.pointer(USER, PLAN)).thenReturn(Optional.of(
                 new PlanPublicationRepository.Pointer(PORTFOLIO, CALCULATION, 1, TC)));
         when(repository.calculation(USER, CALCULATION)).thenReturn(Optional.of(calculation));
@@ -255,7 +258,7 @@ class PlanPublicationServiceTest {
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         PlanPublicationService service = new PlanPublicationService(repository, classifications, conversions, sources,
                 portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager, planSyncs,
-                planSyncAttempts, planVerifications);
+                planSyncAttempts, planVerifications, new ShownPlanAgreement(repository, planSyncAttempts, portfolios));
 
         assertThat(service.dashboard(USER).dashboard()).isInstanceOf(Dashboard.Ready.class);
         assertThat(service.dashboard(USER).consistency()).isEqualTo(BundleConsistency.CONSISTENT);
@@ -287,7 +290,7 @@ class PlanPublicationServiceTest {
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         PlanPublicationService service = new PlanPublicationService(repository, classifications, conversions, sources,
                 portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager, planSyncs,
-                planSyncAttempts, planVerifications);
+                planSyncAttempts, planVerifications, new ShownPlanAgreement(repository, planSyncAttempts, portfolios));
 
         // No bundle was read, so nothing is known about its consistency.
         assertThat(service.dashboard(USER))
@@ -345,7 +348,7 @@ class PlanPublicationServiceTest {
         when(accounts.decide(USER, USER, AccountAccessKind.SENSITIVE)).thenReturn(AccessDecision.ALLOWED);
         when(plans.activePlan(USER)).thenReturn(Optional.empty());
         when(repository.publicationInProgress(USER)).thenReturn(false);
-        when(plans.latestPlan(USER)).thenReturn(Optional.of(new PlanPublicationPort.LatestPlan(plan, status, end)));
+        when(plans.latestPlan(USER)).thenReturn(Optional.of(new PlanPublicationPort.LatestPlan(plan, status, end, null)));
         when(repository.pointer(USER, PLAN)).thenReturn(Optional.of(
                 new PlanPublicationRepository.Pointer(PORTFOLIO, CALCULATION, 1, TC)));
         when(repository.calculation(USER, CALCULATION)).thenReturn(Optional.of(calculation));
@@ -544,7 +547,8 @@ class PlanPublicationServiceTest {
 
     private static PlanPublicationRepository.SourceOrigin tcSource(UUID candidateId, UUID connection, UUID account,
             Instant measuredAt, String policy) {
-        return new PlanPublicationRepository.SourceOrigin(candidateId, connection, account, measuredAt, policy);
+        return new PlanPublicationRepository.SourceOrigin(candidateId, connection, account, measuredAt, policy, null,
+                "1250", measuredAt);
     }
 
     private static Candidate candidateRow(UUID portfolio, UUID connection, UUID account, Instant t0, Instant tc,
@@ -621,7 +625,7 @@ class PlanPublicationServiceTest {
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         PlanPublicationService service = new PlanPublicationService(repository, classifications, conversions, sources,
                 portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager, planSyncs,
-                planSyncAttempts, planVerifications);
+                planSyncAttempts, planVerifications, new ShownPlanAgreement(repository, planSyncAttempts, portfolios));
 
         var evidence = found(service.evidence(USER, REFERENCE));
         ArgumentCaptor<TransactionDefinition> definitions = ArgumentCaptor.forClass(TransactionDefinition.class);
@@ -684,7 +688,7 @@ class PlanPublicationServiceTest {
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         PlanPublicationService service = new PlanPublicationService(repository, classifications, conversions, sources,
                 portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager, planSyncs,
-                planSyncAttempts, planVerifications);
+                planSyncAttempts, planVerifications, new ShownPlanAgreement(repository, planSyncAttempts, portfolios));
         var refused = new EvidenceRead(new EvidenceOutcome.NotPermitted(), BundleConsistency.NOT_READ);
         assertThat(service.evidence(USER, REFERENCE)).isEqualTo(refused);
         // The refusal comes first: a malformed reference does not tell a deleting account "not found".
@@ -932,5 +936,110 @@ class PlanPublicationServiceTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> service(true).evidence(USER, REFERENCE))
                 .isInstanceOf(IllegalStateException.class);
         verify(repository, never()).unpublished(any(), any());
+    }
+
+    // ---------------------------------------------------------------- Story 2.14 the completed plan's bundle
+
+    private static final Instant OBSERVED = END.plusSeconds(3600);
+    private static final UUID OBSERVED_SNAPSHOT = UUID.fromString("00000000-0000-0000-0000-0000000000a1");
+    private static final UUID OBSERVED_SOURCE = UUID.fromString("00000000-0000-0000-0000-0000000000a2");
+    private static final UUID OBSERVING_JOB = UUID.fromString("00000000-0000-0000-0000-0000000000a3");
+
+    /** The completion version: u = T, the observation as its current value, its flows verified a second later. */
+    private final PlanPublicationRepository.CalculationView completionVersion =
+            new PlanPublicationRepository.CalculationView(PLAN, PORTFOLIO, OBSERVED_SNAPSHOT, 3, BASIS_SNAPSHOT, "1000",
+                    T0, END, "DAILY", "0.1", END, OBSERVED, OBSERVED.plusSeconds(1), "CALC-1.0", "CALENDAR-SEOUL-1.0",
+                    "DISPLAY-1.0", "BYBIT-PRICE-1.0", "impl", "a".repeat(64), "b".repeat(64), 0, 0, false, "CONFIRMED",
+                    "COMPLETION");
+    private final List<DashboardMetric> completionMetrics = List.of(
+            new DashboardMetric("CURRENT_VALUE", "1250", "OFFICIAL", null),
+            new DashboardMetric("PLAN_AMOUNT", "1331", "OFFICIAL", null),
+            new DashboardMetric("PLAN_DIFFERENCE", "-81", "OFFICIAL", null),
+            new DashboardMetric("ADJUSTED_TARGET", "1331", "OFFICIAL", null),
+            new DashboardMetric("REQUIRED_RATE", null, "OFFICIAL", "REMAINING_PERIOD_NOT_POSITIVE"),
+            new DashboardMetric("GOAL_PROGRESS", "0.75", "OFFICIAL", null));
+
+    private static PlanPublicationPort.PlanCompletion confirmed(Instant completedAt, long delay, UUID calculation,
+            UUID snapshot, Instant measured, String value) {
+        return new PlanPublicationPort.PlanCompletion(completedAt, completedAt, "CONFIRMED", null, snapshot, value,
+                measured, delay, calculation, 0);
+    }
+
+    private final PlanPublicationPort.PlanCompletion consistentCompletion = confirmed(END, 3_600_000, CALCULATION,
+            OBSERVED_SNAPSHOT, OBSERVED, "1250");
+
+    /** A completed plan's bundle behind its pointer, with the observation its completion attempt published. */
+    private void completedBundle(PlanPublicationPort.@org.jspecify.annotations.Nullable PlanCompletion completion,
+            PlanPublicationRepository.CalculationView version, String sourceEquity, Instant sourceMeasured) {
+        when(accounts.decide(USER, USER, AccountAccessKind.SENSITIVE)).thenReturn(AccessDecision.ALLOWED);
+        when(plans.activePlan(USER)).thenReturn(Optional.empty());
+        when(repository.publicationInProgress(USER)).thenReturn(false);
+        when(plans.latestPlan(USER)).thenReturn(Optional.of(new PlanPublicationPort.LatestPlan(plan, "COMPLETED", null,
+                completion)));
+        when(repository.pointer(USER, PLAN)).thenReturn(Optional.of(
+                new PlanPublicationRepository.Pointer(PORTFOLIO, CALCULATION, 2, OBSERVED.plusSeconds(2))));
+        when(repository.calculation(USER, CALCULATION)).thenReturn(Optional.of(version));
+        when(repository.metrics(CALCULATION)).thenReturn(completionMetrics);
+        when(repository.lineage(USER, CALCULATION)).thenReturn(Optional.of(lineageRow("BYBIT")));
+        when(planSyncAttempts.observation(USER, OBSERVED_SNAPSHOT)).thenReturn(Optional.of(
+                new PlanSyncRepository.Observation(OBSERVING_JOB, "COMPLETION", OBSERVED_SOURCE, OBSERVED_SNAPSHOT, 3)));
+        when(repository.sourceOrigin(USER, OBSERVED_SOURCE)).thenReturn(Optional.of(new PlanPublicationRepository
+                .SourceOrigin(null, CONNECTION, ACCOUNT, sourceMeasured, SOURCE_POLICY, OBSERVING_JOB, sourceEquity,
+                        sourceMeasured)));
+        when(portfolios.officialValue(USER)).thenReturn(Optional.of(new PortfolioMembershipApi.OfficialValue("1250",
+                "USD", OBSERVED, OBSERVED, OBSERVED, OBSERVED_SNAPSHOT, 3)));
+        when(planSyncs.completedState(eq(USER), any(), any())).thenReturn(
+                new com.bokrilog.sync.SyncJobApi.SyncState("AVAILABLE", null, null, null));
+        when(planVerifications.change(eq(USER), any())).thenReturn(new com.bokrilog.sync.SyncJobApi.VersionChange(
+                "VERIFIED_NO_CHANGE", "COMPLETION", null, 0, 0, 0, 0, null, null, List.of(), List.of()));
+    }
+
+    @Test
+    void aCompletedPlanIsShownWithItsCompletionRecord() {
+        completedBundle(consistentCompletion, completionVersion, "1250.00", OBSERVED);
+
+        var completed = (Dashboard.Completed) service(true).dashboard(USER).dashboard();
+        assertThat(completed.result().planStatus()).isEqualTo("COMPLETED");
+        assertThat(completed.result().calculationKind()).isEqualTo("COMPLETION");
+        assertThat(completed.result().trust().freshness().state()).isEqualTo("COMPLETED");
+        assertThat(completed.nextAction()).isEqualTo("PREPARE_NEXT_PLAN");
+        assertThat(completed.completion()).isEqualTo(new com.bokrilog.sync.SyncJobApi.PlanCompletionRecord(END,
+                "CONFIRMED", null, "1250", OBSERVED, 3_600_000L, "1331", 0, false));
+        assertThat(completed.postEnd()).as("the portfolio still points at the observation").isNull();
+        assertThat(completed.change().kind()).isEqualTo("VERIFIED_NO_CHANGE");
+        verify(planSyncs, never()).facts(any(), any());
+    }
+
+    /**
+     * The completed bundle is shown only when the record agrees with the pointer, the version and the observation:
+     * completed at T, a delay that is exactly the measurement minus T, the completion version the pointer's own, the
+     * observation's snapshot, value and time those its completion attempt published. A completed plan without its record
+     * is unavailable too — never a record in part.
+     */
+    @Test
+    void aCompletionThatDisagreesWithItsVersionOrObservationIsUnavailable() {
+        record Case(String name, PlanPublicationPort.@org.jspecify.annotations.Nullable PlanCompletion completion,
+                String sourceEquity, Instant sourceMeasured) {}
+        for (var broken : List.of(
+                new Case("completed at another time", confirmed(END.plusMillis(1), 3_599_999, CALCULATION,
+                        OBSERVED_SNAPSHOT, OBSERVED, "1250"), "1250", OBSERVED),
+                new Case("a delay that is not measured - T", confirmed(END, 3_600_001, CALCULATION, OBSERVED_SNAPSHOT,
+                        OBSERVED, "1250"), "1250", OBSERVED),
+                new Case("another completion version", confirmed(END, 3_600_000, UUID.randomUUID(), OBSERVED_SNAPSHOT,
+                        OBSERVED, "1250"), "1250", OBSERVED),
+                new Case("another observation snapshot", confirmed(END, 3_600_000, CALCULATION, UUID.randomUUID(),
+                        OBSERVED, "1250"), "1250", OBSERVED),
+                new Case("an observed value the version does not hold", confirmed(END, 3_600_000, CALCULATION,
+                        OBSERVED_SNAPSHOT, OBSERVED, "1300"), "1300", OBSERVED),
+                new Case("a source snapshot with another value", consistentCompletion, "9", OBSERVED),
+                new Case("a source snapshot measured at another time", consistentCompletion, "1250",
+                        OBSERVED.plusMillis(1)),
+                new Case("no completion record", null, "1250", OBSERVED))) {
+            org.mockito.Mockito.reset(plans, repository, planSyncAttempts, portfolios, planSyncs, planVerifications);
+            completedBundle(broken.completion(), completionVersion, broken.sourceEquity(), broken.sourceMeasured());
+            var read = service(true).dashboard(USER);
+            assertThat(read.dashboard()).as(broken.name()).isInstanceOf(Dashboard.Unavailable.class);
+            assertThat(read.consistency()).as(broken.name()).isEqualTo(BundleConsistency.INCONSISTENT);
+        }
     }
 }

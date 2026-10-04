@@ -644,7 +644,8 @@ class IncrementalSyncTest extends PlanSyncTestBase {
      */
     @ParameterizedTest(name = "{0}")
     @CsvSource({"DELETION,NOT_PERMITTED", "RESTRICTION,NOT_PERMITTED", "CONNECTION,NOT_PERMITTED",
-        "MEMBERSHIP,MEMBERSHIP_CHANGED", "POINTER,POINTER_CONFLICT", "PLAN_END,PLAN_CHANGED"})
+        "MEMBERSHIP,MEMBERSHIP_CHANGED", "POINTER,POINTER_CONFLICT", "PLAN_END,PLAN_CHANGED",
+        "PLAN_COMPLETION,PLAN_PERIOD_ENDED"})
     void aChangeBeforeThePublicationWinsOverTheLateWorker(String change, String code) throws Exception {
         UUID user = connect(DevBybitStub.Scenario.UTA2);
         publishedPlan(user, "incremental-race-" + change.toLowerCase(java.util.Locale.ROOT), null);
@@ -662,6 +663,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
                 case "MEMBERSHIP" -> jdbc().sql("UPDATE portfolio_source_membership SET ended_at=now() WHERE portfolio_id "
                         + "IN (SELECT portfolio_id FROM portfolio WHERE user_id=:u)").param("u", user).update();
                 case "PLAN_END" -> endedBySql(user, v1);
+                case "PLAN_COMPLETION" -> completedBySql(user);
                 default -> jdbc().sql("UPDATE sync_official_plan_result SET pointer_version=pointer_version+10 "
                         + "WHERE user_id=:u").param("u", user).update();
             }
@@ -689,6 +691,11 @@ class IncrementalSyncTest extends PlanSyncTestBase {
             assertThat(record.result().pointerVersion()).isEqualTo(1);
             assertThat(sync.admitPlanSync(user, SyncJobApi.SyncTrigger.MANUAL, "incremental-race-02"))
                     .isEqualTo(new SyncJobApi.SyncAdmission.Refused("NO_ACTIVE_PLAN"));
+        } else if (change.equals("PLAN_COMPLETION")) {
+            // Story 2.14: the plan completed under the attempt; its period ended, and its last progress version stays.
+            var completed = (SyncJobApi.Dashboard.Completed) sync.dashboard(user).dashboard();
+            assertThat(completed.result().calculationId()).isEqualTo(v1.calculationId());
+            assertThat(completed.completion().comparison()).isEqualTo("PENDING");
         } else if (!change.equals("POINTER")) {
             var dashboard = (SyncJobApi.Dashboard.Ready) sync.dashboard(user).dashboard();
             assertThat(dashboard.result().calculationId()).isEqualTo(v1.calculationId());
@@ -861,6 +868,18 @@ class IncrementalSyncTest extends PlanSyncTestBase {
                 .param("m", java.time.OffsetDateTime.ofInstant(v1.measuredAt(), java.time.ZoneOffset.UTC))
                 .param("v", java.time.OffsetDateTime.ofInstant(v1.cashflowVerifiedThrough(), java.time.ZoneOffset.UTC))
                 .param("h", "0".repeat(64)).update();
+    }
+
+    /**
+     * The completion's two rows (Story 2.14) as the transition leaves them, committed while the plan lock is held: the
+     * plan {@code COMPLETED} and its completion record, not judged yet.
+     */
+    private void completedBySql(UUID user) {
+        jdbc().sql("UPDATE plan_definition SET status='COMPLETED' WHERE user_id=:u AND status='ACTIVE'")
+                .param("u", user).update();
+        jdbc().sql("INSERT INTO plan_completion(plan_id,user_id,completed_at,transitioned_at,comparison) "
+                + "SELECT plan_id,user_id,end_at,end_at,'PENDING' FROM plan_definition WHERE user_id=:u")
+                .param("u", user).update();
     }
 
     private HttpResponseView postSync(String cookie, @Nullable String csrf, String trigger, String key)

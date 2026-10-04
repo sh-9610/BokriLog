@@ -63,6 +63,15 @@ final class DashboardTrust {
     /** The freshness state and cause of an ended plan's record. */
     static final String ENDED = "ENDED";
     static final String PLAN_ENDED_EARLY = "PLAN_ENDED_EARLY";
+    /** The freshness state and cause of a completed plan's bundle (Story 2.14). */
+    static final String COMPLETED = "COMPLETED";
+    static final String PLAN_COMPLETED = "PLAN_COMPLETED";
+    /**
+     * A completed plan's screen-level next action while its first observation is missing or its comparison is pending
+     * or held (Story 2.14): a sync fetches the observation or retries the comparison. Otherwise
+     * {@link #PREPARE_NEXT_PLAN}.
+     */
+    static final String SYNC_FOR_OBSERVATION = "SYNC_FOR_OBSERVATION";
 
     /** The plan-end availabilities of a ready dashboard (Story 2.13). */
     static final String END_AVAILABLE = "AVAILABLE";
@@ -175,13 +184,34 @@ final class DashboardTrust {
     static Optional<TrustAxes> judgeEnded(String inputReliability, boolean estimated, int estimatedFlowCount,
             Instant measuredAt, Instant verifiedThrough, Instant basisAt, List<DashboardMetric> metrics,
             @Nullable String verificationReview) {
+        return judgeRecord(ENDED, PLAN_ENDED_EARLY, inputReliability, estimated, estimatedFlowCount, measuredAt,
+                verifiedThrough, basisAt, metrics, verificationReview);
+    }
+
+    /**
+     * The three axes of a completed plan's bundle (Story 2.14), judged as an ended plan's record is: freshness folds
+     * into {@code COMPLETED} ({@code PLAN_COMPLETED}, all six metrics, no next action) — a completed plan no longer
+     * accrues, and its post-end syncs only refresh the post-end value — and the input reliability and the nature come
+     * from the version and its own persistent verification review.
+     */
+    static Optional<TrustAxes> judgeCompleted(String inputReliability, boolean estimated, int estimatedFlowCount,
+            Instant measuredAt, Instant verifiedThrough, Instant basisAt, List<DashboardMetric> metrics,
+            @Nullable String verificationReview) {
+        return judgeRecord(COMPLETED, PLAN_COMPLETED, inputReliability, estimated, estimatedFlowCount, measuredAt,
+                verifiedThrough, basisAt, metrics, verificationReview);
+    }
+
+    private static Optional<TrustAxes> judgeRecord(String freshnessState, String freshnessCause,
+            String inputReliability, boolean estimated, int estimatedFlowCount, Instant measuredAt,
+            Instant verifiedThrough, Instant basisAt, List<DashboardMetric> metrics,
+            @Nullable String verificationReview) {
         if (!RELIABILITIES.contains(inputReliability)) return Optional.empty();
         // Only the version's own persistent review; no attempt status, availability or long gap reaches the record.
         SyncFacts recordedFacts = new SyncFacts(SyncWindow.Availability.AVAILABLE.name(), null, null, verificationReview,
                 SyncWindow.Availability.AVAILABLE.name());
         Input recorded = new Input(new Freshness(false, false, false), inputReliability, estimated, estimatedFlowCount,
                 measuredAt, verifiedThrough, basisAt, metrics, recordedFacts);
-        return Optional.of(new TrustAxes(new TrustAxis(ENDED, PLAN_ENDED_EARLY, measuredAt, METRICS, NONE),
+        return Optional.of(new TrustAxes(new TrustAxis(freshnessState, freshnessCause, measuredAt, METRICS, NONE),
                 reliability(recorded), nature(recorded)));
     }
 

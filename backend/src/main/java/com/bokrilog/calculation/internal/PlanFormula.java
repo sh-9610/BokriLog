@@ -42,7 +42,8 @@ import org.jspecify.annotations.Nullable;
  * </ul>
  *
  * <p>사건은 {@code (occurredAt, namespace, sourceId)} 순으로 정확히 한 번 더한다. 반영 구간은
- * {@code t0 < ti <= min(tc,T)}이며 미래 흐름을 예측하지 않는다. 표시 반올림은 없다 — 중간값은
+ * {@code t0 < ti <= min(tc,T)}이며 미래 흐름을 예측하지 않는다. 완료 계산(Story 2.14)은 같은 식을
+ * {@code u = T}로 쓴다 — 기준시각이 {@code T}이므로 반영 구간은 {@code t0 < ti <= T}다. 표시 반올림은 없다 — 중간값은
  * 34자리 그대로 다음 연산에 들어가고, canonical 문자열은 결과를 기록할 때 한 번만 만든다.
  */
 public final class PlanFormula {
@@ -55,13 +56,40 @@ public final class PlanFormula {
     private PlanFormula() {}
 
     public static Result evaluate(PlanCalculator.Input input) {
+        return evaluate(input, null);
+    }
+
+    /**
+     * The completion result (Story 2.14): the same formulas at {@code u = T}, with the first post-end observation as
+     * {@code E}. Its input hash is its own kind (with the comparability), so a completion never shares a hash with a
+     * progress calculation.
+     */
+    public static Result evaluateCompletion(PlanCalculator.CompletionInput completion) {
+        PlanCalculator.Input input = new PlanCalculator.Input(completion.principal(), completion.startAt(),
+                completion.endAt(), completion.period(), completion.targetRate(), completion.observedValue(),
+                completion.endAt(), completion.cashflows(), completion.calculationPolicy(),
+                completion.calendarPolicy());
         List<Cashflow> ordered = input.cashflows().stream().sorted(ORDER).toList();
-        String inputHash = inputHash(input, ordered);
+        String inputHash = inputHash(input, ordered, completion);
+        // The observation is never before T: a value measured before the end is not a post-end observation.
+        if (completion.observedMeasuredAt().isBefore(completion.endAt()))
+            return new Result.Rejected(RejectionReason.INPUT_INVALID, inputHash);
+        return evaluate(input, ordered, inputHash, completion.comparable());
+    }
+
+    /** @param comparable {@code null} for a progress calculation; for a completion, whether it is comparable */
+    private static Result evaluate(PlanCalculator.Input input, @Nullable Boolean comparable) {
+        List<Cashflow> ordered = input.cashflows().stream().sorted(ORDER).toList();
+        return evaluate(input, ordered, inputHash(input, ordered, null), comparable);
+    }
+
+    private static Result evaluate(PlanCalculator.Input input, List<Cashflow> ordered, String inputHash,
+            @Nullable Boolean comparable) {
         if (!PlanCalculator.CALCULATION_POLICY.equals(input.calculationPolicy())
                 || !PlanCalculator.CALENDAR_POLICY.equals(input.calendarPolicy()))
             return new Result.Rejected(RejectionReason.POLICY_UNSUPPORTED, inputHash);
         try {
-            return compute(input, ordered, inputHash, new EnumMap<>(Metric.class));
+            return compute(input, ordered, inputHash, new EnumMap<>(Metric.class), comparable);
         } catch (Decimals.RangeExceeded range) {
             return new Result.Rejected(RejectionReason.CALCULATION_RANGE_EXCEEDED, inputHash);
         } catch (ArithmeticException overflow) {
@@ -73,7 +101,8 @@ public final class PlanFormula {
     }
 
     private static Result compute(PlanCalculator.Input input, List<Cashflow> ordered, String inputHash,
-            Map<Metric, BigDecimal> sink) {
+            Map<Metric, BigDecimal> sink, @Nullable Boolean comparable) {
+        boolean completion = comparable != null;
         BigDecimal principal = required(input.principal(), Decimals.Limit.AMOUNT);
         // P0 > 0 is the calculator's own precondition, not only the caller's eligibility rule.
         if (principal.signum() <= 0) throw new Invalid();
@@ -84,7 +113,9 @@ public final class PlanFormula {
         Instant t0 = input.startAt();
         Instant tc = input.basisAt();
         Instant end = input.endAt();
-        if (!t0.isBefore(tc) || !tc.isBefore(end)) throw new Invalid();
+        // A progress calculation needs t0 < tc < T; a completion is at u = T itself (tc is T).
+        if (completion ? !t0.isBefore(end) || !tc.equals(end) : !t0.isBefore(tc) || !tc.isBefore(end))
+            throw new Invalid();
 
         Set<String> identities = new HashSet<>();
         for (Cashflow flow : ordered) {
@@ -127,10 +158,19 @@ public final class PlanFormula {
         List<MetricResult> metrics = new ArrayList<>();
         metrics.add(value(sink, Metric.CURRENT_VALUE, current, Nature.OFFICIAL));
         metrics.add(value(sink, Metric.PLAN_AMOUNT, plan, derived));
-        metrics.add(value(sink, Metric.PLAN_DIFFERENCE, difference, derived));
+        // Not comparable (a completion only): the metrics tied to the observation have no value, never a zero.
+        boolean notComparable = completion && !comparable;
+        if (notComparable) {
+            metrics.add(new MetricResult(Metric.PLAN_DIFFERENCE, null, derived,
+                    UnavailableReason.COMPLETION_NOT_COMPARABLE));
+        } else {
+            metrics.add(value(sink, Metric.PLAN_DIFFERENCE, difference, derived));
+        }
         metrics.add(value(sink, Metric.ADJUSTED_TARGET, target, derived));
 
-        UnavailableReason rateReason = current.signum() <= 0 ? UnavailableReason.CURRENT_VALUE_NOT_POSITIVE
+        // A completion has no remaining period: the required rate is undefined for that reason first.
+        UnavailableReason rateReason = completion ? UnavailableReason.REMAINING_PERIOD_NOT_POSITIVE
+                : current.signum() <= 0 ? UnavailableReason.CURRENT_VALUE_NOT_POSITIVE
                 : target.signum() <= 0 ? UnavailableReason.TARGET_NOT_POSITIVE
                 : remaining.signum() <= 0 ? UnavailableReason.REMAINING_PERIOD_NOT_POSITIVE
                 : null;
@@ -144,7 +184,8 @@ public final class PlanFormula {
                     derived));
         }
 
-        UnavailableReason progressReason = target.signum() <= 0 ? UnavailableReason.TARGET_NOT_POSITIVE
+        UnavailableReason progressReason = notComparable ? UnavailableReason.COMPLETION_NOT_COMPARABLE
+                : target.signum() <= 0 ? UnavailableReason.TARGET_NOT_POSITIVE
                 : goalProfit.signum() <= 0 ? UnavailableReason.GOAL_PROFIT_NOT_POSITIVE
                 : null;
         if (progressReason != null) {
@@ -219,7 +260,18 @@ public final class PlanFormula {
      * ({@code "a|b"+"c"}와 {@code "a"+"b|c"})가 같은 문자열이 되어 서로 다른 입력이 같은 hash가 된다.
      */
     static String inputHash(PlanCalculator.Input input, List<Cashflow> ordered) {
-        Fields fields = new Fields("input").add(input.calculationPolicy()).add(input.calendarPolicy())
+        return inputHash(input, ordered, null);
+    }
+
+    /**
+     * {@code completion} {@code null}: a progress input, hashed as it always was; otherwise a completion input with its
+     * observation's measurement time and whether a post-end flow exists — the facts its comparability is judged from.
+     */
+    static String inputHash(PlanCalculator.Input input, List<Cashflow> ordered,
+            PlanCalculator.@Nullable CompletionInput completion) {
+        Fields fields = (completion == null ? new Fields("input")
+                : new Fields("completion-input").add(completion.observedMeasuredAt().toEpochMilli())
+                        .add(completion.postEndCashflow())).add(input.calculationPolicy()).add(input.calendarPolicy())
                 .add(PlanCalculator.IMPLEMENTATION_VERSION).add(normalized(input.principal()))
                 .add(input.startAt().toEpochMilli()).add(input.endAt().toEpochMilli()).add(input.period())
                 .add(normalized(input.targetRate())).add(normalized(input.currentValue()))
@@ -307,7 +359,7 @@ public final class PlanFormula {
         List<Cashflow> ordered = input.cashflows().stream().sorted(ORDER).toList();
         Map<Metric, BigDecimal> sink = new EnumMap<>(Metric.class);
         try {
-            compute(input, ordered, inputHash(input, ordered), sink);
+            compute(input, ordered, inputHash(input, ordered), sink, null);
         } catch (RuntimeException rejected) {
             return null;
         }

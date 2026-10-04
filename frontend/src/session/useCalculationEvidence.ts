@@ -7,6 +7,7 @@ import { METRIC_ORDER, type MetricName } from '../content/planResult'
 import { isCanonicalDecimal, isPlainNonNegative } from '../format/decimal'
 import {
   bundleOf,
+  isCalculationKind,
   isInstant,
   parseRanges,
   record,
@@ -588,9 +589,11 @@ export function parseEvidence(
     times.cashflowVerifiedThrough === shown.cashflowVerifiedThrough &&
     strings(inputs.connection, ['provider', 'connectionId', 'policyVersion']) &&
     strings(range, ['collectionPolicy', 'completenessHash']) &&
-    // The collection covered exactly (t0, tc].
+    // The collection covered exactly (t0, tc] — for a completion version (Story 2.14, as the evidence names its kind),
+    // whose basis is T, up to the check of its observation after T, (t0, cashflowVerifiedThrough].
     range.rangeStart === times.t0 &&
-    range.rangeEnd === times.tc &&
+    range.rangeEnd ===
+      (calculation.calculationKind === 'COMPLETION' ? times.cashflowVerifiedThrough : times.tc) &&
     isInstant(range.rangeStart) &&
     isInstant(range.rangeEnd) &&
     // The window the sync read again starts inside [t0, tc] (at t0 for the first publication).
@@ -624,6 +627,9 @@ export function parseEvidence(
     ]) &&
     isInstant(calculation.createdAt) &&
     calculation.calculationId === shown.calculationId &&
+    // The evidence names the version's kind (Story 2.14): the shown one's.
+    isCalculationKind(calculation.calculationKind) &&
+    calculation.calculationKind === shown.calculationKind &&
     metrics.length === METRIC_ORDER.length &&
     metrics.every((metric, index) => isImpact(metric, shown, index, shown.estimatedFlowCount)) &&
     official.length > 0 &&
