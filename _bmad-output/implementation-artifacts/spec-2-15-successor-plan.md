@@ -198,3 +198,17 @@ patch8 시험은 PostgreSQL18.6 Testcontainers에서 실행했으며 인메모�
   [SuccessorReviewScreens.test.tsx:62](../../frontend/src/screens/SuccessorReviewScreens.test.tsx#L62)
 
 검토 준비 완료: SPEC은 `done`, 스프린트 Story 2.15는 `review`로 전환했다. 커밋·푸시는 사용자 요청 시 진행한다.
+
+### PR63 CI 실패 수정 (2026-10-05)
+
+- 실패 실행 `37230539867`에서 `FirstSnapshotTest` 두 시험의 `AuthFlowTestBase.resetStore()`가 PostgreSQL deadlock으로 실패했다. 순차 시험과 비동기 worker가 겹치는 TRUNCATE 잠금 순서가 원인이다. 승인된 frozen 블록·운영 동작·금융 계산은 변경하지 않는다.
+- 시험 전용 `PostgresStoreReset`은 public 전체 테이블을 ACCESS EXCLUSIVE NOWAIT로 선행 잠금한다. 실패 시 모든 부분 잠금을 롤백한 뒤 bounded 재시도한다. 정리 콜백은 잠금 확보 뒤에만 실행하고, 정리 시작 뒤 오류는 재시도하지 않는다. 외부 트랜잭션의 잠금을 기다리는 초기화는 거절한다.
+- 병렬 리뷰3개 완료: 잠금 순서·짧은 ROLLBACK 관측 창·데이터 복구·정리 호출 횟수·시간 제한·인터럽트·정리 오류 재시도 경계 지적을 patch로 반영했다. public 밖 스키마·동시 스키마 변경·전체 JDBC 실행 시간 상한·worker 정지 요구는 현재 시험 스키마와 이 수정의 계약에 해당하지 않아 reject했다. defer·승인 블록 변경은 없다.
+- 전체 clean build: 69 suite / 1,097개 / 실패·오류·skip0, 6분20초 (`/tmp/pr63-ci-fix-build.log`, `/tmp/pr63-ci-fix-build-xml/`). 리뷰 보완 뒤 최종 초기화 시험4개와 기존 CI 실패 시험2개는 6/6 통과했다 (`/tmp/pr63-ci-fix-final-targeted.log`).
+- 실패 이력 분석은 `ci-failure-analysis-2026-10-05.md`에 실행별 로그 근거와 공통 검증 공백을 기록했다.
+
+추가 검토: 초기화의 전체 잠금·롤백·재시도 경계를 확인한다.
+[PostgresStoreReset.java](../../backend/src/test/java/com/bokrilog/PostgresStoreReset.java)
+
+추가 검토: 실제 PostgreSQL의 부분 잠금 해제·정리 복구·실패 전파를 확인한다.
+[PostgresStoreResetTest.java](../../backend/src/test/java/com/bokrilog/PostgresStoreResetTest.java)
