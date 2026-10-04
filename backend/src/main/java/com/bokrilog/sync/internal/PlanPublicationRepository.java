@@ -528,6 +528,10 @@ class PlanPublicationRepository {
      * active plan this is the dashboard's "result being prepared"; a finished attempt (published, blocked
      * or failed) does not count.
      */
+    boolean successorWorkInProgress(UUID user) {
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_job WHERE user_id=:u AND purpose='NEXT_PLAN_BASELINE' AND status IN ('QUEUED','RUNNING')) OR EXISTS(SELECT 1 FROM sync_plan_publication_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) OR EXISTS(SELECT 1 FROM sync_initial_collection_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) OR EXISTS(SELECT 1 FROM sync_cashflow_classification_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) OR EXISTS(SELECT 1 FROM sync_cashflow_conversion_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING'))")
+            .param("u",user).query(Boolean.class).single();
+    }
     boolean publicationInProgress(UUID user) {
         return jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_plan_publication_job WHERE user_id=:u "
                 + "AND status IN ('QUEUED','RUNNING'))")

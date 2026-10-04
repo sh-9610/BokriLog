@@ -5,6 +5,7 @@ import { adjustmentHistoryContent } from '../src/content/adjustmentHistory'
 import { authContent } from '../src/content/auth'
 import { calculationEvidenceContent } from '../src/content/calculationEvidence'
 import { entryContent } from '../src/content/entry'
+import { nextPlanContent } from '../src/content/nextPlan'
 import { planConditionContent } from '../src/content/planConditions'
 import { planEndContent } from '../src/content/planEnd'
 import { planResultContent } from '../src/content/planResult'
@@ -332,7 +333,7 @@ test.describe('활성 계획의 명시적 중도 종료와 읽기 전용 기록'
     await page.reload()
     await expect(recordRegion).toBeVisible({ timeout: 15_000 })
     const reached: string[] = []
-    for (let step = 0; step < 6; step += 1) {
+    for (let step = 0; step < 8; step += 1) {
       await page.keyboard.press('Tab')
       reached.push(await page.evaluate(() => document.activeElement?.textContent.trim() ?? ''))
     }
@@ -340,6 +341,8 @@ test.describe('활성 계획의 명시적 중도 종료와 읽기 전용 기록'
       entryContent.skipLink,
       authContent.settings.link,
       authContent.signOut.label,
+      nextPlanContent.historyOpen,
+      nextPlanContent.inspect,
       calculationEvidenceContent.open,
       adjustmentHistoryContent.open,
       planResultContent.reload,

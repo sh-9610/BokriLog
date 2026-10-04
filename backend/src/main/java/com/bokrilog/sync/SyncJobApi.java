@@ -1,5 +1,7 @@
 package com.bokrilog.sync;
 
+import com.bokrilog.portfolio.PortfolioMembershipApi;
+
 import com.bokrilog.portfolio.PortfolioMembershipApi.OfficialValue;
 import java.time.Instant;
 import java.util.List;
@@ -21,6 +23,15 @@ public interface SyncJobApi {
             @Nullable Instant processedAt, int depositCount, int withdrawalCount,
             int excludedCount, int reviewCount, @Nullable String reasonCode) {}
     record ClassificationState(boolean permitted, @Nullable ClassificationJob job) {}
+
+    /** 새 후속 기준 준비의 상태. snapshot은 마지막 성공 준비이며 실패한 재시도에도 유지한다. */
+    record NextBaseline(UUID jobId, UUID predecessorPlanId, UUID portfolioId, UUID snapshotId,
+            UUID sourceSnapshotId, Instant terminalAt, Instant requestedAt, Instant completedAt) {}
+    record NextBaselineState(boolean eligible, String reason, @Nullable Job job,
+            @Nullable NextBaseline baseline, PortfolioMembershipApi.@Nullable FirstOfficialSnapshot snapshot) {}
+    Optional<Job> admitNextBaseline(@Nullable UUID userId, @Nullable String key);
+    NextBaselineState nextBaselineState(@Nullable UUID userId);
+    Optional<NextBaseline> currentNextBaseline(UUID userId);
 
     /**
      * One flow that was not converted automatically (Story 2.6 AC-10).
@@ -269,10 +280,11 @@ public interface SyncJobApi {
      * publication is in progress; otherwise the most recent plan when it ended early or completed (Story 2.14). The
      * evidence and the adjustment history judge their reference against the same plan's current pointer.
      */
-    sealed interface Dashboard permits Dashboard.NotPermitted, Dashboard.Unavailable, Dashboard.NoPlan,
+    sealed interface Dashboard permits Dashboard.NotPermitted, Dashboard.NotFound, Dashboard.Unavailable, Dashboard.NoPlan,
             Dashboard.Preparing, Dashboard.Ready, Dashboard.Ended, Dashboard.Completed {
         /** The account's own access refused it before or after the read (its deletion began or ended). */
         record NotPermitted() implements Dashboard {}
+        record NotFound() implements Dashboard {}
         /** The pointer's bundle did not agree with itself; nothing is returned in part. */
         record Unavailable() implements Dashboard {}
         /** No active plan, no publication in progress and no ended plan. */
@@ -302,7 +314,7 @@ public interface SyncJobApi {
          * missing or the comparison is pending or held, else {@code PREPARE_NEXT_PLAN}.
          */
         record Completed(DashboardResult result, String nextAction, PlanCompletionRecord completion,
-                @Nullable PostEndValue postEnd, SyncState sync, VersionChange change) implements Dashboard {}
+                @Nullable PostEndValue postEnd, @Nullable SyncState sync, VersionChange change) implements Dashboard {}
     }
 
     // -------------------------------------------------------------------- Story 2.14
@@ -413,6 +425,8 @@ public interface SyncJobApi {
      * alone knows the status it answered with.
      */
     DashboardRead dashboard(@Nullable UUID userId);
+    DashboardRead historicalDashboard(@Nullable UUID userId, UUID planId);
+    Optional<java.util.List<PlanPublicationPort.LatestPlan>> planHistory(@Nullable UUID userId);
 
     // -------------------------------------------------------------------- Story 2.9
 

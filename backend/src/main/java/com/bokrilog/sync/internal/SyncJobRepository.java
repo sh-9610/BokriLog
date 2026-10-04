@@ -101,7 +101,50 @@ class SyncJobRepository {
             .param("received",OffsetDateTime.ofInstant(received,ZoneOffset.UTC))
             .param("policy",policy).update();
     }
+    boolean nextInProgress(UUID userId) {
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_job WHERE user_id=:u AND purpose='NEXT_PLAN_BASELINE' AND status IN ('QUEUED','RUNNING'))")
+            .param("u",userId).query(Boolean.class).single();
+    }
+    boolean next(UUID jobId) {
+        return jdbc.sql("SELECT purpose='NEXT_PLAN_BASELINE' FROM sync_job WHERE job_id=:j")
+            .param("j",jobId).query(Boolean.class).optional().orElse(false);
+    }
+    Optional<com.bokrilog.sync.SyncJobApi.NextBaseline> baseline(UUID userId, UUID jobId, boolean currentOnly) {
+        return jdbc.sql("SELECT job_id,predecessor_plan_id,portfolio_id,portfolio_snapshot_id,source_snapshot_id,terminal_at,requested_at,completed_at FROM sync_next_plan_baseline WHERE user_id=:u AND completed_at IS NOT NULL "
+                + (currentOnly ? "AND current" : "AND job_id=:j"))
+            .param("u",userId).param("j",jobId).query((rs,n) -> new com.bokrilog.sync.SyncJobApi.NextBaseline(
+                rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),rs.getObject(3,UUID.class),rs.getObject(4,UUID.class),
+                rs.getObject(5,UUID.class),rs.getObject(6,OffsetDateTime.class).toInstant(),
+                rs.getObject(7,OffsetDateTime.class).toInstant(),rs.getObject(8,OffsetDateTime.class).toInstant())).optional();
+    }
+    record Preparation(UUID predecessorPlanId, UUID portfolioId, Instant terminalAt, Instant requestedAt) {}
+    Optional<Preparation> preparation(UUID userId, UUID jobId) {
+        return jdbc.sql("SELECT predecessor_plan_id,portfolio_id,terminal_at,requested_at FROM sync_next_plan_baseline WHERE user_id=:u AND job_id=:j")
+            .param("u",userId).param("j",jobId).query((rs,n) -> new Preparation(rs.getObject(1,UUID.class),
+                rs.getObject(2,UUID.class),rs.getObject(3,OffsetDateTime.class).toInstant(),rs.getObject(4,OffsetDateTime.class).toInstant())).optional();
+    }
+    Optional<Job> latestNext(UUID userId) {
+        return jdbc.sql("SELECT job_id,status,failure_reason FROM sync_job WHERE user_id=:u AND purpose='NEXT_PLAN_BASELINE' ORDER BY created_at DESC,job_id DESC LIMIT 1")
+            .param("u",userId).query((rs,n)->job(rs)).optional();
+    }
+    boolean busy(UUID userId) {
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) OR EXISTS(SELECT 1 FROM sync_plan_sync_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) OR EXISTS(SELECT 1 FROM sync_plan_publication_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) OR EXISTS(SELECT 1 FROM sync_initial_collection_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) OR EXISTS(SELECT 1 FROM sync_cashflow_classification_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING')) OR EXISTS(SELECT 1 FROM sync_cashflow_conversion_job WHERE user_id=:u AND status IN ('QUEUED','RUNNING'))")
+            .param("u",userId).query(Boolean.class).single();
+    }
+    void insertPreparation(UUID jobId, UUID userId, UUID predecessor, UUID portfolio, Instant terminal) {
+        jdbc.sql("UPDATE sync_job SET purpose='NEXT_PLAN_BASELINE' WHERE job_id=:j").param("j",jobId).update();
+        jdbc.sql("INSERT INTO sync_next_plan_baseline(job_id,user_id,predecessor_plan_id,portfolio_id,terminal_at) VALUES (:j,:u,:p,:portfolio,:t)")
+            .param("j",jobId).param("u",userId).param("p",predecessor).param("portfolio",portfolio)
+            .param("t",OffsetDateTime.ofInstant(terminal,ZoneOffset.UTC)).update();
+    }
+    void completePreparation(UUID userId, UUID jobId, UUID portfolioSnapshotId, UUID sourceSnapshotId) {
+        jdbc.sql("UPDATE sync_next_plan_baseline SET current=false WHERE user_id=:u AND current").param("u",userId).update();
+        if (jdbc.sql("UPDATE sync_next_plan_baseline SET current=true,completed_at=statement_timestamp(),portfolio_snapshot_id=:p,source_snapshot_id=:s WHERE user_id=:u AND job_id=:j AND completed_at IS NULL AND terminal_at<statement_timestamp()")
+                .param("u",userId).param("j",jobId).param("p",portfolioSnapshotId).param("s",sourceSnapshotId).update()!=1)
+            throw new IllegalStateException("baseline preparation changed");
+    }
     void erase(UUID userId) {
+        jdbc.sql("DELETE FROM sync_next_plan_baseline WHERE user_id=:u").param("u",userId).update();
         jdbc.sql("DELETE FROM sync_source_snapshot WHERE user_id=:u").param("u",userId).update();
         jdbc.sql("DELETE FROM sync_job WHERE user_id=:u").param("u",userId).update();
     }

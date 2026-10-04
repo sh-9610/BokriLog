@@ -5,6 +5,7 @@ import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.operations.OperationalRestrictionApi;
 import com.bokrilog.sync.InitialInputsPlanPort;
+import com.bokrilog.sync.PlanPublicationPort;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.SyncJobApi;
@@ -34,6 +35,7 @@ class SyncJobService implements SyncJobApi {
      * it. Its restriction is what the ready dashboard's plan-end part reports as {@code RESTRICTED}.
      */
     static final String PLAN_END_COMMAND="plan-end";
+    private final PlanPublicationPort publicationPlans;
     private final SyncJobRepository jobs;
     private final InitialCollectionRepository initialJobs;
     private final CashflowClassificationRepository classifications;
@@ -56,7 +58,8 @@ class SyncJobService implements SyncJobApi {
             SourceConnectionApi sources, PortfolioMembershipApi portfolios, AccountAccessApi accounts,
             OperationalRestrictionApi restrictions, InitialInputsPlanPort plans, PlatformTransactionManager manager,
             PlanPublicationService publications, AdjustmentHistoryService adjustments, PlanSyncService planSyncs,
-            PlanSyncRepository planSyncAttempts, PlanVerificationService planVerifications) {
+            PlanSyncRepository planSyncAttempts, PlanVerificationService planVerifications, PlanPublicationPort publicationPlans) {
+        this.publicationPlans=publicationPlans;
         this.planSyncs=planSyncs;
         this.planVerifications=planVerifications;
         this.planSyncAttempts=planSyncAttempts;
@@ -98,6 +101,81 @@ class SyncJobService implements SyncJobApi {
                     .or(() -> jobs.active(userId,c.connectionId())));
         }
     }
+    private Optional<PlanPublicationPort.LatestPlan> successorPredecessor(UUID userId) {
+        if (!initialEligible(userId) || publicationPlans.activePlan(userId).isPresent()) return Optional.empty();
+        var latest=publicationPlans.latestPlan(userId).orElse(null);
+        var membership=portfolios.activeSource(userId).orElse(null);
+        var connection=sources.snapshotConnection(userId).orElse(null);
+        if (latest==null || membership==null || connection==null
+                || !latest.plan().portfolioId().equals(membership.portfolioId())
+                || !membership.connectionId().equals(connection.connectionId())
+                || !membership.providerAccountId().equals(connection.providerAccountId()) || terminal(latest)==null)
+            return Optional.empty();
+        return Optional.of(latest);
+    }
+    private static @Nullable Instant terminal(PlanPublicationPort.LatestPlan p) {
+        if ("ENDED_EARLY".equals(p.status()) && p.end()!=null) return p.end().endedAt();
+        if ("COMPLETED".equals(p.status()) && p.completion()!=null) return p.completion().transitionedAt();
+        return null;
+    }
+    @Override
+    public Optional<Job> admitNextBaseline(@Nullable UUID userId, @Nullable String key) {
+        if (userId==null || !validCollectionKey(key)) return Optional.empty();
+        return transactions.execute(status -> {
+            publicationPlans.lockPlanWrites(userId);
+            if (!accounts.lockWriteAccess(userId)) return Optional.empty();
+            var predecessor=successorPredecessor(userId).orElse(null);
+            if (predecessor==null) return Optional.empty();
+            var connection=sources.snapshotConnection(userId).orElseThrow();
+            var same=jobs.byKey(userId,connection.connectionId(),key).orElse(null);
+            if (same!=null) {
+                var preparation=jobs.preparation(userId,same.jobId()).orElse(null);
+                return preparation!=null && predecessor.plan().planId().equals(preparation.predecessorPlanId())
+                        ? Optional.of(same) : Optional.empty();
+            }
+            if (jobs.busy(userId)) return Optional.empty();
+            UUID id=UUID.randomUUID();
+            if (jobs.insert(id,userId,connection.connectionId(),connection.providerAccountId(),key)!=1)
+                return Optional.empty();
+            jobs.insertPreparation(id,userId,predecessor.plan().planId(),predecessor.plan().portfolioId(),
+                    java.util.Objects.requireNonNull(terminal(predecessor)));
+            return jobs.byId(userId,id);
+        });
+    }
+    @Override
+    public Optional<NextBaseline> currentNextBaseline(UUID userId) {
+        return jobs.nextInProgress(userId) ? Optional.empty() : jobs.baseline(userId,new UUID(0,0),true);
+    }
+    @Override
+    public NextBaselineState nextBaselineState(@Nullable UUID userId) {
+        if (userId==null || accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)!=AccessDecision.ALLOWED)
+            return new NextBaselineState(false,"NOT_PERMITTED",null,null,null);
+        var result=transactions.execute(status -> {
+            var predecessor=successorPredecessor(userId).orElse(null);
+            var baseline=jobs.baseline(userId,new UUID(0,0),true).filter(b -> predecessor!=null
+                    && b.predecessorPlanId().equals(predecessor.plan().planId())).orElse(null);
+            var snapshot=baseline==null ? null : portfolios.ownedSnapshot(userId,baseline.snapshotId())
+                    .filter(s -> s.sourceSnapshotId().equals(baseline.sourceSnapshotId())
+                            && jobs.sourceSnapshot(userId,s.sourceSnapshotId()).map(source -> "VERIFIED".equals(source.inputStatus())).orElse(false))
+                    .orElse(null);
+            String reason=predecessor==null ? "NOT_ELIGIBLE" : jobs.busy(userId) ? "JOB_IN_PROGRESS"
+                    : baseline!=null && snapshot==null ? "INPUT_UNCONFIRMED"
+                    : snapshot!=null && new java.math.BigDecimal(snapshot.decimal()).signum()<=0 ? "PRINCIPAL_NOT_POSITIVE" : "AVAILABLE";
+            return new NextBaselineState(predecessor!=null && !jobs.busy(userId),reason,
+                    jobs.latestNext(userId).orElse(null),baseline,snapshot);
+        });
+        return accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)==AccessDecision.ALLOWED
+                ? result : new NextBaselineState(false,"NOT_PERMITTED",null,null,null);
+    }
+    private boolean preparationValid(SyncJobRepository.Lease lease) {
+        var preparation=jobs.preparation(lease.userId(),lease.jobId()).orElse(null);
+        var predecessor=successorPredecessor(lease.userId()).orElse(null);
+        return preparation!=null && predecessor!=null
+                && predecessor.plan().planId().equals(preparation.predecessorPlanId())
+                && predecessor.plan().portfolioId().equals(preparation.portfolioId())
+                && preparation.terminalAt().equals(terminal(predecessor))
+                && preparation.requestedAt().isAfter(preparation.terminalAt());
+    }
     @Override
     public Optional<Job> job(@Nullable UUID userId, UUID jobId) {
         if (userId==null || !eligible(userId) || sources.snapshotConnection(userId).isEmpty())
@@ -121,6 +199,10 @@ class SyncJobService implements SyncJobApi {
         if (userId==null || !validCollectionKey(key)) return Optional.empty();
         try {
             return transactions.execute(status -> {
+                if (publicationPlans.latestPlan(userId).isPresent()) {
+                    publicationPlans.lockPlanWrites(userId);
+                    if (!accounts.lockWriteAccess(userId)) return Optional.empty();
+                }
                 var intent=plans.eligibleIntent(userId,intentId).orElse(null);
                 if (intent==null || !initialEligible(userId)) return Optional.empty();
                 var connection=sources.snapshotConnection(userId).orElse(null);
@@ -162,6 +244,10 @@ class SyncJobService implements SyncJobApi {
     public Optional<ClassificationJob> admitCashflowClassification(@Nullable UUID userId,UUID intentId,String key) {
         if (userId==null||!validCollectionKey(key)) return Optional.empty();
         return transactions.execute(status->{
+            if (publicationPlans.latestPlan(userId).isPresent()) {
+                publicationPlans.lockPlanWrites(userId);
+                if (!accounts.lockWriteAccess(userId)) return Optional.empty();
+            }
             var intent=plans.eligibleIntent(userId,intentId).orElse(null);
             if(intent==null||!initialEligible(userId)) return Optional.empty();
             var connection=sources.snapshotConnection(userId).orElse(null);
@@ -189,6 +275,10 @@ class SyncJobService implements SyncJobApi {
     public Optional<ConversionJob> admitCashflowConversion(@Nullable UUID userId, UUID intentId, String key) {
         if (userId==null||!validCollectionKey(key)) return Optional.empty();
         return transactions.execute(status->{
+            if (publicationPlans.latestPlan(userId).isPresent()) {
+                publicationPlans.lockPlanWrites(userId);
+                if (!accounts.lockWriteAccess(userId)) return Optional.empty();
+            }
             var intent=plans.eligibleIntent(userId,intentId).orElse(null);
             if(intent==null||!initialEligible(userId)) return Optional.empty();
             var connection=sources.snapshotConnection(userId).orElse(null);
@@ -223,6 +313,16 @@ class SyncJobService implements SyncJobApi {
     @Override
     public DashboardRead dashboard(@Nullable UUID userId) {
         return publications.dashboard(userId);
+    }
+    @Override
+    public DashboardRead historicalDashboard(@Nullable UUID userId, UUID planId) {
+        return publications.historicalDashboard(userId,planId);
+    }
+    @Override
+    public Optional<java.util.List<PlanPublicationPort.LatestPlan>> planHistory(@Nullable UUID userId) {
+        if (userId==null || accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)!=AccessDecision.ALLOWED) return Optional.empty();
+        var rows=transactions.execute(status -> publicationPlans.planHistory(userId));
+        return accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)==AccessDecision.ALLOWED ? Optional.ofNullable(rows) : Optional.empty();
     }
     @Override
     public EvidenceRead calculationEvidence(@Nullable UUID userId, @Nullable EvidenceReference reference) {
@@ -496,7 +596,8 @@ class SyncJobService implements SyncJobApi {
     Optional<SyncJobRepository.Lease> claim() {
         return transactions.execute(status -> {
             Optional<SyncJobRepository.Lease> lease=jobs.claim();
-            if (lease.isPresent() && !eligible(lease.get().userId())) {
+            if (lease.isPresent() && (!eligible(lease.get().userId())
+                    || (jobs.next(lease.get().jobId()) && !preparationValid(lease.get())))) {
                 jobs.finish(lease.get(),"BLOCKED","NOT_PERMITTED");
                 return Optional.empty();
             }
@@ -527,7 +628,15 @@ class SyncJobService implements SyncJobApi {
     boolean publish(SyncJobRepository.Lease lease, SourceConnectionApi.EquityObservation value) {
         try {
             return transactions.execute(status -> {
-                if (!jobs.lockOwned(lease) || !eligible(lease.userId())) throw new PublicationBlocked();
+                boolean next=jobs.next(lease.jobId());
+                if (next) publicationPlans.lockPlanWrites(lease.userId());
+                if (!accounts.lockWriteAccess(lease.userId()) || !jobs.lockOwned(lease) || !eligible(lease.userId())
+                        || (next && !preparationValid(lease))) throw new PublicationBlocked();
+                if (next) {
+                    var preparation=jobs.preparation(lease.userId(),lease.jobId()).orElseThrow();
+                    if (!value.measuredAt().isAfter(preparation.terminalAt())
+                            || !value.receivedAt().isAfter(preparation.terminalAt())) throw new PublicationBlocked();
+                }
                 var source=sources.snapshotConnection(lease.userId());
                 if (source.isEmpty() || !source.get().connectionId().equals(lease.connectionId())
                         || !source.get().providerAccountId().equals(lease.providerAccountId())
@@ -543,7 +652,16 @@ class SyncJobService implements SyncJobApi {
                         membership.get().portfolioId(),membership.get().membershipId(),
                         lease.connectionId(),lease.providerAccountId(),sourceId,value.decimal(),
                         value.measuredAt(),value.policyVersion());
-                if (!portfolios.publishFirst(component)) throw new PublicationBlocked();
+                if (next) {
+                    var current=portfolios.officialValue(lease.userId()).orElseThrow(PublicationBlocked::new);
+                    var result=portfolios.publishNext(new PortfolioMembershipApi.CandidateComponent(component.userId(),
+                            component.portfolioId(),component.membershipId(),component.connectionId(),component.providerAccountId(),
+                            component.sourceSnapshotId(),component.decimal(),component.measuredAt(),component.policyVersion()),
+                            current.snapshotId(),current.publicationSequence());
+                    if (!(result instanceof PortfolioMembershipApi.PublishedSnapshot published)) throw new PublicationBlocked();
+                    jobs.completePreparation(lease.userId(),lease.jobId(),published.snapshotId(),sourceId);
+                    publicationPlans.invalidatePreparedConditions(lease.userId());
+                } else if (!portfolios.publishFirst(component)) throw new PublicationBlocked();
                 if (!jobs.owns(lease) || !eligible(lease.userId())
                         || jobs.finish(lease,"SUCCEEDED",null)!=1) throw new PublicationBlocked();
                 return true;

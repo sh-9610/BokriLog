@@ -172,7 +172,9 @@ class InitialCollectionRepository {
             if (parsed.diagnostic()!=null) {
                 observation(l,evidenceId,event,parsed.diagnostic(),parsed.hash());
                 review=true;
-            } else {
+            } else if (!parsed.time().equals(l.t0())) {
+                // The provider query includes its lower bound. t0 belongs to the wallet baseline,
+                // so a valid event exactly there is excluded rather than requiring review.
                 Parsed prior=valid.putIfAbsent(event.sourceId(),parsed);
                 if (prior!=null&&!prior.hash().equals(parsed.hash())) {
                     observation(l,evidenceId,event,"PROVIDER_ID_CONFLICT",parsed.hash());
@@ -640,7 +642,7 @@ class InitialCollectionRepository {
             return new Parsed(null,null,null,e.transactionTime(),sha256(e.sourceId()),"SOURCE_ID_TOO_LONG");
         if (e.type()==null||e.currency()==null||e.cashFlow()==null||e.transactionTime()==null
                 ||!"UNIFIED".equals(e.accountType())) return new Parsed(null,null,null,e.transactionTime(),null,"MALFORMED_EVENT");
-        if (!e.transactionTime().isAfter(t0)||e.transactionTime().isAfter(tc))
+        if (e.transactionTime().isBefore(t0)||e.transactionTime().isAfter(tc))
             return new Parsed(null,null,null,e.transactionTime(),null,"EVENT_OUT_OF_WINDOW");
         if (!"TRANSFER_IN".equals(e.type())&& !"TRANSFER_OUT".equals(e.type()))
             return new Parsed(null,null,null,e.transactionTime(),null,"UNKNOWN_EVENT");

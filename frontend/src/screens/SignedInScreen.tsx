@@ -1,8 +1,10 @@
-import type { ReactElement } from 'react'
+import { useState, type ReactElement } from 'react'
 
 import { DashboardStatusText } from '../components/DashboardStatusText'
 import { FirstSnapshotPanel } from '../components/FirstSnapshotPanel'
+import { NextPlanBaselinePanel } from '../components/NextPlanBaselinePanel'
 import { PlanEndDialog } from '../components/PlanEndDialog'
+import { PlanHistoryPanel } from '../components/PlanHistoryPanel'
 import { PlanResultPanel } from '../components/PlanResultPanel'
 import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
@@ -10,7 +12,13 @@ import { authContent, reauthNoticeKindOf, SETTINGS_PATH } from '../content/auth'
 import { entryContent } from '../content/entry'
 import { useDashboardAdjustments } from '../session/useAdjustmentHistory'
 import { useDashboardEvidence } from '../session/useCalculationEvidence'
-import { planPresenceOf, statusBusy, useDashboard } from '../session/useDashboard'
+import {
+  bundleOf,
+  planPresenceOf,
+  statusBusy,
+  terminalOf,
+  useDashboard,
+} from '../session/useDashboard'
 import { useDashboardSync } from '../session/useDashboardSync'
 import { usePlanEnd } from '../session/usePlanEnd'
 import { useReauthentication } from '../session/useReauthentication'
@@ -52,13 +60,25 @@ export function SignedInScreen(): ReactElement {
   const { csrfToken, gate } = useSessionGate('dashboard')
   const signOut = useSignOut(csrfToken)
   const reauthentication = useReauthentication(csrfToken)
-  const dashboard = useDashboard(gate === 'ready')
+  const [selected, setSelected] = useState<string | null>(null)
+  const [preparationMessage, setPreparationMessage] = useState('')
+  const dashboard = useDashboard(gate === 'ready', selected)
+  const preparationScope =
+    gate === 'ready' && selected === null && terminalOf(bundleOf(dashboard.view)) !== null
+      ? (bundleOf(dashboard.view)?.result.planId ?? null)
+      : null
+  const [messageScope, setMessageScope] = useState(preparationScope)
+  if (messageScope !== preparationScope) {
+    setMessageScope(preparationScope)
+    setPreparationMessage('')
+  }
+
   // The calculation evidence of the bundle the dashboard shows (Story 2.9), in its own state.
   const evidence = useDashboardEvidence(dashboard)
   // The adjustment history of the same bundle (Story 2.10), in its own state.
   const adjustments = useDashboardAdjustments(dashboard)
   // The user-time sync of the shown plan (Story 2.11): entry, tab return and the button, in its own state.
-  const sync = useDashboardSync(dashboard, csrfToken)
+  const sync = useDashboardSync(dashboard, selected === null ? csrfToken : null)
   // The explicit early end of the shown plan (Story 2.13): reauthentication, the confirmation dialog, the end.
   const planEnd = usePlanEnd(dashboard, csrfToken)
   // Whether the first-snapshot panel leads the dashboard, and how (`planPresenceOf` gives the reasons).
@@ -152,14 +172,17 @@ export function SignedInScreen(): ReactElement {
             role="status"
           >
             {ready && !signOut.pending && !reauthentication.pending ? (
-              <DashboardStatusText
-                adjustments={adjustments}
-                className={styles.noticeText}
-                dashboard={dashboard}
-                evidence={evidence}
-                planEnd={planEnd}
-                sync={sync}
-              />
+              <>
+                {preparationMessage === '' ? null : <span>{preparationMessage}</span>}
+                <DashboardStatusText
+                  adjustments={adjustments}
+                  className={styles.noticeText}
+                  dashboard={dashboard}
+                  evidence={evidence}
+                  planEnd={planEnd}
+                  sync={sync}
+                />
+              </>
             ) : (
               <p className={styles.noticeText}>
                 {liveRegionMessage(gate, signOut.pending, reauthentication.pending)}
@@ -177,8 +200,18 @@ export function SignedInScreen(): ReactElement {
             />
           ) : null}
 
-          {ready && presence !== null ? (
+          {ready && selected === null && presence !== null ? (
             <FirstSnapshotPanel csrfToken={csrfToken} plan={presence} ready={ready} />
+          ) : null}
+          {ready && dashboard.view.kind !== 'denied' ? (
+            <PlanHistoryPanel selected={selected} onSelect={setSelected} />
+          ) : null}
+          {ready && selected === null && terminalOf(bundleOf(dashboard.view)) !== null ? (
+            <NextPlanBaselinePanel
+              key={preparationScope}
+              csrfToken={csrfToken}
+              announce={setPreparationMessage}
+            />
           ) : null}
           {ready ? (
             <PlanResultPanel

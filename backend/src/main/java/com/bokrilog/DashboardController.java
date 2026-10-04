@@ -36,18 +36,16 @@ import org.springframework.web.bind.annotation.RestController;
  * ({@code end}) and the next action {@code PREPARE_NEXT_PLAN}, without sync, verification, change or plan-end parts.
  * The client never assembles cards from other requests and never judges time.
  *
- * <p>The path takes no identifier: the scope is the session's internal user id alone. Query parameters
- * are ignored (no parameter is bound), so a request carrying another user's plan, snapshot or
- * calculation id answers exactly what the bare request answers, and every sub-path but one is the same
- * common 404. 403 when the account's own access refuses the read before or after it (its deletion began
- * or finished); 503 {@code DASHBOARD_UNAVAILABLE} when the pointer's bundle does not agree with itself —
- * never a partial bundle. Answers are {@code no-store}.
+ * <p>The default scope is the session's current plan. Story 2.15 adds optional {@code planId} for an
+ * owned terminal record and {@code GET /api/dashboard/history} for owned terminal summaries. Unknown,
+ * foreign, active, malformed or repeated selected identifiers return the common 404. Historical bundles
+ * expose no sync, end or post-end value action. Account read access is checked before and after reading;
+ * inconsistent lineage returns 503, never a partial bundle. All answers are {@code no-store}.
  *
- * <p>Two sub-paths have handlers, and they are the only dashboard surfaces that receive identifiers — they
- * only judge them. {@code GET /api/dashboard/evidence} (Story 2.9) is the calculation evidence of the result
+ * <p>Evidence and adjustment sub-paths judge the shown current or owned terminal reference. {@code GET /api/dashboard/evidence} (Story 2.9) is the calculation evidence of the result
  * the screen shows: the three values of the shown pointer ({@code planId}, {@code pointerVersion},
  * {@code calculationId}) answer 200 when they are the user's current official pointer, and anything else
- * (another user's, an earlier version, an unknown, malformed, repeated or missing value, no active plan) is
+ * (another user's, an earlier version, an unknown, malformed, repeated or missing value) is
  * the same common 404 as a missing route, so nothing can be explored with them. 503
  * {@code EVIDENCE_UNAVAILABLE} when the current pointer's lineage does not agree with itself.
  * {@code GET /api/dashboard/adjustments} (Story 2.10) is the same pointer's applied cash-flow history, one
@@ -217,13 +215,27 @@ class DashboardController {
      * the bundle agreed with itself ({@code unknown} when no bundle was read). No user, correlation id,
      * amount, time or calculation input.
      */
+    record HistorySummary(UUID planId,String status,String principal,String startAt,String endAt,String period,String targetRate) {}
+    @GetMapping(path=AuthSecurityConfig.DASHBOARD_PATH+"/history")
+    @Nullable ResponseEntity<?> history(HttpServletResponse response) throws IOException {
+        var rows=jobs.planHistory(currentUserId());
+        if (rows.isEmpty()) { response.sendError(403); return null; }
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(rows.get().stream().map(row -> new HistorySummary(row.plan().planId(),row.status(),
+                row.plan().principal(),row.plan().startAt().toString(),("ENDED_EARLY".equals(row.status()) && row.end()!=null ? row.end().endedAt() : row.plan().endAt()).toString(),
+                row.plan().period(),row.plan().targetRate())).toList());
+    }
+
     @GetMapping(path=AuthSecurityConfig.DASHBOARD_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<?> dashboard(HttpServletRequest request,HttpServletResponse response)
             throws IOException {
         long started=System.nanoTime();
         SyncJobApi.DashboardRead read;
         try {
-            read=jobs.dashboard(currentUserId());
+            String[] choices=request.getParameterValues("planId");
+            if (choices!=null && (choices.length!=1 || !UUID_TEXT.matcher(choices[0]).matches())) {
+                response.sendError(404); return null;
+            }
+            read=choices==null ? jobs.dashboard(currentUserId()) : jobs.historicalDashboard(currentUserId(),UUID.fromString(choices[0]));
         } catch (RuntimeException failure) {
             // The class name at debug only: a message or cause can carry SQL or values.
             if (LOG.isDebugEnabled()) LOG.debug("dashboard read failed: failure={}",failure.getClass().getName());
@@ -239,6 +251,7 @@ class DashboardController {
                 response.sendError(403);
                 yield null;
             }
+            case SyncJobApi.Dashboard.NotFound missing -> { response.sendError(404); yield null; }
             case SyncJobApi.Dashboard.Unavailable unavailable ->
                     ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).contentType(MediaType.APPLICATION_JSON)
                             .cacheControl(CacheControl.noStore())
@@ -257,12 +270,13 @@ class DashboardController {
                             endView(ended.end())));
             case SyncJobApi.Dashboard.Completed completed ->
                     ok(new DashboardView("COMPLETED",completed.nextAction(),view(completed.result()),
-                            syncView(completed.sync()),null,changeView(completed.change()),null,null,
+                            completed.sync()==null ? null : syncView(completed.sync()),null,changeView(completed.change()),null,null,
                             completionView(completed.completion()),
                             completed.postEnd()==null ? null : new PostEndView(completed.postEnd().value(),
                                     completed.postEnd().measuredAt().toString())));
         };
         String state=switch (read.dashboard()) {
+            case SyncJobApi.Dashboard.NotFound missing -> "NOT_FOUND";
             case SyncJobApi.Dashboard.NotPermitted denied -> "DENIED";
             case SyncJobApi.Dashboard.Unavailable unavailable -> "INCONSISTENT";
             case SyncJobApi.Dashboard.NoPlan none -> "NO_PLAN";

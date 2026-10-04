@@ -989,7 +989,7 @@ describe('PlanResultPanel', () => {
       expect(supersedes(conflicting, shown)).toBe(false)
       expect(supersedes(same, shown)).toBe(true)
       expect(supersedes(newer, shown)).toBe(true)
-      expect(supersedes(otherPlan, shown)).toBe(true)
+      expect(supersedes(otherPlan, shown)).toBe(false)
       expect(supersedes(older, null)).toBe(true)
     })
   })
@@ -1467,4 +1467,39 @@ describe('Story 2.13: the record says nothing it cannot act on', () => {
       expect(within(trust).queryAllByRole('button')).toHaveLength(0)
     },
   )
+})
+
+describe('과거 기록 초점', () => {
+  it('선택한 planId가 바뀔 때만 제목으로 이동하고 조용한 새 객체 refresh는 초점을 보존한다', () => {
+    const parsedRecord = parseDashboard(endedDashboardFixture())
+    if (parsedRecord?.state !== 'ENDED') throw new Error('invalid fixture')
+    const view = {
+      kind: 'ENDED' as const,
+      nextAction: parsedRecord.nextAction,
+      result: parsedRecord.result,
+      end: parsedRecord.end,
+      sync: AVAILABLE_SYNC,
+      verification: AVAILABLE_VERIFICATION,
+      change: NO_CHANGE,
+      planEnd: AVAILABLE_PLAN_END,
+    }
+    const panel = (next: DashboardView) => (
+      <PlanResultPanel
+        planEnd={idlePlanEnd()}
+        reauthentication={idleReauthentication()}
+        adjustments={closedAdjustments()}
+        evidence={closedEvidence()}
+        dashboard={{ ...dashboard(next), historical: true }}
+        sync={idleSyncState()}
+      />
+    )
+    const { rerender } = render(panel(view))
+    expect(screen.getByRole('heading', { level: 2, name: copy.heading })).toHaveFocus()
+    const reload = screen.getByRole('button', { name: copy.reload })
+    reload.focus()
+    rerender(panel({ ...view, result: structuredClone(view.result) }))
+    expect(reload).toHaveFocus()
+    rerender(panel({ ...view, result: { ...view.result, planId: 'second-history' } }))
+    expect(screen.getByRole('heading', { level: 2, name: copy.heading })).toHaveFocus()
+  })
 })

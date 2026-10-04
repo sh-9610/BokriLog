@@ -85,6 +85,11 @@ class PortfolioMembershipService implements PortfolioMembershipApi {
     }
 
     @Override
+    public Optional<FirstOfficialSnapshot> ownedSnapshot(UUID userId, UUID snapshotId) {
+        return repository.ownedSnapshot(userId,snapshotId);
+    }
+
+    @Override
     public Optional<ActiveSource> activeSource(@Nullable UUID userId) {
         return userId==null ? Optional.empty() : this.repository.activeSource(userId);
     }

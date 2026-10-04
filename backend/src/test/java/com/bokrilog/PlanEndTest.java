@@ -940,7 +940,9 @@ class PlanEndTest extends PlanSyncTestBase {
             for (var check : v12.entrySet())
                 if (!check.getKey().equals("plan_definition_status_check"))
                     assertThat(v13).as(check.getKey()).containsEntry(check.getKey(), check.getValue());
-            assertThat(v13).containsOnlyKeys(v12.keySet());
+            var expectedChecks=new java.util.HashSet<>(v12.keySet());
+            expectedChecks.add("plan_successor_pair"); // V15 expands lineage without widening V12 checks.
+            assertThat(v13).containsOnlyKeys(expectedChecks);
             assertThat(v13.get("plan_definition_status_check")).contains("'ACTIVE'").contains("'ENDED_EARLY'");
             assertThat(v12.get("plan_definition_status_check")).doesNotContain("ENDED_EARLY");
         } finally {

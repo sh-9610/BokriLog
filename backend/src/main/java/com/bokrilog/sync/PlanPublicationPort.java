@@ -92,6 +92,12 @@ public interface PlanPublicationPort {
      */
     Optional<LatestPlan> latestPlan(@Nullable UUID userId);
 
+    /** 소유 종단 기록 선택과 기록 목록. 활성 선택은 기본 대시보드만 제공한다. */
+    Optional<LatestPlan> historicalPlan(UUID userId, UUID planId);
+    java.util.List<LatestPlan> planHistory(UUID userId);
+    /** 새 기준 성공은 이전 확인과 OPEN intent를 무효화한다. 호출자 트랜잭션에 참여한다. */
+    void invalidatePreparedConditions(UUID userId);
+
     // ------------------------------------------------------------------ Story 2.14
 
     /**

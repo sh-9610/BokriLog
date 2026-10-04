@@ -574,6 +574,12 @@ export function PlanResultPanel({
     if (last !== null && !last.isConnected && lost) heading.current?.focus()
   }, [hasNextAction, hasResult, terminal])
 
+  const historicalPlanId = dashboard.historical ? result?.planId : undefined
+  // Selecting a historical record replaces the same panel; focus lands on its result heading.
+  useLayoutEffect(() => {
+    if (historicalPlanId !== undefined) heading.current?.focus()
+  }, [historicalPlanId])
+
   // A sync the user pressed ended with a new bundle: focus goes to the heading of what replaced the old one.
   useLayoutEffect(() => {
     if (syncFocus === null || syncFocus.serial === handledFocus.current) return
@@ -650,13 +656,15 @@ export function PlanResultPanel({
             <CalculationEvidence evidence={evidence} result={result} />
             <AdjustmentHistory history={adjustments} result={result} />
           </section>
-          <PostEndValue
-            completion={completion}
-            postEnd={bundle.postEnd ?? null}
-            status={bundle.sync}
-            unreadable={bundle.postEndUnreadable === true}
-            sync={sync}
-          />
+          {dashboard.historical ? null : (
+            <PostEndValue
+              completion={completion}
+              postEnd={bundle.postEnd ?? null}
+              status={bundle.sync}
+              unreadable={bundle.postEndUnreadable === true}
+              sync={sync}
+            />
+          )}
           <Conditions result={result} />
         </>
       )}
