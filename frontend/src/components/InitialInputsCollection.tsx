@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react'
 
 import { CSRF_HEADER } from '../content/auth'
 import { planConditionContent as copy } from '../content/planConditions'
@@ -303,6 +303,11 @@ function CashflowConversionSection({
     (job.status === 'CONVERTED' || job.status === 'CONVERTED_ESTIMATED') &&
     job.calculable
 
+  /*
+   * The report to the parent stays a passive effect. It is not what this commit shows (the parent's sibling
+   * appears from it), and from a layout effect the parent's state update would re-render synchronously before
+   * the browser paints.
+   */
   useEffect(() => {
     onCalculable(lineage, calculableNow)
     // An unmounted (or remounted) conversion section no longer vouches for a calculable result.
@@ -337,6 +342,8 @@ function CashflowConversionSection({
     }
   }, [read])
 
+  // The first read stays a passive effect: starting a request is not something the commit shows, and its answer
+  // comes on a later task anyway. The polling below is a layout effect (see the collection's).
   useEffect(() => {
     live.current = true
     void read()
@@ -354,7 +361,7 @@ function CashflowConversionSection({
     }
   }, [read])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (job?.status !== 'QUEUED' && job?.status !== 'RUNNING') return
     const timer = window.setInterval(() => {
       void refresh()
@@ -698,6 +705,8 @@ export function InitialInputsCollection({
     }
   }, [intentId, readCollectionState])
 
+  // The first reads stay a passive effect: starting a request is not something the commit shows, and the answers
+  // come on a later task anyway.
   useEffect(() => {
     live.current = true
     currentIntentId.current = intentId
@@ -740,7 +749,13 @@ export function InitialInputsCollection({
     }
   }, [intentId, readCollectionState, readClassification])
 
-  useEffect(() => {
+  /*
+   * The three pollings (this one, the classification's below and the conversion's) are layout effects: an
+   * interval starts in the commit that shows a job in progress and is cleared in the commit that shows it ended.
+   * As passive effects both came on a later task, and under load a test that had seen the new state could
+   * advance its clock before the interval was set or after it should have been cleared.
+   */
+  useLayoutEffect(() => {
     if (job?.status !== 'QUEUED' && job?.status !== 'RUNNING') return
     const timer = window.setInterval(() => {
       void refresh()
@@ -750,7 +765,7 @@ export function InitialInputsCollection({
     }
   }, [job?.status, refresh])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const current = classificationIntentId === intentId ? classification : null
     if (current?.status !== 'QUEUED' && current?.status !== 'RUNNING') return
     const timer = window.setInterval(() => {

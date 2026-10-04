@@ -25,6 +25,7 @@ import { DASHBOARD_SYNC_PATH, planSyncContent } from '../content/planSync'
 import { DASHBOARD_VERIFICATION_PATH, planVerificationContent } from '../content/planVerification'
 import { formatSeoulTime } from '../format/decimal'
 import { navigateTo, replaceLocation } from '../session/navigation'
+import { atFirstSight, deferred } from '../test/firstSight'
 import {
   adjustmentPageFixture,
   adjustmentRowFixture,
@@ -586,7 +587,11 @@ describe('SignedInScreen', () => {
     expect(screen.queryByRole('article')).not.toBeInTheDocument()
     expect(document.body.textContent).not.toMatch(/USD|%/)
     // Focus that was on the vanished reload button moves to the dashboard heading.
-    expect(screen.getByRole('heading', { level: 2, name: planResultContent.heading })).toHaveFocus()
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { level: 2, name: planResultContent.heading }),
+      ).toHaveFocus()
+    })
   })
 
   it('입력 신뢰도가 검토 필요인 결과는 상태 리전이 그 사실을 같은 문장에서 먼저 알린다', async () => {
@@ -979,13 +984,16 @@ describe('SignedInScreen', () => {
         await vi.advanceTimersByTimeAsync(2_000)
       })
       expect(await screen.findByText('1,290.00 USD')).toBeInTheDocument()
+      // Read at once: the clock advances with real time (`shouldAdvanceTime`), so a later wait could tick it.
+      expect(screen.getByText(planSyncContent.cooldown(25))).toBeInTheDocument()
       expect(screen.queryByText('1,250.00 USD')).not.toBeInTheDocument()
       const basis = formatSeoulTime('2026-09-27T01:20:00Z', planResultContent.timeUnavailable)
       expect(screen.getByRole('status').textContent).toBe(planSyncContent.status.synced(basis))
-      expect(
-        screen.getByRole('heading', { level: 2, name: planResultContent.heading }),
-      ).toHaveFocus()
-      expect(screen.getByText(planSyncContent.cooldown(25))).toBeInTheDocument()
+      await waitFor(() => {
+        expect(
+          screen.getByRole('heading', { level: 2, name: planResultContent.heading }),
+        ).toHaveFocus()
+      })
       recorder.stop()
       // One sentence when it started, one when it ended — never "reading again", never busy.
       expect(recorder.texts).toEqual([
@@ -1137,10 +1145,14 @@ describe('SignedInScreen', () => {
         await vi.advanceTimersByTimeAsync(2_000)
       })
       expect(await screen.findByText('1,275.00 USD')).toBeInTheDocument()
+      // Read at once: the clock advances with real time (`shouldAdvanceTime`), so a later wait could tick it.
+      expect(screen.getByText(planVerificationContent.cooldown(25))).toBeInTheDocument()
       expect(screen.queryByText('1,250.00 USD')).not.toBeInTheDocument()
-      expect(
-        screen.getByRole('heading', { level: 2, name: planResultContent.heading }),
-      ).toHaveFocus()
+      await waitFor(() => {
+        expect(
+          screen.getByRole('heading', { level: 2, name: planResultContent.heading }),
+        ).toHaveFocus()
+      })
       const basis = formatSeoulTime('2026-09-27T01:20:00Z', planResultContent.timeUnavailable)
       const closing = planVerificationContent.status.succeeded(
         planVerificationContent.change.correctedSentence(ONE_LATE),
@@ -1153,7 +1165,6 @@ describe('SignedInScreen', () => {
       expect(screen.getByRole('region', { name: planResultContent.heading })).toHaveTextContent(
         `${planVerificationContent.change.corrected(ONE_LATE)}, ${planVerificationContent.change.impactStart} ${start}`,
       )
-      expect(screen.getByText(planVerificationContent.cooldown(25))).toBeInTheDocument()
       recorder.stop()
       expect(recorder.texts).toEqual([planVerificationContent.status.running, closing])
       expect(recorder.busy.every((value) => value === 'false')).toBe(true)
@@ -1229,7 +1240,9 @@ describe('SignedInScreen', () => {
       const label = await screen.findByText(planSyncContent.summary.statuses.FAILED)
       // eslint-disable-next-line testing-library/no-node-access -- 오류 요약은 역할이 없는 초점 대상(tabIndex -1)이다. 첫 문장 요소의 부모로만 찾을 수 있다.
       const summary = label.parentElement
-      expect(summary).toHaveFocus()
+      await waitFor(() => {
+        expect(summary).toHaveFocus()
+      })
       expect(summary).toHaveTextContent(planSyncContent.summary.codes.PROVIDER_UNAVAILABLE)
       expect(screen.getByRole('status').textContent).toBe(planSyncContent.status.failed)
       // The last normal values stay, with the freshness cause and its next action.
@@ -1352,7 +1365,9 @@ describe('SignedInScreen', () => {
     render(<SignedInScreen />)
 
     expect(await screen.findByText(authContent.session.redirecting)).toBeInTheDocument()
-    expect(vi.mocked(replaceLocation)).toHaveBeenCalledWith('/onboarding')
+    await waitFor(() => {
+      expect(vi.mocked(replaceLocation)).toHaveBeenCalledWith('/onboarding')
+    })
     expect(screen.queryByText(authContent.dashboard.heading)).not.toBeInTheDocument()
     for (const item of authContent.dashboard.items) {
       expect(screen.queryByText(item)).not.toBeInTheDocument()
@@ -1821,5 +1836,59 @@ describe('SignedInScreen', () => {
      * 주소는 누구나 적을 수 있으므로 거름은 화면의 일이고, 타입이 그 거름을 강제한다.
      */
     expect(screen.queryByText(authContent.notices.loggedOut)).not.toBeInTheDocument()
+  })
+})
+
+/*
+ * Deliberate first-sight guards (`DEVELOPMENT.md`, `시험의 대기`). The tests above wait for the condition
+ * itself, so they pass whether an effect runs in the commit or a task later; these record what the effect has
+ * done at the first sight of the new content, without CPU load (`test/firstSight.ts`). Each fails if its
+ * effect goes back to a passive `useEffect`.
+ */
+describe('SignedInScreen · first sight', () => {
+  it('has already left for the server-chosen destination when the redirecting sentence first appears', async () => {
+    const answer = deferred<Response>()
+    stubSessionRequest(() => answer.promise)
+    render(<SignedInScreen />)
+
+    const calls = await atFirstSight(
+      () => screen.queryByText(authContent.session.redirecting) !== null,
+      () => vi.mocked(replaceLocation).mock.calls.map(([path]) => path),
+      () => {
+        answer.resolve(jsonResponse({ authenticated: true, destination: 'onboarding' }))
+      },
+    )
+
+    // `useSessionGate`'s move is a layout effect: it ran in the commit that drew the sentence.
+    expect(calls).toEqual(['/onboarding'])
+  })
+
+  it('has already moved focus to the dashboard heading when the sign-in link of a 401 first appears', async () => {
+    stubSessionRequest(authenticated)
+    const unauthorized = deferred<Response>()
+    const queue: (() => Promise<Response>)[] = [
+      () => Promise.resolve(jsonResponse(dashboardFixture())),
+      () => unauthorized.promise,
+    ]
+    stubDashboard(() => (queue.shift() ?? (() => Promise.reject(new Error('extra'))))())
+    render(<SignedInScreen />)
+    expect(await screen.findAllByRole('article')).toHaveLength(6)
+    const reload = screen.getByRole('button', { name: planResultContent.reload })
+    reload.focus()
+    fireEvent.click(reload)
+
+    const focused = await atFirstSight(
+      () => screen.queryByRole('link', { name: planResultContent.signInLink }) !== null,
+      // eslint-disable-next-line testing-library/no-node-access -- 첫 관측 순간의 초점을 그 자리에서 읽어야 한다. Testing Library에는 초점 요소를 돌려주는 질의가 없고, `toHaveFocus`는 단정이라 기록할 수 없다.
+      () => document.activeElement,
+      () => {
+        unauthorized.resolve(
+          jsonResponse({ code: 'UNAUTHENTICATED', message: 'x', correlationId: 'c' }, 401),
+        )
+      },
+    )
+
+    // `PlanResultPanel`'s focus move is a layout effect: focus never rested on the body.
+    expect(focused).toBe(screen.getByRole('heading', { level: 2, name: planResultContent.heading }))
   })
 })

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactElement } from 'react'
+import { useLayoutEffect, useRef, type ReactElement } from 'react'
 
 import {
   authContent,
@@ -89,7 +89,7 @@ export function ReauthPanel({
    */
   const busy = pending || signingOut
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     /*
      * 표지와 함께 열리면 포커스를 이 제목으로 보낸다.
      *
@@ -99,6 +99,10 @@ export function ReauthPanel({
      *
      * 표지가 없으면 옮기지 않는다. 그때 이 패널은 화면을 처음 여는 것과 같고, 건너뛰기 링크가
      * 첫 `Tab`이라는 계약이 그대로 유지된다.
+     *
+     * layout effect다. 패널을 그린 커밋 안에서 포커스가 제목에 닿으므로 한 프레임도 `<body>`에
+     * 머물지 않는다. passive effect는 그리기 뒤 별도 작업으로 돌아, 부하가 걸리면 새 패널을 이미 본
+     * 코드보다 늦게 왔다(진입 화면과 같은 이유).
      */
     if (notice !== null) {
       heading.current?.focus()

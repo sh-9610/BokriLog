@@ -336,6 +336,12 @@ export function useSessionState(): SessionAccess {
     void check()
   }, [check])
 
+  /*
+   * 세션 확인을 여는 effect는 passive로 둔다. 요청을 시작하는 것은 커밋이 보여 주는 결과가 아니고
+   * 답은 어차피 응답이라는 뒤 작업에서 온다. 같은 effect가 붙이는 `pageshow` 재확인도 이 확인의
+   * 수명이라 떼지 않는다. 커밋과 함께 성립해야 하는 효과(주소 교체, 가시성 리스너)는 아래
+   * `useSessionGate`의 layout effect다.
+   */
   useEffect(() => {
     mounted.current = true
 
@@ -483,7 +489,13 @@ export function useSessionGate(expected: ScreenDestination): SessionGateResult {
       ? DESTINATION_PATHS[destination]
       : null
 
-  useEffect(() => {
+  /*
+   * 다른 화면으로 보내는 두 이동(서버가 고른 목적지, 만료 표지)도 layout effect다. "이동 중"을 그린
+   * 그 커밋에서 떠난다 — passive effect였을 때는 그 화면이 이미 보이는데 아직 떠나지 않은 틈이
+   * 있었고, 그 틈은 부하가 걸린 러너에서만 드러났다(`OnboardingScreen` 목적지 시험). 위 가시성
+   * 리스너와 같은 원리다.
+   */
+  useLayoutEffect(() => {
     if (target !== null) {
       replaceLocation(target)
     }
@@ -491,7 +503,7 @@ export function useSessionGate(expected: ScreenDestination): SessionGateResult {
 
   const expiredTarget = state === 'unauthenticated' && expired
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (expiredTarget) {
       replaceLocation(noticePath('expired'))
     }

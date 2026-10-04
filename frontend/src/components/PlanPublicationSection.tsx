@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react'
 
 import { CSRF_HEADER, DASHBOARD_PATH } from '../content/auth'
 import { planPublicationContent as copy, PLAN_PUBLICATION_PATH } from '../content/planResult'
@@ -124,6 +124,8 @@ export function PlanPublicationSection({
     }
   }, [read])
 
+  // The first read stays a passive effect: starting a request is not something the commit shows, and its answer
+  // comes on a later task anyway.
   useEffect(() => {
     live.current = true
     void read()
@@ -140,7 +142,12 @@ export function PlanPublicationSection({
 
   const job = state?.job ?? null
   const following = inProgress(job)
-  useEffect(() => {
+  /*
+   * A layout effect: the interval starts in the commit that shows an attempt in progress and is cleared in the
+   * commit that shows it ended. As a passive effect both came on a later task; under load the interval was still
+   * set after the refusal had been shown and kept reading (`InitialInputsCollection.test.tsx`, the 403 test).
+   */
+  useLayoutEffect(() => {
     // Only an attempt in progress is followed; a refusal (403) or any ending clears the interval.
     if (!following) return
     const timer = window.setInterval(() => {

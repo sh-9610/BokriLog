@@ -85,7 +85,7 @@ npm --prefix frontend exec -- playwright install chromium
 
 ### 명령
 
-모든 명령은 저장소 루트에서 `--prefix frontend`로 실행한다.
+모든 명령은 저장소 루트에서 실행한다. npm 명령은 `--prefix frontend`를 붙인다.
 
 | 명령 | 역할 |
 |---|---|
@@ -100,12 +100,15 @@ npm --prefix frontend exec -- playwright install chromium
 | `npm --prefix frontend run test` | Vitest(jsdom) 단위·화면 시험 |
 | `npm --prefix frontend run test:e2e` | 빌드 후 Playwright(Chromium) 접근성·키보드·리플로·요청 시험 |
 | `npm --prefix frontend run test:e2e:run` | 빌드를 건너뛰고 현재 `dist/`로 같은 시험 실행. CI 전용 |
+| `bash frontend/scripts/stress-test.sh` | CPU 부하 아래 Vitest 반복. 기본은 `yes` 부하 프로세스 CPU 수 × 2개, 12회다. `--runs N`·`--load N`, `--` 뒤는 그대로 `vitest run`에 넘긴다. 종료 코드는 0(통과)·1(실패한 실행 있음)·2(준비 실패, 시험 파일을 하나도 찾지 못한 필터 포함) |
 
 `test:e2e`는 스크립트가 먼저 `vite build`를 실행하고, `playwright.config.ts`의 `webServer`가 그 산출물을 `preview`로 띄운다. 별도로 서버를 띄워 둘 필요가 없다. 빌드를 서버 기동과 분리한 이유는 `webServer`가 기존 서버를 재사용하면 빌드까지 건너뛰어 낡은 `dist/`를 검증하게 되기 때문이다. 그래서 `reuseExistingServer`는 항상 `false`이며 e2e는 dev·preview 기본 포트와 겹치지 않는 4183을 쓴다.
 
 `test:e2e:run`은 `playwright test`만 실행한다. CI는 앞 단계에서 이미 `build`를 돌리므로 `test:e2e`를 쓰면 같은 빌드를 두 번 한다. 로컬에서는 한 번에 끝나는 `test:e2e`를 계속 쓴다.
 
 Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패를 green으로 덮어 첫 실패의 원인을 지운다. 그래서 trace도 `retain-on-failure`로 첫 실패부터 남긴다. flaky를 조사할 때만 `npm --prefix frontend run test:e2e:run -- --retries=2`처럼 명령에서 덮어쓴다.
+
+`stress-test.sh`는 부하에서만 드러나는 Vitest 결함을 로컬에서 재현한다. CI 러너는 로컬 8코어보다 붐비고, effect 시점 결함은 React Scheduler가 프레임을 넘겨 양보할 때만 붉게 나온다 — `_bmad-output/implementation-artifacts/spec-frontend-effect-timing.md`의 기준선은 `yes` 16개 아래 전체 Vitest 12회 중 2회 실패였고 부하 없이는 거의 재현되지 않았다. 스크립트는 Node major를 `frontend/.nvmrc`와 대조한 뒤에만 돌고(Node 25의 실패를 부하 탓으로 읽지 않게), 머리에 커밋과 미커밋 변경 여부를 적고, 실패한 회차의 시험 이름을 모아 보이고 그 로그를 남긴다. 정상 종료·실패·Ctrl-C·TERM·HUP에서는 도는 중인 Vitest와 부하 프로세스를 끝내고 바로 나온다. SIGKILL은 트랩을 거치지 않아 부하가 남으므로 그때는 `pkill -x yes`로 지운다. 횟수는 기준선의 실패율에 맞춘다 — 기본 12회는 최소이고, 12회 중 1~2회 실패하던 결함이라면 깨끗한 12회만으로는 약한 근거다. 더 돌리거나 아래 `시험의 대기`의 첫 관측 가드처럼 결정적으로 잡는 시험과 함께 쓴다. CI에는 넣지 않았다 — 넣는다면 판정은 `.github/scripts`가 소유하고 `test-ci-scripts.sh`를 함께 고친다.
 
 ### 구조와 규칙
 
@@ -143,6 +146,9 @@ Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패
 - 경로는 라우터 없이 `App.tsx`의 닫힌 맵이 화면에 대응한다(`/`·`/onboarding`·`/dashboard`·`/settings`). 라우트 하나가 **다섯 곳**에 산다 — `App.tsx`의 경로 맵, `deploy/nginx/bokrilog.conf`의 허용 목록 정규식, 서버의 `AuthFlowHandlers.ALLOWED_DESTINATIONS`, `useSessionState`의 목적지 집합, 그리고 `content/auth.ts`의 `RETURN_DESTINATIONS`(로그인 뒤 돌아갈 수 있는 경로)다. 다섯이 같은 집합이어야 하고 그 등가를 보는 검사는 아직 없다(미해소 항목). 한 곳만 고치면 증상이 제각각이다: Nginx가 빠지면 404, `App.tsx`가 빠지면 진입 화면, 서버 허용 목록이 빠지면 복귀가 대시보드로 접히고, 목적지 집합이 빠지면 타입이 막으며, `RETURN_DESTINATIONS`가 빠지면 미인증 진입에서 `next`가 실리지 않는다. 로그인 상태 경로는 `GET /api/auth/session`으로 서버 세션을 확인한 뒤에만 내용을 그리고, 미인증·오류는 인증 화면으로 되돌린다.
 - 라이트 모드만 제공한다. 다크 모드는 별도 대비 검증 뒤 후속 범위다.
 - 확대 검증은 브라우저 zoom 설정 대신 **뷰포트 폭 = 1280px ÷ 배율**로 재현한다(WCAG 1.4.10 표준 해석). 400%는 320×512, 200%는 640×512다.
+- **effect 시점.** 커밋이 화면을 바꾸는 순간 함께 성립해야 하는 효과 — 초점 이동, `replaceLocation`, 타이머·리스너 등록과 해제, 그 효과들이 읽는 latest-ref 갱신 — 는 `useLayoutEffect`다. passive `useEffect`는 동기 lane 갱신에서만 커밋 끝에 바로 돌고, fetch 응답이 만든 갱신에서는 Scheduler의 다음 작업으로 미뤄진다. 부하가 걸리면 그 작업이 새 DOM을 이미 본 코드(시험의 `findBy*`·`waitFor` 직후 단정, 사용자의 키 입력)보다 늦고, 사용자에게는 한 프레임 동안 초점이 `<body>`에 머문다. 요청을 시작하는 effect는 passive로 둔다(그 요청의 기한 타이머나 `pageshow` 재확인을 함께 붙이는 것도 같다). 보이는 것을 바꾸는 부모 갱신(`onCalculable` — 그 보고로 발행 구역이 나타난다)과 `live` 표지도 passive다 — layout effect에서 부모 `setState`를 부르면 그리기 전에 동기 재렌더가 일어난다. 그리는 것을 바꾸지 않는 일회성 표지를 지우는 부모 갱신은 layout에 있어도 된다(`AdjustmentHistory`의 `Rows`가 부르는 `onFocused`). passive로 남긴 effect에는 근거를 주석으로 적는다. layout effect 본문에 새 동기 `setState`를 넣지 않고, 서로 순서에 기대는 효과는 함께 옮긴다(자식 → 부모 순서는 두 종류가 같다).
+- **`inert` 배경으로 돌려주는 초점은 예외다.** 대화상자가 닫힐 때 호출점으로 돌려주는 초점은 passive effect의 정리에 둔다(`UnlinkDialog`). 호출점은 대화상자가 열린 동안 형제 래퍼의 `inert` 아래에 있다. layout effect의 정리는 닫는 커밋의 DOM 변경 단계에서 대화상자 삭제와 함께 돈다. React는 부모의 자식 삭제를 형제 갱신보다 먼저 처리하므로, 그 정리는 `inert` 해제보다 먼저 돌고 브라우저는 그 `focus()`를 무시한다. passive 정리는 커밋이 끝난 뒤 돈다. `Esc`·취소 같은 이산 입력이 닫으면 React가 그 커밋 끝에서 바로 비운다. 열 때의 기본 포커스와 키 처리기는 layout이고, 호출점은 한 번만 기록한다(개발 빌드의 `StrictMode`가 그 effect를 다시 돌릴 때는 포커스가 이미 취소에 있다). 복귀는 포커스를 잃었을 때만 한다. 같은 커밋에서 화면이 layout으로 옮겨 받은 포커스(해제 성공의 결과 문장)를 뒤늦게 덮지 않기 위해서다. jsdom은 `inert`를 모르므로 이 순서는 Playwright만 본다.
+- **시험의 대기.** 비동기 대기(`findBy*`·`waitFor`) 직후에 효과나 늦게 오는 읽기 결과를 동기로 단정하지 않는다. 단정할 조건 자체를 `waitFor`로 기다리고, 읽기 전부터 있는 상태 영역은 영역이 아니라 텍스트를 기다린다. 재시도·`testTimeout`·`asyncUtilTimeout` 상향·단일 스레드로 실패를 덮지 않는다. 예외는 의도된 **첫 관측 가드**다. `waitFor`는 효과가 늦게 와도 통과하므로, 효과가 커밋에 붙어 있다는 사실은 따로 고정한다. 가드는 `src/test/firstSight.ts`의 `atFirstSight`로 act 환경을 끈 채 응답을 풀어 주고, 새 내용이 처음 보이는 순간(커밋 직후의 `MutationObserver` 마이크로태스크)에 효과의 결과를 동기로 읽는다. 그때 layout effect는 이미 돌았고 passive effect는 아직이다(커밋이 그리기를 위해 Scheduler를 양보시킨다). 그래서 부하 없이 결정적으로 갈린다. 종류마다 대표 하나를 둔다 — 목적지 이동과 응답이 옮기는 초점(`SignedInScreen.test.tsx`), 폴링 interval(`InitialInputsCollection.test.tsx`). 새 가드는 그 effect를 `useEffect`로 되돌리면 매번 실패하는지 확인한 뒤 넣는다.
 
 ## 백엔드 (`backend/`)
 
