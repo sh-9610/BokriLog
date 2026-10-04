@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type ReactElement } from 'react'
+import { useEffect, useLayoutEffect, useRef, type ReactElement } from 'react'
 
 import type { PlanEndDialogView } from '../session/usePlanEnd'
 
@@ -63,10 +63,18 @@ export function PlanEndDialog({
     latest.current = { onCancel, pending, restoreFocus, reason }
   })
 
+  // The element that opened the dialog: recorded in the commit that shows it, given back after it closes (below).
+  const opener = useRef<Element | null>(null)
+
   // A layout effect: the default focus and the key handler are in place in the commit that shows the dialog, not on
   // a later task that a keypress or a reader of the new dialog can come before.
   useLayoutEffect(() => {
-    const opener = document.activeElement
+    /*
+     * Recorded once. `StrictMode` in a development build cleans this effect up and runs it again, and by then the
+     * line below has moved focus to cancel: recording again would make the opener the dialog's own button, gone
+     * after the close, and focus would fall to the body.
+     */
+    opener.current ??= document.activeElement
 
     // The default focus is cancel: one `Enter` must not end the plan.
     cancelButton.current?.focus()
@@ -111,23 +119,44 @@ export function PlanEndDialog({
     return () => {
       document.removeEventListener('keydown', onKeyDown, true)
       document.body.style.overflow = previousOverflow
+    }
+  }, [])
+
+  /*
+   * Back to the button that opened it, when the screen asks for it and focus has nowhere else to be. When that button
+   * is no longer known — the dialog was mounted again (a session re-check unmounts it), so the captured element is
+   * the document body or one that left — back to the button of the reason it was opened for: the end area's, or the
+   * long-gap choice's `새 계획 시작`. When the same commit already moved focus elsewhere (a read that showed another
+   * state closes the dialog and sends focus to the end area's notice or the panel heading), that move stands.
+   *
+   * Only this return is a passive effect's cleanup. The button sits under the screen's `inert` background while the
+   * dialog is open, and can take focus only once the closing commit lifts that attribute. A layout effect's cleanup
+   * runs in that commit's mutation phase with the dialog's deletion, and React handles a parent's deletions before
+   * its other children's updates — so it ran while the button was still inert, the browser ignored the `focus()`,
+   * and focus fell to the body (CI run 37143229430, `e2e/plan-end.spec.ts`; jsdom has no `inert`, so only Playwright
+   * sees it). A passive cleanup runs after the commit, and when a discrete input (`Esc`, cancel) closes the dialog,
+   * React flushes it at the end of that commit, so it is not late either. The rule is in `DEVELOPMENT.md` (`inert`
+   * 배경으로 돌려주는 초점은 예외다), with `UnlinkDialog` as its first case.
+   */
+  useEffect(
+    () => () => {
       if (!latest.current.restoreFocus) return
-      /*
-       * Back to the button that opened it. When that is no longer known — the dialog was mounted again (a session
-       * re-check unmounts it), so the captured element is the document body or one that left — back to the button of
-       * the reason it was opened for: the end area's, or the long-gap choice's `새 계획 시작`.
-       */
+      const active = document.activeElement
+      const lost = active === null || active === document.body || !active.isConnected
+      if (!lost) return
+      const target = opener.current
       const known =
-        opener instanceof HTMLElement && opener !== document.body && opener.isConnected
-          ? opener
+        target instanceof HTMLElement && target !== document.body && target.isConnected
+          ? target
           : document.getElementById(
               latest.current.reason === 'LONG_GAP_NEW_PLAN'
                 ? planEndContent.newPlanActionId
                 : planEndContent.area.actionId,
             )
       known?.focus()
-    }
-  }, [])
+    },
+    [],
+  )
 
   return (
     // The backdrop: it covers the screen and takes no pointer action. Clicking outside does not close the dialog.

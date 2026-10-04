@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
+import { StrictMode, useLayoutEffect, useRef, useState, type ReactElement } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { PlanEndDialogView } from '../session/usePlanEnd'
@@ -230,6 +231,86 @@ describe('PlanEndDialog', () => {
     opener.remove()
     unmount()
     expect(fallback).toHaveFocus()
+  })
+
+  it('under `StrictMode` (a development build) `Esc` still returns focus to the opener', () => {
+    const opener = document.createElement('button')
+    opener.textContent = planEndContent.area.action
+    document.body.append(opener)
+    openers.push(opener)
+    opener.focus()
+    /*
+     * `StrictMode` cleans the opening effect up and runs it again, after it has moved focus to cancel. The opener is
+     * recorded once, so the dialog's own button never takes its place (it is gone after the close).
+     */
+    function Screen(): ReactElement | null {
+      const [open, setOpen] = useState(true)
+      return open ? (
+        <PlanEndDialog
+          dialog={view()}
+          onCancel={() => {
+            setOpen(false)
+          }}
+          onConfirm={vi.fn()}
+          restoreFocus
+        />
+      ) : null
+    }
+    render(
+      <StrictMode>
+        <Screen />
+      </StrictMode>,
+    )
+    expect(cancelButton()).toHaveFocus()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(opener).toHaveFocus()
+  })
+
+  it('leaves focus where the screen moved it in the same commit (a read that showed another state)', () => {
+    const opener = document.createElement('button')
+    opener.textContent = planEndContent.area.action
+    document.body.append(opener)
+    openers.push(opener)
+    /*
+     * A read that shows another state closes the dialog and sends focus to the end area's notice in that commit's
+     * layout effect, while the dialog's last render still asked for the return. The return is only for focus that has
+     * nowhere to be; otherwise it would take focus away from the notice.
+     */
+    function Screen(): ReactElement {
+      const [open, setOpen] = useState(true)
+      const notice = useRef<HTMLParagraphElement>(null)
+      useLayoutEffect(() => {
+        if (!open) notice.current?.focus()
+      }, [open])
+      return (
+        <>
+          <p ref={notice} tabIndex={-1}>
+            {open ? '' : planEndContent.status.cancelled}
+          </p>
+          {open ? (
+            <PlanEndDialog
+              dialog={view()}
+              onCancel={vi.fn()}
+              onConfirm={() => {
+                setOpen(false)
+              }}
+              restoreFocus
+            />
+          ) : null}
+        </>
+      )
+    }
+    opener.focus()
+    render(<Screen />)
+
+    fireEvent.click(confirmButton())
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByText(planEndContent.status.cancelled)).toHaveFocus()
+    expect(opener).not.toHaveFocus()
   })
 
   it('locks the document scroll and gives it back', () => {

@@ -998,10 +998,18 @@ describe('OnboardingScreen: 계획 중도 종료 (Story 2.13)', () => {
     const page = document.querySelector('[inert]')
     expect(page).toContainElement(screen.getByRole('main'))
     expect(page).not.toContainElement(dialog)
-    expect(within(dialog).getByRole('button', { name: planEndContent.dialog.cancel })).toHaveFocus()
+    await waitFor(() => {
+      expect(
+        within(dialog).getByRole('button', { name: planEndContent.dialog.cancel }),
+      ).toHaveFocus()
+    })
     fireEvent.click(within(dialog).getByRole('button', { name: planEndContent.dialog.confirm }))
     expect(await screen.findByRole('region', { name: planEndContent.record.heading })).toBeVisible()
-    expect(screen.getByRole('heading', { level: 2, name: planResultContent.heading })).toHaveFocus()
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { level: 2, name: planResultContent.heading }),
+      ).toHaveFocus()
+    })
     expect(screen.getAllByRole('status')).toHaveLength(1)
     // The onboarding's own section stays below the panel.
     expect(

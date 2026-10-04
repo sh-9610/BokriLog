@@ -1942,9 +1942,13 @@ describe('SignedInScreen: 계획 중도 종료 (Story 2.13)', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
     const heading = screen.getByRole('heading', { level: 2, name: planResultContent.heading })
-    expect(heading).toHaveFocus()
+    await waitFor(() => {
+      expect(heading).toHaveFocus()
+    })
     expect(await screen.findByRole('region', { name: planEndContent.record.heading })).toBeVisible()
-    expect(heading).toHaveFocus()
+    await waitFor(() => {
+      expect(heading).toHaveFocus()
+    })
     // eslint-disable-next-line testing-library/no-node-access -- `inert`는 역할 조회로 드러나지 않는 속성이다.
     expect(document.querySelector('[inert]')).toBeNull()
     const confirmed = sent[1]
@@ -1990,8 +1994,10 @@ describe('SignedInScreen: 계획 중도 종료 (Story 2.13)', () => {
     render(<SignedInScreen />)
     fireEvent.click(await pressableEnd())
     const guidance = await screen.findByText(planEndContent.reauth.text)
-    // eslint-disable-next-line testing-library/no-node-access -- 안내 묶음은 역할이 없는 초점 대상(tabIndex -1)이다.
-    expect(guidance.parentElement).toHaveFocus()
+    await waitFor(() => {
+      // eslint-disable-next-line testing-library/no-node-access -- 안내 묶음은 역할이 없는 초점 대상(tabIndex -1)이다.
+      expect(guidance.parentElement).toHaveFocus()
+    })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent(planEndContent.status.reauthRequired)
     fireEvent.click(screen.getByRole('button', { name: authContent.settings.reauth.labels.google }))

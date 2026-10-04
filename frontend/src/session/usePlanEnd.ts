@@ -260,14 +260,16 @@ export function usePlanEnd(dashboard: Dashboard, csrfToken: string | null): Plan
     if (lastPlan !== null) setNotice(null)
   }
 
-  // The latest values for the callbacks below. First, so every later effect of this commit sees them.
+  // The latest values for the callbacks below. First, so every later effect of this commit sees them. Passive, like
+  // every effect of this hook: the effects and callbacks that read these values are passive or run on later tasks.
   useEffect(() => {
     viewRef.current = view
     dashboardRef.current = dashboard
     csrfRef.current = csrfToken
   })
 
-  // An answer that arrives after unmount changes nothing (the request itself is left to finish).
+  // An answer that arrives after unmount changes nothing (the request itself is left to finish). Passive: it guards
+  // answers that come on later tasks, not anything a commit shows.
   useEffect(() => {
     live.current = true
     return () => {
@@ -304,6 +306,9 @@ export function usePlanEnd(dashboard: Dashboard, csrfToken: string | null): Plan
    * read's answer may predate the end). After `ENDED_READ_TRIES` of them the screen says the end was confirmed but
    * its record is not on screen yet, and reads once out loud. Another state (no plan, a refusal, another plan) says
    * what it is itself.
+   *
+   * Passive: it starts a read, which is not something the commit shows, and the read's answer comes on a later task
+   * anyway.
    */
   useEffect(() => {
     const wait = awaiting.current
@@ -334,6 +339,10 @@ export function usePlanEnd(dashboard: Dashboard, csrfToken: string | null): Plan
    * releases its flow, unless a confirmation is in flight (its answer decides). Focus goes to the end area's notice
    * when the same plan only moved on (asking again with the new result is what is left), to the panel heading
    * otherwise (the button that opened the dialog may have gone).
+   *
+   * Passive: it releases the flow (a request) and changes this hook's state; from a layout effect that state would
+   * re-render synchronously before paint. The focus it asks for moves in the end area's and the panel's layout
+   * effects, in the commit that closes the dialog.
    */
   useEffect(() => {
     const current = armedRef.current

@@ -521,6 +521,21 @@ context:
     - 로컬에서 CPU 부하를 걸자 대화상자의 기본 초점 시험도 재현됐다.
   - layout effect로 옮긴 뒤에는 그 DOM을 바꾸는 같은 커밋 안에서 초점이 옮겨진다. 2.12가 탭 재표시 리스너를 옮긴 것과 같은 해결이다.
   - 같은 부하에서 남은 간헐 실패 둘은 이 스토리 전부터 `develop`에 있던 같은 종류다. passive effect 안의 `replaceLocation`(목적지 이동 시험)과 passive effect가 거는 폴링 타이머(`InitialInputsCollection` 403 시험)이고, 별도 정리 대상이다.
+    - 별도 정리는 PR #58(`spec-frontend-effect-timing.md`)이 했고, 이 브랜치는 `develop`을 병합해 받았다.
+- **대화상자의 호출점 복귀만은 passive 정리다(PR #57 CI run 37143229430 뒤).**
+  - 증상: `same-origin-integration`의 `e2e/plan-end.spec.ts:232`가 `Esc` 취소 뒤 종료 버튼 초점을 기다리다 실패했다(`toBeFocused`, 받은 값 `inactive`).
+  - 원인: 위 항목이 `PlanEndDialog`의 효과를 통째로 layout으로 옮기면서, 닫힐 때의 호출점 복귀(그 effect의 정리)도 닫는 커밋의 DOM 변경 단계로 들어갔다.
+    - React는 부모의 자식 삭제를 형제 갱신보다 먼저 처리한다. 그래서 복귀는 배경 `<div inert>`의 속성 해제보다 먼저 돌았다.
+    - Chromium은 비활성 요소의 `focus()`를 무시한다. jsdom은 `inert`를 모르므로 Vitest로는 보이지 않았다.
+  - 해결: PR #58이 `UnlinkDialog`에 세운 규칙(`DEVELOPMENT.md`의 "`inert` 배경으로 돌려주는 초점은 예외다")을 그대로 적용했다.
+    - 기본 초점·키 처리기·스크롤 잠금은 layout이다.
+    - 호출점 복귀만 passive effect의 정리이고 커밋이 끝난 뒤 돈다. `Esc`·취소 같은 이산 입력이 닫으면 React가 그 커밋 끝에서 바로 비운다.
+    - 호출점은 한 번만 기록한다(개발 빌드 `StrictMode`의 재실행 대비).
+    - 포커스를 잃었을 때만 돌려준다. 다른 상태를 보인 읽기가 대화상자를 닫고 종료 영역 표지나 패널 제목으로 초점을 보내면 그 이동을 덮지 않는다.
+    - `PlanEndDialog.test.tsx`에 두 시험(StrictMode의 `Esc` 복귀, 같은 커밋에서 화면이 옮긴 초점 유지)을 더했다. 각각 그 수정을 빼면 그 시험 하나만 실패함을 확인했다.
+  - `usePlanEnd`의 네 effect(ref 갱신, `live` 표지, 종료 뒤 재읽기, 낡은 대화상자 닫기)는 passive로 두고 근거를 주석으로 적었다. 요청을 시작하거나 이 훅의 상태를 바꾸고, 그것을 읽는 쪽도 passive이거나 뒤 작업이다.
+  - 이 스토리의 시험 중 비동기 대기 직후 초점을 동기로 단정하던 다섯 곳을 `waitFor`로 바꿨다(`OnboardingScreen.test.tsx` 2, `SignedInScreen.test.tsx` 3). 같은 커밋의 layout effect라 지금도 결정적이었지만, PR #58이 `DEVELOPMENT.md`에 둔 시험 대기 규칙에 맞췄다.
+  - 확인: 병합 트리에서 여섯 명령(typecheck·lint·lint:css·format:check·test·build)이 통과했다. Vitest는 32파일 1038건이다. `frontend/scripts/stress-test.sh --runs 36 --load 16`(`yes` 16개)은 36회 모두 통과했고 `yes` 잔존은 0이었다. 브라우저 층의 확인은 이 PR의 CI `same-origin-integration`(`plan-end.spec.ts`)이 맡는다.
 
 **실행 결과 (리뷰 patch 반영 뒤 최종 트리):**
 - 백엔드 `clean build`(`--no-parallel --max-workers=1`): 1044 tests 통과, 실패·skip 0, 5분 11초(독립 재실행에서도 같았다).
