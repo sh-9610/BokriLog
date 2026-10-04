@@ -1135,8 +1135,15 @@ class PlanVerificationTest extends PlanSyncTestBase {
                     var rows = statement.executeQuery(CHECKS)) {
                 while (rows.next()) v11.put(rows.getString(1), rows.getString(2));
             }
+            // V12 itself, not the current schema: Story 2.14 (V14) widens some of these checks again.
+            org.flywaydb.core.Flyway.configure().dataSource(url, postgres.getUsername(), postgres.getPassword())
+                    .locations("classpath:db/migration").target("12").load().migrate();
             Map<String, String> v12 = new java.util.TreeMap<>();
-            jdbc().sql(CHECKS).query((rs, n) -> v12.put(rs.getString(1), rs.getString(2))).list();
+            try (var connection = java.sql.DriverManager.getConnection(url, postgres.getUsername(), postgres.getPassword());
+                    var statement = connection.createStatement();
+                    var rows = statement.executeQuery(CHECKS)) {
+                while (rows.next()) v12.put(rows.getString(1), rows.getString(2));
+            }
             var widened = java.util.Set.of("sync_plan_sync_job_trigger_check", "sync_plan_sync_job_mode_check",
                     "sync_plan_sync_job_stage_check", "sync_plan_sync_job_failure_code_check",
                     "sync_plan_sync_job_check12");

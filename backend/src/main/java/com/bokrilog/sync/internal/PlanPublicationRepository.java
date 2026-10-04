@@ -292,6 +292,21 @@ class PlanPublicationRepository {
     }
 
     /**
+     * The source snapshot of a wallet observation a completion or post-end attempt read itself (Story 2.14): its origin
+     * is that attempt, not a candidate or a first-snapshot job.
+     */
+    int insertObservationSource(UUID sourceSnapshotId, UUID user, UUID connectionId, UUID providerAccountId,
+            UUID planSyncJobId, String equity, Instant measuredAt, Instant receivedAt, String policyVersion) {
+        return jdbc.sql("INSERT INTO sync_source_snapshot(source_snapshot_id,user_id,connection_id,provider_account_id,"
+                + "job_id,initial_candidate_id,plan_sync_job_id,provider,equity_decimal,measured_at,received_at,"
+                + "input_status,policy_version) VALUES (:id,:u,:c,:a,NULL,NULL,:j,'BYBIT',:equity,:measured,:received,"
+                + "'VERIFIED',:policy)")
+            .param("id", sourceSnapshotId).param("u", user).param("c", connectionId).param("a", providerAccountId)
+            .param("j", planSyncJobId).param("equity", equity).param("measured", utc(measuredAt))
+            .param("received", utc(receivedAt)).param("policy", policyVersion).update();
+    }
+
+    /**
      * One calculation version to write. {@code lastExtendedVerificationAt} is its second watermark (a first
      * publication verified all of {@code (t0, tc]} and records {@code tc}); {@code previousCalculationId} is the
      * version it replaces, {@code null} for a first publication.
@@ -299,7 +314,25 @@ class PlanPublicationRepository {
     record CalculationRow(UUID calculationId, UUID jobId, UUID planId, Pinned pinned, UUID portfolioSnapshotId,
             long portfolioSequence, UUID sourceSnapshotId, String classificationPolicy, String pricePolicy,
             String sourcePolicy, PlanCalculator.Result.Calculated result, int flowCount, int estimatedFlowCount,
-            Instant lastExtendedVerificationAt, @Nullable UUID previousCalculationId) {}
+            Instant lastExtendedVerificationAt, @Nullable UUID previousCalculationId, String kind, Instant basisAt,
+            Instant verifiedThrough) {
+
+        /**
+         * A progress version: its basis and its cash-flow verification are both the pinned {@code tc} (V10's rule).
+         */
+        CalculationRow(UUID calculationId, UUID jobId, UUID planId, Pinned pinned, UUID portfolioSnapshotId,
+                long portfolioSequence, UUID sourceSnapshotId, String classificationPolicy, String pricePolicy,
+                String sourcePolicy, PlanCalculator.Result.Calculated result, int flowCount, int estimatedFlowCount,
+                Instant lastExtendedVerificationAt, @Nullable UUID previousCalculationId) {
+            this(calculationId, jobId, planId, pinned, portfolioSnapshotId, portfolioSequence, sourceSnapshotId,
+                    classificationPolicy, pricePolicy, sourcePolicy, result, flowCount, estimatedFlowCount,
+                    lastExtendedVerificationAt, previousCalculationId, PROGRESS, pinned.tc(), pinned.tc());
+        }
+    }
+
+    /** The calculation kinds (V14): a progress version, or the completion version at {@code u = T} (Story 2.14). */
+    static final String PROGRESS = "PROGRESS";
+    static final String COMPLETION = "COMPLETION";
 
     void insertCalculation(CalculationRow row) {
         Pinned p = row.pinned();
@@ -311,11 +344,12 @@ class PlanPublicationRepository {
                 + "calendar_policy,display_policy,precision_policy,time_zone,implementation_version,p0_decimal,t0,end_at,"
                 + "period,target_rate,basis_at,current_value_measured_at,cashflow_verified_through,adjusted_principal,"
                 + "periods_elapsed,periods_total,periods_remaining,flow_count,estimated_flow_count,estimated,"
-                + "input_reliability,input_hash,result_hash,last_extended_verification_at,previous_calculation_id) "
+                + "input_reliability,input_hash,result_hash,last_extended_verification_at,previous_calculation_id,"
+                + "calculation_kind) "
                 + "VALUES (:id,:job,:u,:plan,:p,'BYBIT',:a,:c,:m,:bs,:bss,:ps,"
                 + ":pseq,:ss,:cand,:cls,:conv,:clsPolicy,:pricePolicy,:sourcePolicy,:calc,:calendar,:display,:precision,"
                 + ":zone,:impl,:p0,:t0,:end,:period,:rate,:tc,:measured,:verified,:ap,:elapsed,:total,:remaining,:flows,"
-                + ":estimatedFlows,:estimated,:reliability,:inputHash,:resultHash,:extended,:previous)")
+                + ":estimatedFlows,:estimated,:reliability,:inputHash,:resultHash,:extended,:previous,:kind)")
             .param("id", row.calculationId()).param("job", row.jobId()).param("u", p.userId()).param("plan", row.planId())
             .param("p", p.portfolioId()).param("a", p.providerAccountId()).param("c", p.connectionId())
             .param("m", p.membershipId()).param("bs", p.basisPortfolioSnapshotId())
@@ -327,13 +361,14 @@ class PlanPublicationRepository {
             .param("calendar", r.calendarPolicy()).param("display", r.displayPolicy())
             .param("precision", r.precisionPolicy()).param("zone", r.timeZone()).param("impl", r.implementationVersion())
             .param("p0", p.principal()).param("t0", utc(p.t0())).param("end", utc(p.endAt())).param("period", p.period())
-            .param("rate", p.targetRate()).param("tc", utc(p.tc())).param("measured", utc(p.measuredAt()))
-            .param("verified", utc(p.tc())).param("ap", r.adjustedPrincipal()).param("elapsed", r.periodsElapsed())
+            .param("rate", p.targetRate()).param("tc", utc(row.basisAt())).param("measured", utc(p.measuredAt()))
+            .param("verified", utc(row.verifiedThrough())).param("ap", r.adjustedPrincipal())
+            .param("elapsed", r.periodsElapsed())
             .param("total", r.periodsTotal()).param("remaining", r.periodsRemaining()).param("flows", row.flowCount())
             .param("estimatedFlows", row.estimatedFlowCount()).param("estimated", r.estimated())
             .param("reliability", r.inputReliability().name()).param("inputHash", r.inputHash())
             .param("resultHash", r.resultHash()).param("extended", utc(row.lastExtendedVerificationAt()))
-            .param("previous", row.previousCalculationId()).update();
+            .param("previous", row.previousCalculationId()).param("kind", row.kind()).update();
         for (PlanCalculator.MetricResult metric : r.metrics()) {
             jdbc.sql("INSERT INTO sync_plan_calculation_metric(calculation_id,metric,value_decimal,nature,unavailable_reason) "
                     + "VALUES (:id,:metric,:value,:nature,:reason)")
@@ -513,20 +548,47 @@ class PlanPublicationRepository {
             String targetRate, Instant basisAt, Instant measuredAt, Instant verifiedThrough, String calculationPolicy,
             String calendarPolicy, String displayPolicy, String pricePolicy, String implementationVersion,
             String inputHash, String resultHash, int flowCount, int estimatedFlowCount, boolean estimated,
-            String inputReliability) {}
+            String inputReliability, String kind) {
+
+        /** A progress version (every version before Story 2.14). */
+        CalculationView(UUID planId, UUID portfolioId, UUID portfolioSnapshotId, long portfolioSequence,
+                UUID basisPortfolioSnapshotId, String principal, Instant t0, Instant endAt, String period,
+                String targetRate, Instant basisAt, Instant measuredAt, Instant verifiedThrough,
+                String calculationPolicy, String calendarPolicy, String displayPolicy, String pricePolicy,
+                String implementationVersion, String inputHash, String resultHash, int flowCount,
+                int estimatedFlowCount, boolean estimated, String inputReliability) {
+            this(planId, portfolioId, portfolioSnapshotId, portfolioSequence, basisPortfolioSnapshotId, principal, t0,
+                    endAt, period, targetRate, basisAt, measuredAt, verifiedThrough, calculationPolicy, calendarPolicy,
+                    displayPolicy, pricePolicy, implementationVersion, inputHash, resultHash, flowCount,
+                    estimatedFlowCount, estimated, inputReliability, PROGRESS);
+        }
+
+        /** The completion version of a plan that reached its end (Story 2.14): computed at {@code u = T}. */
+        boolean completion() {
+            return COMPLETION.equals(this.kind);
+        }
+
+        /**
+         * Where the version's applied flows end: its basis — {@code tc} for a progress version, whose flows are verified
+         * through it, and {@code T} for a completion version, whose flows after {@code T} are verified but not applied.
+         */
+        Instant appliedThrough() {
+            return this.basisAt;
+        }
+    }
 
     Optional<CalculationView> calculation(UUID user, UUID calculationId) {
         return jdbc.sql("SELECT plan_id,portfolio_id,portfolio_snapshot_id,portfolio_publication_sequence,"
                 + "basis_portfolio_snapshot_id,p0_decimal,t0,end_at,period,target_rate,basis_at,current_value_measured_at,"
                 + "cashflow_verified_through,calculation_policy,calendar_policy,display_policy,price_policy_version,"
                 + "implementation_version,input_hash,result_hash,flow_count,estimated_flow_count,estimated,"
-                + "input_reliability FROM sync_plan_calculation WHERE calculation_id=:c AND user_id=:u")
+                + "input_reliability,calculation_kind FROM sync_plan_calculation WHERE calculation_id=:c AND user_id=:u")
             .param("c", calculationId).param("u", user)
             .query((rs, n) -> new CalculationView(uuid(rs, 1), uuid(rs, 2), uuid(rs, 3), rs.getLong(4), uuid(rs, 5),
                     rs.getString(6), instant(rs, 7), instant(rs, 8), rs.getString(9), rs.getString(10), instant(rs, 11),
                     instant(rs, 12), instant(rs, 13), rs.getString(14), rs.getString(15), rs.getString(16),
                     rs.getString(17), rs.getString(18), rs.getString(19), rs.getString(20), rs.getInt(21),
-                    rs.getInt(22), rs.getBoolean(23), rs.getString(24))).optional();
+                    rs.getInt(22), rs.getBoolean(23), rs.getString(24), rs.getString(25))).optional();
     }
 
     /** The version's metrics in the screen's order. The caller checks that exactly the six came back. */
@@ -608,19 +670,42 @@ class PlanPublicationRepository {
     }
 
     /**
-     * A source snapshot's origin: the complete candidate it was built from ({@code null} for one a
-     * first-snapshot job wrote), its provenance and the source policy version it was written under.
+     * A source snapshot's origin and what it holds: the complete candidate it was built from, or — for a wallet
+     * observation of a completion or post-end attempt (Story 2.14) — that attempt ({@code null} both for one a
+     * first-snapshot job wrote), its provenance, the source policy version it was written under, and its stored value
+     * and times (all three are required columns).
      */
     record SourceOrigin(@Nullable UUID candidateId, UUID connectionId, UUID providerAccountId, Instant measuredAt,
-            String policyVersion) {}
+            String policyVersion, @Nullable UUID planSyncJobId, String equity, Instant receivedAt) {}
 
+    /**
+     * A source snapshot's origin: the candidate, or — for a wallet observation of a completion or post-end attempt
+     * (Story 2.14) — that attempt; neither for a first-snapshot job's.
+     */
     Optional<SourceOrigin> sourceOrigin(UUID user, UUID sourceSnapshotId) {
-        return jdbc.sql("SELECT initial_candidate_id,connection_id,provider_account_id,measured_at,policy_version "
+        return jdbc.sql("SELECT initial_candidate_id,connection_id,provider_account_id,measured_at,policy_version,"
+                + "plan_sync_job_id,equity_decimal,received_at "
                 + "FROM sync_source_snapshot WHERE source_snapshot_id=:s AND user_id=:u")
             .param("s", sourceSnapshotId).param("u", user)
             .query((rs, n) -> new SourceOrigin(rs.getObject(1, UUID.class), uuid(rs, 2), uuid(rs, 3), instant(rs, 4),
-                    rs.getString(5)))
+                    rs.getString(5), rs.getObject(6, UUID.class), rs.getString(7), instant(rs, 8)))
             .optional();
+    }
+
+    /**
+     * How many of a calculable conversion's flows lie in {@code (from, through]}, how many of them are estimated and
+     * how many are deposits: the flows a completion version (Story 2.14) applies, out of a conversion of
+     * {@code (t0, U]}.
+     */
+    record WithinCounts(int count, int estimated, int inbound) {}
+
+    WithinCounts calculableWithin(UUID user, UUID conversionId, Instant from, Instant through) {
+        // Inbound is the adjustment history's own predicate (AdjustmentHistoryRepository#totals): not signed negative.
+        return jdbc.sql("SELECT count(*),count(*) FILTER (WHERE estimated),count(*) FILTER (WHERE usd_value !~ '^-') "
+                + "FROM sync_calculable_cashflow WHERE conversion_id=:c AND user_id=:u AND occurred_at>:f "
+                + "AND occurred_at<=:t")
+            .param("c", conversionId).param("u", user).param("f", utc(from)).param("t", utc(through))
+            .query((rs, n) -> new WithinCounts(rs.getInt(1), rs.getInt(2), rs.getInt(3))).single();
     }
 
     /** The collected range of a candidate: its collection's earliest page start and latest page end. */
@@ -709,6 +794,9 @@ class PlanPublicationRepository {
         jdbc.sql("DELETE FROM sync_plan_publication_job WHERE user_id=:u").param("u", user).update();
         jdbc.sql("DELETE FROM sync_plan_calculation WHERE user_id=:u").param("u", user).update();
         jdbc.sql("DELETE FROM sync_source_snapshot WHERE user_id=:u AND initial_candidate_id IS NOT NULL")
+            .param("u", user).update();
+        // A completion's or post-end value's wallet observation (Story 2.14): before the attempts it names.
+        jdbc.sql("DELETE FROM sync_source_snapshot WHERE user_id=:u AND plan_sync_job_id IS NOT NULL")
             .param("u", user).update();
     }
 

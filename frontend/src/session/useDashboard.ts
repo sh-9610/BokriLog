@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { SyncPhase } from './useDashboardSync'
 
+import { comparisonName, planCompletionContent } from '../content/planCompletion'
 import { planEndContent } from '../content/planEnd'
 import {
   planResultContent as copy,
@@ -61,6 +62,11 @@ export interface PlanResult {
   readonly pointerVersion: number
   readonly publishedAt: string
   readonly calculationId: string
+  /**
+   * What the version is (Story 2.14): a progress version calculated before `T`, or the completion version of a plan
+   * completed at its scheduled end, calculated at `T` with the first observation after it.
+   */
+  readonly calculationKind: CalculationKind
   /** The official snapshot the version was calculated on. The evidence's failure view names it (Story 2.9). */
   readonly portfolioSnapshotId: string
   readonly basisPortfolioSnapshotId: string
@@ -82,6 +88,14 @@ export interface PlanResult {
     readonly calculationNature: NatureAxis
   }
   readonly metrics: readonly PlanResultMetric[]
+}
+
+/** The two kinds of calculation version (Story 2.14). The calculation evidence names the same kinds. */
+export type CalculationKind = 'PROGRESS' | 'COMPLETION'
+
+/** Whether the value is one of the two calculation kinds. */
+export function isCalculationKind(value: unknown): value is CalculationKind {
+  return value === 'PROGRESS' || value === 'COMPLETION'
 }
 
 /** The value as an object, or `null`. The calculation evidence's validator shares these helpers. */
@@ -171,6 +185,7 @@ export function isPlanResult(value: unknown): value is PlanResult {
     isPlainNonNegative(conditions.principal) &&
     isPlainNonNegative(conditions.targetRate) &&
     strings(row.policies, ['calculation', 'calendar', 'display', 'price', 'implementation']) &&
+    isCalculationKind(row.calculationKind) &&
     Number.isInteger(row.pointerVersion) &&
     Number.isInteger(row.flowCount) &&
     Number.isInteger(row.estimatedFlowCount) &&
@@ -781,11 +796,249 @@ export function parsePlanEndRecord(value: unknown, result: PlanResult): PlanEndR
   }
 }
 
+/** The plan status of a plan completed at its scheduled end `T` (Story 2.14). The evidence's version list reads it. */
+export const PLAN_COMPLETED = 'COMPLETED'
+
+/** The four completion comparisons (Story 2.14): checking, confirmed, not computable, and held for review. */
+const COMPARISONS: readonly string[] = ['PENDING', 'CONFIRMED', 'UNAVAILABLE', 'HELD']
+
+/** The reasons a comparison that cannot be calculated may carry, and the one a held comparison carries. */
+const UNAVAILABLE_REASONS: readonly string[] = [
+  'OBSERVATION_DELAY_EXCEEDED',
+  'POST_END_CASHFLOW',
+  'HISTORY_OUT_OF_RANGE',
+  'DATA_GAP',
+]
+const HELD_REASON = 'INPUT_REVIEW_REQUIRED'
+
+/** The two `UNAVAILABLE` reasons whose inputs are whole: a completion calculation is published for them. */
+const COMPLETION_CALCULATED_REASONS: readonly string[] = [
+  'OBSERVATION_DELAY_EXCEEDED',
+  'POST_END_CASHFLOW',
+]
+
+/** The longest delay from `T` to the first observation that still allows the comparison: 24 hours, inclusive. */
+export const OBSERVATION_DELAY_LIMIT_MS = 24 * 60 * 60 * 1000
+
+/** The reason a derived metric of a completion version is not computable when the comparison is not (Story 2.14). */
+const NOT_COMPARABLE = 'COMPLETION_NOT_COMPARABLE'
+
+/**
+ * The completion record of a plan completed at its scheduled end `T` (Story 2.14), as `GET /api/dashboard` sends it
+ * with `COMPLETED`: `T`, the comparison and its reason, the first normal observation after `T` (its value, the time
+ * Bybit measured it and the delay from `T`, the server's milliseconds — never a valuation at `T`), the completion
+ * target of the completion calculation and the number of external flows between `T` and the observation. The three
+ * observed fields are all present or all `null`; the last two only once a completion calculation exists. A
+ * comparison or a reason this screen does not know is kept and folded to safe copy where shown.
+ */
+export interface PlanCompletionRecord {
+  readonly scheduledEndAt: string
+  readonly comparison: string
+  readonly reason: string | null
+  readonly observedValue: string | null
+  readonly observedMeasuredAt: string | null
+  readonly observationDelayMillis: number | null
+  readonly completionTarget: string | null
+  readonly postEndCashflowCount: number | null
+  /**
+   * Whether a sync runs the completion again (the server's judgment): no observation yet, a comparison still checking,
+   * or one held for a cause a sync can clear. When false the comparison is final — or held for a cause no sync clears —
+   * and a sync only refreshes the value after the end.
+   */
+  readonly retryable: boolean
+}
+
+/** The current value after the first observation (Story 2.14): what later syncs measured. Never the completion. */
+export interface PostEndValue {
+  readonly value: string
+  readonly measuredAt: string
+}
+
+/**
+ * Whether the result is the completion version of its plan (Story 2.14), as the server names its kind. A completion
+ * version is calculated at the plan's scheduled end `T` (`parsePlanCompletion` checks it); a progress version before.
+ */
+export function isCompletionVersion(result: PlanResult): boolean {
+  return result.calculationKind === 'COMPLETION'
+}
+
+/** The value of a metric of the result, or `undefined` when it is not computable. */
+function metricValue(result: PlanResult, name: MetricName): string | undefined {
+  return result.metrics.find((metric) => metric.metric === name)?.value
+}
+
+function metricReason(result: PlanResult, name: MetricName): string | undefined {
+  return result.metrics.find((metric) => metric.metric === name)?.unavailableReason
+}
+
+/**
+ * The `completion` record of a `COMPLETED` answer, or `null` when it is not one whole record that agrees with the
+ * bundle it came with (Story 2.14). Its shape: the scheduled end is an instant and the plan's own `T`; the comparison
+ * a string; the reason a string or `null`; the observed value a canonical decimal, its time an instant and its delay
+ * a whole number of milliseconds — the three all present or all `null`; the target a canonical decimal or `null`; the
+ * count a whole number or `null`. An observation is never before `T`, and its delay is exactly its time minus `T`.
+ *
+ * The record agrees with the bundle: the bundle is the completion version (calculated at `T`) exactly when the record
+ * names a completion target and a count — and then the observation exists, the current value is the observed value,
+ * measured at the observation's time, the plan amount is the target, the required rate is not computable, and the
+ * derived metrics of a comparison that cannot be calculated say so without a value. A known comparison carries what
+ * the contract fixes for it: no reason while checking or confirmed; a confirmed one on a completion version, within 24
+ * hours, with no flow after `T`; a comparison that cannot be calculated with one of its four reasons — its delay over 24
+ * hours or its flows after `T` on a completion version, its data gap or out-of-range history without one; a held one
+ * with its review reason and no completion version. A comparison or a reason this screen does not know is not checked
+ * against these.
+ */
+export function parsePlanCompletion(
+  value: unknown,
+  result: PlanResult,
+): PlanCompletionRecord | null {
+  const row = record(value)
+  if (row === null) return null
+  const { scheduledEndAt, comparison, reason, observedValue, observedMeasuredAt } = row
+  const { observationDelayMillis, completionTarget, postEndCashflowCount, retryable } = row
+  if (!isInstant(scheduledEndAt) || typeof comparison !== 'string') return null
+  if (!absent(reason) && typeof reason !== 'string') return null
+  if (!absent(observedValue) && !isCanonicalDecimal(observedValue)) return null
+  if (!absent(observedMeasuredAt) && !isInstant(observedMeasuredAt)) return null
+  if (!absent(observationDelayMillis) && !count(observationDelayMillis)) return null
+  if (!absent(completionTarget) && !isCanonicalDecimal(completionTarget)) return null
+  if (!absent(postEndCashflowCount) && !count(postEndCashflowCount)) return null
+  if (typeof retryable !== 'boolean') return null
+  const parsed: PlanCompletionRecord = {
+    scheduledEndAt,
+    comparison,
+    reason: absent(reason) ? null : reason,
+    observedValue: absent(observedValue) ? null : observedValue,
+    observedMeasuredAt: absent(observedMeasuredAt) ? null : observedMeasuredAt,
+    observationDelayMillis: absent(observationDelayMillis) ? null : observationDelayMillis,
+    completionTarget: absent(completionTarget) ? null : completionTarget,
+    postEndCashflowCount: absent(postEndCashflowCount) ? null : postEndCashflowCount,
+    retryable,
+  }
+  if (!sameInstant(scheduledEndAt, result.conditions.endAt)) return null
+  // The observation: all three or none, never before T, its delay exactly its time minus T.
+  const observed = parsed.observedMeasuredAt !== null
+  if (
+    (parsed.observedValue !== null) !== observed ||
+    (parsed.observationDelayMillis !== null) !== observed
+  ) {
+    return null
+  }
+  if (parsed.observedMeasuredAt !== null) {
+    const delay = Date.parse(parsed.observedMeasuredAt) - Date.parse(scheduledEndAt)
+    if (delay < 0 || parsed.observationDelayMillis !== delay) return null
+  }
+  // The completion calculation: its target and count come with it, and with nothing else.
+  const completion = isCompletionVersion(result)
+  // A completion version is calculated at T, a progress version before it.
+  if (sameInstant(result.basisAt, result.conditions.endAt) !== completion) return null
+  if ((parsed.completionTarget !== null) !== completion) return null
+  if ((parsed.postEndCashflowCount !== null) !== completion) return null
+  if (completion) {
+    if (parsed.observedMeasuredAt === null || parsed.observedValue === null) return null
+    if (!sameInstant(result.measuredAt, parsed.observedMeasuredAt)) return null
+    if (metricValue(result, 'CURRENT_VALUE') !== parsed.observedValue) return null
+    if (metricValue(result, 'PLAN_AMOUNT') !== parsed.completionTarget) return null
+    if (metricValue(result, 'REQUIRED_RATE') !== undefined) return null
+  }
+  if (!agreesWithComparison(parsed, result, completion)) return null
+  // A sync runs the completion again while the comparison is checking, never once it is final. (Before an observation a
+  // comparison that cannot be calculated — a data gap — is already final; the server says whether a sync still runs.)
+  if (parsed.comparison === 'PENDING' && !parsed.retryable) return null
+  if (
+    (parsed.comparison === 'CONFIRMED' || parsed.comparison === 'UNAVAILABLE') &&
+    parsed.retryable
+  ) {
+    return null
+  }
+  return parsed
+}
+
+/** Whether the record carries what the contract fixes for its comparison (a known one only). */
+function agreesWithComparison(
+  completionRecord: PlanCompletionRecord,
+  result: PlanResult,
+  completion: boolean,
+): boolean {
+  const { comparison, reason, observationDelayMillis, postEndCashflowCount } = completionRecord
+  const notComparable = [
+    metricReason(result, 'PLAN_DIFFERENCE'),
+    metricReason(result, 'GOAL_PROGRESS'),
+  ]
+  // The derived metrics say "not comparable" only on a completion version whose comparison cannot be calculated.
+  const saysNotComparable = notComparable.includes(NOT_COMPARABLE)
+  if (saysNotComparable && !completion) return false
+  if (!COMPARISONS.includes(comparison)) return true
+  if (saysNotComparable && comparison !== 'UNAVAILABLE') return false
+  const withinDay =
+    observationDelayMillis !== null && observationDelayMillis <= OBSERVATION_DELAY_LIMIT_MS
+  const flows = postEndCashflowCount ?? 0
+  switch (comparison) {
+    case 'PENDING':
+      return reason === null && !completion
+    case 'CONFIRMED':
+      return (
+        reason === null &&
+        completion &&
+        withinDay &&
+        flows === 0 &&
+        metricValue(result, 'PLAN_DIFFERENCE') !== undefined
+      )
+    case 'HELD':
+      return reason !== null && (reason === HELD_REASON || !isKnownReason(reason)) && !completion
+    default: {
+      // UNAVAILABLE: a reason, one of its own when known.
+      if (reason === null) return false
+      if (!isKnownReason(reason)) return true
+      if (!UNAVAILABLE_REASONS.includes(reason)) return false
+      if (COMPLETION_CALCULATED_REASONS.includes(reason) !== completion) return false
+      if (completion && !notComparable.every((code) => code === NOT_COMPARABLE)) return false
+      if (reason === 'OBSERVATION_DELAY_EXCEEDED') return !withinDay
+      if (reason === 'POST_END_CASHFLOW') return flows > 0
+      return true
+    }
+  }
+}
+
+function isKnownReason(reason: string): boolean {
+  return UNAVAILABLE_REASONS.includes(reason) || reason === HELD_REASON
+}
+
+/**
+ * The `postEnd` value of a `COMPLETED` answer, or `null` when there is none: absent, `null`, not one whole value
+ * (a canonical decimal and an instant), or not later than the first observation it follows. It is a value of its
+ * own area: one this screen cannot vouch for is not shown, and never a reason to drop the completion record.
+ */
+export function parsePostEndValue(
+  value: unknown,
+  completionRecord: PlanCompletionRecord,
+): PostEndValue | null {
+  const row = record(value)
+  if (row === null) return null
+  const { value: amount, measuredAt } = row
+  if (!isCanonicalDecimal(amount) || !isInstant(measuredAt)) return null
+  const observed = completionRecord.observedMeasuredAt
+  if (observed === null || Date.parse(measuredAt) <= Date.parse(observed)) return null
+  return { value: amount, measuredAt }
+}
+
+/**
+ * The sync block of a `COMPLETED` answer (Story 2.14): read like a ready plan's, except that a completed plan never
+ * meets a long gap — a block that says so is one this screen cannot read, and a sync is not offered.
+ */
+function parseCompletedSync(value: unknown): SyncStatus {
+  const status = parseSyncStatus(value)
+  return status.availability === 'LONG_GAP' ? { ...UNKNOWN_SYNC, latest: status.latest } : status
+}
+
 /**
  * One validated dashboard response. `READY` carries the active plan's financial fields, its sync block, its
  * verification block and its version change (Story 2.12), and whether it may be ended (Story 2.13). `ENDED`
  * (Story 2.13) carries the same bundle of a plan ended early — its last official result, read-only — with its end
- * record, and nothing about syncs or verifications.
+ * record, and nothing about syncs or verifications. `COMPLETED` (Story 2.14) carries the bundle of a plan completed
+ * at its scheduled end — its completion version, or its last progress version until the comparison is decided — with
+ * its completion record, the value later syncs measured after the first observation, and the sync block that asks
+ * for them.
  */
 export type DashboardResponse =
   | { readonly state: 'NO_PLAN' | 'PREPARING'; readonly nextAction: string }
@@ -804,6 +1057,17 @@ export type DashboardResponse =
       readonly result: PlanResult
       readonly end: PlanEndRecord
     }
+  | {
+      readonly state: 'COMPLETED'
+      readonly nextAction: string
+      readonly result: PlanResult
+      readonly completion: PlanCompletionRecord
+      readonly postEnd: PostEndValue | null
+      /** The server sent a later value this screen could not vouch for (`parsePostEndValue` dropped it). */
+      readonly postEndUnreadable: boolean
+      readonly sync: SyncStatus
+      readonly change: VersionChange
+    }
 
 /**
  * The screen-level next actions each state may carry: Story 2.8's closed set, the two Story 2.11 added to
@@ -816,6 +1080,7 @@ const NEXT_ACTIONS: Readonly<Record<DashboardResponse['state'], readonly string[
   PREPARING: ['WAIT_FOR_RESULT'],
   READY: ['NONE', 'WAIT_FOR_SYNC', 'SYNC', 'VERIFY', 'CHOOSE_CONTINUATION'],
   ENDED: ['PREPARE_NEXT_PLAN'],
+  COMPLETED: ['SYNC_FOR_OBSERVATION', 'PREPARE_NEXT_PLAN'],
 }
 
 /** The plan status an `ENDED` bundle carries (Story 2.13), and the one a `READY` bundle carries. */
@@ -825,6 +1090,9 @@ const ACTIVE = 'ACTIVE'
 /** The freshness an ended plan's bundle carries: it is no longer synced (Story 2.13). */
 const ENDED_FRESHNESS = 'ENDED'
 
+/** The freshness a completed plan's bundle carries (Story 2.14): later syncs do not change it. */
+const COMPLETED_FRESHNESS = 'COMPLETED'
+
 /**
  * A `GET /api/dashboard` body, or `null` when it is not one whole answer. A state outside the four, a
  * next action that state cannot carry, a financial field on a state that has none, or a malformed bundle
@@ -832,7 +1100,10 @@ const ENDED_FRESHNESS = 'ENDED'
  * on `READY` each is read as far as it can be (`parseSyncStatus`, `parseVerificationStatus`,
  * `parseVersionChange`, `parsePlanEndStatus`), and on the states without them they have no meaning and are
  * ignored. A `READY` bundle is an active plan's. An `ENDED` bundle is a plan ended early, its freshness folded to
- * `ENDED`, whose end record agrees with it (`parsePlanEndRecord`).
+ * `ENDED`, whose end record agrees with it (`parsePlanEndRecord`). A `COMPLETED` bundle (Story 2.14) is a plan
+ * completed at its scheduled end, its freshness folded to `COMPLETED`, whose completion record agrees with it
+ * (`parsePlanCompletion`); its later value and its sync block never reject it (`parsePostEndValue`, a sync block
+ * read like a ready one's).
  */
 export function parseDashboard(value: unknown): DashboardResponse | null {
   const row = record(value)
@@ -844,15 +1115,38 @@ export function parseDashboard(value: unknown): DashboardResponse | null {
   }
   if (row.state === 'ENDED') {
     if (!NEXT_ACTIONS.ENDED.includes(row.nextAction) || !isPlanResult(row.result)) return null
-    if (row.result.planStatus !== ENDED_EARLY) return null
+    if (row.result.planStatus !== ENDED_EARLY || row.result.calculationKind !== 'PROGRESS') {
+      return null
+    }
     if (row.result.trust.freshness.state !== ENDED_FRESHNESS) return null
     const end = parsePlanEndRecord(row.end, row.result)
     return end === null
       ? null
       : { state: 'ENDED', nextAction: row.nextAction, result: row.result, end }
   }
+  if (row.state === 'COMPLETED') {
+    if (!NEXT_ACTIONS.COMPLETED.includes(row.nextAction) || !isPlanResult(row.result)) return null
+    if (row.result.planStatus !== PLAN_COMPLETED) return null
+    if (row.result.trust.freshness.state !== COMPLETED_FRESHNESS) return null
+    const completion = parsePlanCompletion(row.completion, row.result)
+    if (completion === null) return null
+    // The screen-level next action is the sync for the observation exactly while a sync runs the completion again.
+    if ((row.nextAction === 'SYNC_FOR_OBSERVATION') !== completion.retryable) return null
+    const postEnd = parsePostEndValue(row.postEnd, completion)
+    return {
+      state: 'COMPLETED',
+      nextAction: row.nextAction,
+      result: row.result,
+      completion,
+      postEnd,
+      postEndUnreadable: postEnd === null && !absent(row.postEnd),
+      sync: parseCompletedSync(row.sync),
+      change: parseVersionChange(row.change, row.result.basisAt),
+    }
+  }
   if (row.state !== 'READY' || !NEXT_ACTIONS.READY.includes(row.nextAction)) return null
   if (!isPlanResult(row.result) || row.result.planStatus !== ACTIVE) return null
+  if (row.result.calculationKind !== 'PROGRESS') return null
   return {
     state: 'READY',
     nextAction: row.nextAction,
@@ -864,20 +1158,24 @@ export function parseDashboard(value: unknown): DashboardResponse | null {
   }
 }
 
+/** The two ends a plan has (Story 2.14): ended early (Story 2.13), or completed at its scheduled end. */
+export type PlanTerminal = 'ENDED' | 'COMPLETED'
+
 /**
  * Whether `next` may replace `shown` (AC-9). Within one plan the pointer only moves forward, and one
  * pointer version names one calculation: a version that goes back, or the same version with another
- * calculation, is not a newer bundle. A plan ended early (Story 2.13) never becomes active again: within one
- * plan an active bundle after an ended one is not a newer bundle either.
+ * calculation, is not a newer bundle. A plan that has ended (Story 2.13) or completed (Story 2.14) never becomes
+ * active again: within one plan an active bundle after a terminal one is not a newer bundle, and neither is the
+ * other terminal state — a plan ends one way only. A terminal bundle after an active one of the same plan is.
  */
 export function supersedes(
   next: PlanResult,
   shown: PlanResult | null,
-  nextEnded = false,
-  shownEnded = false,
+  nextTerminal: PlanTerminal | null = null,
+  shownTerminal: PlanTerminal | null = null,
 ): boolean {
   if (shown?.planId !== next.planId) return true
-  if (shownEnded && !nextEnded) return false
+  if (shownTerminal !== null && nextTerminal !== shownTerminal) return false
   if (next.pointerVersion < shown.pointerVersion) return false
   return next.pointerVersion !== shown.pointerVersion || next.calculationId === shown.calculationId
 }
@@ -896,11 +1194,27 @@ export interface Accepted {
   readonly planEnd: PlanEndStatus
   /** The end record of a plan ended early (Story 2.13); `null` while the plan is active. */
   readonly end: PlanEndRecord | null
+  /**
+   * The completion record of a plan completed at its scheduled end (Story 2.14); absent or `null` otherwise. Optional,
+   * so a bundle built by hand for another state need not name it.
+   */
+  readonly completion?: PlanCompletionRecord | null
+  /** The value later syncs measured after the first observation of a completed plan (Story 2.14), if any. */
+  readonly postEnd?: PostEndValue | null
+  /** The server sent such a value but this screen could not vouch for it (Story 2.14). */
+  readonly postEndUnreadable?: boolean
+}
+
+/** How the bundle's plan ended, or `null` while it is active: the one terminal-state test the screen uses. */
+export function terminalOf(bundle: Accepted | null): PlanTerminal | null {
+  if (bundle === null) return null
+  if (bundle.end !== null) return 'ENDED'
+  return (bundle.completion ?? null) === null ? null : 'COMPLETED'
 }
 
 /**
  * What the screen shows. `checking` (no answer yet) is never "no plan". `ENDED` is the record of a plan ended
- * early (Story 2.13). After a failed read the last accepted bundle stays unchanged as `lastGood` (READ_FAIL).
+ * early (Story 2.13). `COMPLETED` is a plan completed at its scheduled end (Story 2.14). After a failed read the last accepted bundle stays unchanged as `lastGood` (READ_FAIL).
  * `retryable` is a read to retry: with nothing kept it has no financial value at all; after a response whose
  * version may not replace the shown bundle it keeps that bundle unswapped (RACE). `denied` has dropped the
  * bundle from memory — a refusal (403), or a session that is gone (401).
@@ -910,6 +1224,7 @@ export type DashboardView =
   | { readonly kind: 'NO_PLAN' | 'PREPARING'; readonly nextAction: string }
   | ({ readonly kind: 'READY' } & Accepted)
   | ({ readonly kind: 'ENDED' } & Accepted & { readonly end: PlanEndRecord })
+  | ({ readonly kind: 'COMPLETED' } & Accepted & { readonly completion: PlanCompletionRecord })
   | ({ readonly kind: 'lastGood' } & Accepted)
   | { readonly kind: 'retryable'; readonly kept: Accepted | null }
   | { readonly kind: 'denied'; readonly cause: 'refused' | 'signedOut' }
@@ -1032,7 +1347,7 @@ export function useDashboard(ready: boolean): Dashboard {
           settle(failed())
           return
         }
-        if (parsed.state !== 'READY' && parsed.state !== 'ENDED') {
+        if (parsed.state !== 'READY' && parsed.state !== 'ENDED' && parsed.state !== 'COMPLETED') {
           accepted.current = null
           settle({ kind: parsed.state, nextAction: parsed.nextAction })
           return
@@ -1042,8 +1357,8 @@ export function useDashboard(ready: boolean): Dashboard {
           !supersedes(
             parsed.result,
             kept?.result ?? null,
-            parsed.state === 'ENDED',
-            (kept?.end ?? null) !== null,
+            parsed.state === 'READY' ? null : parsed.state,
+            terminalOf(kept),
           )
         ) {
           // Not swapped in: the shown bundle stays, as a read to retry.
@@ -1063,6 +1378,25 @@ export function useDashboard(ready: boolean): Dashboard {
           }
           accepted.current = ended
           settle({ kind: 'ENDED', ...ended })
+          return
+        }
+        if (parsed.state === 'COMPLETED') {
+          // A plan completed at its scheduled end (Story 2.14): its bundle, its completion record, the value later syncs
+          // measured, the sync block that asks for them, and the version change marker. Nothing to verify or to end.
+          const completed: Accepted & { readonly completion: PlanCompletionRecord } = {
+            result: parsed.result,
+            nextAction: parsed.nextAction,
+            sync: parsed.sync,
+            verification: UNKNOWN_VERIFICATION,
+            change: parsed.change,
+            planEnd: UNKNOWN_PLAN_END,
+            end: null,
+            completion: parsed.completion,
+            postEnd: parsed.postEnd,
+            postEndUnreadable: parsed.postEndUnreadable,
+          }
+          accepted.current = completed
+          settle({ kind: 'COMPLETED', ...completed })
           return
         }
         const bundle: Accepted = {
@@ -1115,10 +1449,18 @@ export function useDashboard(ready: boolean): Dashboard {
 
 /**
  * The bundle a view shows, if any: ready, the record of a plan ended early (Story 2.13 — the calculation evidence
- * and the adjustment history read it like any other), kept after a failure, or kept unswapped after a conflict.
+ * and the adjustment history read it like any other), a plan completed at its scheduled end (Story 2.14), kept after
+ * a failure, or kept unswapped after a conflict.
  */
 export function bundleOf(view: DashboardView): Accepted | null {
-  if (view.kind === 'READY' || view.kind === 'ENDED' || view.kind === 'lastGood') return view
+  if (
+    view.kind === 'READY' ||
+    view.kind === 'ENDED' ||
+    view.kind === 'COMPLETED' ||
+    view.kind === 'lastGood'
+  ) {
+    return view
+  }
   if (view.kind === 'retryable') return view.kept
   return null
 }
@@ -1203,6 +1545,39 @@ function syncSentence(phase: SyncPhase, purpose: SyncPurpose, bundle: Accepted):
 }
 
 /**
+ * The sentence the status region reads for a shown `COMPLETED` bundle (Story 2.14). Without a job to speak of, it
+ * names the scheduled end and the comparison — once when the completion comes on screen, and again only when the
+ * comparison changes. A job that runs or ends without a new bundle says the sync's own sentences. A job that ended
+ * with one says what it showed: the completion result when it ran the completion or the comparison is still being
+ * decided; once the comparison is final, the value after the end — or that there is none, or that it could not be read
+ * — and that the completion result did not change.
+ */
+function completedSentence(
+  phase: SyncPhase,
+  purpose: SyncPurpose,
+  view: Accepted & { readonly completion: PlanCompletionRecord },
+): string {
+  const { completion } = view
+  const comparison = comparisonName(completion.comparison)
+  const status = planCompletionContent.status
+  if (phase === 'idle') {
+    return status.shown(
+      formatSeoulTime(completion.scheduledEndAt, copy.timeUnavailable),
+      comparison,
+    )
+  }
+  if (phase !== 'succeeded' && phase !== 'refreshed') return fixedSentence(phase, purpose)
+  // The job that ended ran the completion, or the comparison is still being decided: the completion result is what
+  // it brought.
+  if (view.sync.latest?.purpose === 'COMPLETION' || completion.retryable) {
+    return status.synced(comparison)
+  }
+  // Once the comparison is final a sync only measures the value after the end; the completion result is unchanged.
+  if ((view.postEnd ?? null) !== null) return status.postEndSynced
+  return view.postEndUnreadable === true ? status.postEndUnreadable : status.postEndNone
+}
+
+/**
  * The single sentence the screen's status region reads for the dashboard. It knows about the sync (Story
  * 2.11) and the precision verification and catch-up that share its job table (Story 2.12): while the shown
  * bundle is ready, the job's phase has the say — one sentence when it starts, one when it ends — in the words
@@ -1236,6 +1611,8 @@ export function dashboardAnnouncement(
     case 'ENDED':
       // Said once, when the record comes on screen — the end flow itself says nothing more (Story 2.13).
       return planEndContent.status.ended(formatSeoulTime(view.end.endedAt, copy.timeUnavailable))
+    case 'COMPLETED':
+      return completedSentence(phase, purpose, view)
     case 'lastGood':
     case 'retryable':
       if (phase === 'running' || phase === 'stalled') return fixedSentence(phase, purpose)

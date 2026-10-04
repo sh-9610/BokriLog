@@ -37,6 +37,9 @@ const PURPOSES: Readonly<Record<string, string>> = {
   SYNC: '동기화',
   VERIFY: '정밀 검증',
   CATCH_UP: '기존 계획 계속',
+  // Story 2.14: 예정 종료 뒤 첫 관측과 완료 계산, 그리고 그 뒤의 종료 후 현재가치 확인.
+  COMPLETION: '완료 결과 확인',
+  POST_END_VALUE: '종료 후 현재가치 확인',
 }
 
 /** 작업을 접수한 사유. 사용자 사유는 앞의 둘이고 나머지는 서비스가 접수한다. */

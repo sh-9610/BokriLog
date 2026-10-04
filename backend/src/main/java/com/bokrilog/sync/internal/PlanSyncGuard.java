@@ -29,6 +29,11 @@ class PlanSyncGuard {
     static final String RESTRICTED = "RESTRICTED";
     static final String CONNECTION_UNAVAILABLE = "CONNECTION_UNAVAILABLE";
     static final String PLAN_PERIOD_ENDED = "PLAN_PERIOD_ENDED";
+    /** The closed codes a running attempt ends with when {@link #blocked} stops it. */
+    static final String NOT_PERMITTED = "NOT_PERMITTED";
+    static final String PLAN_CHANGED = "PLAN_CHANGED";
+    static final String POINTER_CONFLICT = "POINTER_CONFLICT";
+    static final String MEMBERSHIP_CHANGED = "MEMBERSHIP_CHANGED";
 
     private final PlanPublicationRepository publications;
     private final SourceConnectionApi sources;
@@ -61,6 +66,43 @@ class PlanSyncGuard {
         if (calculation == null || !PlanPublicationService.belongs(calculation, plan, pointer)) return Optional.empty();
         return publications.lineage(user, pointer.calculationId()).map(lineage ->
                 new Base(plan, pointer, calculation, lineage));
+    }
+
+    /**
+     * A plan that reached its end and completed (Story 2.14): its base — the current pointer, the version it cites and
+     * that version's lineage, as a sync reads them — and its completion record.
+     */
+    record CompletedBase(Base base, PlanPublicationPort.PlanCompletion completion) {}
+
+    /**
+     * The user's most recent plan when it completed, with its pointer, version, lineage and completion record; empty
+     * when the most recent plan is not a completed one, or any of them is missing or does not belong to it.
+     */
+    Optional<CompletedBase> completedBase(UUID user) {
+        var latest = plans.latestPlan(user).orElse(null);
+        if (latest == null || !PlanPublicationService.COMPLETED.equals(latest.status()) || latest.completion() == null)
+            return Optional.empty();
+        var plan = latest.plan();
+        var pointer = publications.pointer(user, plan.planId()).orElse(null);
+        if (pointer == null) return Optional.empty();
+        var calculation = publications.calculation(user, pointer.calculationId()).orElse(null);
+        if (calculation == null || !PlanPublicationService.belongs(calculation, plan, pointer)) return Optional.empty();
+        var completion = latest.completion();
+        return publications.lineage(user, pointer.calculationId()).map(lineage ->
+                new CompletedBase(new Base(plan, pointer, calculation, lineage), completion));
+    }
+
+    /**
+     * Why no completion or post-end attempt can run now (Story 2.14), or {@code null}: the guard's own reasons without
+     * the plan's end — a restriction, or a connection or membership that is not the plan's own any more.
+     */
+    @Nullable String completionUnavailableReason(UUID user, UUID membershipId, UUID portfolioId, UUID connectionId,
+            UUID providerAccountId) {
+        if (restricted()) return RESTRICTED;
+        if (!sameConnection(user, connectionId, providerAccountId)
+                || !sameMembership(user, membershipId, portfolioId, connectionId, providerAccountId))
+            return CONNECTION_UNAVAILABLE;
+        return null;
     }
 
     /** The account's own write access. */
@@ -116,18 +158,47 @@ class PlanSyncGuard {
      */
     @Nullable String blocked(PlanSyncRepository.Lease lease) {
         UUID user = lease.userId();
-        if (!writable(user) || restricted()) return "NOT_PERMITTED";
+        if (!writable(user) || restricted()) return NOT_PERMITTED;
+        if (lease.completing() || lease.postEnd()) return completedBlocked(lease);
         var plan = plans.activePlan(user).orElse(null);
-        if (plan == null || !plan.planId().equals(lease.planId())) return "PLAN_CHANGED";
+        if (plan == null) {
+            // The plan completed under this attempt (Story 2.14): its period ended, which is what stops it.
+            var latest = plans.latestPlan(user).orElse(null);
+            return latest != null && latest.plan().planId().equals(lease.planId())
+                    && PlanPublicationService.COMPLETED.equals(latest.status()) ? PLAN_PERIOD_ENDED : PLAN_CHANGED;
+        }
+        if (!plan.planId().equals(lease.planId())) return PLAN_CHANGED;
         var pointer = publications.pointer(user, lease.planId()).orElse(null);
         if (pointer == null || pointer.version() != lease.basePointerVersion()
                 || !pointer.calculationId().equals(lease.baseCalculationId()))
-            return "POINTER_CONFLICT";
-        if (!sameConnection(user, lease.connectionId(), lease.providerAccountId())) return "NOT_PERMITTED";
+            return POINTER_CONFLICT;
+        if (!sameConnection(user, lease.connectionId(), lease.providerAccountId())) return NOT_PERMITTED;
         if (!sameMembership(user, lease.membershipId(), lease.portfolioId(), lease.connectionId(),
                 lease.providerAccountId()))
-            return "MEMBERSHIP_CHANGED";
-        if (!publications.databaseNow().isBefore(lease.endAt())) return "PLAN_PERIOD_ENDED";
+            return MEMBERSHIP_CHANGED;
+        if (!publications.databaseNow().isBefore(lease.endAt())) return PLAN_PERIOD_ENDED;
+        return null;
+    }
+
+    /**
+     * {@link #blocked} for a completion or post-end attempt (Story 2.14): the plan must be the user's most recent plan
+     * and completed, its pointer still the attempt's base, and its connection and membership still the plan's own. The
+     * plan's end is what these attempts are for, so it never stops them.
+     */
+    private @Nullable String completedBlocked(PlanSyncRepository.Lease lease) {
+        UUID user = lease.userId();
+        var latest = plans.latestPlan(user).orElse(null);
+        if (latest == null || !latest.plan().planId().equals(lease.planId())
+                || !PlanPublicationService.COMPLETED.equals(latest.status()) || latest.completion() == null)
+            return PLAN_CHANGED;
+        var pointer = publications.pointer(user, lease.planId()).orElse(null);
+        if (pointer == null || pointer.version() != lease.basePointerVersion()
+                || !pointer.calculationId().equals(lease.baseCalculationId()))
+            return POINTER_CONFLICT;
+        if (!sameConnection(user, lease.connectionId(), lease.providerAccountId())) return NOT_PERMITTED;
+        if (!sameMembership(user, lease.membershipId(), lease.portfolioId(), lease.connectionId(),
+                lease.providerAccountId()))
+            return MEMBERSHIP_CHANGED;
         return null;
     }
 }

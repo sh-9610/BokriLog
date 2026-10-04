@@ -431,4 +431,127 @@ class PlanCalculatorTest {
     private static Instant seoul(String local) {
         return LocalDateTime.parse(local).atZone(SeoulCalendar.ZONE).toInstant();
     }
+
+    // ------------------------------------------------------------------------------------------ Story 2.14 (CV-11)
+
+    /** Comparable: observed at T. Not comparable: observed 24 hours and 1 ms after T. */
+    private static PlanCalculator.CompletionInput completion(String observed, boolean comparable, List<Cashflow> flows) {
+        return completion(observed, comparable ? day(3) : day(4).plusMillis(1), false, flows);
+    }
+
+    private static PlanCalculator.CompletionInput completion(String observed, Instant measuredAt,
+            boolean postEndCashflow, List<Cashflow> flows) {
+        return new PlanCalculator.CompletionInput("1000", T0, day(3), Period.DAILY, "0.1", observed, measuredAt,
+                postEndCashflow, flows, PlanCalculator.CALCULATION_POLICY, PlanCalculator.CALENDAR_POLICY);
+    }
+
+    private static Result.Calculated completed(PlanCalculator.CompletionInput input) {
+        Result result = PlanCalculator.complete(input);
+        assertThat(result).isInstanceOf(Result.Calculated.class);
+        return (Result.Calculated) result;
+    }
+
+    /**
+     * CV-11: the completion is the same formulas at {@code u = T}. The plan amount is the target, the difference is the
+     * observation minus the target, the goal progress is PRD's, and the required rate has no remaining period.
+     */
+    @Test
+    void theCompletionAppliesTheSameFormulasAtTheEnd() {
+        var result = completed(completion("1250", true, List.of()));
+        assertThat(value(result, Metric.CURRENT_VALUE)).isEqualTo("1250");
+        assertThat(value(result, Metric.PLAN_AMOUNT)).isEqualTo("1331");
+        assertThat(value(result, Metric.ADJUSTED_TARGET)).isEqualTo("1331");
+        assertThat(value(result, Metric.PLAN_DIFFERENCE)).isEqualTo("-81");
+        // (1250 - 1000) / (1331 - 1000)
+        assertThat(value(result, Metric.GOAL_PROGRESS))
+                .isEqualTo(Decimals.canonical(new BigDecimal(250).divide(new BigDecimal(331), Decimals.CONTEXT)));
+        assertThat(result.metric(Metric.REQUIRED_RATE).value()).isNull();
+        assertThat(result.metric(Metric.REQUIRED_RATE).unavailableReason())
+                .isEqualTo(UnavailableReason.REMAINING_PERIOD_NOT_POSITIVE);
+        assertThat(result.periodsElapsed()).isEqualTo("3").isEqualTo(result.periodsTotal());
+        assertThat(result.periodsRemaining()).isEqualTo("0");
+        assertThat(result.inputReliability()).isEqualTo(InputReliability.CONFIRMED);
+        // A progress calculation of the same terms just before T is a different input, and hashes differently.
+        assertThat(result.inputHash()).isNotEqualTo(PlanCalculator.calculate(daily("1000", "0.1", "1250", List.of()))
+                .inputHash());
+        // Even a current value that is not positive is not the reason here: there is no period left.
+        assertThat(completed(completion("0", true, List.of())).metric(Metric.REQUIRED_RATE).unavailableReason())
+                .isEqualTo(UnavailableReason.REMAINING_PERIOD_NOT_POSITIVE);
+    }
+
+    /** CV-11: a completion that is not comparable keeps the observation and the target and has no difference or progress. */
+    @Test
+    void aNotComparableCompletionHasNoDifferenceOrProgressAndNeverAZero() {
+        var result = completed(completion("1250", false, List.of()));
+        assertThat(value(result, Metric.CURRENT_VALUE)).isEqualTo("1250");
+        assertThat(value(result, Metric.ADJUSTED_TARGET)).isEqualTo("1331");
+        for (Metric metric : List.of(Metric.PLAN_DIFFERENCE, Metric.GOAL_PROGRESS)) {
+            assertThat(result.metric(metric).value()).as(metric.name()).isNull();
+            assertThat(result.metric(metric).unavailableReason()).isEqualTo(UnavailableReason.COMPLETION_NOT_COMPARABLE);
+            assertThat(result.metric(metric).nature()).isEqualTo(Nature.OFFICIAL);
+        }
+        assertThat(result.inputHash()).isNotEqualTo(completed(completion("1250", true, List.of())).inputHash());
+    }
+
+    /**
+     * AC-5: {@code ti = t0} is in P0 and not applied, {@code ti = T} is applied, {@code ti > T} is not; flows of the same
+     * millisecond are each applied once in the stable order, whatever the input order.
+     */
+    @Test
+    void theCompletionAppliesExactlyTheFlowsOfTheClosedEnd() {
+        Instant end = day(3);
+        List<Cashflow> flows = List.of(flow(T0, "at-start", "100"), flow(end, "at-end-b", "30"),
+                flow(end, "at-end-a", "70"), flow(end.plusMillis(1), "after-end", "500"));
+        var forward = completed(completion("1431", true, flows));
+        var reversed = completed(completion("1431", true, flows.reversed()));
+        assertThat(forward).isEqualTo(reversed);
+        assertThat(forward.appliedCashflows()).extracting(PlanCalculator.AppliedCashflow::sourceId)
+                .containsExactly("at-end-a", "at-end-b");
+        assertThat(forward.appliedCashflows()).extracting(PlanCalculator.AppliedCashflow::periodsToEnd)
+                .containsOnly("0");
+        assertThat(forward.adjustedPrincipal()).isEqualTo("1100");
+        assertThat(value(forward, Metric.ADJUSTED_TARGET)).isEqualTo("1431");
+        assertThat(value(forward, Metric.PLAN_DIFFERENCE)).isEqualTo("0");
+        assertThat(value(forward, Metric.GOAL_PROGRESS)).isEqualTo("1");
+    }
+
+    /** CV-11: the 24-hour limit includes exactly 24 hours and excludes one millisecond more, and nothing before T. */
+    @Test
+    void theObservationLimitIsTwentyFourHoursInclusive() {
+        Instant end = day(3);
+        assertThat(PlanCalculator.observationWithinLimit(end, end)).isTrue();
+        assertThat(PlanCalculator.observationWithinLimit(end, end.plusMillis(DAY))).isTrue();
+        assertThat(PlanCalculator.observationWithinLimit(end, end.plusMillis(DAY + 1))).isFalse();
+        assertThat(PlanCalculator.observationWithinLimit(end, end.minusMillis(1))).isFalse();
+        // The calculator judges the comparability itself, from the observation time and the post-end flow fact.
+        assertThat(completed(completion("1250", end.plusMillis(DAY), false, List.of())).metric(Metric.PLAN_DIFFERENCE)
+                .value()).isEqualTo("-81");
+        assertThat(completed(completion("1250", end.plusMillis(DAY + 1), false, List.of()))
+                .metric(Metric.PLAN_DIFFERENCE).unavailableReason()).isEqualTo(UnavailableReason.COMPLETION_NOT_COMPARABLE);
+        assertThat(completed(completion("1250", end, true, List.of())).metric(Metric.GOAL_PROGRESS)
+                .unavailableReason()).isEqualTo(UnavailableReason.COMPLETION_NOT_COMPARABLE);
+        // The observation time is part of the input: two observations of the same value are two inputs.
+        assertThat(PlanCalculator.complete(completion("1250", end, false, List.of())).inputHash())
+                .isNotEqualTo(PlanCalculator.complete(completion("1250", end.plusMillis(1), false, List.of()))
+                        .inputHash());
+        // An observation before T is no post-end observation.
+        assertThat(PlanCalculator.complete(completion("1250", end.minusMillis(1), false, List.of())))
+                .isInstanceOf(Result.Rejected.class);
+        // The calculator judges the comparability itself, from the observation time and the post-end flow fact.
+        assertThat(completed(completion("1250", end.plusMillis(DAY), false, List.of())).metric(Metric.PLAN_DIFFERENCE)
+                .value()).isEqualTo("-81");
+        assertThat(completed(completion("1250", end.plusMillis(DAY + 1), false, List.of()))
+                .metric(Metric.PLAN_DIFFERENCE).unavailableReason()).isEqualTo(UnavailableReason.COMPLETION_NOT_COMPARABLE);
+        assertThat(completed(completion("1250", end, true, List.of())).metric(Metric.GOAL_PROGRESS)
+                .unavailableReason()).isEqualTo(UnavailableReason.COMPLETION_NOT_COMPARABLE);
+        // The observation time is part of the input: two observations of the same value are two inputs.
+        assertThat(PlanCalculator.complete(completion("1250", end, false, List.of())).inputHash())
+                .isNotEqualTo(PlanCalculator.complete(completion("1250", end.plusMillis(1), false, List.of()))
+                        .inputHash());
+        // An observation before T is no post-end observation.
+        assertThat(PlanCalculator.complete(completion("1250", end.minusMillis(1), false, List.of())))
+                .isInstanceOf(Result.Rejected.class);
+        assertThat(PlanCalculator.conformant()).isTrue();
+        assertThat(Conformance.evaluate()).isTrue();
+    }
 }

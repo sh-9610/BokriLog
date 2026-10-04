@@ -296,6 +296,36 @@ class DashboardTrustTest {
         assertThat(DashboardTrust.nextAction(trust)).isEqualTo("NONE");
     }
 
+    /**
+     * Story 2.14: a completed plan's bundle folds freshness into COMPLETED (all six, no next action); the input
+     * reliability and the nature come from the version and its own persistent review, as an ended record's do. A
+     * completion version's undefined metrics — no remaining period, not comparable — make the nature not computable.
+     */
+    @Test
+    void aCompletedPlansBundleIsJudgedFromItsVersionAlone() {
+        var trust = DashboardTrust.judgeCompleted("CONFIRMED", false, 0, MEASURED, VERIFIED, BASIS,
+                metrics("CONFIRMED", "OFFICIAL"), null).orElseThrow();
+        assertThat(trust.freshness()).isEqualTo(new com.bokrilog.sync.SyncJobApi.TrustAxis("COMPLETED",
+                "PLAN_COMPLETED", MEASURED, SIX, "NONE"));
+        assertThat(trust.inputReliability().state()).isEqualTo("CONFIRMED");
+        assertThat(DashboardTrust.nextAction(trust)).isEqualTo("NONE");
+        var completion = List.of(new DashboardMetric("CURRENT_VALUE", "1250", "OFFICIAL", null),
+                new DashboardMetric("PLAN_AMOUNT", "1331", "OFFICIAL", null),
+                new DashboardMetric("PLAN_DIFFERENCE", null, "OFFICIAL", "COMPLETION_NOT_COMPARABLE"),
+                new DashboardMetric("ADJUSTED_TARGET", "1331", "OFFICIAL", null),
+                new DashboardMetric("REQUIRED_RATE", null, "OFFICIAL", "REMAINING_PERIOD_NOT_POSITIVE"),
+                new DashboardMetric("GOAL_PROGRESS", null, "OFFICIAL", "COMPLETION_NOT_COMPARABLE"));
+        assertThat(DashboardTrust.wellFormed(completion, false)).isTrue();
+        var notComparable = DashboardTrust.judgeCompleted("CONFIRMED", false, 0, MEASURED, VERIFIED, BASIS, completion,
+                "SOURCE_EVENT_MISSING").orElseThrow();
+        assertThat(notComparable.calculationNature().axis().state()).isEqualTo("NOT_COMPUTABLE");
+        assertThat(notComparable.calculationNature().unavailableMetrics()).containsExactly("PLAN_DIFFERENCE",
+                "REQUIRED_RATE", "GOAL_PROGRESS");
+        assertThat(notComparable.inputReliability().cause()).isEqualTo("VERIFICATION_REVIEW_REQUIRED");
+        assertThat(DashboardTrust.judgeCompleted("UNKNOWN", false, 0, MEASURED, VERIFIED, BASIS,
+                metrics("CONFIRMED", "OFFICIAL"), null)).isEmpty();
+    }
+
     /** B3: the end time (the clock to the millisecond) before the measurement or the verification is too recent. */
     @Test
     void aResultAheadOfTheClockIsTooRecent() {

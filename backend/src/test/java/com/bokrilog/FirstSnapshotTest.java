@@ -3162,10 +3162,13 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertThat(nested(inputs,"cashflows")).isEqualTo(java.util.Map.of("appliedCount",0,"estimatedCount",0));
         assertThat(nested(inputs,"plan")).isEqualTo(java.util.Map.of("planId",shown.get("planId"),
                 "conditions",shown.get("conditions")));
-        assertThat(nested(fields,"calculation")).isEqualTo(java.util.Map.of("calculationId",shown.get("calculationId"),
-                "calculationPolicy","CALC-1.0","calendarPolicy","CALENDAR-SEOUL-1.0","displayPolicy","DISPLAY-1.0",
-                "precisionPolicy","DECIMAL128-HALF_EVEN","timeZone","Asia/Seoul","implementationVersion",row[17],
-                "inputHash",row[15],"resultHash",row[16],"createdAt",row[18]));
+        assertThat(nested(fields,"calculation")).isEqualTo(java.util.Map.ofEntries(
+                java.util.Map.entry("calculationId",shown.get("calculationId")),
+                java.util.Map.entry("calculationPolicy","CALC-1.0"),java.util.Map.entry("calendarPolicy","CALENDAR-SEOUL-1.0"),
+                java.util.Map.entry("displayPolicy","DISPLAY-1.0"),java.util.Map.entry("precisionPolicy","DECIMAL128-HALF_EVEN"),
+                java.util.Map.entry("timeZone","Asia/Seoul"),java.util.Map.entry("implementationVersion",row[17]),
+                java.util.Map.entry("inputHash",row[15]),java.util.Map.entry("resultHash",row[16]),
+                java.util.Map.entry("createdAt",row[18]),java.util.Map.entry("calculationKind","PROGRESS")));
         @SuppressWarnings("unchecked")
         var metrics=(java.util.List<java.util.Map<String,Object>>)fields.get("metrics");
         assertThat(metrics).extracting(m -> m.get("metric")).containsExactly("CURRENT_VALUE","PLAN_AMOUNT",

@@ -147,6 +147,10 @@ export const planResultContent = {
     GOAL_PROFIT_NOT_POSITIVE: '목표 이익이 0 이하라 목표 수익 달성도를 정의할 수 없습니다.',
     REMAINING_PERIOD_NOT_POSITIVE:
       '남은 계획 기간이 없어 남은 필요 등가수익률을 정의할 수 없습니다.',
+    // Story 2.14: 자연 만료된 계획의 완료 계산에서, 첫 관측값을 완료 비교에 쓸 수 없을 때(지연 24시간 초과·종료 뒤
+    // 외부 입출금). 0이나 0%로 대신하지 않는다.
+    COMPLETION_NOT_COMPARABLE:
+      '종료 후 첫 관측값을 완료 비교에 쓸 수 없어 이 지표를 계산하지 않습니다. 이유는 완료 결과의 완료 비교에 있습니다.',
   } as Record<string, string>,
   unknownReason: '이 지표를 정의할 수 없습니다.',
   estimatedEvidence: (count: number) =>
@@ -155,7 +159,13 @@ export const planResultContent = {
     freshness: {
       name: '신선도',
       // Story 2.13: 중도 종료된 계획의 신선도(`ENDED`)는 그리지 않는다. 기록 모드는 이 축 대신 종료 기록을 보인다.
-      states: { FRESH: '최신', SYNCING: '동기화 중', STALE: '최신 아님' } as Record<string, string>,
+      // Story 2.14: 자연 만료된 계획의 신선도는 `COMPLETED`로 접힌다. 이후 동기화는 완료 결과를 바꾸지 않는다.
+      states: {
+        FRESH: '최신',
+        SYNCING: '동기화 중',
+        STALE: '최신 아님',
+        COMPLETED: '계획 완료',
+      } as Record<string, string>,
       causes: {
         BOTH_WITHIN_WINDOW: '현재가치 측정과 외부 자금흐름 확인이 모두 15분 이내입니다.',
         JOB_IN_PROGRESS: '동기화 작업이 진행 중입니다. 기존 공식 값은 그대로 유지됩니다.',
@@ -178,6 +188,9 @@ export const planResultContent = {
           '지금은 동기화할 수 없어 공식 값을 새로 확인하지 못합니다. 기존 공식 값은 그대로 유지됩니다.',
         // Story 2.12: 같은 기준 계산의 검증 작업(정밀 검증 또는 기존 계획 계속)이 검토 필요로 끝나 결과를 보류하고
         // 있다. 같은 기준 계산 동안 다시 요청해도 바뀌지 않는다. 어느 목적의 작업이었는지 단정하지 않는다.
+        // Story 2.14: 완료 계산 버전이 보일 때의 문장. 아직 진행 버전이 보이면 화면이 planCompletion의 문장으로 바꾼다.
+        PLAN_COMPLETED:
+          '예정 종료 시각이 지나 계획이 끝났습니다. 표시된 지표는 완료 계산 버전이며 이후 동기화로 바뀌지 않고, 종료 뒤의 값은 종료 후 현재가치 영역에 따로 보입니다.',
         LAST_VERIFICATION_NEEDS_REVIEW:
           '같은 기준 계산에서 끝난 정밀 검증이나 기존 계획 계속의 입력에 검토가 필요해 공식 값을 바꾸지 않았습니다. 기존 공식 값은 그대로 유지됩니다.',
       } as Record<string, string>,

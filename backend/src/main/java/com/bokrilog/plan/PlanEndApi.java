@@ -58,9 +58,29 @@ public interface PlanEndApi {
      */
     String RESULT_UNAVAILABLE = "RESULT_UNAVAILABLE";
 
-    /** The plan statuses (V10, V13). Sync keeps its own copies; {@code SyncCommandNamesTest} pins them to these. */
+    /** The plan statuses (V10, V13, V14). Sync keeps its own copies; {@code SyncCommandNamesTest} pins them to these. */
     String STATUS_ACTIVE = "ACTIVE";
     String STATUS_ENDED_EARLY = "ENDED_EARLY";
+    /**
+     * The natural completion of a plan that reached its end {@code T} (Story 2.14). With {@link #STATUS_ENDED_EARLY}
+     * one of the two terminal statuses; neither goes back to {@link #STATUS_ACTIVE}.
+     */
+    String STATUS_COMPLETED = "COMPLETED";
+
+    /**
+     * The completion comparison of a completed plan (Story 2.14), apart from the plan's own status: not judged yet,
+     * confirmed, not computable (with a {@link CompletionReason}) or held for input review. A comparison that cannot be
+     * confirmed never turns the plan back. Sync keeps its own copies; {@code SyncCommandNamesTest} pins them.
+     */
+    enum Comparison { PENDING, CONFIRMED, UNAVAILABLE, HELD }
+
+    /**
+     * Why a completion comparison is not confirmed: the first observation came more than 24 hours after {@code T}, a
+     * confirmed external flow lies in {@code (T, measured]}, the history is out of the provider's reach, the gap at the
+     * transition was long (all {@link Comparison#UNAVAILABLE}), or the inputs need review ({@link Comparison#HELD}).
+     */
+    enum CompletionReason { OBSERVATION_DELAY_EXCEEDED, POST_END_CASHFLOW, HISTORY_OUT_OF_RANGE, DATA_GAP,
+        INPUT_REVIEW_REQUIRED }
 
     /** Why the plan ends: the user's early end, or the new-plan choice after a long gap. */
     enum Reason { USER_REQUEST, LONG_GAP_NEW_PLAN }

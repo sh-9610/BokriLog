@@ -16,6 +16,7 @@ import {
   type MetricName,
 } from '../content/planResult'
 import { formatAmount, percentFromRatio } from '../format/decimal'
+import { PLAN_COMPLETED } from '../session/useDashboard'
 import styles from './CalculationEvidence.module.css'
 import { EvidenceChange } from './EvidenceChange'
 import { Facts, Id, Part, Time, TimeRange } from './EvidenceParts'
@@ -308,7 +309,13 @@ function attemptReason(code: string): string {
  * it stopped being so — the current one named so instead; then — apart, and read-only — the attempts that
  * never published. Nothing here links anywhere: no earlier version or attempt has a screen of its own.
  */
-function Versions({ evidence }: { readonly evidence: Evidence }): ReactElement {
+function Versions({
+  evidence,
+  completedHelp,
+}: {
+  readonly evidence: Evidence
+  readonly completedHelp: string | null
+}): ReactElement {
   const { official, unpublished } = evidence.versions
   return (
     <Part id="versions" title={copy.sections.versions}>
@@ -325,10 +332,18 @@ function Versions({ evidence }: { readonly evidence: Evidence }): ReactElement {
                 { label: copy.versions.order, value: <Id value={version.pointerVersion} /> },
                 { label: copy.versions.effectiveFrom, value: <Time value={version.publishedAt} /> },
                 // "Current" comes from the version's own flag and from nothing else. The current version of a
-                // plan ended early (Story 2.13) names when it stopped being applied: the end time.
+                // plan ended early (Story 2.13) names when it stopped being applied: the end time. The current
+                // version of a plan completed at its scheduled end (Story 2.14) stays current: its completion version
+                // says no later sync changes it, a progress version that the completion may still replace it.
                 version.current
                   ? typeof version.appliedUntil !== 'string'
-                    ? { label: copy.versions.effectiveUntil, value: copy.versions.current }
+                    ? completedHelp !== null
+                      ? {
+                          label: copy.versions.effectiveUntil,
+                          value: copy.versions.current,
+                          help: completedHelp,
+                        }
+                      : { label: copy.versions.effectiveUntil, value: copy.versions.current }
                     : {
                         label: copy.versions.effectiveUntil,
                         value: <Time value={version.appliedUntil} />,
@@ -494,7 +509,16 @@ export function CalculationEvidence({
                 <Inputs evidence={view.evidence} />
                 <Calculation evidence={view.evidence} />
                 <Metrics evidence={view.evidence} />
-                <Versions evidence={view.evidence} />
+                <Versions
+                  completedHelp={
+                    result.planStatus !== PLAN_COMPLETED
+                      ? null
+                      : result.calculationKind === 'COMPLETION'
+                        ? copy.versions.completedCurrent
+                        : copy.versions.completedProgressCurrent
+                  }
+                  evidence={view.evidence}
+                />
               </>
             ) : null}
             {view.kind === 'failed' ? <Failure result={result} view={view} /> : null}

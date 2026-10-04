@@ -49,4 +49,22 @@ class SyncCommandNamesTest {
         assertThat(DashboardTrust.END_PERIOD_ENDED).isEqualTo(PlanEndApi.PLAN_PERIOD_ENDED);
         assertThat(DashboardTrust.END_RESULT_TOO_RECENT).isEqualTo(PlanEndApi.RESULT_TOO_RECENT);
     }
+
+    /**
+     * Story 2.14: sync reads the completed status, the completion comparison and its reasons, and writes the comparison
+     * through the port — each through its own copy. A rename on either side must fail here, or every completed plan's
+     * bundle turns unavailable and the comparison write is refused.
+     */
+    @Test
+    void theSyncCopiesOfTheCompletionNamesMatchThePlanModule() {
+        assertThat(PlanPublicationService.COMPLETED).isEqualTo(PlanEndApi.STATUS_COMPLETED).isEqualTo("COMPLETED");
+        assertThat(java.util.Arrays.stream(PlanEndApi.Comparison.values()).map(Enum::name))
+                .containsExactly(PlanPublicationService.COMPARISON_PENDING, PlanPublicationService.COMPARISON_CONFIRMED,
+                        PlanPublicationService.COMPARISON_UNAVAILABLE, PlanPublicationService.COMPARISON_HELD);
+        assertThat(java.util.Arrays.stream(PlanEndApi.CompletionReason.values()).map(Enum::name))
+                .containsExactly(PlanPublicationService.COMPLETION_DELAY_EXCEEDED,
+                        PlanPublicationService.COMPLETION_POST_END_CASHFLOW,
+                        PlanPublicationService.COMPLETION_HISTORY_OUT_OF_RANGE,
+                        PlanPublicationService.COMPLETION_REASON_DATA_GAP, PlanPublicationService.COMPLETION_INPUT_REVIEW);
+    }
 }

@@ -69,8 +69,16 @@ public final class PlanCalculator {
         TARGET_NOT_POSITIVE,
         /** 목표 이익이 0 이하라 목표 수익 달성도가 정의되지 않는다. */
         GOAL_PROFIT_NOT_POSITIVE,
-        /** 남은 기간이 0 이하다. 발행 자격({@code tc < T})이 이 경우를 먼저 막는다. */
-        REMAINING_PERIOD_NOT_POSITIVE
+        /**
+         * 남은 기간이 0 이하다. 진행 계산에서는 발행 자격({@code tc < T})이 이 경우를 먼저 막고, 완료 계산
+         * ({@code u = T})에서는 남은 필요 등가수익률이 언제나 이 이유로 계산 불가다.
+         */
+        REMAINING_PERIOD_NOT_POSITIVE,
+        /**
+         * 완료 비교가 불가하다(Story 2.14 CV-11: 첫 종료 후 관측 지연이 24시간을 넘었거나 종료~관측 사이에 확인된
+         * 외부 자금흐름이 있다). 관측과 엮인 계획 대비 차이와 목표 수익 달성도만 값이 없다 — 0으로 두지 않는다.
+         */
+        COMPLETION_NOT_COMPARABLE
     }
 
     /** 계산 전체의 거절. 이 경우 어떤 지표도 없다. */
@@ -138,6 +146,52 @@ public final class PlanCalculator {
         }
     }
 
+    /**
+     * 완료 계산 입력(Story 2.14). PRD §4를 {@code u = T}로 적용한다: 기준시각은 계획 종료 {@code T}, 현재가치
+     * {@code E}는 {@code T} 이후 첫 정상 관측값이다 — {@code T} 시각의 평가액이 아니며 보간하지 않는다. 흐름은
+     * {@code t0 < ti <= T}만 반영하고 그 밖은 버린다.
+     *
+     * <p>완료 비교 가능 여부는 이 계산기가 스스로 판정한다(CV-11): 관측 지연이 {@link #observationWithinLimit}
+     * 안이고 종료 후 확인된 외부 흐름이 없을 때만 비교 가능하다. 거짓이면 계획 대비 차이와 목표 수익 달성도가
+     * {@link UnavailableReason#COMPLETION_NOT_COMPARABLE}이다. 관측 시각은 canonical 입력 hash에 들어간다.
+     *
+     * @param observedValue 첫 종료 후 관측값
+     * @param observedMeasuredAt 그 관측의 측정 시각. {@code T} 이상이어야 한다(아니면 입력 오류)
+     * @param postEndCashflow {@code T < ti <= observedMeasuredAt}에 확인된 외부 흐름이 있는가
+     */
+    public record CompletionInput(String principal, Instant startAt, Instant endAt, Period period, String targetRate,
+            String observedValue, Instant observedMeasuredAt, boolean postEndCashflow, List<Cashflow> cashflows,
+            String calculationPolicy, String calendarPolicy) {
+        public CompletionInput {
+            Objects.requireNonNull(principal, "principal");
+            Objects.requireNonNull(startAt, "startAt");
+            Objects.requireNonNull(endAt, "endAt");
+            Objects.requireNonNull(period, "period");
+            Objects.requireNonNull(targetRate, "targetRate");
+            Objects.requireNonNull(observedValue, "observedValue");
+            Objects.requireNonNull(observedMeasuredAt, "observedMeasuredAt");
+            cashflows = List.copyOf(Objects.requireNonNull(cashflows, "cashflows"));
+            Objects.requireNonNull(calculationPolicy, "calculationPolicy");
+            Objects.requireNonNull(calendarPolicy, "calendarPolicy");
+        }
+
+        /** 완료 비교가 가능한가: 관측 지연이 24시간 이하이고 종료 후 확인된 외부 흐름이 없다. */
+        public boolean comparable() {
+            return observationWithinLimit(this.endAt, this.observedMeasuredAt) && !this.postEndCashflow;
+        }
+    }
+
+    /**
+     * 첫 종료 후 관측이 완료 비교에 쓰일 수 있는 지연의 상한(CV-11). 정확히 24시간은 비교 가능이다("이하").
+     */
+    public static final java.time.Duration OBSERVATION_DELAY_LIMIT = java.time.Duration.ofHours(24);
+
+    /** {@code measuredAt - T <= 24시간}이고 {@code measuredAt >= T}인가. 밀리초까지 비교한다. */
+    public static boolean observationWithinLimit(Instant endAt, Instant measuredAt) {
+        return !measuredAt.isBefore(endAt)
+                && java.time.Duration.between(endAt, measuredAt).compareTo(OBSERVATION_DELAY_LIMIT) <= 0;
+    }
+
     /** 지표 하나. 값이 없으면 이유가 있고, 이유가 있으면 값이 없다. */
     public record MetricResult(Metric metric, @Nullable String value, Nature nature,
             @Nullable UnavailableReason unavailableReason) {
@@ -198,6 +252,15 @@ public final class PlanCalculator {
     }
 
     /**
+     * 완료 결과를 계산한다(Story 2.14). 진행 계산과 같은 식·같은 정책이며 {@code u = T}다: 경과 주기는 전체
+     * 주기, 남은 주기는 0, 계획금액은 조정 최종 목표와 같다. 남은 필요 등가수익률은 언제나
+     * {@link UnavailableReason#REMAINING_PERIOD_NOT_POSITIVE}다. 예외를 던지지 않는다.
+     */
+    public static Result complete(CompletionInput input) {
+        return PlanFormula.evaluateCompletion(Objects.requireNonNull(input, "input"));
+    }
+
+    /**
      * plain decimal string의 손실 없는 정규 표기: 지수·앞의 0·끝의 0이 없고 0은 {@code "0"}이다
      * ({@code "1250.00"} → {@code "1250"}). 반올림하지 않으므로 값은 바뀌지 않는다. 모양이 틀리면
      * {@code null}이다.
@@ -210,7 +273,7 @@ public final class PlanCalculator {
     }
 
     /**
-     * 승인 고정 예제(CV-01~CV-07·CV-09·CV-10·CV-12)를 이 구현이 글자까지 재현하는가.
+     * 승인 고정 예제(CV-01~CV-07·CV-09~CV-12)를 이 구현이 글자까지 재현하는가.
      *
      * <p>호출자는 이 값이 거짓이면 공식 결과를 발행하지 않는다. 한 번 계산해 기억한다 — 입력이 상수라
      * 결과도 상수다.

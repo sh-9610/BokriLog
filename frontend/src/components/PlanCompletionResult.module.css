@@ -1,0 +1,15 @@
+/*
+ * The completion result of a plan completed at its scheduled end (Story 2.14): its own framed region, so the fixed
+ * completion reads apart from the later value in `종료 후 현재가치`. The facts, the marker and the help lines use the
+ * result panel's rules; its `.group` gap is repeated here, on the region itself. This frame only sets the region
+ * apart, with no colour judging the result. Everything stacks in one column and wraps at 320px, 200% and 400% zoom.
+ */
+.region {
+  display: grid;
+  gap: var(--space-3);
+  min-inline-size: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  overflow-wrap: anywhere;
+}

@@ -18,7 +18,7 @@ import org.jspecify.annotations.Nullable;
 /**
  * 승인 고정 예제(ERD-1.0.0 §3.4)의 실행 시점 적합성 검사.
  *
- * <p>CV-01~CV-07·CV-09·CV-10·CV-12를 이 구현으로 다시 계산해 기대 canonical 값과 글자까지 비교한다.
+ * <p>CV-01~CV-07·CV-09~CV-12를 이 구현으로 다시 계산해 기대 canonical 값과 글자까지 비교한다.
  * 하나라도 어긋나면 {@link #passes()}가 거짓이고 호출자는 공식 결과를 발행하지 않는다. 시험
  * ({@code PlanCalculatorTest})이 같은 예제를 따로 적은 기대값으로 한 번 더 고정한다 — 이 표가 틀리면
  * 그 시험이 먼저 깨진다.
@@ -47,7 +47,7 @@ public final class Conformance {
     static boolean evaluate() {
         try {
             return cv01() && cv02() && cv03() && cv04() && cv05() && cv06() && cv07() && cv09() && cv10()
-                    && cv12();
+                    && cv11() && cv12();
         } catch (RuntimeException failure) {
             return false;
         }
@@ -150,6 +150,44 @@ public final class Conformance {
                 .add(right.toDecimal(Decimals.CONTEXT), Decimals.CONTEXT));
         return whole.equals(left.plus(right)) && whole.equals(Fraction.of(1, 1))
                 && Decimals.canonical(whole.toDecimal(Decimals.CONTEXT)).equals(split) && "1".equals(split);
+    }
+
+    /** A completion at {@code T = day(3)}: comparable observed at {@code T}, not comparable 24 hours and 1 ms later. */
+    static PlanCalculator.CompletionInput completion(String observed, boolean comparable, List<Cashflow> flows) {
+        return new PlanCalculator.CompletionInput("1000", T0, day(3), Period.DAILY, "0.1", observed,
+                comparable ? day(3) : day(4).plusMillis(1), false, flows, PlanCalculator.CALCULATION_POLICY,
+                PlanCalculator.CALENDAR_POLICY);
+    }
+
+    /**
+     * 첫 종료 후 관측의 완료 비교(Story 2.14). 지연은 24시간 이하만 비교 가능하다(정확히 24시간 포함, 1ms 넘으면
+     * 불가). 완료 계산은 {@code u = T}의 같은 식이다: 계획금액 = 조정 최종 목표 = 1331, 관측 1331이면 차이 0·달성도 1,
+     * 남은 필요 등가수익률은 남은 기간이 없어 계산 불가. 비교 불가면 관측값은 보존하고 차이·달성도만 값이 없다.
+     * 흐름은 {@code t0}의 것은 제외하고 {@code T}의 것은 포함하며 {@code T} 뒤의 것은 제외한다.
+     */
+    private static boolean cv11() {
+        Instant end = day(3);
+        if (!PlanCalculator.observationWithinLimit(end, end)
+                || !PlanCalculator.observationWithinLimit(end, end.plusMillis(DAY_MILLIS))
+                || PlanCalculator.observationWithinLimit(end, end.plusMillis(DAY_MILLIS + 1))
+                || PlanCalculator.observationWithinLimit(end, end.minusMillis(1)))
+            return false;
+        Result confirmed = PlanCalculator.complete(completion("1331", true, List.of()));
+        Result held = PlanCalculator.complete(completion("1250", false, List.of()));
+        Result bounded = PlanCalculator.complete(completion("1431", true, List.of(flow(T0, "at-start", "100"),
+                flow(end, "at-end", "100"), flow(end.plusMillis(1), "after-end", "100"))));
+        return confirmed instanceof Result.Calculated c && held instanceof Result.Calculated h
+                && bounded instanceof Result.Calculated b
+                && "1331".equals(value(c, Metric.PLAN_AMOUNT)) && "1331".equals(value(c, Metric.ADJUSTED_TARGET))
+                && "0".equals(value(c, Metric.PLAN_DIFFERENCE)) && "1".equals(value(c, Metric.GOAL_PROGRESS))
+                && reason(c, Metric.REQUIRED_RATE) == UnavailableReason.REMAINING_PERIOD_NOT_POSITIVE
+                && "0".equals(c.periodsRemaining()) && "3".equals(c.periodsElapsed())
+                && "1250".equals(value(h, Metric.CURRENT_VALUE)) && "1331".equals(value(h, Metric.ADJUSTED_TARGET))
+                && reason(h, Metric.PLAN_DIFFERENCE) == UnavailableReason.COMPLETION_NOT_COMPARABLE
+                && reason(h, Metric.GOAL_PROGRESS) == UnavailableReason.COMPLETION_NOT_COMPARABLE
+                && b.appliedCashflows().size() == 1 && "at-end".equals(b.appliedCashflows().getFirst().sourceId())
+                && "1431".equals(value(b, Metric.ADJUSTED_TARGET)) && "1100".equals(b.adjustedPrincipal())
+                && "0".equals(value(b, Metric.PLAN_DIFFERENCE));
     }
 
     /** 결과 절대값 {@code >= 1E24}와 {@code r > 10}은 계산 전체를 거절한다. */

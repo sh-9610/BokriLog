@@ -12,7 +12,13 @@ import {
   type PlanEndRefusalAnswer,
   type PlanEndRequest,
 } from './planEnd'
-import { bundleOf, type Accepted, type Dashboard, type DashboardView } from './useDashboard'
+import {
+  bundleOf,
+  terminalOf,
+  type Accepted,
+  type Dashboard,
+  type DashboardView,
+} from './useDashboard'
 
 /**
  * What the end flow says after a request that did not open or did not finish the dialog: the user must confirm
@@ -82,12 +88,10 @@ interface Armed {
 /** The screen waits for the record of a plan it just ended; it asks again at most this many times. */
 const ENDED_READ_TRIES = 3
 
-/** The identity of the plan a view shows, active or ended, or `null` when it shows none. */
+/** The identity of the plan a view shows, active, ended or completed, or `null` when it shows none. */
 function shownPlan(view: DashboardView): string | null {
   const bundle = bundleOf(view)
-  return bundle === null
-    ? null
-    : `${bundle.result.planId}/${bundle.end === null ? 'active' : 'ended'}`
+  return bundle === null ? null : `${bundle.result.planId}/${terminalOf(bundle) ?? 'active'}`
 }
 
 /** The 409 codes and what each says. A code this screen does not know is said in general words. */
@@ -315,7 +319,8 @@ export function usePlanEnd(dashboard: Dashboard, csrfToken: string | null): Plan
     if (wait === null || view.kind === 'checking') return
     const bundle = bundleOf(view)
     const ours = bundle !== null && bundle.result.planId === wait.planId
-    if (ours && bundle.end !== null) {
+    // Whichever way the plan ended — this end, or its scheduled end that came first (Story 2.14) — it is shown now.
+    if (ours && terminalOf(bundle) !== null) {
       awaiting.current = null
       return
     }
@@ -378,7 +383,8 @@ export function usePlanEnd(dashboard: Dashboard, csrfToken: string | null): Plan
       // The reference of the active plan shown right now: the selection the user made by pressing.
       const bundle = bundleOf(viewRef.current)
       const token = csrfRef.current
-      if (bundle?.end !== null || token === null) {
+      // Only an active plan may be ended early: not one that ended or completed (Story 2.14).
+      if (bundle === null || terminalOf(bundle) !== null || token === null) {
         refuse(null)
         return
       }

@@ -67,7 +67,8 @@ class AdjustmentHistoryServiceTest {
     private final AccountAccessApi accounts = mock(AccountAccessApi.class);
     private final PlanPublicationPort plans = mock(PlanPublicationPort.class);
     private final AdjustmentHistoryService service = new AdjustmentHistoryService(publications, history, portfolios,
-            accounts, plans, mock(PlatformTransactionManager.class));
+            accounts, plans, new ShownPlanAgreement(publications, mock(PlanSyncRepository.class), portfolios),
+            mock(PlatformTransactionManager.class));
 
     private static AdjustmentQuery query(AdjustmentDirection direction, String cursor) {
         return new AdjustmentQuery(PLAN, 1, CALCULATION, direction, cursor);

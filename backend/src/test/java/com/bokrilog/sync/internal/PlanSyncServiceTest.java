@@ -80,7 +80,8 @@ class PlanSyncServiceTest {
 
     private PlanSyncService service() {
         return new PlanSyncService(syncs, publications, collections, classifications, conversions, sources,
-                new CalculationConformance(() -> true), guard, publisher, mock(PlatformTransactionManager.class));
+                new CalculationConformance(() -> true), guard, publisher, mock(PlanPublicationPort.class),
+                mock(com.bokrilog.identity.AccountAccessApi.class), mock(PlatformTransactionManager.class));
     }
 
     /** An eligible plan at {@code now}: writable, a current version, nothing in progress, never synced. */
@@ -635,5 +636,38 @@ class PlanSyncServiceTest {
         "UNAVAILABLE,FAILED,PROVIDER_UNAVAILABLE"})
     void aProviderRejectionEndsWithAClosedCode(SourceRejectionReason reason, String status, String code) {
         assertThat(PlanSyncService.rejection(reason)).containsExactly(status, code);
+    }
+
+    /**
+     * Story 2.14: a completed plan's requests wait only after its last admission since the transition — neither the
+     * official publication (before T) nor a progress sync admitted before the transition holds the first observation
+     * back — and the completion runs again while the observation is missing, the comparison pending, or held by a
+     * review that is not persistent.
+     */
+    @Test
+    void aCompletedPlansRequestWaitsOnlyAfterItsAdmissionsSinceTheTransition() {
+        Instant now = END.plusSeconds(60);
+        Instant transitioned = END.plusSeconds(1);
+        assertThat(PlanSyncService.completedWait(SyncWindow.Trigger.ENTRY, now, null, transitioned)).isNull();
+        // A progress sync admitted just before the transition does not count.
+        assertThat(PlanSyncService.completedWait(SyncWindow.Trigger.ENTRY, now, transitioned.minusMillis(1),
+                transitioned)).isNull();
+        assertThat(PlanSyncService.completedWait(SyncWindow.Trigger.ENTRY, now, now.minusSeconds(30), transitioned))
+                .isEqualTo(Duration.ofSeconds(270));
+        assertThat(PlanSyncService.completedWait(SyncWindow.Trigger.MANUAL, now, now.minusSeconds(10), transitioned))
+                .isEqualTo(Duration.ofSeconds(20));
+        assertThat(PlanSyncService.completedWait(SyncWindow.Trigger.MANUAL, now, now.minusSeconds(30), transitioned))
+                .isNull();
+        UUID snapshot = UUID.randomUUID();
+        var unobserved = new PlanPublicationPort.PlanCompletion(END, now, "UNAVAILABLE", "DATA_GAP", null, null, null,
+                null, null, null);
+        var held = new PlanPublicationPort.PlanCompletion(END, now, "HELD", "INPUT_REVIEW_REQUIRED", snapshot, "1",
+                END, 0L, null, null);
+        var confirmed = new PlanPublicationPort.PlanCompletion(END, now, "CONFIRMED", null, snapshot, "1", END, 0L,
+                UUID.randomUUID(), 0);
+        assertThat(PlanSyncService.completionOpen(unobserved, true)).isTrue();
+        assertThat(PlanSyncService.completionOpen(held, false)).isTrue();
+        assertThat(PlanSyncService.completionOpen(held, true)).as("held for good").isFalse();
+        assertThat(PlanSyncService.completionOpen(confirmed, false)).isFalse();
     }
 }

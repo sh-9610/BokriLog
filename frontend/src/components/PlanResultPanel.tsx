@@ -8,6 +8,7 @@ import type {
   DashboardView,
   PlanResult,
   PlanResultMetric,
+  PlanTerminal,
   TrustAxis,
 } from '../session/useDashboard'
 import type { DashboardSync } from '../session/useDashboardSync'
@@ -15,6 +16,7 @@ import type { PlanEnd } from '../session/usePlanEnd'
 import type { ReauthenticationAccess } from '../session/useReauthentication'
 
 import { ENTRY_PATH } from '../content/auth'
+import { completionNextActionCopy, planCompletionContent } from '../content/planCompletion'
 import { planConditionContent } from '../content/planConditions'
 import { planEndContent } from '../content/planEnd'
 import {
@@ -26,12 +28,14 @@ import {
 } from '../content/planResult'
 import { planVerificationContent } from '../content/planVerification'
 import { formatAmount, formatPercent, formatSeoulTime, percentFromRatio } from '../format/decimal'
-import { bundleOf, heldBy } from '../session/useDashboard'
+import { bundleOf, heldBy, isCompletionVersion, terminalOf } from '../session/useDashboard'
 import { AdjustmentHistory } from './AdjustmentHistory'
 import { CalculationEvidence } from './CalculationEvidence'
+import { PlanCompletionResult } from './PlanCompletionResult'
 import { PlanEndControl } from './PlanEndControl'
 import { PlanEndRecord } from './PlanEndRecord'
 import styles from './PlanResultPanel.module.css'
+import { PostEndValue } from './PostEndValue'
 import { SyncControl, type NewPlanChoice } from './SyncControl'
 import { VerificationControl } from './VerificationControl'
 import { RangeList } from './VerificationRanges'
@@ -247,26 +251,42 @@ function Axis({
  * and the calculation nature only, without the sync and verification controls. In the record neither axis points to
  * an action (their next action is `NONE`), and a held input is said by its cause alone: the held notice and the
  * ranges a verification set out to check belong to the controls the record does not show.
+ *
+ * A plan completed at its scheduled end (Story 2.14) keeps all three axes, its freshness folded to `계획 완료`: later
+ * syncs never change the shown result, so no axis carries a control or points to an action — the sync of its later
+ * value lives in `종료 후 현재가치`.
  */
 function Trust({
   bundle,
+  terminal,
   sync,
   newPlan,
 }: {
   readonly bundle: Accepted
+  readonly terminal: PlanTerminal | null
   readonly sync: DashboardSync
   readonly newPlan: NewPlanChoice | undefined
 }): ReactElement {
   const { result, verification } = bundle
-  const ended = bundle.end !== null
+  const ended = terminal === 'ENDED'
+  const inactive = terminal !== null
   const { freshness, inputReliability, calculationNature } = result.trust
+  // A completed plan still showing its last progress version (the comparison checking or held) may yet change to the
+  // completion version: its freshness cause says so instead of "no later sync changes it".
+  const freshnessCauses =
+    terminal === 'COMPLETED' && !isCompletionVersion(result)
+      ? {
+          ...copy.axes.freshness.causes,
+          PLAN_COMPLETED: planCompletionContent.freshnessProgressCause,
+        }
+      : copy.axes.freshness.causes
   // A job that ended in review or out of range holds the input (spec: 미해소): the notice that asking again for
   // the same basis will not change it — in the words of that job's purpose — and the ranges it set out to
   // check. Only the job the server marks as holding the result names ranges: one in progress, one that
   // published or one of an earlier basis does not. Ranges it could not read are said in safe words.
-  const held = !ended && HELD_CAUSES.includes(inputReliability.cause)
+  const held = !inactive && HELD_CAUSES.includes(inputReliability.cause)
   // In the record nothing is left to do: no axis points to a control it does not show.
-  const action = ended ? 'NONE' : undefined
+  const action = inactive ? 'NONE' : undefined
   const holder = held ? heldBy(verification) : null
   const heldCopy = planVerificationContent.held
   const heldNotice =
@@ -305,25 +325,34 @@ function Trust({
       <ul className={styles.axes}>
         {ended ? null : (
           <Axis
+            action={action}
             after={
-              <>
-                <SyncControl
-                  newPlan={newPlan}
-                  status={bundle.sync}
-                  sync={sync}
-                  verification={verification}
-                />
-                <VerificationControl status={verification} sync={sync} />
-              </>
+              inactive ? null : (
+                <>
+                  <SyncControl
+                    newPlan={newPlan}
+                    status={bundle.sync}
+                    sync={sync}
+                    verification={verification}
+                  />
+                  <VerificationControl status={verification} sync={sync} />
+                </>
+              )
             }
             axis={freshness}
-            causes={copy.axes.freshness.causes}
+            causes={freshnessCauses}
             id="plan-result-axis-freshness"
             name={copy.axes.freshness.name}
-            note={{
-              label: copy.axes.freshness.timesNoteLabel,
-              text: copy.axes.freshness.timesNote,
-            }}
+            // A completed plan's later flows never reach its shown result: the note on flows not yet applied is
+            // an active plan's.
+            note={
+              inactive
+                ? undefined
+                : {
+                    label: copy.axes.freshness.timesNoteLabel,
+                    text: copy.axes.freshness.timesNote,
+                  }
+            }
             states={copy.axes.freshness.states}
             times={[
               { label: copy.axes.freshness.lastNormal, value: freshness.lastNormalAt },
@@ -480,6 +509,14 @@ function Notice({
  * introduction), the six metrics, the input reliability and calculation nature, the evidence and history toggles
  * and the plan terms stay, the next action is the preparation of a new plan (explained only), and there is no sync,
  * verification or end control. When the end flow ends the plan, focus moves to this heading.
+ *
+ * When a plan completed at its scheduled end is shown (Story 2.14), the panel is in its completion mode — the same
+ * panel, read-only, in its own reading order: the heading with the `완료` marker, the completion result (its own region:
+ * `T`, the first observation after it with its time, delay and value, the completion target, the comparison and its
+ * reason), the six metrics, the three trust axes (freshness folded to `계획 완료`, without controls), the evidence and
+ * history toggles, `종료 후 현재가치` (its own region, with the sync control), the plan terms, and the preparation of a
+ * new plan (explained only). There is no verification or end control. A sync there never changes the completion
+ * result; a pressed one that ends with a new bundle moves focus to this heading, as on an active plan.
  */
 export function PlanResultPanel({
   dashboard,
@@ -499,9 +536,13 @@ export function PlanResultPanel({
   const { view, loading, reload } = dashboard
   const bundle = bundleOf(view)
   const result = bundle?.result ?? null
-  // The record of a plan ended early (Story 2.13): the same panel, read-only.
+  // The record of a plan ended early (Story 2.13), or a plan completed at its scheduled end (Story 2.14): the same
+  // panel, read-only. One test for both (`terminalOf`).
+  const terminal = terminalOf(bundle)
   const end = bundle?.end ?? null
   const ended = end !== null
+  const completion = bundle?.completion ?? null
+  const inactive = terminal !== null
   const [current, ...rest] = result?.metrics ?? []
   const measured = result === null ? null : seoulOrNull(result.measuredAt)
   const hasNextAction = view.kind !== 'checking' && view.kind !== 'denied'
@@ -526,12 +567,12 @@ export function PlanResultPanel({
    * and under load that came after code that had already seen the new content (a loaded CI runner, run 37134688361).
    */
   useLayoutEffect(() => {
-    if (hasNextAction && hasResult && !ended) return
+    if (hasNextAction && hasResult && terminal === null) return
     const last = lastFocused.current
     const active = document.activeElement
     const lost = active === null || active === document.body || !active.isConnected
     if (last !== null && !last.isConnected && lost) heading.current?.focus()
-  }, [hasNextAction, hasResult, ended])
+  }, [hasNextAction, hasResult, terminal])
 
   // A sync the user pressed ended with a new bundle: focus goes to the heading of what replaced the old one.
   useLayoutEffect(() => {
@@ -550,13 +591,13 @@ export function PlanResultPanel({
     if (endFocus === null || endFocus.serial === handledEndFocus.current) return
     // Every request is seen once: a notice request the end area took is never replayed here later.
     handledEndFocus.current = endFocus.serial
-    if (endFocus.target === 'notice' && !ended) return
+    if (endFocus.target === 'notice' && !inactive) return
     heading.current?.focus()
-  }, [endFocus, ended])
+  }, [endFocus, inactive])
 
   // The long-gap choice `새 계획 시작` starts the same end flow (Story 2.13).
   const newPlan: NewPlanChoice | undefined =
-    bundle === null || ended
+    bundle === null || inactive
       ? undefined
       : { status: bundle.planEnd, flow: planEnd, leaving: reauthentication.pending }
 
@@ -579,43 +620,99 @@ export function PlanResultPanel({
         {copy.heading}
       </h2>
 
+      {completion === null ? null : (
+        <p className={styles.marker}>
+          {planCompletionContent.statusLabel}: {planCompletionContent.marker}
+        </p>
+      )}
+
       <Notice measured={measured} view={view} />
 
-      {result === null ? null : <p>{ended ? planEndContent.record.intro : copy.intro}</p>}
-      {bundle === null ? null : <VersionChangeNote change={bundle.change} />}
-      {result === null || end === null ? null : <PlanEndRecord end={end} result={result} />}
-      {result === null || current === undefined ? null : (
-        <section aria-labelledby="plan-result-current" className={styles.group}>
-          <h3 id="plan-result-current">{copy.currentHeading}</h3>
-          <div className={styles.lead}>
-            <MetricCard metric={current} result={result} />
-          </div>
-        </section>
+      {result === null || bundle === null || completion === null ? null : (
+        <>
+          <p>{planCompletionContent.intro}</p>
+          <VersionChangeNote change={bundle.change} />
+          <PlanCompletionResult completion={completion} />
+          <section aria-labelledby="plan-result-metrics" className={styles.group}>
+            <h3 id="plan-result-metrics">{copy.metricsHeading}</h3>
+            <p className={styles.meta}>{copy.metricsIntro}</p>
+            <ul className={styles.metrics}>
+              {result.metrics.map((metric) => (
+                <li key={metric.metric}>
+                  <MetricCard metric={metric} result={result} />
+                </li>
+              ))}
+            </ul>
+          </section>
+          <Trust bundle={bundle} newPlan={undefined} sync={sync} terminal={terminal} />
+          <section aria-labelledby="plan-result-records" className={styles.group}>
+            <h3 id="plan-result-records">{planCompletionContent.evidenceHeading}</h3>
+            <CalculationEvidence evidence={evidence} result={result} />
+            <AdjustmentHistory history={adjustments} result={result} />
+          </section>
+          <PostEndValue
+            completion={completion}
+            postEnd={bundle.postEnd ?? null}
+            status={bundle.sync}
+            unreadable={bundle.postEndUnreadable === true}
+            sync={sync}
+          />
+          <Conditions result={result} />
+        </>
       )}
-      {bundle === null ? null : <Trust bundle={bundle} newPlan={newPlan} sync={sync} />}
-      {result === null ? null : (
-        <section aria-labelledby="plan-result-metrics" className={styles.group}>
-          <h3 id="plan-result-metrics">{copy.metricsHeading}</h3>
-          <p className={styles.meta}>{copy.metricsIntro}</p>
-          <CalculationEvidence evidence={evidence} result={result} />
-          <AdjustmentHistory history={adjustments} result={result} />
-          <ul className={styles.metrics}>
-            {rest.map((metric) => (
-              <li key={metric.metric}>
-                <MetricCard metric={metric} result={result} />
-              </li>
-            ))}
-          </ul>
-        </section>
+
+      {completion !== null ? null : (
+        <>
+          {result === null ? null : <p>{ended ? planEndContent.record.intro : copy.intro}</p>}
+          {bundle === null ? null : <VersionChangeNote change={bundle.change} />}
+          {result === null || end === null ? null : <PlanEndRecord end={end} result={result} />}
+          {result === null || current === undefined ? null : (
+            <section aria-labelledby="plan-result-current" className={styles.group}>
+              <h3 id="plan-result-current">{copy.currentHeading}</h3>
+              <div className={styles.lead}>
+                <MetricCard metric={current} result={result} />
+              </div>
+            </section>
+          )}
+          {bundle === null ? null : (
+            <Trust bundle={bundle} newPlan={newPlan} sync={sync} terminal={terminal} />
+          )}
+          {result === null ? null : (
+            <section aria-labelledby="plan-result-metrics" className={styles.group}>
+              <h3 id="plan-result-metrics">{copy.metricsHeading}</h3>
+              <p className={styles.meta}>{copy.metricsIntro}</p>
+              <CalculationEvidence evidence={evidence} result={result} />
+              <AdjustmentHistory history={adjustments} result={result} />
+              <ul className={styles.metrics}>
+                {rest.map((metric) => (
+                  <li key={metric.metric}>
+                    <MetricCard metric={metric} result={result} />
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </>
       )}
 
       {hasNextAction ? (
         <section aria-labelledby="plan-result-next" className={styles.group}>
-          {/* The record's next action is the preparation of a new plan, explained only (Story 2.13). */}
+          {/*
+            The record's next action is the preparation of a new plan, explained only (Story 2.13); so is a completed
+            plan's, once its first observation after the end is fixed (Story 2.14).
+          */}
           <h3 id="plan-result-next">
-            {ended ? planEndContent.nextPlan.heading : copy.nextActionHeading}
+            {completion !== null
+              ? planCompletionContent.nextPlan.heading
+              : ended
+                ? planEndContent.nextPlan.heading
+                : copy.nextActionHeading}
           </h3>
-          <p>{nextActionCopy(nextActionOf(view), measured)}</p>
+          <p>
+            {completion === null
+              ? nextActionCopy(nextActionOf(view), measured)
+              : completionNextActionCopy(nextActionOf(view))}
+          </p>
           {view.kind === 'NO_PLAN' ? (
             <a className={styles.action} href={planConditionContent.path}>
               {planConditionContent.openConditions}
@@ -634,9 +731,9 @@ export function PlanResultPanel({
         </section>
       ) : null}
 
-      {result === null ? null : <Conditions result={result} />}
+      {result === null || completion !== null ? null : <Conditions result={result} />}
 
-      {bundle === null || ended ? null : (
+      {bundle === null || inactive ? null : (
         <PlanEndControl
           bundle={bundle}
           planEnd={planEnd}

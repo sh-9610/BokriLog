@@ -77,22 +77,29 @@ class PlanEndRepository {
                 .optional();
     }
 
-    /** Whether the user has a plan that ended early. */
-    boolean endedPlanExists(UUID userId) {
-        return this.jdbc.sql("SELECT EXISTS(SELECT 1 FROM plan_definition WHERE user_id=:u AND status='ENDED_EARLY')")
+    /**
+     * Whether the user has a plan in a terminal status: ended early (Story 2.13) or completed (Story 2.14). Either one
+     * closes the plan-condition path until Story 2.15 opens the following plan.
+     */
+    boolean terminalPlanExists(UUID userId) {
+        return this.jdbc.sql("SELECT EXISTS(SELECT 1 FROM plan_definition WHERE user_id=:u "
+                        + "AND status IN ('ENDED_EARLY','COMPLETED'))")
                 .param("u", userId).query(Boolean.class).single();
     }
 
     /**
-     * The user's most recent plan with its status and, when it ended early, its end record — read together, so the
-     * two cannot come from different moments. An ended plan without its record comes back with no end.
+     * The user's most recent plan with its status and, when it ended early, its end record, or when it completed, its
+     * completion record (Story 2.14) — read together, so they cannot come from different moments. A terminal plan
+     * without its record comes back without it.
      */
     Optional<PlanPublicationPort.LatestPlan> latestPlan(UUID userId) {
         return this.jdbc.sql("SELECT d.plan_id,d.intent_id,d.portfolio_id,d.p0_decimal,d.t0,d.end_at,d.period,"
                         + "d.target_rate,d.created_at,d.status,e.reason,e.ended_at,e.official_calculation_id,"
                         + "e.official_pointer_version,e.official_portfolio_snapshot_id,e.last_measured_at,"
-                        + "e.cashflow_verified_through,e.completion,e.uncollected_from,e.uncollected_until "
+                        + "e.cashflow_verified_through,e.completion,e.uncollected_from,e.uncollected_until,"
+                        + PlanCompletionRepository.COLUMNS + " "
                         + "FROM plan_definition d LEFT JOIN plan_end e ON e.plan_id=d.plan_id AND e.user_id=d.user_id "
+                        + "LEFT JOIN plan_completion c ON c.plan_id=d.plan_id AND c.user_id=d.user_id "
                         + "WHERE d.user_id=:u ORDER BY d.created_at DESC,d.plan_id DESC LIMIT 1")
                 .param("u", userId)
                 .query((rs, n) -> {
@@ -104,7 +111,8 @@ class PlanEndRepository {
                                     rs.getObject(13, UUID.class), rs.getLong(14), rs.getObject(15, UUID.class),
                                     instant(rs, 16), instant(rs, 17), rs.getString(18), nullableInstant(rs, 19),
                                     nullableInstant(rs, 20));
-                    return new PlanPublicationPort.LatestPlan(plan, rs.getString(10), end);
+                    return new PlanPublicationPort.LatestPlan(plan, rs.getString(10), end,
+                            PlanCompletionRepository.completion(rs, 20));
                 })
                 .optional();
     }
