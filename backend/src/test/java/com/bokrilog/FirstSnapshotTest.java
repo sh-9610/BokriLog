@@ -2630,9 +2630,11 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertThat(result.statusCode()).isEqualTo(200);
         assertThat(result.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
         // Story 2.11: a ready dashboard carries its sync state beside the result; Story 2.12 its verification state
-        // and what the version changed (a first publication: nothing).
+        // and what the version changed (a first publication: nothing); Story 2.13 whether it can be ended now.
         assertThat(topLevelFieldsOf(result.body())).containsOnlyKeys("state","nextAction","result","sync",
-                "verification","change").containsEntry("nextAction","NONE");
+                "verification","change","planEnd").containsEntry("nextAction","NONE");
+        assertThat(nested(topLevelFieldsOf(result.body()),"planEnd")).containsOnlyKeys("availability","reason")
+                .containsEntry("availability","AVAILABLE").containsEntry("reason",null);
         assertThat(nested(topLevelFieldsOf(result.body()),"change")).containsEntry("kind","NONE")
                 .containsEntry("purpose",null).containsEntry("lateChangeCount",0);
         var fields=resultOf(result.body());

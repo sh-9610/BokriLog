@@ -259,6 +259,22 @@ class ActionGrantService {
                 userId, ActionGrant.normalize(command), ActionGrant.normalize(target));
     }
 
+    /**
+     * 참조 하나가 가리키는 미소비 허가만 무효화한다(Story 2.13).
+     *
+     * <p>{@link #invalidate}와 갈라 두는 이유는 범위다. {@code (command, target)}으로 지우면 오래된 탭 하나의 취소가
+     * 같은 작업을 위해 <b>다른 세션</b>이 방금 받은 살아 있는 허가까지 지운다. 무장이 들고 있던 참조 하나로 좁히면 그
+     * 무장이 낳은 허가만 사라지고, 이미 다른 발급이 대신했다면 아무것도 하지 않는다.
+     *
+     * <p>소비된 행은 건드리지 않는다. 그 행은 멱등 재전송의 근거다. 트랜잭션을 열지 않는다 — 문장 하나다.
+     */
+    void invalidateReference(@Nullable UUID userId, @Nullable String reference) {
+        if (userId == null || !ActionGrant.isAcceptable(reference, ActionGrant.MAX_GRANT_REFERENCE_BYTES)) {
+            return;
+        }
+        this.repository.invalidateUnconsumed(userId, reference);
+    }
+
     private @Nullable Integer insert(String reference, Binding binding, Instant reauthenticatedAt) {
         try {
             return this.transactions.execute(

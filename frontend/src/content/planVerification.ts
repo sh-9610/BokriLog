@@ -413,19 +413,26 @@ export const planVerificationContent = {
     unavailableLabel: '지금은 기존 계획 계속을 요청할 수 없습니다',
     unknownReason:
       '기존 계획 계속을 요청할 수 있는지 확인하지 못했습니다. 다시 불러오기로 다시 확인할 수 있습니다.',
+    /*
+     * 장기 미동기화 설명의 두 버튼(`기존 계획 계속`, Story 2.13의 `새 계획 시작`)이 함께 막힌 이유. 한 줄을 두 버튼이
+     * 함께 가리키므로 두 이름을 모두 말한다.
+     */
     inProgressOther:
-      '다른 동기화 작업이 진행 중이라 기존 계획 계속을 요청할 수 없습니다. 끝나면 이 화면이 결과를 표시합니다.',
+      '다른 동기화 작업이 진행 중이라 기존 계획 계속과 새 계획 시작을 요청할 수 없습니다. 끝나면 이 화면이 결과를 표시합니다.',
     inProgressElsewhere:
-      '다른 곳에서 시작한 기존 계획 계속이 진행 중입니다. 끝날 때까지 새로 요청할 수 없고, 끝나면 이 화면이 결과를 표시합니다.',
+      '다른 곳에서 시작한 기존 계획 계속이 진행 중입니다. 끝날 때까지 기존 계획 계속과 새 계획 시작을 요청할 수 없고, 끝나면 이 화면이 결과를 표시합니다.',
     inProgressUnfollowed: {
-      SYNC: '동기화가 아직 진행 중이라 기존 계획 계속을 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+      SYNC: '동기화가 아직 진행 중이라 기존 계획 계속과 새 계획 시작을 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
       VERIFY:
-        '정밀 검증이 아직 진행 중이라 기존 계획 계속을 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+        '정밀 검증이 아직 진행 중이라 기존 계획 계속과 새 계획 시작을 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
       CATCH_UP:
-        '기존 계획 계속이 아직 진행 중이라 새로 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
+        '기존 계획 계속이 아직 진행 중이라 기존 계획 계속과 새 계획 시작을 새로 요청할 수 없습니다. 다시 불러오기로 진행 상태를 확인할 수 있습니다.',
     },
     admitting:
-      '화면을 열거나 탭으로 돌아올 때 보낸 동기화 요청을 확인하는 중이라 잠시 기존 계획 계속을 요청할 수 없습니다. 확인이 끝나면 다시 요청할 수 있습니다.',
+      '화면을 열거나 탭으로 돌아올 때 보낸 동기화 요청을 확인하는 중이라 잠시 기존 계획 계속과 새 계획 시작을 요청할 수 없습니다. 확인이 끝나면 다시 요청할 수 있습니다.',
+    /** 앞의 경우가 아닌데 작업이 진행 중일 때(결과를 보류한 기준 등) 두 버튼이 함께 가리키는 줄. */
+    inProgress:
+      '진행 중인 작업이 끝날 때까지 기존 계획 계속과 새 계획 시작을 요청할 수 없습니다. 끝나면 이 화면이 결과를 표시합니다.',
     /**
      * 같은 기준 계산에서 기존 계획 계속이나 정밀 검증이 입력 검토가 필요한 상태로 끝나 결과를 보류하고 있을 때,
      * `기존 계획 계속` 버튼 대신 두는 안내(장기 미동기화 + 대시보드 `NOT_USEFUL`).
@@ -700,6 +707,7 @@ export const planVerificationCopyStrings: readonly string[] = [
   planVerificationContent.catchUp.inProgressElsewhere,
   ...Object.values(planVerificationContent.catchUp.inProgressUnfollowed),
   planVerificationContent.catchUp.admitting,
+  planVerificationContent.catchUp.inProgress,
   planVerificationContent.catchUp.notUseful.label,
   planVerificationContent.catchUp.notUseful.text,
   ...Object.values(planVerificationContent.catchUp.summary.statuses),

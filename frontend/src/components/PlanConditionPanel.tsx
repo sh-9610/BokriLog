@@ -54,6 +54,8 @@ interface StateResponse {
 }
 
 const ACTIVE_PLAN_EXISTS = 'ACTIVE_PLAN_EXISTS'
+/** The account's plan was ended early (Story 2.13): no new conditions are taken here. */
+const PLAN_ENDED = 'PLAN_ENDED'
 
 function isInstant(value: unknown): value is string {
   return typeof value === 'string' && Number.isFinite(new Date(value).getTime())
@@ -233,7 +235,32 @@ export function PlanConditionPanel({
     setRevision((n) => n + 1)
   }
 
+  /** A request was refused because the plan was ended (another tab, say): reload the state, which says so. */
+  function reloadForEndedPlan(): void {
+    setPreview(null)
+    setSaved(null)
+    setError(null)
+    retryKey.current = null
+    setRevision((n) => n + 1)
+  }
+
   if (!ready) return null
+  if (state?.reason === PLAN_ENDED) {
+    return (
+      <section aria-labelledby="plan-condition-heading" className={styles.panel}>
+        <h2 id="plan-condition-heading">{copy.heading}</h2>
+        <div className={styles.savedStatus} role="status">
+          <h3>{copy.planEnded.label}</h3>
+          <p>{copy.planEnded.text}</p>
+        </div>
+        <p>
+          <a className={styles.button} href={DASHBOARD_PATH}>
+            {copy.planEnded.dashboardLink}
+          </a>
+        </p>
+      </section>
+    )
+  }
   if (state !== null && isActivePlan(state.activePlan)) {
     const plan = state.activePlan
     return (
@@ -330,6 +357,10 @@ export function PlanConditionPanel({
           reloadForActivePlan()
           return
         }
+        if (codeOf(refusal) === PLAN_ENDED) {
+          reloadForEndedPlan()
+          return
+        }
         setError(copy.errors.unavailable)
         return
       }
@@ -374,6 +405,8 @@ export function PlanConditionPanel({
       }
       if (response.status === 409 && body.code === ACTIVE_PLAN_EXISTS) {
         reloadForActivePlan()
+      } else if (response.status === 409 && body.code === PLAN_ENDED) {
+        reloadForEndedPlan()
       } else if (body.conflict && body.intent !== undefined) {
         setSaved(body.intent)
         setPreview(null)

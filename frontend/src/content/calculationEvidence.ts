@@ -197,6 +197,8 @@ export const calculationEvidenceContent = {
     effectiveFrom: '적용 시작',
     effectiveUntil: '적용 끝',
     current: '현재 공식 버전입니다.',
+    /** Story 2.13: 중도 종료된 계획의 현재 버전은 종료 시각에 적용이 끝났다. */
+    endedCurrent: '이 계획의 마지막 공식 버전이며, 계획이 중도 종료된 시각에 적용이 끝났습니다.',
     earlier: '이전 공식 버전입니다.',
     calculationId: '계산 ID',
     unpublished: '발행되지 않은 시도',

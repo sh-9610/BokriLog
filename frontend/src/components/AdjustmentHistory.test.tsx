@@ -29,10 +29,13 @@ import {
   adjustmentRowFixture,
   adjustmentTime,
   adjustmentWithdrawalFixture,
+  AVAILABLE_PLAN_END,
   AVAILABLE_SYNC,
   AVAILABLE_VERIFICATION,
   EVIDENCE_IDS,
   evidenceResultFixture,
+  idlePlanEnd,
+  idleReauthentication,
   idleSyncState,
   trustFixture,
 } from '../test/planResultFixture'
@@ -75,6 +78,8 @@ function ready(body: Record<string, unknown> = shownResult()): DashboardView {
     sync: AVAILABLE_SYNC,
     verification: AVAILABLE_VERIFICATION,
     change: NO_CHANGE,
+    planEnd: AVAILABLE_PLAN_END,
+    end: null,
   }
 }
 
@@ -117,6 +122,8 @@ function Harness({
     <>
       <p data-testid="announcement">{adjustmentAnnouncement(adjustments.view) ?? ''}</p>
       <PlanResultPanel
+        planEnd={idlePlanEnd()}
+        reauthentication={idleReauthentication()}
         adjustments={adjustments}
         dashboard={dashboard}
         evidence={evidence}
@@ -1209,6 +1216,8 @@ describe('AdjustmentHistory', { timeout: 20_000 }, () => {
           sync: AVAILABLE_SYNC,
           verification: AVAILABLE_VERIFICATION,
           change: NO_CHANGE,
+          planEnd: AVAILABLE_PLAN_END,
+          end: null,
         }}
       />,
     )
@@ -1222,6 +1231,8 @@ describe('AdjustmentHistory', { timeout: 20_000 }, () => {
           sync: AVAILABLE_SYNC,
           verification: AVAILABLE_VERIFICATION,
           change: NO_CHANGE,
+          planEnd: AVAILABLE_PLAN_END,
+          end: null,
         }}
       />,
     )

@@ -29,6 +29,11 @@ class SyncJobService implements SyncJobApi {
     static final String INITIAL_INPUTS_COMMAND="initial-source-event-collection";
     /** The plan module's condition command, kept here because sync must not depend on plan; {@code SyncCommandNamesTest} pins it. */
     static final String PLAN_CONDITION_COMMAND="plan-condition-create";
+    /**
+     * The plan module's early-end command (Story 2.13), kept here for the same reason; {@code SyncCommandNamesTest} pins
+     * it. Its restriction is what the ready dashboard's plan-end part reports as {@code RESTRICTED}.
+     */
+    static final String PLAN_END_COMMAND="plan-end";
     private final SyncJobRepository jobs;
     private final InitialCollectionRepository initialJobs;
     private final CashflowClassificationRepository classifications;
@@ -236,6 +241,10 @@ class SyncJobService implements SyncJobApi {
     public VerificationAdmission admitPlanVerification(@Nullable UUID userId, @Nullable VerificationKind kind,
             @Nullable EvidenceReference reference, @Nullable String idempotencyKey) {
         return planVerifications.admit(userId,kind,reference,idempotencyKey);
+    }
+    @Override
+    public PlanEndBasisRead planEndBasis(@Nullable UUID userId, UUID planId) {
+        return publications.planEndBasis(userId,planId);
     }
     @Override
     public VerificationAdmission admitSystemVerification(@Nullable UUID userId, VerificationReason reason,

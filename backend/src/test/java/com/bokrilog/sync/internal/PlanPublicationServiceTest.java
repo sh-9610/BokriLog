@@ -309,8 +309,9 @@ class PlanPublicationServiceTest {
     }
 
     /**
-     * A write restriction does not hide the result: only the account's own access gates the read, and the
-     * restriction registry is never asked.
+     * A write restriction does not hide the result: only the account's own access gates the read. The registry is
+     * asked one thing only — whether the plan end is restricted (Story 2.13) — and that only says the plan cannot be
+     * ended now; the bundle is the same.
      */
     @Test
     void aCommandRestrictionDoesNotHideTheDashboard() {
@@ -318,8 +319,166 @@ class PlanPublicationServiceTest {
         when(restrictions.isRestricted(anyString())).thenReturn(true);
         bundle();
 
-        assertThat(service(true).dashboard(USER).dashboard()).isInstanceOf(Dashboard.Ready.class);
+        var dashboard = service(true).dashboard(USER).dashboard();
+        assertThat(dashboard).isInstanceOf(Dashboard.Ready.class);
+        assertThat(((Dashboard.Ready) dashboard).planEnd())
+                .isEqualTo(new com.bokrilog.sync.SyncJobApi.PlanEndAvailability("UNAVAILABLE", "RESTRICTED"));
+        verify(restrictions).isRestricted("plan-end");
+        verify(restrictions, never()).isRestricted(org.mockito.ArgumentMatchers.argThat(command ->
+                !"plan-end".equals(command)));
+    }
+
+    // ---------------------------------------------------------------- Story 2.13 the ended plan's record
+
+    private static final Instant ENDED_AT = TC.plusSeconds(120);
+
+    private static PlanPublicationPort.PlanEnd end(long version, UUID calculation, UUID snapshot, Instant measured,
+            Instant verified, Instant endedAt) {
+        return new PlanPublicationPort.PlanEnd("USER_REQUEST", endedAt, calculation, version, snapshot, measured,
+                verified, "NOT_APPLICABLE", null, null);
+    }
+
+    private final PlanPublicationPort.PlanEnd consistentEnd = end(1, CALCULATION, CURRENT_SNAPSHOT, TC, TC, ENDED_AT);
+
+    /** An ended plan's bundle behind its pointer; the portfolio's current pointer has moved on (a following plan). */
+    private void endedBundle(PlanPublicationPort.@org.jspecify.annotations.Nullable PlanEnd end, String status) {
+        when(accounts.decide(USER, USER, AccountAccessKind.SENSITIVE)).thenReturn(AccessDecision.ALLOWED);
+        when(plans.activePlan(USER)).thenReturn(Optional.empty());
+        when(repository.publicationInProgress(USER)).thenReturn(false);
+        when(plans.latestPlan(USER)).thenReturn(Optional.of(new PlanPublicationPort.LatestPlan(plan, status, end)));
+        when(repository.pointer(USER, PLAN)).thenReturn(Optional.of(
+                new PlanPublicationRepository.Pointer(PORTFOLIO, CALCULATION, 1, TC)));
+        when(repository.calculation(USER, CALCULATION)).thenReturn(Optional.of(calculation));
+        when(portfolios.officialValue(USER)).thenReturn(Optional.of(new PortfolioMembershipApi.OfficialValue("9999",
+                "USD", ENDED_AT, ENDED_AT, ENDED_AT, UUID.randomUUID(), 7)));
+        when(repository.metrics(CALCULATION)).thenReturn(metrics);
+        when(repository.lineage(USER, CALCULATION)).thenReturn(Optional.of(lineageRow("BYBIT")));
+    }
+
+    /**
+     * Without an active plan or a publication in progress, the most recent plan that ended early is shown as its
+     * record: its last official bundle, the plan status ENDED_EARLY, freshness ENDED and the end facts — and no sync,
+     * verification or change part is read for it, nor the portfolio's current pointer compared.
+     */
+    @Test
+    void anEndedPlanIsShownAsItsReadOnlyRecord() {
+        endedBundle(consistentEnd, "ENDED_EARLY");
+
+        var dashboard = service(true).dashboard(USER);
+        assertThat(dashboard.consistency()).isEqualTo(BundleConsistency.CONSISTENT);
+        assertThat(dashboard.dashboard()).isInstanceOf(Dashboard.Ended.class);
+        var ended = (Dashboard.Ended) dashboard.dashboard();
+        assertThat(ended.nextAction()).isEqualTo("PREPARE_NEXT_PLAN");
+        assertThat(ended.result().planStatus()).isEqualTo("ENDED_EARLY");
+        assertThat(ended.result().calculationId()).isEqualTo(CALCULATION);
+        assertThat(ended.result().measuredAt()).isEqualTo(TC);
+        assertThat(ended.result().trust().freshness().state()).isEqualTo("ENDED");
+        assertThat(ended.result().trust().freshness().cause()).isEqualTo("PLAN_ENDED_EARLY");
+        assertThat(ended.end()).isEqualTo(new com.bokrilog.sync.SyncJobApi.PlanEndRecord("USER_REQUEST", ENDED_AT, END,
+                TC, 120_000, "NOT_APPLICABLE", null, null));
+        verify(planSyncs, never()).facts(any(), any());
+        verify(planVerifications, never()).state(any(), any(), any());
+        verify(repository, never()).freshness(any(), any(), any());
         verify(restrictions, never()).isRestricted(anyString());
+    }
+
+    /**
+     * B1: a persistent verification review of the ended version itself (Story 2.12) still holds the record's input
+     * reliability — the state and cause the ready dashboard showed, with no next action; nothing else of sync reaches it.
+     */
+    @Test
+    void anEndedRecordKeepsItsVersionsPersistentReview() {
+        endedBundle(consistentEnd, "ENDED_EARLY");
+        when(planSyncAttempts.verificationReview(USER, PLAN, CALCULATION)).thenReturn(Optional.of(
+                new PlanSyncRepository.Review(UUID.randomUUID(), "SOURCE_EVENT_MISSING")));
+
+        var reliability = ((Dashboard.Ended) service(true).dashboard(USER).dashboard()).result().trust()
+                .inputReliability();
+        assertThat(reliability.state()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(reliability.cause()).isEqualTo("VERIFICATION_REVIEW_REQUIRED");
+        assertThat(reliability.nextAction()).isEqualTo("NONE");
+        verify(planSyncs, never()).facts(any(), any());
+
+        when(planSyncAttempts.verificationReview(USER, PLAN, CALCULATION)).thenReturn(Optional.of(
+                new PlanSyncRepository.Review(UUID.randomUUID(), "HISTORY_OUT_OF_RANGE")));
+        var unusable = ((Dashboard.Ended) service(true).dashboard(USER).dashboard()).result().trust()
+                .inputReliability();
+        assertThat(unusable.state()).isEqualTo("UNUSABLE");
+        assertThat(unusable.cause()).isEqualTo("HISTORY_OUT_OF_RANGE");
+    }
+
+    /** A long-gap end carries its uncollected range (verified, end]. */
+    @Test
+    void aLongGapEndCarriesItsUncollectedRange() {
+        endedBundle(new PlanPublicationPort.PlanEnd("LONG_GAP_NEW_PLAN", ENDED_AT, CALCULATION, 1, CURRENT_SNAPSHOT, TC,
+                TC, "UNAVAILABLE_DATA_GAP", TC, ENDED_AT), "ENDED_EARLY");
+
+        var ended = (Dashboard.Ended) service(true).dashboard(USER).dashboard();
+        assertThat(ended.end()).isEqualTo(new com.bokrilog.sync.SyncJobApi.PlanEndRecord("LONG_GAP_NEW_PLAN", ENDED_AT,
+                END, TC, 120_000, "UNAVAILABLE_DATA_GAP", TC, ENDED_AT));
+    }
+
+    /**
+     * The record is shown only when the end agrees with the pointer and the version: the same version and calculation,
+     * the version's snapshot, both times unchanged, an end after them and before T, and a shape that goes with the
+     * reason. Anything else — and an ended plan without its record, or a status this story does not know — is the
+     * same "unavailable", never a record in part.
+     */
+    @Test
+    void anEndThatDisagreesWithItsVersionIsUnavailable() {
+        for (var disagreeing : List.of(
+                end(2, CALCULATION, CURRENT_SNAPSHOT, TC, TC, ENDED_AT),
+                end(1, UUID.randomUUID(), CURRENT_SNAPSHOT, TC, TC, ENDED_AT),
+                end(1, CALCULATION, UUID.randomUUID(), TC, TC, ENDED_AT),
+                end(1, CALCULATION, CURRENT_SNAPSHOT, TC.minusMillis(1), TC, ENDED_AT),
+                end(1, CALCULATION, CURRENT_SNAPSHOT, TC, TC.minusMillis(1), ENDED_AT),
+                end(1, CALCULATION, CURRENT_SNAPSHOT, TC, TC, END),
+                new PlanPublicationPort.PlanEnd("USER_REQUEST", ENDED_AT, CALCULATION, 1, CURRENT_SNAPSHOT, TC, TC,
+                        "UNAVAILABLE_DATA_GAP", null, null),
+                new PlanPublicationPort.PlanEnd("LONG_GAP_NEW_PLAN", ENDED_AT, CALCULATION, 1, CURRENT_SNAPSHOT, TC, TC,
+                        "UNAVAILABLE_DATA_GAP", TC.minusMillis(1), ENDED_AT),
+                new PlanPublicationPort.PlanEnd("COMPLETED", ENDED_AT, CALCULATION, 1, CURRENT_SNAPSHOT, TC, TC,
+                        "NOT_APPLICABLE", null, null),
+                // A long-gap end whose range does not end at the end, or whose verification is the end itself.
+                new PlanPublicationPort.PlanEnd("LONG_GAP_NEW_PLAN", ENDED_AT, CALCULATION, 1, CURRENT_SNAPSHOT, TC, TC,
+                        "UNAVAILABLE_DATA_GAP", TC, ENDED_AT.minusMillis(1)),
+                new PlanPublicationPort.PlanEnd("LONG_GAP_NEW_PLAN", TC, CALCULATION, 1, CURRENT_SNAPSHOT, TC, TC,
+                        "UNAVAILABLE_DATA_GAP", TC, TC),
+                // An early end with an uncollected range.
+                new PlanPublicationPort.PlanEnd("USER_REQUEST", ENDED_AT, CALCULATION, 1, CURRENT_SNAPSHOT, TC, TC,
+                        "NOT_APPLICABLE", TC, ENDED_AT))) {
+            endedBundle(disagreeing, "ENDED_EARLY");
+            var read = service(true).dashboard(USER);
+            assertThat(read.dashboard()).as(disagreeing.toString()).isEqualTo(new Dashboard.Unavailable());
+            assertThat(read.consistency()).isEqualTo(BundleConsistency.INCONSISTENT);
+        }
+        // An end before the pointer's publication: the pointer was published after the end, so it is not the one ended on.
+        endedBundle(consistentEnd, "ENDED_EARLY");
+        when(repository.pointer(USER, PLAN)).thenReturn(Optional.of(
+                new PlanPublicationRepository.Pointer(PORTFOLIO, CALCULATION, 1, ENDED_AT.plusMillis(1))));
+        assertThat(service(true).dashboard(USER).dashboard()).isEqualTo(new Dashboard.Unavailable());
+        endedBundle(null, "ENDED_EARLY");
+        assertThat(service(true).dashboard(USER).dashboard()).isEqualTo(new Dashboard.Unavailable());
+        endedBundle(consistentEnd, "ACTIVE");
+        assertThat(service(true).dashboard(USER).dashboard()).isEqualTo(new Dashboard.Unavailable());
+    }
+
+    /** Story 2.13: a ready plan's end availability, by the restriction, T and the long gap of the same read. */
+    @Test
+    void aReadyPlanSaysWhetherItCanBeEndedNow() {
+        when(accounts.decide(USER, USER, AccountAccessKind.SENSITIVE)).thenReturn(AccessDecision.ALLOWED);
+        bundle();
+        var longGap = new PlanSyncService.Facts(TC, false, null, true, null, null, null);
+        when(planSyncs.facts(eq(USER), any())).thenReturn(longGap);
+        when(planSyncs.state(longGap)).thenReturn(
+                new com.bokrilog.sync.SyncJobApi.SyncState("LONG_GAP", null, null, null));
+        when(planVerifications.state(eq(USER), any(), eq(longGap))).thenReturn(
+                new com.bokrilog.sync.SyncJobApi.VerificationState("LONG_GAP", null, null, null, null, TC, null));
+
+        var ready = (Dashboard.Ready) service(true).dashboard(USER).dashboard();
+        assertThat(ready.planEnd()).isEqualTo(new com.bokrilog.sync.SyncJobApi.PlanEndAvailability("NEW_PLAN_CHOICE",
+                null));
+        assertThat(ready.result().planStatus()).isEqualTo("ACTIVE");
     }
 
     @Test

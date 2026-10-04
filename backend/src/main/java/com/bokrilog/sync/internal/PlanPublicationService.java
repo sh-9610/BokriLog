@@ -17,6 +17,10 @@ import com.bokrilog.sync.SyncJobApi.DashboardResult;
 import com.bokrilog.sync.SyncJobApi.EvidenceOutcome;
 import com.bokrilog.sync.SyncJobApi.EvidenceRead;
 import com.bokrilog.sync.SyncJobApi.EvidenceReference;
+import com.bokrilog.sync.SyncJobApi.PlanEndAvailability;
+import com.bokrilog.sync.SyncJobApi.PlanEndBasis;
+import com.bokrilog.sync.SyncJobApi.PlanEndBasisRead;
+import com.bokrilog.sync.SyncJobApi.PlanEndRecord;
 import com.bokrilog.sync.SyncJobApi.PublicationAdmission;
 import com.bokrilog.sync.SyncJobApi.PublicationJob;
 import com.bokrilog.sync.SyncJobApi.PublicationState;
@@ -43,6 +47,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -583,17 +588,21 @@ class PlanPublicationService {
     }
 
     /**
-     * The bundle, inside the one consistent read. With no active plan, a publication in progress is
-     * "being prepared" and anything else is "no plan". With one, everything is read by the pointer's
-     * calculation id, and the bundle must agree with itself — the version belongs to the plan, its
-     * portfolio and its terms, the portfolio pointer cites the version's snapshot, and its metrics are a
-     * whole six — or nothing of it is returned.
+     * The bundle, inside the one consistent read. The plan shown is one choice (Story 2.13): the active plan; without
+     * one, a publication in progress is "being prepared"; otherwise the most recent plan, when it ended early, is its
+     * read-only record ({@link #endedBundle}); and anything else is "no plan". With an active plan, everything is read
+     * by the pointer's calculation id, and the bundle must agree with itself — the version belongs to the plan, its
+     * portfolio and its terms, the portfolio pointer cites the version's snapshot, and its metrics are a whole six —
+     * or nothing of it is returned.
      */
     private Dashboard bundle(UUID user) {
         var plan = plans.activePlan(user).orElse(null);
         if (plan == null) {
-            return repository.publicationInProgress(user) ? new Dashboard.Preparing(DashboardTrust.WAIT_FOR_RESULT)
-                    : new Dashboard.NoPlan(DashboardTrust.CREATE_PLAN);
+            if (repository.publicationInProgress(user)) return new Dashboard.Preparing(DashboardTrust.WAIT_FOR_RESULT);
+            var latest = plans.latestPlan(user).orElse(null);
+            if (latest == null) return new Dashboard.NoPlan(DashboardTrust.CREATE_PLAN);
+            // Any other status without an active plan is not one this story knows: shown as nothing, never in part.
+            return ENDED_EARLY.equals(latest.status()) ? endedBundle(user, latest) : new Dashboard.Unavailable();
         }
         // Active plans and their pointers are published atomically: a plan without one is inconsistent.
         var pointer = repository.pointer(user, plan.planId()).orElse(null);
@@ -633,7 +642,11 @@ class PlanPublicationService {
                         review == null ? null : review.code(), verification.availability())))
                 .orElse(null);
         if (trust == null) return new Dashboard.Unavailable();
-        return new Dashboard.Ready(new DashboardResult(plan.planId(), "ACTIVE", notation(calculation.principal()),
+        // Whether the plan can be ended now (Story 2.13), by the end's own order, against the same clock and long gap.
+        PlanEndAvailability planEnd = DashboardTrust.planEnd(restrictions.isRestricted(SyncJobService.PLAN_END_COMMAND),
+                facts.now(), calculation.endAt(), DashboardTrust.resultTooRecent(facts.now(), calculation.measuredAt(),
+                        calculation.verifiedThrough()), facts.longGap());
+        return new Dashboard.Ready(new DashboardResult(plan.planId(), ACTIVE, notation(calculation.principal()),
                 calculation.t0(), calculation.endAt(), calculation.period(), notation(calculation.targetRate()),
                 pointer.version(), pointer.publishedAt(), pointer.calculationId(), calculation.portfolioSnapshotId(),
                 calculation.basisPortfolioSnapshotId(), calculation.basisAt(), calculation.measuredAt(),
@@ -641,7 +654,139 @@ class PlanPublicationService {
                 calculation.displayPolicy(), calculation.pricePolicy(), calculation.implementationVersion(),
                 calculation.inputHash(), calculation.resultHash(), calculation.flowCount(),
                 calculation.estimatedFlowCount(), trust, metrics), DashboardTrust.nextAction(trust), sync,
-                verification, change);
+                verification, change, planEnd);
+    }
+
+    /**
+     * The plan statuses, end reasons and completion values this module reads. The plan module owns them; these are
+     * sync's copies, because sync must not depend on plan — {@code SyncCommandNamesTest} pins each to the plan
+     * module's constant, so a rename fails a test instead of making every record unavailable.
+     */
+    static final String ACTIVE = "ACTIVE";
+    static final String ENDED_EARLY = "ENDED_EARLY";
+    static final String END_USER_REQUEST = "USER_REQUEST";
+    static final String END_LONG_GAP_NEW_PLAN = "LONG_GAP_NEW_PLAN";
+    static final String COMPLETION_NOT_APPLICABLE = "NOT_APPLICABLE";
+    static final String COMPLETION_DATA_GAP = "UNAVAILABLE_DATA_GAP";
+
+    /**
+     * The read-only record of a plan that ended early (Story 2.13), inside the same consistent read: its last official
+     * bundle — read through its pointer like a ready one's — and the end facts. The end record must agree with that
+     * bundle ({@link #endAgrees}) — the same calculation and pointer version, the same portfolio snapshot and both times
+     * copied unchanged — or nothing is returned. The portfolio's current pointer is not compared: a following plan
+     * (Story 2.15) may move it. No sync, verification or change part; freshness is {@code ENDED}, and the input
+     * reliability and the nature are judged from the version and its own persistent verification review (Story 2.12),
+     * if one holds it — the review the ready dashboard showed for that same version.
+     */
+    private Dashboard endedBundle(UUID user, PlanPublicationPort.LatestPlan latest) {
+        var plan = latest.plan();
+        var end = latest.end();
+        if (end == null) return new Dashboard.Unavailable();
+        var pointer = repository.pointer(user, plan.planId()).orElse(null);
+        if (pointer == null) return new Dashboard.Unavailable();
+        var calculation = repository.calculation(user, pointer.calculationId()).orElse(null);
+        if (calculation == null || !belongs(calculation, plan, pointer) || !endAgrees(end, plan, pointer, calculation))
+            return new Dashboard.Unavailable();
+        List<DashboardMetric> metrics = repository.metrics(pointer.calculationId());
+        if (!DashboardTrust.wellFormed(metrics, calculation.estimated())) return new Dashboard.Unavailable();
+        if (repository.lineage(user, pointer.calculationId()).isEmpty()) return new Dashboard.Unavailable();
+        var review = syncAttempts.verificationReview(user, plan.planId(), pointer.calculationId()).orElse(null);
+        var trust = DashboardTrust.judgeEnded(calculation.inputReliability(), calculation.estimated(),
+                calculation.estimatedFlowCount(), calculation.measuredAt(), calculation.verifiedThrough(),
+                calculation.basisAt(), metrics, review == null ? null : review.code()).orElse(null);
+        if (trust == null) return new Dashboard.Unavailable();
+        var record = new PlanEndRecord(end.reason(), end.endedAt(), plan.endAt(), end.lastMeasuredAt(),
+                java.time.Duration.between(end.lastMeasuredAt(), end.endedAt()).toMillis(), end.completion(),
+                end.uncollectedFrom(), end.uncollectedUntil());
+        return new Dashboard.Ended(new DashboardResult(plan.planId(), ENDED_EARLY, notation(calculation.principal()),
+                calculation.t0(), calculation.endAt(), calculation.period(), notation(calculation.targetRate()),
+                pointer.version(), pointer.publishedAt(), pointer.calculationId(), calculation.portfolioSnapshotId(),
+                calculation.basisPortfolioSnapshotId(), calculation.basisAt(), calculation.measuredAt(),
+                calculation.verifiedThrough(), calculation.calculationPolicy(), calculation.calendarPolicy(),
+                calculation.displayPolicy(), calculation.pricePolicy(), calculation.implementationVersion(),
+                calculation.inputHash(), calculation.resultHash(), calculation.flowCount(),
+                calculation.estimatedFlowCount(), trust, metrics), DashboardTrust.PREPARE_NEXT_PLAN, record);
+    }
+
+    /**
+     * Whether an end record agrees with the plan's pointer and the version it cites (Story 2.13): the same calculation
+     * and pointer version — the pointer has not moved since the end — the version's portfolio snapshot, its measurement
+     * and cash-flow verification copied unchanged, an end after both of them, after the pointer's publication and
+     * before {@code T}, and a reason, completion and uncollected range that go together (a long-gap end's range is
+     * {@code (verified, end]}, an early end has none and no completion comparison).
+     */
+    static boolean endAgrees(PlanPublicationPort.PlanEnd end, PlanPublicationPort.ActivePlan plan,
+            PlanPublicationRepository.Pointer pointer, PlanPublicationRepository.CalculationView calculation) {
+        boolean shape = switch (end.reason()) {
+            case END_USER_REQUEST -> COMPLETION_NOT_APPLICABLE.equals(end.completion()) && end.uncollectedFrom() == null
+                    && end.uncollectedUntil() == null;
+            case END_LONG_GAP_NEW_PLAN -> COMPLETION_DATA_GAP.equals(end.completion())
+                    && end.cashflowVerifiedThrough().equals(end.uncollectedFrom())
+                    && end.endedAt().equals(end.uncollectedUntil())
+                    && end.cashflowVerifiedThrough().isBefore(end.endedAt());
+            default -> false;
+        };
+        return shape && end.officialCalculationId().equals(pointer.calculationId())
+                && end.officialPointerVersion() == pointer.version()
+                && end.officialPortfolioSnapshotId().equals(calculation.portfolioSnapshotId())
+                && end.lastMeasuredAt().equals(calculation.measuredAt())
+                && end.cashflowVerifiedThrough().equals(calculation.verifiedThrough())
+                && !end.endedAt().isBefore(calculation.measuredAt())
+                && !end.endedAt().isBefore(calculation.verifiedThrough())
+                && !end.endedAt().isBefore(pointer.publishedAt()) && end.endedAt().isBefore(plan.endAt());
+    }
+
+    /**
+     * The plan the evidence and the adjustment history judge their reference against (Story 2.13): the active plan, or
+     * — without one — the most recent plan when it ended early. {@code end} is that plan's end record; an ended plan
+     * whose record is missing comes back with {@code broken}, so the caller answers "unavailable" once the reference
+     * named it, never "not found".
+     */
+    record Shown(PlanPublicationPort.ActivePlan plan, PlanPublicationPort.@Nullable PlanEnd end, boolean broken) {}
+
+    static @Nullable Shown shown(PlanPublicationPort plans, UUID user) {
+        var active = plans.activePlan(user).orElse(null);
+        if (active != null) return new Shown(active, null, false);
+        var latest = plans.latestPlan(user).orElse(null);
+        if (latest == null || !ENDED_EARLY.equals(latest.status())) return null;
+        return new Shown(latest.plan(), latest.end(), latest.end() == null);
+    }
+
+    // ---------------------------------------------------------------- the plan end's basis (Story 2.13)
+
+    /**
+     * The official basis of the user's active plan {@code planId}, inside the caller's transaction: its pointer and the
+     * calculation it cites, checked exactly as the ready dashboard checks its bundle ({@link #bundle}) — the version
+     * belongs to the plan and its terms, the portfolio pointer cites its snapshot (AD-23), its six metrics are whole and
+     * its input reliability is one this module knows, and its lineage exists — then the database clock, the long gap by
+     * the sync admission's own function ({@link PlanSyncService#longGap}) and whether the result is too recent to end on
+     * ({@link DashboardTrust#resultTooRecent}). Not the user's active plan: {@code NotActive}. A result that fails any
+     * check: {@code Unavailable} — an end recorded on it would be a record that is never shown.
+     */
+    PlanEndBasisRead planEndBasis(@Nullable UUID userId, UUID planId) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("the plan end basis joins the caller's transaction");
+        if (userId == null) return new PlanEndBasisRead.NotActive();
+        var plan = plans.activePlan(userId).orElse(null);
+        if (plan == null || !plan.planId().equals(planId)) return new PlanEndBasisRead.NotActive();
+        var pointer = repository.pointer(userId, planId).orElse(null);
+        if (pointer == null) return new PlanEndBasisRead.Unavailable();
+        var calculation = repository.calculation(userId, pointer.calculationId()).orElse(null);
+        if (calculation == null || !belongs(calculation, plan, pointer)) return new PlanEndBasisRead.Unavailable();
+        var portfolio = portfolios.officialValue(userId).orElse(null);
+        if (portfolio == null || !portfolio.snapshotId().equals(calculation.portfolioSnapshotId())
+                || portfolio.publicationSequence() != calculation.portfolioSequence())
+            return new PlanEndBasisRead.Unavailable();
+        if (!DashboardTrust.wellFormed(repository.metrics(pointer.calculationId()), calculation.estimated())
+                || !DashboardTrust.RELIABILITIES.contains(calculation.inputReliability()))
+            return new PlanEndBasisRead.Unavailable();
+        var lineage = repository.lineage(userId, pointer.calculationId()).orElse(null);
+        if (lineage == null) return new PlanEndBasisRead.Unavailable();
+        Instant now = repository.databaseNow();
+        boolean longGap = syncs.longGap(userId, new PlanSyncGuard.Base(plan, pointer, calculation, lineage), now);
+        return new PlanEndBasis(planId, pointer.version(), pointer.calculationId(), calculation.portfolioSnapshotId(),
+                calculation.measuredAt(), calculation.verifiedThrough(), calculation.endAt(), now, longGap,
+                DashboardTrust.resultTooRecent(now, calculation.measuredAt(), calculation.verifiedThrough()));
     }
 
     // ---------------------------------------------------------------- calculation evidence (Story 2.9)
@@ -700,21 +845,30 @@ class PlanPublicationService {
      * </ul>
      */
     private EvidenceOutcome lineage(UUID user, EvidenceReference reference) {
-        var plan = plans.activePlan(user).orElse(null);
-        if (plan == null || !plan.planId().equals(reference.planId())) return new EvidenceOutcome.NotFound();
+        // The plan shown (Story 2.13): the active plan, or the most recent plan that ended early.
+        var shown = shown(plans, user);
+        if (shown == null || !shown.plan().planId().equals(reference.planId())) return new EvidenceOutcome.NotFound();
+        var plan = shown.plan();
         var pointer = repository.pointer(user, plan.planId()).orElse(null);
         if (pointer == null || pointer.version() != reference.pointerVersion()
                 || !pointer.calculationId().equals(reference.calculationId()))
             return new EvidenceOutcome.NotFound();
         // The reference is the current official pointer: from here on, a disagreement is a broken lineage.
+        if (shown.broken()) return new EvidenceOutcome.Unavailable();
         UUID calculationId = pointer.calculationId();
         var calculation = repository.calculation(user, calculationId).orElse(null);
         if (calculation == null || !belongs(calculation, plan, pointer)) return new EvidenceOutcome.Unavailable();
-        // The same AD-23 reliance as the dashboard: both pointers advance in one publication transaction.
-        var portfolio = portfolios.officialValue(user).orElse(null);
-        if (portfolio == null || !portfolio.snapshotId().equals(calculation.portfolioSnapshotId())
-                || portfolio.publicationSequence() != calculation.portfolioSequence())
+        var end = shown.end();
+        if (end == null) {
+            // The same AD-23 reliance as the dashboard: both pointers advance in one publication transaction.
+            var portfolio = portfolios.officialValue(user).orElse(null);
+            if (portfolio == null || !portfolio.snapshotId().equals(calculation.portfolioSnapshotId())
+                    || portfolio.publicationSequence() != calculation.portfolioSequence())
+                return new EvidenceOutcome.Unavailable();
+        } else if (!endAgrees(end, plan, pointer, calculation)) {
+            // An ended plan's record names its snapshot instead; the portfolio's pointer may move on (Story 2.15).
             return new EvidenceOutcome.Unavailable();
+        }
         List<DashboardMetric> metrics = repository.metrics(calculationId);
         if (!DashboardTrust.wellFormed(metrics, calculation.estimated())) return new EvidenceOutcome.Unavailable();
         var lineage = repository.lineage(user, calculationId).orElse(null);
@@ -816,7 +970,7 @@ class PlanPublicationService {
             return new EvidenceOutcome.Unavailable();
         }
         List<CalculationEvidence.OfficialVersion> versions = officialVersions(user, plan.planId(), pointer,
-                calculation.portfolioId());
+                calculation.portfolioId(), end == null ? null : end.endedAt());
         if (versions == null) return new EvidenceOutcome.Unavailable();
         var change = evidenceChange(user, calculationId, lineage, pointer, creatingSync, metrics, versions);
         if (change == null) return new EvidenceOutcome.Unavailable();
@@ -903,13 +1057,16 @@ class PlanPublicationService {
 
     /**
      * The plan's official versions from the pointer's append-only history (Story 2.11), oldest first: each
-     * version is official from its publication until the next one's, and the current one has no end. {@code null}
-     * when the history is not one line ending in the current pointer — a gap, a version of another portfolio, a
-     * publication earlier than the one before, or a last row that is not the pointer itself. Two versions may share
-     * a millisecond (the times are stored to the millisecond), so an equal time is still one line.
+     * version is official from its publication until the next one's, and the current one has no end — unless the plan
+     * ended early (Story 2.13): its current version was applied until the end. {@code null} when the history is not
+     * one line ending in the current pointer — a gap, a version of another portfolio, a publication earlier than the
+     * one before, or a last row that is not the pointer itself. Two versions may share a millisecond (the times are
+     * stored to the millisecond), so an equal time is still one line.
+     *
+     * @param endedAt the end time of an ended plan, {@code null} for an active one
      */
     private @Nullable List<CalculationEvidence.OfficialVersion> officialVersions(UUID user, UUID planId,
-            PlanPublicationRepository.Pointer pointer, UUID portfolioId) {
+            PlanPublicationRepository.Pointer pointer, UUID portfolioId, @Nullable Instant endedAt) {
         List<PlanPublicationRepository.HistoryRow> rows = repository.history(user, planId);
         if (rows.isEmpty()) return null;
         List<CalculationEvidence.OfficialVersion> versions = new java.util.ArrayList<>();
@@ -920,7 +1077,7 @@ class PlanPublicationService {
                     || (next != null && next.publishedAt().isBefore(row.publishedAt())))
                 return null;
             versions.add(new CalculationEvidence.OfficialVersion(row.pointerVersion(), row.calculationId(),
-                    row.publishedAt(), next == null ? null : next.publishedAt(), next == null));
+                    row.publishedAt(), next == null ? endedAt : next.publishedAt(), next == null));
         }
         var last = rows.getLast();
         if (last.pointerVersion() != pointer.version() || !last.calculationId().equals(pointer.calculationId())

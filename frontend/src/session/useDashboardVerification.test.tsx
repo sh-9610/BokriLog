@@ -7,6 +7,7 @@ import { planSyncContent } from '../content/planSync'
 import { DASHBOARD_VERIFICATION_PATH, planVerificationContent } from '../content/planVerification'
 import { formatSeoulTime } from '../format/decimal'
 import {
+  AVAILABLE_PLAN_END,
   AVAILABLE_VERIFICATION,
   changeFixture,
   dashboardFixture,
@@ -1276,6 +1277,8 @@ describe('useDashboardSync: the catch-up after a long gap', () => {
       sync: { availability: 'AVAILABLE', reason: null, retryAfterSeconds: null, latest: null },
       verification: AVAILABLE_VERIFICATION,
       change: NO_CHANGE,
+      planEnd: AVAILABLE_PLAN_END,
+      end: null,
     }
     const dashboard: Dashboard = { view, loading: false, reload: vi.fn(), refresh: vi.fn() }
     const basis = formatSeoulTime(

@@ -1,9 +1,16 @@
 import { useLayoutEffect, useRef, type FocusEvent, type ReactElement, type Ref } from 'react'
 
-import type { SyncJob, SyncStatus, VerificationStatus } from '../session/useDashboard'
+import type {
+  PlanEndStatus,
+  SyncJob,
+  SyncStatus,
+  VerificationStatus,
+} from '../session/useDashboard'
 import type { DashboardSync } from '../session/useDashboardSync'
+import type { PlanEnd } from '../session/usePlanEnd'
 
 import { calculationEvidenceContent } from '../content/calculationEvidence'
+import { planEndContent } from '../content/planEnd'
 import { copyFor, planResultContent } from '../content/planResult'
 import { planSyncContent as copy } from '../content/planSync'
 import { planVerificationContent } from '../content/planVerification'
@@ -22,9 +29,25 @@ const CATCH_UP_STATE_ID = 'plan-catch-up-state'
 const CATCH_UP_BUSY_ID = 'plan-catch-up-busy'
 const CATCH_UP_COOLDOWN_ID = 'plan-catch-up-cooldown'
 const CATCH_UP_REASON_ID = 'plan-catch-up-reason'
+const NEW_PLAN_REASON_ID = 'plan-new-plan-reason'
+const NEW_PLAN_PREPARING_ID = 'plan-new-plan-preparing'
+const NEW_PLAN_DIALOG_ID = 'plan-new-plan-dialog-open'
+const NEW_PLAN_LEAVING_ID = 'plan-new-plan-leaving'
 
 const catchUp = planVerificationContent.catchUp
 const separators = calculationEvidenceContent.separators
+
+/**
+ * The long-gap choice `새 계획 시작` (Story 2.13): whether the server would take it for the shown plan (its `planEnd`
+ * block — `NEW_PLAN_CHOICE` during a long gap), the end flow it starts, and whether a reauthentication this screen
+ * started is leaving for its provider. Without it (a test of another part) the button is shown blocked, for a reason
+ * not known.
+ */
+export interface NewPlanChoice {
+  readonly status: PlanEndStatus
+  readonly flow: PlanEnd
+  readonly leaving: boolean
+}
 
 /** What the error summary says: a label, then its lines. */
 interface Summary {
@@ -229,6 +252,24 @@ function catchUpReasonOf(verification: VerificationStatus, sync: DashboardSync):
   return null
 }
 
+/**
+ * Why `새 계획 시작` cannot be asked for, beyond the flow, a reauthentication or a job in progress, or `null` when it can:
+ * the server does not take the long-gap choice now. An unavailability names its reason in the end area's words; a plan
+ * the server no longer sees in a long gap (its end block says the plan may be ended early) points to that end; a block
+ * that could not be read is said in safe words.
+ */
+function newPlanReasonOf(newPlan: NewPlanChoice | undefined): string | null {
+  const status = newPlan?.status ?? null
+  if (status?.availability === 'NEW_PLAN_CHOICE') return null
+  const reason =
+    status?.availability === 'AVAILABLE'
+      ? planEndContent.notLongGapReason
+      : status?.availability === 'UNAVAILABLE' && status.reason !== null
+        ? copyFor(planEndContent.area.reasons, status.reason, planEndContent.area.unknownReason)
+        : planEndContent.area.unknownReason
+  return `${copy.longGap.newPlanUnavailableLabel}: ${reason}`
+}
+
 function SummaryBlock({
   summary,
   summaryRef,
@@ -266,14 +307,16 @@ function SummaryBlock({
  * there is no sync button: the explanation of the two ways to continue and their data ranges takes its place,
  * and says the last normal result stays read-only. Since Story 2.12 one of the two runs from here — the
  * `기존 계획 계속` button (secondary, at least 44px), with the range it collects (from the server's catch-up start
- * until now) and its cost; `새 계획 시작` is still explained only. The catch-up runs, cools down, is refused and
+ * until now) and its cost; since Story 2.13 the other does too — the `새 계획 시작` button, which opens the plan's end
+ * flow with the long-gap reason (its reauthentication guidance and notices are the end area's, where focus goes when
+ * a press ends that way). Both share one busy gate. The catch-up runs, cools down, is refused and
  * ends inside this same explanation, which stays while it runs, with its own summary for an ending without a
  * new official result — a summary that stays when the control leaves the long-gap form. When a job that ended
  * in review holds the same basis, asking for the catch-up again cannot help either: a notice takes the button's
  * place (`tabIndex=-1`), like the precision verification's.
  *
  * When what held focus inside the control goes away (a summary that is no longer true), focus moves to the
- * button — the sync button, or the catch-up button — or to that notice, rather than falling to the document
+ * button — the sync button, the catch-up button or the new-plan button — or to that notice, rather than falling to the document
  * body; unless the same change asked for the dashboard heading, which the panel then focuses.
  *
  * No live region of its own: the screen's single status region says what the job did, once.
@@ -282,15 +325,18 @@ export function SyncControl({
   status,
   verification,
   sync,
+  newPlan,
 }: {
   readonly status: SyncStatus
   readonly verification: VerificationStatus
   readonly sync: DashboardSync
+  readonly newPlan?: NewPlanChoice
 }): ReactElement {
   const summaryRef = useRef<HTMLDivElement>(null)
   const explanationRef = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const catchUpRef = useRef<HTMLButtonElement>(null)
+  const newPlanRef = useRef<HTMLButtonElement>(null)
   const noticeRef = useRef<HTMLDivElement>(null)
   // A focus request made before this control was mounted is not replayed.
   const handled = useRef(sync.focus?.serial ?? 0)
@@ -334,6 +380,7 @@ export function SyncControl({
     ;(
       buttonRef.current ??
       catchUpRef.current ??
+      newPlanRef.current ??
       noticeRef.current ??
       summaryRef.current ??
       explanationRef.current
@@ -363,7 +410,22 @@ export function SyncControl({
     // The same basis already ended in review: the catch-up cannot help either (Story 2.12, a long gap with a
     // persistent review of this basis). The notice takes the button's place; it is never shown while one runs.
     const held = verification.availability === 'NOT_USEFUL' && !catchingUp
-    const busy = held ? null : catchUpBusyOf(status, verification, sync)
+    /*
+     * `새 계획 시작` (Story 2.13) shares the catch-up's busy gate — any job in progress or admission in flight — and is
+     * also blocked while the end flow prepares or its dialog is open, while a reauthentication is leaving, and while
+     * the server does not take the long-gap choice. A cool-down of the catch-up does not block it: ending collects
+     * nothing.
+     */
+    const jobBusy =
+      sync.running ||
+      sync.admitting ||
+      status.availability === 'IN_PROGRESS' ||
+      verification.availability === 'IN_PROGRESS'
+    // One busy line for both buttons: the catch-up's cause when it has one, else a job in progress in general (a
+    // catch-up of this tab says itself in its progress line).
+    const busy =
+      catchUpBusyOf(status, verification, sync) ??
+      (jobBusy && !catchingUp ? catchUp.inProgress : null)
     const cooling = sync.verificationCooldownSeconds !== null && !sync.running && !held
     const reason = catchUpReasonOf(verification, sync)
     const summary = catchUpSummaryOf(status, verification, sync)
@@ -372,6 +434,20 @@ export function SyncControl({
       busy === null ? null : CATCH_UP_BUSY_ID,
       cooling ? CATCH_UP_COOLDOWN_ID : null,
       reason === null ? null : CATCH_UP_REASON_ID,
+    ].filter((id) => id !== null)
+    const newPlanReason = newPlanReasonOf(newPlan)
+    const preparing = newPlan?.flow.preparing ?? false
+    const dialogOpen = (newPlan?.flow.dialog ?? null) !== null
+    const leaving = newPlan?.leaving ?? false
+    const canStartNewPlan =
+      newPlan !== undefined && newPlanReason === null && !jobBusy && !newPlan.flow.busy && !leaving
+    // Every cause that blocks it is said, and describes it.
+    const newPlanDescribed = [
+      preparing ? NEW_PLAN_PREPARING_ID : null,
+      dialogOpen ? NEW_PLAN_DIALOG_ID : null,
+      leaving ? NEW_PLAN_LEAVING_ID : null,
+      busy !== null ? CATCH_UP_BUSY_ID : catchingUp ? CATCH_UP_STATE_ID : null,
+      newPlanReason === null ? null : NEW_PLAN_REASON_ID,
     ].filter((id) => id !== null)
     return (
       <div className={styles.sync} id={SYNC_CONTROL_ID} {...tracking}>
@@ -398,6 +474,10 @@ export function SyncControl({
           </dl>
           <p>{gap.readOnly}</p>
         </div>
+        {/*
+          The two ways to continue, as equals: `기존 계획 계속` first (it keeps the plan), then `새 계획 시작`, which opens
+          the end flow — reauthentication, the confirmation dialog, then the end. Its notices are the end area's.
+        */}
         {held ? (
           <div className={styles.summary} ref={noticeRef} tabIndex={-1}>
             <p className={styles.label}>{catchUp.notUseful.label}</p>
@@ -439,6 +519,39 @@ export function SyncControl({
         {reason === null ? null : (
           <p className={styles.state} id={CATCH_UP_REASON_ID}>
             {reason}
+          </p>
+        )}
+        <button
+          aria-describedby={newPlanDescribed.length === 0 ? undefined : newPlanDescribed.join(' ')}
+          aria-disabled={!canStartNewPlan}
+          className={styles.secondary}
+          id={planEndContent.newPlanActionId}
+          onClick={() => {
+            if (canStartNewPlan) newPlan.flow.request('LONG_GAP_NEW_PLAN')
+          }}
+          ref={newPlanRef}
+          type="button"
+        >
+          {gap.newPlanAction}
+        </button>
+        {preparing ? (
+          <p className={styles.help} id={NEW_PLAN_PREPARING_ID}>
+            {planEndContent.area.preparing}
+          </p>
+        ) : null}
+        {dialogOpen ? (
+          <p className={styles.help} id={NEW_PLAN_DIALOG_ID}>
+            {planEndContent.area.dialogOpen}
+          </p>
+        ) : null}
+        {leaving ? (
+          <p className={styles.help} id={NEW_PLAN_LEAVING_ID}>
+            {planEndContent.area.leaving}
+          </p>
+        ) : null}
+        {newPlanReason === null ? null : (
+          <p className={styles.state} id={NEW_PLAN_REASON_ID}>
+            {newPlanReason}
           </p>
         )}
         {summary === null ? null : <SummaryBlock summary={summary} summaryRef={summaryRef} />}

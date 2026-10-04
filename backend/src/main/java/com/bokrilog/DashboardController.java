@@ -30,8 +30,11 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>One response is one unit: {@code {state, nextAction, result?}}. {@code NO_PLAN} and {@code PREPARING}
  * carry no financial field. {@code READY} carries the bundle the active plan's pointer cites — the plan
  * terms, the pointer, the calculation version, its six metrics and the three trust axes, each with its
- * state, cause, last normal time, affected metrics and next action as codes. The client never assembles
- * cards from other requests and never judges time.
+ * state, cause, last normal time, affected metrics and next action as codes — and, since Story 2.13, whether the
+ * plan can be ended now ({@code planEnd}). {@code ENDED} (Story 2.13) is the read-only record of a plan that ended
+ * early: the same {@code result} shape (plan status {@code ENDED_EARLY}, freshness {@code ENDED}), the end facts
+ * ({@code end}) and the next action {@code PREPARE_NEXT_PLAN}, without sync, verification, change or plan-end parts.
+ * The client never assembles cards from other requests and never judges time.
  *
  * <p>The path takes no identifier: the scope is the session's internal user id alone. Query parameters
  * are ignored (no parameter is bound), so a request carrying another user's plan, snapshot or
@@ -120,7 +123,17 @@ class DashboardController {
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record DashboardView(String state,String nextAction,@Nullable ResultView result,@Nullable SyncView sync,
-            @Nullable VerificationView verification,@Nullable ChangeView change) {}
+            @Nullable VerificationView verification,@Nullable ChangeView change,@Nullable PlanEndView planEnd,
+            @Nullable EndView end) {}
+    /** Whether the ready plan can be ended now (Story 2.13). Every key is sent; absent values are {@code null}. */
+    record PlanEndView(String availability,@Nullable String reason) {}
+    /**
+     * An ended plan's end facts (Story 2.13). Every key is sent; the uncollected range is {@code null} unless the plan
+     * ended by the new-plan choice after a long gap.
+     */
+    record EndView(String reason,String endedAt,String scheduledEndAt,String lastNormalMeasuredAt,
+            long lastNormalDelayMillis,String completion,@Nullable String uncollectedFrom,
+            @Nullable String uncollectedUntil) {}
     /** One sync attempt of any purpose. Every key is sent; absent values are {@code null}. */
     record SyncJobView(UUID jobId,String purpose,@Nullable String reason,String trigger,String status,
             @Nullable String stage,@Nullable String failureCode,String admittedAt,@Nullable String finishedAt) {}
@@ -215,12 +228,16 @@ class DashboardController {
                             .body(new ApiErrorHandler.ApiError(DASHBOARD_UNAVAILABLE,MESSAGE_DASHBOARD_UNAVAILABLE,
                                     correlationOf(request)));
             case SyncJobApi.Dashboard.NoPlan none ->
-                    ok(new DashboardView("NO_PLAN",none.nextAction(),null,null,null,null));
+                    ok(new DashboardView("NO_PLAN",none.nextAction(),null,null,null,null,null,null));
             case SyncJobApi.Dashboard.Preparing preparing ->
-                    ok(new DashboardView("PREPARING",preparing.nextAction(),null,null,null,null));
+                    ok(new DashboardView("PREPARING",preparing.nextAction(),null,null,null,null,null,null));
             case SyncJobApi.Dashboard.Ready ready ->
                     ok(new DashboardView("READY",ready.nextAction(),view(ready.result()),syncView(ready.sync()),
-                            verificationView(ready.verification()),changeView(ready.change())));
+                            verificationView(ready.verification()),changeView(ready.change()),
+                            new PlanEndView(ready.planEnd().availability(),ready.planEnd().reason()),null));
+            case SyncJobApi.Dashboard.Ended ended ->
+                    ok(new DashboardView("ENDED",ended.nextAction(),view(ended.result()),null,null,null,null,
+                            endView(ended.end())));
         };
         String state=switch (read.dashboard()) {
             case SyncJobApi.Dashboard.NotPermitted denied -> "DENIED";
@@ -228,6 +245,7 @@ class DashboardController {
             case SyncJobApi.Dashboard.NoPlan none -> "NO_PLAN";
             case SyncJobApi.Dashboard.Preparing preparing -> "PREPARING";
             case SyncJobApi.Dashboard.Ready ready -> "READY";
+            case SyncJobApi.Dashboard.Ended ended -> "ENDED";
         };
         String consistent=switch (read.consistency()) {
             case CONSISTENT -> "true";
@@ -241,6 +259,13 @@ class DashboardController {
     private static void log(String state,int status,long started,String consistent) {
         LOG.info("dashboard read: state={} status={} latencyMs={} consistent={}",state,status,
                 (System.nanoTime()-started)/1_000_000,consistent);
+    }
+
+    static EndView endView(SyncJobApi.PlanEndRecord e) {
+        return new EndView(e.reason(),e.endedAt().toString(),e.scheduledEndAt().toString(),
+                e.lastNormalMeasuredAt().toString(),e.lastNormalDelayMillis(),e.completion(),
+                e.uncollectedFrom()==null ? null : e.uncollectedFrom().toString(),
+                e.uncollectedUntil()==null ? null : e.uncollectedUntil().toString());
     }
 
     // ------------------------------------------------------------------ sync (Story 2.11)

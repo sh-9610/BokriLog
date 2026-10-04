@@ -368,9 +368,11 @@ function judge(
     case 'lastGood':
     case 'retryable':
       return keep
+    // A plan ended early (Story 2.13) is no longer synced: whatever was followed or said about it is over.
     case 'denied':
     case 'NO_PLAN':
     case 'PREPARING':
+    case 'ENDED':
       return {
         followed: null,
         outcome: null,
@@ -752,7 +754,8 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
     })()
   }, [])
 
-  // ENTRY: once per mount, on the first ready answer. Passive: it starts a request.
+  // ENTRY: once per mount, on the first ready answer — never on the record of a plan ended early (Story 2.13).
+  // Passive: it starts a request.
   useEffect(() => {
     if (entrySent.current || view.kind !== 'READY' || loading || csrfToken === null) return
     entrySent.current = true

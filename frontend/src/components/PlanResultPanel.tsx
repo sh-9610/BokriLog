@@ -11,9 +11,12 @@ import type {
   TrustAxis,
 } from '../session/useDashboard'
 import type { DashboardSync } from '../session/useDashboardSync'
+import type { PlanEnd } from '../session/usePlanEnd'
+import type { ReauthenticationAccess } from '../session/useReauthentication'
 
 import { ENTRY_PATH } from '../content/auth'
 import { planConditionContent } from '../content/planConditions'
+import { planEndContent } from '../content/planEnd'
 import {
   axisActionCopy,
   planResultContent as copy,
@@ -26,8 +29,10 @@ import { formatAmount, formatPercent, formatSeoulTime, percentFromRatio } from '
 import { bundleOf, heldBy } from '../session/useDashboard'
 import { AdjustmentHistory } from './AdjustmentHistory'
 import { CalculationEvidence } from './CalculationEvidence'
+import { PlanEndControl } from './PlanEndControl'
+import { PlanEndRecord } from './PlanEndRecord'
 import styles from './PlanResultPanel.module.css'
-import { SyncControl } from './SyncControl'
+import { SyncControl, type NewPlanChoice } from './SyncControl'
 import { VerificationControl } from './VerificationControl'
 import { RangeList } from './VerificationRanges'
 import { VersionChangeNote } from './VersionChangeNote'
@@ -155,7 +160,8 @@ interface AxisRow {
  * EXPERIENCE gives ("what is it → why → which values → what can the user do"). The axis's next action
  * is a short sentence without a time; the approved sentence with the measurement time appears once, in
  * the screen's next-action section. `after` follows the group inside the same item — the freshness axis's
- * sync control (Story 2.11), right after the axis it acts on.
+ * sync control (Story 2.11), right after the axis it acts on. `action` replaces the axis's own next action — the
+ * record of a plan ended early (Story 2.13) has nothing left to do on any axis.
  */
 function Axis({
   id,
@@ -168,6 +174,7 @@ function Axis({
   note,
   rows = [],
   after,
+  action = axis.nextAction,
 }: {
   readonly id: string
   readonly name: string
@@ -179,6 +186,7 @@ function Axis({
   readonly note?: { readonly label: string; readonly text: string }
   readonly rows?: readonly AxisRow[]
   readonly after?: ReactNode
+  readonly action?: string
 }): ReactElement {
   return (
     <li className={styles.axis}>
@@ -224,7 +232,7 @@ function Axis({
           </div>
           <div>
             <dt>{copy.axes.action}</dt>
-            <dd>{axisActionCopy(axis.nextAction)}</dd>
+            <dd>{axisActionCopy(action)}</dd>
           </div>
         </dl>
       </div>
@@ -233,20 +241,32 @@ function Axis({
   )
 }
 
+/**
+ * The three trust axes of an active plan, each its own group. The record of a plan ended early (Story 2.13) has no
+ * freshness axis — it is no longer synced, and the end record takes that place — so it shows the input reliability
+ * and the calculation nature only, without the sync and verification controls. In the record neither axis points to
+ * an action (their next action is `NONE`), and a held input is said by its cause alone: the held notice and the
+ * ranges a verification set out to check belong to the controls the record does not show.
+ */
 function Trust({
   bundle,
   sync,
+  newPlan,
 }: {
   readonly bundle: Accepted
   readonly sync: DashboardSync
+  readonly newPlan: NewPlanChoice | undefined
 }): ReactElement {
   const { result, verification } = bundle
+  const ended = bundle.end !== null
   const { freshness, inputReliability, calculationNature } = result.trust
   // A job that ended in review or out of range holds the input (spec: 미해소): the notice that asking again for
   // the same basis will not change it — in the words of that job's purpose — and the ranges it set out to
   // check. Only the job the server marks as holding the result names ranges: one in progress, one that
   // published or one of an earlier basis does not. Ranges it could not read are said in safe words.
-  const held = HELD_CAUSES.includes(inputReliability.cause)
+  const held = !ended && HELD_CAUSES.includes(inputReliability.cause)
+  // In the record nothing is left to do: no axis points to a control it does not show.
+  const action = ended ? 'NONE' : undefined
   const holder = held ? heldBy(verification) : null
   const heldCopy = planVerificationContent.held
   const heldNotice =
@@ -278,30 +298,44 @@ function Trust({
   return (
     <section aria-labelledby="plan-result-trust" className={styles.group}>
       <h3 id="plan-result-trust">{copy.trustHeading}</h3>
-      {/* Three equal groups, never merged into one score or badge. */}
+      {/*
+        Equal groups, never merged into one score or badge: three for an active plan, two in the record of a plan
+        ended early (the end record takes the freshness axis's place).
+      */}
       <ul className={styles.axes}>
+        {ended ? null : (
+          <Axis
+            after={
+              <>
+                <SyncControl
+                  newPlan={newPlan}
+                  status={bundle.sync}
+                  sync={sync}
+                  verification={verification}
+                />
+                <VerificationControl status={verification} sync={sync} />
+              </>
+            }
+            axis={freshness}
+            causes={copy.axes.freshness.causes}
+            id="plan-result-axis-freshness"
+            name={copy.axes.freshness.name}
+            note={{
+              label: copy.axes.freshness.timesNoteLabel,
+              text: copy.axes.freshness.timesNote,
+            }}
+            states={copy.axes.freshness.states}
+            times={[
+              { label: copy.axes.freshness.lastNormal, value: freshness.lastNormalAt },
+              {
+                label: copy.axes.freshness.verifiedThrough,
+                value: freshness.cashflowVerifiedThrough,
+              },
+            ]}
+          />
+        )}
         <Axis
-          after={
-            <>
-              <SyncControl status={bundle.sync} sync={sync} verification={verification} />
-              <VerificationControl status={verification} sync={sync} />
-            </>
-          }
-          axis={freshness}
-          causes={copy.axes.freshness.causes}
-          id="plan-result-axis-freshness"
-          name={copy.axes.freshness.name}
-          note={{ label: copy.axes.freshness.timesNoteLabel, text: copy.axes.freshness.timesNote }}
-          states={copy.axes.freshness.states}
-          times={[
-            { label: copy.axes.freshness.lastNormal, value: freshness.lastNormalAt },
-            {
-              label: copy.axes.freshness.verifiedThrough,
-              value: freshness.cashflowVerifiedThrough,
-            },
-          ]}
-        />
-        <Axis
+          action={action}
           axis={inputReliability}
           causes={copy.axes.reliability.causes}
           extra={held ? [heldNotice] : undefined}
@@ -314,6 +348,7 @@ function Trust({
           ]}
         />
         <Axis
+          action={action}
           axis={calculationNature}
           causes={copy.axes.nature.causes}
           extra={natureExtra}
@@ -438,21 +473,35 @@ function Notice({
  * moves focus to this panel's heading. Their state is their own (`sync`); the screen's status region says what
  * they did. The result marker of the shown version (Story 2.12) sits under the introduction: how many late
  * cash flows it applied and where their impact starts, or that a verification found no change.
+ *
+ * The `계획 종료` area (Story 2.13) closes the active plan's panel, after the plan terms; the long-gap choice
+ * `새 계획 시작` in the sync control starts the same end flow. When a plan ended early is shown, the panel is in its
+ * record mode — the same panel, read-only: the end record takes the freshness axis's place (under the
+ * introduction), the six metrics, the input reliability and calculation nature, the evidence and history toggles
+ * and the plan terms stay, the next action is the preparation of a new plan (explained only), and there is no sync,
+ * verification or end control. When the end flow ends the plan, focus moves to this heading.
  */
 export function PlanResultPanel({
   dashboard,
   evidence,
   adjustments,
   sync,
+  planEnd,
+  reauthentication,
 }: {
   readonly dashboard: Dashboard
   readonly evidence: EvidenceState
   readonly adjustments: AdjustmentHistoryState
   readonly sync: DashboardSync
+  readonly planEnd: PlanEnd
+  readonly reauthentication: ReauthenticationAccess
 }): ReactElement {
   const { view, loading, reload } = dashboard
   const bundle = bundleOf(view)
   const result = bundle?.result ?? null
+  // The record of a plan ended early (Story 2.13): the same panel, read-only.
+  const end = bundle?.end ?? null
+  const ended = end !== null
   const [current, ...rest] = result?.metrics ?? []
   const measured = result === null ? null : seoulOrNull(result.measuredAt)
   const hasNextAction = view.kind !== 'checking' && view.kind !== 'denied'
@@ -463,19 +512,26 @@ export function PlanResultPanel({
   // A sync's focus request made before this panel was mounted is not replayed.
   const handledFocus = useRef(sync.focus?.serial ?? 0)
   const syncFocus = sync.focus
+  // The same for the end flow's.
+  const handledEndFocus = useRef(planEnd.focus?.serial ?? 0)
+  const endFocus = planEnd.focus
 
   /*
-   * The two focus moves are layout effects: they run in the commit that removes or replaces the content, so focus
+   * Focus on something inside the panel that went away is not dropped: when the view changes to a state without
+   * the next-action block or without a bundle, or to the record of a plan ended early (which takes the sync,
+   * verification and end controls with it).
+   *
+   * The three focus moves are layout effects: they run in the commit that removes or replaces the content, so focus
    * never rests on the body for a frame. As passive effects they ran after the commit on the scheduler's own task,
    * and under load that came after code that had already seen the new content (a loaded CI runner, run 37134688361).
    */
   useLayoutEffect(() => {
-    if (hasNextAction && hasResult) return
+    if (hasNextAction && hasResult && !ended) return
     const last = lastFocused.current
     const active = document.activeElement
     const lost = active === null || active === document.body || !active.isConnected
     if (last !== null && !last.isConnected && lost) heading.current?.focus()
-  }, [hasNextAction, hasResult])
+  }, [hasNextAction, hasResult, ended])
 
   // A sync the user pressed ended with a new bundle: focus goes to the heading of what replaced the old one.
   useLayoutEffect(() => {
@@ -484,6 +540,25 @@ export function PlanResultPanel({
     handledFocus.current = syncFocus.serial
     heading.current?.focus()
   }, [syncFocus])
+
+  /*
+   * The plan ended (Story 2.13): the dialog closed without returning focus to the button that opened it, and focus
+   * goes to this heading — the record replaces the panel's content under it. A notice the end area would take while
+   * the area is not shown (the record is) comes here too.
+   */
+  useLayoutEffect(() => {
+    if (endFocus === null || endFocus.serial === handledEndFocus.current) return
+    // Every request is seen once: a notice request the end area took is never replayed here later.
+    handledEndFocus.current = endFocus.serial
+    if (endFocus.target === 'notice' && !ended) return
+    heading.current?.focus()
+  }, [endFocus, ended])
+
+  // The long-gap choice `새 계획 시작` starts the same end flow (Story 2.13).
+  const newPlan: NewPlanChoice | undefined =
+    bundle === null || ended
+      ? undefined
+      : { status: bundle.planEnd, flow: planEnd, leaving: reauthentication.pending }
 
   return (
     <section
@@ -506,8 +581,9 @@ export function PlanResultPanel({
 
       <Notice measured={measured} view={view} />
 
-      {result === null ? null : <p>{copy.intro}</p>}
+      {result === null ? null : <p>{ended ? planEndContent.record.intro : copy.intro}</p>}
       {bundle === null ? null : <VersionChangeNote change={bundle.change} />}
+      {result === null || end === null ? null : <PlanEndRecord end={end} result={result} />}
       {result === null || current === undefined ? null : (
         <section aria-labelledby="plan-result-current" className={styles.group}>
           <h3 id="plan-result-current">{copy.currentHeading}</h3>
@@ -516,7 +592,7 @@ export function PlanResultPanel({
           </div>
         </section>
       )}
-      {bundle === null ? null : <Trust bundle={bundle} sync={sync} />}
+      {bundle === null ? null : <Trust bundle={bundle} newPlan={newPlan} sync={sync} />}
       {result === null ? null : (
         <section aria-labelledby="plan-result-metrics" className={styles.group}>
           <h3 id="plan-result-metrics">{copy.metricsHeading}</h3>
@@ -535,7 +611,10 @@ export function PlanResultPanel({
 
       {hasNextAction ? (
         <section aria-labelledby="plan-result-next" className={styles.group}>
-          <h3 id="plan-result-next">{copy.nextActionHeading}</h3>
+          {/* The record's next action is the preparation of a new plan, explained only (Story 2.13). */}
+          <h3 id="plan-result-next">
+            {ended ? planEndContent.nextPlan.heading : copy.nextActionHeading}
+          </h3>
           <p>{nextActionCopy(nextActionOf(view), measured)}</p>
           {view.kind === 'NO_PLAN' ? (
             <a className={styles.action} href={planConditionContent.path}>
@@ -556,6 +635,15 @@ export function PlanResultPanel({
       ) : null}
 
       {result === null ? null : <Conditions result={result} />}
+
+      {bundle === null || ended ? null : (
+        <PlanEndControl
+          bundle={bundle}
+          planEnd={planEnd}
+          reauthentication={reauthentication}
+          sync={sync}
+        />
+      )}
     </section>
   )
 }

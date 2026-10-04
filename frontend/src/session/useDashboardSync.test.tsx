@@ -6,6 +6,7 @@ import { DASHBOARD_PATH, planResultContent } from '../content/planResult'
 import { DASHBOARD_SYNC_PATH, planSyncContent } from '../content/planSync'
 import {
   dashboardFixture,
+  endedDashboardFixture,
   NO_PLAN_FIXTURE,
   planResultFixture,
   syncFixture,
@@ -1171,6 +1172,58 @@ describe('useDashboardSync: automatic syncs', () => {
     expect(result.current.sync.phase).toBe('failed')
     expect(result.current.sync.focus).toBeNull()
     await steps(10, SYNC_POLL_INTERVAL_MS)
+    expect(reads()).toBe(2)
+    expect(posts()).toBe(0)
+  })
+})
+
+describe('useDashboardSync: the record of a plan ended early (Story 2.13)', () => {
+  it('sends no automatic trigger on the record — neither at entry nor after a long absence — and offers nothing to press', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    dashboards(() => Promise.resolve(json(endedDashboardFixture())))
+    admissions()
+    const { result } = render()
+    await flush()
+    expect(result.current.dashboard.view.kind).toBe('ENDED')
+    expect(posts()).toBe(0)
+    await returnAfterLongAbsence()
+    act(() => {
+      result.current.dashboard.reload()
+    })
+    await flush()
+    expect(posts()).toBe(0)
+    expect(result.current.sync).toMatchObject({
+      phase: 'idle',
+      running: false,
+      canRequest: false,
+      canVerify: false,
+      canCatchUp: false,
+    })
+    // A press asks nothing either.
+    act(() => {
+      result.current.sync.request()
+      result.current.sync.requestVerification('PRECISION')
+      result.current.sync.requestVerification('CATCH_UP')
+    })
+    await flush()
+    expect(posts()).toBe(0)
+    expect(getObservedRequests()).toEqual([])
+  })
+
+  it('a job followed while the plan was active is over when the record comes, and nothing more is polled', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const job = syncJobFixture({ trigger: 'VISIBILITY', status: 'RUNNING', stage: 'COLLECTION' })
+    dashboards(ready(syncFixture({ availability: 'IN_PROGRESS', latest: job })), () =>
+      Promise.resolve(json(endedDashboardFixture())),
+    )
+    const { result } = render()
+    await flush()
+    expect(result.current.sync.running).toBe(true)
+    await advance(SYNC_POLL_INTERVAL_MS)
+    expect(result.current.dashboard.view.kind).toBe('ENDED')
+    expect(result.current.sync.running).toBe(false)
+    expect(result.current.sync.phase).toBe('idle')
+    await steps(5, SYNC_POLL_INTERVAL_MS)
     expect(reads()).toBe(2)
     expect(posts()).toBe(0)
   })

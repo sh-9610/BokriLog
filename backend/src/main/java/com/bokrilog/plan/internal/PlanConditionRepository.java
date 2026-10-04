@@ -156,11 +156,12 @@ class PlanConditionRepository {
             .param("h",hash).update();
     }
     /**
-     * Erases this user's plans, intents, confirmations and idempotency rows. Plans go first: they
-     * reference their intent immediately, while the intent's reference back to its plan is deferred
-     * to the end of this transaction, by which time both are gone.
+     * Erases this user's end records, plans, intents, confirmations and idempotency rows. The end records go first:
+     * they reference their plan (Story 2.13). Plans go next: they reference their intent immediately, while the
+     * intent's reference back to its plan is deferred to the end of this transaction, by which time both are gone.
      */
     void erase(UUID userId) {
+        jdbc.sql("DELETE FROM plan_end WHERE user_id=:u").param("u",userId).update();
         jdbc.sql("DELETE FROM plan_definition WHERE user_id=:u").param("u",userId).update();
         jdbc.sql("DELETE FROM plan_condition_idempotency WHERE user_id=:u").param("u",userId).update();
         jdbc.sql("DELETE FROM plan_condition_confirmation WHERE user_id=:u").param("u",userId).update();

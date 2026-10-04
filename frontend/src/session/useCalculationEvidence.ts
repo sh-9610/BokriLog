@@ -214,13 +214,19 @@ function isImpact(value: unknown, shown: PlanResult, index: number, estimated: n
   )
 }
 
-function isOfficialVersion(value: unknown): boolean {
+/**
+ * One official version, whole. Only the current version of an active plan is still applied; every earlier one
+ * names when it stopped being official. The current version of a plan ended early (Story 2.13) stopped being
+ * applied when the plan ended: exactly the end time of the shown record (`endedAt`), and never otherwise.
+ */
+function isOfficialVersion(value: unknown, endedAt: string | null): boolean {
   const row = record(value)
   if (row === null) return false
-  // Only the current version is still applied; every earlier one names when it stopped being official.
   const applied =
     row.current === true
-      ? row.appliedUntil === null || row.appliedUntil === undefined
+      ? endedAt === null
+        ? row.appliedUntil === null || row.appliedUntil === undefined
+        : isInstant(row.appliedUntil) && Date.parse(row.appliedUntil) === Date.parse(endedAt)
       : isInstant(row.appliedUntil)
   return (
     typeof row.calculationId === 'string' &&
@@ -522,8 +528,16 @@ function isUnpublished(value: unknown): boolean {
  * the shown metrics'; and the change part (Story 2.12) whole, its new metrics the shown ones and its previous
  * version one of the official list. Every instant is in the server's format. Anything else — a missing
  * section, a malformed field, another bundle's lineage — is dropped whole, never rendered in part.
+ *
+ * `endedAt` is the end time of the shown record when the shown plan ended early (Story 2.13): its current
+ * version is then applied until exactly that time. For an active plan (`null`) the current version is still
+ * applied.
  */
-export function parseEvidence(value: unknown, shown: PlanResult): CalculationEvidence | null {
+export function parseEvidence(
+  value: unknown,
+  shown: PlanResult,
+  endedAt: string | null = null,
+): CalculationEvidence | null {
   const row = record(value)
   if (row === null) return null
   const snapshots = record(row.snapshots)
@@ -613,7 +627,7 @@ export function parseEvidence(value: unknown, shown: PlanResult): CalculationEvi
     metrics.length === METRIC_ORDER.length &&
     metrics.every((metric, index) => isImpact(metric, shown, index, shown.estimatedFlowCount)) &&
     official.length > 0 &&
-    official.every(isOfficialVersion) &&
+    official.every((version) => isOfficialVersion(version, endedAt)) &&
     unpublished.every(isUnpublished)
   if (!whole) return null
   const change = parseChange(row.change, shown, official)
@@ -679,11 +693,14 @@ export interface EvidenceState {
 export function useCalculationEvidence(
   bundle: PlanResult | null,
   onDenied: () => void,
+  endedAt: string | null = null,
 ): EvidenceState {
+  // The plan's status is part of the key: when the shown plan ends (Story 2.13), the evidence read while it was
+  // active (its current version still applied) leaves with it.
   const key =
     bundle === null
       ? null
-      : `${bundle.planId}\n${String(bundle.pointerVersion)}\n${bundle.calculationId}`
+      : `${bundle.planId}\n${String(bundle.pointerVersion)}\n${bundle.calculationId}\n${bundle.planStatus}`
   const [view, setView] = useState<EvidenceView>({ kind: 'closed' })
   const [shownKey, setShownKey] = useState(key)
   const sequence = useRef(0)
@@ -718,6 +735,7 @@ export function useCalculationEvidence(
       inFlight.current = controller
       setView({ kind: 'loading', retrying })
       const shown = bundle
+      const ended = endedAt
       const latest = (): boolean => sequence.current === mine && keyRef.current === askedFor
       const settle = (next: EvidenceView): void => {
         inFlight.current = null
@@ -743,7 +761,7 @@ export function useCalculationEvidence(
           }
           const payload: unknown = response.status === 200 ? await response.json() : null
           if (!latest()) return
-          const evidence = parseEvidence(payload, shown)
+          const evidence = parseEvidence(payload, shown, ended)
           settle(
             evidence === null ? { kind: 'failed', retryable: true } : { kind: 'ready', evidence },
           )
@@ -753,7 +771,7 @@ export function useCalculationEvidence(
         }
       })()
     },
-    [bundle, onDenied],
+    [bundle, onDenied, endedAt],
   )
 
   const open = useCallback((): void => {
@@ -779,7 +797,12 @@ export function useCalculationEvidence(
  * the evidence read asks the dashboard to read again, so the dashboard's own read decides what it keeps.
  */
 export function useDashboardEvidence(dashboard: Dashboard): EvidenceState {
-  return useCalculationEvidence(bundleOf(dashboard.view)?.result ?? null, dashboard.reload)
+  const bundle = bundleOf(dashboard.view)
+  return useCalculationEvidence(
+    bundle?.result ?? null,
+    dashboard.reload,
+    bundle?.end?.endedAt ?? null,
+  )
 }
 
 /**

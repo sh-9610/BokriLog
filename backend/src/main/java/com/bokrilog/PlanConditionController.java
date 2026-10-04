@@ -41,6 +41,13 @@ class PlanConditionController {
     static final String MESSAGE_ACTIVE_PLAN_EXISTS =
             "이미 활성 계획이 있어 새 계획 조건이나 계획을 만들지 않았습니다. 대시보드에서 현재 계획의 결과를 확인해 주세요.";
 
+    /**
+     * 계획이 중도 종료돼 새 조건을 받지 않을 때의 안내(Story 2.13). 후속 계획은 Story 2.15가 연다. 원인과
+     * 다음 행동(종료 기록 보기)만 말한다.
+     */
+    static final String MESSAGE_PLAN_ENDED =
+            "계획이 종료되어 새 계획 조건을 받지 않았습니다. 대시보드에서 종료된 계획의 기록을 확인해 주세요.";
+
     private final PlanConditionApi plans;
     PlanConditionController(PlanConditionApi plans) { this.plans=plans; }
 
@@ -88,11 +95,13 @@ class PlanConditionController {
         if (session==null) { response.sendError(403); return null; }
         var state=plans.state(user);
         if (PlanConditionApi.ACTIVE_PLAN_EXISTS.equals(state.reason())) return activePlanExists(request);
+        if (PlanConditionApi.PLAN_ENDED.equals(state.reason())) return planEnded(request);
         if (!state.eligible()) { response.sendError(409); return null; }
         var preview=plans.preview(user,session.getId(),input);
         if (preview.isEmpty()) {
             var after=plans.state(user);
             if (PlanConditionApi.ACTIVE_PLAN_EXISTS.equals(after.reason())) return activePlanExists(request);
+            if (PlanConditionApi.PLAN_ENDED.equals(after.reason())) return planEnded(request);
             response.sendError(after.eligible()?422:409);
             return null;
         }
@@ -113,6 +122,7 @@ class PlanConditionController {
         if (session==null) { response.sendError(403); return null; }
         Confirmation result=plans.confirm(user,session.getId(),body.confirmationRef(),key);
         if (PlanConditionApi.ACTIVE_PLAN_EXISTS.equals(result.reason())) return activePlanExists(request);
+        if (PlanConditionApi.PLAN_ENDED.equals(result.reason())) return planEnded(request);
         HttpStatus status=result.accepted()?HttpStatus.CREATED:
                 (result.conflict()?HttpStatus.CONFLICT:HttpStatus.valueOf(422));
         return ResponseEntity.status(status).cacheControl(CacheControl.noStore()).body(new ConfirmView(
@@ -127,6 +137,14 @@ class PlanConditionController {
         return ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)
                 .cacheControl(CacheControl.noStore())
                 .body(new ApiError(PlanConditionApi.ACTIVE_PLAN_EXISTS,MESSAGE_ACTIVE_PLAN_EXISTS,
+                        ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER))));
+    }
+
+    /** 409 with the stable code {@code PLAN_ENDED} in the common error shape (Story 2.13). Nothing is created. */
+    private static ResponseEntity<ApiError> planEnded(HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)
+                .cacheControl(CacheControl.noStore())
+                .body(new ApiError(PlanConditionApi.PLAN_ENDED,MESSAGE_PLAN_ENDED,
                         ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER))));
     }
 

@@ -8,11 +8,16 @@
  *
  * `READY`에는 동기화 블록(Story 2.11)이 함께 온다. 기본값은 "지금 동기화할 수 있고 지난 작업은 없다"이다.
  * 정밀 검증 블록과 버전 변경(Story 2.12)도 함께 온다. 기본값은 "지금 정밀 검증을 요청할 수 있고, 늦은 변경은
- * 없으며, 지난 검증 작업은 없다"이다.
+ * 없으며, 지난 검증 작업은 없다"이다. 계획 종료 블록(Story 2.13)의 기본값은 "지금 중도 종료할 수 있다"이다.
+ *
+ * `ENDED`(Story 2.13)는 중도 종료된 계획의 마지막 공식 묶음과 종료 기록이다. 기록은 묶음과 일치해야 받아들여진다
+ * (`parsePlanEndRecord`): 예정 종료는 계획의 `T`, 마지막 정상 측정은 묶음의 측정 시각이다.
  */
 
-import type { SyncStatus, VerificationStatus } from '../session/useDashboard'
+import type { PlanEndStatus, SyncStatus, VerificationStatus } from '../session/useDashboard'
 import type { DashboardSync } from '../session/useDashboardSync'
+import type { PlanEnd } from '../session/usePlanEnd'
+import type { ReauthenticationAccess } from '../session/useReauthentication'
 
 export const BASIS_AT = '2026-09-27T01:00:00Z'
 export const MEASURED_AT = '2026-09-27T00:59:59Z'
@@ -233,6 +238,11 @@ export function changeFixture(overrides: Record<string, unknown> = {}): Record<s
   }
 }
 
+/** The `planEnd` block of a `READY` answer (Story 2.13): the plan may be ended early now. */
+export function planEndFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { availability: 'AVAILABLE', reason: null, ...overrides }
+}
+
 /** A whole `READY` answer. */
 export function dashboardFixture(
   result: Record<string, unknown> = planResultFixture(),
@@ -240,8 +250,89 @@ export function dashboardFixture(
   sync: Record<string, unknown> = syncFixture(),
   verification: Record<string, unknown> = verificationFixture(),
   change: Record<string, unknown> = changeFixture(),
+  planEnd: Record<string, unknown> = planEndFixture(),
 ): Record<string, unknown> {
-  return { state: 'READY', nextAction, result, sync, verification, change }
+  return { state: 'READY', nextAction, result, sync, verification, change, planEnd }
+}
+
+/** The actual end time of the default ended plan (Story 2.13): after its last normal measurement. */
+export const ENDED_AT = '2026-09-28T03:04:05.678Z'
+
+/** The six metrics, as the freshness axis of an ended plan names them all. */
+const ALL_METRICS = [
+  'CURRENT_VALUE',
+  'PLAN_AMOUNT',
+  'PLAN_DIFFERENCE',
+  'ADJUSTED_TARGET',
+  'REQUIRED_RATE',
+  'GOAL_PROGRESS',
+]
+
+/**
+ * The `result` of an `ENDED` answer (Story 2.13): the default bundle of a plan ended early — `ENDED_EARLY`, its
+ * freshness folded to `ENDED` (no longer synced, every metric affected, nothing to do).
+ */
+export function endedResultFixture(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return planResultFixture({
+    planStatus: 'ENDED_EARLY',
+    trust: trustFixture({
+      freshness: {
+        state: 'ENDED',
+        cause: 'PLAN_ENDED_EARLY',
+        affectedMetrics: ALL_METRICS,
+        nextAction: 'NONE',
+      },
+    }),
+    ...overrides,
+  })
+}
+
+/**
+ * The `end` record of an `ENDED` answer (Story 2.13), made for the given result: an early end the user asked for by
+ * default — no completion comparison, nothing uncollected, the delay from the last normal measurement.
+ */
+export function endRecordFixture(
+  result: Record<string, unknown> = endedResultFixture(),
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const endedAt = (overrides.endedAt as string | undefined) ?? ENDED_AT
+  const measuredAt = result.measuredAt as string
+  return {
+    reason: 'USER_REQUEST',
+    endedAt,
+    scheduledEndAt: (result.conditions as Record<string, unknown>).endAt,
+    lastNormalMeasuredAt: measuredAt,
+    lastNormalDelayMillis: Date.parse(endedAt) - Date.parse(measuredAt),
+    completion: 'NOT_APPLICABLE',
+    uncollectedFrom: null,
+    uncollectedUntil: null,
+    ...overrides,
+  }
+}
+
+/** The `end` record of a plan ended after a long gap: the gap uncollected, the comparison not computable. */
+export function longGapEndRecordFixture(
+  result: Record<string, unknown> = endedResultFixture(),
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const endedAt = (overrides.endedAt as string | undefined) ?? ENDED_AT
+  return endRecordFixture(result, {
+    reason: 'LONG_GAP_NEW_PLAN',
+    completion: 'UNAVAILABLE_DATA_GAP',
+    uncollectedFrom: result.cashflowVerifiedThrough,
+    uncollectedUntil: endedAt,
+    ...overrides,
+  })
+}
+
+/** A whole `ENDED` answer (Story 2.13): no sync, verification, change or plan-end block. */
+export function endedDashboardFixture(
+  result: Record<string, unknown> = endedResultFixture(),
+  end: Record<string, unknown> = endRecordFixture(result),
+): Record<string, unknown> {
+  return { state: 'ENDED', nextAction: 'PREPARE_NEXT_PLAN', result, end }
 }
 
 /** The parsed default sync block, for views a test builds by hand. */
@@ -261,6 +352,31 @@ export const AVAILABLE_VERIFICATION: VerificationStatus = {
   preview: { ...PREVIEW },
   catchUpFrom: null,
   latest: null,
+}
+
+/** The parsed default plan-end block, for views a test builds by hand (Story 2.13). */
+export const AVAILABLE_PLAN_END: PlanEndStatus = { availability: 'AVAILABLE', reason: null }
+
+/** An end flow with nothing to say: for panels a test renders without the end hook (Story 2.13). */
+export function idlePlanEnd(overrides: Partial<PlanEnd> = {}): PlanEnd {
+  return {
+    preparing: false,
+    dialog: null,
+    busy: false,
+    notice: null,
+    focus: null,
+    request: () => undefined,
+    confirm: () => undefined,
+    cancel: () => undefined,
+    ...overrides,
+  }
+}
+
+/** A reauthentication that has not started: for panels a test renders without the hook. */
+export function idleReauthentication(
+  overrides: Partial<ReauthenticationAccess> = {},
+): ReauthenticationAccess {
+  return { pending: false, requestReauthentication: () => undefined, ...overrides }
 }
 
 /** A sync with nothing to say: for panels a test renders without the sync hook. */

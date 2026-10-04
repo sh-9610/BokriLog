@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { adjustmentHistoryContent } from '../content/adjustmentHistory'
@@ -15,6 +15,7 @@ import {
 import { calculationEvidenceContent } from '../content/calculationEvidence'
 import { firstSnapshotContent } from '../content/firstSnapshot'
 import { planConditionContent } from '../content/planConditions'
+import { PLAN_END_CANCEL_PATH, PLAN_END_CONFIRM_PATH, planEndContent } from '../content/planEnd'
 import {
   DASHBOARD_PATH,
   METRIC_ORDER,
@@ -33,7 +34,11 @@ import {
   calculationEvidenceFixture,
   changeFixture,
   dashboardFixture,
+  ENDED_AT,
+  endedDashboardFixture,
+  endedResultFixture,
   evidenceResultFixture,
+  longGapEndRecordFixture,
   MEASURED_AT,
   NO_PLAN_FIXTURE,
   planResultFixture,
@@ -56,6 +61,9 @@ import {
   stubFirstSnapshotStart,
   stubFirstSnapshotState,
   stubLogoutRequest,
+  stubPlanEndCancel,
+  stubPlanEndConfirm,
+  stubPlanEndPrepare,
   stubReauthenticationRequest,
   stubSessionRequest,
 } from '../test/setup'
@@ -1836,6 +1844,205 @@ describe('SignedInScreen', () => {
      * 주소는 누구나 적을 수 있으므로 거름은 화면의 일이고, 타입이 그 거름을 강제한다.
      */
     expect(screen.queryByText(authContent.notices.loggedOut)).not.toBeInTheDocument()
+  })
+})
+
+describe('SignedInScreen: 계획 중도 종료 (Story 2.13)', () => {
+  const FORBIDDEN =
+    /실시간|정확|보장|성공|실패|축하|손실|수익을 내|투자성과|계좌 수익률|추천합니다|스트릭|배지|달성하세요|서두르|놓치/
+
+  /** The prepare's answer for the default bundle. */
+  function prepared(reason = 'USER_REQUEST'): Record<string, unknown> {
+    return {
+      reason,
+      planId: 'plan-1',
+      pointerVersion: 1,
+      calculationId: 'calculation-1',
+      confirmation: `plan-end|${reason}|plan-1|1|calculation-1`,
+    }
+  }
+
+  function syncPosts(): number {
+    return getObservedAllowedRequests().filter((entry) => entry === `POST ${DASHBOARD_SYNC_PATH}`)
+      .length
+  }
+
+  /** The end button, once it can be pressed (the entry sync's automatic admission blocks it until it answers). */
+  async function pressableEnd(): Promise<HTMLElement> {
+    const end = await screen.findByRole('button', { name: planEndContent.area.action })
+    await waitFor(() => {
+      expect(end).toHaveAttribute('aria-disabled', 'false')
+    })
+    return end
+  }
+
+  /** Records each distinct text of the screen's status region from now on (never browser storage). */
+  function recordStatus(): { readonly texts: string[]; readonly stop: () => void } {
+    const texts: string[] = []
+    const region = screen.getByRole('status')
+    const observer = new MutationObserver(() => {
+      const text = region.textContent
+      if (texts.at(-1) !== text) texts.push(text)
+    })
+    observer.observe(region, { characterData: true, childList: true, subtree: true })
+    return {
+      texts,
+      stop: () => {
+        observer.disconnect()
+      },
+    }
+  }
+
+  it('AC: the dialog opens over an inert page; the end closes it, focuses the panel heading and says the record once', async () => {
+    stubSessionRequest(authenticated)
+    let ended = false
+    stubDashboard(() =>
+      Promise.resolve(jsonResponse(ended ? endedDashboardFixture() : dashboardFixture())),
+    )
+    const sent: (RequestInit | undefined)[] = []
+    stubPlanEndPrepare((init) => {
+      sent.push(init)
+      return Promise.resolve(jsonResponse(prepared()))
+    })
+    stubPlanEndConfirm((init) => {
+      sent.push(init)
+      ended = true
+      return Promise.resolve(
+        jsonResponse({
+          outcome: 'ENDED',
+          planId: 'plan-1',
+          reason: 'USER_REQUEST',
+          endedAt: ENDED_AT,
+        }),
+      )
+    })
+    render(<SignedInScreen />)
+
+    const end = await pressableEnd()
+    expect(syncPosts()).toBe(1)
+    end.focus()
+    fireEvent.click(end)
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveAccessibleName(planEndContent.dialog.titles.USER_REQUEST)
+    // The dialog is the sibling of the inert page, never inside it.
+    // eslint-disable-next-line testing-library/no-node-access -- `inert`는 역할 조회로 드러나지 않는 속성이다.
+    const page = document.querySelector('[inert]')
+    expect(page).not.toBeNull()
+    expect(page).toContainElement(screen.getByRole('main'))
+    expect(page).not.toContainElement(dialog)
+    const cancel = within(dialog).getByRole('button', { name: planEndContent.dialog.cancel })
+    expect(cancel).toHaveFocus()
+    // Both requests carry the session token; the CSRF header is the session's.
+    expect((sent[0]?.headers as Record<string, string>)[CSRF_HEADER]).toBe(CSRF_TOKEN)
+
+    const recorder = recordStatus()
+    const { texts } = recorder
+    fireEvent.click(within(dialog).getByRole('button', { name: planEndContent.dialog.confirm }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+    const heading = screen.getByRole('heading', { level: 2, name: planResultContent.heading })
+    await waitFor(() => {
+      expect(heading).toHaveFocus()
+    })
+    expect(await screen.findByRole('region', { name: planEndContent.record.heading })).toBeVisible()
+    await waitFor(() => {
+      expect(heading).toHaveFocus()
+    })
+    // eslint-disable-next-line testing-library/no-node-access -- `inert`는 역할 조회로 드러나지 않는 속성이다.
+    expect(document.querySelector('[inert]')).toBeNull()
+    const confirmed = sent[1]
+    expect((confirmed?.headers as Record<string, string>)['Idempotency-Key']).toMatch(
+      /^[A-Za-z0-9._:-]{16,128}$/,
+    )
+    expect(JSON.parse(confirmed?.body as string)).toMatchObject({
+      confirmation: 'plan-end|USER_REQUEST|plan-1|1|calculation-1',
+    })
+
+    // One announcement of the end: the record's sentence, never "reading again".
+    const sentence = planEndContent.status.ended(
+      formatSeoulTime(ENDED_AT, planResultContent.timeUnavailable),
+    )
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent(sentence)
+    })
+    recorder.stop()
+    expect(texts.filter((text) => text.includes(sentence))).toHaveLength(1)
+    expect(texts.some((text) => text.includes(planResultContent.status.reloading))).toBe(false)
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    // The record: no sync, verification or end control, and no further sync request.
+    for (const name of [planSyncContent.action, planEndContent.area.action]) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+    }
+    await new Promise((settle) => setTimeout(settle, 30))
+    expect(syncPosts()).toBe(1)
+    expect(getObservedStorageEntries()).toEqual([])
+    expect(window.location.search).toBe('')
+  })
+
+  it('without a recent reauthentication: the guidance and provider buttons in the end area, and a provider leaves for its sign-in', async () => {
+    stubSessionRequest(authenticated)
+    stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture())))
+    stubPlanEndPrepare(() =>
+      Promise.resolve(
+        jsonResponse({ code: 'REAUTHENTICATION_REQUIRED', message: 'x', correlationId: 'c' }, 403),
+      ),
+    )
+    stubReauthenticationRequest('google', () =>
+      Promise.resolve(new Response(null, { status: 204 })),
+    )
+    render(<SignedInScreen />)
+    fireEvent.click(await pressableEnd())
+    const guidance = await screen.findByText(planEndContent.reauth.text)
+    await waitFor(() => {
+      // eslint-disable-next-line testing-library/no-node-access -- 안내 묶음은 역할이 없는 초점 대상(tabIndex -1)이다.
+      expect(guidance.parentElement).toHaveFocus()
+    })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(planEndContent.status.reauthRequired)
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.reauth.labels.google }))
+    await waitFor(() => {
+      expect(navigateTo).toHaveBeenCalledWith(authorizePath('google'))
+    })
+    expect(screen.getByRole('status')).toHaveTextContent(authContent.reauth.pending)
+  })
+
+  it('`Esc` cancels: the dialog closes, focus returns to the button, the flow is released and nothing changed', async () => {
+    stubSessionRequest(authenticated)
+    stubDashboard(() => Promise.resolve(jsonResponse(dashboardFixture())))
+    stubPlanEndPrepare(() => Promise.resolve(jsonResponse(prepared())))
+    stubPlanEndCancel(() => Promise.resolve(new Response(null, { status: 204 })))
+    render(<SignedInScreen />)
+    const end = await pressableEnd()
+    end.focus()
+    fireEvent.click(end)
+    await screen.findByRole('dialog')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(end).toHaveFocus()
+    expect(screen.getByRole('status')).toHaveTextContent(planEndContent.status.cancelled)
+    await waitFor(() => {
+      expect(getObservedAllowedRequests()).toContain(`POST ${PLAN_END_CANCEL_PATH}`)
+    })
+    expect(getObservedAllowedRequests()).not.toContain(`POST ${PLAN_END_CONFIRM_PATH}`)
+  })
+
+  it('the record of a plan ended early: no sync request at all, the disclaimer beside the title, and no forbidden wording', async () => {
+    stubSessionRequest(authenticated)
+    const result = endedResultFixture()
+    stubDashboard(() =>
+      Promise.resolve(jsonResponse(endedDashboardFixture(result, longGapEndRecordFixture(result)))),
+    )
+    render(<SignedInScreen />)
+    expect(await screen.findByRole('region', { name: planEndContent.record.heading })).toBeVisible()
+    await new Promise((settle) => setTimeout(settle, 30))
+    expect(syncPosts()).toBe(0)
+    const title = screen.getByRole('heading', { level: 1 })
+    expect(title.nextElementSibling?.textContent).toBe(authContent.disclaimer)
+    const text = document.body.textContent.replace(authContent.disclaimer, '')
+    expect(text).not.toMatch(FORBIDDEN)
+    expect(text.replaceAll(planEndContent.record.completion, '')).not.toContain('완료')
+    expect(getObservedStorageEntries()).toEqual([])
   })
 })
 

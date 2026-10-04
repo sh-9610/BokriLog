@@ -44,6 +44,34 @@ public interface PlanPublicationPort {
     Optional<ActivePlan> activePlan(@Nullable UUID userId);
 
     /**
+     * 중도 종료한 계획의 종료 기록(Story 2.13). plan 모듈이 저장한 값 그대로이며 sync는 대조만 한다.
+     *
+     * @param reason {@code USER_REQUEST} 또는 {@code LONG_GAP_NEW_PLAN}
+     * @param officialCalculationId 종료 시점의 마지막 정상 공식 계산 버전. 그 계획의 공식 포인터가 가리키던 값이다
+     * @param lastMeasuredAt 그 계산의 {@code measured_at}을 복사한 값. 종료 시각으로 바꿔 쓰지 않는다
+     * @param completion {@code NOT_APPLICABLE} 또는 {@code UNAVAILABLE_DATA_GAP}
+     * @param uncollectedFrom 장기 미동기화 종료의 미수집 구간 시작(그 밖에는 {@code null})
+     */
+    record PlanEnd(String reason, Instant endedAt, UUID officialCalculationId, long officialPointerVersion,
+            UUID officialPortfolioSnapshotId, Instant lastMeasuredAt, Instant cashflowVerifiedThrough, String completion,
+            @Nullable Instant uncollectedFrom, @Nullable Instant uncollectedUntil) {}
+
+    /**
+     * 그 사용자의 가장 최근 계획과 상태(Story 2.13). {@code ENDED_EARLY}이면 종료 기록이 함께 온다 — 기록이
+     * 없으면 {@code end}는 {@code null}이고, 호출자는 그것을 어긋난 묶음으로 읽는다.
+     *
+     * @param plan 계획의 불변 요약. 활성 계획이 아니어도 같은 모양이다
+     * @param status {@code ACTIVE} 또는 {@code ENDED_EARLY}
+     */
+    record LatestPlan(ActivePlan plan, String status, @Nullable PlanEnd end) {}
+
+    /**
+     * 그 사용자의 가장 최근 계획. 없으면 빈 값이다. 대시보드·계산 근거·조정 이력이 활성 계획이 없을 때
+     * "표시할 계획"(종료된 계획의 읽기 전용 기록)을 고르는 읽기다.
+     */
+    Optional<LatestPlan> latestPlan(@Nullable UUID userId);
+
+    /**
      * 그 사용자의 계획 조건 쓰기와 직렬화한다. 호출자 트랜잭션이 끝날 때까지 유지된다.
      *
      * <p>발행 트랜잭션이 <b>가장 먼저</b> 부른다. 계획 조건 확인과 같은 잠금 순서(계획 → 계정 생명주기)

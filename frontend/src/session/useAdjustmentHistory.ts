@@ -380,10 +380,12 @@ export function useAdjustmentHistory(
   bundle: PlanResult | null,
   onDenied: () => void,
 ): AdjustmentHistoryState {
+  // The plan's status is part of the key: when the shown plan ends (Story 2.13), the history read while it was
+  // active closes with it, and the record reads it again.
   const key =
     bundle === null
       ? null
-      : `${bundle.planId}\n${String(bundle.pointerVersion)}\n${bundle.calculationId}`
+      : `${bundle.planId}\n${String(bundle.pointerVersion)}\n${bundle.calculationId}\n${bundle.planStatus}`
   const [view, setView] = useState<AdjustmentView>({ kind: 'closed' })
   const [shownKey, setShownKey] = useState(key)
   const sequence = useRef(0)

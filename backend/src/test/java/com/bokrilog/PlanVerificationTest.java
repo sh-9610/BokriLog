@@ -88,7 +88,8 @@ class PlanVerificationTest extends PlanSyncTestBase {
 
         // The dashboard: "verified, no change" with the ranges and the time; the verification cools down.
         var dashboard = topLevelFieldsOf(get(AuthSecurityConfig.DASHBOARD_PATH, cookie).body());
-        assertThat(dashboard).containsOnlyKeys("state", "nextAction", "result", "sync", "verification", "change");
+        assertThat(dashboard).containsOnlyKeys("state", "nextAction", "result", "sync", "verification", "change",
+                "planEnd");
         var change = nested(dashboard, "change");
         assertThat(change).containsEntry("kind", "VERIFIED_NO_CHANGE").containsEntry("purpose", "VERIFY")
                 .containsEntry("reason", "USER_REQUEST").containsEntry("lateChangeCount", 0)

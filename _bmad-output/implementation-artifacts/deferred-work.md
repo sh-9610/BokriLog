@@ -302,3 +302,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-12-precision-reverification.md`
   summary: V12의 변경 행 backfill은 마이그레이션 시점에 있던 증분 버전만 덮는다. `migrate` 역할이 V12를 적용한 뒤에도 2.11 바이너리가 발행을 계속하면, 그 버전에는 변경 행이 없어 근거·조정 이력이 다음 발행까지 503이다. 옛 바이너리가 VERIFY 작업을 집으면 V12 CHECK에 걸린다.
   evidence: AD-12가 마이그레이션을 API 기동과 분리했고, 아직 운영 배포가 없어 단일 인스턴스에서는 생기지 않는다. 새 바이너리 전환과 expand 마이그레이션의 순서는 Blue-green 배포(Story 3.8)가 정할 일이다(Story 2.12 2차 검토).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-13-plan-early-end.md`
+  summary: 계획 중도 종료(`plan-end`)가 재인증 시각을 지우지 않는 민감 command 목록에 더해졌다. 본인 확인 1회가 5분 창 안에서 연결·해제·Bybit 연결·계획 종료를 연쇄 승인할 수 있다.
+  evidence: Epic 1 회고가 "재인증 시각(`bokrilog.auth.reauthenticated-at`)을 지우는 코드가 없다"를 실연동 게이트 전에 닫을 액션으로 남겼다(`sprint-status.yaml`의 `action_items`). 이 스토리는 그 관용을 따랐을 뿐이며, 소비 뒤 시각을 지우는 일은 네 command를 함께 바꾸는 별도 정리다(Story 2.13 리뷰).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-13-plan-early-end.md`
+  summary: 44×44 최소 조작 영역 규칙의 아홉·열 번째 사본이 생겼다(`PlanEndControl.module.css`, `PlanEndDialog.module.css`). 진행 표지 `.marker`와 `@keyframes`는 네 모듈에, 확인 대화상자 규칙은 `UnlinkDialog.module.css`와 두 곳에 같은 모양으로 있다.
+  evidence: Story 2.10~2.12가 다섯~여덟 번째 사본을 기록했다. 공통 규칙을 한 곳으로 모으는 일은 여러 화면 CSS 모듈을 함께 바꾸는 별도 정리다(Story 2.13 리뷰).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-13-plan-early-end.md`
+  summary: 모달의 기본 동작(문서 capture `keydown`의 Tab 가둠, Esc, `body` 스크롤 잠금, 초점 복귀)이 `UnlinkDialog`와 `PlanEndDialog`에 손으로 두 벌 있다. 둘을 맞춰 줄 공유 훅이나 시험이 없다.
+  evidence: `PlanEndDialog`는 SPEC대로 `UnlinkDialog` 관용을 따랐다. 공유 훅으로 묶는 일은 Story 1.11의 대화상자를 함께 바꾸는 정리라 이 스토리 범위 밖이다(Story 2.13 리뷰).

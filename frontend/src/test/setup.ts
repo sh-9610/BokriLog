@@ -11,7 +11,8 @@
  *    `stubLinkRequest`, `stubUnlinkPrepareRequest`, `stubUnlinkConfirmRequest`,
  *    `stubUnlinkCancelRequest`, `stubConnectionStatusRequest`, `stubConnectionPrepareRequest`,
  *    `stubConnectRequest`, `stubConnectionCancelRequest`, `stubCalculationEvidence`,
- *    `stubAdjustmentHistory`, `stubDashboardSync`, `stubDashboardVerification`).
+ *    `stubAdjustmentHistory`, `stubDashboardSync`, `stubDashboardVerification`, `stubPlanEndPrepare`,
+ *    `stubPlanEndConfirm`, `stubPlanEndCancel`).
  *    전역 거부는 그대로다. 아래 `responders` 절의 근거를 참고한다.
  */
 
@@ -34,6 +35,7 @@ import {
 import { DASHBOARD_EVIDENCE_PATH } from '../content/calculationEvidence'
 import { BYBIT_CANCEL_PATH, BYBIT_CONNECT_PATH, BYBIT_CONNECTION_PATH } from '../content/connection'
 import { FIRST_SNAPSHOT_PATH } from '../content/firstSnapshot'
+import { PLAN_END_CANCEL_PATH, PLAN_END_CONFIRM_PATH, PLAN_END_PATH } from '../content/planEnd'
 import { DASHBOARD_PATH } from '../content/planResult'
 import { DASHBOARD_SYNC_PATH } from '../content/planSync'
 import { DASHBOARD_VERIFICATION_PATH } from '../content/planVerification'
@@ -115,6 +117,32 @@ export function stubDashboardSync(responder: RequestResponder): void {
  */
 export function stubDashboardVerification(responder: RequestResponder): void {
   responders.set(requestKey('POST', DASHBOARD_VERIFICATION_PATH), responder)
+}
+
+/**
+ * 계획 중도 종료 **준비** 요청 하나를 이 시험 동안만 허용한다(Story 2.13).
+ *
+ * 확정·취소와 따로 연다. 세 경로를 한 번에 열면 "대화상자를 여는 요청은 아무것도 끝내지 않는다"를 확인하려는
+ * 시험이 확정 요청까지 통과시키고, 그때 그 시험은 자기가 무엇을 본 것인지 알 수 없다(해제 스텁과 같은 근거).
+ * 응답 함수는 `init`으로 본문(사유와 참조 세 값)과 헤더(CSRF 토큰)를 받는다.
+ */
+export function stubPlanEndPrepare(responder: RequestResponder): void {
+  responders.set(requestKey('POST', PLAN_END_PATH), responder)
+}
+
+/**
+ * 계획 중도 종료 **확정** 요청 하나를 이 시험 동안만 허용한다. 계획이 끝나는 유일한 경로다.
+ *
+ * 열지 않은 시험에서 이 요청이 나가면 전역 거부가 그것을 기록하고 거절한다 — 화면이 확인 없이 계획을 끝내는
+ * 회귀가 그 기록으로 드러난다. 응답 함수는 `init`으로 본문(확인 문구 포함)과 헤더(멱등 키)를 받는다.
+ */
+export function stubPlanEndConfirm(responder: RequestResponder): void {
+  responders.set(requestKey('POST', PLAN_END_CONFIRM_PATH), responder)
+}
+
+/** 계획 중도 종료 **취소** 요청 하나를 이 시험 동안만 허용한다. 준비가 만든 흐름과 허가를 되돌린다. */
+export function stubPlanEndCancel(responder: RequestResponder): void {
+  responders.set(requestKey('POST', PLAN_END_CANCEL_PATH), responder)
 }
 
 /**

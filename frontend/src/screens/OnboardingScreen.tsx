@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 
 import { DashboardStatusText } from '../components/DashboardStatusText'
 import { FirstSnapshotPanel } from '../components/FirstSnapshotPanel'
+import { PlanEndDialog } from '../components/PlanEndDialog'
 import { PlanResultPanel } from '../components/PlanResultPanel'
 import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
@@ -11,6 +12,7 @@ import { useDashboardAdjustments } from '../session/useAdjustmentHistory'
 import { useDashboardEvidence } from '../session/useCalculationEvidence'
 import { planPresenceOf, statusBusy, useDashboard } from '../session/useDashboard'
 import { useDashboardSync } from '../session/useDashboardSync'
+import { usePlanEnd } from '../session/usePlanEnd'
 import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
@@ -37,7 +39,8 @@ const MAIN_ID = 'onboarding-main'
  * 첫 로그인 세션의 확정 목적지가 이 화면이다. 그 세션이 `/dashboard`를 열어도 이 화면으로
  * 밀려나므로(`useSessionGate`), 공식 대시보드(Story 2.8)도 대시보드 화면과 같은 패널·같은 순서로 여기
  * 그린다 — 조회 모델 응답 하나에서 그리고 화면의 단일 live region이 상태 변화를 한 문장으로 알린다. 동기화
- * (Story 2.11)도 대시보드 화면과 같은 자리·같은 트리거로 둔다.
+ * (Story 2.11)도 대시보드 화면과 같은 자리·같은 트리거로 둔다. 계획 중도 종료(Story 2.13)도 같은 자리에 두고, 확인
+ * 대화상자는 본문을 감싼 `inert` 래퍼의 형제로 연다(대시보드 화면과 같은 배치).
  */
 export function OnboardingScreen(): ReactElement {
   const { csrfToken, gate } = useSessionGate('onboarding')
@@ -50,6 +53,8 @@ export function OnboardingScreen(): ReactElement {
   const adjustments = useDashboardAdjustments(dashboard)
   // The user-time sync of the shown plan (Story 2.11): entry, tab return and the button, in its own state.
   const sync = useDashboardSync(dashboard, csrfToken)
+  // The explicit early end of the shown plan (Story 2.13): reauthentication, the confirmation dialog, the end.
+  const planEnd = usePlanEnd(dashboard, csrfToken)
   // Whether the first-snapshot panel leads the dashboard, and how (`planPresenceOf` gives the reasons).
   const presence = planPresenceOf(dashboard.view)
 
@@ -70,118 +75,142 @@ export function OnboardingScreen(): ReactElement {
    * 서버가 "이미 인증된 세션"으로 거절해 무한 왕복이 된다.
    */
   const reauthRequired = gate === 'reauth-required'
+  /*
+   * 계획 종료 확인 대화상자가 열려 있는가(Story 2.13). 열려 있는 동안 배경을 비활성화한다 — `inert`가 없으면
+   * 스크린리더의 가상 커서가 뒤 화면을 읽고 포인터·키보드가 그 조작에 닿는다. 대화상자는 이 래퍼의 형제다(설정
+   * 화면과 같은 관용): 안에 두면 그 속성이 대화상자까지 덮는다.
+   */
+  const dialog = ready ? planEnd.dialog : null
 
   return (
-    <div className={styles.page}>
-      {/* 건너뛰기 링크는 진입 화면과 같은 관용이다. 반복되는 머리말을 지나칠 첫 조작이다. */}
-      <a className={styles.skipLink} href={`#${MAIN_ID}`}>
-        {entryContent.skipLink}
-      </a>
+    <>
+      <div className={styles.page} inert={dialog !== null}>
+        {/* 건너뛰기 링크는 진입 화면과 같은 관용이다. 반복되는 머리말을 지나칠 첫 조작이다. */}
+        <a className={styles.skipLink} href={`#${MAIN_ID}`}>
+          {entryContent.skipLink}
+        </a>
 
-      <header className={styles.header}>
-        <p className={styles.brand}>{entryContent.brand}</p>
-        {/* 세션이 확인된 뒤에만 둔다. 확인 전에는 로그아웃할 대상이 아직 없다. */}
-        {ready ? (
-          <div className={styles.headerActions}>
-            {/*
+        <header className={styles.header}>
+          <p className={styles.brand}>{entryContent.brand}</p>
+          {/* 세션이 확인된 뒤에만 둔다. 확인 전에는 로그아웃할 대상이 아직 없다. */}
+          {ready ? (
+            <div className={styles.headerActions}>
+              {/*
               설정 화면으로 가는 길. 이 링크가 없으면 그 화면은 주소를 직접 쳐야만 닿고,
               사용자가 자기 로그인 수단을 볼 자리가 사실상 없다. 전역 내비게이션은 아직 없으므로
               (Epic 1의 범위가 아니다) 머리말의 링크 하나가 그 자리다.
 
               `<a href>`다. 화면 전환은 전부 문서 요청이고 이 저장소에는 클라이언트 라우팅이 없다.
             */}
-            <a className={styles.settingsLink} href={SETTINGS_PATH}>
-              {authContent.settings.link}
-            </a>
-            <SignOutButton onSignOut={signOut.requestSignOut} pending={signOut.pending} />
+              <a className={styles.settingsLink} href={SETTINGS_PATH}>
+                {authContent.settings.link}
+              </a>
+              <SignOutButton onSignOut={signOut.requestSignOut} pending={signOut.pending} />
+            </div>
+          ) : null}
+        </header>
+
+        <main className={styles.main} id={MAIN_ID} tabIndex={-1}>
+          <div className={styles.intro}>
+            {/* UX-DR23: 제목과 바로 아래 고지를 인접 배치한다. */}
+            <h1 className={styles.title}>{authContent.pageTitle}</h1>
+            <p className={styles.disclaimer}>{authContent.disclaimer}</p>
           </div>
-        ) : null}
-      </header>
 
-      <main className={styles.main} id={MAIN_ID} tabIndex={-1}>
-        <div className={styles.intro}>
-          {/* UX-DR23: 제목과 바로 아래 고지를 인접 배치한다. */}
-          <h1 className={styles.title}>{authContent.pageTitle}</h1>
-          <p className={styles.disclaimer}>{authContent.disclaimer}</p>
-        </div>
-
-        {/*
+          {/*
           화면당 polite live region 하나. 갱신 중임을 aria-busy로 알린다.
 
           로그아웃 진행도 여기서 말한다. 버튼 안의 문구 변화는 live region이 아니어서 보조기술에
           전달되지 않고, 그 문구가 버튼의 접근 가능한 이름이 되면 컨트롤의 이름이 동작 아닌
           상태가 된다.
         */}
-        <div
-          /*
+          <div
+            /*
             표시된 세션은 갱신 중이 아니다. 게이트가 `reauth-required`인 상태는 확인이
             끝나고 다음 행동을 기다리는 자리이므로 `aria-busy`를 세우면 보조기술에 "지금
             바뀌는 중"이라고 잘못 말한다. 확인 중·이동 중·요청 중만 참이다.
           */
-          aria-busy={statusBusy({
-            ready,
-            reauthRequired,
-            requestPending: signOut.pending || reauthentication.pending,
-            dashboard,
-          })}
-          // The dashboard, the evidence and the history speak in separate parts; a change to one is read alone.
-          aria-atomic="false"
-          aria-live="polite"
-          className={styles.notice}
-          role="status"
-        >
-          {ready && !signOut.pending ? (
-            <DashboardStatusText
+            aria-busy={statusBusy({
+              ready,
+              reauthRequired,
+              requestPending: signOut.pending || reauthentication.pending,
+              dashboard,
+            })}
+            // The dashboard, the evidence and the history speak in separate parts; a change to one is read alone.
+            aria-atomic="false"
+            aria-live="polite"
+            className={styles.notice}
+            role="status"
+          >
+            {ready && !signOut.pending && !reauthentication.pending ? (
+              <DashboardStatusText
+                adjustments={adjustments}
+                className={styles.noticeText}
+                dashboard={dashboard}
+                evidence={evidence}
+                planEnd={planEnd}
+                sync={sync}
+              />
+            ) : (
+              <p className={styles.noticeText}>
+                {liveRegionMessage(gate, signOut.pending, reauthentication.pending)}
+              </p>
+            )}
+          </div>
+
+          {reauthRequired ? (
+            <ReauthPanel
+              notice={reauthNoticeKindOf(window.location.search)}
+              onReauthenticate={reauthentication.requestReauthentication}
+              onSignOut={signOut.requestSignOut}
+              pending={reauthentication.pending}
+              signingOut={signOut.pending}
+            />
+          ) : null}
+
+          {ready && presence !== null ? (
+            <FirstSnapshotPanel csrfToken={csrfToken} plan={presence} ready={ready} />
+          ) : null}
+          {ready ? (
+            <PlanResultPanel
               adjustments={adjustments}
-              className={styles.noticeText}
               dashboard={dashboard}
               evidence={evidence}
+              planEnd={planEnd}
+              reauthentication={reauthentication}
               sync={sync}
             />
-          ) : (
-            <p className={styles.noticeText}>
-              {liveRegionMessage(gate, signOut.pending, reauthentication.pending)}
-            </p>
-          )}
-        </div>
+          ) : null}
 
-        {reauthRequired ? (
-          <ReauthPanel
-            notice={reauthNoticeKindOf(window.location.search)}
-            onReauthenticate={reauthentication.requestReauthentication}
-            onSignOut={signOut.requestSignOut}
-            pending={reauthentication.pending}
-            signingOut={signOut.pending}
-          />
-        ) : null}
+          {ready ? (
+            <section aria-labelledby={authContent.onboarding.id} className={styles.section}>
+              <h2 className={styles.sectionHeading} id={authContent.onboarding.id}>
+                {authContent.onboarding.heading}
+              </h2>
+              <ul className={styles.itemList} role="list">
+                {authContent.onboarding.items.map((item, index) => (
+                  <li className={styles.item} key={`${authContent.onboarding.id}-${String(index)}`}>
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+        </main>
+      </div>
 
-        {ready && presence !== null ? (
-          <FirstSnapshotPanel csrfToken={csrfToken} plan={presence} ready={ready} />
-        ) : null}
-        {ready ? (
-          <PlanResultPanel
-            adjustments={adjustments}
-            dashboard={dashboard}
-            evidence={evidence}
-            sync={sync}
-          />
-        ) : null}
-
-        {ready ? (
-          <section aria-labelledby={authContent.onboarding.id} className={styles.section}>
-            <h2 className={styles.sectionHeading} id={authContent.onboarding.id}>
-              {authContent.onboarding.heading}
-            </h2>
-            <ul className={styles.itemList} role="list">
-              {authContent.onboarding.items.map((item, index) => (
-                <li className={styles.item} key={`${authContent.onboarding.id}-${String(index)}`}>
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
-      </main>
-    </div>
+      {/*
+        계획 종료 확인 대화상자(Story 2.13). 준비 요청이 확인 문구로 답한 뒤에만 열린다. 확정이 도는 동안에는
+        호출점으로 포커스를 돌려주지 않는다 — 끝나면 화면이 패널 제목(종료) 또는 종료 영역의 표지(거절)로 옮긴다.
+      */}
+      {dialog === null ? null : (
+        <PlanEndDialog
+          dialog={dialog}
+          onCancel={planEnd.cancel}
+          onConfirm={planEnd.confirm}
+          restoreFocus={!dialog.confirming}
+        />
+      )}
+    </>
   )
 }

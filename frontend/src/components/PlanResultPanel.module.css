@@ -184,3 +184,25 @@
 .action[aria-disabled='true'] {
   cursor: wait;
 }
+
+/*
+ * The record of a plan ended early (Story 2.13): its `중도 종료` marker, framed so it reads as the plan's state, and
+ * the help line under a fact. Text carries the state; the frame only sets it apart, with no colour judging it.
+ */
+.marker {
+  justify-self: start;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-subtle);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+.factHelp {
+  display: block;
+  color: var(--color-ink-secondary);
+  font-size: var(--type-meta-font-size);
+  line-height: var(--type-meta-line-height);
+}

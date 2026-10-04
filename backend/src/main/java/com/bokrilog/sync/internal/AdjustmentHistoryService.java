@@ -102,12 +102,14 @@ class AdjustmentHistoryService {
     }
 
     /**
-     * The page, inside the one consistent read. The reference must be the active plan's pointer — its plan,
-     * version and calculation — or it is not found. Then the version must agree with itself and its lineage:
+     * The page, inside the one consistent read. The reference must be the shown plan's pointer — the active plan's,
+     * or the ended plan's (Story 2.13) — its plan, version and calculation, or it is not found. Then the version must
+     * agree with itself and its lineage:
      *
      * <ul>
      *   <li>it belongs to the plan and its terms, and the portfolio pointer cites its snapshot (the
-     *       dashboard's AD-23 reliance: both pointers advance in one publication);
+     *       dashboard's AD-23 reliance: both pointers advance in one publication) — or, for an ended plan, its end
+     *       record names that snapshot and version instead;
      *   <li>its classification is the COMPLETE one of its candidate under its policy, with nothing held for
      *       review and an excluded count its excluded events agree with, and its conversion is that
      *       classification's calculable one under its price policy, both of its intent, portfolio, connection
@@ -120,21 +122,30 @@ class AdjustmentHistoryService {
      * </ul>
      */
     private AdjustmentOutcome page(UUID user, AdjustmentQuery query, int after) {
-        var plan = plans.activePlan(user).orElse(null);
-        if (plan == null || !plan.planId().equals(query.planId())) return new AdjustmentOutcome.NotFound();
+        // The plan shown (Story 2.13): the active plan, or the most recent plan that ended early — the dashboard's own.
+        var shown = PlanPublicationService.shown(plans, user);
+        if (shown == null || !shown.plan().planId().equals(query.planId())) return new AdjustmentOutcome.NotFound();
+        var plan = shown.plan();
         var pointer = publications.pointer(user, plan.planId()).orElse(null);
         if (pointer == null || pointer.version() != query.pointerVersion()
                 || !pointer.calculationId().equals(query.calculationId()))
             return new AdjustmentOutcome.NotFound();
         // The reference is the current official pointer: from here on, a disagreement is a broken lineage.
+        if (shown.broken()) return new AdjustmentOutcome.Unavailable();
         UUID calculationId = pointer.calculationId();
         var calculation = publications.calculation(user, calculationId).orElse(null);
         if (calculation == null || !PlanPublicationService.belongs(calculation, plan, pointer))
             return new AdjustmentOutcome.Unavailable();
-        var portfolio = portfolios.officialValue(user).orElse(null);
-        if (portfolio == null || !portfolio.snapshotId().equals(calculation.portfolioSnapshotId())
-                || portfolio.publicationSequence() != calculation.portfolioSequence())
+        var end = shown.end();
+        if (end == null) {
+            var portfolio = portfolios.officialValue(user).orElse(null);
+            if (portfolio == null || !portfolio.snapshotId().equals(calculation.portfolioSnapshotId())
+                    || portfolio.publicationSequence() != calculation.portfolioSequence())
+                return new AdjustmentOutcome.Unavailable();
+        } else if (!PlanPublicationService.endAgrees(end, plan, pointer, calculation)) {
+            // An ended plan's record names its snapshot; the portfolio's pointer may move on (Story 2.15).
             return new AdjustmentOutcome.Unavailable();
+        }
         var lineage = publications.lineage(user, calculationId).orElse(null);
         if (lineage == null) return new AdjustmentOutcome.Unavailable();
         var classification = publications.classificationBundle(user, lineage.classificationId()).orElse(null);

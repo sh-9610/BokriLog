@@ -18,7 +18,11 @@ import { planPublicationContent } from '../../src/content/planResult'
 
 const STUB_CONSENT = '동의하고 계속하기'
 
-async function consent(page: Page, subject: string): Promise<void> {
+/**
+ * Passes the local OIDC stub's consent page as the given subject: the same person across a sign-in, a
+ * reauthentication or a second sign-in (the stub's default is a new subject per request).
+ */
+export async function consent(page: Page, subject: string): Promise<void> {
   await expect(page.getByRole('link', { name: STUB_CONSENT })).toBeVisible()
   const url = new URL(page.url())
   url.searchParams.set('dev_subject', subject)
@@ -28,8 +32,9 @@ async function consent(page: Page, subject: string): Promise<void> {
 
 /**
  * Signs in, connects the stub with the given scenario, takes the first official snapshot and saves
- * plan conditions. Resolves with the credentials used and the host time just after the snapshot
- * appeared (the snapshot's measured time, t0, is not later than that). `firstValue` is the first official
+ * plan conditions. Resolves with the credentials used, the host time just after the snapshot
+ * appeared (the snapshot's measured time, t0, is not later than that) and the stub subject the person
+ * signed in as (a later reauthentication must be the same person). `firstValue` is the first official
  * value the scenario's wallet reports — a constant for most scenarios; one that moves with time names a
  * pattern.
  */
@@ -37,7 +42,7 @@ export async function connectAndSavePlan(
   page: Page,
   scenario: string,
   firstValue = /1,234\.56 USD/,
-): Promise<{ key: string; secret: string; snapshotSeenAt: number }> {
+): Promise<{ key: string; secret: string; snapshotSeenAt: number; subject: string }> {
   const subject = `e2e-snapshot-${String(Date.now())}-${Math.random().toString(36).slice(2)}`
   await page.goto('/')
   await page.getByRole('link', { name: authContent.signIn.labels.google }).click()
@@ -94,7 +99,7 @@ export async function connectAndSavePlan(
   await page.getByRole('button', { name: planConditionContent.confirm }).click()
   await expect(page.getByRole('heading', { name: planConditionContent.saved })).toBeVisible()
   await expect(page.getByText(planConditionContent.collection.notStarted)).toBeVisible()
-  return { key, secret, snapshotSeenAt }
+  return { key, secret, snapshotSeenAt, subject }
 }
 
 /** Collects the initial inputs and classifies them, both started from the keyboard at 320px. */
