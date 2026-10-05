@@ -148,7 +148,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 ## 현재 진행 지점
 
-기획은 완료됐고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. **Epic 1(11개)은 닫혔고 회고도 끝났다**(`epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건은 `sprint-status.yaml`의 `action_items`가 소유). Epic 2는 2.1~2.14가 `develop`에 머지됐고 M2-2(2.7)·M2-3(2.12) 검증 지점이 닫혔다. **다음 구현은 2.15(새 정상 스냅샷을 기준으로 후속 계획 생성하기)다.** 실연동 게이트는 둘이며 둘 다 별도 출시 게이트가 소유한다 — Epic 1의 세 제공자 왕복, Epic 2의 Bybit 연결 정책·실연동(실제 검증 계정과 regional reserved IP 필요).
+기획은 완료됐고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. **Epic 1(11개)은 닫혔고 회고도 끝났다**(`epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건은 `sprint-status.yaml`의 `action_items`가 소유). Epic 2는 2.1~2.15가 `develop`에 머지됐고 M2-2(2.7)·M2-3(2.12) 검증 지점이 닫혔다. **다음 구현은 2.16(Bybit 연결을 해제하고 기존 계획 기록을 읽기 전용으로 보존하기)다.** 실연동 게이트는 둘이며 둘 다 별도 출시 게이트가 소유한다 — Epic 1의 세 제공자 왕복, Epic 2의 Bybit 연결 정책·실연동(실제 검증 계정과 regional reserved IP 필요).
 
 스토리마다 무엇을 도입했고 리뷰가 무엇을 잡았는지는 아래 표의 SPEC이 소유한다. 그 코드를 건드릴 때 해당 SPEC의 `## Design Notes`와 "구현에서 확정한 것"을 읽는다.
 
@@ -181,7 +181,8 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 2.12 정밀 재검증 | done | `spec-2-12-precision-reverification.md`, PR #54 머지 커밋 `4551b5b` |
 | 2.13 계획 중도 종료 | done | `spec-2-13-plan-early-end.md`, PR #57 머지 커밋 `436f1c2` |
 | 2.14 계획 자연 만료·완료 결과 | done | `spec-2-14-plan-natural-completion.md`, PR #60 머지 커밋 `1c92f5f` |
-| Epic 2 | in-progress | 16개 중 14개 done. 다음은 2.15 |
+| 2.15 새 정상 기준·후속 계획 | done | `spec-2-15-successor-plan.md`, PR #63 머지 커밋 `816289366f57f6e3d067ed59359d7399c02b433b` |
+| Epic 2 | in-progress | 16개 중 15개 done. 다음은 2.16 |
 
 ## 스토리가 고정한 계약
 
@@ -203,7 +204,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 **경로·화면 경계**
 - 내부 경로는 셋(`/onboarding`·`/dashboard`·`/settings`)이고 그 집합이 **다섯 곳**에서 같아야 한다: `App.tsx` 경로 맵, Nginx 허용 목록, 서버 `ALLOWED_DESTINATIONS`, 세션 목적지 맵, 복귀 목적지 집합. 타입 검사가 잡는 것은 하나뿐이다. 근거·조정 이력·종료·완료는 새 경로가 아니라 대시보드 패널 안에서 연다(2.9~2.14).
 - CSP는 넓히지 않는다. 폼은 `fetch`로 보내고 `form-action 'none'`을 유지한다(2.1).
-- 화면은 대시보드 응답 하나를 한 단위로 교체한다. 늦은 응답은 버리고, 버전 역행·충돌은 교체하지 않고, 실패한 다시 불러오기는 마지막 정상 결과를 유지하며, 401·403은 값을 메모리에서 지운다. 종단(중도 종료·완료) 뒤의 활성 묶음은 거절한다(2.8·2.13·2.14).
+- 화면은 대시보드 응답 하나를 한 단위로 교체한다. 늦은 응답은 버리고, 버전 역행·충돌은 교체하지 않고, 실패한 다시 불러오기는 마지막 정상 결과를 유지하며, 401·403은 값을 메모리에서 지운다. 같은 계획의 종단(중도 종료·완료) 뒤 활성 묶음과 새 계획 시작 뒤 이전 계획 응답의 역행은 거절한다(2.8·2.13~2.15).
 - 초점은 사용자가 누른 조작의 결과에만 옮긴다. 자동 트리거의 완료는 status 문장 한 번이다. 화면당 live region은 하나이고 대시보드 status는 `aria-atomic="false"`다(2.9·2.11).
 
 **Bybit·수집·계산 (Epic 2)**
@@ -214,12 +215,13 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 - 환산은 `USD`·`USDT`만 직접이고 나머지는 spot 종료 1분봉 close를 `ESTIMATED`로 쓴다. 미종료 candle은 fallback 없이 보류다. 공유 공개 증거(`sync_market_*`)는 사용자 식별자가 없고 삭제 뒤에도 남는다(2.6).
 - 계산은 순수 `calculation` 모듈이 한다. `periods`는 정확한 분수를 누적한 뒤 한 번만 반올림한다. `Target <= 0`이어도 발행하고 목표 기반 비율만 계산 불가다. 범위 초과는 발행 전체를 거절한다. `계산 불가`는 계산 성격을 덮지 않는다(2.7).
 - 공식 발행은 sync가 소유한 outer 트랜잭션 하나이고 잠금 순서는 계획 advisory → 생명주기 행 → 작업 행이다. portfolio 포인터가 계산 버전의 snapshot을 가리켜야 `READY`다(AD-23). 제한 판정 시각은 `statement_timestamp()`다(2.7·2.8·2.11).
-- 대시보드 읽기는 읽기 전용 `REPEATABLE READ` 한 묶음이고 계정 접근을 그 앞뒤로 본다. 세 신뢰 축은 서버가 판정하고 화면은 닫힌 맵으로 카피에 잇는다(모르는 코드는 안전한 카피). 근거·조정 이력은 참조(`planId`·`pointerVersion`·`calculationId`)를 받아 현재 포인터와 같을 때만 200이고, 불일치는 모두 같은 404, 계보가 어긋나면 503이다(2.8~2.10).
+- 대시보드 읽기는 읽기 전용 `REPEATABLE READ` 한 묶음이고 계정 접근을 그 앞뒤로 본다. 세 신뢰 축은 서버가 판정하고 화면은 닫힌 맵으로 카피에 잇는다(모르는 코드는 안전한 카피). 현재 근거·조정 이력은 참조(`planId`·`pointerVersion`·`calculationId`)가 현재 포인터와 같을 때만 200이다. 명시적 과거 조회는 소유 종단 계획의 고정 묶음만 읽고, 불일치는 모두 같은 404, 계보가 어긋나면 503이다(2.8~2.10·2.15).
 - 모든 증분 발행은 직전 버전과의 흐름 차이(`sync_plan_calculation_change`)를 같은 트랜잭션에 쓴다. 지속성 검증 검토는 그 기준 계산 동안 끈적이며 작업을 다시 만들지 않는다 — 풀 수 없는 재수집 루프를 막는 규칙이고 완료 계획에도 적용된다(2.12·2.14).
-- 계획 상태는 `ACTIVE → ENDED_EARLY | COMPLETED` 단조이고 활성 포인터는 부분 유일 색인 `WHERE status='ACTIVE'`다. 종료·완료 사실은 별도 표(`plan_end`·`plan_completion`)에 두고 상태와 복합 FK로 짝짓는다. 종단 계획이 있으면 계획 조건 경로는 `PLAN_ENDED`다(2.13·2.14).
+- 계획 상태는 `ACTIVE → ENDED_EARLY | COMPLETED` 단조이고 활성 포인터는 부분 유일 색인 `WHERE status='ACTIVE'`다. 종료·완료 사실은 별도 표(`plan_end`·`plan_completion`)에 두고 상태와 복합 FK로 짝짓는다. 종단 뒤 새 준비가 없으면 계획 조건 경로는 `PLAN_ENDED`이고, 후속 계획은 종단 이후 요청·완료·측정된 양수 정상 기준에 확인→intent→발행을 고정한다. 이전 흐름은 옮기지 않고 새 `t0 < ti`만 반영한다(2.13~2.15).
 - 자연 만료는 사용자 시점의 동기화 admission이 전환한다(백그라운드 없음, `GET`은 쓰지 않음). 첫 종료 후 관측은 한 번 고정하고 교체하지 않으며, 관측 시각은 ms로 잘라 저장·판정한다(2.14).
 
 **시험·CI**
+- 순차 시험 중에도 scheduler·virtual worker는 실행된다. DB 초기화는 public 전체 테이블의 NOWAIT 잠금을 확보한 트랜잭션에서 하며, 경합이면 부분 잠금을 모두 롤백한 뒤 기다린다. 정리 시작 뒤 오류는 재시도하지 않는다(PR #63).
 - 시험의 멱등 키·토큰 모양 값은 리터럴로 쓰지 않는다. gitleaks `generic-api-key`가 잡고, PR 커밋 범위가 스캔되므로 뒤 커밋으로는 지워지지 않는다(PR #60).
 - `inert` 배경으로 돌려주는 대화상자의 초점 복귀만 passive 정리이고 나머지 초점 이동은 layout effect다(PR #57·#58, `DEVELOPMENT.md`).
 
