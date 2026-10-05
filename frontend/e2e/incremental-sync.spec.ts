@@ -5,6 +5,7 @@ import { adjustmentHistoryContent } from '../src/content/adjustmentHistory'
 import { authContent } from '../src/content/auth'
 import { calculationEvidenceContent } from '../src/content/calculationEvidence'
 import { entryContent } from '../src/content/entry'
+import { nextPlanContent } from '../src/content/nextPlan'
 import { planConditionContent } from '../src/content/planConditions'
 import { planResultContent } from '../src/content/planResult'
 import { planSyncContent } from '../src/content/planSync'
@@ -263,7 +264,7 @@ test.describe('활성 계획의 증분 동기화', () => {
       },
     )
     const reached: string[] = []
-    for (let step = 0; step < 8; step += 1) {
+    for (let step = 0; step < 9; step += 1) {
       await page.keyboard.press('Tab')
       reached.push(await page.evaluate(() => document.activeElement?.textContent.trim() ?? ''))
     }
@@ -271,6 +272,7 @@ test.describe('활성 계획의 증분 동기화', () => {
       entryContent.skipLink,
       authContent.settings.link,
       authContent.signOut.label,
+      nextPlanContent.historyOpen,
       planSyncContent.action,
       planVerificationContent.action,
       calculationEvidenceContent.open,

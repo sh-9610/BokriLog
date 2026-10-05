@@ -1230,7 +1230,8 @@ class AuthSecurityConfig {
     }
 
     private static boolean isPlanConditionsPath(String uri) {
-        return uri.equals(PLAN_CONDITIONS_PATH) || uri.startsWith(PLAN_CONDITIONS_PATH + "/");
+        return uri.equals(PLAN_CONDITIONS_PATH) || uri.startsWith(PLAN_CONDITIONS_PATH + "/")
+                || uri.equals("/api/plans/next/baseline");
     }
 
     /**

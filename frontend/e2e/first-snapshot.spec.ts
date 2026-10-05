@@ -6,6 +6,7 @@ import { authContent } from '../src/content/auth'
 import { calculationEvidenceContent } from '../src/content/calculationEvidence'
 import { entryContent } from '../src/content/entry'
 import { firstSnapshotContent } from '../src/content/firstSnapshot'
+import { nextPlanContent } from '../src/content/nextPlan'
 import { planConditionContent } from '../src/content/planConditions'
 import { planEndContent } from '../src/content/planEnd'
 import {
@@ -167,7 +168,7 @@ async function expectKeyboardOrder(page: Page): Promise<void> {
       .getByRole('region', { name: planResultContent.currentHeading }),
   ).toBeVisible({ timeout: 15_000 })
   const reached: string[] = []
-  for (let step = 0; step < 8; step += 1) {
+  for (let step = 0; step < 9; step += 1) {
     await page.keyboard.press('Tab')
     reached.push(await page.evaluate(() => document.activeElement?.textContent.trim() ?? ''))
   }
@@ -175,6 +176,7 @@ async function expectKeyboardOrder(page: Page): Promise<void> {
     entryContent.skipLink,
     authContent.settings.link,
     authContent.signOut.label,
+    nextPlanContent.historyOpen,
     planSyncContent.action,
     planVerificationContent.action,
     calculationEvidenceContent.open,
@@ -183,6 +185,7 @@ async function expectKeyboardOrder(page: Page): Promise<void> {
   ])
   // The controls are real 44px targets.
   for (const name of [
+    nextPlanContent.historyOpen,
     planSyncContent.action,
     planVerificationContent.action,
     calculationEvidenceContent.open,

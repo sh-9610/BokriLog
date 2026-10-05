@@ -515,7 +515,7 @@ final class DevBybitStub {
         if (scenario==Scenario.EXCESSIVE_CASH_FLOW_SCALE&&"TRANSFER_IN".equals(type))
             return eventPage("wide-scale","TRANSFER_IN","0."+"1".repeat(19),query,"start+1");
         if (scenario==Scenario.OUT_OF_WINDOW_EVENT&&"TRANSFER_IN".equals(type))
-            return eventPage("out-of-window","TRANSFER_IN","1.00",query,"start");
+            return eventPage("out-of-window","TRANSFER_IN","1.00",query,"before-start");
         if (scenario==Scenario.OVER_LIMIT_PAGE&&"TRANSFER_IN".equals(type)) {
             long eventAt=Long.parseLong(query.get("startTime"))+1;
             StringBuilder items=new StringBuilder("[");
@@ -713,7 +713,11 @@ final class DevBybitStub {
 
     private static Response eventPage(String id,String type,String flow,Map<String,String> query,String timeKind) {
         long start=Long.parseLong(query.get("startTime"));
-        long eventAt=timeKind.equals("start")?start:start+1;
+        long eventAt=switch (timeKind) {
+            case "start" -> start;
+            case "before-start" -> start-1;
+            default -> start+1;
+        };
         return ok("{\"list\":[{\"id\":\""+id+"\",\"type\":\""+type+"\","
                 +"\"currency\":\"USDT\",\"cashFlow\":\""+flow+"\",\"transactionTime\":\""
                 +eventAt+"\"}],\"nextPageCursor\":\"\"}");

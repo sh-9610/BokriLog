@@ -2760,13 +2760,15 @@ class FirstSnapshotTest extends AuthFlowTestBase {
 
         String bare=get(AuthSecurityConfig.DASHBOARD_PATH,cookie).body();
         assertThat(resultOf(bare)).containsEntry("planId",ownPlan);
-        for (String query : new String[] {"?planId="+foreign[0],"?calculationId="+foreign[1],"?snapshotId="+foreign[2],
+        for (String query : new String[] {"?calculationId="+foreign[1],"?snapshotId="+foreign[2],
                 "?portfolioSnapshotId="+foreign[2],"?userId="+other,
-                "?planId="+foreign[0]+"&calculationId="+foreign[1]+"&snapshotId="+foreign[2],"?planId="+ownPlan}) {
+                "?calculationId="+foreign[1]+"&snapshotId="+foreign[2]}) {
             var tampered=get(AuthSecurityConfig.DASHBOARD_PATH+query,cookie);
             assertThat(tampered.statusCode()).as(query).isEqualTo(200);
             assertThat(tampered.body()).as(query).isEqualTo(bare);
         }
+        for (String target : new String[] {foreign[0],ownPlan,UUID.randomUUID().toString()})
+            assertThat(get(AuthSecurityConfig.DASHBOARD_PATH+"?planId="+target,cookie).statusCode()).isEqualTo(404);
         String notFound=null;
         for (String sub : new String[] {"/"+foreign[0],"/"+ownPlan,"/"+UUID.randomUUID(),"/"+foreign[1]+"/metrics","/"}) {
             var probe=send("GET",AuthSecurityConfig.DASHBOARD_PATH+sub,cookie,"X-Request-Id","dashboard-tamper-probe");

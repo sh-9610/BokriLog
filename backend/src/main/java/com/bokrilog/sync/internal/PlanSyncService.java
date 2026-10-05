@@ -225,6 +225,12 @@ class PlanSyncService {
      */
     private SyncAdmission admitCompleted(UUID user, SyncTrigger trigger, String key,
             PlanSyncGuard.CompletedBase completed) {
+        plans.lockPlanWrites(user);
+        if (!accounts.lockWriteAccess(user)) return new SyncAdmission.NotPermitted();
+        if (publications.successorWorkInProgress(user)) return new SyncAdmission.Refused("SYNC_UNAVAILABLE");
+        var latest=guard.completedBase(user).orElse(null);
+        if (latest==null || !latest.base().plan().planId().equals(completed.base().plan().planId()))
+            return new SyncAdmission.Refused("NO_ACTIVE_PLAN");
         var base = completed.base();
         UUID planId = base.plan().planId();
         var active = syncs.active(user, planId).orElse(null);

@@ -85,7 +85,8 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
             if (active!=null) return new State(false,ACTIVE_PLAN_EXISTS,null,null,view(active));
             // A plan that ended early or completed takes no new conditions until Story 2.15 opens the following plan: the
             // first official snapshot is that plan's P0 and t0, and a plan made from it would continue the old baseline.
-            if (ends.terminalPlanExists(userId)) return new State(false,PLAN_ENDED,null,null,null);
+            if (ends.terminalPlanExists(userId) && sync.currentNextBaseline(userId).isEmpty())
+                return new State(false,PLAN_ENDED,null,null,null);
             FirstOfficialSnapshot s=eligibleSnapshot(userId).orElse(null);
             if (s==null) {
                 repository.invalidateOpen(userId);
@@ -106,7 +107,7 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
         if (userId==null || sessionId==null || sessionId.isBlank() || input==null
                 || input.period()==null || input.targetRate()==null || input.endAtSeoul()==null
                 || !eligibleUser(userId) || repository.activePlan(userId).isPresent()
-                || ends.terminalPlanExists(userId)) return Optional.empty();
+                || (ends.terminalPlanExists(userId) && sync.currentNextBaseline(userId).isEmpty())) return Optional.empty();
         var s=eligibleSnapshot(userId).orElse(null);
         if (s==null) return Optional.empty();
         Period period;
@@ -124,7 +125,7 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
         String ref=randomRef();
         Instant expires=Instant.now().plusSeconds(CONFIRMATION_LIFETIME_SECONDS)
                 .truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
-        String hash=sha256(canonical(s,end,period,rate));
+        String hash=sha256(canonical(userId,s,end,period,rate));
         try {
             Boolean stored=transactions.execute(status -> {
                 repository.lockUser(userId);
@@ -135,8 +136,9 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
                     return false;
                 }
                 // Checked again under the lock: a publication or an end that committed after the check above wins.
-                if (repository.activePlan(userId).isPresent() || ends.terminalPlanExists(userId)) return false;
+                if (repository.activePlan(userId).isPresent() || !sameSnapshot(userId,s)) return false;
                 repository.insertConfirmation(sha256(ref),userId,sha256(sessionId),hash,s,end,period,rate,expires);
+                sync.currentNextBaseline(userId).ifPresent(b -> repository.linkConfirmation(sha256(ref),b));
                 return true;
             });
             if (!Boolean.TRUE.equals(stored)) return Optional.empty();
@@ -163,7 +165,8 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
                 if (repository.activePlan(userId).isPresent())
                     return new Confirmation(false,false,null,ACTIVE_PLAN_EXISTS);
                 // The same for an ended plan (Story 2.13): it answers its own state, before the reference is read.
-                if (ends.terminalPlanExists(userId)) return new Confirmation(false,false,null,PLAN_ENDED);
+                if (ends.terminalPlanExists(userId) && sync.currentNextBaseline(userId).isEmpty())
+                    return new Confirmation(false,false,null,PLAN_ENDED);
                 var c=repository.confirmation(confirmationHash,userId,sha256(sessionId)).orElse(null);
                 if (c==null
                         || !c.calendarPolicy().equals(CALENDAR_POLICY)
@@ -191,6 +194,7 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
                 if (current!=null && repository.replace(userId,current.intentId(),intentId)!=1)
                     throw new StaleState();
                 repository.saveIntent(intentId,userId,c);
+                repository.linkIntent(intentId,confirmationHash);
                 if (repository.idempotency(userId,idempotencyKey,c.canonicalHash(),intentId)!=1)
                     throw new DuplicateKeyException("idempotency conflict");
                 repository.consume(confirmationHash);
@@ -209,7 +213,7 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
     public Optional<CollectionIntent> collectionIntent(@Nullable UUID userId, UUID intentId) {
         if (userId == null) return Optional.empty();
         return transactions.execute(status -> {
-            if (!eligibleUser(userId)) return Optional.empty();
+            if (!eligibleUser(userId) || currentTerms(userId,intentId,false).isEmpty()) return Optional.empty();
             var row = repository.collectionIntent(userId,intentId).orElse(null);
             if (row == null || !"OPEN".equals(row.status()) || !row.expiresAt().isAfter(Instant.now()))
                 return Optional.empty();
@@ -259,6 +263,19 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
     }
 
     @Override
+    public Optional<PlanPublicationPort.LatestPlan> historicalPlan(UUID userId, UUID planId) {
+        return ends.historicalPlan(userId,planId);
+    }
+    @Override
+    public java.util.List<PlanPublicationPort.LatestPlan> planHistory(UUID userId) { return ends.history(userId); }
+    @Override
+    public void invalidatePreparedConditions(UUID userId) {
+        requireCallerTransaction();
+        repository.invalidateOpen(userId);
+        repository.invalidateConfirmations(userId);
+    }
+
+    @Override
     public Optional<PlanPublicationPort.PlanCompletion> completePlan(UUID userId, UUID planId, boolean dataGap) {
         return completions.completePlan(userId,planId,dataGap);
     }
@@ -300,6 +317,7 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
         // A concurrent second insert for the same portfolio fails on the partial unique index and that
         // exception rolls the caller's whole publication back.
         repository.insertPlan(planId,userId,row);
+        repository.linkPlan(planId,row.intentId());
         if (repository.consumeIntent(userId,expected.intentId(),planId)!=1)
             throw new IllegalStateException("intent changed under its row lock");
         return Optional.of(planId);
@@ -359,7 +377,15 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
     }
 
     private Optional<FirstOfficialSnapshot> eligibleSnapshot(UUID userId) {
-        var first=portfolios.firstOfficialSnapshot(userId);
+        var latest=ends.latestPlan(userId).orElse(null);
+        var first=latest==null ? portfolios.firstOfficialSnapshot(userId)
+                : sync.currentNextBaseline(userId).filter(b -> latest.plan().planId().equals(b.predecessorPlanId())
+                        && latest.plan().portfolioId().equals(b.portfolioId())
+                        && (("ENDED_EARLY".equals(latest.status()) && latest.end()!=null && latest.end().endedAt().equals(b.terminalAt()))
+                            || ("COMPLETED".equals(latest.status()) && latest.completion()!=null
+                                && latest.completion().transitionedAt().equals(b.terminalAt()))))
+                    .flatMap(b -> portfolios.ownedSnapshot(userId,b.snapshotId())
+                            .filter(s -> s.sourceSnapshotId().equals(b.sourceSnapshotId())));
         var active=portfolios.activeSource(userId);
         var connection=sources.snapshotConnection(userId);
         if (first.isEmpty() || active.isEmpty() || connection.isEmpty()) return Optional.empty();
@@ -439,12 +465,12 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
         return normalized.signum()==0 ? "0" : normalized.toPlainString();
     }
 
-    private static String canonical(FirstOfficialSnapshot s, Instant end, Period period, String rate) {
+    private String canonical(UUID userId, FirstOfficialSnapshot s, Instant end, Period period, String rate) {
         return s.portfolioId()+"|"+s.snapshotId()+"|"+s.membershipId()+"|"+s.connectionId()+"|"
                 +s.providerAccountId()+"|"+s.sourceSnapshotId()+"|"+s.sourcePolicyVersion()+"|"
                 +s.portfolioPolicyVersion()+"|"+s.decimal()+"|"
                 +s.measuredAt().toEpochMilli()+"|"+end.toEpochMilli()+"|"+period.name()+"|"+rate+"|"
-                +CALENDAR_POLICY+"|"+CALCULATION_POLICY;
+                +CALENDAR_POLICY+"|"+CALCULATION_POLICY+"|"+sync.currentNextBaseline(userId).map(b -> b.predecessorPlanId()+"|"+b.jobId()).orElse("FIRST");
     }
     private static boolean validKey(@Nullable String key) {
         return key!=null && key.length()>=16 && key.length()<=128 && key.matches("[A-Za-z0-9._:-]+")

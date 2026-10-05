@@ -170,6 +170,23 @@ class PlanConditionRepository {
         jdbc.sql("DELETE FROM plan_condition_intent WHERE user_id=:u").param("u",userId).update();
     }
 
+    void invalidateConfirmations(UUID userId) {
+        jdbc.sql("UPDATE plan_condition_confirmation SET consumed_at=statement_timestamp() WHERE user_id=:u AND consumed_at IS NULL")
+            .param("u",userId).update();
+    }
+    void linkConfirmation(String hash, com.bokrilog.sync.SyncJobApi.NextBaseline baseline) {
+        jdbc.sql("UPDATE plan_condition_confirmation SET predecessor_plan_id=:p,baseline_job_id=:b WHERE confirmation_hash=:h")
+            .param("p",baseline.predecessorPlanId()).param("b",baseline.jobId()).param("h",hash).update();
+    }
+    void linkIntent(UUID intentId, String hash) {
+        jdbc.sql("UPDATE plan_condition_intent i SET predecessor_plan_id=c.predecessor_plan_id,baseline_job_id=c.baseline_job_id FROM plan_condition_confirmation c WHERE i.intent_id=:i AND c.confirmation_hash=:h AND i.user_id=c.user_id")
+            .param("i",intentId).param("h",hash).update();
+    }
+    void linkPlan(UUID planId, UUID intentId) {
+        jdbc.sql("UPDATE plan_definition d SET predecessor_plan_id=i.predecessor_plan_id,baseline_job_id=i.baseline_job_id FROM plan_condition_intent i WHERE d.plan_id=:p AND i.intent_id=:i AND d.user_id=i.user_id")
+            .param("p",planId).param("i",intentId).update();
+    }
+
     // ------------------------------------------------------------------ Story 2.7 active plan
 
     /** The user's active plan, if any. MVP has one portfolio per user and one active plan per portfolio. */

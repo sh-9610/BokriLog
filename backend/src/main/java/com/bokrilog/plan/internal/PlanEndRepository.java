@@ -117,6 +117,56 @@ class PlanEndRepository {
                 .optional();
     }
 
+    Optional<PlanPublicationPort.LatestPlan> historicalPlan(UUID userId, UUID planId) {
+        return this.jdbc.sql("SELECT d.plan_id,d.intent_id,d.portfolio_id,d.p0_decimal,d.t0,d.end_at,d.period,"
+                        + "d.target_rate,d.created_at,d.status,e.reason,e.ended_at,e.official_calculation_id,"
+                        + "e.official_pointer_version,e.official_portfolio_snapshot_id,e.last_measured_at,"
+                        + "e.cashflow_verified_through,e.completion,e.uncollected_from,e.uncollected_until,"
+                        + PlanCompletionRepository.COLUMNS + " "
+                        + "FROM plan_definition d LEFT JOIN plan_end e ON e.plan_id=d.plan_id AND e.user_id=d.user_id "
+                        + "LEFT JOIN plan_completion c ON c.plan_id=d.plan_id AND c.user_id=d.user_id "
+                        + "WHERE d.user_id=:u AND d.plan_id=:p AND d.status IN ('ENDED_EARLY','COMPLETED')")
+                .param("u", userId).param("p",planId)
+                .query((rs, n) -> {
+                    var plan = new PlanPublicationPort.ActivePlan(rs.getObject(1, UUID.class),
+                            rs.getObject(2, UUID.class), rs.getObject(3, UUID.class), rs.getString(4), instant(rs, 5),
+                            instant(rs, 6), rs.getString(7), rs.getString(8), instant(rs, 9));
+                    PlanPublicationPort.PlanEnd end = rs.getString(11) == null ? null
+                            : new PlanPublicationPort.PlanEnd(rs.getString(11), instant(rs, 12),
+                                    rs.getObject(13, UUID.class), rs.getLong(14), rs.getObject(15, UUID.class),
+                                    instant(rs, 16), instant(rs, 17), rs.getString(18), nullableInstant(rs, 19),
+                                    nullableInstant(rs, 20));
+                    return new PlanPublicationPort.LatestPlan(plan, rs.getString(10), end,
+                            PlanCompletionRepository.completion(rs, 20));
+                })
+                .optional();
+    }
+
+    java.util.List<PlanPublicationPort.LatestPlan> history(UUID userId) {
+        return this.jdbc.sql("SELECT d.plan_id,d.intent_id,d.portfolio_id,d.p0_decimal,d.t0,d.end_at,d.period,"
+                        + "d.target_rate,d.created_at,d.status,e.reason,e.ended_at,e.official_calculation_id,"
+                        + "e.official_pointer_version,e.official_portfolio_snapshot_id,e.last_measured_at,"
+                        + "e.cashflow_verified_through,e.completion,e.uncollected_from,e.uncollected_until,"
+                        + PlanCompletionRepository.COLUMNS + " "
+                        + "FROM plan_definition d LEFT JOIN plan_end e ON e.plan_id=d.plan_id AND e.user_id=d.user_id "
+                        + "LEFT JOIN plan_completion c ON c.plan_id=d.plan_id AND c.user_id=d.user_id "
+                        + "WHERE d.user_id=:u AND d.status IN ('ENDED_EARLY','COMPLETED') ORDER BY d.created_at DESC,d.plan_id DESC")
+                .param("u", userId)
+                .query((rs, n) -> {
+                    var plan = new PlanPublicationPort.ActivePlan(rs.getObject(1, UUID.class),
+                            rs.getObject(2, UUID.class), rs.getObject(3, UUID.class), rs.getString(4), instant(rs, 5),
+                            instant(rs, 6), rs.getString(7), rs.getString(8), instant(rs, 9));
+                    PlanPublicationPort.PlanEnd end = rs.getString(11) == null ? null
+                            : new PlanPublicationPort.PlanEnd(rs.getString(11), instant(rs, 12),
+                                    rs.getObject(13, UUID.class), rs.getLong(14), rs.getObject(15, UUID.class),
+                                    instant(rs, 16), instant(rs, 17), rs.getString(18), nullableInstant(rs, 19),
+                                    nullableInstant(rs, 20));
+                    return new PlanPublicationPort.LatestPlan(plan, rs.getString(10), end,
+                            PlanCompletionRepository.completion(rs, 20));
+                })
+                .list();
+    }
+
     private static OffsetDateTime utc(Instant instant) {
         return OffsetDateTime.ofInstant(instant, ZoneOffset.UTC);
     }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import type { SyncPhase } from './useDashboardSync'
 
@@ -891,6 +891,7 @@ function metricReason(result: PlanResult, name: MetricName): string | undefined 
 export function parsePlanCompletion(
   value: unknown,
   result: PlanResult,
+  historical = false,
 ): PlanCompletionRecord | null {
   const row = record(value)
   if (row === null) return null
@@ -944,7 +945,7 @@ export function parsePlanCompletion(
   if (!agreesWithComparison(parsed, result, completion)) return null
   // A sync runs the completion again while the comparison is checking, never once it is final. (Before an observation a
   // comparison that cannot be calculated — a data gap — is already final; the server says whether a sync still runs.)
-  if (parsed.comparison === 'PENDING' && !parsed.retryable) return null
+  if (!historical && parsed.comparison === 'PENDING' && !parsed.retryable) return null
   if (
     (parsed.comparison === 'CONFIRMED' || parsed.comparison === 'UNAVAILABLE') &&
     parsed.retryable
@@ -1105,9 +1106,10 @@ const COMPLETED_FRESHNESS = 'COMPLETED'
  * (`parsePlanCompletion`); its later value and its sync block never reject it (`parsePostEndValue`, a sync block
  * read like a ready one's).
  */
-export function parseDashboard(value: unknown): DashboardResponse | null {
+export function parseDashboard(value: unknown, historical = false): DashboardResponse | null {
   const row = record(value)
   if (row === null || typeof row.nextAction !== 'string') return null
+  if (historical && row.state !== 'ENDED' && row.state !== 'COMPLETED') return null
   if (row.state === 'NO_PLAN' || row.state === 'PREPARING') {
     return row.result === undefined && NEXT_ACTIONS[row.state].includes(row.nextAction)
       ? { state: row.state, nextAction: row.nextAction }
@@ -1128,8 +1130,13 @@ export function parseDashboard(value: unknown): DashboardResponse | null {
     if (!NEXT_ACTIONS.COMPLETED.includes(row.nextAction) || !isPlanResult(row.result)) return null
     if (row.result.planStatus !== PLAN_COMPLETED) return null
     if (row.result.trust.freshness.state !== COMPLETED_FRESHNESS) return null
-    const completion = parsePlanCompletion(row.completion, row.result)
+    const completion = parsePlanCompletion(row.completion, row.result, historical)
     if (completion === null) return null
+    if (
+      historical &&
+      (completion.retryable || !absent(row.sync) || !absent(row.postEnd) || !absent(row.planEnd))
+    )
+      return null
     // The screen-level next action is the sync for the observation exactly while a sync runs the completion again.
     if ((row.nextAction === 'SYNC_FOR_OBSERVATION') !== completion.retryable) return null
     const postEnd = parsePostEndValue(row.postEnd, completion)
@@ -1174,7 +1181,11 @@ export function supersedes(
   nextTerminal: PlanTerminal | null = null,
   shownTerminal: PlanTerminal | null = null,
 ): boolean {
-  if (shown?.planId !== next.planId) return true
+  if (shown === null) return true
+  if (shown.planId !== next.planId)
+    return (
+      new Date(next.conditions.startAt).getTime() > new Date(shown.conditions.startAt).getTime()
+    )
   if (shownTerminal !== null && nextTerminal !== shownTerminal) return false
   if (next.pointerVersion < shown.pointerVersion) return false
   return next.pointerVersion !== shown.pointerVersion || next.calculationId === shown.calculationId
@@ -1230,6 +1241,7 @@ export type DashboardView =
   | { readonly kind: 'denied'; readonly cause: 'refused' | 'signedOut' }
 
 export interface Dashboard {
+  readonly historical?: boolean
   readonly view: DashboardView
   /**
    * A read the user or the session asked for is in flight. The screen marks the result container and its
@@ -1274,7 +1286,8 @@ interface Request {
  * quiet one (`refresh`), which is judged the same way but says nothing while it is in flight. Every read
  * is aborted after `DASHBOARD_REQUEST_TIMEOUT_MS` and then counts as a failed read.
  */
-export function useDashboard(ready: boolean): Dashboard {
+export function useDashboard(ready: boolean, planId: string | null = null): Dashboard {
+  const [target, setTarget] = useState(planId)
   const [view, setView] = useState<DashboardView>({ kind: 'checking' })
   // One number per read the screen asks for: a reload, a quiet refresh, or the session becoming ready.
   const [request, setRequest] = useState<Request>({ serial: 0, quiet: false })
@@ -1284,6 +1297,17 @@ export function useDashboard(ready: boolean): Dashboard {
   // The kind of the read in flight, if any.
   const inFlight = useRef<'loud' | 'quiet' | null>(null)
   const accepted = useRef<Accepted | null>(null)
+
+  if (target !== planId) {
+    setTarget(planId)
+    setView({ kind: 'checking' })
+    setRequest((current) => ({ serial: current.serial + 1, quiet: false }))
+  }
+  // A selected record has its own response generation; current responses cannot overwrite it.
+  useLayoutEffect(() => {
+    sequence.current += 1
+    accepted.current = null
+  }, [planId])
 
   // Adjusting state to a changed prop during render (React's documented pattern, not an effect): the
   // bundle leaves the view the moment the session stops being ready, and a new read starts as loading.
@@ -1323,12 +1347,15 @@ export function useDashboard(ready: boolean): Dashboard {
       }, DASHBOARD_REQUEST_TIMEOUT_MS)
     })
     const answer = async (): Promise<{ readonly status: number; readonly payload: unknown }> => {
-      const response = await fetch(DASHBOARD_PATH, {
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: { Accept: 'application/json' },
-        signal: controller.signal,
-      })
+      const response = await fetch(
+        planId === null ? DASHBOARD_PATH : `${DASHBOARD_PATH}?planId=${encodeURIComponent(planId)}`,
+        {
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { Accept: 'application/json' },
+          signal: controller.signal,
+        },
+      )
       const payload: unknown = response.status === 200 ? await response.json() : null
       return { status: response.status, payload }
     }
@@ -1342,7 +1369,7 @@ export function useDashboard(ready: boolean): Dashboard {
           settle({ kind: 'denied', cause: status === 401 ? 'signedOut' : 'refused' })
           return
         }
-        const parsed = parseDashboard(payload)
+        const parsed = parseDashboard(payload, planId !== null)
         if (parsed === null) {
           settle(failed())
           return
@@ -1350,6 +1377,10 @@ export function useDashboard(ready: boolean): Dashboard {
         if (parsed.state !== 'READY' && parsed.state !== 'ENDED' && parsed.state !== 'COMPLETED') {
           accepted.current = null
           settle({ kind: parsed.state, nextAction: parsed.nextAction })
+          return
+        }
+        if (planId !== null && parsed.result.planId !== planId) {
+          settle(failed())
           return
         }
         const kept = accepted.current
@@ -1424,7 +1455,7 @@ export function useDashboard(ready: boolean): Dashboard {
       window.clearTimeout(deadline)
       controller.abort()
     }
-  }, [ready, request])
+  }, [ready, request, planId])
 
   const reload = useCallback((): void => {
     // A quiet read in flight gives way: the user asked, so the screen says it is reading.
@@ -1440,6 +1471,7 @@ export function useDashboard(ready: boolean): Dashboard {
   }, [])
 
   return {
+    historical: planId !== null,
     view,
     loading: ready && settled !== request.serial && !request.quiet,
     reload,

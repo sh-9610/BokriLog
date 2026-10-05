@@ -182,6 +182,23 @@ class PortfolioRepository {
                 rs.getString(11),rs.getString(11))).optional();
     }
 
+    Optional<com.bokrilog.portfolio.PortfolioMembershipApi.FirstOfficialSnapshot> ownedSnapshot(UUID userId, UUID snapshotId) {
+        return this.jdbc.sql("SELECT s.portfolio_id,s.portfolio_snapshot_id,s.amount_decimal,s.measured_at,"
+                + "s.composed_at,s.published_at,c.membership_id,c.connection_id,c.provider_account_id,"
+                + "c.source_snapshot_id,c.policy_version "
+                + "FROM portfolio p JOIN portfolio_snapshot s ON s.portfolio_id=p.portfolio_id "
+                + "JOIN portfolio_snapshot_component c ON c.portfolio_snapshot_id=s.portfolio_snapshot_id "
+                + "WHERE p.user_id=:userId AND s.user_id=:userId AND p.is_default "
+                + "AND s.base_currency='USD' AND s.portfolio_snapshot_id=:snapshotId")
+            .param("userId",userId).param("snapshotId",snapshotId)
+            .query((rs,n)->new com.bokrilog.portfolio.PortfolioMembershipApi.FirstOfficialSnapshot(
+                rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),rs.getString(3),
+                rs.getObject(4,OffsetDateTime.class).toInstant(),rs.getObject(5,OffsetDateTime.class).toInstant(),
+                rs.getObject(6,OffsetDateTime.class).toInstant(),rs.getObject(7,UUID.class),
+                rs.getObject(8,UUID.class),rs.getObject(9,UUID.class),rs.getObject(10,UUID.class),
+                rs.getString(11),rs.getString(11))).optional();
+    }
+
     Optional<com.bokrilog.portfolio.PortfolioMembershipApi.ActiveSource> activeSource(UUID userId) {
         return this.jdbc.sql("SELECT p.portfolio_id,m.membership_id,m.connection_id,m.provider_account_id "
                 + "FROM portfolio p JOIN portfolio_source_membership m ON m.portfolio_id=p.portfolio_id "

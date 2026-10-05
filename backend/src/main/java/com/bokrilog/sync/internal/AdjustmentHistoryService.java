@@ -125,7 +125,7 @@ class AdjustmentHistoryService {
      */
     private AdjustmentOutcome page(UUID user, AdjustmentQuery query, int after) {
         // The plan shown (Story 2.13): the active plan, or the most recent plan that ended early — the dashboard's own.
-        var shown = PlanPublicationService.shown(plans, user);
+        var shown = PlanPublicationService.shown(plans, user, query.planId());
         if (shown == null || !shown.plan().planId().equals(query.planId())) return new AdjustmentOutcome.NotFound();
         var plan = shown.plan();
         var pointer = publications.pointer(user, plan.planId()).orElse(null);

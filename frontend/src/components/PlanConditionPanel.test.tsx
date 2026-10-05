@@ -351,7 +351,7 @@ describe('PlanConditionPanel', () => {
         screen.getByRole('link', { name: planConditionContent.planEnded.dashboardLink }),
       ).toHaveAttribute('href', DASHBOARD_PATH)
       expect(screen.queryByLabelText('종료 시각 (T)')).not.toBeInTheDocument()
-      expect(screen.queryByRole('button')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '새 기준 준비 상태 확인' })).toBeInTheDocument()
       // It does not promise a new plan, nor judge the ended one.
       expect(planConditionContent.planEnded.text).not.toMatch(/성공|실패|완료|곧|예정입니다/)
     })

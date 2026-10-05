@@ -91,6 +91,18 @@ export function stubPlanConditionState(responder: RequestResponder): void {
  *
  * 다시 불러오기가 같은 요청을 다시 보내므로 응답 함수는 부를 때마다 새 `Response`를 돌려줘야 한다.
  */
+export function stubNextBaseline(responder: RequestResponder, method = 'GET'): void {
+  responders.set(requestKey(method, '/api/plans/next/baseline'), responder)
+}
+export function stubPlanHistory(responder: RequestResponder): void {
+  responders.set(requestKey('GET', '/api/dashboard/history'), responder)
+}
+export function stubHistoricalDashboard(planId: string, responder: RequestResponder): void {
+  responders.set(
+    requestKey('GET', `/api/dashboard?planId=${encodeURIComponent(planId)}`),
+    responder,
+  )
+}
 export function stubDashboard(responder: RequestResponder): void {
   responders.set(requestKey('GET', DASHBOARD_PATH), responder)
 }

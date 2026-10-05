@@ -43,6 +43,7 @@ import org.springframework.session.Session;
 import org.springframework.session.SessionRepository;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
@@ -131,6 +132,9 @@ abstract class AuthFlowTestBase {
     private JdbcClient jdbc;
 
     @Autowired
+    private PlatformTransactionManager storeResetTransactions;
+
+    @Autowired
     private AccountLifecycleApi accountLifecycle;
 
     @Autowired
@@ -191,10 +195,15 @@ abstract class AuthFlowTestBase {
      *
      * <p>이 시험들은 "행이 몇 개인가"를 단정한다. 앞선 시험이 남긴 계정·세션이 있으면 그 단정이
      * 무엇을 세는지 알 수 없게 되므로, 새 UUID로 충돌만 피하는 대신 실제로 비운다. 컨테이너는 JVM
-     * 하나에 하나뿐이고 시험은 순차 실행이라 이 초기화가 다른 시험과 겹치지 않는다.
+     * 하나에 하나뿐이다. 시험 메서드는 순차 실행이어도 scheduler·virtual worker는 살아 있으므로,
+     * 초기화는 전체 테이블 잠금을 NOWAIT로 확보한 트랜잭션에서만 한다.
      */
     @BeforeEach
     void resetStore() {
+        PostgresStoreReset.run(this.jdbc, this.storeResetTransactions, this::truncateStore);
+    }
+
+    private void truncateStore() {
         this.jdbc.sql("TRUNCATE TABLE spring_session, spring_session_attributes").update();
         // `action_grant`를 이름으로 적는다. `identity_account`를 참조하므로 CASCADE가 어차피
         // 비우지만, 이름이 없으면 그 정리가 외래키 설정에 딸린 부수 효과로만 성립한다.

@@ -1,10 +1,18 @@
-import { useEffect, useRef, useState, type ReactElement, type SyntheticEvent } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactElement,
+  type SyntheticEvent,
+} from 'react'
 
 import { DASHBOARD_PATH } from '../content/auth'
 import { planConditionContent as copy } from '../content/planConditions'
 import { activePlanContent } from '../content/planResult'
 import { formatAmount, isCanonicalNonNegative, percentFromRatio } from '../format/decimal'
 import { InitialInputsCollection } from './InitialInputsCollection'
+import { NextPlanBaselinePanel } from './NextPlanBaselinePanel'
 import styles from './PlanConditionPanel.module.css'
 
 interface Snapshot {
@@ -180,10 +188,13 @@ function canonicalLocalInput(value: string): string | null {
 export function PlanConditionPanel({
   csrfToken,
   ready,
+  announce,
 }: {
   readonly csrfToken: string | null
   readonly ready: boolean
+  readonly announce?: (message: string) => void
 }): ReactElement | null {
+  const [baselineMessage, setBaselineMessage] = useState('')
   const [state, setState] = useState<StateResponse | null>(null)
   const [preview, setPreview] = useState<Preview | null>(null)
   const [saved, setSaved] = useState<Intent | null>(null)
@@ -196,6 +207,13 @@ export function PlanConditionPanel({
   const [busy, setBusy] = useState(false)
   const [revision, setRevision] = useState(0)
   const [lostToActivePlan, setLostToActivePlan] = useState(false)
+  const preparedSnapshot = state?.snapshot?.snapshotId ?? null
+  const previousSnapshot = useRef(preparedSnapshot)
+  useLayoutEffect(() => {
+    if (preparedSnapshot !== null && preparedSnapshot !== previousSnapshot.current && revision > 0)
+      document.getElementById('plan-condition-heading')?.focus()
+    previousSnapshot.current = preparedSnapshot
+  }, [preparedSnapshot, revision])
   const retryKey = useRef<string | null>(null)
 
   // The read stays a passive effect: starting a request is not something the commit shows, and its answer comes
@@ -248,11 +266,21 @@ export function PlanConditionPanel({
   if (state?.reason === PLAN_ENDED) {
     return (
       <section aria-labelledby="plan-condition-heading" className={styles.panel}>
-        <h2 id="plan-condition-heading">{copy.heading}</h2>
-        <div className={styles.savedStatus} role="status">
+        <h2 id="plan-condition-heading" tabIndex={-1}>
+          {copy.heading}
+        </h2>
+        <div className={styles.savedStatus} role={announce === undefined ? 'status' : undefined}>
           <h3>{copy.planEnded.label}</h3>
           <p>{copy.planEnded.text}</p>
+          {baselineMessage === '' ? null : <p>{baselineMessage}</p>}
         </div>
+        <NextPlanBaselinePanel
+          csrfToken={csrfToken}
+          announce={announce ?? setBaselineMessage}
+          onPrepared={() => {
+            setRevision((value) => value + 1)
+          }}
+        />
         <p>
           <a className={styles.button} href={DASHBOARD_PATH}>
             {copy.planEnded.dashboardLink}
@@ -265,7 +293,9 @@ export function PlanConditionPanel({
     const plan = state.activePlan
     return (
       <section aria-labelledby="plan-condition-heading" className={styles.panel}>
-        <h2 id="plan-condition-heading">{copy.heading}</h2>
+        <h2 id="plan-condition-heading" tabIndex={-1}>
+          {copy.heading}
+        </h2>
         <div className={styles.savedStatus} role="status">
           <h3>{activePlanContent.heading}</h3>
           <p>{activePlanContent.help}</p>
@@ -304,7 +334,9 @@ export function PlanConditionPanel({
   if (state === null) {
     return (
       <section aria-labelledby="plan-condition-heading" className={styles.panel}>
-        <h2 id="plan-condition-heading">{copy.heading}</h2>
+        <h2 id="plan-condition-heading" tabIndex={-1}>
+          {copy.heading}
+        </h2>
         <p aria-live="polite" role={error === null ? 'status' : 'alert'}>
           {error ?? copy.intro}
         </p>
@@ -314,7 +346,9 @@ export function PlanConditionPanel({
   if (!state.eligible || state.snapshot === undefined || state.snapshot === null) {
     return (
       <section aria-labelledby="plan-condition-heading" className={styles.panel}>
-        <h2 id="plan-condition-heading">{copy.heading}</h2>
+        <h2 id="plan-condition-heading" tabIndex={-1}>
+          {copy.heading}
+        </h2>
         <p role="status">{copy.blocked}</p>
       </section>
     )
@@ -432,7 +466,9 @@ export function PlanConditionPanel({
   const snapshot = state.snapshot
   return (
     <section aria-labelledby="plan-condition-heading" className={styles.panel}>
-      <h2 id="plan-condition-heading">{copy.heading}</h2>
+      <h2 id="plan-condition-heading" tabIndex={-1}>
+        {copy.heading}
+      </h2>
       <p>{copy.intro}</p>
       <dl className={styles.facts}>
         <div>

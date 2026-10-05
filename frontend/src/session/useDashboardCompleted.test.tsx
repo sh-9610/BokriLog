@@ -506,9 +506,9 @@ describe('supersedes: the two ends of a plan (Story 2.14)', () => {
     expect(supersedes(pending, confirmed, 'COMPLETED', 'COMPLETED')).toBe(false)
   })
 
-  it('takes another plan whatever the ends', () => {
+  it('refuses another plan with the old baseline', () => {
     const other = planResultFixture({ planId: 'plan-2' }) as unknown as PlanResult
-    expect(supersedes(other, confirmed, null, 'COMPLETED')).toBe(true)
+    expect(supersedes(other, confirmed, null, 'COMPLETED')).toBe(false)
   })
 })
 

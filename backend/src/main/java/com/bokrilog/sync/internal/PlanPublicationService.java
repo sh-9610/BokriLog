@@ -145,6 +145,10 @@ class PlanPublicationService {
     }
 
     private PublicationAdmission admitInTransaction(UUID userId, UUID intentId, String key) {
+        if (plans.latestPlan(userId).isPresent()) {
+            plans.lockPlanWrites(userId);
+            if (!accounts.lockWriteAccess(userId)) return new PublicationAdmission.Refused("NOT_PERMITTED");
+        }
         if (!writable(userId)) return new PublicationAdmission.Refused("NOT_PERMITTED");
         var keyed = repository.byKey(userId, key).orElse(null);
         if (keyed != null) return keyed(keyed, intentId);
@@ -606,6 +610,26 @@ class PlanPublicationService {
         return new DashboardRead(bundle, consistency);
     }
 
+    DashboardRead historicalDashboard(@Nullable UUID user, UUID planId) {
+        if (user==null || !readable(user)) return new DashboardRead(new Dashboard.NotPermitted(),BundleConsistency.NOT_READ);
+        Dashboard bundle=Objects.requireNonNull(dashboardReads.execute(status -> {
+            var selected=plans.historicalPlan(user,planId).orElse(null);
+            if (selected==null) return new Dashboard.NotFound();
+            if (ENDED_EARLY.equals(selected.status())) return endedBundle(user,selected);
+            if (selected.completion()==null) return new Dashboard.Unavailable();
+            var value=completedBundle(user,selected.plan(),selected.completion());
+            if (value instanceof Dashboard.Completed c) return new Dashboard.Completed(c.result(),
+                    DashboardTrust.PREPARE_NEXT_PLAN,new com.bokrilog.sync.SyncJobApi.PlanCompletionRecord(
+                        c.completion().scheduledEndAt(),c.completion().comparison(),c.completion().reason(),
+                        c.completion().observedValue(),c.completion().observedMeasuredAt(),c.completion().observationDelayMillis(),
+                        c.completion().completionTarget(),c.completion().postEndCashflowCount(),false),null,null,c.change());
+            return value;
+        }));
+        var consistency=bundle instanceof Dashboard.Unavailable ? BundleConsistency.INCONSISTENT : BundleConsistency.CONSISTENT;
+        if (!readable(user)) return new DashboardRead(new Dashboard.NotPermitted(),consistency);
+        return new DashboardRead(bundle,consistency);
+    }
+
     /**
      * The bundle, inside the one consistent read. The plan shown is one choice (Story 2.13): the active plan; without
      * one, a publication in progress is "being prepared"; otherwise the most recent plan, when it ended early, is its
@@ -903,6 +927,15 @@ class PlanPublicationService {
         return null;
     }
 
+    static @Nullable Shown shown(PlanPublicationPort plans, UUID user, UUID planId) {
+        var current=shown(plans,user);
+        if (current!=null && current.plan().planId().equals(planId)) return current;
+        var selected=plans.historicalPlan(user,planId).orElse(null);
+        if (selected==null) return null;
+        if (ENDED_EARLY.equals(selected.status())) return new Shown(selected.plan(),selected.end(),null,selected.end()==null);
+        return new Shown(selected.plan(),null,selected.completion(),selected.completion()==null);
+    }
+
     // ---------------------------------------------------------------- the plan end's basis (Story 2.13)
 
     /**
@@ -997,7 +1030,7 @@ class PlanPublicationService {
      */
     private EvidenceOutcome lineage(UUID user, EvidenceReference reference) {
         // The plan shown (Story 2.13): the active plan, or the most recent plan that ended early.
-        var shown = shown(plans, user);
+        var shown = shown(plans, user, reference.planId());
         if (shown == null || !shown.plan().planId().equals(reference.planId())) return new EvidenceOutcome.NotFound();
         var plan = shown.plan();
         var pointer = repository.pointer(user, plan.planId()).orElse(null);

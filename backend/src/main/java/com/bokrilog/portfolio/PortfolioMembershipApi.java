@@ -86,6 +86,9 @@ public interface PortfolioMembershipApi {
     /** First published USD snapshot, independent of the current official pointer. */
     Optional<FirstOfficialSnapshot> firstOfficialSnapshot(@Nullable UUID userId);
 
+    /** 특정 소유 snapshot의 불변 구성 provenance. 현재 포인터와 독립이다. */
+    Optional<FirstOfficialSnapshot> ownedSnapshot(UUID userId, UUID snapshotId);
+
     /** The user's currently active source membership, if any. */
     Optional<ActiveSource> activeSource(@Nullable UUID userId);
 

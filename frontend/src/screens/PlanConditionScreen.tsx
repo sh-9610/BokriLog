@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import { useState, type ReactElement } from 'react'
 
 import { PlanConditionPanel } from '../components/PlanConditionPanel'
 import { ReauthPanel } from '../components/ReauthPanel'
@@ -15,6 +15,7 @@ const MAIN_ID = 'plan-condition-main'
 
 /** 로그인 세션 안에서 첫 공식 스냅샷을 기준으로 계획 조건을 검토하는 화면. */
 export function PlanConditionScreen(): ReactElement {
+  const [preparationMessage, setPreparationMessage] = useState('')
   const { csrfToken, gate } = useSessionGate('settings')
   const signOut = useSignOut(csrfToken)
   const reauthentication = useReauthentication(csrfToken)
@@ -53,7 +54,9 @@ export function PlanConditionScreen(): ReactElement {
           className={styles.notice}
           role="status"
         >
-          {ready && !signOut.pending ? null : (
+          {ready && !signOut.pending ? (
+            <p>{preparationMessage}</p>
+          ) : (
             <p className={styles.noticeText}>
               {liveRegionMessage(gate, signOut.pending, reauthentication.pending)}
             </p>
@@ -68,7 +71,13 @@ export function PlanConditionScreen(): ReactElement {
             signingOut={signOut.pending}
           />
         ) : null}
-        {ready ? <PlanConditionPanel csrfToken={csrfToken} ready={ready} /> : null}
+        {ready ? (
+          <PlanConditionPanel
+            csrfToken={csrfToken}
+            ready={ready}
+            announce={setPreparationMessage}
+          />
+        ) : null}
       </main>
     </div>
   )
