@@ -213,7 +213,7 @@ flowchart LR
 | Spring Session JDBC | Spring Boot BOM | Boot 4.1.1 managed version |
 | PostgreSQL | 18.x | 18.6 image digest |
 | big-math | 2.3.x | 2.3.2 |
-| React | 19.2.x | 19.2.7 lockfile |
+| React | 19.2.x | 19.2.8 lockfile |
 | Vite | 8.2.x | 8.2.2 lockfile |
 | Nginx Open Source | 1.30.x stable | 1.30.4 image digest |
 | Grafana Alloy | 1.18.x | 1.18.0 image digest |
