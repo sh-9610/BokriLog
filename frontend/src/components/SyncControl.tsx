@@ -292,6 +292,11 @@ function SummaryBlock({
   )
 }
 
+/** Whether the server says no sync can run because the user revoked the connection (Story 2.16). */
+function revoked(status: SyncStatus): boolean {
+  return status.availability === 'UNAVAILABLE' && status.reason === 'CONNECTION_REVOKED'
+}
+
 /**
  * The sync control (Story 2.11), right after the freshness axis it acts on.
  *
@@ -395,6 +400,68 @@ export function SyncControl({
     onFocus: (event: FocusEvent<HTMLDivElement>) => {
       lastFocused.current = event.target
     },
+  }
+
+  /*
+   * A revoked connection (Story 2.16): no sync control at all — neither the button nor the long-gap choices — only the
+   * reason, as text. Nothing can run on that plan any more; a disabled button would promise an action that never comes.
+   */
+  if (revoked(status) && !sync.running) {
+    /*
+     * The one control that stays: after a long gap the plan can only end through the long-gap choice's `새 계획
+     * 시작` (Story 2.13 refuses an early end then, so the gap is recorded), and the end area points here. A revoked
+     * plan must still be endable, so the button stays — ending reads nothing from Bybit.
+     */
+    const choice = newPlan?.status.availability === 'NEW_PLAN_CHOICE' ? newPlan : undefined
+    const preparing = choice?.flow.preparing ?? false
+    const dialogOpen = (choice?.flow.dialog ?? null) !== null
+    const leaving = choice?.leaving ?? false
+    const canStartNewPlan = choice !== undefined && !choice.flow.busy && !leaving
+    const described = [
+      preparing ? NEW_PLAN_PREPARING_ID : null,
+      dialogOpen ? NEW_PLAN_DIALOG_ID : null,
+      leaving ? NEW_PLAN_LEAVING_ID : null,
+    ].filter((id) => id !== null)
+    return (
+      <div className={styles.sync} id={SYNC_CONTROL_ID} {...tracking}>
+        <div ref={noticeRef} tabIndex={-1}>
+          <p className={styles.state}>{copy.reasons.CONNECTION_REVOKED}</p>
+        </div>
+        {choice === undefined ? null : (
+          <>
+            <p>{copy.longGap.newPlanText}</p>
+            <button
+              aria-describedby={described.length === 0 ? undefined : described.join(' ')}
+              aria-disabled={!canStartNewPlan}
+              className={styles.secondary}
+              id={planEndContent.newPlanActionId}
+              onClick={() => {
+                if (canStartNewPlan) choice.flow.request('LONG_GAP_NEW_PLAN')
+              }}
+              ref={newPlanRef}
+              type="button"
+            >
+              {copy.longGap.newPlanAction}
+            </button>
+            {preparing ? (
+              <p className={styles.help} id={NEW_PLAN_PREPARING_ID}>
+                {planEndContent.area.preparing}
+              </p>
+            ) : null}
+            {dialogOpen ? (
+              <p className={styles.help} id={NEW_PLAN_DIALOG_ID}>
+                {planEndContent.area.dialogOpen}
+              </p>
+            ) : null}
+            {leaving ? (
+              <p className={styles.help} id={NEW_PLAN_LEAVING_ID}>
+                {planEndContent.area.leaving}
+              </p>
+            ) : null}
+          </>
+        )}
+      </div>
+    )
   }
 
   const catchingUp = sync.running && sync.purpose === 'CATCH_UP'

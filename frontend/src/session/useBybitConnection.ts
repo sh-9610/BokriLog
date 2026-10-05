@@ -3,9 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { noticePath } from '../content/auth'
 import {
   cancelConnection,
+  cancelRevocation,
+  confirmRevocation,
   connectBybit,
   fetchConnectionStatus,
   prepareConnection,
+  prepareRevocation,
 } from './bybitConnection'
 import { replaceLocation } from './navigation'
 
@@ -20,6 +23,25 @@ export type ConnectionNotice =
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'rejected'; readonly code: string | null }
   | { readonly kind: 'succeeded' }
+  /** 연결을 해제했다(Story 2.16). */
+  | { readonly kind: 'revoked' }
+  | { readonly kind: 'revokeCancelled' }
+  | { readonly kind: 'revokeRejected'; readonly code: string | null }
+  /** 응답을 받지 못한 확정 뒤에 취소했다. 결과를 단정하지 않고 상태를 다시 읽는다. */
+  | { readonly kind: 'revokeUnknown' }
+
+/**
+ * 열려 있는 해제 확인 대화상자.
+ *
+ * @param confirming 확정 요청이 도는 중인가
+ * @param uncertain 앞선 확정이 응답을 받지 못했는가. 다시 누르면 같은 키로 같은 요청이 나간다
+ */
+export interface RevocationDialogView {
+  readonly connectionId: string
+  readonly confirmation: string
+  readonly confirming: boolean
+  readonly uncertain: boolean
+}
 
 /** 세션이 끝났음을 알리는 공통 오류 계약의 code. 이 값만 이동으로 답한다. */
 const UNAUTHENTICATED = 'UNAUTHENTICATED'
@@ -33,6 +55,10 @@ export type ConnectionView =
       readonly connected: boolean
       readonly verifiedAt: string | null
       readonly policyVersion: string | null
+      /** 불투명 연결 참조. 해제 요청의 대상이며 화면에 그리지 않는다. */
+      readonly connectionId: string | null
+      readonly revoked: boolean
+      readonly revokedAt: string | null
     }
 
 /** 제출의 결과. `ignored`는 가드가 막아 요청이 나가지 않은 경우다. */
@@ -60,6 +86,14 @@ export interface BybitConnectionAccess {
   readonly submit: (apiKey: string, apiSecret: string) => Promise<SubmitOutcome>
   /** 폼을 닫고 준비가 만든 무장과 허가를 되돌린다. */
   readonly cancel: () => void
+  /** 열려 있는 해제 확인 대화상자. 닫혀 있으면 `null`이다(Story 2.16). */
+  readonly revocation: RevocationDialogView | null
+  /** 해제를 준비한다. 성공하면 대화상자가 열린다. */
+  readonly startRevocation: () => void
+  /** 해제를 확정한다. */
+  readonly confirmRevocation: () => void
+  /** 대화상자를 닫고 준비가 만든 무장과 허가를 되돌린다. */
+  readonly cancelRevocation: () => void
 }
 
 /**
@@ -115,6 +149,9 @@ export function useBybitConnection(
               connected: result.connected,
               verifiedAt: result.verifiedAt,
               policyVersion: result.policyVersion,
+              connectionId: result.connectionId,
+              revoked: result.revoked,
+              revokedAt: result.revokedAt,
             }
           : { status: 'unavailable' },
       )
@@ -183,6 +220,10 @@ export function useBybitConnection(
             connected: true,
             verifiedAt: result.verifiedAt,
             policyVersion: result.policyVersion,
+            // 해제 요청의 대상인 불투명 참조. 연결 응답이 싣는다(Story 2.16).
+            connectionId: result.connectionId,
+            revoked: false,
+            revokedAt: null,
           })
           setNotice({ kind: 'succeeded' })
           return 'connected'
@@ -228,5 +269,138 @@ export function useBybitConnection(
     void cancelConnection(csrfToken)
   }, [confirmation, csrfToken])
 
-  return { pending, view, confirmation, notice, refresh, start, submit, cancel }
+  // ---------------------------------------------------------------- Story 2.16: 연결 해제
+
+  const [revocation, setRevocation] = useState<RevocationDialogView | null>(null)
+  /** 이 대화상자의 멱등 키. 열 때 한 번 만들고, 응답을 받지 못한 확정의 재시도가 같은 값을 쓴다. */
+  const revocationKey = useRef<string | null>(null)
+  const connectionId = view.status === 'loaded' && view.connected ? view.connectionId : null
+
+  const startRevocation = useCallback((): void => {
+    if (inFlight.current || connectionId === null) {
+      return
+    }
+    inFlight.current = true
+    setPending(true)
+    setNotice(null)
+    void prepareRevocation(csrfToken, connectionId).then(
+      (result) => {
+        inFlight.current = false
+        setPending(false)
+        if (result.outcome === 'armed') {
+          revocationKey.current = crypto.randomUUID()
+          setRevocation({
+            connectionId: result.connectionId,
+            confirmation: result.confirmation,
+            confirming: false,
+            uncertain: false,
+          })
+          return
+        }
+        if (result.code === UNAUTHENTICATED) {
+          replaceLocation(noticePath('expired'))
+          return
+        }
+        setNotice({ kind: 'revokeRejected', code: result.code })
+        if (result.code === 'CONNECTION_NOT_FOUND') {
+          // 화면이 본 연결이 이미 바뀌었다. 지금 상태를 다시 읽는다.
+          setAttempt((value) => value + 1)
+        }
+      },
+      () => {
+        inFlight.current = false
+        setPending(false)
+        setNotice({ kind: 'revokeRejected', code: null })
+      },
+    )
+  }, [connectionId, csrfToken])
+
+  const confirmRevocationNow = useCallback((): void => {
+    const open = revocation
+    const key = revocationKey.current
+    if (inFlight.current || open === null || key === null) {
+      return
+    }
+    inFlight.current = true
+    setPending(true)
+    setRevocation({ ...open, confirming: true })
+    void confirmRevocation(csrfToken, open.connectionId, open.confirmation, key).then(
+      (result) => {
+        inFlight.current = false
+        setPending(false)
+        if (result.outcome === 'revoked') {
+          revocationKey.current = null
+          setRevocation(null)
+          setView((current) =>
+            current.status === 'loaded'
+              ? {
+                  ...current,
+                  connected: false,
+                  revoked: true,
+                  revokedAt: result.revokedAt,
+                  connectionId: open.connectionId,
+                }
+              : current,
+          )
+          setNotice({ kind: 'revoked' })
+          return
+        }
+        if (result.outcome === 'unanswered') {
+          // 대화상자를 유지한다. 다시 누르면 같은 키로 나가고, 이미 커밋됐다면 서버가 같은 결과를 재생한다.
+          setRevocation({ ...open, confirming: false, uncertain: true })
+          return
+        }
+        revocationKey.current = null
+        setRevocation(null)
+        if (result.code === UNAUTHENTICATED) {
+          replaceLocation(noticePath('expired'))
+          return
+        }
+        /*
+         * 거절로 대화상자를 닫는다. 서버에 남은 무장과 허가를 버린다 — 결과를 기다리지 않고 실패는 무시한다(남은 무장은
+         * 스스로 만료된다).
+         */
+        void cancelRevocation(csrfToken)
+        setNotice({ kind: 'revokeRejected', code: result.code })
+        setAttempt((value) => value + 1)
+      },
+      () => {
+        inFlight.current = false
+        setPending(false)
+        setRevocation({ ...open, confirming: false, uncertain: true })
+      },
+    )
+  }, [csrfToken, revocation])
+
+  const cancelRevocationNow = useCallback((): void => {
+    if (inFlight.current || revocation === null) {
+      return
+    }
+    const uncertain = revocation.uncertain
+    revocationKey.current = null
+    setRevocation(null)
+    if (uncertain) {
+      // 앞선 확정이 커밋됐을 수 있다. 결과를 단정하지 않고 지금 상태를 다시 읽는다.
+      setNotice({ kind: 'revokeUnknown' })
+      setAttempt((value) => value + 1)
+    } else {
+      setNotice({ kind: 'revokeCancelled' })
+    }
+    void cancelRevocation(csrfToken)
+  }, [csrfToken, revocation])
+
+  return {
+    pending,
+    view,
+    confirmation,
+    notice,
+    refresh,
+    start,
+    submit,
+    cancel,
+    revocation,
+    startRevocation,
+    confirmRevocation: confirmRevocationNow,
+    cancelRevocation: cancelRevocationNow,
+  }
 }

@@ -243,8 +243,7 @@ class SuccessorPlanTest extends PlanSyncTestBase {
             Object lease=reserved(user);
             if ("deletion".equals(cause)) accountDeletion().beginDeletion(user);
             if ("restriction".equals(cause)) restrictCommand("plan-condition-create");
-            if ("connection".equals(cause)) jdbc().sql("UPDATE source_connection SET status='REVOKED' WHERE user_id=:u")
-                    .param("u",user).update();
+            if ("connection".equals(cause)) revokeConnectionOf(user);
             try {
                 Instant now=Instant.now();
                 assertThat(publishObservation(lease,"1250",now,now)).as(cause).isFalse();

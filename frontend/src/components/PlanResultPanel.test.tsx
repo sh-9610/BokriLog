@@ -251,6 +251,8 @@ describe('PlanResultPanel', () => {
     ['freshness', 'STALE', 'LAST_SYNC_NEEDS_REVIEW', copy.axes.freshness.causes],
     ['freshness', 'STALE', 'LONG_GAP', copy.axes.freshness.causes],
     ['freshness', 'STALE', 'SYNC_UNAVAILABLE', copy.axes.freshness.causes],
+    // Story 2.16: the user revoked the Bybit connection; no new data reaches the plan.
+    ['freshness', 'STALE', 'CONNECTION_REVOKED', copy.axes.freshness.causes],
     ['reliability', 'REVIEW_REQUIRED', 'TARGET_NOT_POSITIVE', copy.axes.reliability.causes],
     ['reliability', 'REVIEW_REQUIRED', 'SYNC_REVIEW_REQUIRED', copy.axes.reliability.causes],
   ] as const)('maps the %s cause %s/%s to its copy', (which, state, cause, causes) => {

@@ -9,6 +9,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import java.io.IOException;
+import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
 import java.util.Optional;
@@ -121,11 +122,18 @@ class BybitConnectionController {
 
     private final UnlinkService unlinkService;
 
+    /** Bybit 연결 해제(Story 2.16). 다섯 번째 무장이며 같은 설정 화면에서 시작된다. */
+    private final BybitRevocationCommandService revocations;
+
     BybitConnectionController(
-            BybitConnectionService connections, LinkService linkService, UnlinkService unlinkService) {
+            BybitConnectionService connections,
+            LinkService linkService,
+            UnlinkService unlinkService,
+            BybitRevocationCommandService revocations) {
         this.connections = connections;
         this.linkService = linkService;
         this.unlinkService = unlinkService;
+        this.revocations = revocations;
     }
 
     /**
@@ -140,7 +148,18 @@ class BybitConnectionController {
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record ConnectionState(
-            boolean connected, @Nullable String verifiedAt, @Nullable String policyVersion) {}
+            boolean connected,
+            @Nullable String verifiedAt,
+            @Nullable String policyVersion,
+            @Nullable UUID connectionId,
+            @Nullable Boolean revoked,
+            @Nullable String revokedAt) {
+
+        /** 연결한 적이 없다. Story 2.1이 고정한 최소 본문 {@code {"connected":false}} 그대로다. */
+        static ConnectionState none() {
+            return new ConnectionState(false, null, null, null, null, null);
+        }
+    }
 
     /**
      * 준비의 응답.
@@ -182,17 +201,25 @@ class BybitConnectionController {
             response.sendError(HttpStatus.FORBIDDEN.value());
             return null;
         }
-        Optional<SourceConnectionApi.ActiveConnection> active = this.connections.activeConnection(userId);
+        Optional<SourceConnectionApi.ConnectionStatus> current = this.connections.currentConnection(userId);
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
-                .body(
-                        active.map(
-                                        connection ->
-                                                new ConnectionState(
-                                                        true,
-                                                        TIMESTAMP.format(connection.verifiedAt()),
-                                                        connection.policyVersion()))
-                                .orElseGet(() -> new ConnectionState(false, null, null)));
+                .body(current.map(BybitConnectionController::stateOf).orElseGet(ConnectionState::none));
+    }
+
+    /**
+     * 연결 하나의 상태. 활성 연결은 연결 사실·검증 시각·정책 버전과 불투명 {@code connectionId}를, 해제된 연결은
+     * 해제 사실과 해제 시각을 함께 담는다(Story 2.16). 자격정보도 제공자 계정 식별자도 없다.
+     */
+    private static ConnectionState stateOf(SourceConnectionApi.ConnectionStatus status) {
+        Instant revokedAt = status.revokedAt();
+        return new ConnectionState(
+                !status.revoked(),
+                TIMESTAMP.format(status.verifiedAt()),
+                status.policyVersion(),
+                status.connectionId(),
+                status.revoked(),
+                revokedAt == null ? null : TIMESTAMP.format(revokedAt));
     }
 
     /**
@@ -232,6 +259,7 @@ class BybitConnectionController {
          */
         this.linkService.abandon(session);
         this.unlinkService.abandon(session);
+        this.revocations.abandon(session);
         return ResponseEntity.ok()
                 // 확인 문구는 이 요청에만 유효하다. 캐시가 되살리면 다음 요청이 남의 문구를 본다.
                 .cacheControl(CacheControl.noStore())
@@ -281,7 +309,12 @@ class BybitConnectionController {
                         new ConnectionState(
                                 true,
                                 TIMESTAMP.format(connected.verifiedAt()),
-                                connected.policyVersion()));
+                                connected.policyVersion(),
+                                // The opaque reference a revocation names (Story 2.16). A replay that did not store
+                                // again does not know it; the state read answers it then.
+                                connected.connectionId(),
+                                connected.connectionId() == null ? null : Boolean.FALSE,
+                                null));
     }
 
     /**
@@ -308,6 +341,218 @@ class BybitConnectionController {
             this.connections.abandon(session);
         }
         response.setStatus(HttpStatus.NO_CONTENT.value());
+    }
+
+    // ------------------------------------------------------------------ Story 2.16: 연결 해제
+
+    /** 해제 준비 경로. 기존 {@code /api/connections/} 술어가 인증·CSRF·{@code Origin}을 그대로 건다. */
+    static final String REVOCATION_PATH = AuthSecurityConfig.BYBIT_CONNECTION_PATH + "/revocation";
+
+    static final String REVOCATION_CONFIRM_PATH = REVOCATION_PATH + "/confirm";
+
+    static final String REVOCATION_CANCEL_PATH = REVOCATION_PATH + "/" + AuthSecurityConfig.CANCEL_SEGMENT;
+
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(BybitConnectionController.class);
+
+    /** 해제 표면의 거절 code → 상태와 안전한 문장. 닫힌 맵이며 기계 값은 code 하나다. */
+    private static final Map<String, RevocationRefusal> REVOCATION_REFUSALS = Map.ofEntries(
+            Map.entry(BybitRevocationCommandService.NOT_PERMITTED, new RevocationRefusal(HttpStatus.FORBIDDEN,
+                    ApiErrorHandler.CODE_FORBIDDEN, ApiErrorHandler.MESSAGE_FORBIDDEN)),
+            Map.entry(BybitRevocationCommandService.REAUTHENTICATION_REQUIRED, new RevocationRefusal(
+                    HttpStatus.FORBIDDEN, BybitRevocationCommandService.REAUTHENTICATION_REQUIRED,
+                    "연결을 해제하려면 먼저 본인 확인이 필요합니다.")),
+            Map.entry(BybitRevocationCommandService.REVOCATION_NOT_CONFIRMED, new RevocationRefusal(
+                    HttpStatus.FORBIDDEN, BybitRevocationCommandService.REVOCATION_NOT_CONFIRMED,
+                    "확인된 해제 요청이 아니어서 연결을 해제하지 않았습니다. 설정 화면을 다시 불러와 주세요.")),
+            Map.entry(BybitRevocationCommandService.CONNECTION_NOT_FOUND, new RevocationRefusal(HttpStatus.NOT_FOUND,
+                    BybitRevocationCommandService.CONNECTION_NOT_FOUND,
+                    "해제할 활성 연결을 찾지 못했습니다. 설정 화면을 다시 불러와 주세요.")),
+            Map.entry(BybitRevocationCommandService.IDEMPOTENCY_CONFLICT, new RevocationRefusal(HttpStatus.CONFLICT,
+                    BybitRevocationCommandService.IDEMPOTENCY_CONFLICT,
+                    "같은 요청 키가 다른 해제 요청에 이미 쓰였습니다. 새로 요청해 주세요.")));
+
+    static final String MESSAGE_REVOCATION_KEY_REQUIRED =
+            "요청 키가 없거나 형식이 맞지 않아 해제 요청을 받지 않았습니다. 화면을 새로 열어 다시 시도해 주세요.";
+
+    /** 본문은 수십 바이트다. 훨씬 긴 것은 이 요청이 아니다. */
+    private static final int MAX_REVOCATION_BODY_CHARS = 512;
+
+    /** 확인 문구는 약 60자다. */
+    private static final int MAX_REVOCATION_CONFIRMATION_CHARS = 256;
+
+    private static final java.util.regex.Pattern UUID_TEXT = java.util.regex.Pattern.compile(
+            "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
+
+    private static final tools.jackson.databind.json.JsonMapper JSON =
+            tools.jackson.databind.json.JsonMapper.builder().build();
+
+    private record RevocationRefusal(HttpStatus status, String code, String message) {}
+
+    /** 준비의 응답. 허가 참조는 없다. */
+    record RevocationChallenge(UUID connectionId, String confirmation) {}
+
+    /** 확정의 응답. */
+    record RevocationResult(String outcome, UUID connectionId, String revokedAt) {}
+
+    /** 해제 본문: 대상과, 확정이면 확인 문구. */
+    record RevocationBody(UUID connectionId, @Nullable String confirmation) {}
+
+    @PostMapping(path = REVOCATION_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
+    ResponseEntity<?> prepareRevocation(
+            @RequestBody(required = false) @Nullable String body, HttpServletRequest request) {
+        long started = System.nanoTime();
+        RevocationBody parsed = revocationBodyOf(body, false);
+        if (parsed == null) return revocationAnswer("prepare", revocationBadRequest(request), "BAD_REQUEST", started);
+        UUID userId = currentUserId();
+        HttpSession session = request.getSession(false);
+        if (userId == null || session == null)
+            return revocationAnswer("prepare", revocationRefused(BybitRevocationCommandService.NOT_PERMITTED, request),
+                    BybitRevocationCommandService.NOT_PERMITTED, started);
+        BybitRevocationCommandService.Preparation preparation;
+        try {
+            preparation = this.revocations.prepare(session, userId, parsed.connectionId());
+        } catch (RuntimeException failure) {
+            return revocationAnswer("prepare", revocationInternal(failure, request), "ERROR", started);
+        }
+        if (preparation instanceof BybitRevocationCommandService.Preparation.Refused refused)
+            return revocationAnswer("prepare", revocationRefused(refused.code(), request), refused.code(), started);
+        BybitRevocationFlow.Armed armed = ((BybitRevocationCommandService.Preparation.Armed) preparation).flow();
+        /*
+         * 상대 흐름은 무장이 확정된 뒤에만 버린다(Story 1.11의 규칙). 앞에 두면 거절되는 준비 하나가 진행 중이던
+         * 연결·로그인 수단 연결/해제 대화상자의 무장과 허가를 함께 없앤다. 재인증 무장은 준비가 이미 버렸다.
+         */
+        this.connections.abandon(session);
+        this.linkService.abandon(session);
+        this.unlinkService.abandon(session);
+        return revocationAnswer("prepare", ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(new RevocationChallenge(armed.connectionId(), armed.confirmation())), "PREPARED", started);
+    }
+
+    @PostMapping(path = REVOCATION_CONFIRM_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
+    ResponseEntity<?> confirmRevocation(
+            @RequestBody(required = false) @Nullable String body,
+            @org.springframework.web.bind.annotation.RequestHeader(name = "Idempotency-Key", required = false)
+                    @Nullable String key,
+            HttpServletRequest request) {
+        long started = System.nanoTime();
+        RevocationBody parsed = revocationBodyOf(body, true);
+        if (parsed == null || parsed.confirmation() == null)
+            return revocationAnswer("confirm", revocationBadRequest(request), "BAD_REQUEST", started);
+        if (key == null || !PlanEndController.validKey(key))
+            return revocationAnswer("confirm", revocationError(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "IDEMPOTENCY_KEY_REQUIRED", MESSAGE_REVOCATION_KEY_REQUIRED, request), "IDEMPOTENCY_KEY_REQUIRED",
+                    started);
+        UUID userId = currentUserId();
+        HttpSession session = request.getSession(false);
+        if (userId == null || session == null)
+            return revocationAnswer("confirm", revocationRefused(BybitRevocationCommandService.NOT_PERMITTED, request),
+                    BybitRevocationCommandService.NOT_PERMITTED, started);
+        BybitRevocationCommandService.Outcome outcome;
+        try {
+            outcome = this.revocations.confirm(request, session, userId, parsed.connectionId(),
+                    parsed.confirmation(), key);
+        } catch (RuntimeException failure) {
+            return revocationAnswer("confirm", revocationInternal(failure, request), "ERROR", started);
+        }
+        return switch (outcome) {
+            case BybitRevocationCommandService.Outcome.Refused refused ->
+                    revocationAnswer("confirm", revocationRefused(refused.code(), request), refused.code(), started);
+            case BybitRevocationCommandService.Outcome.Done done -> revocationAnswer("confirm", ResponseEntity.ok()
+                    .cacheControl(CacheControl.noStore())
+                    .body(new RevocationResult(BybitRevocationCommandService.OUTCOME_REVOKED,
+                            done.revoked().connectionId(), TIMESTAMP.format(done.revoked().revokedAt()))),
+                    BybitRevocationCommandService.OUTCOME_REVOKED, started);
+        };
+    }
+
+    /** 무장과 그 허가를 버린다. 인증된 요청에는 언제나 204다(준비를 묻는 오라클이 되지 않게). */
+    @PostMapping(REVOCATION_CANCEL_PATH)
+    void cancelRevocation(HttpServletRequest request, HttpServletResponse response) {
+        long started = System.nanoTime();
+        HttpSession session = request.getSession(false);
+        String result = "CANCELLED";
+        if (session != null) {
+            try {
+                this.revocations.abandon(session);
+            } catch (RuntimeException failure) {
+                // The arming is gone from the session either way; a grant left behind expires in five minutes.
+                if (LOG.isDebugEnabled())
+                    LOG.debug("bybit revocation cancel failed: failure={}", failure.getClass().getName());
+                result = "ERROR";
+            }
+        }
+        response.setStatus(HttpStatus.NO_CONTENT.value());
+        response.setHeader(org.springframework.http.HttpHeaders.CACHE_CONTROL, CacheControl.noStore().getHeaderValue());
+        revocationLog("cancel", result, HttpStatus.NO_CONTENT.value(), started);
+    }
+
+    /**
+     * 해제 본문, 또는 본문이 없거나 JSON 객체가 아니거나 {@code connectionId}가 정본 UUID 문자열이 아니거나 — 확정이면 —
+     * {@code confirmation}이 적당한 길이의 문자열이 아니면 {@code null}. 다른 필드는 무시한다.
+     */
+    static @Nullable RevocationBody revocationBodyOf(@Nullable String body, boolean confirming) {
+        if (body == null || body.length() > MAX_REVOCATION_BODY_CHARS) return null;
+        tools.jackson.databind.JsonNode node;
+        try {
+            node = JSON.readTree(body);
+        } catch (tools.jackson.core.JacksonException malformed) {
+            return null;
+        }
+        if (node == null || !node.isObject()) return null;
+        tools.jackson.databind.JsonNode connection = node.get("connectionId");
+        if (connection == null || !connection.isString() || !UUID_TEXT.matcher(connection.asString()).matches())
+            return null;
+        String confirmation = null;
+        if (confirming) {
+            tools.jackson.databind.JsonNode phrase = node.get("confirmation");
+            if (phrase == null || !phrase.isString() || phrase.asString().isBlank()
+                    || phrase.asString().length() > MAX_REVOCATION_CONFIRMATION_CHARS)
+                return null;
+            confirmation = phrase.asString();
+        }
+        return new RevocationBody(UUID.fromString(connection.asString()), confirmation);
+    }
+
+    private static ResponseEntity<?> revocationRefused(String code, HttpServletRequest request) {
+        RevocationRefusal refusal = REVOCATION_REFUSALS.get(code);
+        if (refusal == null) {
+            // A refusal this surface does not know is a broken contract, not the caller's fault.
+            return revocationError(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorHandler.CODE_INTERNAL_ERROR,
+                    ApiErrorHandler.MESSAGE_INTERNAL_ERROR, request);
+        }
+        return revocationError(refusal.status(), refusal.code(), refusal.message(), request);
+    }
+
+    private static ResponseEntity<?> revocationBadRequest(HttpServletRequest request) {
+        return revocationError(HttpStatus.BAD_REQUEST, ApiErrorHandler.CODE_BAD_REQUEST,
+                ApiErrorHandler.MESSAGE_BAD_REQUEST, request);
+    }
+
+    private static ResponseEntity<?> revocationInternal(RuntimeException failure, HttpServletRequest request) {
+        // The class name at debug only: a message or cause can carry SQL or values.
+        if (LOG.isDebugEnabled()) LOG.debug("bybit revocation failed: failure={}", failure.getClass().getName());
+        return revocationError(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorHandler.CODE_INTERNAL_ERROR,
+                ApiErrorHandler.MESSAGE_INTERNAL_ERROR, request);
+    }
+
+    private static ResponseEntity<ApiError> revocationError(HttpStatus status, String code, String message,
+            HttpServletRequest request) {
+        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).cacheControl(CacheControl.noStore())
+                .body(new ApiError(code, message,
+                        ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER))));
+    }
+
+    private static ResponseEntity<?> revocationAnswer(String step, ResponseEntity<?> response, String result,
+            long started) {
+        String logged = response.getStatusCode().value() == 500 ? "ERROR" : result;
+        revocationLog(step, logged, response.getStatusCode().value(), started);
+        return response;
+    }
+
+    /** 요청 하나, 운영 줄 하나. 사용자·연결·허가 참조·확인 문구·멱등 키·금융값을 싣지 않는다. */
+    private static void revocationLog(String step, String result, int status, long started) {
+        LOG.info("bybit revocation request: step={} result={} status={} latencyMs={}", step, result, status,
+                (System.nanoTime() - started) / 1_000_000);
     }
 
     /**

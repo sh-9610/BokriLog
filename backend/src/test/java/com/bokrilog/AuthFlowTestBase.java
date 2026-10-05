@@ -44,6 +44,7 @@ import org.springframework.session.SessionRepository;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
@@ -152,6 +153,9 @@ abstract class AuthFlowTestBase {
      */
     @Autowired
     private SourceConnectionApi sources;
+
+    @Autowired
+    private com.bokrilog.sync.SyncJobApi syncJobs;
 
     /** portfolio membership의 공개 API. {@link #sources}와 같은 근거로 주입한다. */
     @Autowired
@@ -732,6 +736,26 @@ abstract class AuthFlowTestBase {
     // ----------------------------------------------------------------------
     // Bybit 연결(Story 2.1)
     // ----------------------------------------------------------------------
+
+    /**
+     * 그 사용자의 활성 연결을 실제 해제 종단 그대로 끝낸다(Story 2.16) — 자격정보 삭제, {@code REVOKED}와 단조 해제
+     * 시각·멱등 키·요청 hash, membership 종료, 진행 중 작업 종단을 한 트랜잭션에서. 제품 코드의 세 모듈 API를 그대로
+     * 부르되 HTTP·허가·계획 잠금·생명주기 잠금은 거치지 않는다: 계획 잠금을 쥔 채 "그 사이 연결이 해제됐다"를 만드는
+     * 시험이 쓴다.
+     */
+    void revokeConnectionOf(UUID userId) {
+        new TransactionTemplate(this.storeResetTransactions).executeWithoutResult(status -> {
+            UUID connection = this.jdbc.sql("SELECT connection_id FROM source_connection WHERE user_id=:u "
+                    + "AND status='ACTIVE'").param("u", userId).query(UUID.class).single();
+            var revocation = this.sources.revoke(userId, connection, "test-revocation-" + UUID.randomUUID(),
+                    BybitRevocationCommandService.requestHashOf(connection),
+                    this.portfolios.activeMembershipStart(userId, connection).orElse(null));
+            var revoked = (SourceConnectionApi.Revocation.Revoked) revocation;
+            this.portfolios.endSourceMembership(userId, connection, revoked.revokedAt());
+            this.syncJobs.endConnectionWork(userId, connection, revoked.revokedAt());
+        });
+    }
+
 
     /** 최종 확인 경로. 준비와 갈라 두는 것이 "확인 전에는 아무것도 바뀌지 않는다"의 짝이다. */
     static final String BYBIT_CONNECT_PATH =

@@ -30,9 +30,11 @@ export function FirstSnapshotPanel({
   const active = pending || job?.status === 'QUEUED' || job?.status === 'RUNNING'
   let message: string = copy.checking
   if (view.kind === 'unconnected') message = copy.unconnected
+  if (view.kind === 'revoked') message = copy.revoked
   if (view.kind === 'unavailable') message = copy.unavailable
   if (view.kind === 'loaded') {
-    if (view.state.restricted) message = copy.blocked
+    if (view.state.revoked === true) message = copy.revoked
+    else if (view.state.restricted) message = copy.blocked
     else if (job?.status === 'QUEUED') message = copy.queued
     else if (job?.status === 'RUNNING') message = copy.running
     else if (job?.status === 'SUCCEEDED') message = copy.succeeded
@@ -95,7 +97,10 @@ export function FirstSnapshotPanel({
           {copy.refresh}
         </button>
       ) : null}
-      {view.kind === 'loaded' && !view.state.restricted && value === undefined ? (
+      {view.kind === 'loaded' &&
+      !view.state.restricted &&
+      view.state.revoked !== true &&
+      value === undefined ? (
         <button type="button" disabled={active} onClick={start}>
           {job?.status === 'FAILED' ? copy.retry : copy.start}
         </button>

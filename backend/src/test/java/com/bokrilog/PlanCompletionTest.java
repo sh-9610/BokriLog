@@ -506,14 +506,15 @@ class PlanCompletionTest extends PlanSyncTestBase {
         } finally {
             jdbc().sql("DELETE FROM operations_restriction WHERE command='plan-sync'").update();
         }
-        jdbc().sql("UPDATE source_connection SET status='REVOKED' WHERE user_id=:u").param("u", disconnected).update();
+        revokeConnectionOf(disconnected);
         assertThat(sync.admitPlanSync(disconnected, SyncJobApi.SyncTrigger.ENTRY, "completion-disconnected-1"))
                 .isEqualTo(new SyncJobApi.SyncAdmission.Refused("SYNC_UNAVAILABLE"));
         assertThat(planStatus(disconnected)).isEqualTo("COMPLETED");
         assertThat(countOf("sync_plan_sync_job", disconnected)).isZero();
         var dashboard = completed(disconnected);
         assertThat(dashboard.sync().availability()).isEqualTo("UNAVAILABLE");
-        assertThat(dashboard.sync().reason()).isEqualTo("CONNECTION_UNAVAILABLE");
+        // Since Story 2.16 a revoked connection is named as such.
+        assertThat(dashboard.sync().reason()).isEqualTo("CONNECTION_REVOKED");
     }
 
     /**

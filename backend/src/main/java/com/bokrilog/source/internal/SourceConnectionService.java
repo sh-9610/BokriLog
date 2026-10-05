@@ -14,6 +14,7 @@ import java.time.Instant;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
  * {@link SourceConnectionApi} 구현. 구현은 {@code internal}의 package-private 클래스다
@@ -200,6 +201,14 @@ class SourceConnectionService implements SourceConnectionApi {
                 != AccessDecision.ALLOWED) {
             return rejected(SourceRejectionReason.NOT_PERMITTED);
         }
+        /*
+         * 해제한 사용자는 다시 연결하지 않는다(Story 2.16). 지금의 저장은 새 membership을 만들 뿐 활성 계획과
+         * UID를 대조하지 않으므로, 열어 두면 다른 UID가 그 계획의 portfolio에 붙는다(RECONNECT-1.0 위반).
+         * 준비 게이트가 먼저 거르고 이 검사는 같은 사실을 저장 트랜잭션 안에서 다시 본다.
+         */
+        if (this.repository.hasRevoked(userId)) {
+            return rejected(SourceRejectionReason.NOT_PERMITTED);
+        }
 
         String providerName = provider.name();
         Optional<SourceConnectionRepository.ProviderAccountRow> existing =
@@ -244,6 +253,50 @@ class SourceConnectionService implements SourceConnectionApi {
                 verified.policyVersion());
         this.repository.insertCredential(credentialId, connectionId, sealed.get());
         return new StoreOutcome.Stored(connectionId, providerAccountId);
+    }
+
+    @Override
+    public Optional<ConnectionStatus> currentConnection(@Nullable UUID userId) {
+        return userId == null ? Optional.empty() : this.repository.currentConnection(userId);
+    }
+
+    @Override
+    public boolean hasRevokedConnection(@Nullable UUID userId) {
+        return userId != null && this.repository.hasRevoked(userId);
+    }
+
+    @Override
+    public boolean isRevoked(@Nullable UUID userId, @Nullable UUID connectionId) {
+        return userId != null && connectionId != null && this.repository.isRevoked(userId, connectionId);
+    }
+
+    @Override
+    public Revocation revoke(UUID userId, UUID connectionId, String idempotencyKey, String requestHash,
+            @Nullable Instant notBefore) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("the revocation joins the caller's transaction");
+        // The row lock, then the state judged again under it: a revocation that won the race left nothing to do.
+        var locked = this.repository.lockActive(userId, connectionId).orElse(null);
+        if (locked == null) return new Revocation.NotActive();
+        /*
+         * The credential first: once it is gone no worker can decrypt anything, and every re-check that joins it
+         * (`snapshotConnection`) is empty. Exactly one row — a connection has exactly one credential (V4).
+         */
+        if (this.repository.deleteCredential(connectionId) != 1)
+            throw new IllegalStateException("the active connection had no credential");
+        Instant revokedAt = this.repository.markRevoked(userId, connectionId, idempotencyKey, requestHash,
+                        notBefore)
+                .orElseThrow(() -> new IllegalStateException("the connection changed under its row lock"));
+        return new Revocation.Revoked(connectionId, locked, revokedAt);
+    }
+
+    @Override
+    public RevocationReplay revocationReplay(@Nullable UUID userId, String idempotencyKey, String requestHash) {
+        if (userId == null) return new RevocationReplay.None();
+        var stored = this.repository.revocationByKey(userId, idempotencyKey).orElse(null);
+        if (stored == null) return new RevocationReplay.None();
+        if (!stored.requestHash().equals(requestHash)) return new RevocationReplay.Conflict();
+        return new RevocationReplay.Stored(stored.connectionId(), stored.revokedAt());
     }
 
     @Override

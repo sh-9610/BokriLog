@@ -1,5 +1,12 @@
 import { CSRF_HEADER } from '../content/auth'
-import { BYBIT_CANCEL_PATH, BYBIT_CONNECT_PATH, BYBIT_CONNECTION_PATH } from '../content/connection'
+import {
+  BYBIT_CANCEL_PATH,
+  BYBIT_CONNECT_PATH,
+  BYBIT_CONNECTION_PATH,
+  BYBIT_REVOCATION_CANCEL_PATH,
+  BYBIT_REVOCATION_CONFIRM_PATH,
+  BYBIT_REVOCATION_PATH,
+} from '../content/connection'
 import { post } from './unlinkProvider'
 import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
 
@@ -42,15 +49,37 @@ import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
  */
 const CONNECT_REQUEST_TIMEOUT_MS = 20_000
 
-/** 연결 상태 조회의 결과. 실패를 "연결 없음"으로 접지 않는다. */
+/**
+ * 연결 상태 조회의 결과. 실패를 "연결 없음"으로 접지 않는다.
+ *
+ * `connectionId`는 불투명 참조다(Story 2.16). 해제 요청의 대상이며 화면에 그리지 않는다. 연결한 적이 없으면
+ * `null`이다. `revoked`는 해제된 연결의 사실이고 그때만 `revokedAt`이 있다.
+ */
 export type ConnectionStatus =
   | {
       readonly status: 'loaded'
       readonly connected: boolean
       readonly verifiedAt: string | null
       readonly policyVersion: string | null
+      readonly connectionId: string | null
+      readonly revoked: boolean
+      readonly revokedAt: string | null
     }
   | { readonly status: 'unavailable' }
+
+/** 해제 준비의 결과. */
+export type RevocationPrepareOutcome =
+  | { readonly outcome: 'armed'; readonly connectionId: string; readonly confirmation: string }
+  | { readonly outcome: 'failed'; readonly code: string | null }
+
+/**
+ * 해제 확정의 결과. `unanswered`는 응답을 받지 못했다는 뜻이다 — 서버가 커밋했을 수도 있으므로 화면은 결과를
+ * 단정하지 않고 같은 키로 다시 시도하게 한다.
+ */
+export type RevocationConfirmOutcome =
+  | { readonly outcome: 'revoked'; readonly revokedAt: string }
+  | { readonly outcome: 'failed'; readonly code: string | null }
+  | { readonly outcome: 'unanswered' }
 
 /** 준비의 결과. 화면이 폼을 열지 정하는 데 쓴다. */
 export type PrepareOutcome =
@@ -63,6 +92,7 @@ export type ConnectOutcome =
       readonly outcome: 'connected'
       readonly verifiedAt: string | null
       readonly policyVersion: string | null
+      readonly connectionId: string | null
     }
   | { readonly outcome: 'failed'; readonly code: string | null }
 
@@ -145,6 +175,7 @@ export async function connectBybit(
         outcome: 'connected',
         verifiedAt: typeof body.verifiedAt === 'string' ? body.verifiedAt : null,
         policyVersion: typeof body.policyVersion === 'string' ? body.policyVersion : null,
+        connectionId: typeof body.connectionId === 'string' ? body.connectionId : null,
       }
     }
   }
@@ -164,11 +195,87 @@ export async function cancelConnection(csrfToken: string | null): Promise<void> 
   await post(BYBIT_CANCEL_PATH, csrfToken)
 }
 
-/** 본문이 있는 상태 변경 하나의 결과. */
+/**
+ * 연결 해제를 준비한다(Story 2.16). **아직 아무것도 지우지 않는다.** 200과 서버의 정본 확인 문구만 성공이다.
+ */
+export async function prepareRevocation(
+  csrfToken: string | null,
+  connectionId: string,
+): Promise<RevocationPrepareOutcome> {
+  const result = await request(
+    BYBIT_REVOCATION_PATH,
+    csrfToken,
+    { connectionId },
+    SESSION_REQUEST_TIMEOUT_MS,
+  )
+  if (result.ok && typeof result.payload === 'object' && result.payload !== null) {
+    const body = result.payload as Record<string, unknown>
+    if (
+      body.connectionId === connectionId &&
+      typeof body.confirmation === 'string' &&
+      body.confirmation.length > 0
+    ) {
+      return { outcome: 'armed', connectionId, confirmation: body.confirmation }
+    }
+  }
+  return { outcome: 'failed', code: result.code }
+}
+
+/**
+ * 연결 해제를 확정한다. 멱등 키는 대화상자를 열 때 한 번 만든 값이다 — 응답을 받지 못한 확정을 다시 보내면
+ * 서버가 같은 결과를 재생한다. 키는 헤더로만 나가며 주소·저장소에 남지 않는다.
+ */
+export async function confirmRevocation(
+  csrfToken: string | null,
+  connectionId: string,
+  confirmation: string,
+  idempotencyKey: string,
+): Promise<RevocationConfirmOutcome> {
+  const result = await request(
+    BYBIT_REVOCATION_CONFIRM_PATH,
+    csrfToken,
+    { connectionId, confirmation },
+    SESSION_REQUEST_TIMEOUT_MS,
+    { 'Idempotency-Key': idempotencyKey },
+  )
+  if (!result.received) {
+    return csrfToken === null ? { outcome: 'failed', code: null } : { outcome: 'unanswered' }
+  }
+  if (result.ok && typeof result.payload === 'object' && result.payload !== null) {
+    const body = result.payload as Record<string, unknown>
+    if (
+      body.outcome === 'REVOKED' &&
+      body.connectionId === connectionId &&
+      typeof body.revokedAt === 'string' &&
+      !Number.isNaN(new Date(body.revokedAt).getTime())
+    ) {
+      return { outcome: 'revoked', revokedAt: body.revokedAt }
+    }
+    // 200인데 모르는 모양이다. 결과를 단정하지 않는다.
+    return { outcome: 'unanswered' }
+  }
+  /*
+   * 5xx 가운데 공통 오류 본문(`code`·`correlationId`)이 있는 것은 서버가 답한 실패다 — 확정 트랜잭션 전체가 롤백됐다.
+   * 본문이 그 모양이 아닌 5xx(프록시가 끊은 응답)만 커밋 여부를 단정하지 않고 같은 키 재시도로 둔다.
+   */
+  if (result.status >= 500 && !commonError(result.payload)) {
+    return { outcome: 'unanswered' }
+  }
+  return { outcome: 'failed', code: result.code }
+}
+
+/** 해제 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다(`cancelConnection`과 같다). */
+export async function cancelRevocation(csrfToken: string | null): Promise<void> {
+  await post(BYBIT_REVOCATION_CANCEL_PATH, csrfToken)
+}
+
+/** 본문이 있는 상태 변경 하나의 결과. `received`는 응답이 왔는가다(시한 초과·단절이면 거짓). */
 interface RequestResult {
   readonly ok: boolean
   readonly payload: unknown
   readonly code: string | null
+  readonly received: boolean
+  readonly status: number
 }
 
 /**
@@ -183,6 +290,7 @@ async function request(
   csrfToken: string | null,
   body: object | null,
   timeoutMs: number,
+  extraHeaders: Readonly<Record<string, string>> = {},
 ): Promise<RequestResult> {
   if (csrfToken === null) {
     /*
@@ -190,7 +298,7 @@ async function request(
      * 실패가 예정된 상태 변경 시도 하나를 로그에 남긴다(`linkProvider.ts`와 같은 근거).
      * 자격정보가 실린 요청이면 더욱 그렇다.
      */
-    return { ok: false, payload: null, code: null }
+    return { ok: false, payload: null, code: null, received: false, status: 0 }
   }
 
   // 시한은 호출자가 정한다. 준비·취소는 공유 값이고 최종 확인만 서버 예산을 덮는 더 큰 값이다.
@@ -201,6 +309,7 @@ async function request(
 
   try {
     const headers: Record<string, string> = {
+      ...extraHeaders,
       [CSRF_HEADER]: csrfToken,
       Accept: 'application/json',
     }
@@ -216,13 +325,28 @@ async function request(
       signal: controller.signal,
     })
     const payload: unknown = await readJson(response)
-    return { ok: response.ok, payload, code: codeIn(payload) }
+    return {
+      ok: response.ok,
+      payload,
+      code: codeIn(payload),
+      received: true,
+      status: response.status,
+    }
   } catch {
     // 네트워크 단절·응답 유실·시한 초과도 같은 결과다. 무엇이 일어났는지 추측하지 않는다.
-    return { ok: false, payload: null, code: null }
+    return { ok: false, payload: null, code: null, received: false, status: 0 }
   } finally {
     clearTimeout(deadline)
   }
+}
+
+/** 공통 오류 계약의 모양인가 — 서버가 직접 답한 오류다. */
+function commonError(payload: unknown): boolean {
+  if (typeof payload !== 'object' || payload === null) {
+    return false
+  }
+  const body = payload as Record<string, unknown>
+  return typeof body.code === 'string' && typeof body.correlationId === 'string'
 }
 
 /** 본문이 JSON이 아니면 `null`이다. 오류 계약은 언제나 JSON이지만 그 사실에 기대지 않는다. */
@@ -258,10 +382,19 @@ function statusIn(payload: unknown): ConnectionStatus {
   if (typeof body.connected !== 'boolean') {
     return { status: 'unavailable' }
   }
+  const revoked = body.revoked === true
+  const revokedAt = typeof body.revokedAt === 'string' ? body.revokedAt : null
+  if (revoked && (body.connected || revokedAt === null)) {
+    // 해제됐다면서 연결됐다고 하거나 해제 시각이 없다. 어느 쪽도 주장하지 않는다.
+    return { status: 'unavailable' }
+  }
   return {
     status: 'loaded',
     connected: body.connected,
     verifiedAt: typeof body.verifiedAt === 'string' ? body.verifiedAt : null,
     policyVersion: typeof body.policyVersion === 'string' ? body.policyVersion : null,
+    connectionId: typeof body.connectionId === 'string' ? body.connectionId : null,
+    revoked,
+    revokedAt: revoked ? revokedAt : null,
   }
 }

@@ -33,6 +33,14 @@ export const BYBIT_CONNECT_PATH = `${BYBIT_CONNECTION_PATH}/connect`
 export const BYBIT_CANCEL_PATH = `${BYBIT_CONNECTION_PATH}/cancel`
 
 /**
+ * 연결 해제(Story 2.16)의 세 경로 — 준비·확정·취소. 같은 접두사 아래라 서버의 인증·CSRF·`Origin` 판정을
+ * 그대로 지난다. 새 화면 경로가 아니라 설정 화면 안의 조작이다.
+ */
+export const BYBIT_REVOCATION_PATH = `${BYBIT_CONNECTION_PATH}/revocation`
+export const BYBIT_REVOCATION_CONFIRM_PATH = `${BYBIT_REVOCATION_PATH}/confirm`
+export const BYBIT_REVOCATION_CANCEL_PATH = `${BYBIT_REVOCATION_PATH}/cancel`
+
+/**
  * 서버가 돌려주는 거절 code → 화면 문장.
  *
  * **닫힌 맵이다.** 서버가 같은 뜻의 문장을 이미 보내지만 화면은 자기 카피를 쓴다 — 이 저장소의
@@ -238,6 +246,102 @@ export const connectionContent = {
   /** 연결이 끝났다. 자산도 계정 식별자도 말하지 않는다. */
   succeeded: 'Bybit 연결을 마쳤습니다. 아래에서 검증 시각과 적용 정책 버전을 확인할 수 있습니다.',
 } as const
+
+/**
+ * 연결 해제 카피(Story 2.16).
+ *
+ * 규칙: 해제를 성공·실패·완료의 감정으로 말하지 않고 사실만 쓴다. 무엇이 즉시 지워지는지, 무엇이 멈추는지,
+ * 무엇이 남는지를 구분해 쓰고, BokriLog가 Bybit의 API Key를 폐기하지 못한다는 한계를 중립적으로 말한다.
+ * 재연결 정책이 아직 없으므로 동작하지 않는 재연결 조작을 내지 않고 안내 문장 하나만 둔다.
+ */
+export const revocationContent = {
+  /** 연결된 상태의 보조 조작. 대화상자가 호출점을 잃으면 이 id로 초점을 돌려준다. */
+  start: 'Bybit 연결 해제',
+  buttonId: 'connection-bybit-revoke',
+  /** 해제된 상태의 글자 표지. 색만으로 상태를 전하지 않는다. */
+  revoked: '해제됨',
+  revokedAtLabel: '해제 시각',
+  /** 해제 뒤에 남는 것과 멈추는 것. */
+  revokedBoundary:
+    '저장된 자격정보는 삭제됐고 새 데이터는 갱신되지 않습니다. 기존 계획·조정 이력·계산 근거·완료 결과는 읽기 전용으로 남아 있습니다.',
+  /** 재연결 정책이 승인되기 전의 중립 안내. 조작을 내지 않는다. */
+  reconnectUnavailable: '해제한 뒤 다시 연결하는 기능은 아직 제공하지 않습니다.',
+  /** Bybit 쪽 키는 BokriLog가 지우지 못한다. */
+  remoteKey:
+    'BokriLog는 Bybit에 등록된 API Key를 폐기하지 못합니다. 필요하면 Bybit에서 직접 폐기할 수 있습니다.',
+  /** 화면당 live region 하나가 말할 진행·결과 문장. */
+  preparing: 'Bybit 연결 해제를 준비하고 있습니다.',
+  revokedNotice: 'Bybit 연결을 해제했습니다. 저장된 자격정보를 삭제했고 이후 동기화를 멈췄습니다.',
+  cancelled: 'Bybit 연결 해제를 취소했습니다. 바뀐 것은 없습니다.',
+  /** 확정했지만 응답을 받지 못한 뒤 취소했다. 결과를 단정하지 않고 다시 읽는다. */
+  unknown: 'Bybit 연결 해제 결과를 확인하지 못했습니다. 연결 상태를 다시 확인하고 있습니다.',
+  dialog: {
+    titleId: 'connection-revoke-dialog-title',
+    descriptionId: 'connection-revoke-dialog-description',
+    progressId: 'connection-revoke-dialog-progress',
+    uncertainId: 'connection-revoke-dialog-uncertain',
+    title: 'Bybit 연결을 해제할까요?',
+    /** 즉시 일어나는 것. 되돌릴 수 없다는 사실을 함께 말한다. */
+    credentials:
+      'BokriLog에 저장된 Bybit 자격정보를 즉시 삭제합니다. 이 조작은 되돌릴 수 없습니다.',
+    jobs: '대기 중이거나 진행 중인 수집·환산·동기화·정밀 검증 작업을 취소합니다.',
+    future: '해제한 뒤에는 새 동기화를 할 수 없고 현재가치와 지표가 더 이상 갱신되지 않습니다.',
+    kept: '기존 계획, 조정 이력, 계산 근거, 완료 결과는 삭제하지 않고 읽기 전용으로 남겨 둡니다.',
+    reconnect: '해제한 뒤 다시 연결하는 기능은 아직 제공하지 않습니다.',
+    cancel: '취소',
+    confirm: '연결 해제',
+    confirming: '연결 해제를 처리하고 있습니다.',
+    uncertain:
+      '응답을 받지 못했습니다. 같은 요청으로 다시 시도하거나 취소한 뒤 연결 상태를 확인해 주세요.',
+  },
+} as const
+
+/**
+ * 해제 표면이 낼 수 있는 거절 code → 화면 문장. 닫힌 맵이며 모르는 code는 하나로 접는다.
+ *
+ * 백엔드 `BybitConnectionController.REVOCATION_REFUSALS`의 code 집합과 같아야 한다(400·422·500은 공통 계약).
+ */
+const REVOCATION_REJECTIONS: Readonly<Record<string, string>> = {
+  FORBIDDEN: '연결을 해제하지 못했습니다. 세션 상태를 확인한 뒤 다시 시도해 주세요.',
+  REAUTHENTICATION_REQUIRED:
+    '연결을 해제하려면 먼저 본인 확인이 필요합니다. 아래에서 본인 확인을 마친 뒤 다시 시도해 주세요.',
+  REVOCATION_NOT_CONFIRMED:
+    '확인된 해제 요청이 아니어서 연결을 해제하지 않았습니다. 연결 상태를 다시 확인한 뒤 다시 시도해 주세요.',
+  CONNECTION_NOT_FOUND: '해제할 활성 연결을 찾지 못했습니다. 연결 상태를 다시 확인해 주세요.',
+  IDEMPOTENCY_CONFLICT: '요청이 겹쳐 연결을 해제하지 않았습니다. 다시 시도해 주세요.',
+}
+
+export const REVOCATION_REJECTION_CODES: readonly string[] = [
+  'CONNECTION_NOT_FOUND',
+  'FORBIDDEN',
+  'IDEMPOTENCY_CONFLICT',
+  'REAUTHENTICATION_REQUIRED',
+  'REVOCATION_NOT_CONFIRMED',
+]
+
+const UNKNOWN_REVOCATION_REJECTION =
+  '연결을 해제하지 못했습니다. 바뀐 것은 없습니다. 잠시 후 다시 시도해 주세요.'
+
+/** 그 해제 거절 code의 문장. 모르는 값은 하나로 접힌다. */
+export function revocationRejectionMessage(code: string | null): string {
+  if (code === null) {
+    return UNKNOWN_REVOCATION_REJECTION
+  }
+  return REVOCATION_REJECTIONS[code] ?? UNKNOWN_REVOCATION_REJECTION
+}
+
+/** 해제 확인 대화상자가 렌더해야 하는 카피 전부. */
+export const revocationDialogCopyStrings: readonly string[] = [
+  revocationContent.dialog.title,
+  revocationContent.dialog.credentials,
+  revocationContent.dialog.jobs,
+  revocationContent.dialog.future,
+  revocationContent.dialog.kept,
+  revocationContent.remoteKey,
+  revocationContent.dialog.reconnect,
+  revocationContent.dialog.cancel,
+  revocationContent.dialog.confirm,
+]
 
 /**
  * 연결 구역에서 **언제나** 렌더되는 카피.

@@ -879,8 +879,8 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         BybitStubConfiguration.resetRequestCount();
 
         accountDeletion().beginDeletion(deleting);
-        jdbc().sql("UPDATE source_connection SET status='REVOKED' WHERE user_id=:u").param("u",revoked).update();
-        jdbc().sql("UPDATE source_connection SET status='REVOKED' WHERE user_id=:u").param("u",replaced).update();
+        revokeConnectionOf(revoked);
+        revokeConnectionOf(replaced);
         String uid="replacement-"+UUID.randomUUID();
         new TransactionTemplate(manager).executeWithoutResult(status -> source.store(replaced,SourceProvider.BYBIT,
                 new SourceVerification.Verified(uid,Instant.now(),"bybit-readonly-uta-1.0"),

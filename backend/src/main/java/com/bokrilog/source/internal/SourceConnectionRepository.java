@@ -156,6 +156,78 @@ class SourceConnectionRepository {
                 .update();
     }
 
+    // ---------------------------------------------------------------- Story 2.16
+
+    /** The active connection, or else the most recently revoked one: the state the settings screen shows. */
+    Optional<com.bokrilog.source.SourceConnectionApi.ConnectionStatus> currentConnection(UUID userId) {
+        return this.jdbc.sql("SELECT connection_id, status, verified_at, policy_version, revoked_at "
+                + "FROM source_connection WHERE user_id = :userId "
+                + "ORDER BY (status = 'ACTIVE') DESC, revoked_at DESC NULLS LAST, created_at DESC, connection_id LIMIT 1")
+            .param("userId", userId)
+            .query((rs, n) -> {
+                OffsetDateTime revoked = rs.getObject("revoked_at", OffsetDateTime.class);
+                return new com.bokrilog.source.SourceConnectionApi.ConnectionStatus(
+                        rs.getObject("connection_id", UUID.class), "REVOKED".equals(rs.getString("status")),
+                        rs.getObject("verified_at", OffsetDateTime.class).toInstant(), rs.getString("policy_version"),
+                        revoked == null ? null : revoked.toInstant());
+            })
+            .optional();
+    }
+
+    boolean hasRevoked(UUID userId) {
+        return this.jdbc.sql("SELECT EXISTS(SELECT 1 FROM source_connection WHERE user_id = :userId "
+                + "AND status = 'REVOKED')")
+            .param("userId", userId).query(Boolean.class).single();
+    }
+
+    boolean isRevoked(UUID userId, UUID connectionId) {
+        return this.jdbc.sql("SELECT EXISTS(SELECT 1 FROM source_connection WHERE user_id = :userId "
+                + "AND connection_id = :connectionId AND status = 'REVOKED')")
+            .param("userId", userId).param("connectionId", connectionId).query(Boolean.class).single();
+    }
+
+    /** Locks the user's active connection row and answers its provider account; empty when it is not one. */
+    Optional<UUID> lockActive(UUID userId, UUID connectionId) {
+        return this.jdbc.sql("SELECT provider_account_id FROM source_connection WHERE user_id = :userId "
+                + "AND connection_id = :connectionId AND status = 'ACTIVE' FOR UPDATE")
+            .param("userId", userId).param("connectionId", connectionId).query(UUID.class).optional();
+    }
+
+    /** Deletes the connection's encrypted credential: the ciphertext, the nonce, the key and algorithm versions. */
+    int deleteCredential(UUID connectionId) {
+        return this.jdbc.sql("DELETE FROM source_credential WHERE connection_id = :connectionId")
+            .param("connectionId", connectionId).update();
+    }
+
+    /**
+     * {@code ACTIVE → REVOKED} with the key and the request hash. The time is the database time to the millisecond,
+     * never before the verification or {@code notBefore} rounded up past them by one millisecond: monotonic even when
+     * a provider clock ran ahead.
+     */
+    Optional<Instant> markRevoked(UUID userId, UUID connectionId, String key, String requestHash,
+            @org.jspecify.annotations.Nullable Instant notBefore) {
+        return this.jdbc.sql("UPDATE source_connection SET status = 'REVOKED', "
+                + "revoked_at = GREATEST(date_trunc('milliseconds', statement_timestamp()), "
+                + "date_trunc('milliseconds', GREATEST(verified_at, COALESCE(CAST(:notBefore AS timestamptz), "
+                + "verified_at))) + interval '1 millisecond'), "
+                + "revocation_idempotency_key = :key, revocation_request_hash = :hash "
+                + "WHERE user_id = :userId AND connection_id = :connectionId AND status = 'ACTIVE' RETURNING revoked_at")
+            .param("notBefore", notBefore == null ? null : OffsetDateTime.ofInstant(notBefore, ZoneOffset.UTC))
+            .param("key", key).param("hash", requestHash).param("userId", userId).param("connectionId", connectionId)
+            .query((rs, n) -> rs.getObject(1, OffsetDateTime.class).toInstant()).optional();
+    }
+
+    record RevocationRow(UUID connectionId, Instant revokedAt, String requestHash) {}
+
+    Optional<RevocationRow> revocationByKey(UUID userId, String key) {
+        return this.jdbc.sql("SELECT connection_id, revoked_at, revocation_request_hash FROM source_connection "
+                + "WHERE user_id = :userId AND revocation_idempotency_key = :key")
+            .param("userId", userId).param("key", key)
+            .query((rs, n) -> new RevocationRow(rs.getObject(1, UUID.class),
+                    rs.getObject(2, OffsetDateTime.class).toInstant(), rs.getString(3)))
+            .optional();
+    }
+
     /**
      * 이 사용자의 source 데이터를 지운다.
      *

@@ -228,6 +228,69 @@ public interface SourceConnectionApi {
             SourceVerification.Verified verified,
             SourceCredentials credentials);
 
+    // ------------------------------------------------------------------ Story 2.16
+
+    /**
+     * 그 사용자의 현재 연결 하나의 상태. 활성 연결이 있으면 그것이고, 없으면 가장 최근에 해제된 연결이다.
+     * 자격정보도 제공자 계정 식별자도 담지 않는다 — {@code connectionId}는 불투명 참조다.
+     *
+     * @param revokedAt 해제된 연결에만 있다. 데이터베이스 시각을 ms로 자른 값이다
+     */
+    record ConnectionStatus(UUID connectionId, boolean revoked, Instant verifiedAt, String policyVersion,
+            @Nullable Instant revokedAt) {}
+
+    /** 그 사용자의 현재 연결 상태. 연결한 적이 없으면 빈 값이며 미존재·삭제 계정도 같은 값이다. */
+    Optional<ConnectionStatus> currentConnection(@Nullable UUID userId);
+
+    /**
+     * 그 사용자에게 해제된 연결이 있는가. 새 연결 준비의 단일 거부가 이것을 본다 — 재연결 정책
+     * ({@code RECONNECT-1.0})이 구현되기 전까지 해제한 사용자는 다시 연결하지 않는다.
+     */
+    boolean hasRevokedConnection(@Nullable UUID userId);
+
+    /** 그 사용자의 그 연결이 해제된 연결인가. 동기화 가용성의 원인({@code CONNECTION_REVOKED})이 이것을 본다. */
+    boolean isRevoked(@Nullable UUID userId, @Nullable UUID connectionId);
+
+    /** 해제의 결과. */
+    sealed interface Revocation {
+        /**
+         * 이번 호출이 해제했다.
+         *
+         * @param revokedAt 데이터베이스 시각({@code statement_timestamp()})을 ms로 자른 값
+         */
+        record Revoked(UUID connectionId, UUID providerAccountId, Instant revokedAt) implements Revocation {}
+
+        /** 그 사용자의 활성 연결이 아니다 — 타 사용자·미존재·이미 해제가 구분되지 않는다. 아무것도 쓰지 않았다. */
+        record NotActive() implements Revocation {}
+    }
+
+    /**
+     * 연결을 해제한다. <b>호출자 트랜잭션 전용이다</b>({@code MANDATORY}).
+     *
+     * <p>연결 행을 {@code FOR UPDATE}로 잠그고 {@code ACTIVE}를 다시 확인한 뒤 자격정보 행을 지우고
+     * ({@code ACTIVE → REVOKED}, 해제 시각·멱등 키·요청 hash)를 쓴다. 연결 행·제공자 계정은 지우지 않는다.
+     * 호출자는 이 앞에서 계획 쓰기 잠금과 계정 생명주기 잠금을 잡는다.
+     *
+     * <p><b>해제 시각은 단조다.</b> 데이터베이스 시각을 ms로 자른 값이되, 검증 시각과 {@code notBefore}(활성
+     * membership의 시작) 중 늦은 쪽을 ms로 올린 값보다 앞서지 않는다 — 시계 차로 {@code ended_at > started_at}이
+     * 깨져 해제 전체가 실패하지 않게 한다. 호출자는 같은 값을 membership 종료와 작업 종단에 쓴다.
+     */
+    Revocation revoke(UUID userId, UUID connectionId, String idempotencyKey, String requestHash,
+            @Nullable Instant notBefore);
+
+    /** 같은 키의 앞선 해제. */
+    sealed interface RevocationReplay {
+        record Stored(UUID connectionId, Instant revokedAt) implements RevocationReplay {}
+
+        /** 같은 키가 다른 요청에 쓰였다. */
+        record Conflict() implements RevocationReplay {}
+
+        record None() implements RevocationReplay {}
+    }
+
+    /** 그 사용자가 그 키로 해제한 결과. 요청 hash가 다르면 충돌이다. */
+    RevocationReplay revocationReplay(@Nullable UUID userId, String idempotencyKey, String requestHash);
+
     /**
      * 이 사용자의 source 데이터를 지운다. <b>다른 사용자 것은 남는다.</b>
      *

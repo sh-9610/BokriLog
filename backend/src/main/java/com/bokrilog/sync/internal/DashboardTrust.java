@@ -279,6 +279,10 @@ final class DashboardTrust {
             return new TrustAxis("SYNCING", "JOB_IN_PROGRESS", input.measuredAt(), METRICS, WAIT_FOR_SYNC);
         // The guard's own reasons (restriction, connection, plan end) say nothing can run; a sync held by a persistent
         // verification review (R6) is named by that review instead.
+        // A revoked connection (Story 2.16) is named as the cause: no new data reaches the plan any more.
+        if (SyncWindow.Availability.UNAVAILABLE.name().equals(sync.availability())
+                && PlanSyncGuard.CONNECTION_REVOKED.equals(sync.unavailableReason()))
+            return new TrustAxis("STALE", PlanSyncGuard.CONNECTION_REVOKED, input.measuredAt(), METRICS, NONE);
         if (SyncWindow.Availability.UNAVAILABLE.name().equals(sync.availability())
                 && !PlanSyncService.REVIEW_HELD.equals(sync.unavailableReason()))
             return new TrustAxis("STALE", "SYNC_UNAVAILABLE", input.measuredAt(), METRICS, NONE);

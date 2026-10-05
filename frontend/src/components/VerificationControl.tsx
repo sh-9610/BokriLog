@@ -250,6 +250,22 @@ export function VerificationControl({
       </div>
     )
 
+  // A revoked connection (Story 2.16): no verification button, only the reason as text.
+  if (
+    status.availability === 'UNAVAILABLE' &&
+    status.reason === 'CONNECTION_REVOKED' &&
+    !(sync.running && sync.purpose === 'VERIFY')
+  ) {
+    return (
+      <div className={styles.verification} id={VERIFICATION_CONTROL_ID} {...tracking}>
+        <div ref={noticeRef} tabIndex={-1}>
+          <p>{copy.reasons.CONNECTION_REVOKED}</p>
+        </div>
+        {localSummary}
+      </div>
+    )
+  }
+
   if (inLongGap(status) && !(sync.running && sync.purpose === 'VERIFY')) {
     return (
       <div className={styles.verification} id={VERIFICATION_CONTROL_ID} {...tracking}>

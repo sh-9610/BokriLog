@@ -162,6 +162,13 @@ export function NextPlanBaselinePanel({
           }, 2000)
           return
         }
+        if (next.reason === 'CONNECTION_REVOKED') {
+          // Story 2.16: no new baseline can be read; the panel says why and offers no request.
+          setMessage(copy.revoked)
+          say.current?.(copy.revoked)
+          awaitingPreparation.current = false
+          return
+        }
         const failed = next.job?.status === 'FAILED' || next.job?.status === 'BLOCKED'
         const usable =
           next.snapshot !== null &&
@@ -286,7 +293,7 @@ export function NextPlanBaselinePanel({
           )}
         </dl>
       )}
-      {open ? (
+      {open && state?.reason !== 'CONNECTION_REVOKED' ? (
         <button
           className={styles.button}
           type="button"

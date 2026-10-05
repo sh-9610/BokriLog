@@ -16,6 +16,9 @@ export const firstSnapshotContent = {
   connectionSettings: 'Bybit 연결 설정',
   refresh: '상태 다시 확인',
   unconnected: 'Bybit 연결을 먼저 완료해 주세요.',
+  /** 해제한 사용자(Story 2.16). 재연결 정책이 없으므로 연결 조작 대신 중립 안내만 둔다. */
+  revoked:
+    'Bybit 연결을 해제해 새 데이터는 갱신되지 않습니다. 해제한 뒤 다시 연결하는 기능은 아직 제공하지 않습니다.',
   cannotPlan: '현재가치가 0 이하이므로 이 값으로 계획을 만들 수 없습니다.',
   measured: 'Bybit 측정 시각',
   official: '공식 현재가치',

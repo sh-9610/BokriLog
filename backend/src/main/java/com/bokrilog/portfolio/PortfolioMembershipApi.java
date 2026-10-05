@@ -110,6 +110,22 @@ public interface PortfolioMembershipApi {
     ActiveMembership attachActiveSource(
             UUID userId, UUID connectionId, UUID providerAccountId, Instant startedAt);
 
+    /**
+     * 그 연결의 활성 source 구간을 {@code endedAt}으로 닫는다(Story 2.16). <b>호출자 트랜잭션 전용이다.</b>
+     *
+     * <p>portfolio 자체와 이미 닫힌 과거 구간은 건드리지 않는다. snapshot 구성이 가리키는 membership 행도
+     * 지우지 않으므로 기존 공식 결과의 provenance는 그대로 남는다.
+     *
+     * @return 닫은 구간 수. 그 연결에 활성 구간이 없었으면 0이다
+     */
+    int endSourceMembership(UUID userId, UUID connectionId, Instant endedAt);
+
+    /**
+     * 그 연결의 활성 source 구간이 시작된 시각(Story 2.16). 없으면 빈 값이다. 해제 시각이 구간 시작보다 늦도록
+     * ({@code ended_at > started_at}) 호출자가 하한으로 쓴다.
+     */
+    Optional<Instant> activeMembershipStart(UUID userId, UUID connectionId);
+
     /** 그 사용자의 기본 portfolio. 없으면 빈 값이며 미존재·삭제 계정도 같은 값이다. */
     Optional<UUID> findDefaultPortfolio(@Nullable UUID userId);
 

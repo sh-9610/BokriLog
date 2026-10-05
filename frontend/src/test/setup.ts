@@ -33,7 +33,14 @@ import {
   type SignInProvider,
 } from '../content/auth'
 import { DASHBOARD_EVIDENCE_PATH } from '../content/calculationEvidence'
-import { BYBIT_CANCEL_PATH, BYBIT_CONNECT_PATH, BYBIT_CONNECTION_PATH } from '../content/connection'
+import {
+  BYBIT_CANCEL_PATH,
+  BYBIT_CONNECT_PATH,
+  BYBIT_CONNECTION_PATH,
+  BYBIT_REVOCATION_CANCEL_PATH,
+  BYBIT_REVOCATION_CONFIRM_PATH,
+  BYBIT_REVOCATION_PATH,
+} from '../content/connection'
 import { FIRST_SNAPSHOT_PATH } from '../content/firstSnapshot'
 import { PLAN_END_CANCEL_PATH, PLAN_END_CONFIRM_PATH, PLAN_END_PATH } from '../content/planEnd'
 import { DASHBOARD_PATH } from '../content/planResult'
@@ -318,6 +325,20 @@ export function stubConnectRequest(responder: RequestResponder): void {
 /** 연결 **취소** 요청 하나를 이 시험 동안만 허용한다. 준비가 만든 무장과 허가를 되돌린다. */
 export function stubConnectionCancelRequest(responder: RequestResponder): void {
   responders.set(requestKey('POST', BYBIT_CANCEL_PATH), responder)
+}
+
+/**
+ * 연결 해제(Story 2.16)의 세 요청 — 준비·확정·취소 — 을 각각 이 시험 동안만 허용한다. 따로 여는 이유는 연결
+ * 준비·확인과 같다: 준비만 연 시험에서 확정이 나가면 전역 거부가 그것을 기록한다.
+ */
+export function stubRevocationPrepareRequest(responder: RequestResponder): void {
+  responders.set(requestKey('POST', BYBIT_REVOCATION_PATH), responder)
+}
+export function stubRevocationConfirmRequest(responder: RequestResponder): void {
+  responders.set(requestKey('POST', BYBIT_REVOCATION_CONFIRM_PATH), responder)
+}
+export function stubRevocationCancelRequest(responder: RequestResponder): void {
+  responders.set(requestKey('POST', BYBIT_REVOCATION_CANCEL_PATH), responder)
 }
 
 /** 허용된 세션 확인 요청의 기록. 몇 번 불렸는지 단정하는 데 쓴다. */

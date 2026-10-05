@@ -76,6 +76,7 @@ const UNAVAILABLE_REASONS: Readonly<
   RESTRICTED: '운영 제한으로 지금은 받지 않습니다.',
   CONNECTION_UNAVAILABLE:
     'Bybit 연결을 확인할 수 없어 받을 수 없습니다. 설정 화면에서 연결 상태를 확인해 주세요.',
+  CONNECTION_REVOKED: 'Bybit 연결을 해제해 정밀 검증과 기존 계획 계속을 받지 않습니다.',
   PLAN_PERIOD_ENDED: '계획 종료 시각이 지나 이 계획은 더 받지 않습니다.',
 }
 

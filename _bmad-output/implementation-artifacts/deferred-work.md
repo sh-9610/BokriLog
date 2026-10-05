@@ -317,3 +317,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-14-plan-natural-completion.md`
   summary: 새 CSS 모듈 둘(`PlanCompletionResult.module.css`, `PostEndValue.module.css`)의 `.region`이 테두리 토큰 하나만 다른 같은 패널 프레이밍 규칙이고, 기존 영역 모듈 규칙의 또 다른 사본이다.
   evidence: Story 2.10~2.13이 같은 종류의 CSS 사본을 기록했다. 공통 규칙을 한 곳으로 모으는 일은 여러 화면 CSS 모듈을 함께 바꾸는 별도 정리다(Story 2.14 리뷰).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-16-bybit-connection-revocation.md`
+  summary: 민감 command 확정이 커밋·세션 회전한 뒤 응답을 잃으면, 같은 키 재시도가 회전 전 세션 쿠키로 나가 재생되지 못하고 만료 화면으로 이동한다.
+  evidence: 2.16 리뷰(edge-case)가 연결 해제 확정에서 지적했고, 같은 회전 규칙(`SECURITY-ACTION-1.0`)을 쓰는 2.13 중도 종료 확정에도 같은 경로가 있어 이번 스토리가 만든 결함이 아니다.
