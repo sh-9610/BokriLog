@@ -148,7 +148,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 ## 현재 진행 지점
 
-기획은 완료됐고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. **Epic 1(11개)은 닫혔고 회고도 끝났다**(`epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건은 `sprint-status.yaml`의 `action_items`가 소유). **Epic 2(16개)도 모두 `develop`에 머지됐고** M2-2(2.7)·M2-3(2.12)·M2-4(2.13~2.16) 검증 지점이 닫혔다. **다음은 Epic 2 회고(선택)와 Epic 3 Story 3.1(보호된 운영자 표면과 추가 전용 감사 원장)이다.** 실연동 게이트는 둘이며 둘 다 별도 출시 게이트가 소유한다 — Epic 1의 세 제공자 왕복, Epic 2의 Bybit 연결 정책·실연동(실제 검증 계정과 regional reserved IP 필요).
+기획은 완료됐고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. **Epic 1(11개)은 닫혔고 회고도 끝났다**(`epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건은 `sprint-status.yaml`의 `action_items`가 소유). **Epic 2(16개)도 모두 `develop`에 머지됐고** M2-2(2.7)·M2-3(2.12)·M2-4(2.13~2.16) 검증 지점이 닫혔다. Epic 2 회고도 끝났다(`epic-2-retro-2026-10-05.md`, 판정 `accepted-with-open-items`, 액션 13건). **다음 구현은 Epic 3 Story 3.1(보호된 운영자 표면과 추가 전용 감사 원장)이며, 그 전에 회고 액션 AI-8(민감 command 공통 부품 정리)을 먼저 볼지 정한다.** 실연동 게이트는 둘이며 둘 다 별도 출시 게이트가 소유한다 — Epic 1의 세 제공자 왕복, Epic 2의 Bybit 연결 정책·실연동(실제 검증 계정과 regional reserved IP 필요).
 
 스토리마다 무엇을 도입했고 리뷰가 무엇을 잡았는지는 아래 표의 SPEC이 소유한다. 그 코드를 건드릴 때 해당 SPEC의 `## Design Notes`와 "구현에서 확정한 것"을 읽는다.
 
@@ -183,7 +183,8 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 2.14 계획 자연 만료·완료 결과 | done | `spec-2-14-plan-natural-completion.md`, PR #60 머지 커밋 `1c92f5f` |
 | 2.15 새 정상 기준·후속 계획 | done | `spec-2-15-successor-plan.md`, PR #63 머지 커밋 `816289366f57f6e3d067ed59359d7399c02b433b` |
 | 2.16 연결 해제·기록 보존 | done | `spec-2-16-bybit-connection-revocation.md`, PR #65 머지 커밋 `9aae04d` |
-| Epic 2 | **완료** | 16개 스토리 전부 done. 회고는 선택 |
+| Epic 2 | **완료** | 16개 스토리 전부 done |
+| Epic 2 회고 | done | `epic-2-retro-2026-10-05.md`, 판정 `accepted-with-open-items`, 액션 13건 |
 
 ## 스토리가 고정한 계약
 

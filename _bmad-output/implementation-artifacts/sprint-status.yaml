@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 2026-10-05
+last_updated: 10-05-2026 19:21
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -66,7 +66,7 @@ development_status:
   2-14-자연-만료-계획의-첫-종료-후-관측값과-완료-결과-확정하기: done
   2-15-새-정상-스냅샷을-기준으로-후속-계획-생성하기: done
   2-16-bybit-연결을-해제하고-기존-계획-기록을-읽기-전용으로-보존하기: done
-  epic-2-retrospective: optional
+  epic-2-retrospective: done
 
   epic-3: backlog
   3-1-보호된-운영자-표면과-추가-전용-감사-원장-마련하기: backlog
@@ -143,14 +143,14 @@ action_items:
     action: "SECURITY-ACTION-1.0(ERD 5장)의 다섯 번째 귀속인 confirmation hash를 정한다 — 화면이 보여
       준 실제 확인 문구를 해시에 넣어 살리거나, ERD를 네 귀속 + 선택적 확인 해시로 정정한다. 현재 판별력이 0이다"
     owner: "SSAFY"
-    status: open
+    status: in-progress
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
   - id: "epic-1-retro-item-8-미룬-결정-원장-deferred-work-resolutions-md-의"
     epic: 1
     action: "미룬 결정 원장(deferred-work-resolutions.md)의 판정 단계를 강제 가능한 자리에 넣는다. 항목 51~64가
       판정을 받지 못한 것이 deferred-work.md 항목 35가 예고한 재발의 네 번째 증거다"
     owner: "SSAFY"
-    status: open
+    status: in-progress
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
   - id: "epic-1-retro-item-9-architecture-spine-md의-모듈-지도를-as-built에"
     epic: 1
@@ -171,7 +171,7 @@ action_items:
     action: "AuthSecurityConfig의 permitAll 근거 주석을 현실에 맞게 고치고, 인가 규칙 도입 시점을 Epic 2
       착수 전에 정한다. 도달 불가능한 authenticationEntryPoint 401도 함께 판단한다"
     owner: "SSAFY"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
   - id: "epic-1-retro-item-12-반복-로그아웃-403의-화면-처리를-정한다-signout-ts가-403"
     epic: 1
@@ -180,3 +180,92 @@ action_items:
     owner: "SSAFY"
     status: open
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
+  - id: "epic-2-retro-item-13-reconnect-1-0-동일-uid-재사용-다른-uid-활성-계획-차단"
+    epic: 2
+    action: "RECONNECT-1.0(동일 UID 재사용·다른 UID 활성 계획 차단)을 구현할 스토리를 정해 epics.md에 배치하고,
+      그 전까지 해제 사용자 새 연결의 영구 차단을 accepted deviation으로 기록한다(회고 R-1)"
+    owner: "PM(사용자)"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
+  - id: "epic-2-retro-item-14-시스템-트리거-정밀-검증-네-사유-plan_end_preparation"
+    epic: 2
+    action: "시스템 트리거 정밀 검증 네 사유(PLAN_END_PREPARATION·UNRECOGNIZED_EVENT·DUPLICATE_SUSPECTED·OPERATOR_INVESTIGATION)의
+      호출 스토리를 정하거나 2.12 AC-1을 사용자 요청 하나로 정정한다 — admitSystemVerification은 시험에서만 불린다(R-2)"
+    owner: "PM"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
+  - id: "epic-2-retro-item-15-해제된-계획도-t가-지나면-연결과-무관하게-completed로-전환하고"
+    epic: 2
+    action: "해제된 계획도 T가 지나면 연결과 무관하게 COMPLETED로 전환하고 완료 비교를 UNAVAILABLE로 확정한다(사용자
+      결정). PlanSyncService 접수의 complete() 선행으로 오래된 탭 유무에 따라 종단이 갈리는 것을 없애고, 잠금 없는
+      접수가 남기는 고아 QUEUED 행을 정리한다(B-1·B-3)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
+  - id: "epic-2-retro-item-16-발행-지점별-운영-제한-command-집합을-한-정의로-모으고-planc"
+    epic: 2
+    action: "발행 지점별 운영 제한 command 집합을 한 정의로 모으고 PlanConditionService의 \"first-snapshot\"\
+      ·\"bybit-connection-create\" 리터럴을 시험으로 고정한다(B-2)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
+  - id: "epic-2-retro-item-17-ad-17-scope-제한-대시보드-표시-단계-제한-연결-해제의-제한-우"
+    epic: 2
+    action: "AD-17 scope 제한·대시보드 표시 단계 제한·연결 해제의 제한 우회 근거를 Story 3.2 SPEC 입력으로 넘긴다(R-3)"
+    owner: "Architect"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
+  - id: "epic-2-retro-item-18-미룬-결정-원장-상태-표를-103건에-맞추고-epic-2-미판정-33건"
+    epic: 2
+    action: "미룬 결정 원장 상태 표를 103건에 맞추고 Epic 2 미판정 33건(71·72 우선)을 판정하며 CLAUDE.md의 건수도
+      맞춘다(R-8)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
+  - id: "epic-2-retro-item-19-architecture-spine-erd-새-버전으로-as-built를"
+    epic: 2
+    action: "ARCHITECTURE-SPINE·ERD 새 버전으로 as-built를 반영한다 — 루트 패키지, 작업 표 6개와 종단 code,
+      plan_end·plan_completion·sync_next_plan_baseline 소유, JdbcClient, 정정·충돌 정의(A-3·R-4·R-7)"
+    owner: "Architect"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
+  - id: "epic-2-retro-item-20-epic-3-운영자-민감-command-전에-공통-부품을-모은다-세션-무"
+    epic: 2
+    action: "Epic 3 운영자 민감 command 전에 공통 부품을 모은다 — 세션 무장 Flow 6벌·rotate·허가 무효화(참조
+      단위로 통일), 멱등 키 규칙 5벌·메시지, lease 저장소 수명 상수, 대화상자 모달 동작(D-1~D-4)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
+  - id: "epic-2-retro-item-21-usedashboard-ts-파서-훅-카피-조립-와-planpublica"
+    epic: 2
+    action: "useDashboard.ts(파서·훅·카피 조립)와 PlanPublicationService(발행·대시보드 읽기·계보)를 책임
+      단위로 나눈다(S-1)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
+  - id: "epic-2-retro-item-22-코드-주석-언어-규칙을-정해-claude-md-언어-절에-한-줄로-둔다"
+    epic: 2
+    action: "코드 주석 언어 규칙을 정해 CLAUDE.md 언어 절에 한 줄로 둔다 — Epic 2 신규 코드는 영어 주석이 과반이다(P-1)"
+    owner: "사용자"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
+  - id: "epic-2-retro-item-23-m2-4-브라우저-근거를-보강한다-연결-해제-후속-계획-e2e를-주입-o"
+    epic: 2
+    action: "M2-4 브라우저 근거를 보강한다 — 연결 해제·후속 계획 e2e를 주입 origin에 더하고 자연 완료는 accepted
+      deviation으로 기록한다(R-6)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
+  - id: "epic-2-retro-item-24-사용자-소유-표-전체를-information_schema로-훑어-eras"
+    epic: 2
+    action: "사용자 소유 표 전체를 information_schema로 훑어 erase 경로를 대조하는 완전성 시험을 둔다(B-4)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
+  - id: "epic-2-retro-item-25-리뷰-patch-루프와-2차-리뷰의-기록-위치를-정한다-spec-chan"
+    epic: 2
+    action: "리뷰 patch 루프와 2차 리뷰의 기록 위치를 정한다 — SPEC Change Log 사용 또는 review_loop_iteration을
+      patch 루프에도 올릴지(C-2)"
+    owner: "사용자"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
