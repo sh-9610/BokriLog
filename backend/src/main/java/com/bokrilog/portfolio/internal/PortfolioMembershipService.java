@@ -129,6 +129,18 @@ class PortfolioMembershipService implements PortfolioMembershipApi {
     }
 
     @Override
+    public Optional<Instant> activeMembershipStart(UUID userId, UUID connectionId) {
+        return this.repository.activeMembershipStart(userId, connectionId);
+    }
+
+    @Override
+    public int endSourceMembership(UUID userId, UUID connectionId, Instant endedAt) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("ending a membership joins the caller's transaction");
+        return this.repository.endMembership(userId, connectionId, endedAt);
+    }
+
+    @Override
     public void erasePortfolioData(@Nullable UUID userId) {
         if (userId == null) {
             return;

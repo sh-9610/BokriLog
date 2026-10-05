@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react'
 
 import { BybitConnectionForm } from '../components/BybitConnectionForm'
+import { ConnectionRevokeDialog } from '../components/ConnectionRevokeDialog'
 import { ProviderMark } from '../components/ProviderMark'
 import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
@@ -12,7 +13,13 @@ import {
   SIGN_IN_PROVIDERS,
   type SignInProvider,
 } from '../content/auth'
-import { connectionContent, formatVerifiedAt, rejectionMessage } from '../content/connection'
+import {
+  connectionContent,
+  formatVerifiedAt,
+  rejectionMessage,
+  revocationContent,
+  revocationRejectionMessage,
+} from '../content/connection'
 import { entryContent } from '../content/entry'
 import { fetchLinkedProviders } from '../session/linkProvider'
 import { useBybitConnection, type ConnectionNotice } from '../session/useBybitConnection'
@@ -44,6 +51,19 @@ function connectionNoticeText(notice: ConnectionNotice | null, formOpen: boolean
   }
   if (notice.kind === 'cancelled') {
     return connectionContent.cancelled
+  }
+  // 연결 해제(Story 2.16)의 결과. 대화상자가 닫힌 뒤에만 이 region이 말한다.
+  if (notice.kind === 'revoked') {
+    return revocationContent.revokedNotice
+  }
+  if (notice.kind === 'revokeCancelled') {
+    return revocationContent.cancelled
+  }
+  if (notice.kind === 'revokeUnknown') {
+    return revocationContent.unknown
+  }
+  if (notice.kind === 'revokeRejected') {
+    return revocationRejectionMessage(notice.code)
   }
   return formOpen ? null : rejectionMessage(notice.code)
 }
@@ -227,7 +247,8 @@ export function SettingsScreen(): ReactElement {
    */
   const connectionNotice = connection.notice
   useLayoutEffect(() => {
-    if (connectionNotice?.kind === 'succeeded') {
+    // 해제에 성공하면 해제 버튼이 사라진다(Story 2.16). 같은 이유로 결과 문장이 초점을 받는다.
+    if (connectionNotice?.kind === 'succeeded' || connectionNotice?.kind === 'revoked') {
       unlinkNoticeRef.current?.focus()
     }
   }, [connectionNotice])
@@ -255,7 +276,7 @@ export function SettingsScreen(): ReactElement {
    * 연결·본인 확인·로그아웃이 눌리면 안 된다 — 그 조작들은 열려 있는 해제 무장을 버리므로, 사용자가
    * 확인을 누르는 순간 이유 없이 실패한다.
    */
-  const dialogOpen = unlinking.confirming !== null
+  const dialogOpen = unlinking.confirming !== null || connection.revocation !== null
   /**
    * 연결 구역의 조작을 시작한다.
    *
@@ -586,6 +607,50 @@ export function SettingsScreen(): ReactElement {
                       </div>
                     </dl>
                     <p className={styles.boundary}>{connectionContent.connectedBoundary}</p>
+                    {/*
+                      연결 해제(Story 2.16). 보조 조작이며 누르면 확인 대화상자가 열린다 — 여는 요청은
+                      허가를 발급하고 무장할 뿐 아무것도 지우지 않는다. 연결 참조를 아직 모르면(연결 직후
+                      응답이 참조를 싣지 않은 재전송) 그리지 않는다.
+                    */}
+                    {connection.view.connectionId === null ? null : (
+                      <button
+                        aria-disabled={busy}
+                        className={styles.retryButton}
+                        id={revocationContent.buttonId}
+                        onClick={() => {
+                          if (busy) {
+                            return
+                          }
+                          runConnection(connection.startRevocation)
+                        }}
+                        type="button"
+                      >
+                        {revocationContent.start}
+                      </button>
+                    )}
+                  </>
+                ) : connection.view.revoked ? (
+                  /*
+                    해제된 연결. 상태를 글자로 말하고(색만으로 전하지 않는다) 남는 것과 멈추는 것을
+                    구분한다. 재연결 정책이 아직 없으므로 동작하지 않는 연결 조작을 내지 않는다.
+                  */
+                  <>
+                    <p className={styles.linkedState}>{revocationContent.revoked}</p>
+                    <dl className={styles.connectionMeta}>
+                      <div className={styles.connectionMetaRow}>
+                        <dt className={styles.connectionTerm}>
+                          {revocationContent.revokedAtLabel}
+                        </dt>
+                        <dd className={styles.connectionValue}>
+                          {connection.view.revokedAt === null
+                            ? ''
+                            : formatVerifiedAt(connection.view.revokedAt)}
+                        </dd>
+                      </div>
+                    </dl>
+                    <p className={styles.boundary}>{revocationContent.revokedBoundary}</p>
+                    <p className={styles.boundary}>{revocationContent.remoteKey}</p>
+                    <p className={styles.boundary}>{revocationContent.reconnectUnavailable}</p>
                   </>
                 ) : connection.confirmation === null ? (
                   <>
@@ -676,6 +741,14 @@ export function SettingsScreen(): ReactElement {
         해제에 성공하면 호출점으로 돌려주지 않는다(`restoreFocus`). 그 버튼은 곧 사라지고, 포커스는
         화면이 결과 문장으로 옮겨 받는다.
       */}
+      {connection.revocation === null ? null : (
+        <ConnectionRevokeDialog
+          dialog={connection.revocation}
+          onCancel={connection.cancelRevocation}
+          onConfirm={connection.confirmRevocation}
+          restoreFocus={connection.notice?.kind !== 'revoked'}
+        />
+      )}
       {unlinking.confirming === null ? null : (
         <UnlinkDialog
           onCancel={unlinking.cancel}

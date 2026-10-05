@@ -35,7 +35,9 @@ class FirstSnapshotController {
     record SnapshotState(boolean connected,boolean restricted,@Nullable JobState job,
             @Nullable String decimal,@Nullable String currency,
             @Nullable String measuredAt,@Nullable String composedAt,@Nullable String publishedAt,
-            @Nullable UUID snapshotId) {}
+            @Nullable UUID snapshotId,
+            // Story 2.16: present (true) only after a revocation; the screen then offers no connection.
+            @Nullable Boolean revoked) {}
     record CollectionRequest(UUID intentId) {}
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record CollectionJobState(UUID jobId,String status,@Nullable String failureCode,
@@ -90,7 +92,8 @@ class FirstSnapshotController {
                         value==null ? null : value.measuredAt().toString(),
                         value==null ? null : value.composedAt().toString(),
                         value==null ? null : value.publishedAt().toString(),
-                        value==null ? null : value.snapshotId()));
+                        value==null ? null : value.snapshotId(),
+                        state.get().revoked() ? Boolean.TRUE : null));
     }
     @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/inputs",
             consumes=MediaType.APPLICATION_JSON_VALUE,produces=MediaType.APPLICATION_JSON_VALUE)

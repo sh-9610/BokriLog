@@ -12,8 +12,9 @@ import org.jspecify.annotations.Nullable;
 /** 첫 공식 snapshot 작업과 화면 조회의 소유 경계. */
 public interface SyncJobApi {
     record Job(UUID jobId, String status, @Nullable String failureReason) {}
+    /** @param revoked the user revoked the connection (Story 2.16): no new connection is offered, only a notice */
     record State(@Nullable Job job, @Nullable OfficialValue officialValue,
-            boolean connected, boolean restricted) {}
+            boolean connected, boolean restricted, boolean revoked) {}
     record SourceSnapshot(UUID sourceSnapshotId, UUID userId, UUID connectionId,
             UUID providerAccountId, String inputStatus, String policyVersion) {}
     record CollectionJob(UUID jobId, String status, @Nullable String failureCode,
@@ -844,6 +845,37 @@ public interface SyncJobApi {
      */
     VerificationAdmission admitSystemVerification(@Nullable UUID userId, VerificationReason reason,
             List<InvestigationRange> ranges, @Nullable String idempotencyKey);
+
+    // ------------------------------------------------------------------ Story 2.16
+
+    /**
+     * The connection revocation's first lock: the user's plan write lock, the one every publisher takes first
+     * ({@link PlanPublicationPort#lockPlanWrites}). <b>Caller's transaction only.</b> The caller then takes the account
+     * lifecycle lock and the connection row; {@link #endConnectionWork} takes the attempt rows last — the publishers'
+     * order, so a publication either committed before the revocation or waits for it and then reads the connection
+     * revoked.
+     */
+    void lockConnectionRevocation(UUID userId);
+
+    /** How many attempts of each table a revocation ended. */
+    record EndedConnectionWork(int firstSnapshots, int planSyncs, int collections, int classifications,
+            int conversions, int publications) {
+        public int total() {
+            return firstSnapshots + planSyncs + collections + classifications + conversions + publications;
+        }
+    }
+
+    /**
+     * Ends every attempt of the connection still queued or running, with each table's own refusal ending: a first
+     * snapshot, a plan sync and a first publication {@code BLOCKED}/{@code NOT_PERMITTED}, a collection, a
+     * classification and a conversion {@code CANCELLED}/{@code NOT_PERMITTED}; the stage rows of an ended plan sync go
+     * with it whatever connection they name. Every ending time is {@code revokedAt}, never before the row's own
+     * admission. The lease goes with it, so no holder can
+     * heartbeat, store a page or publish any more: every holder's next fenced statement finds the row not running.
+     * <b>Caller's transaction only</b>, after {@link #lockConnectionRevocation} and the account lifecycle lock. Plan
+     * syncs end before their stage rows — a stage's own lock order, attempt before child.
+     */
+    EndedConnectionWork endConnectionWork(UUID userId, UUID connectionId, Instant revokedAt);
 
     /** portfolio 삭제 뒤, source 삭제 앞에 호출한다. 발행 결과·시도를 먼저 지운다. */
     void eraseSyncData(@Nullable UUID userId);

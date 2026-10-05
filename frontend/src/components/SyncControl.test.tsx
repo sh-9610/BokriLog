@@ -162,6 +162,21 @@ describe('SyncControl', () => {
     expect(document.body.textContent).not.toContain('SOMETHING_NEW')
   })
 
+  it('a revoked connection (Story 2.16) shows no sync control, only the reason as text', () => {
+    const request = vi.fn()
+    render(
+      <SyncControl
+        verification={AVAILABLE_VERIFICATION}
+        status={status({ availability: 'UNAVAILABLE', reason: 'CONNECTION_REVOKED' })}
+        sync={idleSyncState({ canRequest: false, request })}
+      />,
+    )
+    expect(screen.getByText(copy.reasons.CONNECTION_REVOKED)).toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    expect(screen.queryByText(copy.recentEvents)).not.toBeInTheDocument()
+    expect(request).not.toHaveBeenCalled()
+  })
+
   it.each([
     ['FAILED', 'PROVIDER_UNAVAILABLE', copy.summary.statuses.FAILED],
     ['NEEDS_REVIEW', 'CONVERSION_REQUIRES_REVIEW', copy.summary.statuses.NEEDS_REVIEW],
@@ -1154,6 +1169,41 @@ describe('새 계획 시작 in the long-gap choice (Story 2.13)', () => {
   function newPlanButton(): HTMLElement {
     return screen.getByRole('button', { name: copy.longGap.newPlanAction })
   }
+
+  it('a revoked plan after a long gap keeps 새 계획 시작 so it can still end (Story 2.16)', () => {
+    const request = vi.fn()
+    render(
+      <SyncControl
+        verification={AVAILABLE_VERIFICATION}
+        status={status({ availability: 'UNAVAILABLE', reason: 'CONNECTION_REVOKED' })}
+        sync={idleSyncState({ canRequest: false })}
+        newPlan={choice({ flow: idlePlanEnd({ request }) })}
+      />,
+    )
+    expect(screen.getByText(copy.reasons.CONNECTION_REVOKED)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: copy.action })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: copy.longGap.continueAction }),
+    ).not.toBeInTheDocument()
+    expect(newPlanButton()).toHaveAttribute('id', planEndContent.newPlanActionId)
+    expect(newPlanButton()).toHaveAttribute('aria-disabled', 'false')
+    fireEvent.click(newPlanButton())
+    expect(request).toHaveBeenCalledWith('LONG_GAP_NEW_PLAN')
+  })
+
+  it('a revoked plan without a long gap shows no new-plan button: the end area offers the early end', () => {
+    render(
+      <SyncControl
+        verification={AVAILABLE_VERIFICATION}
+        status={status({ availability: 'UNAVAILABLE', reason: 'CONNECTION_REVOKED' })}
+        sync={idleSyncState({ canRequest: false })}
+        newPlan={choice({
+          status: parsePlanEndStatus(planEndFixture({ availability: 'AVAILABLE' })),
+        })}
+      />,
+    )
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
 
   it('sits right after 기존 계획 계속 and starts the end flow with the long-gap reason', () => {
     const request = vi.fn()

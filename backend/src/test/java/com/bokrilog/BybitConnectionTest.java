@@ -242,19 +242,11 @@ class BybitConnectionTest extends AuthFlowTestBase {
         UUID providerAccountId = providerAccountIdOf(session.userId()).orElseThrow();
 
         /*
-         * 연결 해제는 Story 2.16의 것이다. 여기서 보려는 것은 "자격정보·connection 교체에도
-         * 안정 식별자가 재사용되는가"이므로 그 전제만 SQL로 만든다 — 해제 표면을 미리 만들면
-         * 이 스토리의 Never를 어긴다.
-         *
-         * 두 문장인 것이 이 스키마의 사실이다. 연결을 끝내는 것과 membership 구간을 닫는 것이
-         * 서로 다른 테이블의 일이고, 구간을 열어 둔 채로 두면 다음 연결이 `portfolio당 활성
-         * source 하나` 색인에 걸린다 — 그 규칙이 애플리케이션이 아니라 DB에 있다는 증거이기도
-         * 하다.
+         * 여기서 보려는 것은 "자격정보·connection 교체에도 안정 식별자가 재사용되는가"다. Story 2.16부터 해제한
+         * 사용자의 새 연결은 단일 거부다(RECONNECT-1.0 구현 전) — 그래서 교체의 전제를 해제가 아니라 연결 행 삭제로
+         * 만든다. 행을 지우면 자격정보와 membership이 CASCADE로 함께 사라지고 제공자 계정·portfolio는 남는다.
          */
-        jdbc().sql("UPDATE source_connection SET status = 'REVOKED'").update();
-        jdbc()
-                .sql("UPDATE portfolio_source_membership SET ended_at = GREATEST(now(), started_at + interval '1 microsecond') WHERE ended_at IS NULL")
-                .update();
+        jdbc().sql("DELETE FROM source_connection WHERE user_id=:u").param("u", session.userId()).update();
 
         Session again = reauthenticate(session);
         assertThat(
@@ -270,7 +262,7 @@ class BybitConnectionTest extends AuthFlowTestBase {
         assertThat(providerAccountIdOf(session.userId())).contains(providerAccountId);
         // portfolio도 재사용된다. 두 번째 연결이 두 번째 묶음을 만들지 않는다.
         assertThat(portfolioCount()).isEqualTo(1);
-        assertThat(membershipCount()).isEqualTo(2);
+        assertThat(membershipCount()).isEqualTo(1);
     }
 
     // ----------------------------------------------------------------------

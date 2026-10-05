@@ -142,7 +142,7 @@ class BybitConnectionService {
     sealed interface Outcome {
 
         /** 여섯이 한 트랜잭션으로 커밋됐다. 세션 재회전이 뒤따랐다. */
-        record Connected(Instant verifiedAt, String policyVersion) implements Outcome {}
+        record Connected(Instant verifiedAt, String policyVersion, @Nullable UUID connectionId) implements Outcome {}
 
         /** 저장되지 않았다. */
         record Rejected(SourceRejectionReason reason) implements Outcome {}
@@ -172,6 +172,21 @@ class BybitConnectionService {
         return this.sources.findActiveConnection(userId);
     }
 
+    /** 그 사용자의 현재 연결 — 활성 연결, 없으면 가장 최근에 해제된 연결(Story 2.16). */
+    Optional<SourceConnectionApi.ConnectionStatus> currentConnection(@Nullable UUID userId) {
+        return this.sources.currentConnection(userId);
+    }
+
+    /**
+     * 새 연결을 받지 않는 상태인가. 운영 제한, 이미 있는 활성 연결, 그리고 해제된 연결(Story 2.16)이다 — 재연결 정책
+     * ({@code RECONNECT-1.0})이 구현되기 전까지 해제한 사용자의 새 연결은 단일 거부다. 지금의 저장은 활성 계획과 UID를
+     * 대조하지 않으므로 열어 두면 다른 UID가 그 계획의 portfolio에 붙는다.
+     */
+    private boolean refusesNewConnection(UUID userId) {
+        return this.restrictions.isRestricted(COMMAND) || this.sources.hasActiveConnection(userId)
+                || this.sources.hasRevokedConnection(userId);
+    }
+
     /**
      * 자격정보 입력 폼을 열 준비를 한다. <b>아무것도 바꾸지 않는다.</b>
      *
@@ -197,7 +212,7 @@ class BybitConnectionService {
              */
             return new Preparation.Rejected(SourceRejectionReason.UNAVAILABLE);
         }
-        if (this.restrictions.isRestricted(COMMAND) || this.sources.hasActiveConnection(userId)) {
+        if (refusesNewConnection(userId)) {
             /*
              * 운영 제한이 걸려 있거나 이미 활성 연결이 있다. 두 경우가 같은 빈 값으로 접힌다.
              *
@@ -312,7 +327,7 @@ class BybitConnectionService {
             // 구성이 빈 스택이다. 제공자에 닿기 전에 닫는다(`start`와 같은 게이트).
             return rejected(SourceRejectionReason.UNAVAILABLE);
         }
-        if (this.restrictions.isRestricted(COMMAND) || this.sources.hasActiveConnection(userId)) {
+        if (refusesNewConnection(userId)) {
             // 외부 호출 0건으로 끝난다. 거절될 자격정보로 제공자를 두드리지 않는다.
             return rejected(SourceRejectionReason.NOT_PERMITTED);
         }
@@ -332,7 +347,9 @@ class BybitConnectionService {
          * 가르는 재료는 하나뿐이다 — 건넨 작업이 불렸는가(`UnlinkService.complete`와 같은 상자).
          */
         AtomicBoolean stored = new AtomicBoolean(false);
-        Outcome outcome = consume(session, armed, verified, credentials, confirmation, stored);
+        java.util.concurrent.atomic.AtomicReference<@Nullable UUID> connectionId =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Outcome outcome = consume(session, armed, verified, credentials, confirmation, stored, connectionId);
         if (outcome instanceof Outcome.Connected && stored.get()) {
             rotate(request);
         }
@@ -346,7 +363,8 @@ class BybitConnectionService {
             SourceVerification.Verified verified,
             SourceCredentials credentials,
             String confirmation,
-            AtomicBoolean stored) {
+            AtomicBoolean stored,
+            java.util.concurrent.atomic.AtomicReference<@Nullable UUID> connectionId) {
         ConsumptionRequest consumption =
                 new ConsumptionRequest(
                         session,
@@ -396,10 +414,11 @@ class BybitConnectionService {
                                         saved.providerAccountId(),
                                         verified.verifiedAt());
                                 stored.set(true);
+                                connectionId.set(saved.connectionId());
                                 return RESULT_CONNECTED;
                             });
             return result instanceof Consumption.ConsumedRequiringSessionRotation
-                    ? new Outcome.Connected(verified.verifiedAt(), verified.policyVersion())
+                    ? new Outcome.Connected(verified.verifiedAt(), verified.policyVersion(), connectionId.get())
                     : rejected(SourceRejectionReason.NOT_PERMITTED);
         } catch (StoreRejected rejection) {
             // 소비 UPDATE까지 함께 롤백됐다. 저장소에 남은 변화는 0건이다.

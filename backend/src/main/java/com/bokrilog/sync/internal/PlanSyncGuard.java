@@ -28,6 +28,11 @@ class PlanSyncGuard {
 
     static final String RESTRICTED = "RESTRICTED";
     static final String CONNECTION_UNAVAILABLE = "CONNECTION_UNAVAILABLE";
+    /**
+     * The plan's own connection was revoked (Story 2.16): no new data reaches it any more. A cause of its own beside
+     * {@link #CONNECTION_UNAVAILABLE}, so the dashboard can say why the values stop instead of a generic cause.
+     */
+    static final String CONNECTION_REVOKED = "CONNECTION_REVOKED";
     static final String PLAN_PERIOD_ENDED = "PLAN_PERIOD_ENDED";
     /** The closed codes a running attempt ends with when {@link #blocked} stops it. */
     static final String NOT_PERMITTED = "NOT_PERMITTED";
@@ -101,7 +106,7 @@ class PlanSyncGuard {
         if (restricted()) return RESTRICTED;
         if (!sameConnection(user, connectionId, providerAccountId)
                 || !sameMembership(user, membershipId, portfolioId, connectionId, providerAccountId))
-            return CONNECTION_UNAVAILABLE;
+            return connectionCause(user, connectionId);
         return null;
     }
 
@@ -131,9 +136,14 @@ class PlanSyncGuard {
         if (restricted()) return RESTRICTED;
         if (!sameConnection(user, connectionId, providerAccountId)
                 || !sameMembership(user, membershipId, portfolioId, connectionId, providerAccountId))
-            return CONNECTION_UNAVAILABLE;
+            return connectionCause(user, connectionId);
         if (!now.isBefore(endAt)) return PLAN_PERIOD_ENDED;
         return null;
+    }
+
+    /** Why the plan's connection is not usable: revoked by the user (Story 2.16), or otherwise gone or replaced. */
+    private String connectionCause(UUID user, UUID connectionId) {
+        return sources.isRevoked(user, connectionId) ? CONNECTION_REVOKED : CONNECTION_UNAVAILABLE;
     }
 
     boolean sameConnection(UUID user, UUID connectionId, UUID providerAccountId) {

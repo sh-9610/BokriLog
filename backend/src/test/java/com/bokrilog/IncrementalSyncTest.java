@@ -658,8 +658,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
                 case "DELETION" -> accountDeletion().beginDeletion(user);
                 case "RESTRICTION" -> jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) "
                         + "VALUES (gen_random_uuid(),'plan-sync')").update();
-                case "CONNECTION" -> jdbc().sql("UPDATE source_connection SET status='REVOKED' WHERE user_id=:u")
-                        .param("u", user).update();
+                case "CONNECTION" -> revokeConnectionOf(user);
                 case "MEMBERSHIP" -> jdbc().sql("UPDATE portfolio_source_membership SET ended_at=now() WHERE portfolio_id "
                         + "IN (SELECT portfolio_id FROM portfolio WHERE user_id=:u)").param("u", user).update();
                 case "PLAN_END" -> endedBySql(user, v1);
@@ -700,7 +699,9 @@ class IncrementalSyncTest extends PlanSyncTestBase {
             var dashboard = (SyncJobApi.Dashboard.Ready) sync.dashboard(user).dashboard();
             assertThat(dashboard.result().calculationId()).isEqualTo(v1.calculationId());
             assertThat(dashboard.sync().availability()).isEqualTo("UNAVAILABLE");
-            assertThat(dashboard.result().trust().freshness().cause()).isEqualTo("SYNC_UNAVAILABLE");
+            // Since Story 2.16 a revoked connection is the freshness cause itself.
+            assertThat(dashboard.result().trust().freshness().cause())
+                    .isEqualTo(change.equals("CONNECTION") ? "CONNECTION_REVOKED" : "SYNC_UNAVAILABLE");
             assertThat(dashboard.nextAction()).isEqualTo("NONE");
             assertThat(sync.admitPlanSync(user, SyncJobApi.SyncTrigger.MANUAL, "incremental-race-02"))
                     .isEqualTo(new SyncJobApi.SyncAdmission.Refused("SYNC_UNAVAILABLE"));

@@ -18,9 +18,11 @@ export interface SnapshotState {
   readonly composedAt?: string
   readonly publishedAt?: string
   readonly snapshotId?: string
+  /** The user revoked the connection (Story 2.16). Present only then. */
+  readonly revoked?: boolean
 }
 export type SnapshotView =
-  | { readonly kind: 'checking' | 'unconnected' | 'unavailable' }
+  | { readonly kind: 'checking' | 'unconnected' | 'unavailable' | 'revoked' }
   | { readonly kind: 'loaded'; readonly state: SnapshotState }
 
 const isJob = (value: unknown): value is SnapshotJob => {
@@ -40,7 +42,8 @@ const isState = (value: unknown): value is SnapshotState => {
     typeof row.restricted === 'boolean' &&
     (row.job === undefined || isJob(row.job)) &&
     (row.decimal === undefined || typeof row.decimal === 'string') &&
-    (row.measuredAt === undefined || typeof row.measuredAt === 'string')
+    (row.measuredAt === undefined || typeof row.measuredAt === 'string') &&
+    (row.revoked === undefined || typeof row.revoked === 'boolean')
   )
 }
 
@@ -83,7 +86,15 @@ export function useFirstSnapshot(
         if (!response.ok) throw new Error('snapshot request failed')
         const payload: unknown = await response.json()
         if (!isState(payload)) throw new Error('invalid snapshot state')
-        setView(payload.connected ? { kind: 'loaded', state: payload } : { kind: 'unconnected' })
+        // A revoked connection is its own state (Story 2.16): reconnecting is not offered, only a notice.
+        // A revoked connection keeps its first official value read-only: shown with the revoked flag, no new read.
+        setView(
+          payload.connected || (payload.revoked === true && payload.decimal !== undefined)
+            ? { kind: 'loaded', state: payload }
+            : payload.revoked === true
+              ? { kind: 'revoked' }
+              : { kind: 'unconnected' },
+        )
         if (payload.job?.status === 'QUEUED' || payload.job?.status === 'RUNNING') {
           timer = setTimeout(() => {
             void read()

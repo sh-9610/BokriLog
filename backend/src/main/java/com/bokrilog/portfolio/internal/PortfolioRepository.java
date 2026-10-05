@@ -210,6 +210,27 @@ class PortfolioRepository {
                 rs.getObject(4,UUID.class))).optional();
     }
 
+    /** The latest start of the connection's open intervals in the user's portfolios. */
+    Optional<Instant> activeMembershipStart(UUID userId, UUID connectionId) {
+        return this.jdbc.sql("SELECT max(m.started_at) FROM portfolio_source_membership m JOIN portfolio p "
+                + "ON p.portfolio_id=m.portfolio_id WHERE p.user_id=:userId AND m.connection_id=:connectionId "
+                + "AND m.ended_at IS NULL")
+            .param("userId", userId).param("connectionId", connectionId)
+            .query((rs, n) -> {
+                OffsetDateTime at = rs.getObject(1, OffsetDateTime.class);
+                return at == null ? null : at.toInstant();
+            })
+            .optional();
+    }
+
+    /** Closes the connection's open interval in the user's portfolios at {@code endedAt}. */
+    int endMembership(UUID userId, UUID connectionId, Instant endedAt) {
+        return this.jdbc.sql("UPDATE portfolio_source_membership SET ended_at=:endedAt WHERE connection_id=:connectionId "
+                + "AND ended_at IS NULL AND portfolio_id IN (SELECT portfolio_id FROM portfolio WHERE user_id=:userId)")
+            .param("endedAt", OffsetDateTime.ofInstant(endedAt, ZoneOffset.UTC))
+            .param("connectionId", connectionId).param("userId", userId).update();
+    }
+
     /**
      * 이 사용자의 portfolio 데이터를 지운다.
      *

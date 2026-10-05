@@ -233,6 +233,21 @@ describe('VerificationControl', () => {
     expect(document.body.textContent).not.toContain('SOMETHING_NEW')
   })
 
+  it('a revoked connection (Story 2.16) shows no verification button, only the reason as text', () => {
+    render(
+      <VerificationControl
+        status={status({
+          availability: 'UNAVAILABLE',
+          reason: 'CONNECTION_REVOKED',
+          preview: null,
+        })}
+        sync={idleSyncState({ canVerify: false })}
+      />,
+    )
+    expect(screen.getByText(copy.reasons.CONNECTION_REVOKED)).toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
+
   it('a block it could not read blocks the button with a safe reason', () => {
     render(
       <VerificationControl

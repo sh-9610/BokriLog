@@ -74,13 +74,18 @@ class AuthSessionController {
      */
     private final BybitConnectionService bybitConnectionService;
 
+    /** Bybit 연결 해제(Story 2.16). 같은 설정 화면의 다섯 번째 무장이라 같은 규칙을 지난다. */
+    private final BybitRevocationCommandService bybitRevocations;
+
     AuthSessionController(
             LinkService linkService,
             UnlinkService unlinkService,
-            BybitConnectionService bybitConnectionService) {
+            BybitConnectionService bybitConnectionService,
+            BybitRevocationCommandService bybitRevocations) {
         this.linkService = linkService;
         this.unlinkService = unlinkService;
         this.bybitConnectionService = bybitConnectionService;
+        this.bybitRevocations = bybitRevocations;
     }
 
     /**
@@ -112,6 +117,7 @@ class AuthSessionController {
         this.unlinkService.abandon(session);
         // Story 2.1의 네 번째 무장. 같은 화면에서 시작되므로 같은 규칙을 지난다.
         this.bybitConnectionService.abandon(session);
+        this.bybitRevocations.abandon(session);
     }
 
     /**
@@ -438,6 +444,7 @@ class AuthSessionController {
          */
         this.unlinkService.abandon(session);
         this.bybitConnectionService.abandon(session);
+        this.bybitRevocations.abandon(session);
         response.setStatus(HttpStatus.NO_CONTENT.value());
     }
 
@@ -484,6 +491,7 @@ class AuthSessionController {
         // 무장이 확정된 뒤에만 상대 흐름을 버린다(`startLink`와 같은 근거).
         this.linkService.abandon(session);
         this.bybitConnectionService.abandon(session);
+        this.bybitRevocations.abandon(session);
         response.setStatus(HttpStatus.NO_CONTENT.value());
     }
 

@@ -52,14 +52,17 @@ class SyncJobService implements SyncJobApi {
     private final PlanSyncService planSyncs;
     private final PlanSyncRepository planSyncAttempts;
     private final PlanVerificationService planVerifications;
+    private final ConnectionRevocationRepository revocations;
 
     SyncJobService(SyncJobRepository jobs, InitialCollectionRepository initialJobs,
             CashflowClassificationRepository classifications, CashflowConversionRepository conversions,
             SourceConnectionApi sources, PortfolioMembershipApi portfolios, AccountAccessApi accounts,
             OperationalRestrictionApi restrictions, InitialInputsPlanPort plans, PlatformTransactionManager manager,
             PlanPublicationService publications, AdjustmentHistoryService adjustments, PlanSyncService planSyncs,
-            PlanSyncRepository planSyncAttempts, PlanVerificationService planVerifications, PlanPublicationPort publicationPlans) {
+            PlanSyncRepository planSyncAttempts, PlanVerificationService planVerifications, PlanPublicationPort publicationPlans,
+            ConnectionRevocationRepository revocations) {
         this.publicationPlans=publicationPlans;
+        this.revocations=revocations;
         this.planSyncs=planSyncs;
         this.planVerifications=planVerifications;
         this.planSyncAttempts=planSyncAttempts;
@@ -158,10 +161,13 @@ class SyncJobService implements SyncJobApi {
                     .filter(s -> s.sourceSnapshotId().equals(baseline.sourceSnapshotId())
                             && jobs.sourceSnapshot(userId,s.sourceSnapshotId()).map(source -> "VERIFIED".equals(source.inputStatus())).orElse(false))
                     .orElse(null);
-            String reason=predecessor==null ? "NOT_ELIGIBLE" : jobs.busy(userId) ? "JOB_IN_PROGRESS"
+            // A revoked connection (Story 2.16) reads no new value: its own reason, before every other one.
+            boolean revoked=sources.snapshotConnection(userId).isEmpty() && sources.hasRevokedConnection(userId);
+            String reason=revoked ? "CONNECTION_REVOKED" : predecessor==null ? "NOT_ELIGIBLE"
+                    : jobs.busy(userId) ? "JOB_IN_PROGRESS"
                     : baseline!=null && snapshot==null ? "INPUT_UNCONFIRMED"
                     : snapshot!=null && new java.math.BigDecimal(snapshot.decimal()).signum()<=0 ? "PRINCIPAL_NOT_POSITIVE" : "AVAILABLE";
-            return new NextBaselineState(predecessor!=null && !jobs.busy(userId),reason,
+            return new NextBaselineState(!revoked && predecessor!=null && !jobs.busy(userId),reason,
                     jobs.latestNext(userId).orElse(null),baseline,snapshot);
         });
         return accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)==AccessDecision.ALLOWED
@@ -186,13 +192,21 @@ class SyncJobService implements SyncJobApi {
     public Optional<State> state(@Nullable UUID userId) {
         if (userId==null || accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)
                 !=AccessDecision.ALLOWED) return Optional.empty();
-        if (sources.snapshotConnection(userId).isEmpty())
-            return Optional.of(new State(null,null,false,false));
+        if (sources.snapshotConnection(userId).isEmpty()) {
+            /*
+             * Story 2.16: a revoked connection keeps the first official value read-only — the job and the value stay
+             * visible, flagged revoked, and no new read is offered. A revocation wins over a restriction.
+             */
+            if (sources.hasRevokedConnection(userId))
+                return Optional.of(new State(jobs.latest(userId).orElse(null),
+                        portfolios.officialValue(userId).orElse(null),false,false,true));
+            return Optional.of(new State(null,null,false,false,false));
+        }
         if (restrictions.isRestricted(SYNC_COMMAND)
                 || restrictions.isRestricted(CONNECTION_COMMAND))
-            return Optional.of(new State(null,null,true,true));
+            return Optional.of(new State(null,null,true,true,false));
         return Optional.of(new State(jobs.latest(userId).orElse(null),
-                portfolios.officialValue(userId).orElse(null),true,false));
+                portfolios.officialValue(userId).orElse(null),true,false,false));
     }
     @Override
     public Optional<CollectionJob> admitInitialInputs(@Nullable UUID userId, UUID intentId, String key) {
@@ -380,6 +394,20 @@ class SyncJobService implements SyncJobApi {
         if (ended!=null) ended.forEach(ending -> planSyncs.logEnding(new PlanSyncRepository.Ending(ending.jobId(),
                 ending.purpose(),ending.reason(),ending.trigger(),ending.mode(),"ERASED",ending.stage(),"-",
                 ending.latencyMs())));
+    }
+    @Override
+    public void lockConnectionRevocation(UUID userId) {
+        requireCallerTransaction();
+        publicationPlans.lockPlanWrites(userId);
+    }
+    @Override
+    public EndedConnectionWork endConnectionWork(UUID userId, UUID connectionId, Instant revokedAt) {
+        requireCallerTransaction();
+        return revocations.endWork(userId,connectionId,revokedAt);
+    }
+    private static void requireCallerTransaction() {
+        if (!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("the connection revocation joins the caller's transaction");
     }
     Optional<CashflowClassificationRepository.Lease> claimClassification() {
         return transactions.execute(status->classifications.claim().flatMap(lease->{
