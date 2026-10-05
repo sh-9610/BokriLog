@@ -2,7 +2,7 @@
 title: 'Deferred Work 해소 원장'
 status: living
 created: '2026-09-02'
-updated: '2026-10-04'
+updated: '2026-10-05'
 applies_to: '_bmad-output/implementation-artifacts/deferred-work.md'
 decision_baseline: 'ERD-1.0.0'
 ---
@@ -20,7 +20,9 @@ decision_baseline: 'ERD-1.0.0'
 | 해소 | 16 |
 | 부분 해소 | 4 |
 | 미해소 | 31 |
-| 미판정 | 51 |
+| 미판정 | 52 |
+
+**2026-10-05 갱신(Story 2.16 done 전환 뒤 재집계).** Story 2.16(PR #65)이 `deferred-work.md`에 항목 **103**(민감 command 확정이 커밋·세션 회전한 뒤 응답을 잃으면 같은 키 재시도가 회전 전 쿠키로 나가는 경로)을 append했는데 표가 102건에 머물러 있었다. 판정은 아직 없다. 그래서 표를 **103건** 기준으로 맞추고 미판정을 51→52로 늘렸다. 나머지 수치는 그대로다.
 
 **2026-10-04 갱신(Story 2.14 done 전환).** Story 2.14(PR #60)가 `deferred-work.md`에 항목 **101~102**를 append했다. 판정은 아직 없다. 그래서 표를 **102건** 기준으로 맞추고 미판정을 49→51로 늘렸다. 나머지 수치는 그대로다.
 
