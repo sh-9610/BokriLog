@@ -1,6 +1,6 @@
 # BokriLog
 
-Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개인 프로젝트다. BMAD 기획 산출물은 완료됐고 Epic 1은 닫혔으며 구현은 Epic 2를 진행 중이다. 제품 코드는 `frontend/`(React/Vite 정적 SPA), `backend/`(Spring Boot 최소 실행 기반), `deploy/`(Nginx 동일 출처 구성)로 이뤄져 있다. 절차와 명령의 상세는 `DEVELOPMENT.md`가 소유하고, 이 파일은 세션이 바로 일을 시작하는 데 필요한 규칙과 현재 지점만 담는다.
+Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개인 프로젝트다. BMAD 기획 산출물은 완료됐고 Epic 1·2는 닫혔으며 다음 구현은 Epic 3이다. 제품 코드는 `frontend/`(React/Vite 정적 SPA), `backend/`(Spring Boot 최소 실행 기반), `deploy/`(Nginx 동일 출처 구성)로 이뤄져 있다. 절차와 명령의 상세는 `DEVELOPMENT.md`가 소유하고, 이 파일은 세션이 바로 일을 시작하는 데 필요한 규칙과 현재 지점만 담는다.
 
 ## 언어
 
@@ -86,7 +86,7 @@ npm --prefix frontend run test:e2e
 
 ## 백엔드·동일 출처 실행
 
-`backend/`는 Java 25 + Spring Boot 4.1.1 + Gradle wrapper이고 모듈 경계는 Spring Modulith 2.1.1이 시험에서 검증한다(운영 classpath에는 없다). Story 1.3부터 PostgreSQL 18을 쓰고 Story 1.4부터 Spring Security OAuth2 Client·Spring Session JDBC가 있다. HTTP 엔드포인트는 `GET /api/status`, `GET /api/auth/session`, `POST /api/auth/logout`, `POST /api/auth/reauthenticate/<provider>`, 그리고 Spring Security 필터가 받는 `/api/auth/authorize/<provider>`·`/api/auth/callback/<provider>`다. Epic 2가 그 위에 `/api/connections/**`(Bybit 연결), `/api/snapshots/first/**`(첫 스냅샷·수집·판정·환산·계획 발행), `/api/plans/conditions/**`(계획 조건), `GET /api/dashboard`(공식 대시보드 — Story 2.8이 2.7의 `GET /api/plans/active`를 대체했고 옛 경로는 404다), `GET /api/dashboard/evidence`(현재 공식 결과의 계산 근거 — Story 2.9), `GET /api/dashboard/adjustments`(현재 공식 계산에 반영된 외부 자금흐름 조정 이력 — Story 2.10), `POST /api/dashboard/sync`(사용자 시점 증분 동기화 접수 — Story 2.11), `POST /api/dashboard/verification`(정밀 검증·기존 계획 계속 접수 — Story 2.12), `POST /api/dashboard/plan-end`와 그 `/confirm`·`/cancel`(활성 계획 중도 종료의 준비·확정·취소 — Story 2.13)를 더했다. Story 2.14는 새 경로 없이 `GET /api/dashboard`에 `COMPLETED` 상태를 더했다. 상태·인증 컨트롤러는 루트 패키지 `com.bokrilog`에 있고 모듈 패키지는 `identity`·`source`·`portfolio`·`operations`·`sync`·`plan`·`calculation` 일곱이다(`calculation`은 DB·Spring·시계·다른 모듈에 의존하지 않는 순수 모듈이다). Story 1.9부터 루트 패키지가 자기 테이블 하나(`action_grant`, `V3`)를 소유한다 — 그전까지 모든 테이블은 `identity` 소유였다. 컴파일 경고는 `-Werror`로 실패다.
+`backend/`는 Java 25 + Spring Boot 4.1.1 + Gradle wrapper이고 모듈 경계는 Spring Modulith 2.1.1이 시험에서 검증한다(운영 classpath에는 없다). Story 1.3부터 PostgreSQL 18을 쓰고 Story 1.4부터 Spring Security OAuth2 Client·Spring Session JDBC가 있다. HTTP 엔드포인트는 `GET /api/status`, `GET /api/auth/session`, `POST /api/auth/logout`, `POST /api/auth/reauthenticate/<provider>`, 그리고 Spring Security 필터가 받는 `/api/auth/authorize/<provider>`·`/api/auth/callback/<provider>`다. Epic 2가 그 위에 `/api/connections/**`(Bybit 연결), `/api/snapshots/first/**`(첫 스냅샷·수집·판정·환산·계획 발행), `/api/plans/conditions/**`(계획 조건), `GET /api/dashboard`(공식 대시보드 — Story 2.8이 2.7의 `GET /api/plans/active`를 대체했고 옛 경로는 404다), `GET /api/dashboard/evidence`(현재 공식 결과의 계산 근거 — Story 2.9), `GET /api/dashboard/adjustments`(현재 공식 계산에 반영된 외부 자금흐름 조정 이력 — Story 2.10), `POST /api/dashboard/sync`(사용자 시점 증분 동기화 접수 — Story 2.11), `POST /api/dashboard/verification`(정밀 검증·기존 계획 계속 접수 — Story 2.12), `POST /api/dashboard/plan-end`와 그 `/confirm`·`/cancel`(활성 계획 중도 종료의 준비·확정·취소 — Story 2.13)를 더했다. Story 2.14는 새 경로 없이 `GET /api/dashboard`에 `COMPLETED` 상태를 더했다. Story 2.16이 `POST /api/connections/bybit/revocation`과 그 `/confirm`·`/cancel`(Bybit 연결 해제의 준비·확정·취소)을 더했다. 상태·인증 컨트롤러는 루트 패키지 `com.bokrilog`에 있고 모듈 패키지는 `identity`·`source`·`portfolio`·`operations`·`sync`·`plan`·`calculation` 일곱이다(`calculation`은 DB·Spring·시계·다른 모듈에 의존하지 않는 순수 모듈이다). Story 1.9부터 루트 패키지가 자기 테이블 하나(`action_grant`, `V3`)를 소유한다 — 그전까지 모든 테이블은 `identity` 소유였다. 컴파일 경고는 `-Werror`로 실패다.
 
 제공자 자격정보는 여전히 필요 없다. 판정은 **제공자마다 독립**이다 — `BOKRILOG_PUBLIC_BASE_URL`과 그 제공자의 `BOKRILOG_<제공자>_CLIENT_ID`·`_CLIENT_SECRET` 중 하나라도 비면 그 등록만 만들어지지 않고 그 제공자의 인증 시작이 공통 오류 계약으로 fail-closed이며, 다른 제공자의 로그인은 살아 있다. 어느 제공자도 구성되지 않으면 `oauth2Login` DSL 자체를 배선하지 않는다. 서로 다른 두 등록이 같은 issuer로 해석되면 기동을 거부한다 — 조회 키가 `(issuer, subject)`라서 override 하나로 계정 병합이 열리기 때문이다(`DevOidcStubProfileTest`·`AuthNaverSignInTest`가 이 계약을 지킨다). 정상 흐름의 결정성은 `dev-oidc` 프로필에서만 사는 local OIDC 스텁이 만든다. 스텁 논리는 `DevOidcStub`이 소유하고 표면은 두 곳이다 — 개발·CI 스택은 `DevOidcStubConfig`가 `/api/dev-oidc/<제공자>/**`에 제공자마다 인스턴스 하나로 올리고(라우터 빈은 하나다)(브라우저와 백엔드가 같은 origin에서 도달해야 성공 경로를 브라우저 층에서 검증할 수 있다), 백엔드 시험은 `OidcStubConfiguration`이 루프백 HTTP 서버에 올린다. 스텁을 두 번 만들지 않는다. 그 프로필이 어느 제공자든 실제 등록과 함께 활성이면 기동을 거부하고, 실제 제공자 왕복은 Epic 1의 **실연동 미검증** 게이트가 소유한다. 백엔드가 자기 스텁에 닿는 주소는 `BOKRILOG_DEV_OIDC_INTERNAL_BASE_URL`이며 브라우저가 보는 origin과 다른 값이다.
 
@@ -148,7 +148,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 ## 현재 진행 지점
 
-기획은 완료됐고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. **Epic 1(11개)은 닫혔고 회고도 끝났다**(`epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건은 `sprint-status.yaml`의 `action_items`가 소유). Epic 2는 2.1~2.15가 `develop`에 머지됐고 M2-2(2.7)·M2-3(2.12) 검증 지점이 닫혔다. **다음 구현은 2.16(Bybit 연결을 해제하고 기존 계획 기록을 읽기 전용으로 보존하기)다.** 실연동 게이트는 둘이며 둘 다 별도 출시 게이트가 소유한다 — Epic 1의 세 제공자 왕복, Epic 2의 Bybit 연결 정책·실연동(실제 검증 계정과 regional reserved IP 필요).
+기획은 완료됐고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. **Epic 1(11개)은 닫혔고 회고도 끝났다**(`epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건은 `sprint-status.yaml`의 `action_items`가 소유). **Epic 2(16개)도 모두 `develop`에 머지됐고** M2-2(2.7)·M2-3(2.12)·M2-4(2.13~2.16) 검증 지점이 닫혔다. **다음은 Epic 2 회고(선택)와 Epic 3 Story 3.1(보호된 운영자 표면과 추가 전용 감사 원장)이다.** 실연동 게이트는 둘이며 둘 다 별도 출시 게이트가 소유한다 — Epic 1의 세 제공자 왕복, Epic 2의 Bybit 연결 정책·실연동(실제 검증 계정과 regional reserved IP 필요).
 
 스토리마다 무엇을 도입했고 리뷰가 무엇을 잡았는지는 아래 표의 SPEC이 소유한다. 그 코드를 건드릴 때 해당 SPEC의 `## Design Notes`와 "구현에서 확정한 것"을 읽는다.
 
@@ -182,7 +182,8 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 2.13 계획 중도 종료 | done | `spec-2-13-plan-early-end.md`, PR #57 머지 커밋 `436f1c2` |
 | 2.14 계획 자연 만료·완료 결과 | done | `spec-2-14-plan-natural-completion.md`, PR #60 머지 커밋 `1c92f5f` |
 | 2.15 새 정상 기준·후속 계획 | done | `spec-2-15-successor-plan.md`, PR #63 머지 커밋 `816289366f57f6e3d067ed59359d7399c02b433b` |
-| Epic 2 | in-progress | 16개 중 15개 done. 다음은 2.16 |
+| 2.16 연결 해제·기록 보존 | done | `spec-2-16-bybit-connection-revocation.md`, PR #65 머지 커밋 `9aae04d` |
+| Epic 2 | **완료** | 16개 스토리 전부 done. 회고는 선택 |
 
 ## 스토리가 고정한 계약
 
@@ -218,6 +219,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 - 대시보드 읽기는 읽기 전용 `REPEATABLE READ` 한 묶음이고 계정 접근을 그 앞뒤로 본다. 세 신뢰 축은 서버가 판정하고 화면은 닫힌 맵으로 카피에 잇는다(모르는 코드는 안전한 카피). 현재 근거·조정 이력은 참조(`planId`·`pointerVersion`·`calculationId`)가 현재 포인터와 같을 때만 200이다. 명시적 과거 조회는 소유 종단 계획의 고정 묶음만 읽고, 불일치는 모두 같은 404, 계보가 어긋나면 503이다(2.8~2.10·2.15).
 - 모든 증분 발행은 직전 버전과의 흐름 차이(`sync_plan_calculation_change`)를 같은 트랜잭션에 쓴다. 지속성 검증 검토는 그 기준 계산 동안 끈적이며 작업을 다시 만들지 않는다 — 풀 수 없는 재수집 루프를 막는 규칙이고 완료 계획에도 적용된다(2.12·2.14).
 - 계획 상태는 `ACTIVE → ENDED_EARLY | COMPLETED` 단조이고 활성 포인터는 부분 유일 색인 `WHERE status='ACTIVE'`다. 종료·완료 사실은 별도 표(`plan_end`·`plan_completion`)에 두고 상태와 복합 FK로 짝짓는다. 종단 뒤 새 준비가 없으면 계획 조건 경로는 `PLAN_ENDED`이고, 후속 계획은 종단 이후 요청·완료·측정된 양수 정상 기준에 확인→intent→발행을 고정한다. 이전 흐름은 옮기지 않고 새 `t0 < ti`만 반영한다(2.13~2.15).
+- 연결 해제는 연결 행을 지우지 않는다 — 자격정보 행 삭제·`ACTIVE → REVOKED`·membership 종료·진행 중 작업 종단을 허가 소비와 같은 트랜잭션 하나로 커밋하고, 기존 `snapshotConnection` 재검사가 늦은 worker를 막는다. 해제 시각은 검증·membership 시작보다 늦게 단조다. 해제된 사용자의 새 연결은 `RECONNECT-1.0` 구현 전까지 단일 거부이며 운영 제한은 해제를 막지 않는다(2.16).
 - 자연 만료는 사용자 시점의 동기화 admission이 전환한다(백그라운드 없음, `GET`은 쓰지 않음). 첫 종료 후 관측은 한 번 고정하고 교체하지 않으며, 관측 시각은 ms로 잘라 저장·판정한다(2.14).
 
 **시험·CI**
