@@ -107,6 +107,8 @@ context:
 - `grep -rn "private static void rotate\|invalidate(.*\"link-provider\"\|invalidate(.*\"unlink-provider\"\|invalidate(.*\"bybit-connection-create\"" backend/src/main/java` -- expected: 0건.
 - `grep -rn "IDEMPOTENCY_KEY_REQUIRED" backend/src/main/java` -- expected: 메시지 문장 리터럴은 1곳.
 
+- **CI 첫 실행 실패(PR #71, `backend-quality`)**: `PlanVerificationTest.aFlakyPageIsRetriedAndTheSyncSucceeds`가 `plan sync finished` 줄을 0건으로 읽었다. 그 줄은 상태 커밋과 종료 사실 재조회 뒤에 찍히는데 시험은 `awaitSync`(상태만 폴링) 직후 읽는 기존 경합이며 이 chore의 변경과 무관하다. `PlanSyncTestBase.endingLines(output, job)`(줄이 보일 때까지 최대 10초 폴링, `IncrementalSyncTest:841` 선례)를 두고 같은 패턴 9곳을 바꿨다(`cae71b4`). 재시도로 덮지 않았다.
+
 ## Suggested Review Order
 
 **재인증 시각 제거와 세션 회전(item-1, 새 계약)**
