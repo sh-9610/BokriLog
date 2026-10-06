@@ -10,7 +10,7 @@ Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개�
 
 1. `git status`와 `git log --oneline -5`로 현재 브랜치가 `develop`이고 깨끗한지 본다. 사용자 체크아웃은 항상 `develop`에 둔다.
 2. `_bmad-output/implementation-artifacts/sprint-status.yaml`에서 `in-progress`·`review` 스토리가 있는지 본다. 있으면 그 스토리의 `spec-<n>-<m>-<slug>.md` frontmatter `status`를 함께 확인한다.
-3. 아래 `## 현재 진행 지점`과 `_bmad-output/implementation-artifacts/epic-1-context.md`로 다음 착수 스토리를 확정한다.
+3. 아래 `## 현재 진행 지점`과 `_bmad-output/implementation-artifacts/epic-<n>-context.md`(현재 Epic 3은 `epic-3-context.md`)로 다음 착수 스토리를 확정한다.
 4. 스토리를 시작하거나 코드를 바꾸는 요청이면 `bmad-build` 스킬로 진행한다. 질문·조사·문서 읽기는 스킬 없이 답한다.
 
 ## BMAD 스킬 실행
@@ -139,7 +139,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 ## 산출물 위치와 권위
 
 - `_bmad-output/planning-artifacts/` — `epics.md`(5 에픽·45 스토리 승인), `EPIC-IMPLEMENTATION-READINESS.md`(`ERD-1.0.0`), `architecture/architecture-BokriLog-2026-08-24/`(`ARCHITECTURE-SPINE.md`, `PORTFOLIO-SOLUTION-DESIGN.md`, `CI-PLAN.md`), `prds/prd-BokriLog-2026-08-23/prd.md`, `ux-designs/ux-BokriLog-2026-08-23/`(`DESIGN.md`, `EXPERIENCE.md`), `briefs/`
-- `_bmad-output/implementation-artifacts/` — `sprint-status.yaml`, `epic-1-context.md`, `spec-*.md`, `deferred-work.md`, `deferred-work-resolutions.md`
+- `_bmad-output/implementation-artifacts/` — `sprint-status.yaml`, `epic-<n>-context.md`(1~3), `epic-<n>-retro-<날짜>.md`, `spec-*.md`, `deferred-work.md`, `deferred-work-resolutions.md`
 - `_bmad/render/` — 스킬 렌더링 스냅샷. 생성물이며 커밋하지 않는다.
 
 충돌 시 우선순위는 PRD의 제품 범위 → 아키텍처의 불변식 → `ERD-1.0.0`의 하위 구현 계약 순이다. 결정을 바꿀 때는 기존 문서를 덮어쓰지 않고 새 버전으로 발행한다. `sprint-status.yaml`의 스토리 키 앞부분(`1-3`)이 브랜치 번호이고, 스토리 본문은 `epics.md`의 해당 `### Story` 절이다.
