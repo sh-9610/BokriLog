@@ -30,6 +30,7 @@ import com.bokrilog.sync.internal.PlanPublicationRepository.Flow;
 import com.bokrilog.sync.internal.PlanPublicationRepository.Lease;
 import com.bokrilog.sync.internal.PlanPublicationRepository.Pinned;
 import com.bokrilog.sync.internal.PlanPublicationRepository.PublicationBlocked;
+import com.bokrilog.sync.IdempotencyKey;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.security.MessageDigest;
@@ -135,7 +136,7 @@ class PlanPublicationService {
     PublicationAdmission admit(@Nullable UUID userId, UUID intentId, @Nullable String key) {
         if (userId == null) return new PublicationAdmission.Refused("NOT_PERMITTED");
         // This command creates an immutable plan: without the caller's own key there is no safe replay.
-        if (key == null || !validKey(key)) return new PublicationAdmission.Refused("IDEMPOTENCY_KEY_REQUIRED");
+        if (!IdempotencyKey.isValid(key)) return new PublicationAdmission.Refused(IdempotencyKey.REQUIRED_CODE);
         try {
             return transactions.execute(status -> admitInTransaction(userId, intentId, key));
         } catch (DuplicateKeyException racing) {
@@ -1459,15 +1460,6 @@ class PlanPublicationService {
         } catch (NumberFormatException invalid) {
             return false;
         }
-    }
-
-    /**
-     * The key rule of the plan's commands: the first publication's and the incremental sync's (Story 2.11). A key
-     * is the caller's own; none is invented for it.
-     */
-    static boolean validKey(String key) {
-        return key.length() >= 16 && key.length() <= 128 && key.matches("[A-Za-z0-9._:-]+")
-                && !key.contains("..") && !key.startsWith("-");
     }
 
     static String sha256(String value) {

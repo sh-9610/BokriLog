@@ -876,7 +876,9 @@ class PlanVerificationTest extends PlanSyncTestBase {
         var keyless = sendJson("POST", VERIFICATION_PATH, bodyOf("PRECISION", v1.planId(), 1, v1.calculationId()),
                 cookie, "Origin", OidcStubConfiguration.PUBLIC_BASE_URL, AuthSecurityConfig.CSRF_HEADER_NAME, csrf);
         assertThat(keyless.statusCode()).isEqualTo(422);
-        assertThat(topLevelFieldsOf(keyless.body())).containsEntry("code", "IDEMPOTENCY_KEY_REQUIRED");
+        // 모든 엄격 키 경로가 같은 code와 같은 메시지 한 문장으로 답한다(`ApiErrorHandler`).
+        assertThat(topLevelFieldsOf(keyless.body())).containsEntry("code", "IDEMPOTENCY_KEY_REQUIRED")
+                .containsEntry("message", ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED);
         assertThat(sendJson("POST", VERIFICATION_PATH, bodyOf("PRECISION", v1.planId(), 1, v1.calculationId()), cookie,
                 "Idempotency-Key", "verify-http-key-0003").statusCode()).as("no CSRF token or Origin").isEqualTo(403);
         assertThat(get(VERIFICATION_PATH, cookie).statusCode()).as("the command path is not a read").isEqualTo(405);

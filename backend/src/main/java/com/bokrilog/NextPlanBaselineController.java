@@ -1,5 +1,6 @@
 package com.bokrilog;
 
+import com.bokrilog.sync.IdempotencyKey;
 import com.bokrilog.sync.SyncJobApi;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -32,13 +33,12 @@ class NextPlanBaselineController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(state);
     }
     @PostMapping(PATH)
-    @Nullable ResponseEntity<?> prepare(@RequestHeader(name="Idempotency-Key",required=false) @Nullable String key,
+    @Nullable ResponseEntity<?> prepare(@RequestHeader(name=IdempotencyKey.HEADER,required=false) @Nullable String key,
             HttpServletRequest request,HttpServletResponse response) throws IOException {
         if (user()==null) { response.sendError(403); return null; }
-        if (key==null || key.length()<16 || key.length()>128 || !key.matches("[A-Za-z0-9._:-]+")
-                || key.contains("..") || key.startsWith("-"))
+        if (!IdempotencyKey.isValid(key))
             return ResponseEntity.unprocessableContent().cacheControl(CacheControl.noStore()).body(new ApiErrorHandler.ApiError(
-                    "IDEMPOTENCY_KEY_REQUIRED","요청 키를 확인할 수 없습니다. 화면을 다시 열어 주세요.",ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER))));
+                    IdempotencyKey.REQUIRED_CODE,ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED,ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER))));
         var job=jobs.admitNextBaseline(user(),key);
         if (job.isEmpty() && "NOT_PERMITTED".equals(jobs.nextBaselineState(user()).reason())) {
             response.sendError(403); return null;

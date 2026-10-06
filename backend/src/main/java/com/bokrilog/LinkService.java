@@ -192,15 +192,15 @@ class LinkService {
          * 앞선 연결 무장은 허가를 함께 버려야 한다 — `issue`의 무효화 술어는 `(user, command,
          * target)`이고 target이 제공자 이름이라, 네이버로 무장한 뒤 카카오로 다시 무장하면 네이버
          * 허가만 살아남고 그것을 가리키던 흐름 기록은 사라진다. 아무도 참조할 수 없는 허가가
-         * 수명을 사는 상태가 정확히 그것이다. 대상이 같으면 방금 `issue`가 이미 지웠으므로
-         * 다시 지우지 않는다(지우면 방금 발급한 허가가 같은 술어에 걸린다).
+         * 수명을 사는 상태가 정확히 그것이다. 그 무장이 든 참조 하나만 지우므로 방금 발급한 허가는
+         * 걸리지 않는다.
          *
          * 재인증 무장은 값만 버린다. 한 세션에 두 흐름이 함께 무장돼 있으면 콜백이 어느 쪽 것인지
          * 매번 등록 id로 가려야 하고, 그 판정이 한 번 어긋나면 재인증 콜백이 연결 분기에 삼켜진다.
          * 연결 시작이 성립한다는 것은 재인증이 이미 끝났다는 뜻이므로(그 시각이 없으면 허가가
          * 서지 않는다) 남아 있는 재인증 무장은 완료되지 않은 옛 의도다.
          */
-        supersedePreviousArming(session, provider);
+        supersedePreviousArming(session);
         ReauthenticationFlow.discard(session);
 
         LinkFlow.Armed armed =
@@ -219,7 +219,7 @@ class LinkService {
     }
 
     /**
-     * 이 세션에 남은 연결 무장을 버리고 <b>그 허가도 함께</b> 무효화한다.
+     * 이 세션에 남은 연결 무장을 버리고 <b>그 무장이 낳은 허가 하나만</b> 무효화한다.
      *
      * <p>흐름 기록만 버리면 그것이 가리키던 허가가 아무도 참조할 수 없는 채로 수명을 산다. 두
      * 호출자가 있고 둘 다 "이 세션의 연결 의도를 지금 끝낸다"는 같은 뜻이다 — 새 연결 시작이
@@ -228,28 +228,32 @@ class LinkService {
      *
      * <p>수명이 지난 무장도 대상이다. 그 무장의 허가는 아직 살아 있을 수 있고(두 수명은 서로 다른
      * 상수다) 살아 있다면 같은 이유로 지워야 한다.
+     *
+     * <p>참조로 좁힌다. {@code (command, target)}으로 지우면 오래된 탭의 취소 하나가 같은 작업을 위해
+     * 다른 세션이 방금 받은 살아 있는 허가까지 지운다({@code PlanEndCommandService.cancel}과 같은 단위).
      */
     void abandon(HttpSession session) {
         LinkFlow.Armed armed = LinkFlow.peekIncludingExpired(session);
         LinkFlow.discard(session);
         if (armed != null) {
-            this.grants.invalidate(armed.userId(), COMMAND, armed.targetProvider());
+            this.grants.invalidateReference(armed.userId(), armed.grantReference());
         }
     }
 
     /**
-     * 새 무장이 앞선 무장을 대신한다. <b>대상이 다를 때만</b> 그 허가를 무효화한다.
+     * 새 무장이 앞선 무장을 대신한다. 앞선 무장의 허가를 <b>참조로</b> 무효화한다.
      *
-     * <p>{@link #abandon}과 갈라 두는 이유가 그 한 조건이다. 같은 제공자로 다시 무장하면 방금
-     * {@code issue}가 그 {@code (user, command, target)}의 살아 있는 허가를 이미 지웠고, 여기서 한
-     * 번 더 지우면 <b>방금 발급한 허가</b>가 같은 술어에 걸려 사라진다 — 그러면 그 무장은 태어나는
-     * 순간 참조할 것이 없다.
+     * <p>같은 제공자로 다시 무장하면 방금 {@code issue}가 그 {@code (user, command, target)}의 살아
+     * 있는 허가를 이미 지웠으므로 참조 하나를 지우는 이 호출은 0행으로 끝나고, 방금 발급한 허가는
+     * 다른 참조라 걸리지 않는다. 다른 제공자면 그 무장이 낳은 허가만 사라진다 — 그래서 대상을 받지
+     * 않는다. 옛 조건("대상이 다를 때만")은 {@code (user, command, target)} 단위가 방금 발급한 허가를
+     * 삼키던 시절의 것이다.
      */
-    private void supersedePreviousArming(HttpSession session, String provider) {
+    private void supersedePreviousArming(HttpSession session) {
         LinkFlow.Armed previous = LinkFlow.peekIncludingExpired(session);
         LinkFlow.discard(session);
-        if (previous != null && !previous.targetProvider().equals(provider)) {
-            this.grants.invalidate(previous.userId(), COMMAND, previous.targetProvider());
+        if (previous != null) {
+            this.grants.invalidateReference(previous.userId(), previous.grantReference());
         }
     }
 

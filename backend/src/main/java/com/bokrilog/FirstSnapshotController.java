@@ -1,6 +1,7 @@
 package com.bokrilog;
 
 import com.bokrilog.sync.SyncJobApi;
+import com.bokrilog.sync.IdempotencyKey;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
@@ -59,7 +60,7 @@ class FirstSnapshotController {
             java.util.List<PendingAsset> pendingAssets) {}
 
     @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
-    @Nullable ResponseEntity<JobState> start(@RequestHeader(name="Idempotency-Key",required=false)
+    @Nullable ResponseEntity<JobState> start(@RequestHeader(name=IdempotencyKey.HEADER,required=false)
             @Nullable String key,HttpServletResponse response) throws IOException {
         UUID user=currentUserId();
         if (user==null) { response.sendError(403); return null; }
@@ -98,7 +99,7 @@ class FirstSnapshotController {
     @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/inputs",
             consumes=MediaType.APPLICATION_JSON_VALUE,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<CollectionJobState> startInitialInputs(@RequestBody CollectionRequest body,
-            @RequestHeader(name="Idempotency-Key",required=false) @Nullable String key,
+            @RequestHeader(name=IdempotencyKey.HEADER,required=false) @Nullable String key,
             HttpServletResponse response) throws IOException {
         UUID user=currentUserId();
         if(user==null){response.sendError(403);return null;}
@@ -120,7 +121,7 @@ class FirstSnapshotController {
     @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/cashflow-classification",
             consumes=MediaType.APPLICATION_JSON_VALUE,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<CashflowClassificationState> classifyCashflows(@RequestBody CollectionRequest body,
-            @RequestHeader(name="Idempotency-Key",required=false) @Nullable String key,
+            @RequestHeader(name=IdempotencyKey.HEADER,required=false) @Nullable String key,
             HttpServletResponse response) throws IOException {
         UUID user=currentUserId();
         if(user==null){response.sendError(403);return null;}
@@ -149,7 +150,7 @@ class FirstSnapshotController {
     @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/cashflow-conversion",
             consumes=MediaType.APPLICATION_JSON_VALUE,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<CashflowConversionState> convertCashflows(@RequestBody CollectionRequest body,
-            @RequestHeader(name="Idempotency-Key",required=false) @Nullable String key,
+            @RequestHeader(name=IdempotencyKey.HEADER,required=false) @Nullable String key,
             HttpServletResponse response) throws IOException {
         UUID user=currentUserId();
         if(user==null){response.sendError(403);return null;}
@@ -196,9 +197,6 @@ class FirstSnapshotController {
             "CALCULATION_RANGE_EXCEEDED","같은 입력의 계산이 허용 범위를 벗어났습니다. 계획 조건을 다시 정해 주세요.",
             "CALCULATION_INPUT_INVALID","같은 입력의 계산 형식을 확인할 수 없었습니다. 입력을 다시 준비해 주세요.");
 
-    /** The one refusal that is the request's own fault: this command requires the caller's key. */
-    static final String IDEMPOTENCY_KEY_REQUIRED="IDEMPOTENCY_KEY_REQUIRED";
-    static final String MESSAGE_IDEMPOTENCY_KEY_REQUIRED="요청 키가 없거나 형식이 맞지 않아 발행을 받지 않았습니다. 화면을 새로 열어 다시 시도해 주세요.";
 
     /**
      * Story 2.7 first publication. POST answers 202 with the attempt, 403 when the account or
@@ -210,7 +208,7 @@ class FirstSnapshotController {
     @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/plan-publication",
             consumes=MediaType.APPLICATION_JSON_VALUE,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<?> publishPlan(@RequestBody CollectionRequest body,
-            @RequestHeader(name="Idempotency-Key",required=false) @Nullable String key,
+            @RequestHeader(name=IdempotencyKey.HEADER,required=false) @Nullable String key,
             jakarta.servlet.http.HttpServletRequest request,HttpServletResponse response) throws IOException {
         UUID user=currentUserId();
         if(user==null){response.sendError(403);return null;}
@@ -220,10 +218,11 @@ class FirstSnapshotController {
                     .body(toPublicationState(accepted.job()));
         String code=((SyncJobApi.PublicationAdmission.Refused)admission).code();
         String correlation=ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER));
-        if(IDEMPOTENCY_KEY_REQUIRED.equals(code))
+        // 요청 자체의 잘못인 유일한 거절: 이 command는 호출자의 키를 요구한다. 규칙·code는 IdempotencyKey가 소유한다.
+        if(IdempotencyKey.REQUIRED_CODE.equals(code))
             return ResponseEntity.status(422).contentType(MediaType.APPLICATION_JSON)
                     .cacheControl(CacheControl.noStore())
-                    .body(new ApiErrorHandler.ApiError(code,MESSAGE_IDEMPOTENCY_KEY_REQUIRED,correlation));
+                    .body(new ApiErrorHandler.ApiError(code,ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED,correlation));
         String message=PUBLICATION_REFUSALS.get(code);
         if(message==null){response.sendError(403);return null;}
         return ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)

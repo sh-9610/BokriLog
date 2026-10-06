@@ -116,6 +116,67 @@ class AuthUnlinkProviderTest extends AuthFlowTestBase {
     }
 
     @Test
+    void 실행된_해제는_재인증_시각을_지워_다음_민감_command를_연쇄_승인하지_않는다() throws Exception {
+        /*
+         * I/O 표 "연쇄 승인 차단". 본인 확인 1회는 command 1건이다 — 해제가 실제로 실행된 요청이 세션 회전과
+         * 함께 재인증 시각을 지우므로(`SessionRotation`), 5분 안의 다음 민감 command(여기서는 연결 시작)는
+         * 허가를 받지 못하고 재인증을 요구한다. 새 재인증 뒤에는 다시 시작할 수 있다.
+         */
+        Linked user = signInLinkAndReauthenticate("unlink-chain");
+        HttpResponse<String> confirmed = unlink(NAVER, user.cookie(), csrfTokenOf(user.cookie()));
+        assertThat(confirmed.statusCode()).isEqualTo(204);
+        String rotated = sessionCookieOf(confirmed).orElseThrow();
+        assertThat(socialLinkCount()).isEqualTo(1);
+        assertThat(sessionAttribute(sessionIdOf(rotated), ReauthenticationFlow.AUTHENTICATED_AT_ATTRIBUTE))
+                .isNull();
+
+        // 같은 세션의 다음 민감 command는 재인증 요구로 거절된다. 허가는 발급되지 않고 무장도 심기지 않는다.
+        HttpResponse<String> chained = startLink(KAKAO, rotated, csrfTokenOf(rotated));
+        assertUnlinkDenied(chained);
+        assertThat(actionGrantCountOf(user.userId())).isEqualTo(1);
+        assertThat(consumedGrantCount()).isEqualTo(1);
+        assertThat(sessionAttribute(sessionIdOf(rotated), LinkFlow.FLOW_ATTRIBUTE)).isNull();
+        assertThat(socialLinkCount()).isEqualTo(1);
+
+        // 새 본인 확인이 다시 연다.
+        String reauthenticated =
+                sessionCookieOf(
+                                reauthenticate(
+                                        GOOGLE, rotated, csrfTokenOf(rotated), plan -> plan.subject(user.subject())))
+                        .orElseThrow();
+        assertThat(startLink(KAKAO, reauthenticated, csrfTokenOf(reauthenticated)).statusCode()).isEqualTo(204);
+        assertThat(actionGrantCountOf(user.userId())).isEqualTo(2);
+    }
+
+    @Test
+    void 거부된_확인은_재인증_시각을_남기고_같은_무장으로_다시_확인할_수_있다() throws Exception {
+        /*
+         * I/O 표 "Denied". 거부는 업무 변경을 실행하지 않았으므로 회전도 시각 제거도 없다 — 그래서 같은 무장으로
+         * 다시 시도할 수 있다. 지우는 조건이 "실행 플래그"인 것을 여기서 고정한다.
+         */
+        Linked user = signInLinkAndReauthenticate("unlink-denied-keeps");
+        assertThat(prepareUnlink(NAVER, user.cookie(), csrfTokenOf(user.cookie())).statusCode()).isEqualTo(204);
+        String sessionId = sessionIdOf(user.cookie());
+
+        // 대상이 다른 확인은 거부다.
+        HttpResponse<String> denied = confirmUnlink(GOOGLE, user.cookie(), csrfTokenOf(user.cookie()));
+        assertUnlinkDenied(denied);
+        assertThat(sessionCookieOf(denied)).as("거부는 회전하지 않는다").isEmpty();
+        assertThat(sessionAttribute(sessionId, ReauthenticationFlow.AUTHENTICATED_AT_ATTRIBUTE))
+                .isInstanceOf(java.time.Instant.class);
+        assertThat(consumedGrantCount()).isZero();
+        assertThat(socialLinkCount()).isEqualTo(2);
+
+        // 같은 무장이 그대로 쓰인다. 이번에는 실행이고, 그 요청이 시각을 지운다.
+        HttpResponse<String> confirmed = confirmUnlink(NAVER, user.cookie(), csrfTokenOf(user.cookie()));
+        assertThat(confirmed.statusCode()).isEqualTo(204);
+        assertThat(socialLinkCount()).isEqualTo(1);
+        String rotated = sessionCookieOf(confirmed).orElseThrow();
+        assertThat(sessionAttribute(sessionIdOf(rotated), ReauthenticationFlow.AUTHENTICATED_AT_ATTRIBUTE))
+                .isNull();
+    }
+
+    @Test
     void 해제한_제공자로_로그인하면_기존_계정에_닿지_않는다() throws Exception {
         Linked user = signInLinkAndReauthenticate("unlink-then-sign-in");
         assertThat(unlink(NAVER, user.cookie(), csrfTokenOf(user.cookie())).statusCode())
@@ -531,6 +592,39 @@ class AuthUnlinkProviderTest extends AuthFlowTestBase {
         // 되돌린 뒤의 확인은 소비할 것이 없다.
         assertUnlinkDenied(confirmUnlink(NAVER, user.cookie(), csrfTokenOf(user.cookie())));
         assertThat(socialLinkCount()).isEqualTo(2);
+    }
+
+    @Test
+    void 오래된_탭의_취소는_다른_세션의_허가를_지우지_않는다() throws Exception {
+        /*
+         * I/O 표 "오래된 탭 취소". 같은 사용자의 세션 B가 같은 제공자로 준비하면 그 발급이 세션 A의 허가를
+         * `(user, command, target)` 단위로 대신한다("같은 작업의 살아 있는 허가는 하나"). 그 뒤 세션 A의 취소는
+         * **자기 무장이 든 참조만** 지우므로 B의 허가는 살아 있고 B의 확정이 성공한다 — 옛 `(user, command,
+         * target)` 단위 취소였다면 A의 취소가 B의 허가까지 지워 아래 확정이 거부됐다.
+         */
+        Linked first = signInLinkAndReauthenticate("unlink-two-sessions");
+        String cookie = sessionCookieOf(signIn(first.subject())).orElseThrow();
+        String second =
+                sessionCookieOf(
+                                reauthenticate(
+                                        GOOGLE, cookie, csrfTokenOf(cookie), plan -> plan.subject(first.subject())))
+                        .orElseThrow();
+        assertThat(sessionCountOf(first.userId())).isEqualTo(2);
+
+        assertThat(prepareUnlink(NAVER, first.cookie(), csrfTokenOf(first.cookie())).statusCode()).isEqualTo(204);
+        assertThat(prepareUnlink(NAVER, second, csrfTokenOf(second)).statusCode()).isEqualTo(204);
+        // B의 발급이 A의 허가를 대신했다. 살아 있는 허가는 B의 것 하나다.
+        String live = singleGrantReference();
+
+        assertThat(cancelUnlink(NAVER, first.cookie(), csrfTokenOf(first.cookie())).statusCode()).isEqualTo(204);
+        assertThat(sessionAttribute(sessionIdOf(first.cookie()), UnlinkFlow.FLOW_ATTRIBUTE)).isNull();
+        assertThat(actionGrantExists(live)).as("다른 세션의 허가").isTrue();
+        assertThat(sessionAttribute(sessionIdOf(second), UnlinkFlow.FLOW_ATTRIBUTE))
+                .isInstanceOf(UnlinkFlow.Armed.class);
+
+        assertThat(confirmUnlink(NAVER, second, csrfTokenOf(second)).statusCode()).isEqualTo(204);
+        assertThat(socialLinkCount()).isEqualTo(1);
+        assertThat(actionGrantConsumed(live)).isTrue();
     }
 
     @Test

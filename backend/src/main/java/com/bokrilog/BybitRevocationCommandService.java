@@ -170,7 +170,7 @@ class BybitRevocationCommandService {
         if (previous != null) {
             this.grants.invalidateReference(previous.userId(), previous.grantReference());
         }
-        // A reauthentication arming left over is an older intent: the grant just stood on a fresh reauthentication.
+        // 남아 있는 재인증 무장은 옛 의도다. 방금 허가가 신선한 재인증 위에 섰다.
         ReauthenticationFlow.discard(session);
         BybitRevocationFlow.Armed armed = new BybitRevocationFlow.Armed(userId, connectionId, reference.get(),
                 confirmation, session.getId(), Instant.now());
@@ -241,9 +241,9 @@ class BybitRevocationCommandService {
         }
         Revoked revoked = ran.get();
         if (revoked != null) {
-            // This request revoked the connection: the arming is spent and the session rotates (SECURITY-ACTION-1.0).
+            // 이 요청이 연결을 해제했다: 무장은 다 썼고 세션은 회전하며 재인증 시각은 지워진다(SECURITY-ACTION-1.0).
             BybitRevocationFlow.discard(session);
-            rotate(httpRequest);
+            SessionRotation.completeSensitiveCommand(httpRequest);
             var work = ended.get();
             LOG.info("bybit connection revoked: endedAttempts={}", work == null ? 0 : work.total());
             return new Outcome.Done(revoked);
@@ -273,14 +273,5 @@ class BybitRevocationCommandService {
 
     private static Outcome notConfirmed() {
         return new Outcome.Refused(REVOCATION_NOT_CONFIRMED);
-    }
-
-    /** 커밋 뒤 세션 회전. 여기서 실패해도 해제는 이미 커밋됐다({@code PlanEndCommandService.rotate}와 같다). */
-    private static void rotate(HttpServletRequest request) {
-        try {
-            request.changeSessionId();
-        } catch (RuntimeException ignored) {
-            // 다음 요청이 같은 세션 상태를 다시 본다.
-        }
     }
 }

@@ -261,7 +261,7 @@ class PlanSyncRepository {
                 + "FROM sync_plan_sync_job WHERE status='QUEUED' OR (status='RUNNING' AND lease_until<statement_timestamp()) "
                 + "ORDER BY admitted_at FOR UPDATE SKIP LOCKED LIMIT 1) "
                 + "UPDATE sync_plan_sync_job j SET status='RUNNING',fencing_generation=j.fencing_generation+1,"
-                + "lease_until=statement_timestamp()+interval '30 seconds',heartbeat_at=statement_timestamp(),"
+                + "lease_until=statement_timestamp()+"+SyncLease.SQL_INTERVAL+",heartbeat_at=statement_timestamp(),"
                 + "resume_count=CASE WHEN picked.resumable THEN j.resume_count+1 ELSE j.resume_count END "
                 + "FROM picked WHERE j.job_id=picked.job_id RETURNING " + LEASE_COLUMNS + ",picked.previous,"
                 + "picked.resumable")
@@ -306,21 +306,21 @@ class PlanSyncRepository {
      * @return whether the lease is still held
      */
     boolean heartbeat(Lease lease) {
-        int renewed = jdbc.sql("UPDATE sync_plan_sync_job SET lease_until=statement_timestamp()+interval '30 seconds',"
+        int renewed = jdbc.sql("UPDATE sync_plan_sync_job SET lease_until=statement_timestamp()+"+SyncLease.SQL_INTERVAL+","
                 + "heartbeat_at=statement_timestamp() WHERE job_id=(SELECT job_id FROM sync_plan_sync_job "
                 + "WHERE job_id=:j AND fencing_generation=:g AND status='RUNNING' AND lease_until>statement_timestamp() "
                 + "FOR UPDATE SKIP LOCKED)")
             .param("j", lease.jobId()).param("g", lease.generation()).update();
         if (renewed != 1 && !owns(lease)) return false;
-        jdbc.sql("UPDATE sync_initial_collection_job SET lease_until=now()+interval '30 seconds',heartbeat_at=now(),"
+        jdbc.sql("UPDATE sync_initial_collection_job SET lease_until=now()+"+SyncLease.SQL_INTERVAL+",heartbeat_at=now(),"
                 + "last_checked_at=now() WHERE job_id IN (SELECT job_id FROM sync_initial_collection_job "
                 + "WHERE plan_sync_job_id=:j AND status='RUNNING' AND lease_until>now() FOR UPDATE SKIP LOCKED)")
             .param("j", lease.jobId()).update();
-        jdbc.sql("UPDATE sync_cashflow_classification_job SET lease_until=now()+interval '30 seconds',"
+        jdbc.sql("UPDATE sync_cashflow_classification_job SET lease_until=now()+"+SyncLease.SQL_INTERVAL+","
                 + "last_checked_at=now() WHERE job_id IN (SELECT job_id FROM sync_cashflow_classification_job "
                 + "WHERE plan_sync_job_id=:j AND status='RUNNING' AND lease_until>now() FOR UPDATE SKIP LOCKED)")
             .param("j", lease.jobId()).update();
-        jdbc.sql("UPDATE sync_cashflow_conversion_job SET lease_until=now()+interval '30 seconds',heartbeat_at=now(),"
+        jdbc.sql("UPDATE sync_cashflow_conversion_job SET lease_until=now()+"+SyncLease.SQL_INTERVAL+",heartbeat_at=now(),"
                 + "last_checked_at=now() WHERE job_id IN (SELECT job_id FROM sync_cashflow_conversion_job "
                 + "WHERE plan_sync_job_id=:j AND status='RUNNING' AND lease_until>now() FOR UPDATE SKIP LOCKED)")
             .param("j", lease.jobId()).update();
@@ -541,7 +541,7 @@ class PlanSyncRepository {
      */
     Optional<InitialCollectionRepository.Lease> takeOverCollection(Lease lease, UUID childId) {
         return jdbc.sql("UPDATE sync_initial_collection_job SET fencing_generation=fencing_generation+1,"
-                + "lease_until=statement_timestamp()+interval '30 seconds',heartbeat_at=statement_timestamp(),"
+                + "lease_until=statement_timestamp()+"+SyncLease.SQL_INTERVAL+",heartbeat_at=statement_timestamp(),"
                 + "last_checked_at=statement_timestamp() "
                 + "WHERE job_id=:c AND plan_sync_job_id=:j AND user_id=:u AND status='RUNNING' "
                 + "RETURNING job_id,user_id,portfolio_id,intent_id,connection_id,provider_account_id,t0,tc,"

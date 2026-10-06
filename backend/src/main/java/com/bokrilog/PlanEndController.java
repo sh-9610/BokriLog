@@ -1,6 +1,7 @@
 package com.bokrilog;
 
 import com.bokrilog.plan.PlanEndApi;
+import com.bokrilog.sync.IdempotencyKey;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -79,9 +80,6 @@ class PlanEndController {
             Map.entry(PlanEndCommandService.IDEMPOTENCY_CONFLICT, new Refusal(HttpStatus.CONFLICT,
                     PlanEndCommandService.IDEMPOTENCY_CONFLICT, "같은 요청 키가 다른 종료 요청에 이미 쓰였습니다. 새로 요청해 주세요.")));
 
-    static final String MESSAGE_KEY_REQUIRED =
-            "요청 키가 없거나 형식이 맞지 않아 종료 요청을 받지 않았습니다. 화면을 새로 열어 다시 시도해 주세요.";
-
     /** A request body is a few hundred bytes; anything much longer is not one. */
     private static final int MAX_BODY_CHARS = 1024;
 
@@ -145,15 +143,16 @@ class PlanEndController {
 
     @PostMapping(path = CONFIRM_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<?> confirm(@RequestBody(required = false) @Nullable String body,
-            @RequestHeader(name = "Idempotency-Key", required = false) @Nullable String key,
+            @RequestHeader(name = IdempotencyKey.HEADER, required = false) @Nullable String key,
             HttpServletRequest request) {
         long started = System.nanoTime();
         Body parsed = bodyOf(body, true);
         if (parsed == null || parsed.confirmation() == null)
             return answer("confirm", badRequest(request), "BAD_REQUEST", started);
-        if (key == null || !validKey(key))
-            return answer("confirm", error(HttpStatus.UNPROCESSABLE_CONTENT, "IDEMPOTENCY_KEY_REQUIRED",
-                    MESSAGE_KEY_REQUIRED, null, request), "IDEMPOTENCY_KEY_REQUIRED", started);
+        if (!IdempotencyKey.isValid(key))
+            return answer("confirm", error(HttpStatus.UNPROCESSABLE_CONTENT, IdempotencyKey.REQUIRED_CODE,
+                    ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED, null, request), IdempotencyKey.REQUIRED_CODE,
+                    started);
         UUID userId = currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null || session == null)
@@ -237,12 +236,6 @@ class PlanEndController {
         }
         return new Body(new PlanEndApi.Request(parsedReason, UUID.fromString(plan.asString()), pointerVersion,
                 UUID.fromString(calculation.asString())), confirmation);
-    }
-
-    /** The plan's key rule: the caller's own key, 16~128 characters of a safe alphabet (the dashboard's). */
-    static boolean validKey(String key) {
-        return key.length() >= 16 && key.length() <= 128 && key.matches("[A-Za-z0-9._:-]+") && !key.contains("..")
-                && !key.startsWith("-");
     }
 
     private static ResponseEntity<?> refused(String code, @Nullable String reason, HttpServletRequest request) {

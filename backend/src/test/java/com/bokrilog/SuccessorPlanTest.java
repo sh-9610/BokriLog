@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.bokrilog.plan.PlanConditionApi;
 import com.bokrilog.plan.PlanEndApi;
 import com.bokrilog.sync.SyncJobApi;
+import com.bokrilog.sync.internal.SyncLease;
 import com.bokrilog.sync.PlanPublicationPort;
 import java.time.Duration;
 import java.time.Instant;
@@ -27,7 +28,7 @@ class SuccessorPlanTest extends PlanSyncTestBase {
     private Object reserved(UUID user) {
         UUID id=new TransactionTemplate(manager).execute(status -> {
             UUID job=sync.admitNextBaseline(user,key("reserved")).orElseThrow().jobId();
-            jdbc().sql("UPDATE sync_job SET status='RUNNING',fencing_generation=1,lease_until=now()+interval '30 seconds' WHERE job_id=:j")
+            jdbc().sql("UPDATE sync_job SET status='RUNNING',fencing_generation=1,lease_until=now()+"+SyncLease.SQL_INTERVAL+" WHERE job_id=:j")
                 .param("j",job).update();
             return job;
         });
@@ -289,7 +290,11 @@ class SuccessorPlanTest extends PlanSyncTestBase {
         assertThat(get(path,null).statusCode()).isEqualTo(401);
         assertThat(send("POST",path,cookie).statusCode()).isEqualTo(403);
         assertThat(send("POST",path,cookie,"Origin","https://other.invalid","X-CSRF-TOKEN",csrfTokenOf(cookie),"Idempotency-Key",key("foreign")).statusCode()).isEqualTo(403);
-        assertThat(send("POST",path,cookie,"Origin",OidcStubConfiguration.PUBLIC_BASE_URL,"X-CSRF-TOKEN",csrfTokenOf(cookie)).statusCode()).isEqualTo(422);
+        var keyless=send("POST",path,cookie,"Origin",OidcStubConfiguration.PUBLIC_BASE_URL,"X-CSRF-TOKEN",csrfTokenOf(cookie));
+        assertThat(keyless.statusCode()).isEqualTo(422);
+        // 모든 엄격 키 경로가 같은 code와 같은 메시지 한 문장으로 답한다(`ApiErrorHandler`).
+        assertThat(topLevelFieldsOf(keyless.body())).containsEntry("code","IDEMPOTENCY_KEY_REQUIRED")
+                .containsEntry("message",ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED);
         var admitted=send("POST",path,cookie,"Origin",OidcStubConfiguration.PUBLIC_BASE_URL,"X-CSRF-TOKEN",csrfTokenOf(cookie),"Idempotency-Key",key("http-admit"));
         assertThat(admitted.statusCode()).isEqualTo(202);
         assertThat(admitted.headers().firstValue("Cache-Control")).contains("no-store");

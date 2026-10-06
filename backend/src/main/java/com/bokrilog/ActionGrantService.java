@@ -240,31 +240,13 @@ class ActionGrantService {
     }
 
     /**
-     * 그 작업의 살아 있는 허가를 무효화한다.
-     *
-     * <p>{@link #issue}가 발급 앞에서 부르는 것과 같은 문장이고, 이 표면은 <b>발급 없이</b> 그
-     * 무효화만 필요한 경우를 위한 것이다 — 흐름 기록을 버리면서 그것이 가리키던 허가를 남기면
-     * 아무도 참조할 수 없는 허가가 수명이 다할 때까지 산다({@code LinkService.abandon}).
-     *
-     * <p>소비된 행은 건드리지 않는다. 그 행은 멱등 재전송의 근거다.
-     *
-     * <p>트랜잭션을 열지 않는다. 문장 하나라 그 자체로 원자적이고, 발급과 함께 쓰는 경로는
-     * {@link #issue}가 자기 경계 안에서 같은 저장소 메서드를 다시 부른다.
-     */
-    void invalidate(@Nullable UUID userId, String command, String target) {
-        if (userId == null) {
-            return;
-        }
-        this.repository.invalidateLiveGrants(
-                userId, ActionGrant.normalize(command), ActionGrant.normalize(target));
-    }
-
-    /**
      * 참조 하나가 가리키는 미소비 허가만 무효화한다(Story 2.13).
      *
-     * <p>{@link #invalidate}와 갈라 두는 이유는 범위다. {@code (command, target)}으로 지우면 오래된 탭 하나의 취소가
-     * 같은 작업을 위해 <b>다른 세션</b>이 방금 받은 살아 있는 허가까지 지운다. 무장이 들고 있던 참조 하나로 좁히면 그
-     * 무장이 낳은 허가만 사라지고, 이미 다른 발급이 대신했다면 아무것도 하지 않는다.
+     * <p>서비스가 명시적으로 부르는 무효화(abandon·supersede·cancel)의 <b>유일한</b> 단위다. {@code (user, command,
+     * target)} 단위의 무효화는 {@link #issue}가 발급 앞에서 자기 경계 안에서만 쓴다("같은 작업의 살아 있는 허가는
+     * 하나") — 그것을 밖에서 쓰면 오래된 탭 하나의 취소가 같은 작업을 위해 <b>다른 세션</b>이 방금 받은 살아 있는
+     * 허가까지 지운다. 무장이 들고 있던 참조 하나로 좁히면 그 무장이 낳은 허가만 사라지고, 이미 다른 발급이 대신했다면
+     * 아무것도 하지 않는다.
      *
      * <p>소비된 행은 건드리지 않는다. 그 행은 멱등 재전송의 근거다. 트랜잭션을 열지 않는다 — 문장 하나다.
      */

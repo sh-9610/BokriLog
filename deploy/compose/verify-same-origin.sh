@@ -1583,12 +1583,15 @@ assert_rows '연결이 세션 행을 늘리지 않는다' 'SELECT count(*) FROM 
 # 무장을 다시 쓴다.
 assert_rows '연결 콜백이 무장 속성을 소비한다' \
   "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.link'" '0'
-# 목적지와 재인증 기록은 회전을 건너 살아남는다. 이 왕복에서 세션 ID가 두 번 바뀌므로(고정 방어
-# + 허가 소비의 재회전) 그 둘 중 하나라도 속성을 잃으면 사용자는 다음 연결을 이유 없이 거부당한다.
+# 목적지는 회전을 건너 살아남는다. 이 왕복에서 세션 ID가 두 번 바뀌므로(고정 방어 + 허가 소비의
+# 재회전) 그 속성을 잃으면 사용자는 복귀 목적지를 잃은 채 로그인 상태로 남는다.
 assert_rows '연결 뒤에도 목적지 속성이 세 세션에 남아 있다' \
   "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.destination'" '3'
-assert_rows '연결 뒤에도 재인증 기록이 남아 있다' \
-  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.reauthenticated-at'" '1'
+# 재인증 시각은 **지워진다**. 연결이 실행된 요청이 세션 회전과 함께 그 시각을 지운다 — 본인 확인
+# 1회는 command 1건이다(`SessionRotation`). 남아 있으면 방금의 본인 확인이 5분 안에서 다음 민감
+# command를 연쇄 승인한다.
+assert_rows '연결이 실행된 요청이 재인증 시각을 지운다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.reauthenticated-at'" '0'
 
 # 7) 회전 전 쿠키는 죽었고 새 쿠키로는 두 제공자가 보인다.
 fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${link_session_cookie}"
@@ -1621,11 +1624,57 @@ else
     "본문에 csrfToken이 없다 — $(head -c 200 "${last_body}")"
 fi
 
+# 같은 Google 식별자로 재인증 왕복 하나를 지나고 `google_session_cookie`·`google_csrf_token`을 회전한
+# 값으로 갱신한다. 민감 command 실행 성공은 세션 회전과 함께 재인증 시각을 지우므로(본인 확인 1회는
+# command 1건, `SessionRotation`), 같은 세션으로 다음 command를 준비하는 절은 먼저 이것을 지난다.
+# 인자: 단정 이름 접두사.
+reauthenticate_google_session() {
+  local label="$1"
+  fetch POST /api/auth/reauthenticate/google \
+    -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}" \
+    -H "Origin: ${base_url}" \
+    -H "X-CSRF-TOKEN: ${google_csrf_token}"
+  assert_equals "${label} 재인증 시작 204" "${last_status}" '204'
+  fetch GET /api/auth/authorize/google -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}"
+  assert_equals "${label} 재인증 인가 시작 302" "${last_status}" '302'
+  local authorize_location
+  authorize_location="$(header_value 'Location')"
+  fetch GET "${authorize_location#"${base_url}"}&dev_subject=google-${stub_subject_marker}"
+  assert_equals "${label} 재인증 동의 화면 200" "${last_status}" '200'
+  local consent_href
+  consent_href="$(sed -n 's/.*<a href="\([^"]*\)".*/\1/p' "${last_body}" | head -1 | sed 's/&amp;/\&/g')"
+  fetch GET "${consent_href#"${base_url}"}" \
+    -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}"
+  assert_equals "${label} 재인증 콜백 302" "${last_status}" '302'
+  assert_equals "${label} 재인증이 붙들어 둔 목적지로 돌아간다" \
+    "$(resolve_location "$(header_value 'Location')")" "${base_url}/onboarding"
+  local rotated_cookie
+  rotated_cookie="$(session_cookie_value)"
+  if [ -n "${rotated_cookie}" ] && [ "${rotated_cookie}" != "${google_session_cookie}" ]; then
+    record_pass "${label} 재인증이 세션을 회전시킨다"
+    fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${rotated_cookie}"
+    assert_body_contains "${label} 재인증 뒤 세션이 인증 상태다" '"authenticated":true'
+    google_session_cookie="${rotated_cookie}"
+    google_csrf_token="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
+    if [ -n "${google_csrf_token}" ]; then
+      record_pass "${label} 재인증 뒤 세션이 새 CSRF 토큰을 준다"
+    else
+      record_fail "${label} 재인증 뒤 세션이 새 CSRF 토큰을 준다" \
+        "본문에 csrfToken이 없다 — $(head -c 200 "${last_body}")"
+    fi
+  else
+    record_fail "${label} 재인증이 세션을 회전시킨다" '콜백이 새 세션 쿠키를 주지 않았다.'
+  fi
+}
+
 # 9) 거부 탐침: 연결 무장 도중 본인 확인을 시작하면 그 흐름이 대신 성립한다.
 #
 # 설정 화면은 연결 버튼 셋과 본인 확인 버튼 셋을 같은 페이지에 그린다. "무장 → 제공자 화면에서
 # 이탈 → 본인 확인"은 그래서 평범한 경로이고, 연결 무장이 남아 있으면 그 콜백이 연결 분기에
 # 삼켜져 재인증이 성립하지 않는다. 무장 시각에 상대 흐름을 버리는 것이 그 상태를 없앤다.
+#
+# 위 네이버 연결이 실행되며 재인증 시각을 지웠으므로 새 본인 확인 없이는 이 무장이 서지 않는다.
+reauthenticate_google_session '카카오 무장 전'
 fetch POST /api/auth/link/kakao \
   -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}" \
   -H "Origin: ${base_url}" \
@@ -2121,8 +2170,25 @@ printf '\nBybit 연결 왕복\n'
 # 제공자는 `dev-bybit` 프로필의 local 스텁이다. 시나리오를 API Key가 고르므로 같은 키로 몇 번을
 # 물어도 같은 답이 나온다(`DevBybitStub`).
 #
-# 재인증은 위 연결 왕복이 이미 마쳤다. 세션의 재인증 시각이 남아 있어야 허가가 서고, 그 값은
-# 세션 회전을 건너 살아남는다.
+# 재인증은 **다시** 한다. 위 해제 왕복이 민감 command 하나를 실제로 실행했고, 실행 성공은 세션
+# 회전과 함께 재인증 시각을 지운다 — 본인 확인 1회는 command 1건이다(`SessionRotation`). 그래서
+# 같은 재인증으로는 아래 연결 준비가 서지 않고, 그 거부를 먼저 본 뒤 새 본인 확인 위에서 연결한다.
+
+fetch POST /api/connections/bybit \
+  -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}" \
+  -H "Origin: ${base_url}" \
+  -H "X-CSRF-TOKEN: ${google_csrf_token}"
+assert_equals '해제를 실행한 재인증으로는 연결 준비가 거부된다(연쇄 승인 차단)' "${last_status}" '403'
+assert_body_contains '연쇄 승인 거부의 안정 code' '"code":"FORBIDDEN"'
+# 거부의 이유가 "시각이 없어서"임을 저장소에서 본다 — 허가도 무장도 생기지 않았다.
+assert_rows '연쇄 승인 거부가 허가를 만들지 않는다' \
+  "SELECT count(*) FROM action_grant WHERE command = 'bybit-connection-create'" '0'
+assert_rows '연쇄 승인 거부가 연결 무장을 만들지 않는다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.source.bybit-connection'" '0'
+assert_rows '해제를 실행한 세션에 재인증 시각이 없다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.reauthenticated-at'" '0'
+
+reauthenticate_google_session '연결 전'
 
 connection_session_cookie="${google_session_cookie}"
 connection_csrf_token="${google_csrf_token}"

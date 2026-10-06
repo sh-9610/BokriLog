@@ -53,7 +53,7 @@ class SyncJobRepository {
     }
     Optional<Lease> claim() {
         return jdbc.sql("UPDATE sync_job SET status='RUNNING',fencing_generation=fencing_generation+1,"
-                + "lease_until=now()+interval '30 seconds',heartbeat_at=now() WHERE job_id=("
+                + "lease_until=now()+"+SyncLease.SQL_INTERVAL+",heartbeat_at=now() WHERE job_id=("
                 + "SELECT job_id FROM sync_job WHERE status='QUEUED' OR "
                 + "(status='RUNNING' AND lease_until<now()) ORDER BY created_at "
                 + "FOR UPDATE SKIP LOCKED LIMIT 1) "
@@ -78,7 +78,7 @@ class SyncJobRepository {
             .query(UUID.class).optional().isPresent();
     }
     int heartbeat(Lease lease) {
-        return jdbc.sql("UPDATE sync_job SET lease_until=now()+interval '30 seconds',heartbeat_at=now() "
+        return jdbc.sql("UPDATE sync_job SET lease_until=now()+"+SyncLease.SQL_INTERVAL+",heartbeat_at=now() "
                 + "WHERE job_id=:j AND fencing_generation=:g AND status='RUNNING' AND lease_until>now()")
             .param("j",lease.jobId()).param("g",lease.generation()).update();
     }

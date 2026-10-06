@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -76,8 +75,8 @@ class PlanEndCommandServiceTest {
         String reference = "grant-reference-c".repeat(3);
         MockHttpSession session = armedSession(reference);
         service.cancel(session);
+        // 참조 단위가 유일한 명시적 무효화다 — `(user, command, target)` 단위 메서드는 더 이상 서비스 표면에 없다.
         verify(grants).invalidateReference(USER, reference);
-        verify(grants, never()).invalidate(any(), any(), any());
         assertThat(PlanEndFlow.peekIncludingExpired(session)).isNull();
         service.cancel(session);
         verify(grants).invalidateReference(eq(USER), eq(reference));

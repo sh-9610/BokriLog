@@ -115,7 +115,7 @@ class CashflowClassificationRepository {
     }
     Optional<Lease> claim() {
         return jdbc.sql("UPDATE sync_cashflow_classification_job SET status='RUNNING',fencing_generation=fencing_generation+1,"
-                + "lease_until=now()+interval '30 seconds',last_checked_at=now() WHERE job_id=(SELECT job_id "
+                + "lease_until=now()+"+SyncLease.SQL_INTERVAL+",last_checked_at=now() WHERE job_id=(SELECT job_id "
                 + "FROM sync_cashflow_classification_job WHERE plan_sync_job_id IS NULL AND (status='QUEUED' "
                 + "OR (status='RUNNING' AND lease_until<now())) "
                 + "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING job_id,user_id,portfolio_id,intent_id,"
@@ -133,7 +133,7 @@ class CashflowClassificationRepository {
         jdbc.sql("INSERT INTO sync_cashflow_classification_job(job_id,user_id,portfolio_id,intent_id,connection_id,"
                 + "provider_account_id,candidate_id,policy_version,idempotency_key,status,fencing_generation,lease_until,"
                 + "last_checked_at,plan_sync_job_id) VALUES (:j,:u,:p,:i,:c,:a,:candidate,:policy,:key,'RUNNING',1,"
-                + "now()+interval '30 seconds',now(),:sync)")
+                + "now()+"+SyncLease.SQL_INTERVAL+",now(),:sync)")
             .param("j",childId).param("u",sync.userId()).param("p",sync.portfolioId()).param("i",sync.intentId())
             .param("c",sync.connectionId()).param("a",sync.providerAccountId()).param("candidate",candidateId)
             .param("policy",CashflowDecisionTable.POLICY_VERSION).param("key","plan-sync:"+sync.jobId()+":classification")

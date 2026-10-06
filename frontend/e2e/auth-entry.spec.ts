@@ -923,6 +923,18 @@ test.describe('스텁 제공자 성공 왕복', () => {
     // 수단이 둘이므로 마지막 수단 설명이 사라진다.
     await expect(page.getByText(authContent.settings.lastMethod)).toHaveCount(0)
 
+    /*
+     * 본인 확인을 한 번 더. 연결은 민감 command 하나이고 본인 확인 1회는 command 1건이다 — 연결
+     * 성공이 세션 회전과 함께 재인증 시각을 지웠으므로 해제 준비는 새 본인 확인 위에서만 허가를
+     * 받는다(`SessionRotation`). 복귀 목적지는 여전히 세션이 붙들어 둔 온보딩이다.
+     */
+    await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
+    await consentWithSubject(page, `google-${marker}`)
+    await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
+    expect(new URL(page.url()).search).toBe('')
+    await page.getByRole('link', { name: authContent.settings.link }).click()
+    await expect(page.getByText(authContent.settings.linked)).toHaveCount(2)
+
     const unlinkButton = page.getByRole('button', {
       name: authContent.settings.unlinkLabels.naver,
     })

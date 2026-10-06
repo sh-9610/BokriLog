@@ -746,13 +746,18 @@ class AuthFlowHandlers {
      * 사실을 HTTP 밖에서 직접 볼 수 있다 — 소비에 성공했을 때만 회전하고 거부에서는 하지 않는다는
      * 것이 여기서 고정된다({@code AuthFlowHandlersRotationTest}).
      *
+     * <p>회전과 함께 재인증 시각을 지운다({@code SessionRotation}). 연결은 민감 command 하나이고 본인
+     * 확인 1회는 command 1건이다 — 지우지 않으면 방금의 재인증이 5분 안에서 해제·연결 같은 다음
+     * command를 연쇄 승인한다. 거부에서는 아무것도 지우지 않으므로 사용자는 같은 재인증으로 다시
+     * 시작할 수 있다.
+     *
      * @return 회전한 새 세션 id, 연결이 거부됐으면 {@code null}
      */
     static @Nullable String rotateIfLinked(HttpServletRequest request, LinkService.Outcome outcome) {
         if (outcome != LinkService.Outcome.LINKED) {
             return null;
         }
-        return request.changeSessionId();
+        return SessionRotation.rotateAfterSensitiveCommand(request);
     }
 
     /**

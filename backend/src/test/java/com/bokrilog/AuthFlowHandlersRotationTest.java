@@ -2,6 +2,7 @@ package com.bokrilog;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.time.Instant;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -26,12 +27,15 @@ class AuthFlowHandlersRotationTest {
     void 연결에_성공하면_세션_ID를_다시_회전시킨다() {
         RotationRecordingRequest request = new RotationRecordingRequest();
         String before = request.getSession().getId();
+        ReauthenticationFlow.recordAuthentication(request.getSession(), Instant.now());
 
         String rotated = AuthFlowHandlers.rotateIfLinked(request, LinkService.Outcome.LINKED);
 
         assertThat(request.rotations()).isEqualTo(1);
         assertThat(rotated).isNotNull().isNotEqualTo(before);
         assertThat(request.getSession().getId()).isEqualTo(rotated);
+        // 연결은 민감 command 하나다. 실행 성공이 재인증 시각을 지운다 — 본인 확인 1회는 command 1건.
+        assertThat(ReauthenticationFlow.lastAuthenticatedAt(request.getSession())).isNull();
     }
 
     @Test
@@ -44,10 +48,14 @@ class AuthFlowHandlersRotationTest {
          * 소비 성공에 묶여 있다는 것이 `SECURITY-ACTION-1.0`의 계약이고, 그 묶임을 보는 자리가
          * 여기다.
          */
+        Instant reauthenticatedAt = Instant.now();
+        ReauthenticationFlow.recordAuthentication(request.getSession(), reauthenticatedAt);
         assertThat(AuthFlowHandlers.rotateIfLinked(request, LinkService.Outcome.DENIED)).isNull();
 
         assertThat(request.rotations()).isZero();
         assertThat(request.getSession().getId()).isEqualTo(before);
+        // 거부는 아무것도 실행하지 않았다. 같은 재인증으로 다시 시작할 수 있어야 하므로 시각이 남는다.
+        assertThat(ReauthenticationFlow.lastAuthenticatedAt(request.getSession())).isEqualTo(reauthenticatedAt);
     }
 
     /** {@code changeSessionId()} 호출을 세는 요청. 세션 하나를 미리 들고 있다. */

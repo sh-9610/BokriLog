@@ -140,14 +140,17 @@ class AuthLinkProviderTest extends AuthFlowTestBase {
         String rotatedId = sessionIdOf(rotated);
         assertThat(sessionAttribute(rotatedId, LinkFlow.FLOW_ATTRIBUTE)).isNull();
         /*
-         * 나머지 세션 속성은 회전을 건너 살아남는다. 이 왕복에서 세션 ID가 두 번 바뀌므로
-         * (고정 방어 + 허가 소비의 재회전) 그 둘 중 하나라도 속성을 잃으면 사용자는 목적지와
-         * 재인증 기록을 잃은 채 로그인 상태로 남는다 — 다음 연결이 이유 없이 거부되는 모양이다.
+         * 목적지 속성은 회전을 건너 살아남는다. 이 왕복에서 세션 ID가 두 번 바뀌므로(고정 방어 +
+         * 허가 소비의 재회전) 그 둘 중 하나라도 속성을 잃으면 사용자는 목적지를 잃은 채 로그인
+         * 상태로 남는다.
+         *
+         * 재인증 시각은 **지워진다**. 연결은 민감 command 하나이고 본인 확인 1회는 command 1건이다 —
+         * 남겨 두면 방금의 재인증이 5분 안에서 해제·연결 같은 다음 command를 연쇄 승인한다
+         * (`SessionRotation`, Epic 1 회고 item-1). 다음 연결은 새 재인증을 요구한다.
          */
         assertThat(sessionAttribute(rotatedId, AuthFlowHandlers.DESTINATION_ATTRIBUTE))
                 .isEqualTo(AuthFlowHandlers.ONBOARDING_PATH);
-        assertThat(sessionAttribute(rotatedId, ReauthenticationFlow.AUTHENTICATED_AT_ATTRIBUTE))
-                .isInstanceOf(java.time.Instant.class);
+        assertThat(sessionAttribute(rotatedId, ReauthenticationFlow.AUTHENTICATED_AT_ATTRIBUTE)).isNull();
 
         // 연결 상태 조회가 두 제공자를 답한다. 순서는 화면이 아는 고정 순서다.
         assertThat(linkStatus(rotated).body()).isEqualTo("{\"providers\":[\"google\",\"naver\"]}");

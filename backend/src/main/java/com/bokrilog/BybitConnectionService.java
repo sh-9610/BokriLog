@@ -254,29 +254,36 @@ class BybitConnectionService {
     }
 
     /**
-     * 이 세션에 남은 연결 무장을 버리고 <b>그 허가도 함께</b> 무효화한다.
+     * 이 세션에 남은 연결 무장을 버리고 <b>그 무장이 낳은 허가 하나만</b> 무효화한다.
      *
      * <p>{@code UnlinkService.abandon}과 같은 근거의 같은 모양이다. 흐름만 버리면 그것이 가리키던
      * 허가가 아무도 참조할 수 없는 채 수명을 산다.
+     *
+     * <p>참조로 좁힌다. {@code (command, target)}으로 지우면 오래된 탭의 취소 하나가 같은 작업을 위해 다른 세션이 방금
+     * 받은 살아 있는 허가를 지운다({@code PlanEndCommandService.cancel}과 같은 단위).
      */
     void abandon(HttpSession session) {
         BybitConnectionFlow.Armed armed = BybitConnectionFlow.peekIncludingExpired(session);
         BybitConnectionFlow.discard(session);
         if (armed != null) {
-            this.grants.invalidate(armed.userId(), COMMAND, TARGET);
+            this.grants.invalidateReference(armed.userId(), armed.grantReference());
         }
     }
 
     /**
-     * 새 무장이 앞선 무장을 대신한다.
+     * 새 무장이 앞선 무장을 대신한다. 앞선 무장의 허가를 <b>참조로</b> 무효화한다.
      *
-     * <p>{@link #abandon}과 갈라 두는 이유는 방금 {@code issue}가 같은 {@code (user, command,
-     * target)}의 허가를 이미 지웠기 때문이다. 한 번 더 지우면 방금 발급한 것이 사라진다
-     * ({@code UnlinkService.supersedePreviousArming}과 같은 근거이며, target이 고정이라 조건이
-     * 아예 없다).
+     * <p>{@code LinkService}·{@code UnlinkService}의 같은 이름 메서드와 같은 모양이다. target이 고정이라 방금
+     * {@code issue}가 같은 {@code (user, command, target)}의 허가를 언제나 이미 지웠고, 그래서 이 호출은 보통
+     * 0행으로 끝난다 — 그래도 부른다. 이전 무장이 든 참조만 지우므로 방금 발급한 허가는 걸리지 않고, 무장과 허가가
+     * 함께 사라진다는 규칙이 세 서비스에서 같은 문장으로 읽힌다.
      */
-    private static void supersedePreviousArming(HttpSession session) {
+    private void supersedePreviousArming(HttpSession session) {
+        BybitConnectionFlow.Armed previous = BybitConnectionFlow.peekIncludingExpired(session);
         BybitConnectionFlow.discard(session);
+        if (previous != null) {
+            this.grants.invalidateReference(previous.userId(), previous.grantReference());
+        }
     }
 
     /**
@@ -351,7 +358,9 @@ class BybitConnectionService {
                 new java.util.concurrent.atomic.AtomicReference<>();
         Outcome outcome = consume(session, armed, verified, credentials, confirmation, stored, connectionId);
         if (outcome instanceof Outcome.Connected && stored.get()) {
-            rotate(request);
+            // 연결이 실제로 저장된 요청에서만. 재전송에서는 돌지 않는다 — 업무 변경이 다시 실행되지 않았는데 회전시키면
+            // "커밋 뒤에만"이 깨진다. 재인증 시각도 여기서 함께 지운다(본인 확인 1회는 command 1건).
+            SessionRotation.completeSensitiveCommand(request);
         }
         return outcome;
     }
@@ -434,25 +443,6 @@ class BybitConnectionService {
              * 단일 거부로 접는다.
              */
             return rejected(SourceRejectionReason.NOT_PERMITTED);
-        }
-    }
-
-    /**
-     * 커밋 뒤 세션 회전. <b>연결이 실제로 저장된 요청에서만</b> 실행된다.
-     *
-     * <p>{@code SECURITY-ACTION-1.0}이 허가 소비 성공에 요구하는 것이고 1.9의 결과 타입 이름
-     * ({@code ConsumedRequiringSessionRotation})이 이 자리로 넘긴 의무다. 재전송에서는 돌지
-     * 않는다 — 업무 변경이 다시 실행되지 않았는데 회전시키면 "커밋 뒤에만"이 깨진다.
-     *
-     * <p>여기서 실패해도 연결은 성공이다. 연결은 이미 커밋됐고 이 회전은 그 뒤의 곁다리이므로,
-     * 예외를 올려보내면 클라이언트가 "연결하지 못했다"를 보면서 실제로는 연결된 상태가 된다
-     * ({@code UnlinkService.settleSessions}와 같은 판단).
-     */
-    private static void rotate(HttpServletRequest request) {
-        try {
-            request.changeSessionId();
-        } catch (RuntimeException ignored) {
-            // 다음 요청이 같은 세션 상태를 다시 본다. 연결 자체는 이미 커밋됐다.
         }
     }
 

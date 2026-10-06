@@ -12,6 +12,7 @@ import com.bokrilog.sync.SyncJobApi.SyncTrigger;
 import com.bokrilog.sync.internal.PlanPublicationRepository.Flow;
 import com.bokrilog.sync.internal.PlanPublicationRepository.Pinned;
 import com.bokrilog.sync.internal.PlanPublicationRepository.PublicationBlocked;
+import com.bokrilog.sync.IdempotencyKey;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -125,9 +126,9 @@ class PlanSyncService {
     SyncAdmission admit(@Nullable UUID userId, @Nullable SyncTrigger trigger, @Nullable String key) {
         if (userId == null) return new SyncAdmission.NotPermitted();
         if (trigger == null) return new SyncAdmission.Refused("BAD_REQUEST");
-        // One key rule for the plan's commands: the publication's.
-        if (key == null || !PlanPublicationService.validKey(key))
-            return new SyncAdmission.Refused("IDEMPOTENCY_KEY_REQUIRED");
+        // 계획 command의 키 규칙은 하나다(IdempotencyKey).
+        if (!IdempotencyKey.isValid(key))
+            return new SyncAdmission.Refused(IdempotencyKey.REQUIRED_CODE);
         try {
             return Objects.requireNonNull(transactions.execute(status -> admitInTransaction(userId, trigger, key)));
         } catch (DuplicateKeyException racing) {
