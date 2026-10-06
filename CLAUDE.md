@@ -148,7 +148,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 ## 현재 진행 지점
 
-기획은 완료됐고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. **Epic 1(11개)은 닫혔고 회고도 끝났다**(`epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건은 `sprint-status.yaml`의 `action_items`가 소유). **Epic 2(16개)도 모두 `develop`에 머지됐고** M2-2(2.7)·M2-3(2.12)·M2-4(2.13~2.16) 검증 지점이 닫혔다. Epic 2 회고도 끝났다(`epic-2-retro-2026-10-05.md`, 판정 `accepted-with-open-items`, 액션 13건). **다음은 회고 액션 AI-8(민감 command 공통 부품 정리, `spec-sensitive-command-commons.md`)을 chore로 먼저 끝내고, 그 뒤 Epic 3 Story 3.1(보호된 운영자 표면과 추가 전용 감사 원장)이다.** 2026-10-06 결정: Epic 1 액션 item-1(재인증 시각 연쇄 승인)은 같은 코드를 만지므로 AI-8 범위에 넣고, item-7(확인 hash 판별력)은 운영 envelope가 실제 확인 문구를 정의하는 3.1 SPEC의 입력으로 넘긴다. `RECONNECT-1.0`(AI-1)은 Epic 3 완료 뒤 Epic 2 보완 스토리로 배치하고 그때까지 해제 사용자의 새 연결 영구 차단은 accepted deviation이다. 실연동 게이트는 둘이며 둘 다 별도 출시 게이트가 소유한다 — Epic 1의 세 제공자 왕복, Epic 2의 Bybit 연결 정책·실연동(실제 검증 계정과 regional reserved IP 필요).
+기획은 완료됐고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. **Epic 1(11개)은 닫혔고 회고도 끝났다**(`epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건은 `sprint-status.yaml`의 `action_items`가 소유). **Epic 2(16개)도 모두 `develop`에 머지됐고** M2-2(2.7)·M2-3(2.12)·M2-4(2.13~2.16) 검증 지점이 닫혔다. Epic 2 회고도 끝났다(`epic-2-retro-2026-10-05.md`, 판정 `accepted-with-open-items`, 액션 13건). 회고 액션 AI-8의 백엔드 묶음(민감 command 공통 부품 정리)과 Epic 1 액션 item-1(재인증 시각 연쇄 승인)은 `spec-sensitive-command-commons.md`(PR #71)가 닫았다. **다음은 AI-8의 프런트엔드 묶음(D-4 — 대화상자 모달 3벌·조회 훅 2벌·`isInstant` 2벌, `deferred-work.md` 104번)을 chore로 끝내고, 그 뒤 Epic 3 Story 3.1(보호된 운영자 표면과 추가 전용 감사 원장)이다.** item-7(확인 hash 판별력)은 운영 envelope가 실제 확인 문구를 정의하는 3.1 SPEC의 입력이다. `RECONNECT-1.0`(AI-1)은 Epic 3 완료 뒤 Epic 2 보완 스토리로 배치하고 그때까지 해제 사용자의 새 연결 영구 차단은 accepted deviation이다. 실연동 게이트는 둘이며 둘 다 별도 출시 게이트가 소유한다 — Epic 1의 세 제공자 왕복, Epic 2의 Bybit 연결 정책·실연동(실제 검증 계정과 regional reserved IP 필요).
 
 스토리마다 무엇을 도입했고 리뷰가 무엇을 잡았는지는 아래 표의 SPEC이 소유한다. 그 코드를 건드릴 때 해당 SPEC의 `## Design Notes`와 "구현에서 확정한 것"을 읽는다.
 
@@ -185,6 +185,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 2.16 연결 해제·기록 보존 | done | `spec-2-16-bybit-connection-revocation.md`, PR #65 머지 커밋 `9aae04d` |
 | Epic 2 | **완료** | 16개 스토리 전부 done |
 | Epic 2 회고 | done | `epic-2-retro-2026-10-05.md`, 판정 `accepted-with-open-items`, 액션 13건 |
+| AI-8 백엔드 공통 부품 chore | done | `spec-sensitive-command-commons.md`, PR #71 머지 커밋 `1e43ebf` |
 
 ## 스토리가 고정한 계약
 
@@ -231,7 +232,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 ## 미룬 결정
 
-`deferred-work.md`가 항목을 추가만 하는 로그(현재 103건)이고 판정은 `deferred-work-resolutions.md`의 상태 요약 표가 소유한다(해소 16·부분 해소 4·미해소 31·미판정 52). 판정이 멈춰 있는 것 자체가 Epic 1 회고 액션 8번이고 Epic 2 회고 AI-6이 같은 일을 다시 요구한다. 회고가 실연동 게이트 전에 닫으라고 남긴 둘 가운데 연쇄 승인(재인증 시각을 지우는 코드가 없던 것, AI-8 범위)은 `spec-sensitive-command-commons.md`가 `SessionRotation`으로 닫았고, `onFailure`가 무장을 무조건 버리는 것 하나만 아직 열려 있다.
+`deferred-work.md`가 항목을 추가만 하는 로그(현재 105건)이고 판정은 `deferred-work-resolutions.md`의 상태 요약 표가 소유한다(해소 16·부분 해소 4·미해소 31·미판정 54). 판정이 멈춰 있는 것 자체가 Epic 1 회고 액션 8번이고 Epic 2 회고 AI-6이 같은 일을 다시 요구한다. 회고가 실연동 게이트 전에 닫으라고 남긴 둘 가운데 연쇄 승인(재인증 시각을 지우는 코드가 없던 것, AI-8 범위)은 `spec-sensitive-command-commons.md`가 `SessionRotation`으로 닫았고, `onFailure`가 무장을 무조건 버리는 것 하나만 아직 열려 있다.
 
 ## 브랜치·커밋
 

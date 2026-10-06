@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 10-05-2026 19:21
+last_updated: 10-06-2026 19:40
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -101,7 +101,7 @@ action_items:
       (command, target)에 귀속시켜, 본인 확인 1회가 연결·해제 여러 건을 5분 창 안에서 연쇄 승인하지 못하게 한다. 실연동
       게이트 전 필수"
     owner: "SSAFY"
-    status: in-progress
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
   - id: "epic-1-retro-item-2-authflowhandlers-onfailure의-무장-폐기에-disca"
     epic: 1
@@ -234,7 +234,7 @@ action_items:
     action: "Epic 3 운영자 민감 command 전에 공통 부품을 모은다 — 세션 무장 Flow 6벌·rotate·허가 무효화(참조
       단위로 통일), 멱등 키 규칙 5벌·메시지, lease 저장소 수명 상수, 대화상자 모달 동작(D-1~D-4)"
     owner: "Dev"
-    status: in-progress
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
   - id: "epic-2-retro-item-21-usedashboard-ts-파서-훅-카피-조립-와-planpublica"
     epic: 2
