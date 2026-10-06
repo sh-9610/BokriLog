@@ -101,7 +101,7 @@ action_items:
       (command, target)에 귀속시켜, 본인 확인 1회가 연결·해제 여러 건을 5분 창 안에서 연쇄 승인하지 못하게 한다. 실연동
       게이트 전 필수"
     owner: "SSAFY"
-    status: open
+    status: in-progress
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
   - id: "epic-1-retro-item-2-authflowhandlers-onfailure의-무장-폐기에-disca"
     epic: 1
@@ -185,7 +185,7 @@ action_items:
     action: "RECONNECT-1.0(동일 UID 재사용·다른 UID 활성 계획 차단)을 구현할 스토리를 정해 epics.md에 배치하고,
       그 전까지 해제 사용자 새 연결의 영구 차단을 accepted deviation으로 기록한다(회고 R-1)"
     owner: "PM(사용자)"
-    status: open
+    status: in-progress
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
   - id: "epic-2-retro-item-14-시스템-트리거-정밀-검증-네-사유-plan_end_preparation"
     epic: 2
@@ -234,7 +234,7 @@ action_items:
     action: "Epic 3 운영자 민감 command 전에 공통 부품을 모은다 — 세션 무장 Flow 6벌·rotate·허가 무효화(참조
       단위로 통일), 멱등 키 규칙 5벌·메시지, lease 저장소 수명 상수, 대화상자 모달 동작(D-1~D-4)"
     owner: "Dev"
-    status: open
+    status: in-progress
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
   - id: "epic-2-retro-item-21-usedashboard-ts-파서-훅-카피-조립-와-planpublica"
     epic: 2
@@ -247,7 +247,7 @@ action_items:
     epic: 2
     action: "코드 주석 언어 규칙을 정해 CLAUDE.md 언어 절에 한 줄로 둔다 — Epic 2 신규 코드는 영어 주석이 과반이다(P-1)"
     owner: "사용자"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
   - id: "epic-2-retro-item-23-m2-4-브라우저-근거를-보강한다-연결-해제-후속-계획-e2e를-주입-o"
     epic: 2
@@ -267,5 +267,5 @@ action_items:
     action: "리뷰 patch 루프와 2차 리뷰의 기록 위치를 정한다 — SPEC Change Log 사용 또는 review_loop_iteration을
       patch 루프에도 올릴지(C-2)"
     owner: "사용자"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
