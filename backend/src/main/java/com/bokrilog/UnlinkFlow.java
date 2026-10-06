@@ -73,6 +73,10 @@ final class UnlinkFlow {
      */
     static final Duration ARMED_LIFETIME = Duration.ofMinutes(5);
 
+    /** 공통 무장 메커니즘. 키·수명·record는 이 클래스가 정하고 동작은 {@link SessionArming}이 한다. */
+    private static final SessionArming<Armed> ARMING =
+            new SessionArming<>(FLOW_ATTRIBUTE, Armed.class, ARMED_LIFETIME, Armed::armedAt);
+
     private UnlinkFlow() {}
 
     /**
@@ -110,7 +114,7 @@ final class UnlinkFlow {
      * 아니라 {@code UnlinkService.abandon}의 일이다({@code LinkFlow.arm}과 같은 분담).
      */
     static void arm(HttpSession session, Armed armed) {
-        session.setAttribute(FLOW_ATTRIBUTE, armed);
+        ARMING.arm(session, armed);
     }
 
     /**
@@ -122,15 +126,7 @@ final class UnlinkFlow {
      * @return 살아 있는 무장, 없으면 {@code null}
      */
     static @Nullable Armed peek(HttpSession session) {
-        Armed armed = peekIncludingExpired(session);
-        if (armed == null) {
-            return null;
-        }
-        if (!armed.isLive(Instant.now())) {
-            discard(session);
-            return null;
-        }
-        return armed;
+        return ARMING.peek(session);
     }
 
     /**
@@ -142,7 +138,7 @@ final class UnlinkFlow {
      * @return 저장된 무장, 없으면 {@code null}
      */
     static @Nullable Armed peekIncludingExpired(HttpSession session) {
-        return session.getAttribute(FLOW_ATTRIBUTE) instanceof Armed armed ? armed : null;
+        return ARMING.peekIncludingExpired(session);
     }
 
     /**
@@ -153,6 +149,6 @@ final class UnlinkFlow {
      * 된다({@code LinkFlow.discard}와 같은 분담).
      */
     static void discard(HttpSession session) {
-        session.removeAttribute(FLOW_ATTRIBUTE);
+        ARMING.discard(session);
     }
 }

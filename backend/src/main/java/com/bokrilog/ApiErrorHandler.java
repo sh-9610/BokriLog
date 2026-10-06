@@ -82,6 +82,15 @@ public class ApiErrorHandler extends ResponseEntityExceptionHandler {
     static final String MESSAGE_INTERNAL_ERROR = "요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.";
 
     /**
+     * 멱등 키가 없거나 규칙에 맞지 않을 때의 메시지 <b>한 문장</b>(422 {@code IdempotencyKey.REQUIRED_CODE}).
+     *
+     * <p>규칙은 {@code com.bokrilog.sync.IdempotencyKey}가, 메시지는 여기가 소유한다. command마다 다른 문장을 두면
+     * 같은 code에 메시지가 여섯이 되고 화면은 code로만 가르므로 그 차이는 아무것도 전하지 않는다.
+     */
+    static final String MESSAGE_IDEMPOTENCY_KEY_REQUIRED =
+            "요청 키가 없거나 형식이 맞지 않아 요청을 받지 않았습니다. 화면을 새로 열어 다시 시도해 주세요.";
+
+    /**
      * Nginx가 채워 넣는 요청 식별자. 있으면 그대로 쓴다. 진입점과 애플리케이션이 같은 값을 쓰지
      * 않으면 사용자가 화면에서 읽은 ID로 로그를 찾을 수 없다.
      */

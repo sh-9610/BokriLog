@@ -10,6 +10,7 @@ import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.SyncJobApi;
 import com.bokrilog.source.SourceConnectionApi.CollectionObservation;
+import com.bokrilog.sync.IdempotencyKey;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -123,7 +124,7 @@ class SyncJobService implements SyncJobApi {
     }
     @Override
     public Optional<Job> admitNextBaseline(@Nullable UUID userId, @Nullable String key) {
-        if (userId==null || !validCollectionKey(key)) return Optional.empty();
+        if (userId==null || !IdempotencyKey.isValid(key)) return Optional.empty();
         return transactions.execute(status -> {
             publicationPlans.lockPlanWrites(userId);
             if (!accounts.lockWriteAccess(userId)) return Optional.empty();
@@ -210,7 +211,7 @@ class SyncJobService implements SyncJobApi {
     }
     @Override
     public Optional<CollectionJob> admitInitialInputs(@Nullable UUID userId, UUID intentId, String key) {
-        if (userId==null || !validCollectionKey(key)) return Optional.empty();
+        if (userId==null || !IdempotencyKey.isValid(key)) return Optional.empty();
         try {
             return transactions.execute(status -> {
                 if (publicationPlans.latestPlan(userId).isPresent()) {
@@ -256,7 +257,7 @@ class SyncJobService implements SyncJobApi {
     }
     @Override
     public Optional<ClassificationJob> admitCashflowClassification(@Nullable UUID userId,UUID intentId,String key) {
-        if (userId==null||!validCollectionKey(key)) return Optional.empty();
+        if (userId==null||!IdempotencyKey.isValid(key)) return Optional.empty();
         return transactions.execute(status->{
             if (publicationPlans.latestPlan(userId).isPresent()) {
                 publicationPlans.lockPlanWrites(userId);
@@ -287,7 +288,7 @@ class SyncJobService implements SyncJobApi {
     }
     @Override
     public Optional<ConversionJob> admitCashflowConversion(@Nullable UUID userId, UUID intentId, String key) {
-        if (userId==null||!validCollectionKey(key)) return Optional.empty();
+        if (userId==null||!IdempotencyKey.isValid(key)) return Optional.empty();
         return transactions.execute(status->{
             if (publicationPlans.latestPlan(userId).isPresent()) {
                 publicationPlans.lockPlanWrites(userId);
@@ -705,10 +706,6 @@ class SyncJobService implements SyncJobApi {
                 && !restrictions.isRestricted(PLAN_CONDITION_COMMAND)
                 && !restrictions.isRestricted(SYNC_COMMAND)
                 && !restrictions.isRestricted(CONNECTION_COMMAND);
-    }
-    private static boolean validCollectionKey(@Nullable String key) {
-        return key!=null&&key.length()>=16&&key.length()<=128&&key.matches("[A-Za-z0-9._:-]+")
-                &&!key.contains("..")&&!key.startsWith("-");
     }
     private static final class PublicationBlocked extends RuntimeException {
         private static final long serialVersionUID = 1L;

@@ -39,6 +39,10 @@ final class PlanEndFlow {
      */
     static final Duration ARMED_LIFETIME = Duration.ofMinutes(5);
 
+    /** 공통 무장 메커니즘. 키·수명·record는 이 클래스가 정하고 동작은 {@link SessionArming}이 한다. */
+    private static final SessionArming<Armed> ARMING =
+            new SessionArming<>(FLOW_ATTRIBUTE, Armed.class, ARMED_LIFETIME, Armed::armedAt);
+
     private PlanEndFlow() {}
 
     /**
@@ -76,29 +80,21 @@ final class PlanEndFlow {
 
     /** 이 세션에 종료 흐름을 심는다. 앞선 무장은 덮인다(그 허가는 발급이 이미 무효화했다). */
     static void arm(HttpSession session, Armed armed) {
-        session.setAttribute(FLOW_ATTRIBUTE, armed);
+        ARMING.arm(session, armed);
     }
 
     /** 살아 있는 무장을 읽되 소비하지 않는다. 수명이 지났으면 버리고 {@code null}이다. */
     static @Nullable Armed peek(HttpSession session) {
-        Armed armed = peekIncludingExpired(session);
-        if (armed == null) {
-            return null;
-        }
-        if (!armed.isLive(Instant.now())) {
-            discard(session);
-            return null;
-        }
-        return armed;
+        return ARMING.peek(session);
     }
 
     /** 수명이 지난 무장까지 그대로 읽는다. 버릴 무장의 허가를 함께 무효화하는 경로가 쓴다. */
     static @Nullable Armed peekIncludingExpired(HttpSession session) {
-        return session.getAttribute(FLOW_ATTRIBUTE) instanceof Armed armed ? armed : null;
+        return ARMING.peekIncludingExpired(session);
     }
 
     /** 무장만 버린다. 세션도 허가도 건드리지 않는다. */
     static void discard(HttpSession session) {
-        session.removeAttribute(FLOW_ATTRIBUTE);
+        ARMING.discard(session);
     }
 }

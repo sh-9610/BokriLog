@@ -4,6 +4,7 @@ import com.bokrilog.ApiErrorHandler.ApiError;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.source.SourceCredentials;
 import com.bokrilog.source.SourceRejectionReason;
+import com.bokrilog.sync.IdempotencyKey;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -371,9 +372,6 @@ class BybitConnectionController {
                     BybitRevocationCommandService.IDEMPOTENCY_CONFLICT,
                     "같은 요청 키가 다른 해제 요청에 이미 쓰였습니다. 새로 요청해 주세요.")));
 
-    static final String MESSAGE_REVOCATION_KEY_REQUIRED =
-            "요청 키가 없거나 형식이 맞지 않아 해제 요청을 받지 않았습니다. 화면을 새로 열어 다시 시도해 주세요.";
-
     /** 본문은 수십 바이트다. 훨씬 긴 것은 이 요청이 아니다. */
     private static final int MAX_REVOCATION_BODY_CHARS = 512;
 
@@ -431,17 +429,17 @@ class BybitConnectionController {
     @PostMapping(path = REVOCATION_CONFIRM_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<?> confirmRevocation(
             @RequestBody(required = false) @Nullable String body,
-            @org.springframework.web.bind.annotation.RequestHeader(name = "Idempotency-Key", required = false)
+            @org.springframework.web.bind.annotation.RequestHeader(name = IdempotencyKey.HEADER, required = false)
                     @Nullable String key,
             HttpServletRequest request) {
         long started = System.nanoTime();
         RevocationBody parsed = revocationBodyOf(body, true);
         if (parsed == null || parsed.confirmation() == null)
             return revocationAnswer("confirm", revocationBadRequest(request), "BAD_REQUEST", started);
-        if (key == null || !PlanEndController.validKey(key))
+        if (!IdempotencyKey.isValid(key))
             return revocationAnswer("confirm", revocationError(HttpStatus.UNPROCESSABLE_CONTENT,
-                    "IDEMPOTENCY_KEY_REQUIRED", MESSAGE_REVOCATION_KEY_REQUIRED, request), "IDEMPOTENCY_KEY_REQUIRED",
-                    started);
+                    IdempotencyKey.REQUIRED_CODE, ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED, request),
+                    IdempotencyKey.REQUIRED_CODE, started);
         UUID userId = currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null || session == null)

@@ -81,7 +81,7 @@ class InitialCollectionRepository {
     }
     Optional<Lease> claim() {
         return jdbc.sql("UPDATE sync_initial_collection_job SET status='RUNNING',fencing_generation=fencing_generation+1,"
-                + "lease_until=now()+interval '30 seconds',heartbeat_at=now(),last_checked_at=now() "
+                + "lease_until=now()+"+SyncLease.SQL_INTERVAL+",heartbeat_at=now(),last_checked_at=now() "
                 + "WHERE job_id=(SELECT job_id FROM sync_initial_collection_job WHERE plan_sync_job_id IS NULL AND "
                 + "(status='QUEUED' OR (status='RUNNING' AND lease_until<now())) ORDER BY created_at "
                 + "FOR UPDATE SKIP LOCKED LIMIT 1) "
@@ -102,7 +102,7 @@ class InitialCollectionRepository {
         jdbc.sql("INSERT INTO sync_initial_collection_job(job_id,user_id,portfolio_id,intent_id,connection_id,"
                 + "provider_account_id,idempotency_key,status,t0,tc,fencing_generation,lease_until,heartbeat_at,"
                 + "last_checked_at,plan_sync_job_id,window_start,base_candidate_id) VALUES (:j,:u,:p,:i,:c,:a,:k,"
-                + "'RUNNING',:t0,:tc,1,now()+interval '30 seconds',now(),now(),:sync,:w,:base)")
+                + "'RUNNING',:t0,:tc,1,now()+"+SyncLease.SQL_INTERVAL+",now(),now(),:sync,:w,:base)")
             .param("j",childId).param("u",sync.userId()).param("p",sync.portfolioId()).param("i",sync.intentId())
             .param("c",sync.connectionId()).param("a",sync.providerAccountId())
             .param("k","plan-sync:"+sync.jobId()+":collection").param("t0",utc(sync.t0())).param("tc",utc(tc))
@@ -128,7 +128,7 @@ class InitialCollectionRepository {
             .param("a",l.providerAccountId()).param("g",l.generation()).query(UUID.class).optional().isPresent();
     }
     int heartbeat(Lease l) {
-        return jdbc.sql("UPDATE sync_initial_collection_job SET lease_until=now()+interval '30 seconds',"
+        return jdbc.sql("UPDATE sync_initial_collection_job SET lease_until=now()+"+SyncLease.SQL_INTERVAL+","
                 + "heartbeat_at=now(),last_checked_at=now() WHERE job_id=:j AND fencing_generation=:g "
                 + "AND status='RUNNING' AND lease_until>now()")
             .param("j",l.jobId()).param("g",l.generation()).update();

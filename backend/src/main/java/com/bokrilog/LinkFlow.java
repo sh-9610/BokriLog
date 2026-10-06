@@ -59,6 +59,10 @@ final class LinkFlow {
      */
     static final Duration ARMED_LIFETIME = Duration.ofMinutes(5);
 
+    /** 공통 무장 메커니즘. 키·수명·record는 이 클래스가 정하고 동작은 {@link SessionArming}이 한다. */
+    private static final SessionArming<Armed> ARMING =
+            new SessionArming<>(FLOW_ATTRIBUTE, Armed.class, ARMED_LIFETIME, Armed::armedAt);
+
     private LinkFlow() {}
 
     /**
@@ -102,7 +106,7 @@ final class LinkFlow {
      * 지운다).
      */
     static void arm(HttpSession session, Armed armed) {
-        session.setAttribute(FLOW_ATTRIBUTE, armed);
+        ARMING.arm(session, armed);
     }
 
     /**
@@ -114,15 +118,7 @@ final class LinkFlow {
      * @return 살아 있는 무장, 없으면 {@code null}
      */
     static @Nullable Armed peek(HttpServletRequest request) {
-        Armed armed = stored(request);
-        if (armed == null) {
-            return null;
-        }
-        if (!armed.isLive(Instant.now())) {
-            discard(request);
-            return null;
-        }
-        return armed;
+        return ARMING.peek(request);
     }
 
     /**
@@ -136,7 +132,7 @@ final class LinkFlow {
      * @return 저장된 무장, 없으면 {@code null}
      */
     static @Nullable Armed peekIncludingExpired(HttpServletRequest request) {
-        return stored(request);
+        return ARMING.peekIncludingExpired(request);
     }
 
     /**
@@ -146,12 +142,7 @@ final class LinkFlow {
      * 거기서는 요청이 아니라 세션이 이미 손에 있고, 수명이 지난 무장의 허가도 무효화 대상이다.
      */
     static @Nullable Armed peekIncludingExpired(HttpSession session) {
-        return session.getAttribute(FLOW_ATTRIBUTE) instanceof Armed armed ? armed : null;
-    }
-
-    private static @Nullable Armed stored(HttpServletRequest request) {
-        HttpSession session = request.getSession(false);
-        return session == null ? null : peekIncludingExpired(session);
+        return ARMING.peekIncludingExpired(session);
     }
 
     /**
@@ -162,17 +153,12 @@ final class LinkFlow {
      * @return 살아 있던 무장, 없으면 {@code null}
      */
     static @Nullable Armed consume(HttpServletRequest request) {
-        Armed armed = peek(request);
-        discard(request);
-        return armed;
+        return ARMING.consume(request);
     }
 
     /** 무장만 버린다. 세션도 허가도 건드리지 않는다. */
     static void discard(HttpServletRequest request) {
-        HttpSession session = request.getSession(false);
-        if (session != null) {
-            discard(session);
-        }
+        ARMING.discard(request);
     }
 
     /**
@@ -183,6 +169,6 @@ final class LinkFlow {
      * 된다 — 콜백 경계처럼 허가를 남겨 두어야 하는 자리도 이 메서드를 쓴다.
      */
     static void discard(HttpSession session) {
-        session.removeAttribute(FLOW_ATTRIBUTE);
+        ARMING.discard(session);
     }
 }

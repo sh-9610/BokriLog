@@ -231,7 +231,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
         assertThat(admissions).anySatisfy(line -> assertThat(line).contains("trigger=VISIBILITY result=IDEMPOTENCY_CONFLICT "
                 + "status=409"));
         assertThat(admissions).anySatisfy(line -> assertThat(line).contains("trigger=MANUAL result=COOLDOWN status=200"));
-        var endings = lines(output, "plan sync finished: job=" + job + " ");
+        var endings = endingLines(output, job);
         // Story 2.12 widened the line: purpose and reason, the collection's targets, windows, pages and retries, the
         // reconciliation outcomes and late changes. A sync plans no target range and records no outcome.
         assertThat(endings).singleElement().satisfies(line -> assertThat(line).contains("purpose=SYNC reason=- "
@@ -732,7 +732,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
                 .param("j", job).query(String.class).single()).isEqualTo("FAILED|SYNC_INTERRUPTED");
         assertUnchanged(user, v1);
         assertNoChildInProgress(job);
-        assertThat(lines(output, "plan sync finished: job=" + job + " ")).singleElement()
+        assertThat(endingLines(output, job)).singleElement()
                 .satisfies(line -> assertThat(line).contains("status=FAILED").contains("code=SYNC_INTERRUPTED"));
     }
 
@@ -769,7 +769,9 @@ class IncrementalSyncTest extends PlanSyncTestBase {
         var keyless = sendJson("POST", SYNC_PATH, "{\"trigger\":\"MANUAL\"}", cookie, "Origin",
                 OidcStubConfiguration.PUBLIC_BASE_URL, AuthSecurityConfig.CSRF_HEADER_NAME, csrf);
         assertThat(keyless.statusCode()).isEqualTo(422);
-        assertThat(topLevelFieldsOf(keyless.body())).containsEntry("code", "IDEMPOTENCY_KEY_REQUIRED");
+        // 모든 엄격 키 경로가 같은 code와 같은 메시지 한 문장으로 답한다(`ApiErrorHandler`).
+        assertThat(topLevelFieldsOf(keyless.body())).containsEntry("code", "IDEMPOTENCY_KEY_REQUIRED")
+                .containsEntry("message", ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED);
         assertThat(sendJson("POST", SYNC_PATH, "{\"trigger\":\"MANUAL\"}", cookie, "Idempotency-Key",
                 "incremental-http-key-0003").statusCode()).as("no CSRF token or Origin").isEqualTo(403);
         assertThat(sendJson("POST", SYNC_PATH, "{\"trigger\":\"MANUAL\"}", null, "Idempotency-Key",
@@ -850,7 +852,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
         assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_event_provenance p JOIN sync_initial_collection_job j "
                 + "ON j.job_id=p.job_id WHERE j.user_id=:u").param("u", user).query(Integer.class).single()).isZero();
         assertThat(ready(kept).pointerVersion()).isEqualTo(2);
-        assertThat(lines(output, "plan sync finished: job=" + late + " ")).singleElement()
+        assertThat(endingLines(output, late)).singleElement()
                 .satisfies(line -> assertThat(line).contains("status=ERASED"));
     }
 

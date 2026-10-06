@@ -188,6 +188,8 @@ class BybitConnectionTest extends AuthFlowTestBase {
         assertThat(rotated).isNotEqualTo(session.cookie());
         assertThat(sessionState(rotated).body()).contains("\"authenticated\":true");
         assertThat(sessionCountOf(session.userId())).isEqualTo(1);
+        // 연결이 실행된 요청이 재인증 시각을 지웠다 — 본인 확인 1회는 command 1건이다(`SessionRotation`).
+        assertThat(sessionAttribute(sessionIdOf(rotated), ReauthenticationFlow.AUTHENTICATED_AT_ATTRIBUTE)).isNull();
 
         // 세 엔드포인트를 정확히 한 번씩 지났다. 재시도가 없다는 사실이 여기서 관측된다.
         assertThat(BybitStubConfiguration.requestCount()).isEqualTo(3);
@@ -487,6 +489,43 @@ class BybitConnectionTest extends AuthFlowTestBase {
         // 멱등하다. 되돌릴 것이 없을 때 불러도 아무 일도 하지 않는다.
         assertThat(cancelBybitConnection(session.cookie(), session.csrfToken()).statusCode())
                 .isEqualTo(204);
+    }
+
+    @Test
+    void 오래된_탭의_취소는_다른_세션의_허가를_지우지_않는다() throws Exception {
+        /*
+         * I/O 표 "오래된 탭 취소". 같은 사용자의 세션 B가 준비하면 그 발급이 세션 A의 허가를 `(user, command,
+         * target)` 단위로 대신한다("같은 작업의 살아 있는 허가는 하나"). 그 뒤 세션 A의 취소는 **자기 무장이 든
+         * 참조만** 지우므로 B의 허가는 살아 있고 B의 확인이 연결을 만든다 — 옛 `(user, command, target)` 단위
+         * 취소였다면 A의 취소가 B의 허가까지 지워 아래 확인이 거부됐다.
+         */
+        Session first = signInAndReauthenticate("cancel-two-sessions");
+        String cookie = sessionCookieOf(signIn(first.subject())).orElseThrow();
+        Session second =
+                reauthenticate(new Session(first.userId(), first.subject(), cookie, csrfTokenOf(cookie)));
+        assertThat(sessionCountOf(first.userId())).isEqualTo(2);
+
+        assertThat(prepareBybitConnection(first.cookie(), first.csrfToken()).statusCode()).isEqualTo(200);
+        HttpResponse<String> prepared = prepareBybitConnection(second.cookie(), second.csrfToken());
+        assertThat(prepared.statusCode()).isEqualTo(200);
+        // B의 발급이 A의 허가를 대신했다. 살아 있는 허가는 B의 것 하나다.
+        String live = grantReferenceOf(first.userId());
+
+        assertThat(cancelBybitConnection(first.cookie(), first.csrfToken()).statusCode()).isEqualTo(204);
+        assertThat(actionGrantExists(live)).as("다른 세션의 허가").isTrue();
+        assertThat(sessionAttribute(sessionIdOf(second.cookie()), BybitConnectionFlow.FLOW_ATTRIBUTE))
+                .isInstanceOf(BybitConnectionFlow.Armed.class);
+
+        HttpResponse<String> connected =
+                connectBybit(
+                        second.cookie(),
+                        second.csrfToken(),
+                        BybitStubConfiguration.apiKey(Scenario.UTA2, "992001"),
+                        BybitStubConfiguration.newSecret(),
+                        confirmationIn(prepared.body()));
+        assertThat(connected.statusCode()).as(connected.body()).isEqualTo(200);
+        assertThat(sourceConnectionCount()).isEqualTo(1);
+        assertThat(actionGrantConsumed(live)).isTrue();
     }
 
     @Test

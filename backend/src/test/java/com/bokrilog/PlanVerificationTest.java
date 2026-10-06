@@ -138,7 +138,7 @@ class PlanVerificationTest extends PlanSyncTestBase {
         assertThat(lines(output, "plan verification admission: ")).anySatisfy(line -> assertThat(line)
                 .contains("kind=PRECISION result=ACCEPTED status=202 latencyMs="))
                 .anySatisfy(line -> assertThat(line).contains("kind=PRECISION result=COOLDOWN status=200"));
-        assertThat(lines(output, "plan sync finished: job=" + job + " ")).singleElement().satisfies(line ->
+        assertThat(endingLines(output, job)).singleElement().satisfies(line ->
                 assertThat(line).contains("purpose=VERIFY reason=USER_REQUEST trigger=MANUAL mode=VERIFY "
                         + "status=SUCCEEDED stage=PUBLICATION code=- targets=2 windows=2 pages=4 retries=0 "
                         + "reconciled=0 lateChanges=0 latencyMs="));
@@ -232,7 +232,7 @@ class PlanVerificationTest extends PlanSyncTestBase {
                 });
         // No Bybit id and no amount in the attempt's line. Its lateChanges is counted in SQL (VersionChanges.LATE_SQL)
         // and the dashboard's lateChangeCount in Java (VersionChanges.late): the same rows, 1 and 1.
-        assertThat(lines(output, "plan sync finished: job=" + job + " ")).singleElement().satisfies(line -> {
+        assertThat(endingLines(output, job)).singleElement().satisfies(line -> {
             assertThat(line).contains("purpose=VERIFY reason=GAP_SUSPECTED").contains("lateChanges=1")
                     .contains("reconciled=1");
             assertThat(line).doesNotContain("late-event-01").doesNotContain(user.toString());
@@ -537,7 +537,7 @@ class PlanVerificationTest extends PlanSyncTestBase {
         assertThat(after.change().purpose()).isEqualTo("CATCH_UP");
         assertThat(sync.calculationEvidence(user, reference(v2)).outcome())
                 .isInstanceOf(SyncJobApi.EvidenceOutcome.Found.class);
-        assertThat(lines(output, "plan sync finished: job=" + job + " ")).singleElement().satisfies(line ->
+        assertThat(endingLines(output, job)).singleElement().satisfies(line ->
                 assertThat(line).contains("purpose=CATCH_UP reason=LONG_GAP_CONTINUATION trigger=MANUAL mode=CATCH_UP "
                         + "status=SUCCEEDED stage=PUBLICATION code=- targets=3"));
     }
@@ -668,7 +668,7 @@ class PlanVerificationTest extends PlanSyncTestBase {
                 reads.getFirst().startTime());
         assertThat(reads.get(1).receivedAtMillis() - reads.get(0).receivedAtMillis()).isGreaterThanOrEqualTo(45);
         assertThat(reads.get(2).receivedAtMillis() - reads.get(1).receivedAtMillis()).isGreaterThanOrEqualTo(95);
-        assertThat(lines(output, "plan sync finished: job=" + job + " ")).singleElement()
+        assertThat(endingLines(output, job)).singleElement()
                 .satisfies(line -> assertThat(line).contains("retries=2"));
     }
 
@@ -819,7 +819,7 @@ class PlanVerificationTest extends PlanSyncTestBase {
             assertThat(countOf(table, kept)).as("kept " + table).isPositive();
         }
         assertThat(ready(kept).pointerVersion()).isEqualTo(2);
-        assertThat(lines(output, "plan sync finished: job=" + late + " ")).singleElement()
+        assertThat(endingLines(output, late)).singleElement()
                 .satisfies(line -> assertThat(line).contains("status=ERASED"));
     }
 
@@ -876,7 +876,9 @@ class PlanVerificationTest extends PlanSyncTestBase {
         var keyless = sendJson("POST", VERIFICATION_PATH, bodyOf("PRECISION", v1.planId(), 1, v1.calculationId()),
                 cookie, "Origin", OidcStubConfiguration.PUBLIC_BASE_URL, AuthSecurityConfig.CSRF_HEADER_NAME, csrf);
         assertThat(keyless.statusCode()).isEqualTo(422);
-        assertThat(topLevelFieldsOf(keyless.body())).containsEntry("code", "IDEMPOTENCY_KEY_REQUIRED");
+        // 모든 엄격 키 경로가 같은 code와 같은 메시지 한 문장으로 답한다(`ApiErrorHandler`).
+        assertThat(topLevelFieldsOf(keyless.body())).containsEntry("code", "IDEMPOTENCY_KEY_REQUIRED")
+                .containsEntry("message", ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED);
         assertThat(sendJson("POST", VERIFICATION_PATH, bodyOf("PRECISION", v1.planId(), 1, v1.calculationId()), cookie,
                 "Idempotency-Key", "verify-http-key-0003").statusCode()).as("no CSRF token or Origin").isEqualTo(403);
         assertThat(get(VERIFICATION_PATH, cookie).statusCode()).as("the command path is not a read").isEqualTo(405);

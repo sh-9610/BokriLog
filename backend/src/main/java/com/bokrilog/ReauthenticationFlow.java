@@ -61,6 +61,10 @@ final class ReauthenticationFlow {
      */
     static final Duration ARMED_LIFETIME = Duration.ofMinutes(5);
 
+    /** 공통 무장 메커니즘. 키·수명·record는 이 클래스가 정하고 동작은 {@link SessionArming}이 한다. */
+    private static final SessionArming<Armed> ARMING =
+            new SessionArming<>(FLOW_ATTRIBUTE, Armed.class, ARMED_LIFETIME, Armed::armedAt);
+
     /**
      * 최근 인증으로 인정하는 창.
      *
@@ -116,8 +120,7 @@ final class ReauthenticationFlow {
      * 어느 쪽 콜백이 와도 통과하는 상태가 된다.
      */
     static void arm(HttpSession session, String provider, UUID userId, String returnPath) {
-        session.setAttribute(
-                FLOW_ATTRIBUTE, new Armed(provider, userId, returnPath, Instant.now()));
+        ARMING.arm(session, new Armed(provider, userId, returnPath, Instant.now()));
     }
 
     /**
@@ -129,15 +132,7 @@ final class ReauthenticationFlow {
      * @return 살아 있는 무장, 없으면 {@code null}
      */
     static @Nullable Armed peek(HttpServletRequest request) {
-        Armed armed = stored(request);
-        if (armed == null) {
-            return null;
-        }
-        if (!armed.isLive(Instant.now())) {
-            discard(request);
-            return null;
-        }
-        return armed;
+        return ARMING.peek(request);
     }
 
     /**
@@ -151,15 +146,7 @@ final class ReauthenticationFlow {
      * @return 저장된 무장, 없으면 {@code null}
      */
     static @Nullable Armed peekIncludingExpired(HttpServletRequest request) {
-        return stored(request);
-    }
-
-    private static @Nullable Armed stored(HttpServletRequest request) {
-        HttpSession session = request.getSession(false);
-        if (session == null) {
-            return null;
-        }
-        return session.getAttribute(FLOW_ATTRIBUTE) instanceof Armed armed ? armed : null;
+        return ARMING.peekIncludingExpired(request);
     }
 
     /**
@@ -170,17 +157,12 @@ final class ReauthenticationFlow {
      * @return 살아 있던 무장, 없으면 {@code null}
      */
     static @Nullable Armed consume(HttpServletRequest request) {
-        Armed armed = peek(request);
-        discard(request);
-        return armed;
+        return ARMING.consume(request);
     }
 
     /** 무장만 버린다. 세션은 건드리지 않는다. */
     static void discard(HttpServletRequest request) {
-        HttpSession session = request.getSession(false);
-        if (session != null) {
-            discard(session);
-        }
+        ARMING.discard(request);
     }
 
     /**
@@ -192,12 +174,27 @@ final class ReauthenticationFlow {
      * 만들지 않는 1차 방어다.
      */
     static void discard(HttpSession session) {
-        session.removeAttribute(FLOW_ATTRIBUTE);
+        ARMING.discard(session);
     }
 
     /** 이 세션의 마지막 재인증 시각을 기록한다. */
     static void recordAuthentication(HttpSession session, Instant at) {
         session.setAttribute(AUTHENTICATED_AT_ATTRIBUTE, at);
+    }
+
+    /**
+     * 이 세션의 마지막 재인증 시각을 지운다. {@link #recordAuthentication}의 짝이다.
+     *
+     * <p>민감 command가 <b>실제로 실행된</b> 요청에서 세션 회전과 함께 부른다({@code SessionRotation}). 본인 확인
+     * 1회는 command 1건이다 — 지우지 않으면 재인증 한 번이 5분 안에서 연결·해제·종료 같은 민감 command 여러 건을
+     * 연쇄 승인한다(Epic 1 회고 item-1). 거부·재전송·검증 실패는 업무 변경을 실행하지 않았으므로 지우지 않으며, 그래서
+     * 같은 무장으로 다시 시도할 수 있다.
+     *
+     * <p>시각이 없는 세션에서 불러도 아무 일도 없다. 다음 허가 발급은 새 재인증을 요구한다
+     * ({@code ActionGrantRepository.issueIfReauthenticationFresh}).
+     */
+    static void clearAuthentication(HttpSession session) {
+        session.removeAttribute(AUTHENTICATED_AT_ATTRIBUTE);
     }
 
     /**

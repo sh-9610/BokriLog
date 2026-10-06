@@ -188,7 +188,7 @@ class PlanPublicationRepository {
 
     Optional<Lease> claim() {
         return jdbc.sql("UPDATE sync_plan_publication_job SET status='RUNNING',fencing_generation=fencing_generation+1,"
-                + "lease_until=now()+interval '30 seconds',heartbeat_at=now(),last_checked_at=now() WHERE job_id=("
+                + "lease_until=now()+"+SyncLease.SQL_INTERVAL+",heartbeat_at=now(),last_checked_at=now() WHERE job_id=("
                 + "SELECT job_id FROM sync_plan_publication_job WHERE status='QUEUED' OR (status='RUNNING' AND "
                 + "lease_until<now()) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING job_id,user_id,"
                 + "intent_id,portfolio_id,connection_id,provider_account_id,input_scope_hash,fencing_generation")
@@ -230,7 +230,7 @@ class PlanPublicationRepository {
      * @return whether the lease is still held (renewed, or skipped while its own transaction runs)
      */
     boolean heartbeat(Lease lease) {
-        int renewed = jdbc.sql("UPDATE sync_plan_publication_job SET lease_until=now()+interval '30 seconds',"
+        int renewed = jdbc.sql("UPDATE sync_plan_publication_job SET lease_until=now()+"+SyncLease.SQL_INTERVAL+","
                 + "heartbeat_at=now(),last_checked_at=now() WHERE job_id=(SELECT job_id FROM sync_plan_publication_job "
                 + "WHERE job_id=:j AND fencing_generation=:g AND status='RUNNING' AND lease_until>now() "
                 + "FOR UPDATE SKIP LOCKED)")

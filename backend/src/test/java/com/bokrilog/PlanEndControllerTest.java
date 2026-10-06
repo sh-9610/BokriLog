@@ -104,9 +104,6 @@ class PlanEndControllerTest {
         assertThat(PlanEndController.bodyOf(body("USER_REQUEST"), true)).as("a confirm needs its phrase").isNull();
         assertThat(PlanEndController.bodyOf(body("USER_REQUEST").replace("}", ",\"confirmation\":\" \"}"), true))
                 .isNull();
-        assertThat(PlanEndController.validKey("plan-end-key-00000001")).isTrue();
-        for (String key : List.of("short", "-starts-with-dash-0001", "has..dots-0000000001", "has space 0000000001",
-                "k".repeat(129)))
-            assertThat(PlanEndController.validKey(key)).as(key).isFalse();
+        // 멱등 키 규칙의 단정은 `sync.IdempotencyKeyTest`로 옮겼다 — 규칙이 한 벌이 되면서 이 컨트롤러의 사본이 사라졌다.
     }
 }

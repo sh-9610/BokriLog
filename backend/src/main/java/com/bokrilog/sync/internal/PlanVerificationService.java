@@ -12,6 +12,7 @@ import com.bokrilog.sync.SyncJobApi.VerificationRange;
 import com.bokrilog.sync.SyncJobApi.VerificationReason;
 import com.bokrilog.sync.SyncJobApi.VerificationState;
 import com.bokrilog.sync.SyncJobApi.VersionChange;
+import com.bokrilog.sync.IdempotencyKey;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
@@ -78,8 +79,8 @@ class PlanVerificationService {
             @Nullable EvidenceReference reference, @Nullable String key) {
         if (userId == null) return new VerificationAdmission.NotPermitted();
         if (kind == null || reference == null) return new VerificationAdmission.Refused("BAD_REQUEST");
-        if (key == null || !PlanPublicationService.validKey(key))
-            return new VerificationAdmission.Refused("IDEMPOTENCY_KEY_REQUIRED");
+        if (!IdempotencyKey.isValid(key))
+            return new VerificationAdmission.Refused(IdempotencyKey.REQUIRED_CODE);
         return Objects.requireNonNull(transactions.execute(status -> admitInTransaction(userId, kind, reference, key)));
     }
 
@@ -141,8 +142,8 @@ class PlanVerificationService {
             @Nullable List<InvestigationRange> ranges, @Nullable String key) {
         if (userId == null) return new VerificationAdmission.NotPermitted();
         if (reason == null || !SYSTEM_REASONS.contains(reason)) return new VerificationAdmission.Refused("BAD_REQUEST");
-        if (key == null || !PlanPublicationService.validKey(key))
-            return new VerificationAdmission.Refused("IDEMPOTENCY_KEY_REQUIRED");
+        if (!IdempotencyKey.isValid(key))
+            return new VerificationAdmission.Refused(IdempotencyKey.REQUIRED_CODE);
         if (ranges == null || ranges.stream().anyMatch(Objects::isNull))
             return new VerificationAdmission.Refused("INVALID_RANGE");
         boolean investigation = reason == VerificationReason.OPERATOR_INVESTIGATION;

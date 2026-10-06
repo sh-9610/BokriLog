@@ -230,6 +230,8 @@ class BybitConnectionRevocationTest extends PlanSyncTestBase {
         assertThat(replayed.statusCode()).as(replayed.body()).isEqualTo(200);
         assertThat(topLevelFieldsOf(replayed.body())).isEqualTo(topLevelFieldsOf(first.body()));
         assertThat(sessionCookieOf(replayed)).as("a replay does not rotate").isEmpty();
+        // 재전송 뒤에도 재인증 시각은 없다 — 첫 실행이 지웠고 재전송은 아무것도 다시 하지 않는다.
+        assertThat(sessionAttribute(sessionIdOf(rotated), ReauthenticationFlow.AUTHENTICATED_AT_ATTRIBUTE)).isNull();
 
         var conflict = confirm(after, UUID.randomUUID(), "bybit-connection-revoke|x", key);
         assertThat(conflict.statusCode()).isEqualTo(409);
@@ -373,7 +375,9 @@ class BybitConnectionRevocationTest extends PlanSyncTestBase {
         var shortKey = sendJson("POST", CONFIRM_PATH, confirmBody, signed.cookie(),
                 protectedHeaders(signed.csrf(), "short"));
         assertThat(shortKey.statusCode()).isEqualTo(422);
-        assertThat(topLevelFieldsOf(shortKey.body())).containsEntry("code", "IDEMPOTENCY_KEY_REQUIRED");
+        // 모든 엄격 키 경로가 같은 code와 같은 메시지 한 문장으로 답한다(`ApiErrorHandler`).
+        assertThat(topLevelFieldsOf(shortKey.body())).containsEntry("code", "IDEMPOTENCY_KEY_REQUIRED")
+                .containsEntry("message", ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED);
         assertThat(connectionStatus(connection)).isEqualTo("ACTIVE");
     }
 
@@ -500,7 +504,15 @@ class BybitConnectionRevocationTest extends PlanSyncTestBase {
                 protectedHeaders(signed.csrf(), key("revoke-ended-plan")));
         assertThat(ended.statusCode()).as(ended.body()).isEqualTo(200);
         String cookie = sessionCookieOf(ended).orElseThrow();
-        Signed afterEnd = new Signed(signed.user(), signed.subject(), cookie, csrfTokenOf(cookie));
+        // 종료가 재인증 시각을 지웠다(본인 확인 1회는 command 1건) — 같은 세션의 해제 준비는 거절되고 허가도 늘지 않는다.
+        Signed stale = new Signed(signed.user(), signed.subject(), cookie, csrfTokenOf(cookie));
+        long grants = actionGrantCountOf(signed.user());
+        var chained = prepare(stale, connection);
+        assertThat(chained.statusCode()).isEqualTo(403);
+        assertThat(topLevelFieldsOf(chained.body())).containsEntry("code", "REAUTHENTICATION_REQUIRED");
+        assertThat(actionGrantCountOf(signed.user())).isEqualTo(grants);
+        // 해제는 새 재인증 위에서 준비한다.
+        Signed afterEnd = reauthenticate(stale);
         var before = recordsOf(signed.user());
 
         String rotated = sessionCookieOf(revoke(afterEnd, connection, key("revoke-ended"))).orElseThrow();
@@ -746,9 +758,19 @@ class BybitConnectionRevocationTest extends PlanSyncTestBase {
         var e1 = ready(early.user());
         String cookie = sessionCookieOf(revoke(early, connectionOf(early.user()), key("revoke-then-end")))
                 .orElseThrow();
-        Signed afterEarly = new Signed(early.user(), early.subject(), cookie, csrfTokenOf(cookie));
-        assertThat(nested(topLevelFieldsOf(get(AuthSecurityConfig.DASHBOARD_PATH, cookie).body()), "planEnd"))
-                .containsEntry("availability", "AVAILABLE");
+        // 해제가 재인증 시각을 지웠다(본인 확인 1회는 command 1건) — 같은 세션의 종료 준비는 거절되고 허가도 늘지 않는다.
+        Signed stale = new Signed(early.user(), early.subject(), cookie, csrfTokenOf(cookie));
+        long grants = actionGrantCountOf(early.user());
+        var chained = sendJson("POST", PLAN_END_PATH, "{\"reason\":\"USER_REQUEST\",\"planId\":\"" + e1.planId()
+                + "\",\"pointerVersion\":" + e1.pointerVersion() + ",\"calculationId\":\"" + e1.calculationId() + "\"}",
+                stale.cookie(), protectedHeaders(stale.csrf(), null));
+        assertThat(chained.statusCode()).isEqualTo(403);
+        assertThat(topLevelFieldsOf(chained.body())).containsEntry("code", "REAUTHENTICATION_REQUIRED");
+        assertThat(actionGrantCountOf(early.user())).isEqualTo(grants);
+        // 종료는 새 재인증 위에서 준비한다.
+        Signed afterEarly = reauthenticate(stale);
+        assertThat(nested(topLevelFieldsOf(get(AuthSecurityConfig.DASHBOARD_PATH, afterEarly.cookie()).body()),
+                "planEnd")).containsEntry("availability", "AVAILABLE");
         String endedCookie = sessionCookieOf(endPlan(afterEarly, "USER_REQUEST", e1)).orElseThrow();
         assertThat(topLevelFieldsOf(get(AuthSecurityConfig.DASHBOARD_PATH, endedCookie).body()))
                 .containsEntry("state", "ENDED");
@@ -759,8 +781,8 @@ class BybitConnectionRevocationTest extends PlanSyncTestBase {
         var g1Moved = ready(gap.user());
         String gapCookie = sessionCookieOf(revoke(gap, connectionOf(gap.user()), key("revoke-gap-end")))
                 .orElseThrow();
-        Signed afterGap = new Signed(gap.user(), gap.subject(), gapCookie, csrfTokenOf(gapCookie));
-        var dashboard = topLevelFieldsOf(get(AuthSecurityConfig.DASHBOARD_PATH, gapCookie).body());
+        Signed afterGap = reauthenticate(new Signed(gap.user(), gap.subject(), gapCookie, csrfTokenOf(gapCookie)));
+        var dashboard = topLevelFieldsOf(get(AuthSecurityConfig.DASHBOARD_PATH, afterGap.cookie()).body());
         assertThat(nested(dashboard, "planEnd")).containsEntry("availability", "NEW_PLAN_CHOICE");
         assertThat(nested(dashboard, "sync")).containsEntry("reason", "CONNECTION_REVOKED");
         assertThat(endPlan(afterGap, "LONG_GAP_NEW_PLAN", g1Moved).statusCode()).isEqualTo(200);

@@ -11,6 +11,7 @@ import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.SyncJobApi;
 import com.bokrilog.sync.InitialInputsPlanPort;
 import com.bokrilog.sync.PlanPublicationPort;
+import com.bokrilog.sync.IdempotencyKey;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -150,7 +151,7 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
     public Confirmation confirm(@Nullable UUID userId, @Nullable String sessionId,
             @Nullable String confirmationRef, @Nullable String idempotencyKey) {
         if (userId==null || sessionId==null || sessionId.isBlank() || confirmationRef==null
-                || !validKey(idempotencyKey) || !eligibleUser(userId)) return new Confirmation(false,false,null,null);
+                || !IdempotencyKey.isValid(idempotencyKey) || !eligibleUser(userId)) return new Confirmation(false,false,null,null);
         String confirmationHash=sha256(confirmationRef);
         try {
             return transactions.execute(status -> {
@@ -471,10 +472,6 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
                 +s.portfolioPolicyVersion()+"|"+s.decimal()+"|"
                 +s.measuredAt().toEpochMilli()+"|"+end.toEpochMilli()+"|"+period.name()+"|"+rate+"|"
                 +CALENDAR_POLICY+"|"+CALCULATION_POLICY+"|"+sync.currentNextBaseline(userId).map(b -> b.predecessorPlanId()+"|"+b.jobId()).orElse("FIRST");
-    }
-    private static boolean validKey(@Nullable String key) {
-        return key!=null && key.length()>=16 && key.length()<=128 && key.matches("[A-Za-z0-9._:-]+")
-                && !key.contains("..") && !key.startsWith("-");
     }
     private static String randomRef() {
         byte[] bytes=new byte[32]; RANDOM.nextBytes(bytes);

@@ -140,6 +140,16 @@ abstract class PlanSyncTestBase extends AuthFlowTestBase {
         return (Map<String, Object>) fields.get(name);
     }
 
+    /**
+     * 작업 하나의 종료 줄 묶음. 종료 줄은 상태가 커밋되고 종료 사실을 한 번 더 읽은 뒤에야 찍히므로 {@link #awaitSync}가
+     * 돌아온 직후에는 아직 없을 수 있다 — 느린 러너에서 그 틈이 실제로 드러났다(PR #71 첫 실행). 줄이 하나라도 보일
+     * 때까지 잠시 기다린 뒤 그때의 묶음을 돌려준다. 몇 줄이어야 하는지의 단정은 호출자가 한다.
+     */
+    static List<String> endingLines(CapturedOutput output, UUID job) throws InterruptedException {
+        String marker = "plan sync finished: job=" + job + " ";
+        return pollUntil(Duration.ofSeconds(10), () -> lines(output, marker), found -> !found.isEmpty());
+    }
+
     static List<String> lines(CapturedOutput output, String marker) {
         List<String> found = new ArrayList<>();
         for (String line : output.getAll().split("\\R")) if (line.contains(marker)) found.add(line);

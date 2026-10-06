@@ -183,13 +183,14 @@ class UnlinkService {
          * 흐름 기록만 덮으면 그것이 가리키던 허가가 아무도 참조할 수 없는 채로 수명을 산다 —
          * `issue`의 무효화 술어는 `(user, command, target)`이고 target이 제공자 이름이라, Google로
          * 무장한 뒤 네이버로 다시 무장하면 Google 허가만 살아남는다(`LinkService.start`와 같은 결함).
+         * 그래서 덮이는 무장의 허가를 **참조로** 함께 지운다.
          *
          * 재인증 무장도 버린다. 해제 준비가 성립한다는 것은 재인증이 이미 끝났다는 뜻이므로(그 시각이
          * 없으면 허가가 서지 않는다) 남아 있는 재인증 무장은 완료되지 않은 옛 의도다. 연결 무장을
          * 버리는 것은 이 메서드를 부르는 컨트롤러가 한다 — 두 서비스가 서로를 주입받으면 빈 순환이
          * 되고, 그 경계를 한 방향으로 고른 것이 그 자리다(`AuthSessionController`).
          */
-        supersedePreviousArming(session, provider);
+        supersedePreviousArming(session);
         ReauthenticationFlow.discard(session);
 
         UnlinkFlow.Armed armed =
@@ -206,7 +207,7 @@ class UnlinkService {
     }
 
     /**
-     * 이 세션에 남은 해제 무장을 버리고 <b>그 허가도 함께</b> 무효화한다.
+     * 이 세션에 남은 해제 무장을 버리고 <b>그 무장이 낳은 허가 하나만</b> 무효화한다.
      *
      * <p>{@code LinkService.abandon}과 같은 근거의 같은 모양이다. 호출자가 셋이고 셋 다 "이 세션의
      * 해제 의도를 지금 끝낸다"는 같은 뜻이다 — 새 해제 준비가 앞의 무장을 덮을 때({@link #start}),
@@ -215,27 +216,32 @@ class UnlinkService {
      *
      * <p>수명이 지난 무장도 대상이다. 그 무장의 허가는 아직 살아 있을 수 있고, 살아 있다면 같은
      * 이유로 지워야 한다.
+     *
+     * <p>참조로 좁힌다. {@code (command, target)}으로 지우면 오래된 탭의 취소 하나가 같은 작업을 위해
+     * 다른 세션이 방금 받은 살아 있는 허가까지 지운다. 무장이 들고 있던 참조 하나로 좁히면 그 무장이
+     * 낳은 허가만 사라지고, 이미 다른 발급이 대신했다면 아무것도 하지 않는다.
      */
     void abandon(HttpSession session) {
         UnlinkFlow.Armed armed = UnlinkFlow.peekIncludingExpired(session);
         UnlinkFlow.discard(session);
         if (armed != null) {
-            this.grants.invalidate(armed.userId(), COMMAND, armed.targetProvider());
+            this.grants.invalidateReference(armed.userId(), armed.grantReference());
         }
     }
 
     /**
-     * 새 무장이 앞선 무장을 대신한다. <b>대상이 다를 때만</b> 그 허가를 무효화한다.
+     * 새 무장이 앞선 무장을 대신한다. 앞선 무장의 허가를 <b>참조로</b> 무효화한다.
      *
-     * <p>{@link #abandon}과 갈라 두는 이유가 그 한 조건이며 근거는 {@code LinkService}의 같은
-     * 이름 메서드와 같다 — 같은 제공자로 다시 무장하면 방금 {@code issue}가 그 허가를 이미 지웠고,
-     * 한 번 더 지우면 방금 발급한 것이 사라진다.
+     * <p>대상이 같으면 방금 {@code issue}가 그 {@code (user, command, target)}의 허가를 이미 지웠으므로
+     * 참조 하나를 지우는 이 호출은 0행으로 끝난다 — 방금 발급한 허가는 다른 참조라 걸리지 않는다. 대상이
+     * 다르면 그 무장이 낳은 허가만 사라진다. 그래서 대상을 받지 않는다 — 옛 조건("대상이 다를 때만")은
+     * {@code (user, command, target)} 단위가 방금 발급한 허가를 삼키던 시절의 것이다.
      */
-    private void supersedePreviousArming(HttpSession session, String provider) {
+    private void supersedePreviousArming(HttpSession session) {
         UnlinkFlow.Armed previous = UnlinkFlow.peekIncludingExpired(session);
         UnlinkFlow.discard(session);
-        if (previous != null && !previous.targetProvider().equals(provider)) {
-            this.grants.invalidate(previous.userId(), COMMAND, previous.targetProvider());
+        if (previous != null) {
+            this.grants.invalidateReference(previous.userId(), previous.grantReference());
         }
     }
 
@@ -268,7 +274,8 @@ class UnlinkService {
      * <p>회전은 {@code SECURITY-ACTION-1.0}이 허가 소비 성공에 요구하는 것이고 1.9의 결과 타입 이름
      * ({@code ConsumedRequiringSessionRotation})이 이 자리로 넘긴 의무다. 폐기보다 <b>뒤</b>에 한다 —
      * 폐기 대상을 고를 때 저장소에 있는 현재 세션의 id는 아직 회전 전 값이기 때문이다(회전은 요청
-     * 끝에 반영된다).
+     * 끝에 반영된다). 회전과 함께 재인증 시각이 지워진다({@code SessionRotation}) — 본인 확인 1회는
+     * command 1건이다.
      *
      * @param request 지금 이 요청. 세션 회전이 여기서만 가능하다
      * @param session 지금 이 요청의 세션. 귀속의 세션 축이자 남길 세션이다
@@ -365,9 +372,13 @@ class UnlinkService {
      * 문장으로 만들지 않는다.
      */
     private void settleSessions(HttpServletRequest request, HttpSession session, UUID userId) {
+        // 재인증 시각은 폐기보다 먼저, try 밖에서 지운다. 폐기가 예외로 끝나 회전에 닿지 못해도 해제는 이미
+        // 커밋된 상태이므로 시각만 남으면 그 본인 확인이 다음 command를 연쇄 승인한다. 회전이 한 번 더 지우는
+        // 것은 무해하다.
+        ReauthenticationFlow.clearAuthentication(session);
         try {
             this.sessionGuard.revokeSessionsOfExcept(userId, session.getId());
-            request.changeSessionId();
+            SessionRotation.rotateAfterSensitiveCommand(request);
         } catch (RuntimeException ignored) {
             // 다음 요청이 같은 세션 상태를 다시 본다. 해제 자체는 이미 커밋됐다.
         }

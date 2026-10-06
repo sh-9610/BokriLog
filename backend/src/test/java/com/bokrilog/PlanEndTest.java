@@ -99,6 +99,8 @@ class PlanEndTest extends PlanSyncTestBase {
         // The session rotated: a new cookie, and the old one names no session any more.
         String rotated = sessionCookieOf(confirmed).orElseThrow();
         assertThat(rotated).isNotEqualTo(signed.cookie());
+        // 종료가 실행된 요청이 재인증 시각을 지웠다 — 본인 확인 1회는 command 1건이다(`SessionRotation`).
+        assertThat(sessionAttribute(sessionIdOf(rotated), ReauthenticationFlow.AUTHENTICATED_AT_ATTRIBUTE)).isNull();
         assertThat(BybitStubConfiguration.requestCount()).as("no provider call to end").isZero();
 
         // One transaction: the status, the end record and the grant's consumption with its result.
@@ -692,7 +694,9 @@ class PlanEndTest extends PlanSyncTestBase {
         var shortKey = sendJson("POST", CONFIRM_PATH, confirmBody, signed.cookie(), protectedHeaders(signed.csrf(),
                 "short"));
         assertThat(shortKey.statusCode()).isEqualTo(422);
-        assertThat(topLevelFieldsOf(shortKey.body())).containsEntry("code", "IDEMPOTENCY_KEY_REQUIRED");
+        // 모든 엄격 키 경로가 같은 code와 같은 메시지 한 문장으로 답한다(`ApiErrorHandler`).
+        assertThat(topLevelFieldsOf(shortKey.body())).containsEntry("code", "IDEMPOTENCY_KEY_REQUIRED")
+                .containsEntry("message", ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED);
         assertThat(planStatus(signed.user())).isEqualTo("ACTIVE");
     }
 

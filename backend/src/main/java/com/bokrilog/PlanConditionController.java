@@ -9,6 +9,7 @@ import com.bokrilog.plan.PlanConditionApi.Intent;
 import com.bokrilog.plan.PlanConditionApi.Preview;
 import com.bokrilog.plan.PlanConditionApi.PreviewInput;
 import com.bokrilog.plan.PlanConditionApi.Snapshot;
+import com.bokrilog.sync.IdempotencyKey;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -114,7 +115,7 @@ class PlanConditionController {
     @PostMapping(path=AuthSecurityConfig.PLAN_CONDITIONS_PATH+"/confirm",
             consumes=MediaType.APPLICATION_JSON_VALUE,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<?> confirm(@RequestBody ConfirmRequest body,
-            @RequestHeader(name="Idempotency-Key",required=false) @Nullable String key,
+            @RequestHeader(name=IdempotencyKey.HEADER,required=false) @Nullable String key,
             HttpServletRequest request,HttpServletResponse response) throws IOException {
         UUID user=currentUserId();
         if (user==null) { response.sendError(403); return null; }

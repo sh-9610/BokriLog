@@ -190,7 +190,7 @@ class PlanCompletionTest extends PlanSyncTestBase {
                 .isAfter(record.observedMeasuredAt());
         assertThat(nested(after, "completion")).isEqualTo(nested(fields, "completion"));
 
-        var lines = lines(output, "plan sync finished: job=" + job);
+        var lines = endingLines(output, job);
         assertThat(lines).hasSize(1);
         assertThat(lines.getFirst()).contains("purpose=COMPLETION").contains("status=SUCCEEDED")
                 .doesNotContain(user.toString()).doesNotContain(uidOf(user)).doesNotContain("equity")

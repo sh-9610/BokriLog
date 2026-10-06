@@ -100,13 +100,13 @@ class PlanEndCommandService {
         if (reference.isEmpty()) {
             return new Preparation.Refused(REAUTHENTICATION_REQUIRED, null);
         }
-        // The arming this one overwrites goes with its own grant — that grant only, by its reference: an issue for the
-        // same plan already replaced it, and nothing another session holds is touched.
+        // 이 준비가 덮는 무장은 자기 허가 하나와 함께 간다 — 참조로 그 허가만. 같은 계획의 발급이 이미 그것을
+        // 대신했고, 다른 세션이 든 것은 건드리지 않는다.
         PlanEndFlow.Armed previous = PlanEndFlow.peekIncludingExpired(session);
         if (previous != null) {
             this.grants.invalidateReference(previous.userId(), previous.grantReference());
         }
-        // A reauthentication arming left over is an older intent: the grant just stood on a fresh reauthentication.
+        // 남아 있는 재인증 무장은 옛 의도다. 방금 허가가 신선한 재인증 위에 섰다.
         ReauthenticationFlow.discard(session);
         PlanEndFlow.Armed armed =
                 new PlanEndFlow.Armed(
@@ -189,9 +189,9 @@ class PlanEndCommandService {
         }
         PlanEndApi.Ended ended = ran.get();
         if (ended != null) {
-            // This request ended the plan: the arming is spent and the session rotates (SECURITY-ACTION-1.0).
+            // 이 요청이 계획을 끝냈다: 무장은 다 썼고 세션은 회전하며 재인증 시각은 지워진다(SECURITY-ACTION-1.0).
             PlanEndFlow.discard(session);
-            rotate(httpRequest);
+            SessionRotation.completeSensitiveCommand(httpRequest);
             return new Outcome.Ended(ended);
         }
         // The grant answered with the stored result of the same key's earlier execution: replay its end record.
@@ -224,17 +224,5 @@ class PlanEndCommandService {
 
     private static Outcome notConfirmed() {
         return new Outcome.Refused(PLAN_END_NOT_CONFIRMED, null);
-    }
-
-    /**
-     * 커밋 뒤 세션 회전. <b>계획을 실제로 끝낸 요청에서만</b> 돈다. 여기서 실패해도 종료는 이미 커밋됐다
-     * ({@code BybitConnectionService.rotate}와 같은 판단).
-     */
-    private static void rotate(HttpServletRequest request) {
-        try {
-            request.changeSessionId();
-        } catch (RuntimeException ignored) {
-            // 다음 요청이 같은 세션 상태를 다시 본다. 종료 자체는 이미 커밋됐다.
-        }
     }
 }

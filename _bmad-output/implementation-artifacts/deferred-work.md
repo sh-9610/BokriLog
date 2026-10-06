@@ -320,3 +320,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-16-bybit-connection-revocation.md`
   summary: 민감 command 확정이 커밋·세션 회전한 뒤 응답을 잃으면, 같은 키 재시도가 회전 전 세션 쿠키로 나가 재생되지 못하고 만료 화면으로 이동한다.
   evidence: 2.16 리뷰(edge-case)가 연결 해제 확정에서 지적했고, 같은 회전 규칙(`SECURITY-ACTION-1.0`)을 쓰는 2.13 중도 종료 확정에도 같은 경로가 있어 이번 스토리가 만든 결함이 아니다.
+- source_spec: none
+  summary: Epic 2 회고 AI-8의 프런트엔드 묶음(D-4) — 대화상자 모달 동작 3벌(`UnlinkDialog`·`PlanEndDialog`·`ConnectionRevokeDialog`)과 그 CSS 모듈, 조회 훅 2벌(`useAdjustmentHistory`·`useCalculationEvidence`)의 진행 중 요청 처리, 의미가 다른 `isInstant` 2벌을 한 정의로 모은다.
+  evidence: AI-8을 백엔드 공통 부품(세션 무장 Flow·rotate·허가 무효화·멱등 키·lease 상수·재인증 시각 소비)과 프런트엔드 사본으로 나눴다. 두 묶음은 서로 다른 계층이고 독립적으로 머지할 수 있어, 백엔드 chore(`spec-sensitive-command-commons.md`)를 먼저 하고 프런트엔드는 바로 이어지는 두 번째 chore로 한다(2026-10-06 Epic 3 착수 전 점검).
+- source_spec: `_bmad-output/implementation-artifacts/spec-sensitive-command-commons.md`
+  summary: 민감 command 실행 성공이 재인증 시각을 지우므로 설정 화면에서 연결·해제 성공 직후의 다음 준비 요청은 403 `reauth-required` 게이트에 떨어진다 — 성공 직후 본인 확인 안내를 다시 보여 주는 화면 동작과 카피가 그 계약에 맞는지 확인하지 않았다.
+  evidence: 이 chore는 백엔드 공통 부품만 바꾸고 프런트엔드 제품 코드는 D-4 별도 chore로 뺐다. e2e·검증 스크립트에는 재인증 단계를 더했지만 화면의 안내 문구·버튼 상태는 보지 않았다(리뷰 blind-hunter, 2026-10-06).

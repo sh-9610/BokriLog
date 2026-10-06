@@ -1,6 +1,7 @@
 package com.bokrilog;
 
 import com.bokrilog.sync.SyncJobApi;
+import com.bokrilog.sync.IdempotencyKey;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -116,8 +117,6 @@ class DashboardController {
             "NO_ACTIVE_PLAN","동기화할 활성 계획이 없습니다. 대시보드를 다시 불러와 주세요.",
             "SYNC_UNAVAILABLE","지금은 동기화할 수 없습니다. 대시보드에서 이유를 확인해 주세요.",
             "IDEMPOTENCY_CONFLICT","같은 요청 키가 다른 동기화 요청에 이미 쓰였습니다. 새로 요청해 주세요.");
-    static final String MESSAGE_SYNC_KEY_REQUIRED=
-            "요청 키가 없거나 형식이 맞지 않아 동기화를 받지 않았습니다. 화면을 새로 열어 다시 시도해 주세요.";
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record DashboardView(String state,String nextAction,@Nullable ResultView result,@Nullable SyncView sync,
@@ -357,7 +356,7 @@ class DashboardController {
      */
     @PostMapping(path=SYNC_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<?> sync(@RequestBody(required=false) @Nullable String body,
-            @RequestHeader(name="Idempotency-Key",required=false) @Nullable String key,
+            @RequestHeader(name=IdempotencyKey.HEADER,required=false) @Nullable String key,
             HttpServletRequest request,HttpServletResponse response) throws IOException {
         long started=System.nanoTime();
         SyncJobApi.SyncTrigger trigger=triggerOf(body);
@@ -403,11 +402,12 @@ class DashboardController {
             }
             case SyncJobApi.SyncAdmission.Refused refused -> {
                 String code=refused.code();
-                if ("IDEMPOTENCY_KEY_REQUIRED".equals(code)) {
+                if (IdempotencyKey.REQUIRED_CODE.equals(code)) {
                     logSync(triggerName,code,422,started);
                     return ResponseEntity.status(422).contentType(MediaType.APPLICATION_JSON)
                             .cacheControl(CacheControl.noStore())
-                            .body(new ApiErrorHandler.ApiError(code,MESSAGE_SYNC_KEY_REQUIRED,correlationOf(request)));
+                            .body(new ApiErrorHandler.ApiError(code,ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED,
+                                    correlationOf(request)));
                 }
                 if ("BAD_REQUEST".equals(code)) {
                     logSync(triggerName,code,400,started);
@@ -469,8 +469,6 @@ class DashboardController {
             "NOT_LONG_GAP","장기 미동기화 상태가 아니어서 기존 계획 계속을 받지 않았습니다.",
             "VERIFICATION_NOT_USEFUL","같은 결과의 정밀 검증이나 기존 계획 계속이 이미 검토 필요로 끝났습니다. 다시 요청해도 바뀌지 않습니다.",
             "IDEMPOTENCY_CONFLICT","같은 요청 키가 다른 요청에 이미 쓰였습니다. 새로 요청해 주세요.");
-    static final String MESSAGE_VERIFICATION_KEY_REQUIRED=
-            "요청 키가 없거나 형식이 맞지 않아 검증 요청을 받지 않았습니다. 화면을 새로 열어 다시 시도해 주세요.";
 
     /** The body of a verification request, read here for the same {@code no-store} reason as the sync's. */
     record VerificationBody(SyncJobApi.VerificationKind kind,SyncJobApi.EvidenceReference reference) {}
@@ -481,7 +479,7 @@ class DashboardController {
      */
     @PostMapping(path=VERIFICATION_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<?> verification(@RequestBody(required=false) @Nullable String body,
-            @RequestHeader(name="Idempotency-Key",required=false) @Nullable String key,
+            @RequestHeader(name=IdempotencyKey.HEADER,required=false) @Nullable String key,
             HttpServletRequest request,HttpServletResponse response) throws IOException {
         long started=System.nanoTime();
         VerificationBody parsed=verificationBodyOf(body);
@@ -525,11 +523,11 @@ class DashboardController {
             }
             case SyncJobApi.VerificationAdmission.Refused refused -> {
                 String code=refused.code();
-                if ("IDEMPOTENCY_KEY_REQUIRED".equals(code)) {
+                if (IdempotencyKey.REQUIRED_CODE.equals(code)) {
                     logVerification(kind,code,422,started);
                     return ResponseEntity.status(422).contentType(MediaType.APPLICATION_JSON)
                             .cacheControl(CacheControl.noStore())
-                            .body(new ApiErrorHandler.ApiError(code,MESSAGE_VERIFICATION_KEY_REQUIRED,
+                            .body(new ApiErrorHandler.ApiError(code,ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED,
                                     correlationOf(request)));
                 }
                 if ("BAD_REQUEST".equals(code)) {
