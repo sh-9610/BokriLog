@@ -4,7 +4,7 @@ Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개�
 
 ## 언어
 
-대화와 산출 문서 모두 한국어다. BMAD 중앙 설정(`_bmad/core/config.yaml`)이 `communication_language: Korean`, `document_output_language: Korean`으로 고정되어 있으므로 이 값을 따른다. 브랜치명·커밋 subject·코드 식별자만 영문이다.
+대화와 산출 문서 모두 한국어다. BMAD 중앙 설정(`_bmad/core/config.yaml`)이 `communication_language: Korean`, `document_output_language: Korean`으로 고정되어 있으므로 이 값을 따른다. 브랜치명·커밋 subject·코드 식별자만 영문이다. 코드 주석도 한국어다 — 새로 쓰거나 고치는 주석은 한국어로 쓰고, 기존 영어 주석은 그 파일을 고칠 때 손대는 범위에서만 바꾸며 주석만 바꾸는 일괄 치환은 하지 않는다(Epic 2 회고 AI-10, 2026-10-06 결정).
 
 ## 세션 시작 시 확인 순서
 
@@ -29,7 +29,7 @@ Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개�
 1. **SPEC 작성** — `_bmad-output/implementation-artifacts/spec-<slug>.md`. 스토리는 `spec-1-3-<slug>.md`처럼 스토리 번호로 시작하고, chore·fix도 SPEC을 쓴다(예: `spec-ci-foundation.md`). SPEC의 `## Intent`·`## Boundaries & Constraints`는 사람이 소유하며 승인 뒤 고치지 않는다.
 2. **CHECKPOINT 1(Intent 승인)** — 사용자 승인을 받기 전에는 구현하지 않는다. SPEC 토큰 초과 경고가 나오면 사용자는 보통 `[K] 유지`를, 도구 선택 안이 여럿이면 추천안을 고른다.
 3. **구현** — 아래 `## 코드 규칙`을 지킨다. `bmad-build`가 sprint-status를 `in-progress`로 올리고 에픽을 `in-progress`로 든다.
-4. **리뷰** — 리뷰 서브에이전트를 병렬로 돌리고 결과를 `patch`·`defer`·`reject`로 분류한다. `defer`는 `deferred-work.md`에 **추가만** 한다.
+4. **리뷰** — 리뷰 서브에이전트를 병렬로 돌리고 결과를 `patch`·`defer`·`reject`로 분류한다. `defer`는 `deferred-work.md`에 **추가만** 한다. patch 루프와 2차 리뷰의 결과는 SPEC `## Spec Change Log`에 한 줄씩 적고, `review_loop_iteration`은 리뷰 전체를 다시 돌린 2차 리뷰에만 올린다(Epic 2 회고 AI-13, 2026-10-06 결정).
 5. **present** — SPEC `status: done`, sprint-status `review`. 여기서 스킬은 끝난다.
 6. **PR** — 토픽 브랜치를 push하고 `develop`으로 PR을 연다. `ci-required`가 green이면 `Create a merge commit`으로 머지한다(`gh pr merge --merge`).
 7. **done 전환** — 머지 뒤 `chore/sprint-status-<n>-<m>-done` 브랜치에서 sprint-status 한 줄을 `done`으로 바꾸는 docs PR을 따로 올린다(PR #3, #10 패턴). 문서-only 경로라 `changes → ci-required`만 돌고 1분 안에 끝난다.
@@ -148,7 +148,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 ## 현재 진행 지점
 
-기획은 완료됐고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. **Epic 1(11개)은 닫혔고 회고도 끝났다**(`epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건은 `sprint-status.yaml`의 `action_items`가 소유). **Epic 2(16개)도 모두 `develop`에 머지됐고** M2-2(2.7)·M2-3(2.12)·M2-4(2.13~2.16) 검증 지점이 닫혔다. Epic 2 회고도 끝났다(`epic-2-retro-2026-10-05.md`, 판정 `accepted-with-open-items`, 액션 13건). **다음 구현은 Epic 3 Story 3.1(보호된 운영자 표면과 추가 전용 감사 원장)이며, 그 전에 회고 액션 AI-8(민감 command 공통 부품 정리)을 먼저 볼지 정한다.** 실연동 게이트는 둘이며 둘 다 별도 출시 게이트가 소유한다 — Epic 1의 세 제공자 왕복, Epic 2의 Bybit 연결 정책·실연동(실제 검증 계정과 regional reserved IP 필요).
+기획은 완료됐고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. **Epic 1(11개)은 닫혔고 회고도 끝났다**(`epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건은 `sprint-status.yaml`의 `action_items`가 소유). **Epic 2(16개)도 모두 `develop`에 머지됐고** M2-2(2.7)·M2-3(2.12)·M2-4(2.13~2.16) 검증 지점이 닫혔다. Epic 2 회고도 끝났다(`epic-2-retro-2026-10-05.md`, 판정 `accepted-with-open-items`, 액션 13건). **다음은 회고 액션 AI-8(민감 command 공통 부품 정리, `spec-sensitive-command-commons.md`)을 chore로 먼저 끝내고, 그 뒤 Epic 3 Story 3.1(보호된 운영자 표면과 추가 전용 감사 원장)이다.** 2026-10-06 결정: Epic 1 액션 item-1(재인증 시각 연쇄 승인)은 같은 코드를 만지므로 AI-8 범위에 넣고, item-7(확인 hash 판별력)은 운영 envelope가 실제 확인 문구를 정의하는 3.1 SPEC의 입력으로 넘긴다. `RECONNECT-1.0`(AI-1)은 Epic 3 완료 뒤 Epic 2 보완 스토리로 배치하고 그때까지 해제 사용자의 새 연결 영구 차단은 accepted deviation이다. 실연동 게이트는 둘이며 둘 다 별도 출시 게이트가 소유한다 — Epic 1의 세 제공자 왕복, Epic 2의 Bybit 연결 정책·실연동(실제 검증 계정과 regional reserved IP 필요).
 
 스토리마다 무엇을 도입했고 리뷰가 무엇을 잡았는지는 아래 표의 SPEC이 소유한다. 그 코드를 건드릴 때 해당 SPEC의 `## Design Notes`와 "구현에서 확정한 것"을 읽는다.
 
@@ -230,7 +230,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 ## 미룬 결정
 
-`deferred-work.md`가 항목을 추가만 하는 로그(현재 103건)이고 판정은 `deferred-work-resolutions.md`의 상태 요약 표가 소유한다(해소 16·부분 해소 4·미해소 31·미판정 52). 판정이 멈춰 있는 것 자체가 Epic 1 회고 액션 8번이다. 회고가 실연동 게이트 전에 닫으라고 남긴 둘 — 재인증 시각을 지우는 코드가 없어 본인 확인 1회가 5분 안에서 민감 command 여러 건을 연쇄 승인하는 것, `onFailure`가 무장을 무조건 버리는 것 — 은 아직 열려 있다.
+`deferred-work.md`가 항목을 추가만 하는 로그(현재 103건)이고 판정은 `deferred-work-resolutions.md`의 상태 요약 표가 소유한다(해소 16·부분 해소 4·미해소 31·미판정 52). 판정이 멈춰 있는 것 자체가 Epic 1 회고 액션 8번이고 Epic 2 회고 AI-6이 같은 일을 다시 요구한다. 회고가 실연동 게이트 전에 닫으라고 남긴 둘 — 재인증 시각을 지우는 코드가 없어 본인 확인 1회가 5분 안에서 민감 command 여러 건을 연쇄 승인하는 것(AI-8 범위), `onFailure`가 무장을 무조건 버리는 것 — 은 아직 열려 있다.
 
 ## 브랜치·커밋
 
