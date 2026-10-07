@@ -62,6 +62,31 @@ interface HostProps {
   readonly restoreFocus?: boolean
 }
 
+/** 확인 문구 재입력 칸이 버튼 앞에 있는 대화상자(운영자 화면의 모양, Story 3.1). */
+function InputHost(): ReactElement {
+  const surface = useRef<HTMLDivElement>(null)
+  const cancelButton = useRef<HTMLButtonElement>(null)
+  useConfirmationDialog({
+    surface,
+    cancelButton,
+    isPending: false,
+    onCancel: vi.fn(),
+    restoreFocus: true,
+  })
+  return (
+    <div aria-label="입력 칸 대화상자" aria-modal="true" ref={surface} role="dialog">
+      <label>
+        확인 문구
+        <input type="text" />
+      </label>
+      <button ref={cancelButton} type="button">
+        {CANCEL}
+      </button>
+      <button type="button">{CONFIRM}</button>
+    </div>
+  )
+}
+
 /** 훅을 쓰는 최소 대화상자. 버튼 둘뿐이고 카피는 시험의 것이다. */
 function Host({
   fallbackTargetId,
@@ -159,6 +184,21 @@ describe('useConfirmationDialog', () => {
     expect(document.body).toHaveFocus()
     fireEvent.keyDown(document, { key: 'Tab' })
     expect(cancelButton()).toHaveFocus()
+    unmount()
+  })
+
+  it('입력 칸이 있는 대화상자에서도 Tab·Shift+Tab이 칸과 버튼을 함께 돈다', () => {
+    focusedOpener()
+    const { unmount } = render(<InputHost />)
+    const input = screen.getByRole('textbox')
+
+    // 기본 포커스는 여전히 취소다.
+    expect(cancelButton()).toHaveFocus()
+    confirmButton().focus()
+    fireEvent.keyDown(confirmButton(), { key: 'Tab' })
+    expect(input).toHaveFocus()
+    fireEvent.keyDown(input, { key: 'Tab', shiftKey: true })
+    expect(confirmButton()).toHaveFocus()
     unmount()
   })
 

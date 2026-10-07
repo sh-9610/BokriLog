@@ -36,7 +36,7 @@ export function onBackdropMouseDown(event: MouseEvent<HTMLElement>): void {
 
 /**
  * 확인 대화상자의 메커니즘(DESIGN.md `confirmation-dialog`). `UnlinkDialog`·`PlanEndDialog`·
- * `ConnectionRevokeDialog`가 마크업과 status 표시 방식은 각자 들고 이 넷을 여기에 위임한다 — 기본
+ * `ConnectionRevokeDialog`·`OperatorExportDialog`가 마크업과 status 표시 방식은 각자 들고 이 넷을 여기에 위임한다 — 기본
  * 포커스(취소), 포커스 가둠, `Esc` 닫기, 호출점 복귀. 문서 스크롤 잠금도 함께다. 겹 클릭 방어는 모듈
  * 상수 `onBackdropMouseDown`이고 대화상자가 겹에 직접 붙인다.
  *
@@ -138,7 +138,9 @@ export function useConfirmationDialog({
       if (root === null) {
         return
       }
-      const focusable = root.querySelectorAll<HTMLElement>('button')
+      // 입력 칸도 가둔다 — 운영자 화면의 확인 문구 재입력 칸(Story 3.1)이 버튼 사이에서 건너뛰어지면 키보드로 다시
+      // 닿을 수 없다. 입력 칸이 없는 대화상자에서는 결과가 같다.
+      const focusable = root.querySelectorAll<HTMLElement>('button, input')
       const first = focusable[0]
       const last = focusable[focusable.length - 1]
       if (first === undefined || last === undefined) {

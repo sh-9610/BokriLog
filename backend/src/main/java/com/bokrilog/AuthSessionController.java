@@ -77,15 +77,20 @@ class AuthSessionController {
     /** Bybit 연결 해제(Story 2.16). 같은 설정 화면의 다섯 번째 무장이라 같은 규칙을 지난다. */
     private final BybitRevocationCommandService bybitRevocations;
 
+    /** 운영자 판정(Story 3.1). 재인증 복귀 목적지 {@code /operator}를 운영자에게만 남긴다. */
+    private final OperatorAccess operators;
+
     AuthSessionController(
             LinkService linkService,
             UnlinkService unlinkService,
             BybitConnectionService bybitConnectionService,
-            BybitRevocationCommandService bybitRevocations) {
+            BybitRevocationCommandService bybitRevocations,
+            OperatorAccess operators) {
         this.linkService = linkService;
         this.unlinkService = unlinkService;
         this.bybitConnectionService = bybitConnectionService;
         this.bybitRevocations = bybitRevocations;
+        this.operators = operators;
     }
 
     /**
@@ -175,9 +180,15 @@ class AuthSessionController {
          */
         boolean reauthRequired = !authenticated && carriesReauthMarker(request);
 
+        /*
+         * 운영자 화면 목적지는 지금 운영자일 때만 종류로 나간다(Story 3.1). 로그인 뒤 회수됐으면 대시보드로 접는다 —
+         * 규칙은 `OperatorAccess.foldDestination` 하나다.
+         */
+        String settled = sessionAttribute(request);
         String destination =
                 authenticated
-                        ? AuthFlowHandlers.destinationKind(sessionAttribute(request))
+                        ? AuthFlowHandlers.destinationKind(settled == null ? null
+                                : this.operators.foldDestination(currentUserId(), settled))
                         : AuthFlowHandlers.destinationKind(null);
 
         return ResponseEntity.ok()
@@ -328,6 +339,11 @@ class AuthSessionController {
         String destination =
                 Optional.ofNullable(AuthFlowHandlers.allowedDestination(sessionAttribute(request)))
                         .orElse(AuthFlowHandlers.DASHBOARD_PATH);
+        /*
+         * 운영자 화면은 운영자에게만 목적지다(Story 3.1). 로그인 뒤 allowlist에서 빠졌으면 대시보드로 접는다 — 두 이동
+         * 모두 평범한 302라 권한 유무가 목적지로 새지 않는다.
+         */
+        destination = this.operators.foldDestination(userId, destination);
         /*
          * 남아 있는 연결·해제 무장을 먼저 버리고 그 허가도 함께 무효화한다.
          *

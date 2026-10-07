@@ -1,0 +1,531 @@
+package com.bokrilog;
+
+import com.bokrilog.operations.OperatorAuditApi;
+import com.bokrilog.operations.OperatorCommandApi;
+import com.bokrilog.operations.OperatorPermission;
+import com.bokrilog.sync.IdempotencyKey;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
+import java.io.IOException;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.regex.Pattern;
+import org.jspecify.annotations.Nullable;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.http.CacheControl;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+/**
+ * 보호된 운영자 표면의 HTTP(Story 3.1). 모든 경로가 {@code /api/operator} 아래이고 같은 술어 하나
+ * ({@code AuthSecurityConfig.isOperatorPath})로 인증·세션 귀속 CSRF 토큰·동일 출처 {@code Origin}을 지나며, 그 뒤
+ * {@link OperatorGate}가 운영자·권한을 판정한다. 비운영자·권한 부족·미존재 대상은 모두 없는 경로와 같은 404다.
+ *
+ * <ul>
+ *   <li>{@code GET /api/operator/audit?from&to&command&scope&outcome&cursor&limit}(감사 권한): 최신순 allowlist 필드,
+ *       {@code (recordedAt, sequence)} keyset cursor, 쪽당 최대 200행. 날짜는 KST 달력 날짜(양 끝 포함). 읽을 수 없는
+ *       값은 400.
+ *   <li>{@code GET /api/operator/operations/{operationId}}: 그 운영자 자신의 operation 행, 오래된 순. 남의·미존재는 404.
+ *   <li>{@code POST /api/operator/commands/{type}}(준비, command 권한 + type별 권한): {@code {scope, target, reason}}과
+ *       {@code Idempotency-Key}. 200 {@code {operationId, command, scope, target, reason, confirmationPhrase,
+ *       policyVersion, requestedAt}}. 허가 참조는 서버 밖으로 나가지 않는다.
+ *   <li>{@code POST /api/operator/commands/{type}/confirm}: {@code {operationId, confirmation}}과 같은 키. 200
+ *       {@code {operationId, outcome: "COMPLETED", command, target, upperSequence, rowCount, truncated, rows}} — 같은
+ *       키의 재전송도 같은 묶음이다(회전 없음).
+ *   <li>{@code POST /api/operator/commands/{type}/cancel}: 무장과 그 허가를 버리고 {@code CANCELLED} 행을 남긴다. 무장이
+ *       없어도 204.
+ * </ul>
+ *
+ * <p>거절은 공통 오류 모양이다: 400 본문 모양, 403 {@code REAUTHENTICATION_REQUIRED}(준비)·
+ * {@code OPERATOR_COMMAND_NOT_CONFIRMED}(확정), 409 {@code CONFIRMATION_MISMATCH}·{@code IDEMPOTENCY_CONFLICT}, 422
+ * {@code IDEMPOTENCY_KEY_REQUIRED}·{@code REASON_REQUIRED}·{@code REASON_INVALID}·{@code UNSUPPORTED_SCOPE}·
+ * {@code TARGET_INVALID}·{@code ACTOR_NOT_ACCEPTED}, 실패는 500. 404 밖의 응답은 {@code no-store}다.
+ *
+ * <p>한 요청에 운영 로그 한 줄 — 단계·결과 code·상태·지연뿐이다. 수행자·대상·사유·operation ID·키·허가를 남기지 않는다.
+ */
+@RestController
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
+class OperatorController {
+
+    static final String OPERATIONS_PATH = AuthSecurityConfig.OPERATOR_API_PATH + "/operations";
+
+    static final String CONFIRM_SEGMENT = "confirm";
+
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(OperatorController.class);
+
+    /** 요청 본문의 상한. 준비 본문은 사유 500자를 담아도 2KiB 안이다. */
+    private static final int MAX_BODY_CHARS = 4096;
+
+    /** 확인 문구의 상한. 서버 문구는 50자 안팎이고 허가 포트는 4KiB에서 자른다. */
+    private static final int MAX_CONFIRMATION_CHARS = 256;
+
+    /** 본문이 수행자를 주장하는 이름. 하나라도 있으면 거절한다 — 수행자는 세션이 정한다. */
+    private static final Set<String> ACTOR_FIELDS =
+            Set.of("actor", "actorId", "actorUserId", "actorDigest", "operator", "operatorId", "userId");
+
+    private static final Pattern OPERATION_ID = Pattern.compile("op_[A-Za-z0-9_-]{1,60}");
+
+    private static final Pattern COMMAND_FILTER = Pattern.compile("[a-z][a-z0-9-]{0,63}");
+
+    private static final Pattern SCOPE_FILTER = Pattern.compile("[A-Z][A-Z_]{0,63}");
+
+    private static final Pattern DATE = Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
+
+    private static final Pattern LIMIT = Pattern.compile("\\d{1,4}");
+
+    private static final tools.jackson.databind.json.JsonMapper JSON =
+            tools.jackson.databind.json.JsonMapper.builder().build();
+
+    private record Refusal(HttpStatus status, String message) {}
+
+    /** 거절 code → 상태와 안전한 문장. 닫힌 맵이며 machine 값은 code뿐이다. */
+    private static final Map<String, Refusal> REFUSALS = Map.ofEntries(
+            Map.entry(OperatorCommandService.REAUTHENTICATION_REQUIRED, new Refusal(HttpStatus.FORBIDDEN,
+                    "운영 명령을 준비하려면 먼저 본인 확인이 필요합니다.")),
+            Map.entry(OperatorCommandService.NOT_CONFIRMED, new Refusal(HttpStatus.FORBIDDEN,
+                    "확인된 운영 명령이 아니어서 실행하지 않았습니다. 명령을 다시 준비해 주세요.")),
+            Map.entry(OperatorCommandService.CONFIRMATION_MISMATCH, new Refusal(HttpStatus.CONFLICT,
+                    "확인 문구가 일치하지 않아 실행하지 않았습니다. 화면의 문구를 그대로 입력해 주세요.")),
+            Map.entry(OperatorCommandService.IDEMPOTENCY_CONFLICT, new Refusal(HttpStatus.CONFLICT,
+                    "같은 요청 키가 다른 운영 명령에 이미 쓰였습니다. 명령을 새로 준비해 주세요.")),
+            Map.entry(IdempotencyKey.REQUIRED_CODE, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
+                    ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED)),
+            Map.entry(OperatorCommandApi.REASON_REQUIRED, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "사유를 입력해 주세요.")),
+            Map.entry(OperatorCommandApi.REASON_INVALID, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "사유는 500자 이내의 한 줄 문장이어야 하고 이메일 주소를 담을 수 없습니다.")),
+            Map.entry(OperatorCommandApi.UNSUPPORTED_SCOPE, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "이 운영 명령이 지원하지 않는 범위입니다.")),
+            Map.entry(OperatorCommandApi.TARGET_INVALID, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "대상 기간이 올바르지 않습니다. 시작일과 종료일을 366일 이내로 지정해 주세요.")),
+            Map.entry(OperatorCommandApi.ACTOR_NOT_ACCEPTED, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "요청에 수행자를 담을 수 없습니다. 수행자는 로그인 세션이 정합니다.")));
+
+    /** 감사 행 하나의 응답 모양. allowlist 필드뿐이다. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record EntryView(long sequence, String operationId, String actorKind, String actorDigest, String command,
+            String scope, String target, String reason, String outcome, @Nullable String code, String policyVersion,
+            String requestedAt, @Nullable String decidedAt, String recordedAt, String correlationId) {
+
+        static EntryView of(OperatorAuditApi.Entry entry) {
+            return new EntryView(entry.sequence(), entry.operationId(), entry.actorKind(), entry.actorDigest(),
+                    entry.command(), entry.scope(), entry.target(), entry.reason(), entry.outcome(), entry.code(),
+                    entry.policyVersion(), entry.requestedAt().toString(),
+                    entry.decidedAt() == null ? null : entry.decidedAt().toString(), entry.recordedAt().toString(),
+                    entry.correlationId());
+        }
+    }
+
+    record PageView(List<EntryView> items, @Nullable String nextCursor) {}
+
+    record OperationView(String operationId, List<EntryView> items) {}
+
+    record PreparedView(String operationId, String command, String scope, String target, String reason,
+            String confirmationPhrase, String policyVersion, String requestedAt) {}
+
+    record CompletedView(String operationId, String outcome, String command, String target, long upperSequence,
+            int rowCount, boolean truncated, List<EntryView> rows) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record OperatorError(String code, String message, String correlationId) {}
+
+    private final OperatorCommandService commands;
+
+    private final OperatorAuditApi audit;
+
+    /**
+     * 핸들러 안의 이중 검사. 게이트({@link OperatorGate})가 먼저 판정하지만 경로 판정이 어긋나는 날(인코딩·매핑 변경)
+     * 그 검사 하나에 기대지 않는다 — 여기서도 같은 권한을 보고 같은 404를 낸다.
+     */
+    private final OperatorAccess access;
+
+    OperatorController(OperatorCommandService commands, OperatorAuditApi audit, OperatorAccess access) {
+        this.commands = commands;
+        this.audit = audit;
+        this.access = access;
+    }
+
+    // ------------------------------------------------------------------ 감사 조회
+
+    @GetMapping(path = OperatorGate.AUDIT_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<?> search(@RequestParam(required = false) @Nullable String from,
+            @RequestParam(required = false) @Nullable String to,
+            @RequestParam(required = false) @Nullable String command,
+            @RequestParam(required = false) @Nullable String scope,
+            @RequestParam(required = false) @Nullable String outcome,
+            @RequestParam(required = false) @Nullable String cursor,
+            @RequestParam(required = false) @Nullable String limit, HttpServletRequest request,
+            HttpServletResponse response) throws IOException {
+        long started = System.nanoTime();
+        String correlationId = correlationIdOf(request);
+        if (!this.access.permits(currentUserId(), Set.of(OperatorPermission.AUDIT))) {
+            return notFound("audit", response, started);
+        }
+        OperatorAuditApi.Filter filter = filterOf(from, to, command, scope, outcome);
+        Integer size = limitOf(limit);
+        if (filter == null || size == null) {
+            return answer("audit", badRequest(correlationId), "BAD_REQUEST", started);
+        }
+        var page = this.audit.search(filter, cursor, size);
+        if (page.isEmpty()) {
+            return answer("audit", badRequest(correlationId), "BAD_REQUEST", started);
+        }
+        return answer("audit", ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(new PageView(page.get().entries().stream().map(EntryView::of).toList(),
+                        page.get().nextCursor())), "OK", started);
+    }
+
+    @GetMapping(path = OPERATIONS_PATH + "/{operationId}", produces = MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<?> operation(@PathVariable String operationId, HttpServletResponse response)
+            throws IOException {
+        long started = System.nanoTime();
+        UUID userId = currentUserId();
+        if (!this.access.permits(userId, Set.of())) {
+            return notFound("operation", response, started);
+        }
+        List<OperatorAuditApi.Entry> rows = userId == null || !OPERATION_ID.matcher(operationId).matches()
+                ? List.of() : this.audit.operation(userId, operationId);
+        if (rows.isEmpty()) {
+            return notFound("operation", response, started);
+        }
+        return answer("operation", ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(new OperationView(operationId, rows.stream().map(EntryView::of).toList())), "OK", started);
+    }
+
+    // ------------------------------------------------------------------ 운영 command
+
+    @PostMapping(path = OperatorGate.COMMANDS_PATH + "/{type}", produces = MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<?> prepare(@PathVariable String type, @RequestBody(required = false) @Nullable String body,
+            @RequestHeader(name = IdempotencyKey.HEADER, required = false) @Nullable String key,
+            HttpServletRequest request, HttpServletResponse response) throws IOException {
+        long started = System.nanoTime();
+        String correlationId = correlationIdOf(request);
+        UUID userId = currentUserId();
+        HttpSession session = request.getSession(false);
+        if (userId == null || session == null
+                || !this.access.permits(userId, Set.of(OperatorPermission.COMMAND))) {
+            return notFound("prepare", response, started);
+        }
+        OperatorCommandApi.Proposal proposal = proposalOf(type, body);
+        if (proposal == null) {
+            return answer("prepare", badRequest(correlationId), "BAD_REQUEST", started);
+        }
+        if (!IdempotencyKey.isValid(key)) {
+            return answer("prepare", refused(IdempotencyKey.REQUIRED_CODE, correlationId), IdempotencyKey.REQUIRED_CODE,
+                    started);
+        }
+        OperatorCommandService.Preparation preparation;
+        try {
+            preparation = this.commands.prepare(session, userId, proposal, key, correlationId);
+        } catch (RuntimeException failure) {
+            return answer("prepare", internal(failure, correlationId), "ERROR", started);
+        }
+        return switch (preparation) {
+            case OperatorCommandService.Preparation.Refused refused ->
+                    OperatorCommandService.NOT_FOUND.equals(refused.code()) ? notFound("prepare", response, started)
+                            : answer("prepare", refused(refused.code(), correlationId), refused.code(), started);
+            case OperatorCommandService.Preparation.Armed armed -> answer("prepare", ResponseEntity.ok()
+                    .cacheControl(CacheControl.noStore())
+                    .body(new PreparedView(armed.flow().operationId(), armed.flow().command(), armed.flow().scope(),
+                            armed.flow().target(), armed.flow().reason(), armed.flow().confirmation(),
+                            armed.flow().policyVersion(), armed.flow().requestedAt().toString())), "PREPARED",
+                    started);
+        };
+    }
+
+    @PostMapping(path = OperatorGate.COMMANDS_PATH + "/{type}/" + CONFIRM_SEGMENT,
+            produces = MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<?> confirm(@PathVariable String type, @RequestBody(required = false) @Nullable String body,
+            @RequestHeader(name = IdempotencyKey.HEADER, required = false) @Nullable String key,
+            HttpServletRequest request, HttpServletResponse response) throws IOException {
+        long started = System.nanoTime();
+        String correlationId = correlationIdOf(request);
+        UUID userId = currentUserId();
+        HttpSession session = request.getSession(false);
+        if (userId == null || session == null) {
+            return notFound("confirm", response, started);
+        }
+        if (!this.access.permits(userId, Set.of(OperatorPermission.COMMAND))) {
+            this.commands.abandonRevoked(session, userId, correlationId);
+            return notFound("confirm", response, started);
+        }
+        Confirmation parsed = confirmationOf(body);
+        if (parsed == null) {
+            return answer("confirm", badRequest(correlationId), "BAD_REQUEST", started);
+        }
+        if (!IdempotencyKey.isValid(key)) {
+            return answer("confirm", refused(IdempotencyKey.REQUIRED_CODE, correlationId), IdempotencyKey.REQUIRED_CODE,
+                    started);
+        }
+        OperatorCommandService.Outcome outcome;
+        try {
+            outcome = this.commands.confirm(request, session, userId, type, parsed.operationId(),
+                    parsed.confirmation(), key, correlationId);
+        } catch (RuntimeException failure) {
+            return answer("confirm", internal(failure, correlationId), "ERROR", started);
+        }
+        return switch (outcome) {
+            case OperatorCommandService.Outcome.Refused refused ->
+                    OperatorCommandService.NOT_FOUND.equals(refused.code()) ? notFound("confirm", response, started)
+                            : answer("confirm", refused(refused.code(), correlationId), refused.code(), started);
+            case OperatorCommandService.Outcome.Completed completed -> answer("confirm", ResponseEntity.ok()
+                    .cacheControl(CacheControl.noStore())
+                    .body(new CompletedView(completed.result().operationId(),
+                            OperatorCommandApi.AuditOutcome.COMPLETED.name(), type, completed.result().target(),
+                            completed.result().upperSequence(), completed.result().rowCount(),
+                            completed.result().truncated(), completed.rows().stream().map(EntryView::of).toList())),
+                    completed.ran() ? "COMPLETED" : "REPLAYED", started);
+        };
+    }
+
+    @PostMapping(path = OperatorGate.COMMANDS_PATH + "/{type}/" + AuthSecurityConfig.CANCEL_SEGMENT)
+    void cancel(@PathVariable String type, HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
+        long started = System.nanoTime();
+        String correlationId = correlationIdOf(request);
+        UUID userId = currentUserId();
+        HttpSession session = request.getSession(false);
+        if (userId == null) {
+            notFound("cancel", response, started);
+            return;
+        }
+        if (!this.access.permits(userId, Set.of(OperatorPermission.COMMAND))) {
+            if (session != null) {
+                this.commands.abandonRevoked(session, userId, correlationId);
+            }
+            notFound("cancel", response, started);
+            return;
+        }
+        if (!this.commands.supports(type)) {
+            // 모르는 type은 경로가 없는 것과 같다. 무장을 건드리지 않는다.
+            notFound("cancel", response, started);
+            return;
+        }
+        String result = "CANCELLED";
+        if (session != null) {
+            try {
+                if (!this.commands.cancel(session, userId, type, correlationId)) {
+                    // 모르는 type은 경로가 없는 것과 같다. 무장을 건드리지 않았다.
+                    notFound("cancel", response, started);
+                    return;
+                }
+            } catch (RuntimeException failure) {
+                // 무장은 이미 세션에서 빠졌다. 남은 허가는 5분 뒤 만료된다.
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("operator cancel failed: failure={}", failure.getClass().getName());
+                }
+                result = "ERROR";
+            }
+        }
+        response.setStatus(HttpStatus.NO_CONTENT.value());
+        response.setHeader(HttpHeaders.CACHE_CONTROL, CacheControl.noStore().getHeaderValue());
+        log("cancel", result, HttpStatus.NO_CONTENT.value(), started);
+    }
+
+    // ------------------------------------------------------------------ 본문
+
+    /** 확정 본문. */
+    record Confirmation(String operationId, String confirmation) {}
+
+    /**
+     * 준비 본문의 제안. 본문이 JSON 객체가 아니거나 세 필드 중 문자열이 아닌 것이 있으면 {@code null}(400)이다. 필드가
+     * 없는 것은 검증이 거절한다(422). 수행자 이름이 하나라도 있으면 제안에 그 사실을 싣는다.
+     */
+    static OperatorCommandApi.@Nullable Proposal proposalOf(String type, @Nullable String body) {
+        tools.jackson.databind.JsonNode node = objectOf(body);
+        if (node == null) {
+            return null;
+        }
+        String scope;
+        String target;
+        String reason;
+        try {
+            scope = stringOrNull(node, "scope");
+            target = stringOrNull(node, "target");
+            reason = stringOrNull(node, "reason");
+        } catch (IllegalArgumentException notText) {
+            return null;
+        }
+        boolean actorClaimed = false;
+        for (String name : ACTOR_FIELDS) {
+            if (node.has(name)) {
+                actorClaimed = true;
+                break;
+            }
+        }
+        return new OperatorCommandApi.Proposal(type, scope, target, reason, actorClaimed);
+    }
+
+    static @Nullable Confirmation confirmationOf(@Nullable String body) {
+        tools.jackson.databind.JsonNode node = objectOf(body);
+        if (node == null) {
+            return null;
+        }
+        tools.jackson.databind.JsonNode operation = node.get("operationId");
+        tools.jackson.databind.JsonNode phrase = node.get("confirmation");
+        if (operation == null || !operation.isString() || phrase == null || !phrase.isString()
+                || phrase.asString().isBlank() || phrase.asString().length() > MAX_CONFIRMATION_CHARS
+                || operation.asString().length() > 64) {
+            return null;
+        }
+        return new Confirmation(operation.asString(), phrase.asString());
+    }
+
+    private static tools.jackson.databind.@Nullable JsonNode objectOf(@Nullable String body) {
+        if (body == null || body.length() > MAX_BODY_CHARS) {
+            return null;
+        }
+        tools.jackson.databind.JsonNode node;
+        try {
+            node = JSON.readTree(body);
+        } catch (tools.jackson.core.JacksonException malformed) {
+            return null;
+        }
+        return node != null && node.isObject() ? node : null;
+    }
+
+    private static @Nullable String stringOrNull(tools.jackson.databind.JsonNode node, String name) {
+        tools.jackson.databind.JsonNode value = node.get(name);
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        if (!value.isString()) {
+            throw new IllegalArgumentException(name);
+        }
+        return value.asString();
+    }
+
+    /** 조회 필터. 읽을 수 없는 값이 하나라도 있으면 {@code null}(400)이다. */
+    static OperatorAuditApi.@Nullable Filter filterOf(@Nullable String from, @Nullable String to,
+            @Nullable String command, @Nullable String scope, @Nullable String outcome) {
+        LocalDate fromDate = dateOf(from);
+        LocalDate toDate = dateOf(to);
+        if ((from != null && fromDate == null) || (to != null && toDate == null)
+                || (fromDate != null && toDate != null && toDate.isBefore(fromDate))
+                || (command != null && !COMMAND_FILTER.matcher(command).matches())
+                || (scope != null && !SCOPE_FILTER.matcher(scope).matches())) {
+            return null;
+        }
+        OperatorCommandApi.AuditOutcome parsedOutcome = null;
+        if (outcome != null) {
+            try {
+                parsedOutcome = OperatorCommandApi.AuditOutcome.valueOf(outcome);
+            } catch (IllegalArgumentException unknown) {
+                return null;
+            }
+        }
+        return new OperatorAuditApi.Filter(fromDate, toDate, command, scope, parsedOutcome);
+    }
+
+    private static @Nullable LocalDate dateOf(@Nullable String text) {
+        if (text == null || !DATE.matcher(text).matches()) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(text);
+        } catch (DateTimeParseException impossible) {
+            return null;
+        }
+    }
+
+    /** 쪽 크기. 없으면 기본값, 0이나 숫자가 아니면 {@code null}(400), 상한을 넘으면 상한이다. */
+    static @Nullable Integer limitOf(@Nullable String limit) {
+        if (limit == null) {
+            return OperatorAuditApi.DEFAULT_PAGE_SIZE;
+        }
+        if (!LIMIT.matcher(limit).matches()) {
+            return null;
+        }
+        int parsed = Integer.parseInt(limit);
+        return parsed < 1 ? null : Math.min(parsed, OperatorAuditApi.MAX_PAGE_SIZE);
+    }
+
+    // ------------------------------------------------------------------ 응답
+
+    /**
+     * 없는 경로와 같은 404. 오류 디스패치를 지나 {@code ApiErrorHandler}가 본문을 만들므로 게이트의 404·없는 경로의 404와
+     * 글자까지 같다.
+     */
+    private static @Nullable ResponseEntity<?> notFound(String step, HttpServletResponse response, long started)
+            throws IOException {
+        response.sendError(HttpStatus.NOT_FOUND.value());
+        log(step, "NOT_FOUND", HttpStatus.NOT_FOUND.value(), started);
+        return null;
+    }
+
+    private static ResponseEntity<?> refused(String code, String correlationId) {
+        Refusal refusal = REFUSALS.get(code);
+        if (refusal == null) {
+            // 이 표면이 모르는 거절은 호출자 잘못이 아니라 깨진 계약이다.
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorHandler.CODE_INTERNAL_ERROR,
+                    ApiErrorHandler.MESSAGE_INTERNAL_ERROR, correlationId);
+        }
+        return error(refusal.status(), code, refusal.message(), correlationId);
+    }
+
+    private static ResponseEntity<?> badRequest(String correlationId) {
+        return error(HttpStatus.BAD_REQUEST, ApiErrorHandler.CODE_BAD_REQUEST, ApiErrorHandler.MESSAGE_BAD_REQUEST,
+                correlationId);
+    }
+
+    private static ResponseEntity<?> internal(RuntimeException failure, String correlationId) {
+        // 클래스 이름만 debug로 남긴다. 메시지·원인에는 SQL이나 값이 실릴 수 있다.
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("operator request failed: failure={}", failure.getClass().getName());
+        }
+        return error(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorHandler.CODE_INTERNAL_ERROR,
+                ApiErrorHandler.MESSAGE_INTERNAL_ERROR, correlationId);
+    }
+
+    private static ResponseEntity<OperatorError> error(HttpStatus status, String code, String message,
+            String correlationId) {
+        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).cacheControl(CacheControl.noStore())
+                .body(new OperatorError(code, message, correlationId));
+    }
+
+    private static String correlationIdOf(HttpServletRequest request) {
+        return ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER));
+    }
+
+    private static ResponseEntity<?> answer(String step, ResponseEntity<?> response, String result, long started) {
+        String logged = response.getStatusCode().value() == 500 ? "ERROR" : result;
+        log(step, logged, response.getStatusCode().value(), started);
+        return response;
+    }
+
+    private static void log(String step, String result, int status, long started) {
+        LOG.info("operator request: step={} result={} status={} latencyMs={}", step, result, status,
+                (System.nanoTime() - started) / 1_000_000);
+    }
+
+    private static @Nullable UUID currentUserId() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()
+                || authentication instanceof AnonymousAuthenticationToken) {
+            return null;
+        }
+        try {
+            return UUID.fromString(authentication.getName());
+        } catch (IllegalArgumentException invalid) {
+            return null;
+        }
+    }
+}

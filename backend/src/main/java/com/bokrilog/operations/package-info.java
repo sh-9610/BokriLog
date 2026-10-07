@@ -17,5 +17,12 @@
  * <p>판독은 fail-closed로 쓴다. 제한이 <b>있으면</b> 막는 것이 이 API의 답이고, 읽지 못하는 상황
  * (저장소 장애)은 값이 아니라 예외로 올라가 요청 전체를 실패시킨다 — 조회 실패를 "제한 없음"으로
  * 접으면 그 순간 제한이 무의미해진다.
+ *
+ * <p><b>Story 3.1이 운영자 표면의 기반을 더했다.</b> 운영자 allowlist 설정({@link
+ * com.bokrilog.operations.OperatorProperties}), 운영 command의 표준 envelope와 검증({@link
+ * com.bokrilog.operations.OperatorCommandApi}), 추가 전용 감사 원장과 그 조회({@link
+ * com.bokrilog.operations.OperatorAuditApi}), 감사 데이터의 deletion port({@link
+ * com.bokrilog.operations.OperationsDeletionApi})다. 재인증·일회성 허가·세션 회전·HTTP는 루트 패키지가 Epic 1의
+ * 부품으로 한다 — 이 모듈은 servlet·세션·허가를 모른다.
  */
 package com.bokrilog.operations;

@@ -1,12 +1,51 @@
-import type { ReactElement } from 'react'
+import { Component, lazy, Suspense, type ReactElement, type ReactNode } from 'react'
 
-import { DASHBOARD_PATH, noticeKindOf, ONBOARDING_PATH, SETTINGS_PATH } from './content/auth'
+import {
+  authContent,
+  DASHBOARD_PATH,
+  noticeKindOf,
+  ONBOARDING_PATH,
+  OPERATOR_PATH,
+  SETTINGS_PATH,
+} from './content/auth'
 import { planConditionContent } from './content/planConditions'
 import { EntryScreen } from './screens/EntryScreen'
 import { OnboardingScreen } from './screens/OnboardingScreen'
 import { PlanConditionScreen } from './screens/PlanConditionScreen'
 import { SettingsScreen } from './screens/SettingsScreen'
 import { SignedInScreen } from './screens/SignedInScreen'
+
+/**
+ * 보호된 운영자 화면(Story 3.1). 일반 번들의 초기 화면에 운영자 제어를 섞지 않으려고 `React.lazy`로 따로 받는다 —
+ * 그 chunk는 `/operator`에 들어올 때만 요청되고, 진입 화면을 비롯한 다른 경로는 그 코드를 받지 않는다(e2e가 고정한다).
+ * 라우터·런타임 의존을 더하지 않는다(`React.lazy`는 React 내장이다).
+ */
+const OperatorScreen = lazy(async () => {
+  const module = await import('./screens/OperatorScreen')
+  return { default: module.OperatorScreen }
+})
+
+/**
+ * 따로 받는 화면 코드의 오류 경계. chunk를 받지 못하면(배포 교체·네트워크 단절) `Suspense`가 오류를 던지고, 경계가 없으면
+ * 앱 전체가 빈 화면이 된다. 그 자리에 다시 불러오기 안내 하나를 그린다 — 자동 재시도하지 않는다.
+ */
+class ScreenLoadBoundary extends Component<
+  { readonly children: ReactNode },
+  { readonly failed: boolean }
+> {
+  override state = { failed: false }
+
+  static getDerivedStateFromError(): { readonly failed: boolean } {
+    return { failed: true }
+  }
+
+  override render(): ReactNode {
+    if (this.state.failed) {
+      return <p role="status">{authContent.session.screenLoadFailed}</p>
+    }
+    return this.props.children
+  }
+}
 
 /**
  * 애플리케이션 루트.
@@ -35,6 +74,18 @@ export function App(): ReactElement {
   }
   if (pathname === planConditionContent.path) {
     return <PlanConditionScreen />
+  }
+  if (pathname === OPERATOR_PATH) {
+    return (
+      /*
+       * chunk를 받는 동안 아무 상태도 주장하지 않는다. 세션 확인 문장은 화면이 받은 뒤 자기 live region에서 말한다.
+       */
+      <ScreenLoadBoundary>
+        <Suspense fallback={<p role="status">{authContent.session.checking}</p>}>
+          <OperatorScreen />
+        </Suspense>
+      </ScreenLoadBoundary>
+    )
   }
   return <EntryScreen notice={noticeKindOf(search)} />
 }

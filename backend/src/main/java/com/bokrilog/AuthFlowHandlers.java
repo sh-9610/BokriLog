@@ -102,6 +102,15 @@ class AuthFlowHandlers {
     static final String SETTINGS_PATH = "/settings";
 
     /**
+     * 보호된 운영자 화면(Story 3.1).
+     *
+     * <p>복귀 목적지 허용 목록에 들지만 <b>운영자에게만</b> 목적지가 된다. 로그인 성공({@link #onSuccess})과 재인증 시작
+     * ({@code AuthSessionController})이 그 순간의 운영자 여부를 다시 보고, 아니면 {@link #DASHBOARD_PATH}로 접는다 — 둘 다
+     * 평범한 이동이라 권한 유무가 목적지로 새지 않는다. 다섯 곳의 등가는 {@link #SETTINGS_PATH}의 설명과 같다.
+     */
+    static final String OPERATOR_PATH = "/operator";
+
+    /**
      * 복귀 목적지 허용 목록.
      *
      * <p>닫힌 집합이다. 목록에 없는 값은 검사할 필요조차 없이 버려지므로, 경로 정규화·스킴 검사·
@@ -109,7 +118,7 @@ class AuthFlowHandlers {
      * 지불하는 대신, 판정 논리에 구멍이 생길 자리를 없앤다.
      */
     private static final Set<String> ALLOWED_DESTINATIONS =
-            Set.of(ONBOARDING_PATH, DASHBOARD_PATH, SETTINGS_PATH);
+            Set.of(ONBOARDING_PATH, DASHBOARD_PATH, SETTINGS_PATH, OPERATOR_PATH);
 
     /** 인증 시작이 기록한 요청 목적지. 성공하면 지운다. */
     static final String REQUESTED_DESTINATION_ATTRIBUTE = "bokrilog.auth.requested-destination";
@@ -239,16 +248,22 @@ class AuthFlowHandlers {
      */
     private final LinkService linkService;
 
+    /** 운영자 판정(Story 3.1). 복귀 목적지 {@link #OPERATOR_PATH}를 운영자에게만 허용하는 데 쓴다. */
+    private final OperatorAccess operators;
+
     AuthFlowHandlers(
             AuthSessionService authSessionService,
             SessionRepository<? extends Session> sessions,
             SessionGuard guard,
-            LinkService linkService) {
+            LinkService linkService,
+            OperatorAccess operators) {
         this.authSessionService = authSessionService;
         this.sessions = sessions;
         this.guard = guard;
         this.linkService = linkService;
+        this.operators = operators;
     }
+
 
     /**
      * 구성된 세션 유휴 수명.
@@ -584,10 +599,12 @@ class AuthFlowHandlers {
         String destination =
                 established.firstLogin()
                         ? ONBOARDING_PATH
-                        : Optional.ofNullable(
-                                        allowedDestination(
-                                                attribute(request, REQUESTED_DESTINATION_ATTRIBUTE)))
-                                .orElse(DASHBOARD_PATH);
+                        : this.operators.foldDestination(
+                                established.userId(),
+                                Optional.ofNullable(
+                                                allowedDestination(
+                                                        attribute(request, REQUESTED_DESTINATION_ATTRIBUTE)))
+                                        .orElse(DASHBOARD_PATH));
 
         /*
          * 세션 ID는 이미 회전했다. `AbstractAuthenticationProcessingFilter`가 성공 핸들러를 부르기
@@ -1102,10 +1119,29 @@ class AuthFlowHandlers {
                 && OAuth2ErrorCodes.ACCESS_DENIED.equals(oauth2Exception.getError().getErrorCode());
     }
 
-    /** 지금 세션이 가진 목적지. 없으면 기본 대시보드다. */
-    private static String currentDestination(HttpServletRequest request) {
-        return Optional.ofNullable(allowedDestination(attribute(request, DESTINATION_ATTRIBUTE)))
-                .orElse(DASHBOARD_PATH);
+    /**
+     * 지금 세션이 가진 목적지. 없으면 기본 대시보드다. 운영자 화면은 지금 운영자일 때만 남는다
+     * ({@link OperatorAccess#foldDestination}).
+     */
+    private String currentDestination(HttpServletRequest request) {
+        String destination =
+                Optional.ofNullable(allowedDestination(attribute(request, DESTINATION_ATTRIBUTE)))
+                        .orElse(DASHBOARD_PATH);
+        return this.operators.foldDestination(sessionPrincipal(), destination);
+    }
+
+    /** 지금 요청의 인증 주체. 없거나 읽히지 않으면 {@code null}이다. */
+    private static @Nullable UUID sessionPrincipal() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()
+                || authentication instanceof AnonymousAuthenticationToken) {
+            return null;
+        }
+        try {
+            return UUID.fromString(authentication.getName());
+        } catch (IllegalArgumentException invalid) {
+            return null;
+        }
     }
 
     private static @Nullable String attribute(HttpServletRequest request, String name) {
@@ -1136,6 +1172,9 @@ class AuthFlowHandlers {
         }
         if (SETTINGS_PATH.equals(destination)) {
             return "settings";
+        }
+        if (OPERATOR_PATH.equals(destination)) {
+            return "operator";
         }
         return "entry";
     }

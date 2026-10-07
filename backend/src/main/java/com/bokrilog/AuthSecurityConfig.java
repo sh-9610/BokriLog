@@ -35,6 +35,7 @@ import org.springframework.security.oauth2.core.oidc.IdTokenClaimNames;
 import org.springframework.security.oauth2.core.oidc.OidcScopes;
 import org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequest;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.intercept.AuthorizationFilter;
 import org.springframework.security.web.context.SecurityContextHolderFilter;
 import org.springframework.security.web.csrf.CsrfFilter;
 import org.springframework.security.web.csrf.CsrfToken;
@@ -42,6 +43,7 @@ import org.springframework.security.web.csrf.CsrfTokenRepository;
 import org.springframework.security.web.csrf.HttpSessionCsrfTokenRepository;
 import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 /**
  * 인증 표면과 세션 정책.
@@ -246,6 +248,15 @@ class AuthSecurityConfig {
      */
     static final String DASHBOARD_PATH = "/api/dashboard";
 
+    /**
+     * 보호된 운영자 표면(Story 3.1). 감사 조회·operation 조회·운영 command 준비/확정/취소가 이 접두사 아래에 있다.
+     *
+     * <p>인가와 CSRF·{@code Origin}이 같은 판정 함수({@link #isOperatorPath})를 본다. 그 위에 운영자 게이트
+     * ({@link OperatorGate})가 인가 필터 뒤에서 한 번 더 판정한다 — 인증된 비운영자·권한 부족은 이 접두사의 <b>모든</b>
+     * 경로·메서드에서 없는 경로와 같은 404다(405로 경로 존재가 새지 않는다). 미인증은 다른 보호 경로와 같은 401이다.
+     */
+    static final String OPERATOR_API_PATH = "/api/operator";
+
     /** Bybit 연결 표면의 경로. 이 계층에서 그 경로를 정의하는 상수는 이것 하나다. */
     static final String BYBIT_CONNECTION_PATH = CONNECTIONS_BASE_URI + "/bybit";
 
@@ -266,6 +277,16 @@ class AuthSecurityConfig {
      * Spring Security의 기본 CSRF 제외 집합과 같다.
      */
     private static final Set<String> SAFE_METHODS = Set.of("GET", "HEAD", "OPTIONS", "TRACE");
+
+    /** 디코딩·세미콜론 제거를 하는 경로 도구. 설정을 바꾸지 않으므로 공유해도 안전하다. */
+    private static final UrlPathHelper PATHS = newPathHelper();
+
+    private static UrlPathHelper newPathHelper() {
+        UrlPathHelper helper = new UrlPathHelper();
+        helper.setUrlDecode(true);
+        helper.setRemoveSemicolonContent(true);
+        return helper;
+    }
 
     /**
      * CSRF·{@code Origin} 검증이 걸리는 경로 접두사.
@@ -977,7 +998,9 @@ class AuthSecurityConfig {
             HttpSecurity http,
             ProviderClientRegistrations registrations,
             AuthProperties properties,
-            AuthFlowHandlers handlers)
+            AuthFlowHandlers handlers,
+            OperatorAccess operators,
+            OperatorCommandService operatorCommands)
             throws Exception {
 
         http.authorizeHttpRequests(
@@ -1103,7 +1126,12 @@ class AuthSecurityConfig {
                  * `CsrfFilter`·`LogoutFilter`보다는 앞이다. 수명이 끝난 세션이 상태 변경 요청을
                  * 통과하는 창을 남기지 않는다.
                  */
-                .addFilterAfter(handlers.sessionGuardFilter(), SecurityContextHolderFilter.class);
+                .addFilterAfter(handlers.sessionGuardFilter(), SecurityContextHolderFilter.class)
+                /*
+                 * 운영자 게이트(Story 3.1). 인가 필터 **뒤**다 — 미인증은 그 앞에서 401로 끝나고, 여기 오는 요청은
+                 * 인증됐다. 빈으로 두지 않는다: 빈이면 서블릿 컨테이너에도 한 번 더 등록되어 체인 밖에서 돈다.
+                 */
+                .addFilterAfter(new OperatorGate(operators, operatorCommands), AuthorizationFilter.class);
 
         if (registrations.isConfigured()) {
             http.oauth2Login(
@@ -1186,7 +1214,7 @@ class AuthSecurityConfig {
         if (SAFE_METHODS.contains(request.getMethod())) {
             return false;
         }
-        String uri = request.getRequestURI();
+        String uri = applicationPath(request);
         for (String prefix : PROTECTED_PATH_PREFIXES) {
             if (uri.startsWith(prefix)) {
                 return true;
@@ -1199,7 +1227,7 @@ class AuthSecurityConfig {
          * 갈린 상태 자체가 이 함수가 하나로 유지되는 이유와 부딪힌다.
          */
         return isConnectionsPath(uri) || isSnapshotPath(uri) || isPlanConditionsPath(uri)
-                || isDashboardPath(uri);
+                || isDashboardPath(uri) || isOperatorPath(uri);
     }
 
     /**
@@ -1214,8 +1242,21 @@ class AuthSecurityConfig {
      * 404지만, 인증 없이 404를 돌려주면 이 접두사의 존재가 밖에서 열거된다.
      */
     static boolean requiresAuthentication(HttpServletRequest request) {
-        return isConnectionsPath(request.getRequestURI()) || isSnapshotPath(request.getRequestURI())
-                || isPlanConditionsPath(request.getRequestURI()) || isDashboardPath(request.getRequestURI());
+        String uri = applicationPath(request);
+        return isConnectionsPath(uri) || isSnapshotPath(uri) || isPlanConditionsPath(uri) || isDashboardPath(uri)
+                || isOperatorPath(uri);
+    }
+
+    /**
+     * 보호 술어가 보는 경로 — 디코딩·정규화한 애플리케이션 내 경로 하나(Story 3.1 리뷰).
+     *
+     * <p>원시 {@code getRequestURI()}를 보면 안 된다. 방화벽은 {@code %6F} 같은 비예약 문자 인코딩을 통과시키고 Nginx는
+     * 원시 URI를 그대로 넘기는데, MVC는 디코딩한 경로로 핸들러를 고른다 — 그러면 {@code /api/%6Fperator/audit}가
+     * 인증·운영자 게이트 없이 감사 원장에 닿고, 다른 접두사의 상태 변경이 CSRF·{@code Origin} 판정을 비켜 간다. 그래서
+     * 인가·CSRF·게이트가 모두 MVC와 같은 디코딩 경로를 본다. 세미콜론 매개변수를 떼고 연속 {@code /}를 접는다.
+     */
+    static String applicationPath(HttpServletRequest request) {
+        return PATHS.getPathWithinApplication(request);
     }
 
     /**
@@ -1240,6 +1281,13 @@ class AuthSecurityConfig {
      */
     private static boolean isDashboardPath(String uri) {
         return uri.equals(DASHBOARD_PATH) || uri.startsWith(DASHBOARD_PATH + "/");
+    }
+
+    /**
+     * 보호된 운영자 표면과 그 모든 하위 경로(Story 3.1). 인가·CSRF·{@code Origin}·운영자 게이트가 이 함수 하나를 본다.
+     */
+    static boolean isOperatorPath(String uri) {
+        return uri.equals(OPERATOR_API_PATH) || uri.startsWith(OPERATOR_API_PATH + "/");
     }
 
     private static boolean isConnectionsPath(String uri) {
