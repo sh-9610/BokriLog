@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { planConditionContent } from '../content/planConditions'
 import { atFirstSight, deferred } from '../test/firstSight'
 import { InitialInputsCollection } from './InitialInputsCollection'
 
@@ -199,6 +200,31 @@ describe('InitialInputsCollection', () => {
     render(<InitialInputsCollection csrfToken="csrf" intentId="intent-time" />)
 
     expect(await screen.findByText('확인 시각을 표시할 수 없습니다.')).toBeInTheDocument()
+  })
+
+  it('attaches no machine value to a last-checked time in an offset format the server never sends', async () => {
+    const offset = '2026-09-26T15:06:05+09:00'
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockImplementation((input) =>
+          Promise.resolve(
+            requestUrl(input).includes('/cashflow-classification')
+              ? response(null)
+              : response({ job: { ...job('INPUTS_COMPLETE'), lastCheckedAt: offset } }),
+          ),
+        ),
+    )
+    render(<InitialInputsCollection csrfToken="csrf" intentId="intent-offset-time" />)
+
+    const line = await screen.findByText(
+      new RegExp(`${planConditionContent.collection.lastChecked}:`),
+    )
+    // eslint-disable-next-line testing-library/no-node-access -- 기계 값은 `time` 요소의 속성에만 있다.
+    const time = line.querySelector('time')
+    expect(time).not.toBeNull()
+    expect(time).not.toHaveAttribute('datetime')
   })
 
   it('starts classification for a complete candidate and renders only safe counts', async () => {

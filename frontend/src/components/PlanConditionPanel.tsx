@@ -11,6 +11,7 @@ import { DASHBOARD_PATH } from '../content/auth'
 import { planConditionContent as copy } from '../content/planConditions'
 import { activePlanContent } from '../content/planResult'
 import { formatAmount, isCanonicalNonNegative, percentFromRatio } from '../format/decimal'
+import { isInstant } from '../session/instant'
 import { InitialInputsCollection } from './InitialInputsCollection'
 import { NextPlanBaselinePanel } from './NextPlanBaselinePanel'
 import styles from './PlanConditionPanel.module.css'
@@ -64,10 +65,6 @@ interface StateResponse {
 const ACTIVE_PLAN_EXISTS = 'ACTIVE_PLAN_EXISTS'
 /** The account's plan was ended early (Story 2.13): no new conditions are taken here. */
 const PLAN_ENDED = 'PLAN_ENDED'
-
-function isInstant(value: unknown): value is string {
-  return typeof value === 'string' && Number.isFinite(new Date(value).getTime())
-}
 
 /**
  * The summary is shown only when every value can be displayed: the amounts are canonical decimals

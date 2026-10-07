@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 
 import {
   adjustmentsPath,
@@ -6,15 +6,16 @@ import {
   type AdjustmentDirection,
 } from '../content/adjustmentHistory'
 import { isCanonicalDecimal } from '../format/decimal'
+import { isInstant } from './instant'
 import {
   bundleOf,
   isCompletionVersion,
-  isInstant,
   record,
   strings,
   type Dashboard,
   type PlanResult,
 } from './useDashboard'
+import { useReferencedRequest } from './useReferencedRequest'
 
 /** One leg of a spot price route: the closed one-minute candle whose close was used. */
 export interface AdjustmentLeg {
@@ -393,9 +394,8 @@ export function useAdjustmentHistory(
       : `${bundle.planId}\n${String(bundle.pointerVersion)}\n${bundle.calculationId}\n${bundle.planStatus}`
   const [view, setView] = useState<AdjustmentView>({ kind: 'closed' })
   const [shownKey, setShownKey] = useState(key)
-  const sequence = useRef(0)
-  const inFlight = useRef<AbortController | null>(null)
-  const keyRef = useRef(key)
+  // 요청의 수명(sequence·중단·키·상태 코드 매핑)은 공통 엔진이 들고, view 상태 기계는 이 훅이 든다.
+  const request = useReferencedRequest({ key, onDenied, concurrency: 'replace' })
 
   // Adjusting state to a changed prop during render (as `useCalculationEvidence` does): the history of a
   // bundle that is no longer shown leaves the screen in the same render that stops showing the bundle.
@@ -404,20 +404,11 @@ export function useAdjustmentHistory(
     setView({ kind: 'closed' })
   }
 
-  // In the commit itself, before any answer can land: the shown key moves, and a read asked for the old
-  // bundle is aborted and belongs to nobody. Unmounting runs the same cleanup.
-  useLayoutEffect(() => {
-    keyRef.current = key
-    return () => {
-      sequence.current += 1
-      inFlight.current?.abort()
-      inFlight.current = null
-    }
-  }, [key])
-
   /**
    * Reads one page. `held` is what the region keeps meanwhile and, for `더 보기`, what the page continues;
-   * `null` reads the filter's first page. A read still in flight (another filter's) is aborted first.
+   * `null` reads the filter's first page. A read still in flight (another filter's) is aborted first
+   * (`concurrency: 'replace'`). `loading`을 먼저 세우고 조회를 시작한다 — 결말은 언제나 `start` 뒤
+   * 비동기로 오므로 순서가 뒤집히지 않는다.
    */
   const read = useCallback(
     (
@@ -427,74 +418,48 @@ export function useAdjustmentHistory(
       retrying: boolean,
     ): void => {
       if (bundle === null) return
-      inFlight.current?.abort()
-      sequence.current += 1
-      const mine = sequence.current
-      const askedFor = keyRef.current
-      const controller = new AbortController()
-      inFlight.current = controller
-      setView({ kind: 'open', direction, list: held, read: { kind: 'loading', more, retrying } })
       const shown = bundle
       const cursor = more ? (held?.nextCursor ?? null) : null
-      const latest = (): boolean => sequence.current === mine && keyRef.current === askedFor
-      const settle = (next: AdjustmentView): void => {
-        inFlight.current = null
-        setView(next)
-      }
       const failed = (retryable: boolean): AdjustmentView => ({
         kind: 'open',
         direction,
         list: held,
         read: { kind: 'failed', more, retryable },
       })
-      void (async () => {
-        try {
-          const response = await fetch(adjustmentsPath(shown, direction, cursor), {
-            credentials: 'same-origin',
-            cache: 'no-store',
-            headers: { Accept: 'application/json' },
-            signal: controller.signal,
-          })
-          if (!latest()) return
-          if (response.status === 401 || response.status === 403) {
-            settle({ kind: 'denied', cause: response.status === 401 ? 'signedOut' : 'refused' })
-            onDenied()
-            return
-          }
-          if (response.status === 404) {
-            settle(failed(false))
-            return
-          }
-          const payload: unknown = response.status === 200 ? await response.json() : null
-          if (!latest()) return
+      setView({ kind: 'open', direction, list: held, read: { kind: 'loading', more, retrying } })
+      request.start({
+        path: adjustmentsPath(shown, direction, cursor),
+        parse: (payload) => {
           const page = parseAdjustmentPage(payload, shown, direction)
-          const list =
-            page === null ? null : more && held !== null ? appendPage(held, page) : complete(page)
-          settle(
-            list === null
-              ? failed(true)
-              : { kind: 'open', direction, list, read: { kind: 'ready' } },
+          return page === null
+            ? null
+            : more && held !== null
+              ? appendPage(held, page)
+              : complete(page)
+        },
+        settle: (outcome) => {
+          setView(
+            outcome.kind === 'ready'
+              ? { kind: 'open', direction, list: outcome.value, read: { kind: 'ready' } }
+              : outcome.kind === 'denied'
+                ? { kind: 'denied', cause: outcome.cause }
+                : failed(outcome.retryable),
           )
-        } catch {
-          // An aborted read is no longer the latest: it settles nothing and is not a failure.
-          if (latest()) settle(failed(true))
-        }
-      })()
+        },
+      })
     },
-    [bundle, onDenied],
+    [bundle, request],
   )
 
   const open = useCallback((): void => {
     // A second press in the same tick joins the read in flight.
-    if (view.kind === 'closed' && inFlight.current === null) read('ALL', null, false, false)
-  }, [read, view.kind])
+    if (view.kind === 'closed' && !request.inFlight()) read('ALL', null, false, false)
+  }, [read, request, view.kind])
 
   const close = useCallback((): void => {
-    sequence.current += 1
-    inFlight.current?.abort()
-    inFlight.current = null
+    request.close()
     setView({ kind: 'closed' })
-  }, [])
+  }, [request])
 
   const filter = useCallback(
     (direction: AdjustmentDirection): void => {
@@ -505,17 +470,17 @@ export function useAdjustmentHistory(
   )
 
   const more = useCallback((): void => {
-    if (view.kind !== 'open' || view.read.kind === 'loading' || inFlight.current !== null) return
+    if (view.kind !== 'open' || view.read.kind === 'loading' || request.inFlight()) return
     const list = view.list
     if (list?.nextCursor == null) return
     read(view.direction, list, true, false)
-  }, [read, view])
+  }, [read, request, view])
 
   const retry = useCallback((): void => {
     if (view.kind !== 'open' || view.read.kind !== 'failed' || !view.read.retryable) return
-    if (inFlight.current !== null) return
+    if (request.inFlight()) return
     read(view.direction, view.list, view.read.more && view.list !== null, true)
-  }, [read, view])
+  }, [read, request, view])
 
   return { view, open, close, filter, more, retry }
 }

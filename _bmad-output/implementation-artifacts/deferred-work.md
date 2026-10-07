@@ -326,3 +326,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-sensitive-command-commons.md`
   summary: 민감 command 실행 성공이 재인증 시각을 지우므로 설정 화면에서 연결·해제 성공 직후의 다음 준비 요청은 403 `reauth-required` 게이트에 떨어진다 — 성공 직후 본인 확인 안내를 다시 보여 주는 화면 동작과 카피가 그 계약에 맞는지 확인하지 않았다.
   evidence: 이 chore는 백엔드 공통 부품만 바꾸고 프런트엔드 제품 코드는 D-4 별도 chore로 뺐다. e2e·검증 스크립트에는 재인증 단계를 더했지만 화면의 안내 문구·버튼 상태는 보지 않았다(리뷰 blind-hunter, 2026-10-06).
+- source_spec: `_bmad-output/implementation-artifacts/spec-frontend-dialog-commons.md`
+  summary: 계획 중도 종료의 성공 문구(`content/planEnd.ts`)에는 "다음 민감 조작 전 본인 확인을 다시 한다"는 안내가 없다 — 연결·해제·Bybit 연결·해제 성공 문구에만 넣었다.
+  evidence: 계획 종료도 같은 `SessionArming`·`SessionRotation` 게이트를 지나므로 성공 직후 다음 민감 command는 403이다. 종료 결과 화면은 대시보드 패널이라 설정 화면의 "아래에서 본인 확인" 문구를 그대로 쓸 수 없어 카피를 따로 정해야 한다(리뷰 blind-hunter, 2026-10-07).
+- source_spec: `_bmad-output/implementation-artifacts/spec-frontend-dialog-commons.md`
+  summary: `UnlinkDialog.test.tsx`·`PlanEndDialog.test.tsx`가 여전히 가둠·Esc·스크롤 잠금·복귀 같은 메커니즘 시험을 각자 들고 있어 `useConfirmationDialog.test.tsx`(정본)와 겹친다.
+  evidence: 이 chore는 신규 `ConnectionRevokeDialog.test.tsx`만 마크업·카피·`restoreFocus` 의미로 좁혔고, 기존 두 파일은 단정을 바꾸지 않는다는 경계 때문에 손대지 않았다(리뷰 blind-hunter, 2026-10-07).
+- source_spec: `_bmad-output/implementation-artifacts/spec-frontend-dialog-commons.md`
+  summary: "Bybit 연결 성공 → 재인증 없이 해제 준비 → 403 안내" 경로는 Vitest만 고정하고 주입 origin e2e가 없다(로그인 수단 연결 → 해제 준비 경로만 `auth-entry.spec.ts`에 있다).
+  evidence: `bybit-connection.spec.ts`에는 해제 시험 자체가 없어 한 단계를 더하는 일이 아니라 해제 왕복을 새로 쓰는 일이다. Epic 2 회고 AI-11(M2-4 브라우저 근거 보강)과 같은 묶음이다(리뷰 blind-hunter·verification-gap, 2026-10-07).

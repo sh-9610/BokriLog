@@ -13,6 +13,7 @@ import {
   revocationRejectionMessage,
 } from '../content/connection'
 import { replaceLocation } from '../session/navigation'
+import { expectReauthGateRejection } from '../test/reauthGate'
 import {
   getObservedAllowedRequests,
   getObservedRequests,
@@ -25,6 +26,7 @@ import {
   stubRevocationConfirmRequest,
   stubRevocationPrepareRequest,
   stubSessionRequest,
+  stubUnlinkPrepareRequest,
 } from '../test/setup'
 import { SettingsScreen } from './SettingsScreen'
 
@@ -280,6 +282,25 @@ describe('SettingsScreen의 Bybit 연결 해제', () => {
     expect(within(connectionSection()).getByText(revocationContent.revoked)).toBeInTheDocument()
   })
 
+  it('해제 시각이 서버 형식이 아닌 200 응답은 결과를 단정하지 않고 같은 키로 다시 보내게 둔다', async () => {
+    await renderConnected()
+    const dialog = await openDialog()
+    for (const revokedAt of ['2026-10-05T10:02:03.456+09:00', '2026-10-05']) {
+      stubRevocationConfirmRequest(() =>
+        Promise.resolve(
+          jsonResponse({ outcome: 'REVOKED', connectionId: CONNECTION_ID, revokedAt }),
+        ),
+      )
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: revocationContent.dialog.confirm }),
+      )
+      expect(
+        await within(dialog).findByText(revocationContent.dialog.uncertain),
+      ).toBeInTheDocument()
+      expect(within(connectionSection()).queryByText(revocationContent.revoked)).toBeNull()
+    }
+  })
+
   it('응답을 받지 못한 뒤 취소하면 결과를 단정하지 않고 상태를 다시 읽는다', async () => {
     await renderConnected()
     const dialog = await openDialog()
@@ -428,7 +449,7 @@ describe('SettingsScreen의 Bybit 연결 해제', () => {
     ])
   })
 
-  it('연결 직후 새로고침 없이 해제 조작이 보인다', async () => {
+  it('연결 직후 새로고침 없이 해제 조작이 보이고, 본인 확인 없는 해제 준비는 안내로 거절된다', async () => {
     stubConnectionStatusRequest(() => Promise.resolve(jsonResponse({ connected: false })))
     stubConnectionPrepareRequest(() =>
       Promise.resolve(jsonResponse({ confirmation: 'connection-confirmation-phrase' })),
@@ -455,11 +476,47 @@ describe('SettingsScreen의 Bybit 연결 해제', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: connectionContent.form.submit }))
 
-    expect(await screen.findByRole('button', { name: revocationContent.start })).toBeInTheDocument()
+    const revoke = await screen.findByRole('button', { name: revocationContent.start })
     expect(
       getObservedAllowedRequests().filter((entry) => entry === 'GET /api/connections/bybit'),
     ).toHaveLength(1)
-    await openDialog()
+    expect(within(status()).getByText(connectionContent.succeeded)).toBeInTheDocument()
+
+    /*
+     * 연결 성공은 재인증 시각을 지웠다(`SessionRotation`) — 본인 확인 1회는 민감한 조작 1건이다. 그래서
+     * 바로 이어지는 해제 준비는 403 `REAUTHENTICATION_REQUIRED`이고, 화면은 대화상자 대신 성공 문구가
+     * 예고한 그 거절을 말한다. 본인 확인 버튼은 열려 있고 초점은 누른 자리에 남는다.
+     */
+    stubRevocationPrepareRequest(() =>
+      Promise.resolve(
+        jsonResponse({ code: 'REAUTHENTICATION_REQUIRED', message: 'x', correlationId: 'c' }, 403),
+      ),
+    )
+    revoke.focus()
+    fireEvent.click(revoke)
+
+    await expectReauthGateRejection(revocationRejectionMessage('REAUTHENTICATION_REQUIRED'), revoke)
+  })
+
+  it('해제 성공 뒤 본인 확인 없는 다음 준비는 거절 문구를 말하고, 본인 확인 버튼은 열려 있으며 초점은 움직이지 않는다', async () => {
+    await renderConnected()
+    const dialog = await openDialog()
+    stubRevocationConfirmRequest(revokedResult)
+    fireEvent.click(within(dialog).getByRole('button', { name: revocationContent.dialog.confirm }))
+    const notice = await within(status()).findByText(revocationContent.revokedNotice)
+    await waitFor(() => {
+      expect(notice).toHaveFocus()
+    })
+
+    // 해제 성공이 재인증 시각을 지웠다. 다음 민감한 조작(로그인 수단 해제)의 준비는 403이다.
+    stubUnlinkPrepareRequest('naver', () =>
+      Promise.resolve(jsonResponse({ code: 'FORBIDDEN', message: 'x', correlationId: 'c' }, 403)),
+    )
+    const unlink = screen.getByRole('button', { name: authContent.settings.unlinkLabels.naver })
+    unlink.focus()
+    fireEvent.click(unlink)
+
+    await expectReauthGateRejection(authContent.notices.unlinkFailed, unlink)
   })
 
   it('해제 거절 code마다 안전한 문장이 있고 모르는 code는 하나로 접힌다', () => {

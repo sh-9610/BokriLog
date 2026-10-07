@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, type ReactElement } from 'react'
+import { useRef, type ReactElement } from 'react'
 
 import type { PlanEndDialogView } from '../session/usePlanEnd'
 
 import { planEndContent } from '../content/planEnd'
+import styles from './ConfirmationDialog.module.css'
 import { TimeRange } from './EvidenceParts'
-import styles from './PlanEndDialog.module.css'
+import { onBackdropMouseDown, useConfirmationDialog } from './useConfirmationDialog'
 
 const copy = planEndContent.dialog
 
@@ -32,16 +33,14 @@ interface PlanEndDialogProps {
  * the long-gap choice — that the gap is not collected and the completion comparison cannot be calculated. It never
  * calls the end a success, a failure or a completion.
  *
- * Cancel comes first in the document and has the default focus. Focus is trapped inside; `Esc` cancels unless a
- * confirmation is in flight (it never pretends to stop a server request). While confirming, both buttons are
- * `aria-disabled` and a progress line describes the confirm button; the dialog keeps its place. A confirmation that
- * got no answer keeps the dialog open with a line that says so — pressing again sends the same request.
+ * 취소가 문서 순서에서 먼저이고 기본 포커스를 가진다. 확정이 도는 동안 두 버튼은 `aria-disabled`이고 진행
+ * 문장이 확인 버튼을 설명하며 대화상자는 자리를 지킨다. 응답을 받지 못한 확정은 그렇다고 말하는 문장과 함께
+ * 대화상자를 열어 둔다 — 다시 누르면 같은 요청을 보낸다.
  *
- * Not a `<dialog>` element, for the reasons `UnlinkDialog` gives; the keyboard handler is on `document`, in the
- * capture phase. Closing returns focus to the button that opened it, or — when the dialog was mounted again and
- * that button is no longer known — to the button of its reason. The screen makes the background `inert` (the dialog is its sibling); this dialog only locks the
- * document's scrolling. No status region of its own: the screen's single one is behind the inert background while
- * the dialog is open, and the progress is said here instead, as static text the confirm button points to.
+ * 메커니즘(기본 포커스·포커스 가둠·`Esc`·스크롤 잠금·호출점 복귀)은 `useConfirmationDialog`가 소유한다.
+ * 호출점을 모르면(세션 재확인이 대화상자를 다시 마운트했다) 연 이유의 버튼 — 종료 구역의 버튼이나
+ * 장기 공백 선택의 `새 계획 시작` — 으로 돌려준다. 자기 status 영역은 없다: 화면의 하나뿐인 영역은
+ * 대화상자가 열린 동안 `inert` 배경 아래에 있으므로, 진행은 확인 버튼이 가리키는 정적 문장으로 여기서 말한다.
  */
 export function PlanEndDialog({
   dialog,
@@ -52,123 +51,21 @@ export function PlanEndDialog({
   const surface = useRef<HTMLDivElement>(null)
   const cancelButton = useRef<HTMLButtonElement>(null)
   const pending = dialog.confirming
-
-  /*
-   * The current callbacks and state, carried in a box the effect fills: the document handler and its cleanup are
-   * attached once (on open) and removed once (on close), so a key pressed in between is never lost.
-   */
-  const reason = dialog.reason
-  const latest = useRef({ onCancel, pending, restoreFocus, reason })
-  useLayoutEffect(() => {
-    latest.current = { onCancel, pending, restoreFocus, reason }
+  useConfirmationDialog({
+    surface,
+    cancelButton,
+    isPending: pending,
+    onCancel,
+    restoreFocus,
+    fallbackTargetId:
+      dialog.reason === 'LONG_GAP_NEW_PLAN'
+        ? planEndContent.newPlanActionId
+        : planEndContent.area.actionId,
   })
-
-  // The element that opened the dialog: recorded in the commit that shows it, given back after it closes (below).
-  const opener = useRef<Element | null>(null)
-
-  // A layout effect: the default focus and the key handler are in place in the commit that shows the dialog, not on
-  // a later task that a keypress or a reader of the new dialog can come before.
-  useLayoutEffect(() => {
-    /*
-     * Recorded once. `StrictMode` in a development build cleans this effect up and runs it again, and by then the
-     * line below has moved focus to cancel: recording again would make the opener the dialog's own button, gone
-     * after the close, and focus would fall to the body.
-     */
-    opener.current ??= document.activeElement
-
-    // The default focus is cancel: one `Enter` must not end the plan.
-    cancelButton.current?.focus()
-
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        if (!latest.current.pending) latest.current.onCancel()
-        return
-      }
-      if (event.key !== 'Tab') return
-      // Focus trap: the dialog's controls in document order, both ends joined. Focus outside is pulled in.
-      const root = surface.current
-      if (root === null) return
-      const focusable = root.querySelectorAll<HTMLElement>('button')
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (first === undefined || last === undefined) return
-      const active = document.activeElement
-      if (!(active instanceof HTMLElement) || !root.contains(active)) {
-        event.preventDefault()
-        first.focus()
-        return
-      }
-      if (event.shiftKey && active === first) {
-        event.preventDefault()
-        last.focus()
-        return
-      }
-      if (!event.shiftKey && active === last) {
-        event.preventDefault()
-        first.focus()
-      }
-    }
-
-    // The capture phase: answered before any handler of the background.
-    document.addEventListener('keydown', onKeyDown, true)
-
-    return () => {
-      document.removeEventListener('keydown', onKeyDown, true)
-      document.body.style.overflow = previousOverflow
-    }
-  }, [])
-
-  /*
-   * Back to the button that opened it, when the screen asks for it and focus has nowhere else to be. When that button
-   * is no longer known — the dialog was mounted again (a session re-check unmounts it), so the captured element is
-   * the document body or one that left — back to the button of the reason it was opened for: the end area's, or the
-   * long-gap choice's `새 계획 시작`. When the same commit already moved focus elsewhere (a read that showed another
-   * state closes the dialog and sends focus to the end area's notice or the panel heading), that move stands.
-   *
-   * Only this return is a passive effect's cleanup. The button sits under the screen's `inert` background while the
-   * dialog is open, and can take focus only once the closing commit lifts that attribute. A layout effect's cleanup
-   * runs in that commit's mutation phase with the dialog's deletion, and React handles a parent's deletions before
-   * its other children's updates — so it ran while the button was still inert, the browser ignored the `focus()`,
-   * and focus fell to the body (CI run 37143229430, `e2e/plan-end.spec.ts`; jsdom has no `inert`, so only Playwright
-   * sees it). A passive cleanup runs after the commit, and when a discrete input (`Esc`, cancel) closes the dialog,
-   * React flushes it at the end of that commit, so it is not late either. The rule is in `DEVELOPMENT.md` (`inert`
-   * 배경으로 돌려주는 초점은 예외다), with `UnlinkDialog` as its first case.
-   */
-  useEffect(
-    () => () => {
-      if (!latest.current.restoreFocus) return
-      const active = document.activeElement
-      const lost = active === null || active === document.body || !active.isConnected
-      if (!lost) return
-      const target = opener.current
-      const known =
-        target instanceof HTMLElement && target !== document.body && target.isConnected
-          ? target
-          : document.getElementById(
-              latest.current.reason === 'LONG_GAP_NEW_PLAN'
-                ? planEndContent.newPlanActionId
-                : planEndContent.area.actionId,
-            )
-      known?.focus()
-    },
-    [],
-  )
 
   return (
     // The backdrop: it covers the screen and takes no pointer action. Clicking outside does not close the dialog.
-    <div
-      className={styles.backdrop}
-      onMouseDown={(event) => {
-        // Pressing a place that is not a control does not move focus to the document body.
-        if (!(event.target instanceof HTMLElement) || event.target.closest('button') === null) {
-          event.preventDefault()
-        }
-      }}
-    >
+    <div className={styles.backdrop} onMouseDown={onBackdropMouseDown}>
       <div
         aria-describedby={copy.descriptionId}
         aria-labelledby={copy.titleId}

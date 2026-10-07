@@ -14,6 +14,7 @@ import {
 import { planSyncContent } from '../content/planSync'
 import { planVerificationContent, type ChangeCounts } from '../content/planVerification'
 import { formatSeoulTime, isCanonicalDecimal, isPlainNonNegative } from '../format/decimal'
+import { isInstant } from './instant'
 
 export interface PlanResultMetric {
   readonly metric: MetricName
@@ -212,14 +213,6 @@ export function isPlanResult(value: unknown): value is PlanResult {
     inputReliability.lastNormalAt === result.cashflowVerifiedThrough &&
     calculationNature.lastNormalAt === result.basisAt
   )
-}
-
-/** An instant as the server writes it (`Instant#toString`): UTC, `Z`, whole seconds and an optional fraction. */
-const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/
-
-/** Whether the value is an instant in the server's format. The calculation evidence shares it. */
-export function isInstant(value: unknown): value is string {
-  return typeof value === 'string' && INSTANT.test(value) && Number.isFinite(Date.parse(value))
 }
 
 /**

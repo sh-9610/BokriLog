@@ -25,16 +25,13 @@ import {
   formatSeoulInstant,
   formatSeoulTime,
 } from '../format/decimal'
+import { isInstant } from '../session/instant'
 import styles from './AdjustmentHistory.module.css'
 
 const REGION_ID = 'adjustment-history'
 const HEADING_ID = 'adjustment-history-heading'
 const TERM_ID = 'adjustment-history-term'
 const LIST_LABEL_ID = 'adjustment-history-list'
-
-function validTime(value: string): boolean {
-  return Number.isFinite(new Date(value).getTime())
-}
 
 /** An instant in Asia/Seoul with its machine value. `precise` shows seconds and milliseconds. */
 function Instant({
@@ -46,7 +43,7 @@ function Instant({
 }): ReactElement {
   const format = precise ? formatSeoulInstant : formatSeoulTime
   return (
-    <time dateTime={validTime(value) ? value : undefined}>
+    <time dateTime={isInstant(value) ? value : undefined}>
       {format(value, planResultContent.timeUnavailable)}
     </time>
   )

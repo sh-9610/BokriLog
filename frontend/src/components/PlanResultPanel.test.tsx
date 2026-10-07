@@ -577,6 +577,41 @@ describe('PlanResultPanel', () => {
     expect(document.body.textContent).not.toContain(`${copy.timeUnavailable}에`)
   })
 
+  it('attaches a machine value only to a time in the server’s format: an offset or a date alone gets none', () => {
+    for (const measuredAt of ['2026-09-25T09:00:00+09:00', '2026-09-25']) {
+      const loose = planResultFixture({
+        measuredAt,
+        trust: trustFixture({ freshness: { lastNormalAt: measuredAt, measuredAt } }),
+      })
+      const { unmount } = render(
+        <PlanResultPanel
+          planEnd={idlePlanEnd()}
+          reauthentication={idleReauthentication()}
+          adjustments={closedAdjustments()}
+          evidence={closedEvidence()}
+          dashboard={dashboard(
+            {
+              kind: 'lastGood',
+              nextAction: 'NONE',
+              result: parsed(loose),
+              sync: AVAILABLE_SYNC,
+              verification: AVAILABLE_VERIFICATION,
+              change: NO_CHANGE,
+              planEnd: AVAILABLE_PLAN_END,
+              end: null,
+            },
+            false,
+          )}
+          sync={idleSyncState()}
+        />,
+      )
+      // eslint-disable-next-line testing-library/no-node-access -- 기계 값은 `time` 요소의 속성에만 있다.
+      const machineValues = [...document.querySelectorAll('time')].map((time) => time.dateTime)
+      expect(machineValues).not.toContain(measuredAt)
+      unmount()
+    }
+  })
+
   it('renders plan terms sent in a trailing-zero notation instead of dropping the whole result', () => {
     const notation = planResultFixture({
       conditions: {

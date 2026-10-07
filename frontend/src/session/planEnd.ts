@@ -5,7 +5,8 @@ import {
   PLAN_END_PATH,
   type PlanEndReason,
 } from '../content/planEnd'
-import { DASHBOARD_REQUEST_TIMEOUT_MS, isInstant, record } from './useDashboard'
+import { isInstant } from './instant'
+import { DASHBOARD_REQUEST_TIMEOUT_MS, record } from './useDashboard'
 
 /*
  * 활성 계획의 중도 종료(Story 2.13).
