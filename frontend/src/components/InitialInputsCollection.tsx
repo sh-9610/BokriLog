@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactEl
 
 import { CSRF_HEADER } from '../content/auth'
 import { planConditionContent as copy } from '../content/planConditions'
+import { isInstant } from '../session/instant'
 import styles from './InitialInputsCollection.module.css'
 import { PlanPublicationSection } from './PlanPublicationSection'
 
@@ -500,11 +501,7 @@ function CashflowConversionSection({
                             <dt>{copy.conversion.occurredAt}</dt>
                             <dd>
                               <time
-                                dateTime={
-                                  Number.isFinite(new Date(flow.occurredAt).getTime())
-                                    ? flow.occurredAt
-                                    : undefined
-                                }
+                                dateTime={isInstant(flow.occurredAt) ? flow.occurredAt : undefined}
                               >
                                 {eventTime(flow.occurredAt)}
                               </time>
@@ -884,9 +881,7 @@ export function InitialInputsCollection({
               {copy.collection.lastChecked}:{' '}
               <time
                 dateTime={
-                  Number.isFinite(new Date(currentJob.lastCheckedAt).getTime())
-                    ? currentJob.lastCheckedAt
-                    : undefined
+                  isInstant(currentJob.lastCheckedAt) ? currentJob.lastCheckedAt : undefined
                 }
               >
                 {dateTime(currentJob.lastCheckedAt)}

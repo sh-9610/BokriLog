@@ -1,9 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, type ReactElement } from 'react'
+import { useRef, type ReactElement } from 'react'
 
 import type { RevocationDialogView } from '../session/useBybitConnection'
 
 import { revocationContent } from '../content/connection'
-import styles from './ConnectionRevokeDialog.module.css'
+import styles from './ConfirmationDialog.module.css'
+import { onBackdropMouseDown, useConfirmationDialog } from './useConfirmationDialog'
 
 const copy = revocationContent.dialog
 
@@ -25,11 +26,12 @@ interface ConnectionRevokeDialogProps {
  * updating; the plans, adjustment history, calculation evidence and completion results stay read-only; BokriLog cannot
  * revoke the API Key on Bybit and the user can do that there; reconnecting is not offered yet.
  *
- * Cancel comes first in the document and has the default focus. Focus is trapped inside; `Esc` cancels unless a
- * confirmation is in flight. While confirming, both buttons are `aria-disabled` and a progress line describes the
- * confirm button. A confirmation that got no answer keeps the dialog open with a line that says so — pressing again
- * sends the same request with the same key. The screen makes the background `inert`; the return of focus to the
- * opener is the one passive cleanup (`DEVELOPMENT.md`, `inert` 배경으로 돌려주는 초점은 예외다).
+ * 취소가 문서 순서에서 먼저이고 기본 포커스를 가진다. 확정이 도는 동안 두 버튼은 `aria-disabled`이고 진행
+ * 문장이 확인 버튼을 설명한다. 응답을 받지 못한 확정은 그렇다고 말하는 문장과 함께 대화상자를 열어 둔다 —
+ * 다시 누르면 같은 키로 같은 요청을 보낸다.
+ *
+ * 메커니즘(기본 포커스·포커스 가둠·`Esc`·스크롤 잠금·호출점 복귀)은 `useConfirmationDialog`가 소유한다.
+ * 호출점을 모르면 해제 버튼(`revocationContent.buttonId`)으로 돌려준다.
  */
 export function ConnectionRevokeDialog({
   dialog,
@@ -40,92 +42,17 @@ export function ConnectionRevokeDialog({
   const surface = useRef<HTMLDivElement>(null)
   const cancelButton = useRef<HTMLButtonElement>(null)
   const pending = dialog.confirming
-
-  const latest = useRef({ onCancel, pending, restoreFocus })
-  useLayoutEffect(() => {
-    latest.current = { onCancel, pending, restoreFocus }
+  useConfirmationDialog({
+    surface,
+    cancelButton,
+    isPending: pending,
+    onCancel,
+    restoreFocus,
+    fallbackTargetId: revocationContent.buttonId,
   })
 
-  const opener = useRef<Element | null>(null)
-
-  // A layout effect: the default focus and the key handler are in place in the commit that shows the dialog.
-  useLayoutEffect(() => {
-    // Recorded once: `StrictMode` runs this effect again after focus already moved to cancel.
-    opener.current ??= document.activeElement
-
-    // The default focus is cancel: one `Enter` must not delete the credential.
-    cancelButton.current?.focus()
-
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        if (!latest.current.pending) latest.current.onCancel()
-        return
-      }
-      if (event.key !== 'Tab') return
-      const root = surface.current
-      if (root === null) return
-      const focusable = root.querySelectorAll<HTMLElement>('button')
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (first === undefined || last === undefined) return
-      const active = document.activeElement
-      if (!(active instanceof HTMLElement) || !root.contains(active)) {
-        event.preventDefault()
-        first.focus()
-        return
-      }
-      if (event.shiftKey && active === first) {
-        event.preventDefault()
-        last.focus()
-        return
-      }
-      if (!event.shiftKey && active === last) {
-        event.preventDefault()
-        first.focus()
-      }
-    }
-
-    document.addEventListener('keydown', onKeyDown, true)
-
-    return () => {
-      document.removeEventListener('keydown', onKeyDown, true)
-      document.body.style.overflow = previousOverflow
-    }
-  }, [])
-
-  /*
-   * Back to the opener, when the screen asks for it and focus has nowhere else to be. A passive cleanup: the opener sits
-   * under the screen's `inert` background until the closing commit lifts it (the `PlanEndDialog` rule).
-   */
-  useEffect(
-    () => () => {
-      if (!latest.current.restoreFocus) return
-      const active = document.activeElement
-      const lost = active === null || active === document.body || !active.isConnected
-      if (!lost) return
-      const target = opener.current
-      const known =
-        target instanceof HTMLElement && target !== document.body && target.isConnected
-          ? target
-          : document.getElementById(revocationContent.buttonId)
-      known?.focus()
-    },
-    [],
-  )
-
   return (
-    <div
-      className={styles.backdrop}
-      onMouseDown={(event) => {
-        if (!(event.target instanceof HTMLElement) || event.target.closest('button') === null) {
-          event.preventDefault()
-        }
-      }}
-    >
+    <div className={styles.backdrop} onMouseDown={onBackdropMouseDown}>
       <div
         aria-describedby={copy.descriptionId}
         aria-labelledby={copy.titleId}

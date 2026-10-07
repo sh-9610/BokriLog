@@ -924,9 +924,20 @@ test.describe('스텁 제공자 성공 왕복', () => {
     await expect(page.getByText(authContent.settings.lastMethod)).toHaveCount(0)
 
     /*
-     * 본인 확인을 한 번 더. 연결은 민감 command 하나이고 본인 확인 1회는 command 1건이다 — 연결
-     * 성공이 세션 회전과 함께 재인증 시각을 지웠으므로 해제 준비는 새 본인 확인 위에서만 허가를
-     * 받는다(`SessionRotation`). 복귀 목적지는 여전히 세션이 붙들어 둔 온보딩이다.
+     * 본인 확인 없이 해제 준비를 누르면 거절이다. 연결은 민감 command 하나이고 본인 확인 1회는
+     * command 1건이다 — 연결 성공이 세션 회전과 함께 재인증 시각을 지웠으므로(`SessionRotation`)
+     * 해제 준비는 403이고, 화면은 대화상자 대신 성공 문구가 예고한 그 거절을 말한다. 실제 서버가
+     * 이 계약을 지키는지 보는 유일한 자리이며, 이 묶음의 다른 단계처럼 `PLAYWRIGHT_BASE_URL`로 주입한
+     * origin에서만 돈다(자체 preview에는 서버가 없다).
+     */
+    await page.getByRole('button', { name: authContent.settings.unlinkLabels.naver }).click()
+    await expect(page.getByRole('status')).toHaveText(authContent.notices.unlinkFailed)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(page.getByText(authContent.settings.linked)).toHaveCount(2)
+
+    /*
+     * 본인 확인을 한 번 더. 해제 준비는 새 본인 확인 위에서만 허가를 받는다. 복귀 목적지는 여전히
+     * 세션이 붙들어 둔 온보딩이다.
      */
     await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
     await consentWithSubject(page, `google-${marker}`)

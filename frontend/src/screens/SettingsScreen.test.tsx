@@ -13,6 +13,7 @@ import {
   unlinkPath,
 } from '../content/auth'
 import { navigateTo, replaceLocation } from '../session/navigation'
+import { expectReauthGateRejection } from '../test/reauthGate'
 import {
   getObservedAllowedRequests,
   getObservedRequests,
@@ -694,6 +695,44 @@ describe('SettingsScreen', () => {
     await waitFor(() => {
       expect(result).toHaveFocus()
     })
+  })
+
+  it('해제 성공 뒤 본인 확인 없는 다음 준비는 거절 문구를 말하고, 본인 확인 버튼은 열려 있으며 초점은 움직이지 않는다', async () => {
+    stubSessionRequest(() => authenticated())
+    let statusCalls = 0
+    stubLinkStatusRequest(() => {
+      statusCalls += 1
+      return statusCalls === 1
+        ? linkedWith('google', 'naver', 'kakao')
+        : linkedWith('google', 'kakao')
+    })
+    stubConnectionStatusRequest(notConnected)
+    stubUnlinkPrepareRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
+    stubUnlinkConfirmRequest('naver', () => Promise.resolve(new Response(null, { status: 204 })))
+
+    render(<SettingsScreen />)
+    await screen.findAllByText(authContent.settings.linked)
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkLabels.naver }))
+    await screen.findByRole('dialog')
+    fireEvent.click(screen.getByRole('button', { name: authContent.settings.unlinkDialog.confirm }))
+    const result = await screen.findByText(authContent.notices.unlinkSucceeded)
+    await waitFor(() => {
+      expect(result).toHaveFocus()
+    })
+
+    /*
+     * 해제 성공은 재인증 시각을 지웠다(`SessionRotation`) — 본인 확인 1회는 민감한 조작 1건이다. 바로
+     * 이어지는 다른 수단의 해제 준비는 403이고, 화면은 성공 문구가 예고한 그 거절을 polite region으로
+     * 말한다. 본인 확인 버튼은 열려 있고 초점은 누른 자리에 남는다.
+     */
+    stubUnlinkPrepareRequest('kakao', () =>
+      Promise.resolve(jsonResponse({ code: 'FORBIDDEN', message: 'x', correlationId: 'c' }, 403)),
+    )
+    const unlink = screen.getByRole('button', { name: authContent.settings.unlinkLabels.kakao })
+    unlink.focus()
+    fireEvent.click(unlink)
+
+    await expectReauthGateRejection(authContent.notices.unlinkFailed, unlink)
   })
 
   it('본인 확인: 세 제공자 버튼이 고정 순서로 있고 시작 호출이 토큰을 싣는다', async () => {

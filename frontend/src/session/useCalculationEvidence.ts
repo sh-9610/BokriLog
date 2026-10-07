@@ -1,14 +1,14 @@
-import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 
 import type { ChangeCounts } from '../content/planVerification'
 
 import { calculationEvidenceContent as copy, evidencePath } from '../content/calculationEvidence'
 import { METRIC_ORDER, type MetricName } from '../content/planResult'
 import { isCanonicalDecimal, isPlainNonNegative } from '../format/decimal'
+import { isInstant } from './instant'
 import {
   bundleOf,
   isCalculationKind,
-  isInstant,
   parseRanges,
   record,
   strings,
@@ -16,6 +16,7 @@ import {
   type PlanResult,
   type VerificationRange,
 } from './useDashboard'
+import { useReferencedRequest } from './useReferencedRequest'
 
 /** One metric's character and why (Story 2.9). The value itself is the dashboard's, not the evidence's. */
 export interface EvidenceMetric {
@@ -709,9 +710,8 @@ export function useCalculationEvidence(
       : `${bundle.planId}\n${String(bundle.pointerVersion)}\n${bundle.calculationId}\n${bundle.planStatus}`
   const [view, setView] = useState<EvidenceView>({ kind: 'closed' })
   const [shownKey, setShownKey] = useState(key)
-  const sequence = useRef(0)
-  const inFlight = useRef<AbortController | null>(null)
-  const keyRef = useRef(key)
+  // 요청의 수명(sequence·중단·키·상태 코드 매핑)은 공통 엔진이 들고, view 상태 기계는 이 훅이 든다.
+  const request = useReferencedRequest({ key, onDenied, concurrency: 'ignore' })
 
   // Adjusting state to a changed prop during render (as `useDashboard` does): the evidence of a bundle
   // that is no longer shown leaves the screen in the same render that stops showing the bundle.
@@ -720,64 +720,29 @@ export function useCalculationEvidence(
     setView({ kind: 'closed' })
   }
 
-  // In the commit itself, before any answer can land: the shown key moves, and a read asked for the old
-  // bundle is aborted and belongs to nobody. Unmounting runs the same cleanup.
-  useLayoutEffect(() => {
-    keyRef.current = key
-    return () => {
-      sequence.current += 1
-      inFlight.current?.abort()
-      inFlight.current = null
-    }
-  }, [key])
-
+  // 진행 중이면 보내지 않는다(`concurrency: 'ignore'`): 같은 tick의 두 번째 열기는 그 조회에 합류한다. 엔진도
+  // 같은 판정을 하지만 여기서 먼저 보고 `loading`을 세운 뒤 시작한다 — 결말은 언제나 `start` 뒤 비동기로 온다.
   const read = useCallback(
     (retrying: boolean): void => {
-      if (bundle === null || inFlight.current !== null) return
-      sequence.current += 1
-      const mine = sequence.current
-      const askedFor = keyRef.current
-      const controller = new AbortController()
-      inFlight.current = controller
-      setView({ kind: 'loading', retrying })
+      if (bundle === null || request.inFlight()) return
       const shown = bundle
       const ended = endedAt
-      const latest = (): boolean => sequence.current === mine && keyRef.current === askedFor
-      const settle = (next: EvidenceView): void => {
-        inFlight.current = null
-        setView(next)
-      }
-      void (async () => {
-        try {
-          const response = await fetch(evidencePath(shown), {
-            credentials: 'same-origin',
-            cache: 'no-store',
-            headers: { Accept: 'application/json' },
-            signal: controller.signal,
-          })
-          if (!latest()) return
-          if (response.status === 401 || response.status === 403) {
-            settle({ kind: 'denied', cause: response.status === 401 ? 'signedOut' : 'refused' })
-            onDenied()
-            return
-          }
-          if (response.status === 404) {
-            settle({ kind: 'failed', retryable: false })
-            return
-          }
-          const payload: unknown = response.status === 200 ? await response.json() : null
-          if (!latest()) return
-          const evidence = parseEvidence(payload, shown, ended)
-          settle(
-            evidence === null ? { kind: 'failed', retryable: true } : { kind: 'ready', evidence },
+      setView({ kind: 'loading', retrying })
+      request.start({
+        path: evidencePath(shown),
+        parse: (payload) => parseEvidence(payload, shown, ended),
+        settle: (outcome) => {
+          setView(
+            outcome.kind === 'ready'
+              ? { kind: 'ready', evidence: outcome.value }
+              : outcome.kind === 'denied'
+                ? { kind: 'denied', cause: outcome.cause }
+                : { kind: 'failed', retryable: outcome.retryable },
           )
-        } catch {
-          // An aborted read is no longer the latest: it settles nothing and is not a failure.
-          if (latest()) settle({ kind: 'failed', retryable: true })
-        }
-      })()
+        },
+      })
     },
-    [bundle, onDenied, endedAt],
+    [bundle, endedAt, request],
   )
 
   const open = useCallback((): void => {
@@ -785,11 +750,9 @@ export function useCalculationEvidence(
   }, [read, view.kind])
 
   const close = useCallback((): void => {
-    sequence.current += 1
-    inFlight.current?.abort()
-    inFlight.current = null
+    request.close()
     setView({ kind: 'closed' })
-  }, [])
+  }, [request])
 
   const retry = useCallback((): void => {
     if (view.kind === 'failed' && view.retryable) read(true)

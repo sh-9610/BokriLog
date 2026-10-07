@@ -3,7 +3,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { calculationEvidenceContent as copy } from '../content/calculationEvidence'
 import { planResultContent } from '../content/planResult'
 import { formatSeoulInstant, formatSeoulTime } from '../format/decimal'
-import { isInstant } from '../session/useDashboard'
+import { isInstant } from '../session/instant'
 import styles from './CalculationEvidence.module.css'
 
 /*

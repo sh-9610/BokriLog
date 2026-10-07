@@ -28,6 +28,7 @@ import {
 } from '../content/planResult'
 import { planVerificationContent } from '../content/planVerification'
 import { formatAmount, formatPercent, formatSeoulTime, percentFromRatio } from '../format/decimal'
+import { isInstant } from '../session/instant'
 import { bundleOf, heldBy, isCompletionVersion, terminalOf } from '../session/useDashboard'
 import { AdjustmentHistory } from './AdjustmentHistory'
 import { CalculationEvidence } from './CalculationEvidence'
@@ -49,13 +50,10 @@ const RATIOS: readonly MetricName[] = ['REQUIRED_RATE', 'GOAL_PROGRESS']
  */
 const HELD_CAUSES: readonly string[] = ['VERIFICATION_REVIEW_REQUIRED', 'HISTORY_OUT_OF_RANGE']
 
-function validTime(value: string): boolean {
-  return Number.isFinite(new Date(value).getTime())
-}
-
+/** 기계 값은 서버 형식의 시각에만 붙인다(`isInstant`). 표시는 형식기가 폴백 문장으로 받는다. */
 function time(value: string): ReactElement {
   return (
-    <time dateTime={validTime(value) ? value : undefined}>
+    <time dateTime={isInstant(value) ? value : undefined}>
       {formatSeoulTime(value, copy.timeUnavailable)}
     </time>
   )
@@ -68,7 +66,7 @@ function seoul(value: string): string {
 /** The Seoul time, or `null` when it cannot be shown — copy then uses its variant without a time. */
 function seoulOrNull(value: string): string | null {
   const shown = seoul(value)
-  return validTime(value) && shown !== copy.timeUnavailable ? shown : null
+  return isInstant(value) && shown !== copy.timeUnavailable ? shown : null
 }
 
 function displayValue(metric: PlanResultMetric): string {

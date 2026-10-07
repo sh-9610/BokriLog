@@ -299,6 +299,8 @@ describe('PlanConditionPanel', () => {
     ['a rate BigInt cannot read', { targetRate: '0.1%' }],
     ['a non-canonical amount', { decimal: '1.2e3' }],
     ['a time that does not parse', { startAt: 'yesterday' }],
+    ['a time in an offset format the server never sends', { startAt: '2026-09-25T09:00:00+09:00' }],
+    ['a date without a time', { endAt: '2026-10-25' }],
   ])('does not render an active plan summary with %s', async (_name, broken) => {
     vi.stubGlobal(
       'fetch',

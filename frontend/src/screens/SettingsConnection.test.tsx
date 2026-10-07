@@ -14,6 +14,7 @@ import {
   rejectionMessage,
 } from '../content/connection'
 import { navigateTo, replaceLocation } from '../session/navigation'
+import { expectReauthGateRejection } from '../test/reauthGate'
 import {
   getObservedAllowedRequests,
   getObservedRequests,
@@ -443,6 +444,44 @@ describe('SettingsScreen의 Bybit 연결', () => {
      */
     expect(screen.getAllByText(rejection)).toHaveLength(1)
     expect(screen.getByRole('status').textContent).not.toContain(rejection)
+  })
+
+  it('연결 성공 뒤 본인 확인 없는 다음 준비는 거절 문구를 말하고, 본인 확인 버튼은 열려 있으며 초점은 움직이지 않는다', async () => {
+    stubConnectionStatusRequest(notConnected)
+    stubConnectionPrepareRequest(() =>
+      Promise.resolve(jsonResponse({ confirmation: CONFIRMATION })),
+    )
+    stubConnectRequest(() =>
+      Promise.resolve(
+        jsonResponse({
+          connected: true,
+          verifiedAt: '2026-09-25T01:02:03Z',
+          policyVersion: 'bybit-readonly-uta-1.0',
+        }),
+      ),
+    )
+
+    await renderSettings()
+    await openForm()
+    fillAndSubmit()
+    const succeeded = await screen.findByText(connectionContent.succeeded)
+    await waitFor(() => {
+      expect(succeeded).toHaveFocus()
+    })
+
+    /*
+     * 연결 성공은 재인증 시각을 지웠다(`SessionRotation`) — 본인 확인 1회는 민감한 조작 1건이다. 바로
+     * 이어지는 로그인 수단 해제 준비는 403이고, 화면은 성공 문구가 예고한 그 거절을 polite region으로
+     * 말한다. 본인 확인 버튼은 열려 있고 초점은 누른 자리에 남는다.
+     */
+    stubUnlinkPrepareRequest('naver', () =>
+      Promise.resolve(jsonResponse({ code: 'FORBIDDEN', message: 'x', correlationId: 'c' }, 403)),
+    )
+    const unlink = screen.getByRole('button', { name: authContent.settings.unlinkLabels.naver })
+    unlink.focus()
+    fireEvent.click(unlink)
+
+    await expectReauthGateRejection(authContent.notices.unlinkFailed, unlink)
   })
 
   it('해제 표지가 지난 연결 표지를 되살리지 않는다', async () => {

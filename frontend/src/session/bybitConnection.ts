@@ -7,6 +7,7 @@ import {
   BYBIT_REVOCATION_CONFIRM_PATH,
   BYBIT_REVOCATION_PATH,
 } from '../content/connection'
+import { isInstant } from './instant'
 import { post } from './unlinkProvider'
 import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
 
@@ -246,8 +247,7 @@ export async function confirmRevocation(
     if (
       body.outcome === 'REVOKED' &&
       body.connectionId === connectionId &&
-      typeof body.revokedAt === 'string' &&
-      !Number.isNaN(new Date(body.revokedAt).getTime())
+      isInstant(body.revokedAt)
     ) {
       return { outcome: 'revoked', revokedAt: body.revokedAt }
     }

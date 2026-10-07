@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 
 import { nextPlanContent as copy } from '../content/nextPlan'
 import { formatSeoulTime } from '../format/decimal'
-import { isInstant, record } from '../session/useDashboard'
+import { isInstant } from '../session/instant'
+import { record } from '../session/useDashboard'
 import styles from './PlanConditionPanel.module.css'
 
 interface Summary {
