@@ -2,7 +2,7 @@
 title: 'Deferred Work 해소 원장'
 status: living
 created: '2026-09-02'
-updated: '2026-10-06'
+updated: '2026-10-07'
 applies_to: '_bmad-output/implementation-artifacts/deferred-work.md'
 decision_baseline: 'ERD-1.0.0'
 ---
@@ -20,7 +20,9 @@ decision_baseline: 'ERD-1.0.0'
 | 해소 | 16 |
 | 부분 해소 | 4 |
 | 미해소 | 31 |
-| 미판정 | 54 |
+| 미판정 | 57 |
+
+**2026-10-07 갱신(프런트엔드 공통 부품 chore done 전환).** `spec-frontend-dialog-commons.md`(PR #73)가 `deferred-work.md`에 항목 **106**(계획 중도 종료 성공 문구의 재인증 안내 부재)·**107**(`UnlinkDialog`·`PlanEndDialog` 시험의 메커니즘 중복)·**108**(Bybit 연결 성공 → 해제 준비 403의 주입 origin e2e 부재)을 append했다. 판정은 아직 없다. 그래서 표를 **108건** 기준으로 맞추고 미판정을 54→57로 늘렸다. 같은 PR이 항목 104(D-4 프런트엔드 묶음)와 105(재인증 게이트 안내)를 실제로 구현했지만, 두 항목의 판정(해소)은 이 원장의 판정 라운드에서 검사와 함께 적는다 — 지금은 미판정으로 둔다.
 
 **2026-10-06 갱신(민감 command 공통 부품 chore done 전환).** `spec-sensitive-command-commons.md`(PR #71)가 `deferred-work.md`에 항목 **104**(AI-8의 프런트엔드 묶음 D-4, 백엔드와 분리해 다음 chore로 미룸)와 **105**(실행 성공 직후 다음 민감 command가 재인증 게이트에 떨어지는 화면 동작·카피 확인)를 append했다. 판정은 아직 없다. 그래서 표를 **105건** 기준으로 맞추고 미판정을 52→54로 늘렸다. 나머지 수치는 그대로다. 같은 PR이 Epic 1 회고 item-1(재인증 시각 연쇄 승인)을 닫았지만 그것은 이 원장의 항목이 아니라 `sprint-status.yaml` `action_items`의 몫이다.
 
