@@ -150,7 +150,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 ## 현재 진행 지점
 
-기획은 완료됐고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. **Epic 1(11개)은 닫혔고 회고도 끝났다**(`epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건은 `sprint-status.yaml`의 `action_items`가 소유). **Epic 2(16개)도 모두 `develop`에 머지됐고** M2-2(2.7)·M2-3(2.12)·M2-4(2.13~2.16) 검증 지점이 닫혔다. Epic 2 회고도 끝났다(`epic-2-retro-2026-10-05.md`, 판정 `accepted-with-open-items`, 액션 13건). 회고 액션 AI-8의 백엔드 묶음(민감 command 공통 부품 정리)과 Epic 1 액션 item-1(재인증 시각 연쇄 승인)은 `spec-sensitive-command-commons.md`(PR #71)가 닫았다. AI-8의 프런트엔드 묶음(D-4)과 재인증 게이트 안내(105번)는 `spec-frontend-dialog-commons.md`(PR #73)가 닫았다. **다음은 Epic 3 Story 3.1(보호된 운영자 표면과 추가 전용 감사 원장)이다 — SPEC 초안 `spec-3-1-operator-surface-audit-ledger.md`(`status: draft`)가 있으니 `bmad-build`가 그것을 이어받아 CHECKPOINT 1부터 시작한다.** item-7(확인 hash 판별력)은 운영 envelope가 실제 확인 문구를 정의하는 3.1 SPEC의 입력이다. `RECONNECT-1.0`(AI-1)은 Epic 3 완료 뒤 Epic 2 보완 스토리로 배치하고 그때까지 해제 사용자의 새 연결 영구 차단은 accepted deviation이다. 실연동 게이트는 둘이며 둘 다 별도 출시 게이트가 소유한다 — Epic 1의 세 제공자 왕복, Epic 2의 Bybit 연결 정책·실연동(실제 검증 계정과 regional reserved IP 필요).
+기획은 완료됐고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. **Epic 1(11개)은 닫혔고 회고도 끝났다**(`epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건은 `sprint-status.yaml`의 `action_items`가 소유). **Epic 2(16개)도 모두 `develop`에 머지됐고** M2-2(2.7)·M2-3(2.12)·M2-4(2.13~2.16) 검증 지점이 닫혔다. Epic 2 회고도 끝났다(`epic-2-retro-2026-10-05.md`, 판정 `accepted-with-open-items`, 액션 13건). 회고 액션 AI-8의 백엔드 묶음(민감 command 공통 부품 정리)과 Epic 1 액션 item-1(재인증 시각 연쇄 승인)은 `spec-sensitive-command-commons.md`(PR #71)가 닫았다. AI-8의 프런트엔드 묶음(D-4)과 재인증 게이트 안내(105번)는 `spec-frontend-dialog-commons.md`(PR #73)가 닫았다. **Epic 3은 Story 3.1(보호된 운영자 표면과 추가 전용 감사 원장, PR #75)이 머지됐고 다음은 Story 3.2(문제 영향 범위만 수동으로 제한하기)다** — 3.1의 `OperatorCommandService`에 command type을 더하고, `operations_restriction`의 scope 축(회고 AI-5)이 3.2 SPEC의 입력이다. item-7(확인 hash 판별력)은 운영 command 쪽이 3.1에서 닫혔고(확인 문구 재입력), Epic 1·2 command의 hash는 ERD 정정 몫으로 남는다. `RECONNECT-1.0`(AI-1)은 Epic 3 완료 뒤 Epic 2 보완 스토리로 배치하고 그때까지 해제 사용자의 새 연결 영구 차단은 accepted deviation이다. 실연동 게이트는 둘이며 둘 다 별도 출시 게이트가 소유한다 — Epic 1의 세 제공자 왕복, Epic 2의 Bybit 연결 정책·실연동(실제 검증 계정과 regional reserved IP 필요).
 
 스토리마다 무엇을 도입했고 리뷰가 무엇을 잡았는지는 아래 표의 SPEC이 소유한다. 그 코드를 건드릴 때 해당 SPEC의 `## Design Notes`와 "구현에서 확정한 것"을 읽는다.
 
@@ -189,6 +189,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | Epic 2 회고 | done | `epic-2-retro-2026-10-05.md`, 판정 `accepted-with-open-items`, 액션 13건 |
 | AI-8 백엔드 공통 부품 chore | done | `spec-sensitive-command-commons.md`, PR #71 머지 커밋 `1e43ebf` |
 | AI-8 프런트엔드 공통 부품 chore | done | `spec-frontend-dialog-commons.md`, PR #73 머지 커밋 `b671bf3` |
+| 3.1 운영자 표면·감사 원장 | done | `spec-3-1-operator-surface-audit-ledger.md`, PR #75 머지 커밋 `4af890e` |
 
 ## 스토리가 고정한 계약
 
