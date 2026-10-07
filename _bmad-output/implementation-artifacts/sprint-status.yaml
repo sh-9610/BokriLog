@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 10-08-2026 00:59
+last_updated: 10-08-2026 02:53
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -69,7 +69,7 @@ development_status:
   epic-2-retrospective: done
 
   epic-3: in-progress
-  3-1-보호된-운영자-표면과-추가-전용-감사-원장-마련하기: review
+  3-1-보호된-운영자-표면과-추가-전용-감사-원장-마련하기: done
   3-2-문제-영향-범위만-수동으로-제한하기: backlog
   3-3-승인된-강한-신호를-감지해-60초-안에-자동-정지하기: backlog
   3-4-검증-증거를-확인한-뒤-제한을-수동-복구하기: backlog
