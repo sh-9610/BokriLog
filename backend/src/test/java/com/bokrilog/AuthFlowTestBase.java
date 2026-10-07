@@ -106,6 +106,8 @@ abstract class AuthFlowTestBase {
         BybitStubConfiguration.registerProperties(registry);
         // 워커 dispatch 간격도 같은 근거로 여기서 준다.
         registry.add("bokrilog.sync.worker.dispatch-interval", () -> WORKER_TICK.toMillis() + "ms");
+        // Story 3.1의 운영자 설정도 같은 근거로 여기서 준다. digest 키는 API 기동의 필수값이다.
+        OperatorTestProperties.registerProperties(registry);
     }
 
     /**
@@ -222,8 +224,8 @@ abstract class AuthFlowTestBase {
                                 + "identity_social_link, identity_account, identity_account_lifecycle "
                                 + "CASCADE")
                 .update();
-        // 운영 제한은 어느 계정도 참조하지 않는다. 그래서 위 CASCADE가 비우지 못한다.
-        this.jdbc.sql("TRUNCATE TABLE operations_restriction").update();
+        // 운영 제한과 감사 원장은 어느 계정도 참조하지 않는다. 그래서 위 CASCADE가 비우지 못한다.
+        this.jdbc.sql("TRUNCATE TABLE operations_restriction, operations_audit_event").update();
     }
 
     // ----------------------------------------------------------------------

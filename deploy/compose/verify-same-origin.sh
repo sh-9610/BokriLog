@@ -144,6 +144,9 @@ forbidden_fragments=(
   'BOKRILOG_BYBIT_LOW_REMAINING_WAIT_CAP'
   'BOKRILOG_SOURCE_CREDENTIAL_KEYS'
   'BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION'
+  # Story 3.1의 운영자 allowlist와 감사 digest 키.
+  'BOKRILOG_OPERATORS'
+  'BOKRILOG_AUDIT_DIGEST_KEY'
   'SPRING_PROFILES_ACTIVE'
   'NGINX_ENTRYPOINT_QUIET_LOGS'
   # 재인증이 제공자에게 보내는 최근 인증 요청·증거. 인가 요청의 `claims`와 ID Token의 claim
@@ -248,6 +251,18 @@ printf '동일 출처 검증\n\n'
 BOKRILOG_SOURCE_CREDENTIAL_KEYS="verify:$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
 BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION='verify'
 export BOKRILOG_SOURCE_CREDENTIAL_KEYS BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION
+
+# 운영자 표면(Story 3.1)의 두 값도 실행 시점에 만든다.
+#
+# 감사 digest 키는 API 기동의 필수값이고(비면 백엔드가 뜨지 않는다) 자격정보 모양이라 커밋하지 않는다. allowlist는
+# 개발 OIDC 스텁의 Google issuer와 subject 둘이다 — 아래 `운영자 표면 왕복` 절의 운영자와, 이 스택에 이어 도는
+# Playwright 회귀(`e2e/operator.spec.ts`)의 운영자다. compose 기본값은 비어 있으므로(운영자 없음) 이 스크립트가
+# 명시적으로 넣는 것이 유일한 경로이며, `--keep-stack`으로 남긴 스택에도 그대로 남는다.
+operator_issuer="${base_url}/api/dev-oidc/google"
+operator_subject="operator-verify-$$"
+BOKRILOG_OPERATORS="${operator_issuer}|${operator_subject}|command,audit;${operator_issuer}|e2e-operator|command,audit"
+BOKRILOG_AUDIT_DIGEST_KEY="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+export BOKRILOG_OPERATORS BOKRILOG_AUDIT_DIGEST_KEY
 
 # 스키마 마이그레이션을 `up` 앞에서 한 번만 실행한다(AD-12).
 #
@@ -2610,9 +2625,112 @@ assert_rows '되돌린 뒤 계정 행이 0개다' 'SELECT count(*) FROM identity
 assert_rows '되돌린 뒤 세션 행이 0개다' 'SELECT count(*) FROM spring_session' '0'
 assert_rows '되돌린 뒤 허가 행이 0개다' 'SELECT count(*) FROM action_grant' '0'
 
+printf '\n운영자 표면 왕복\n'
+
+# Story 3.1. 저장소가 비어 있는 지금 운영자와 비운영자를 하나씩 만들고, 보호된 표면의 경계와 감사 내보내기 왕복
+# (재인증 → 준비 → 확인 문구 → 확정)을 실제 스택에서 지난 뒤 다시 비운다. 확인 문구와 결과는 원장에 남은 행으로
+# 대조한다.
+
+# operator_sign_in <subject>. 스텁 Google 왕복 하나를 지나 `op_cookie`·`op_csrf`를 남긴다.
+operator_sign_in() {
+  local subject="$1" flow_cookie authorize_location consent_href
+  op_cookie=''
+  op_csrf=''
+  fetch GET /api/auth/authorize/google
+  authorize_location="$(header_value 'Location')"
+  flow_cookie="$(session_cookie_value)"
+  fetch GET "${authorize_location#"${base_url}"}&dev_subject=${subject}"
+  consent_href="$(sed -n 's/.*<a href="\([^"]*\)".*/\1/p' "${last_body}" | head -1 | sed 's/&amp;/\&/g')"
+  fetch GET "${consent_href#"${base_url}"}" -H "Cookie: BOKRILOG_SESSION=${flow_cookie}"
+  op_cookie="$(session_cookie_value)"
+  fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${op_cookie}"
+  op_csrf="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
+}
+
+fetch GET /api/operator/audit
+assert_equals '미인증 `GET /api/operator/audit` 상태 401' "${last_status}" '401'
+
+operator_sign_in "nonoperator-verify-$$"
+if [ -n "${op_cookie}" ] && [ -n "${op_csrf}" ]; then
+  record_pass '비운영자가 로그인한다'
+else
+  record_fail '비운영자가 로그인한다' '세션 쿠키나 CSRF 토큰을 받지 못했다.'
+fi
+fetch GET /api/nope -H "Cookie: BOKRILOG_SESSION=${op_cookie}"
+unknown_api_body="$(normalized_error_body)"
+fetch GET /api/operator/audit -H "Cookie: BOKRILOG_SESSION=${op_cookie}"
+assert_equals '비운영자의 감사 조회 상태 404' "${last_status}" '404'
+assert_equals '비운영자의 감사 조회 본문이 없는 경로와 같다' "$(normalized_error_body)" "${unknown_api_body}"
+fetch GET /api/operator/commands/audit-export -H "Cookie: BOKRILOG_SESSION=${op_cookie}"
+assert_equals '비운영자의 잘못된 메서드도 405가 아니라 404다' "${last_status}" '404'
+
+operator_sign_in "${operator_subject}"
+fetch GET /api/operator/audit -H "Cookie: BOKRILOG_SESSION=${op_cookie}"
+assert_equals '운영자의 감사 조회 상태 200' "${last_status}" '200'
+assert_body_contains '감사 조회 본문이 행 목록이다' '"items":['
+assert_security_headers '운영자의 감사 조회'
+
+# 재인증. 운영 command는 최근 본인 확인을 요구한다.
+fetch POST /api/auth/reauthenticate/google \
+  -H "Cookie: BOKRILOG_SESSION=${op_cookie}" -H "Origin: ${base_url}" -H "X-CSRF-TOKEN: ${op_csrf}"
+assert_equals '운영자 재인증 시작 204' "${last_status}" '204'
+fetch GET /api/auth/authorize/google -H "Cookie: BOKRILOG_SESSION=${op_cookie}"
+operator_reauth_location="$(header_value 'Location')"
+fetch GET "${operator_reauth_location#"${base_url}"}&dev_subject=${operator_subject}"
+operator_consent="$(sed -n 's/.*<a href="\([^"]*\)".*/\1/p' "${last_body}" | head -1 | sed 's/&amp;/\&/g')"
+fetch GET "${operator_consent#"${base_url}"}" -H "Cookie: BOKRILOG_SESSION=${op_cookie}"
+assert_equals '운영자 재인증 콜백 302' "${last_status}" '302'
+operator_rotated="$(session_cookie_value)"
+if [ -n "${operator_rotated}" ]; then
+  op_cookie="${operator_rotated}"
+fi
+fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${op_cookie}"
+op_csrf="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
+
+# 준비. 대상 기간은 데이터베이스의 오늘(KST) 앞뒤 하루다 — 셸의 `date`는 플랫폼마다 플래그가 다르다.
+operator_target="$(psql_value "SELECT to_char((now() AT TIME ZONE 'Asia/Seoul')::date - 1, 'YYYY-MM-DD') || '~' || to_char((now() AT TIME ZONE 'Asia/Seoul')::date + 1, 'YYYY-MM-DD')")"
+operator_key="verify-operator-$$-$(head -c 12 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
+fetch POST /api/operator/commands/audit-export \
+  -H "Cookie: BOKRILOG_SESSION=${op_cookie}" -H "Origin: ${base_url}" -H "X-CSRF-TOKEN: ${op_csrf}" \
+  -H "Idempotency-Key: ${operator_key}" -H 'Content-Type: application/json' \
+  --data "{\"scope\":\"AUDIT_LEDGER\",\"target\":\"${operator_target}\",\"reason\":\"동일 출처 검증\"}"
+assert_equals '감사 내보내기 준비 200' "${last_status}" '200'
+operator_operation="$(sed -n 's/.*"operationId":"\([^"]*\)".*/\1/p' "${last_body}")"
+operator_phrase="$(sed -n 's/.*"confirmationPhrase":"\([^"]*\)".*/\1/p' "${last_body}")"
+assert_equals '확인 문구는 서버가 정한 범위와 기간이다' "${operator_phrase}" "감사 내보내기 AUDIT_LEDGER ${operator_target}"
+assert_body_lacks '준비 응답에 허가 참조가 없다' 'grant'
+
+# 확정. 사용자가 다시 입력한 문구를 같은 키로 보낸다.
+fetch POST /api/operator/commands/audit-export/confirm \
+  -H "Cookie: BOKRILOG_SESSION=${op_cookie}" -H "Origin: ${base_url}" -H "X-CSRF-TOKEN: ${op_csrf}" \
+  -H "Idempotency-Key: ${operator_key}" -H 'Content-Type: application/json' \
+  --data "{\"operationId\":\"${operator_operation}\",\"confirmation\":\"${operator_phrase}\"}"
+assert_equals '감사 내보내기 확정 200' "${last_status}" '200'
+assert_body_contains '확정이 완료를 답한다' '"outcome":"COMPLETED"'
+assert_body_contains '확정이 행 묶음을 싣는다' '"rows":['
+assert_body_lacks '행 묶음에 subject가 없다' "${operator_subject}"
+operator_after_confirm="$(session_cookie_value)"
+if [ -n "${operator_after_confirm}" ] && [ "${operator_after_confirm}" != "${op_cookie}" ]; then
+  record_pass '확정이 세션을 회전시킨다'
+else
+  record_fail '확정이 세션을 회전시킨다' '확정 응답이 새 세션 쿠키를 주지 않았다.'
+fi
+assert_rows '원장에 같은 operation의 요청·완료가 남는다' \
+  "SELECT string_agg(outcome, ',' ORDER BY sequence) FROM operations_audit_event WHERE operation_id = '${operator_operation}'" \
+  'REQUESTED,COMPLETED'
+assert_rows '원장 행에 subject·멱등 키가 없다' \
+  "SELECT count(*) FROM operations_audit_event e WHERE row_to_json(e)::text LIKE '%${operator_subject}%' OR row_to_json(e)::text LIKE '%${operator_key}%'" \
+  '0'
+
+psql_exec '운영자 왕복이 만든 세션을 지운다' 'TRUNCATE TABLE spring_session, spring_session_attributes'
+psql_exec '운영자 왕복이 만든 계정·허가·감사 행을 지운다' \
+  'TRUNCATE TABLE action_grant, identity_social_link, identity_account, identity_account_lifecycle, operations_audit_event CASCADE'
+assert_rows '되돌린 뒤 감사 행이 0개다' 'SELECT count(*) FROM operations_audit_event' '0'
+assert_rows '되돌린 뒤 계정 행이 0개다(운영자 왕복)' 'SELECT count(*) FROM identity_account_lifecycle' '0'
+
 printf '\n알려진 내부 경로 허용 목록\n'
 
-# 폴백이 아니라 허용 목록이다. 이름을 적은 네 경로만 진입 문서를 받는다.
+# 폴백이 아니라 허용 목록이다. 이름을 적은 다섯 경로만 진입 문서를 받는다.
 while read -r allowed_path; do
   [ -n "${allowed_path}" ] || continue
   fetch GET "${allowed_path}"
@@ -2627,6 +2745,7 @@ done <<'ALLOWED_PATHS'
 /dashboard
 /settings
 /plan-conditions
+/operator
 ALLOWED_PATHS
 
 # 정적 경로의 잘못된 메서드. 허용 목록 location도 파일을 찾기 전에 되돌린다.
@@ -2651,6 +2770,8 @@ done <<'REJECTED_PATHS'
 /settings-x
 /plan-conditions/x
 /plan-conditions-x
+/operator/x
+/operator-x
 REJECTED_PATHS
 
 printf '\n한도를 넘는 요청\n'
@@ -2853,7 +2974,7 @@ if [ "${log_ready}" = true ]; then
   for leaked_label in 'google code' 'google state' 'naver code' 'naver state' \
     'kakao code' 'kakao state' 'reauth code' 'reauth state' 'link code' 'link state' \
     'link 허가 참조' 'unlink 허가 참조' 'Bybit API Secret' 'Bybit API Key' \
-    'Bybit 암호화 키'; do
+    'Bybit 암호화 키' '운영자 멱등 키' '운영자 subject' '감사 digest 키'; do
     case "${leaked_label}" in
       'google code') leaked_value="${google_round_trip_code}" ;;
       'google state') leaked_value="${google_round_trip_state}" ;;
@@ -2878,6 +2999,11 @@ if [ "${log_ready}" = true ]; then
       # 암호화 key ring은 환경으로만 들어가고 로그를 지나지 않는다. 값이 새면 저장된 암호문이
       # 그대로 열린다.
       'Bybit 암호화 키') leaked_value="${BOKRILOG_SOURCE_CREDENTIAL_KEYS#verify:}" ;;
+      # 운영자 표면(Story 3.1). 멱등 키는 헤더로만, subject는 스텁 인가 요청의 쿼리로만 지나고, digest 키는 환경으로만
+      # 들어간다. 셋 다 로그에 남을 자리가 없다.
+      '운영자 멱등 키') leaked_value="${operator_key}" ;;
+      '운영자 subject') leaked_value="${operator_subject}" ;;
+      '감사 digest 키') leaked_value="${BOKRILOG_AUDIT_DIGEST_KEY}" ;;
       # 마지막 이름도 자기 분기를 갖는다. `*)`가 그것을 겸하면 오타 하나나 새 이름 하나가
       # 마지막 값을 다른 이름으로 다시 검사하며 통과한다 — 위 왕복 `case`가 이미 쓰는 형태다.
       *)

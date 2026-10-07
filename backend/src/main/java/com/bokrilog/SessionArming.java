@@ -14,7 +14,8 @@ import org.jspecify.annotations.Nullable;
  * <p>Flow 여섯({@code ReauthenticationFlow}·{@code LinkFlow}·{@code UnlinkFlow}·{@code BybitConnectionFlow}·
  * {@code PlanEndFlow}·{@code BybitRevocationFlow} — 재인증은 민감 command가 아니라 그 전제다)이 각자 들고 있던
  * {@code arm/peek/peekIncludingExpired/consume/discard} 본문이 이것 하나다. 각 Flow는 자기 속성 키·수명·{@code Armed} record와 고유 메서드만 남기고 공통 동작을 여기에
- * 위임한다 — Epic 3이 운영자 command를 더할 때 일곱 번째 사본이 생기지 않게 하려는 것이다(Epic 2 회고 AI-8).
+ * 위임한다 — Epic 3이 운영자 command를 더할 때 일곱 번째 사본이 생기지 않게 하려는 것이다(Epic 2 회고 AI-8). Story 3.1의
+ * {@code OperatorCommandFlow}가 그 일곱 번째 소비자이며 사본 없이 이것을 쓴다.
  *
  * <p><b>정책은 여기 없다.</b> 속성 키, 5분 수명, record의 필드, 성공 시 무장을 지우는지 남기는지(재전송 계약), 세션
  * id 귀속 방식은 전부 각 Flow와 그 서비스가 정한다. 이 클래스가 아는 것은 "무장을 저장하고, 살아 있는 것만

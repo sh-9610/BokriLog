@@ -166,6 +166,13 @@ services:
       # 연결 기능만 공통 오류 계약으로 fail-closed다. production 비밀 공급은 Story 3.8이 소유한다.
       BOKRILOG_SOURCE_CREDENTIAL_KEYS: ${BOKRILOG_SOURCE_CREDENTIAL_KEYS:-}
       BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION: ${BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION:-}
+      # 운영자 allowlist(Story 3.1). **기본값은 비어 있다(운영자 없음, fail-closed).** dev-oidc 스텁은 subject를
+      # 고를 수 있으므로 기본값에 운영자를 두면 이 스택에 닿는 누구나 운영자가 된다. 운영자가 필요한 실행
+      # (`verify-same-origin.sh`와 그 뒤의 Playwright 회귀)이 명시적으로 넣는다.
+      BOKRILOG_OPERATORS: ${BOKRILOG_OPERATORS:-}
+      # 감사 digest 키. 이름만 여기 있고 **값은 이 파일에 없다**(위 key ring과 같은 근거). 비면 백엔드가 기동을
+      # 거부한다 — `verify-same-origin.sh`가 실행 시점에 만들고, 손으로 띄울 때는 `DEVELOPMENT.md`의 명령으로 넣는다.
+      BOKRILOG_AUDIT_DIGEST_KEY: ${BOKRILOG_AUDIT_DIGEST_KEY:-}
     healthcheck:
       # alpine 베이스의 busybox wget이다. 이미지에 도구를 더 넣지 않는다.
       test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1:8080/api/status']

@@ -1,5 +1,5 @@
 /*
- * 확인 대화상자의 공유 모듈. `UnlinkDialog`·`PlanEndDialog`·`ConnectionRevokeDialog`가 함께 쓴다.
+ * 확인 대화상자의 공유 모듈. `UnlinkDialog`·`PlanEndDialog`·`ConnectionRevokeDialog`·`OperatorExportDialog`가 함께 쓴다.
  *
  * `DESIGN.md`가 소유하는 범주(색·타이포그래피·모서리·간격)는 반드시 tokens.css의 변수를 참조한다.
  * `DESIGN.md`에 토큰이 없는 범주(구조적 1px 테두리 두께, 겹침 불투명도, z-index, 최대 폭)만 예외로
@@ -101,6 +101,24 @@
   font-weight: var(--type-body-font-weight);
   line-height: var(--type-body-line-height);
   color: var(--component-confirmation-dialog-foreground);
+}
+
+/*
+ * 확인 문구 재입력 칸(운영자 화면, Story 3.1). 최소 목표 크기 44px은 입력 칸에도 적용된다.
+ * 포커스 표시는 global.css의 전역 `:focus-visible`이 처리한다.
+ */
+.input {
+  inline-size: 100%;
+  min-block-size: var(--space-target-min);
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface-base);
+  color: var(--color-ink-primary);
+  font-size: var(--type-body-font-size);
+  line-height: var(--type-body-line-height);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--color-border-strong);
 }
 
 /* 최종 확인이 도는 동안의 진행 문장. */

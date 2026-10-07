@@ -1,0 +1,385 @@
+package com.bokrilog;
+
+import com.bokrilog.ActionGrantService.Consumption;
+import com.bokrilog.ActionGrantService.ConsumptionRequest;
+import com.bokrilog.operations.OperatorAuditApi;
+import com.bokrilog.operations.OperatorCommandApi;
+import com.bokrilog.operations.OperatorCommandApi.AuditOutcome;
+import com.bokrilog.operations.OperatorCommandApi.Envelope;
+import com.bokrilog.operations.OperatorCommandApi.ExportResult;
+import com.bokrilog.operations.OperatorPermission;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpSession;
+import java.io.Serial;
+import java.time.Instant;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
+import org.jspecify.annotations.Nullable;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication.Type;
+import org.springframework.dao.DataAccessException;
+import org.springframework.stereotype.Service;
+
+/**
+ * 보호된 운영 command의 흐름(Story 3.1 AC-2·AC-3·AC-6, {@code SECURITY-ACTION-1.0}).
+ *
+ * <p><b>두 번째 인증 경로·두 번째 허가 저장소가 없다.</b> 최근 재인증(1.8) → 일회성 허가(1.9) → 확인 대화상자의 확정을
+ * 그대로 강제하고, 공통 부품({@link SessionArming}·{@link SessionRotation}·{@code IdempotencyKey})을 쓴다 — 계획 중도
+ * 종료·Bybit 연결 해제와 같은 모양이다. envelope 검증·원장·실행은 {@code operations}가 소유하고, 허가 서비스가 루트
+ * package-private이라 흐름은 여기 있다.
+ *
+ * <p><b>준비는 아무것도 바꾸지 않는다</b> — 원장에 {@code REQUESTED} 행 하나를 더하고 허가를 발급해 무장할 뿐이다.
+ * 확인 문구는 서버가 정하고({@code 감사 내보내기 <scope> <target>}) 허가의 확인 hash는
+ * {@code canonicalConfirmationHash(command, target, 문구)}다. 확정은 사용자가 다시 입력한 문구를 보내고, 불일치는 허가를
+ * 소비하지 않는다 — Epic 1 item-7(확인 hash의 판별력)이 운영 command에서는 여기서 닫힌다.
+ *
+ * <p><b>확정은 허가 소비와 같은 트랜잭션 하나다.</b> 그 안에서 원장 추가 잠금 → 최종 권한 재검사(allowlist 재해석과
+ * {@code decide(SENSITIVE)}) → 실행 → {@code COMPLETED} 행이 함께 커밋된다. 하나라도 실패하면 소비까지 전부 롤백되고, 거절·
+ * 실패 행은 그 롤백 <b>뒤</b> 별도 짧은 트랜잭션으로 추가한다. 실제로 실행한 요청에서만 무장을 버리고 세션을 회전하며
+ * 재인증 시각을 지운다. 상태가 불명확하면(500) 자동으로 성공 처리하거나 재실행하지 않는다 — 클라이언트는 준비가 준
+ * operation ID로 조회한다.
+ *
+ * <p><b>멱등은 두 층이다.</b> 원장의 {@code COMPLETED} 행이 같은 operation·같은 키의 저장 결과를 재생하고(다른 키는
+ * 충돌), 허가의 {@code (user_id, operation_id)} 유일 색인이 동시 확정 둘 가운데 하나만 실행시킨다.
+ *
+ * <p>로그에 수행자·대상·사유·허가·키를 남기지 않는다. servlet 웹 애플리케이션에서만 배선한다.
+ */
+@Service
+@ConditionalOnWebApplication(type = Type.SERVLET)
+class OperatorCommandService {
+
+    /** 확정이 없거나 이 확정과 맞지 않는 무장·허가(만료·재사용·다른 operation·다른 키·흐름 없음). */
+    static final String NOT_CONFIRMED = "OPERATOR_COMMAND_NOT_CONFIRMED";
+
+    /** 사용자가 다시 입력한 확인 문구가 서버의 문구와 다르다. 허가는 소비되지 않는다. */
+    static final String CONFIRMATION_MISMATCH = "CONFIRMATION_MISMATCH";
+
+    /** 재인증이 신선하지 않아 허가가 서지 않았다(준비). */
+    static final String REAUTHENTICATION_REQUIRED = "REAUTHENTICATION_REQUIRED";
+
+    /** 같은 멱등 키가 다른 입력·끝난 operation에 이미 쓰였다. */
+    static final String IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT";
+
+    /** 운영자가 아니거나 권한이 없다 — 미존재와 같은 404로 옮긴다. */
+    static final String NOT_FOUND = "NOT_FOUND";
+
+    /** 원장 code: 권한 회수로 거절했다. 이 code로 맺은 operation은 끝난 것이다(같은 키 재준비는 충돌). */
+    static final String ACCESS_REVOKED = OperatorCommandApi.ACCESS_REVOKED;
+
+    /** 원장 code: 실행이 예외로 끝나 전부 롤백됐다. */
+    static final String EXECUTION_FAILED = "EXECUTION_FAILED";
+
+    /** 원장 code: 사용자가 취소했다. */
+    static final String CANCELLED = "CANCELLED";
+
+    /** 원장 code: 같은 세션의 새 준비가 앞선 무장을 대신했다. */
+    static final String SUPERSEDED = "SUPERSEDED";
+
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(OperatorCommandService.class);
+
+    /** 확정 트랜잭션을 되돌리기 위한 사설 타입. 스택도 메시지도 담지 않는다. */
+    private static final class Refused extends RuntimeException {
+
+        @Serial private static final long serialVersionUID = 1L;
+
+        Refused() {
+            super(null, null, false, false);
+        }
+    }
+
+    sealed interface Preparation {
+        record Armed(OperatorCommandFlow.Armed flow) implements Preparation {}
+
+        record Refused(String code) implements Preparation {}
+    }
+
+    sealed interface Outcome {
+        /**
+         * 실행됐다 — 이번 요청이 했거나({@code ran}), 같은 키의 앞선 실행의 재생이다.
+         *
+         * @param rows 추출 결과의 allowlist 필드 묶음
+         */
+        record Completed(ExportResult result, List<OperatorAuditApi.Entry> rows, boolean ran) implements Outcome {}
+
+        /** 실행하지 않았다. */
+        record Refused(String code) implements Outcome {}
+    }
+
+    private final OperatorCommandApi commands;
+
+    private final OperatorAccess access;
+
+    private final ActionGrantService grants;
+
+    OperatorCommandService(OperatorCommandApi commands, OperatorAccess access, ActionGrantService grants) {
+        this.commands = commands;
+        this.access = access;
+        this.grants = grants;
+    }
+
+    /** 이 command type을 아는가. 모르는 type은 경로가 없는 것과 같다. */
+    boolean supports(String command) {
+        return this.commands.isSupported(command);
+    }
+
+    /** 허가가 귀속하는 command 이름. 다른 민감 command와 겹치지 않게 접두사를 붙인다. */
+    static String grantCommandOf(String command) {
+        return "operator-" + command;
+    }
+
+    /**
+     * 확인 대화상자를 열 준비. 권한 → envelope 검증 → 멱등 키 → 허가 발급 → {@code REQUESTED} → 무장 순서다.
+     *
+     * @param idempotencyKey 규칙을 지난 멱등 키(컨트롤러가 먼저 본다)
+     */
+    Preparation prepare(HttpSession session, UUID userId, OperatorCommandApi.Proposal proposal,
+            String idempotencyKey, String correlationId) {
+        String command = proposal.command();
+        if (!this.commands.isSupported(command)) {
+            return new Preparation.Refused(NOT_FOUND);
+        }
+        Set<OperatorPermission> required = this.commands.permissionsOf(command);
+        if (!this.access.permits(userId, required)) {
+            return new Preparation.Refused(NOT_FOUND);
+        }
+        String keyDigest = this.commands.digestOf(idempotencyKey);
+        var validation = this.commands.validate(proposal);
+        if (validation instanceof OperatorCommandApi.Validation.Invalid invalid) {
+            this.commands.recordRefusedProposal(userId, proposal, invalid.code(), keyDigest, correlationId);
+            return new Preparation.Refused(invalid.code());
+        }
+        var accepted = ((OperatorCommandApi.Validation.Valid) validation).accepted();
+
+        var keyUse = this.commands.keyUse(userId, keyDigest, accepted.requestDigest());
+        if (keyUse instanceof OperatorCommandApi.KeyUse.Conflict) {
+            this.commands.recordRefusedProposal(userId, proposal, IDEMPOTENCY_CONFLICT, keyDigest, correlationId);
+            return new Preparation.Refused(IDEMPOTENCY_CONFLICT);
+        }
+        // 미리 본 판정이다. 확정적인 판정은 허가 발급 뒤 원장 잠금 안에서 다시 한다(`claim`).
+        String candidateId;
+        Instant requestedAt;
+        if (keyUse instanceof OperatorCommandApi.KeyUse.Open open) {
+            candidateId = open.operationId();
+            requestedAt = open.requestedAt();
+        } else {
+            candidateId = this.commands.newOperationId();
+            requestedAt = null;
+        }
+
+        String grantCommand = grantCommandOf(command);
+        String phrase = accepted.confirmationPhrase();
+        String confirmationHash = ActionGrant.canonicalConfirmationHash(ActionGrant.normalize(grantCommand),
+                ActionGrant.normalize(accepted.target()), phrase);
+        Envelope envelope = new Envelope(candidateId, userId, command, accepted.scope(), accepted.target(),
+                accepted.reason(), confirmationHash, accepted.policyVersion(), requestedAt, keyDigest,
+                accepted.requestDigest());
+
+        var reference = this.grants.issue(session, userId, grantCommand, accepted.target(), phrase);
+        if (reference.isEmpty()) {
+            this.commands.recordDecision(envelope, AuditOutcome.DENIED, REAUTHENTICATION_REQUIRED, correlationId);
+            return new Preparation.Refused(REAUTHENTICATION_REQUIRED);
+        }
+        /*
+         * 키 판정과 `REQUESTED` 추가를 원장 잠금 안의 한 트랜잭션으로 한다. 같은 새 키의 동시 준비 둘은 여기서 줄을
+         * 서고, 뒤의 것은 앞의 것이 쓴 operation을 받는다 — operation이 둘 생기지 않는다.
+         */
+        OperatorCommandApi.Claim claim;
+        try {
+            claim = this.commands.claim(envelope, correlationId);
+        } catch (RuntimeException failure) {
+            // 감사 없는 허가를 남기지 않는다.
+            this.grants.invalidateReference(userId, reference.get());
+            throw failure;
+        }
+        if (!(claim instanceof OperatorCommandApi.Claim.Claimed claimed)) {
+            this.grants.invalidateReference(userId, reference.get());
+            this.commands.recordRefusedProposal(userId, proposal, IDEMPOTENCY_CONFLICT, keyDigest, correlationId);
+            return new Preparation.Refused(IDEMPOTENCY_CONFLICT);
+        }
+        String operationId = claimed.operationId();
+        Instant recorded = claimed.requestedAt();
+
+        OperatorCommandFlow.Armed previous = OperatorCommandFlow.peekIncludingExpired(session);
+        if (previous != null && !previous.grantReference().equals(reference.get())) {
+            this.grants.invalidateReference(previous.userId(), previous.grantReference());
+            if (!previous.operationId().equals(operationId)) {
+                recordQuietly(envelopeOf(previous), AuditOutcome.CANCELLED, SUPERSEDED, correlationId);
+            }
+        }
+        // 남아 있는 재인증 무장은 옛 의도다. 방금 허가가 신선한 재인증 위에 섰다.
+        ReauthenticationFlow.discard(session);
+        OperatorCommandFlow.Armed armed = new OperatorCommandFlow.Armed(userId, operationId, command,
+                accepted.scope(), accepted.target(), accepted.reason(), accepted.policyVersion(), confirmationHash,
+                accepted.requestDigest(), recorded, keyDigest, reference.get(), phrase, session.getId(),
+                Instant.now());
+        OperatorCommandFlow.arm(session, armed);
+        return new Preparation.Armed(armed);
+    }
+
+    /**
+     * 확정.
+     *
+     * @param confirmation <b>사용자가 다시 입력한</b> 확인 문구. 무장의 문구와 정규화해 같아야 하고, 허가 소비의 확인
+     *     hash도 이 값으로 만든다
+     * @param idempotencyKey 준비에 쓴 것과 같은 멱등 키. 허가의 operation id다
+     */
+    Outcome confirm(HttpServletRequest httpRequest, HttpSession session, UUID userId, String command,
+            String operationId, String confirmation, String idempotencyKey, String correlationId) {
+        if (!this.commands.isSupported(command)) {
+            return new Outcome.Refused(NOT_FOUND);
+        }
+        Set<OperatorPermission> required = this.commands.permissionsOf(command);
+        if (!this.access.permits(userId, required)) {
+            // 게이트는 지났지만(command 권한은 남았다) 이 command의 권한 하나가 회수됐다. 남은 무장을 같은 규칙으로 맺는다.
+            abandonRevoked(session, userId, correlationId);
+            return new Outcome.Refused(NOT_FOUND);
+        }
+        String keyDigest = this.commands.digestOf(idempotencyKey);
+        Outcome replayed = replayed(userId, operationId, keyDigest);
+        if (replayed != null) {
+            return replayed;
+        }
+        OperatorCommandFlow.Armed armed = OperatorCommandFlow.peek(session);
+        if (armed == null
+                || !armed.userId().equals(userId)
+                || !armed.command().equals(command)
+                || !armed.operationId().equals(operationId)
+                || !armed.sessionId().equals(session.getId())
+                || !armed.keyDigest().equals(keyDigest)) {
+            return new Outcome.Refused(NOT_CONFIRMED);
+        }
+        Envelope envelope = envelopeOf(armed);
+        if (!ActionGrant.normalize(armed.confirmation()).equals(ActionGrant.normalize(confirmation))) {
+            // 허가를 소비하지 않는다. 무장도 그대로라 사용자가 문구를 고쳐 다시 확정할 수 있다.
+            this.commands.recordDecision(envelope, AuditOutcome.DENIED, CONFIRMATION_MISMATCH, correlationId);
+            return new Outcome.Refused(CONFIRMATION_MISMATCH);
+        }
+
+        String grantCommand = grantCommandOf(command);
+        AtomicReference<@Nullable ExportResult> ran = new AtomicReference<>();
+        Consumption consumption;
+        try {
+            consumption = this.grants.consume(
+                    new ConsumptionRequest(session, userId, armed.grantReference(), grantCommand, armed.target(),
+                            confirmation, idempotencyKey),
+                    () -> {
+                        ExportResult result = this.commands
+                                .completeExport(envelope, correlationId, () -> this.access.permits(userId, required))
+                                .orElseThrow(Refused::new);
+                        ran.set(result);
+                        return result.operationId() + "|" + result.upperSequence() + "|" + result.rowCount() + "|"
+                                + result.truncated();
+                    });
+        } catch (Refused revoked) {
+            // 소비·실행·완료 행이 함께 롤백됐다. 거절 행은 밖에서 쓰고, 이 무장은 다시 쓸 수 없으니 버린다.
+            recordQuietly(envelope, AuditOutcome.DENIED, ACCESS_REVOKED, correlationId);
+            abandon(session, armed);
+            return new Outcome.Refused(NOT_FOUND);
+        } catch (RuntimeException failure) {
+            // 롤백됐다. 실패 행을 남기되 그것마저 실패하면(같은 DB 장애) 삼킨다 — 응답은 어차피 500이다.
+            recordQuietly(envelope, AuditOutcome.FAILED, EXECUTION_FAILED, correlationId);
+            throw failure;
+        }
+        ExportResult result = ran.get();
+        if (result != null) {
+            // 이 요청이 실행했다: 무장은 다 썼고 세션은 회전하며 재인증 시각은 지워진다(SECURITY-ACTION-1.0).
+            OperatorCommandFlow.discard(session);
+            SessionRotation.completeSensitiveCommand(httpRequest);
+            LOG.info("operator command completed: command={} rows={} truncated={}", command, result.rowCount(),
+                    result.truncated());
+            List<OperatorAuditApi.Entry> rows;
+            try {
+                rows = this.commands.exportRows(result);
+            } catch (RuntimeException unreadable) {
+                /*
+                 * 실행은 이미 커밋됐다. 행을 다시 읽지 못한 사실만 남기고 실패로 답한다 — 클라이언트는 응답을 불확실로
+                 * 다루고 같은 키로 다시 확정하면 원장이 같은 묶음을 재생한다. 실패 행을 쓰지 않는다(실패가 아니다).
+                 */
+                LOG.warn("operator command completed but its rows were not read back: command={} failure={}", command,
+                        unreadable.getClass().getName());
+                throw unreadable;
+            }
+            return new Outcome.Completed(result, rows, true);
+        }
+        // 허가가 같은 키의 앞선 실행을 답했거나(동시 확정) 거부했다. 원장이 답한다.
+        Outcome settled = replayed(userId, operationId, keyDigest);
+        if (settled != null) {
+            return settled;
+        }
+        if (consumption instanceof Consumption.Denied) {
+            recordQuietly(envelope, AuditOutcome.DENIED, NOT_CONFIRMED, correlationId);
+        }
+        return new Outcome.Refused(NOT_CONFIRMED);
+    }
+
+    /**
+     * 이 세션의 그 command 무장을 버리고 <b>그 무장이 낳은 허가 하나만</b> 무효화하며 {@code CANCELLED} 행을 남긴다. 무장이
+     * 없거나 다른 사용자·다른 command의 것이면 아무것도 쓰지 않는다.
+     *
+     * @return 그 command를 아는가. 모르면 경로가 없는 것과 같다(404)
+     */
+    boolean cancel(HttpSession session, UUID userId, String command, String correlationId) {
+        if (!this.commands.isSupported(command)) {
+            // 모르는 type은 경로가 없는 것과 같다. 무장을 건드리지 않는다.
+            return false;
+        }
+        OperatorCommandFlow.Armed armed = OperatorCommandFlow.peekIncludingExpired(session);
+        if (armed == null || !armed.userId().equals(userId) || !armed.command().equals(command)) {
+            return true;
+        }
+        abandon(session, armed);
+        recordQuietly(envelopeOf(armed), AuditOutcome.CANCELLED, CANCELLED, correlationId);
+        return true;
+    }
+
+    /**
+     * 권한을 잃은 운영자의 무장을 정리한다 — 게이트({@link OperatorGate})가 확정·취소를 404로 끊기 직전에 부른다.
+     *
+     * <p>준비 뒤·확정 요청 전에 allowlist에서 빠지면 요청은 서비스에 닿지 못한다. 그때 무장과 허가가 남고 operation은
+     * {@code REQUESTED}만 남아 결말이 없다. 그래서 그 사용자의 무장이 있으면 무장을 버리고 허가 참조를 무효화하며
+     * {@code DENIED}({@value #ACCESS_REVOKED}) 행을 짧은 트랜잭션 하나로 더한다. 무장이 없거나 다른 사용자의 것이면
+     * 아무것도 쓰지 않는다 — 처음부터 운영자가 아닌 사용자의 요청은 원장에 흔적을 남기지 않는다.
+     */
+    void abandonRevoked(HttpSession session, UUID userId, String correlationId) {
+        OperatorCommandFlow.Armed armed = OperatorCommandFlow.peekIncludingExpired(session);
+        if (armed == null || !armed.userId().equals(userId)) {
+            return;
+        }
+        abandon(session, armed);
+        recordQuietly(envelopeOf(armed), AuditOutcome.DENIED, ACCESS_REVOKED, correlationId);
+    }
+
+    private void abandon(HttpSession session, OperatorCommandFlow.Armed armed) {
+        OperatorCommandFlow.discard(session);
+        this.grants.invalidateReference(armed.userId(), armed.grantReference());
+    }
+
+    private @Nullable Outcome replayed(UUID userId, String operationId, String keyDigest) {
+        return switch (this.commands.replay(userId, operationId, keyDigest)) {
+            case OperatorCommandApi.Replay.Stored stored ->
+                    new Outcome.Completed(stored.result(), this.commands.exportRows(stored.result()), false);
+            case OperatorCommandApi.Replay.Conflict conflict -> new Outcome.Refused(IDEMPOTENCY_CONFLICT);
+            case OperatorCommandApi.Replay.None none -> null;
+        };
+    }
+
+    private static Envelope envelopeOf(OperatorCommandFlow.Armed armed) {
+        return new Envelope(armed.operationId(), armed.userId(), armed.command(), armed.scope(), armed.target(),
+                armed.reason(), armed.confirmationHash(), armed.policyVersion(), armed.requestedAt(),
+                armed.keyDigest(), armed.requestDigest());
+    }
+
+    /** 결정 행을 쓰되 실패를 삼킨다. 롤백 뒤의 기록이고 응답은 이미 정해졌다. */
+    private void recordQuietly(Envelope envelope, AuditOutcome outcome, String code, String correlationId) {
+        try {
+            this.commands.recordDecision(envelope, outcome, code, correlationId);
+        } catch (DataAccessException unavailable) {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("operator audit decision not recorded: outcome={} failure={}", outcome,
+                        unavailable.getClass().getName());
+            }
+        }
+    }
+}

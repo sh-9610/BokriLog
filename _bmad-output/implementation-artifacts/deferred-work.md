@@ -335,3 +335,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-frontend-dialog-commons.md`
   summary: "Bybit 연결 성공 → 재인증 없이 해제 준비 → 403 안내" 경로는 Vitest만 고정하고 주입 origin e2e가 없다(로그인 수단 연결 → 해제 준비 경로만 `auth-entry.spec.ts`에 있다).
   evidence: `bybit-connection.spec.ts`에는 해제 시험 자체가 없어 한 단계를 더하는 일이 아니라 해제 왕복을 새로 쓰는 일이다. Epic 2 회고 AI-11(M2-4 브라우저 근거 보강)과 같은 묶음이다(리뷰 blind-hunter·verification-gap, 2026-10-07).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-1-operator-surface-audit-ledger.md`
+  summary: 준비만 하고 방치되거나 5분 허가가 만료된 운영 operation은 원장에 `REQUESTED` 한 행만 남고 결말 행이 없다 — 조회·export가 "만료로 끝남"을 따로 말하지 않는다.
+  evidence: 결말 행을 쓰려면 만료를 관측하는 주체(백그라운드 또는 다음 요청)가 필요한데 3.1은 백그라운드를 두지 않는다. 회수·문구 불일치·실행 실패·취소·대체는 결말 행을 남기도록 고쳤다(리뷰 edge-case-hunter, 2026-10-08).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-1-operator-surface-audit-ledger.md`
+  summary: 감사 actor digest에 키 버전·식별자가 없어 `BOKRILOG_AUDIT_DIGEST_KEY`를 교체하면 교체 전후 같은 수행자 행을 묶을 수 없고 어느 키의 digest인지도 알 수 없다.
+  evidence: `ActorDigest`는 키 하나로 HMAC만 만들고 `operations_audit_event`에 키 버전 열이 없다. 키 회전 절차는 production 자격정보를 소유하는 Story 3.8의 입력이다(리뷰 blind-hunter, 2026-10-08).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-1-operator-surface-audit-ledger.md`
+  summary: 운영 command 사유는 자유 텍스트이고 이메일 모양만 거절하므로 전화번호·이름·Bybit UID 같은 개인정보가 영구 원장에 들어갈 수 있고, `eraseActor`는 `reason`·`target`을 비식별하지 않는다.
+  evidence: `OperatorEnvelopeService`의 사유 검증과 `OperatorAuditRepository.eraseActor`의 UPDATE 범위. 사유 필드의 보존·삭제 분류는 법정 분리 보존 결정(G-5, SPEC Ask First)과 함께 정해야 한다(리뷰 blind-hunter, 2026-10-08).

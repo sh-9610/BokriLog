@@ -275,6 +275,22 @@ describe('SignedInScreen', () => {
     expect(vi.mocked(replaceLocation)).not.toHaveBeenCalled()
   })
 
+  it('서버가 운영자 화면을 골라도 대시보드는 밀려나지 않는다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: true, destination: 'operator', csrfToken: CSRF_TOKEN }),
+      ),
+    )
+
+    render(<SignedInScreen />)
+
+    // `next=/operator`로 로그인한 운영자의 확정 목적지는 `operator`다. 그 세션도 대시보드에 머문다(Story 3.1).
+    expect(
+      await screen.findByRole('heading', { level: 2, name: authContent.dashboard.heading }),
+    ).toBeInTheDocument()
+    expect(vi.mocked(replaceLocation)).not.toHaveBeenCalled()
+  })
+
   it('온보딩을 지나지 않은 계정은 온보딩으로 밀려난다', async () => {
     stubSessionRequest(() =>
       Promise.resolve(jsonResponse({ authenticated: true, destination: 'onboarding' })),

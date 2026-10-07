@@ -20,6 +20,8 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -80,6 +82,15 @@ class StatusApiTest {
 
     @LocalServerPort
     private int port;
+
+    /**
+     * Story 3.1의 감사 digest 키. API 기동의 필수값이라 이 컨텍스트에도 있어야 한다. 값은 시험 JVM이 만든다
+     * ({@link OperatorTestProperties}).
+     */
+    @DynamicPropertySource
+    static void operatorProperties(DynamicPropertyRegistry registry) {
+        OperatorTestProperties.registerProperties(registry);
+    }
 
     private final HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))

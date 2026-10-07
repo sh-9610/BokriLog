@@ -150,6 +150,14 @@ export const DASHBOARD_PATH = '/dashboard'
  */
 export const SETTINGS_PATH = '/settings'
 
+/**
+ * 보호된 운영자 화면(Story 3.1).
+ *
+ * 다섯 곳 가운데 하나다(위 `SETTINGS_PATH` 설명). 복귀 목적지로 보낼 수는 있지만 서버가 운영자에게만 그 목적지를
+ * 허용하고 아니면 대시보드로 접는다. 운영자 제어 자체는 이 번들에 없다 — 화면은 `React.lazy`로 따로 받는 chunk다.
+ */
+export const OPERATOR_PATH = '/operator'
+
 /** 서버가 실패 표지로 쓰는 쿼리 이름. `AuthFlowHandlers`와 같은 값이다. */
 export const NOTICE_PARAMETER = 'auth'
 
@@ -163,7 +171,12 @@ export const RETURN_DESTINATION_PARAMETER = 'next'
  * 값은 서버가 버리므로 여기서도 보내지 않는다 — 보내면 화면이 지키지 못할 약속을 URL에 싣는 것이
  * 된다.
  */
-const RETURN_DESTINATIONS: readonly string[] = [ONBOARDING_PATH, DASHBOARD_PATH, SETTINGS_PATH]
+const RETURN_DESTINATIONS: readonly string[] = [
+  ONBOARDING_PATH,
+  DASHBOARD_PATH,
+  SETTINGS_PATH,
+  OPERATOR_PATH,
+]
 
 /**
  * 지금 경로에서 시작하는 그 제공자의 인증 시작 링크 `href`.
@@ -575,6 +588,8 @@ export const authContent = {
     checking: '로그인 상태를 확인하고 있습니다.',
     /** 서버가 다른 목적지를 골랐다. 그 화면으로 문서를 다시 요청하는 동안 보여 준다. */
     redirecting: '로그인 상태에 맞는 화면으로 이동합니다.',
+    /** 따로 받는 화면 코드(chunk)를 받지 못했다. 다시 불러오기만 안내한다. */
+    screenLoadFailed: '화면을 불러오지 못했습니다. 페이지를 새로 고쳐 다시 시도해 주세요.',
   },
   /**
    * 두 인증 화면이 공유하는 재인증 패널의 카피.

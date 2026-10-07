@@ -8,15 +8,18 @@ import {
   DASHBOARD_PATH,
   linkNoticeKindOf,
   ONBOARDING_PATH,
+  OPERATOR_PATH,
   reauthNoticeKindOf,
   SETTINGS_PATH,
   SIGN_IN_PROVIDERS,
 } from './content/auth'
 import { entryContent } from './content/entry'
+import { operatorContent } from './content/operator'
 import { planConditionContent } from './content/planConditions'
 import {
   getObservedRequests,
   stubLinkStatusRequest,
+  stubOperatorAudit,
   stubPlanConditionState,
   stubSessionRequest,
 } from './test/setup'
@@ -259,5 +262,41 @@ describe('App 경로 맵', () => {
       ).toBeInTheDocument()
     }
     expect(getObservedRequests()).toEqual([])
+  })
+
+  it('운영자 경로는 따로 받는 운영자 화면을 마운트한다', async () => {
+    navigate(OPERATOR_PATH)
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: true, destination: 'operator', csrfToken: 'operator-csrf' }),
+      ),
+    )
+    stubOperatorAudit(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ code: 'NOT_FOUND', message: 'x', correlationId: 'c' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+
+    render(<App />)
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: operatorContent.notFound.heading }),
+    ).toBeInTheDocument()
+    expect(getObservedRequests()).toEqual([])
+  })
+
+  it('미인증으로 운영자 경로에 오면 `next`로 그 경로를 실어 보낸다', async () => {
+    navigate(OPERATOR_PATH)
+    stubSessionRequest(() =>
+      Promise.resolve(jsonResponse({ authenticated: false, destination: 'entry' })),
+    )
+
+    render(<App />)
+
+    const link = await screen.findByRole('link', { name: authContent.signIn.labels.google })
+    expect(link).toHaveAttribute('href', `${authorizePath('google')}?next=%2Foperator`)
   })
 })

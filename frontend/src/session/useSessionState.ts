@@ -5,6 +5,7 @@ import {
   DASHBOARD_PATH,
   noticePath,
   ONBOARDING_PATH,
+  OPERATOR_PATH,
   SESSION_ENDPOINT,
   SETTINGS_PATH,
 } from '../content/auth'
@@ -32,7 +33,7 @@ export type SessionState = 'authenticated' | 'checking' | 'unauthenticated'
  * 경로가 아니라 종류다(`GET /api/auth/session`). 서버가 경로 문자열을 내보내면 그 값이 리다이렉트
  * 입력으로 쓰일 자리가 생기므로, 경로를 아는 것은 아래 표 하나뿐이다.
  */
-export type SessionDestination = 'dashboard' | 'entry' | 'onboarding' | 'settings'
+export type SessionDestination = 'dashboard' | 'entry' | 'onboarding' | 'operator' | 'settings'
 
 export interface SessionSnapshot {
   readonly state: SessionState
@@ -85,6 +86,7 @@ export type SessionGate =
 const DESTINATION_PATHS = {
   dashboard: DASHBOARD_PATH,
   onboarding: ONBOARDING_PATH,
+  operator: OPERATOR_PATH,
   settings: SETTINGS_PATH,
 } as const
 
@@ -105,12 +107,20 @@ export type ScreenDestination = keyof typeof DESTINATION_PATHS
  * 돌아오는 자리도 그 화면이다), 미는 쪽으로 두면 미인증으로 `/settings`를 열어 로그인한 사용자가
  * `destination`이 `settings`로 굳어 그 세션 내내 대시보드에 닿지 못한다. 그래서 미는 일은 착지
  * 화면 둘(온보딩·대시보드) 사이에서만 일어난다.
+ *
+ * **운영자 화면도 같은 자리다(Story 3.1).** 운영자가 스스로 여는 보호 화면이고, 서버가 그 목적지를 운영자에게만
+ * 허용하므로 그것으로 굳은 세션도 다른 화면에 머물 수 있어야 한다.
  */
 function staysOn(expected: ScreenDestination, destination: SessionDestination): boolean {
   if (destination === expected) {
     return true
   }
-  return expected === 'settings' || destination === 'settings'
+  return (
+    expected === 'settings' ||
+    destination === 'settings' ||
+    expected === 'operator' ||
+    destination === 'operator'
+  )
 }
 
 /**
@@ -143,7 +153,12 @@ const UNAUTHENTICATED: SessionSnapshot = {
 
 /** 서버가 준 목적지 종류. 아는 값이 아니면 `entry`다. */
 function destinationOf(value: unknown): SessionDestination {
-  return value === 'dashboard' || value === 'onboarding' || value === 'settings' ? value : 'entry'
+  return value === 'dashboard' ||
+    value === 'onboarding' ||
+    value === 'operator' ||
+    value === 'settings'
+    ? value
+    : 'entry'
 }
 
 /** 서버가 준 CSRF 토큰. 비어 있거나 문자열이 아니면 없는 것과 같다. */

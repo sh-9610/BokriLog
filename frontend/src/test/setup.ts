@@ -42,6 +42,13 @@ import {
   BYBIT_REVOCATION_PATH,
 } from '../content/connection'
 import { FIRST_SNAPSHOT_PATH } from '../content/firstSnapshot'
+import {
+  OPERATOR_AUDIT_ENDPOINT,
+  OPERATOR_EXPORT_CANCEL_ENDPOINT,
+  OPERATOR_EXPORT_CONFIRM_ENDPOINT,
+  OPERATOR_EXPORT_ENDPOINT,
+  OPERATOR_OPERATIONS_ENDPOINT,
+} from '../content/operator'
 import { PLAN_END_CANCEL_PATH, PLAN_END_CONFIRM_PATH, PLAN_END_PATH } from '../content/planEnd'
 import { DASHBOARD_PATH } from '../content/planResult'
 import { DASHBOARD_SYNC_PATH } from '../content/planSync'
@@ -339,6 +346,30 @@ export function stubRevocationConfirmRequest(responder: RequestResponder): void 
 }
 export function stubRevocationCancelRequest(responder: RequestResponder): void {
   responders.set(requestKey('POST', BYBIT_REVOCATION_CANCEL_PATH), responder)
+}
+
+/**
+ * 운영자 표면(Story 3.1)의 요청들을 각각 이 시험 동안만 허용한다. 감사 조회는 기간·결과·cursor를 쿼리로 보내므로
+ * 근거·이력과 같이 경로로 열고 응답 함수가 URL 전체를 받는다. 준비·확정·취소는 따로 연다 — 준비만 연 시험에서 확정이
+ * 나가면 전역 거부가 그것을 기록한다.
+ */
+export function stubOperatorAudit(responder: QueryResponder): void {
+  queryResponders.set(requestKey('GET', OPERATOR_AUDIT_ENDPOINT), responder)
+  responders.set(requestKey('GET', OPERATOR_AUDIT_ENDPOINT), (init) =>
+    responder(OPERATOR_AUDIT_ENDPOINT, init),
+  )
+}
+export function stubOperatorOperation(operationId: string, responder: RequestResponder): void {
+  responders.set(requestKey('GET', `${OPERATOR_OPERATIONS_ENDPOINT}/${operationId}`), responder)
+}
+export function stubOperatorExportPrepare(responder: RequestResponder): void {
+  responders.set(requestKey('POST', OPERATOR_EXPORT_ENDPOINT), responder)
+}
+export function stubOperatorExportConfirm(responder: RequestResponder): void {
+  responders.set(requestKey('POST', OPERATOR_EXPORT_CONFIRM_ENDPOINT), responder)
+}
+export function stubOperatorExportCancel(responder: RequestResponder): void {
+  responders.set(requestKey('POST', OPERATOR_EXPORT_CANCEL_ENDPOINT), responder)
 }
 
 /** 허용된 세션 확인 요청의 기록. 몇 번 불렸는지 단정하는 데 쓴다. */
