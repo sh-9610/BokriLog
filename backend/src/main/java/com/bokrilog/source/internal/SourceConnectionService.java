@@ -310,4 +310,14 @@ class SourceConnectionService implements SourceConnectionApi {
     private static StoreOutcome rejected(SourceRejectionReason reason) {
         return new StoreOutcome.Rejected(reason);
     }
+
+    @Override
+    public Optional<ConnectionTarget> connectionTarget(UUID connectionId) {
+        return this.repository.connectionTarget(connectionId);
+    }
+
+    @Override
+    public long countActiveConnections() {
+        return this.repository.countActive();
+    }
 }

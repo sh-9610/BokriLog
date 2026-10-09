@@ -7,6 +7,11 @@ export type ReferencedOutcome<T> =
   | { readonly kind: 'failed'; readonly retryable: boolean }
   /** 거절(403)이거나 세션이 끝났다(401). 조회 결과를 메모리에서 지우고 `onDenied`가 불린다. */
   | { readonly kind: 'denied'; readonly cause: 'refused' | 'signedOut' }
+  /**
+   * 계산 표시 제한(409 `CALCULATION_DISPLAY_RESTRICTED`, Story 3.2). 다시 물어도 바뀌지 않는다 — 운영자가 제한을
+   * 풀어야 한다. 실패가 아니라 그 결과를 지금 보이지 않는다는 답이다.
+   */
+  | { readonly kind: 'restricted' }
 
 export interface ReferencedRead<T> {
   /** 동일 출처 경로. 요청 옵션(`credentials`·`cache`·`Accept`·`signal`)은 엔진이 붙인다. */
@@ -141,6 +146,11 @@ export function useReferencedRequest({
           }
           if (response.status === 404) {
             settle({ kind: 'failed', retryable: false })
+            return
+          }
+          // 409: 계산 표시 제한(Story 3.2). 다시 물어도 같은 답이므로 재시도할 수 있는 실패로 접지 않는다.
+          if (response.status === 409) {
+            settle({ kind: 'restricted' })
             return
           }
           const payload: unknown = response.status === 200 ? await response.json() : null

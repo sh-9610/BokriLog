@@ -91,7 +91,7 @@ class PlanSyncServiceTest {
         when(guard.base(USER)).thenReturn(Optional.of(base));
         when(syncs.active(USER, PLAN)).thenReturn(Optional.empty());
         when(publications.databaseNow()).thenReturn(now);
-        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any())).thenReturn(null);
+        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any(), any())).thenReturn(null);
         when(syncs.latest(USER, PLAN)).thenReturn(Optional.empty());
         when(syncs.lastAdmission(USER, PLAN)).thenReturn(Optional.empty());
         when(syncs.longGapObserved(USER, PLAN, CALCULATION)).thenReturn(false);
@@ -162,7 +162,7 @@ class PlanSyncServiceTest {
         eligible(VERIFIED.plus(Duration.ofDays(40)));
         SyncJob running = new SyncJob(JOB, "SYNC", null, "ENTRY", "RUNNING", "COLLECTION", null, PUBLISHED, null);
         when(syncs.active(USER, PLAN)).thenReturn(Optional.of(running));
-        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any())).thenReturn("RESTRICTED");
+        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any(), any())).thenReturn("RESTRICTED");
         when(syncs.lastAdmission(USER, PLAN)).thenReturn(Optional.of(VERIFIED.plus(Duration.ofDays(40))));
         for (SyncTrigger trigger : SyncTrigger.values())
             assertThat(service().admit(USER, trigger, KEY)).isEqualTo(new SyncAdmission.Joined(running));
@@ -172,7 +172,7 @@ class PlanSyncServiceTest {
     @Test
     void anUnavailableSyncIsRefusedBeforeTheLongGapAndTheCooldown() {
         eligible(VERIFIED.plus(Duration.ofDays(40)));
-        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any())).thenReturn("PLAN_PERIOD_ENDED");
+        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any(), any())).thenReturn("PLAN_PERIOD_ENDED");
         assertThat(service().admit(USER, SyncTrigger.MANUAL, KEY)).isEqualTo(new SyncAdmission.Refused("SYNC_UNAVAILABLE"));
         verify(syncs, never()).insert(any());
     }
@@ -292,9 +292,9 @@ class PlanSyncServiceTest {
         when(syncs.active(USER, PLAN)).thenReturn(Optional.of(queued));
         assertThat(service().state(USER, base).availability()).isEqualTo("IN_PROGRESS");
         when(syncs.active(USER, PLAN)).thenReturn(Optional.empty());
-        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any())).thenReturn("RESTRICTED");
+        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any(), any())).thenReturn("RESTRICTED");
         assertThat(service().state(USER, base)).isEqualTo(new SyncState("UNAVAILABLE", "RESTRICTED", null, null));
-        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any())).thenReturn(null);
+        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any(), any())).thenReturn(null);
         when(publications.databaseNow()).thenReturn(VERIFIED.plus(Duration.ofDays(31)));
         assertThat(service().state(USER, base)).isEqualTo(new SyncState("LONG_GAP", null, null, null));
         when(publications.databaseNow()).thenReturn(admitted.plusSeconds(30));
@@ -669,5 +669,33 @@ class PlanSyncServiceTest {
         assertThat(PlanSyncService.completionOpen(held, false)).isTrue();
         assertThat(PlanSyncService.completionOpen(held, true)).as("held for good").isFalse();
         assertThat(PlanSyncService.completionOpen(confirmed, false)).isFalse();
+    }
+
+    // ---------------------------------------------------------------- Story 3.2 lease 검사 지점
+
+    /**
+     * lease가 검사 지점이다(Story 3.2): 접수 뒤 걸린 동기화 제한은 claim 트랜잭션에서 작업을 {@code BLOCKED}로 끝내고
+     * 작업을 돌려주지 않는다 — worker가 {@code run}에 들어가지 않으므로 단계도 제공자 호출도 없다.
+     */
+    @Test
+    void aSyncRestrictionEndsTheAttemptInsideTheClaim() {
+        when(syncs.claim()).thenReturn(Optional.of(new PlanSyncRepository.Claimed(lease, false, false)));
+        when(guard.syncRestricted(lease)).thenReturn(true);
+        when(syncs.finish(lease, "BLOCKED", "NOT_PERMITTED")).thenReturn(Optional.empty());
+
+        assertThat(service().claim()).isEmpty();
+        verify(syncs).finish(lease, "BLOCKED", "NOT_PERMITTED");
+        verify(syncs, never()).stage(any(), any());
+        org.mockito.Mockito.verifyNoInteractions(sources);
+    }
+
+    /** 제한이 없으면 claim은 작업을 그대로 돌려주고 끝내지 않는다. */
+    @Test
+    void anUnrestrictedClaimHandsTheAttemptToTheWorker() {
+        when(syncs.claim()).thenReturn(Optional.of(new PlanSyncRepository.Claimed(lease, false, false)));
+        when(guard.syncRestricted(lease)).thenReturn(false);
+
+        assertThat(service().claim()).contains(lease);
+        verify(syncs, never()).finish(any(), any(), any());
     }
 }

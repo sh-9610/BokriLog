@@ -3,11 +3,15 @@ package com.bokrilog.sync.internal;
 import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
+import com.bokrilog.calculation.PlanCalculator;
 import com.bokrilog.operations.OperationalRestrictionApi;
+import com.bokrilog.operations.RestrictionFeature;
+import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.PlanPublicationPort;
 import java.time.Instant;
+import java.util.EnumSet;
 import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
@@ -23,9 +27,6 @@ import org.springframework.stereotype.Component;
  */
 @Component
 class PlanSyncGuard {
-    /** The command name operators restrict to stop incremental syncs. */
-    static final String PLAN_SYNC_COMMAND = "plan-sync";
-
     static final String RESTRICTED = "RESTRICTED";
     static final String CONNECTION_UNAVAILABLE = "CONNECTION_UNAVAILABLE";
     /**
@@ -101,9 +102,9 @@ class PlanSyncGuard {
      * Why no completion or post-end attempt can run now (Story 2.14), or {@code null}: the guard's own reasons without
      * the plan's end — a restriction, or a connection or membership that is not the plan's own any more.
      */
-    @Nullable String completionUnavailableReason(UUID user, UUID membershipId, UUID portfolioId, UUID connectionId,
-            UUID providerAccountId) {
-        if (restricted()) return RESTRICTED;
+    @Nullable String completionUnavailableReason(UUID user, UUID planId, UUID membershipId, UUID portfolioId,
+            UUID connectionId, UUID providerAccountId) {
+        if (syncRestricted(planId, portfolioId, connectionId)) return RESTRICTED;
         if (!sameConnection(user, connectionId, providerAccountId)
                 || !sameMembership(user, membershipId, portfolioId, connectionId, providerAccountId))
             return connectionCause(user, connectionId);
@@ -116,24 +117,39 @@ class PlanSyncGuard {
     }
 
     /**
-     * The commands whose restriction stops a sync: its own, and the stages and publication it reuses (the
-     * Bybit read, the collection and the publication). The plan-condition command is not one of them — a sync
-     * changes no condition.
+     * 동기화 제한이 이 계획의 동기화를 막는가(Story 3.2) — {@code SYNC}가 그 계획, portfolio, 연결, 또는 전역에 걸렸는가.
+     * 접수·lease·모든 단계·발행이 읽는다. 판독 실패는 예외다(fail-closed).
      */
-    boolean restricted() {
-        return restrictions.isRestricted(PLAN_SYNC_COMMAND)
-                || restrictions.isRestricted(SyncJobService.SYNC_COMMAND)
-                || restrictions.isRestricted(SyncJobService.INITIAL_INPUTS_COMMAND)
-                || restrictions.isRestricted(PlanPublicationService.PUBLICATION_COMMAND);
+    boolean syncRestricted(UUID planId, UUID portfolioId, UUID connectionId) {
+        return restrictions.blocks(EnumSet.of(RestrictionFeature.SYNC), subject(planId, portfolioId, connectionId));
+    }
+
+    /** 작업의 {@link #syncRestricted}: 접수된 계획·portfolio·연결로 본다. */
+    boolean syncRestricted(PlanSyncRepository.Lease lease) {
+        return syncRestricted(lease.planId(), lease.portfolioId(), lease.connectionId());
+    }
+
+    /**
+     * 증분 발행을 제한이 막는가(Story 3.2) — 동기화, 또는 발행할 계산의 표시가 그 계획·portfolio·연결·계산 정책
+     * ({@code CALC-1.0})에 걸렸는가. 어느 쪽이든 걸려 있으면 공식 포인터를 옮기지 않는다.
+     */
+    boolean publicationRestricted(PlanSyncRepository.Lease lease) {
+        return restrictions.blocks(EnumSet.of(RestrictionFeature.SYNC, RestrictionFeature.CALCULATION_DISPLAY),
+                subject(lease.planId(), lease.portfolioId(), lease.connectionId())
+                        .withCalculationPolicy(PlanCalculator.CALCULATION_POLICY));
+    }
+
+    private static RestrictionSubject subject(UUID planId, UUID portfolioId, UUID connectionId) {
+        return RestrictionSubject.none().withPlan(planId).withPortfolio(portfolioId).withConnection(connectionId);
     }
 
     /**
      * Why no sync can run now, or {@code null}: a restriction, a connection or membership that is not the plan's
      * own any more (gone, replaced or ended), or the plan's end reached on the database clock.
      */
-    @Nullable String unavailableReason(UUID user, UUID membershipId, UUID portfolioId, UUID connectionId,
+    @Nullable String unavailableReason(UUID user, UUID planId, UUID membershipId, UUID portfolioId, UUID connectionId,
             UUID providerAccountId, Instant endAt, Instant now) {
-        if (restricted()) return RESTRICTED;
+        if (syncRestricted(planId, portfolioId, connectionId)) return RESTRICTED;
         if (!sameConnection(user, connectionId, providerAccountId)
                 || !sameMembership(user, membershipId, portfolioId, connectionId, providerAccountId))
             return connectionCause(user, connectionId);
@@ -168,7 +184,7 @@ class PlanSyncGuard {
      */
     @Nullable String blocked(PlanSyncRepository.Lease lease) {
         UUID user = lease.userId();
-        if (!writable(user) || restricted()) return NOT_PERMITTED;
+        if (!writable(user) || syncRestricted(lease)) return NOT_PERMITTED;
         if (lease.completing() || lease.postEnd()) return completedBlocked(lease);
         var plan = plans.activePlan(user).orElse(null);
         if (plan == null) {

@@ -351,6 +351,8 @@ export type AdjustmentView =
       readonly read: AdjustmentRead
     }
   | { readonly kind: 'denied'; readonly cause: 'refused' | 'signedOut' }
+  /** 계산 표시 제한이 이 결과의 조정 이력을 막는다(Story 3.2). 재시도가 없다. */
+  | { readonly kind: 'restricted' }
 
 export interface AdjustmentHistoryState {
   readonly view: AdjustmentView
@@ -443,7 +445,9 @@ export function useAdjustmentHistory(
               ? { kind: 'open', direction, list: outcome.value, read: { kind: 'ready' } }
               : outcome.kind === 'denied'
                 ? { kind: 'denied', cause: outcome.cause }
-                : failed(outcome.retryable),
+                : outcome.kind === 'restricted'
+                  ? { kind: 'restricted' }
+                  : failed(outcome.retryable),
           )
         },
       })
@@ -503,6 +507,8 @@ export function adjustmentAnnouncement(view: AdjustmentView): string | null {
       return null
     case 'denied':
       return view.cause === 'signedOut' ? copy.status.signedOut : copy.status.denied
+    case 'restricted':
+      return copy.status.restricted
     case 'open': {
       const { read, list } = view
       if (read.kind === 'loading') return read.more ? copy.status.loadingMore : copy.status.loading

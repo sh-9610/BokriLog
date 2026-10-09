@@ -537,6 +537,12 @@ export function CalculationEvidence({
                 )}
               </div>
             ) : null}
+            {view.kind === 'restricted' ? (
+              // 계산 표시 제한(Story 3.2): 문장 하나뿐이다. 다시 요청해도 같으므로 재시도를 두지 않는다.
+              <div className={styles.notice}>
+                <p>{copy.failure.restricted}</p>
+              </div>
+            ) : null}
             {/* One place for the retry control, so it is the same element before and during a retry. */}
             {retryable || retrying ? (
               <button

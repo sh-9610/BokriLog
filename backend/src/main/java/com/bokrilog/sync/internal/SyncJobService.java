@@ -4,6 +4,8 @@ import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.operations.OperationalRestrictionApi;
+import com.bokrilog.operations.RestrictionFeature;
+import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.sync.InitialInputsPlanPort;
 import com.bokrilog.sync.PlanPublicationPort;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
@@ -26,16 +28,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 class SyncJobService implements SyncJobApi {
     private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(SyncJobService.class);
-    static final String SYNC_COMMAND="first-snapshot";
-    static final String CONNECTION_COMMAND="bybit-connection-create";
-    static final String INITIAL_INPUTS_COMMAND="initial-source-event-collection";
-    /** The plan module's condition command, kept here because sync must not depend on plan; {@code SyncCommandNamesTest} pins it. */
-    static final String PLAN_CONDITION_COMMAND="plan-condition-create";
-    /**
-     * The plan module's early-end command (Story 2.13), kept here for the same reason; {@code SyncCommandNamesTest} pins
-     * it. Its restriction is what the ready dashboard's plan-end part reports as {@code RESTRICTED}.
-     */
-    static final String PLAN_END_COMMAND="plan-end";
     private final PlanPublicationPort publicationPlans;
     private final SyncJobRepository jobs;
     private final InitialCollectionRepository initialJobs;
@@ -78,8 +70,19 @@ class SyncJobService implements SyncJobApi {
     }
     boolean eligible(UUID userId) {
         return accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)==AccessDecision.ALLOWED
-            && !restrictions.isRestricted(SYNC_COMMAND)
-            && !restrictions.isRestricted(CONNECTION_COMMAND);
+            && !syncRestricted(userId);
+    }
+    /**
+     * 동기화 제한이 이 사용자의 첫 스냅샷·초기 입력을 막는가(Story 3.2) — {@code SYNC}가 사용자의 지금 portfolio·연결,
+     * 또는 전역에 걸렸는가. 아직 계획이 없으므로 계획 제한은 적용되지 않고, 신규 연결 제한도 적용되지 않는다 — 이
+     * 파이프라인은 이미 있는 연결 위에서 돈다(NFR-17의 독립성). 판독 실패는 예외다(fail-closed).
+     */
+    private boolean syncRestricted(UUID userId) {
+        var membership=portfolios.activeSource(userId).orElse(null);
+        var connection=sources.snapshotConnection(userId).orElse(null);
+        return restrictions.blocks(java.util.EnumSet.of(RestrictionFeature.SYNC),RestrictionSubject.none()
+                .withPortfolio(membership==null ? null : membership.portfolioId())
+                .withConnection(connection==null ? null : connection.connectionId()));
     }
     @Override
     public Optional<Job> admit(@Nullable UUID userId, String key) {
@@ -203,8 +206,7 @@ class SyncJobService implements SyncJobApi {
                         portfolios.officialValue(userId).orElse(null),false,false,true));
             return Optional.of(new State(null,null,false,false,false));
         }
-        if (restrictions.isRestricted(SYNC_COMMAND)
-                || restrictions.isRestricted(CONNECTION_COMMAND))
+        if (syncRestricted(userId))
             return Optional.of(new State(null,null,true,true,false));
         return Optional.of(new State(jobs.latest(userId).orElse(null),
                 portfolios.officialValue(userId).orElse(null),true,false,false));
@@ -702,10 +704,7 @@ class SyncJobService implements SyncJobApi {
     }
     private boolean initialEligible(UUID userId) {
         return accounts.decide(userId,userId,AccountAccessKind.WRITE)==AccessDecision.ALLOWED
-                && !restrictions.isRestricted(INITIAL_INPUTS_COMMAND)
-                && !restrictions.isRestricted(PLAN_CONDITION_COMMAND)
-                && !restrictions.isRestricted(SYNC_COMMAND)
-                && !restrictions.isRestricted(CONNECTION_COMMAND);
+                && !syncRestricted(userId);
     }
     private static final class PublicationBlocked extends RuntimeException {
         private static final long serialVersionUID = 1L;

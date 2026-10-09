@@ -16,15 +16,16 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * 운영자 표면 시험의 공통 배선(Story 3.1).
+ * 운영자 표면 시험의 공통 배선(Story 3.1·3.2).
  *
- * <p>{@link AuthFlowTestBase}의 컨텍스트를 그대로 쓴다 — 새 {@code @DynamicPropertySource}가 없다. 운영자는 시험마다
+ * <p>{@link AuthFlowTestBase}의 컨텍스트를 그대로 쓴다 — 새 {@code @DynamicPropertySource}가 없다. Story 3.2의 제한
+ * 대상(계획·연결)을 실제로 만들려고 {@link PlanSyncTestBase}의 발행 도구를 물려받는다(그것도 같은 컨텍스트다). 운영자는 시험마다
  * {@link OperatorAccess#reinterpret} 훅으로 세우고 끝나면 비운다. 컨텍스트가 시험 클래스 사이에 공유되므로 비우지 않으면
  * 다음 클래스가 "운영자 없음"을 전제한 단정에서 엉뚱하게 통과하거나 실패한다.
  *
  * <p>멱등 키·확인 문구는 실행 시점에 만든다(키 모양 리터럴은 gitleaks가 잡는다).
  */
-abstract class OperatorTestBase extends AuthFlowTestBase {
+abstract class OperatorTestBase extends PlanSyncTestBase {
 
     static final String GOOGLE = AuthSecurityConfig.GOOGLE_REGISTRATION_ID;
 
@@ -263,5 +264,54 @@ abstract class OperatorTestBase extends AuthFlowTestBase {
         if (waiting < 1) {
             throw new IllegalStateException("허가 행 잠금 대기자가 없다.");
         }
+    }
+
+    // ------------------------------------------------------------------ Story 3.2 제한 command
+
+    static String commandPath(String command) {
+        return OperatorGate.COMMANDS_PATH + "/" + command;
+    }
+
+    HttpResponse<String> prepareRestriction(Signed signed, String command, @Nullable String scope,
+            @Nullable String target, @Nullable String reason, @Nullable String key) throws Exception {
+        return sendJson("POST", commandPath(command), exportBody(scope, target, reason), signed.cookie(),
+                headers(signed.csrf(), key));
+    }
+
+    HttpResponse<String> confirmRestriction(Signed signed, String command, String operationId, String confirmation,
+            @Nullable String key) throws Exception {
+        return sendJson("POST", commandPath(command) + "/confirm",
+                "{\"operationId\":\"" + operationId + "\",\"confirmation\":\"" + confirmation + "\"}",
+                signed.cookie(), headers(signed.csrf(), key));
+    }
+
+    HttpResponse<String> restrictionsGet(Signed signed) throws Exception {
+        return get(OperatorController.RESTRICTIONS_PATH, signed.cookie());
+    }
+
+    static String phraseIn(String body) {
+        Object value = topLevelFieldsOf(body).get("confirmationPhrase");
+        return value instanceof String text ? text : "";
+    }
+
+    /** 준비 → 확정. 둘 다 200이어야 한다. 확정 응답과 회전한 세션을 돌려준다. */
+    record Restricted(Signed signed, HttpResponse<String> prepared, HttpResponse<String> confirmed) {}
+
+    Restricted restrictVia(Signed signed, String command, String scope, String target, String key)
+            throws Exception {
+        var prepared = prepareRestriction(signed, command, scope, target, "장애 범위 제한", key);
+        if (prepared.statusCode() != 200) {
+            throw new IllegalStateException("준비: " + prepared.statusCode() + " " + prepared.body());
+        }
+        var confirmed = confirmRestriction(signed, command, operationIdIn(prepared.body()), phraseIn(prepared.body()),
+                key);
+        if (confirmed.statusCode() != 200) {
+            throw new IllegalStateException("확정: " + confirmed.statusCode() + " " + confirmed.body());
+        }
+        return new Restricted(after(signed, confirmed), prepared, confirmed);
+    }
+
+    long restrictionCount() {
+        return jdbc().sql("SELECT count(*) FROM operations_restriction").query(Long.class).single();
     }
 }

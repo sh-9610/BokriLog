@@ -249,4 +249,13 @@ class PortfolioRepository {
                 .param("userId", userId)
                 .update();
     }
+
+    /** 운영 제한의 대상 확인(Story 3.2): id로 찾은 portfolio와 그 소유자, 활성 source의 유무. */
+    Optional<com.bokrilog.portfolio.PortfolioMembershipApi.PortfolioTarget> portfolioTarget(UUID portfolioId) {
+        return this.jdbc.sql("SELECT p.portfolio_id,p.user_id,EXISTS(SELECT 1 FROM portfolio_source_membership m "
+                + "WHERE m.portfolio_id=p.portfolio_id AND m.ended_at IS NULL) FROM portfolio p WHERE p.portfolio_id=:p")
+            .param("p",portfolioId)
+            .query((rs,n)->new com.bokrilog.portfolio.PortfolioMembershipApi.PortfolioTarget(
+                rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),rs.getBoolean(3))).optional();
+    }
 }

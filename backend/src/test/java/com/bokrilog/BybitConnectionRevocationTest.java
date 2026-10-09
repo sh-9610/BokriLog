@@ -838,9 +838,9 @@ class BybitConnectionRevocationTest extends PlanSyncTestBase {
     void anOperationalRestrictionDoesNotStopTheRevocation() throws Exception {
         Signed signed = signedInWithPlan("revoke-restricted");
         UUID connection = connectionOf(signed.user());
-        for (String command : List.of(BybitRevocationCommandService.COMMAND, BybitConnectionService.COMMAND,
-                "plan-sync", "first-snapshot"))
-            restrictCommand(command);
+        // 모든 기능을 전역으로 막는다(Story 3.2): 해제는 그 어느 것도 읽지 않는다.
+        for (var feature : com.bokrilog.operations.RestrictionFeature.values())
+            restrictGlobally(feature);
         assertThat(revoke(signed, connection, key("revoke-restricted")).statusCode()).isEqualTo(200);
         assertThat(connectionStatus(connection)).isEqualTo("REVOKED");
     }

@@ -56,4 +56,27 @@ public interface PlanConditionApi {
     Optional<CollectionIntent> collectionIntent(@Nullable UUID userId, UUID intentId);
     /** 계획·종료 기록·intent·확인·멱등 데이터를 지운다. 다른 사용자 것은 남는다. 멱등하다. */
     void erasePlanData(@Nullable UUID userId);
+
+    // ------------------------------------------------------------------ Story 3.2
+
+    /**
+     * 운영 제한의 대상 확인에 쓰는 계획 하나(Story 3.2). 사용자 없이 id로 찾는다 — 운영자 표면이 부른다.
+     *
+     * @param userId 소유자. 제한 행의 귀속이다
+     * @param connectionId 계획이 기록한 제공자 연결
+     * @param status 계획 상태 — {@code ACTIVE}·{@code ENDED_EARLY}·{@code COMPLETED}
+     */
+    record PlanTarget(UUID planId, UUID userId, UUID portfolioId, UUID connectionId, String status,
+            String calculationPolicy) {}
+
+    /** 그 계획. 없으면 빈 값이다. */
+    Optional<PlanTarget> planTarget(UUID planId);
+
+    /**
+     * 조건에 맞는 계획의 수. 운영 제한의 영향 미리보기가 쓴다. {@code null}인 조건은 거르지 않는다.
+     *
+     * @param activeOnly 참이면 활성 계획만 센다
+     */
+    long countPlans(boolean activeOnly, @Nullable UUID userId, @Nullable UUID portfolioId,
+            @Nullable String calculationPolicy);
 }

@@ -216,11 +216,12 @@ describe('useReferencedRequest', () => {
     expect(result.current.inFlight()).toBe(false)
   })
 
-  it('상태 코드를 옮긴다: 401은 세션 종료, 403은 거절, 404는 재시도 불가, 그 밖과 깨진 본문은 재시도 가능', async () => {
+  it('상태 코드를 옮긴다: 401은 세션 종료, 403은 거절, 404는 재시도 불가, 409는 계산 표시 제한, 그 밖과 깨진 본문은 재시도 가능', async () => {
     answers(
       () => Promise.resolve(json({}, 401)),
       () => Promise.resolve(json({}, 403)),
       () => Promise.resolve(json({}, 404)),
+      () => Promise.resolve(json({ code: 'CALCULATION_DISPLAY_RESTRICTED' }, 409)),
       () => Promise.resolve(json({}, 503)),
       () => Promise.resolve(json({ value: 1 })),
       () => Promise.reject(new TypeError('network')),
@@ -232,6 +233,7 @@ describe('useReferencedRequest', () => {
       { kind: 'denied', cause: 'signedOut' },
       { kind: 'denied', cause: 'refused' },
       { kind: 'failed', retryable: false },
+      { kind: 'restricted' },
       { kind: 'failed', retryable: true },
       { kind: 'failed', retryable: true },
       { kind: 'failed', retryable: true },
@@ -246,9 +248,9 @@ describe('useReferencedRequest', () => {
       expect(settle).toHaveBeenCalledWith(outcome)
       expect(result.current.inFlight()).toBe(false)
     }
-    // 거절·세션 종료에만 불린다.
+    // 거절·세션 종료에만 불린다. 계산 표시 제한은 대시보드를 다시 읽게 하지 않는다.
     expect(onDenied).toHaveBeenCalledTimes(2)
-    expect(reads()).toBe(7)
+    expect(reads()).toBe(8)
   })
 
   it('요청 중에 `onDenied`가 바뀌면 결말 시점의 최신 콜백이 불린다', async () => {

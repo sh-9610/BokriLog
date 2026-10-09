@@ -414,8 +414,18 @@ public interface SyncJobApi {
      * One dashboard read and what it learned about the bundle. {@code consistency} is
      * {@link BundleConsistency#NOT_READ} when the account was refused before the read; a bundle read and
      * then dropped by the second deletion check keeps the consistency it was read with.
+     *
+     * <p>{@code displayRestricted}(Story 3.2): 계산 표시 제한이 보이는 결과를 막는다 — 그 계획, portfolio, 계산 정책, 또는
+     * 전역. 묶음은 그대로 읽어 온전한지 판정하고, HTTP 표면이 상태·계획 정체성·다음 행동을 두고 계산 값을 뺀다. 공식
+     * 기록은 아무것도 바뀌지 않는다.
      */
-    record DashboardRead(Dashboard dashboard, BundleConsistency consistency) {}
+    record DashboardRead(Dashboard dashboard, BundleConsistency consistency, boolean displayRestricted) {
+
+        /** 계산 표시가 제한되지 않은 읽기. */
+        public DashboardRead(Dashboard dashboard, BundleConsistency consistency) {
+            this(dashboard, consistency, false);
+        }
+    }
 
     /**
      * The user's dashboard (Story 2.8): the account's own access is checked, the plan, pointer,
@@ -568,7 +578,12 @@ public interface SyncJobApi {
 
     /** The outcome of one evidence read. Only {@link Found} carries lineage. */
     sealed interface EvidenceOutcome permits EvidenceOutcome.NotPermitted, EvidenceOutcome.NotFound,
-            EvidenceOutcome.Unavailable, EvidenceOutcome.Found {
+            EvidenceOutcome.Unavailable, EvidenceOutcome.Restricted, EvidenceOutcome.Found {
+        /**
+         * 참조는 현재 포인터지만 계산 표시 제한이 그 결과를 막는다(Story 3.2). 계보는 아무것도 돌려주지 않고 공식 기록은
+         * 바뀌지 않는다.
+         */
+        record Restricted() implements EvidenceOutcome {}
         /** The account's own access refused it before or after the read. */
         record NotPermitted() implements EvidenceOutcome {}
         /**
@@ -701,7 +716,9 @@ public interface SyncJobApi {
 
     /** The outcome of one adjustment history read. Only {@link Found} carries rows. */
     sealed interface AdjustmentOutcome permits AdjustmentOutcome.NotPermitted, AdjustmentOutcome.NotFound,
-            AdjustmentOutcome.Unavailable, AdjustmentOutcome.Found {
+            AdjustmentOutcome.Unavailable, AdjustmentOutcome.Restricted, AdjustmentOutcome.Found {
+        /** 참조는 현재 포인터지만 계산 표시 제한이 그 결과를 막는다(Story 3.2). */
+        record Restricted() implements AdjustmentOutcome {}
         /** The account's own access refused it before or after the read. */
         record NotPermitted() implements AdjustmentOutcome {}
         /**

@@ -308,9 +308,40 @@ class PlanEndTest extends PlanSyncTestBase {
     // ------------------------------------------------------------------------------------------ UNAVAILABLE
 
     /**
-     * AC-1: the {@code plan-end} restriction and the database clock at {@code T} make the end unavailable, with the
-     * reason, at the preparation and again inside the confirmation's transaction — where the refusal rolls the grant's
-     * consumption back with everything else.
+     * Story 3.2: 계산 정책 버전({@code CALC-1.0})의 표시 제한도 계획 종료를 막는다 — 준비와 확정이 같은 code로 거절되고
+     * 허가는 소비되지 않으며 계획은 활성으로 남는다. 표시 제한 중의 대시보드도 계획 종료 가용성을 그대로 싣는다.
+     */
+    @Test
+    void aCalculationPolicyDisplayRestrictionStopsThePrepareAndTheConfirmation() throws Exception {
+        Signed signed = signedInWithPlan("end-display-restricted", null);
+        var v1 = ready(signed.user());
+        var prepared = prepare(signed, "USER_REQUEST", v1);
+        assertThat(prepared.statusCode()).isEqualTo(200);
+        String grant = grantReferenceOf(signed.user());
+
+        UUID restriction = restrict(com.bokrilog.operations.RestrictionFeature.CALCULATION_DISPLAY,
+                com.bokrilog.operations.RestrictionScope.CALCULATION_POLICY_VERSION, "CALC-1.0");
+        try {
+            assertThat(planEndOf(signed.cookie())).isEqualTo(planEndView("UNAVAILABLE", "RESTRICTED"));
+            var confirmed = confirm(signed, "USER_REQUEST", v1, confirmationIn(prepared.body()),
+                    "end-display-restricted-key-01");
+            assertThat(confirmed.statusCode()).isEqualTo(409);
+            assertThat(topLevelFieldsOf(confirmed.body())).containsEntry("code", "PLAN_END_UNAVAILABLE")
+                    .containsEntry("reason", "RESTRICTED");
+            assertThat(actionGrantConsumed(grant)).isFalse();
+            assertThat(planStatus(signed.user())).isEqualTo("ACTIVE");
+            var again = prepare(signed, "USER_REQUEST", v1);
+            assertThat(again.statusCode()).isEqualTo(409);
+            assertThat(topLevelFieldsOf(again.body())).containsEntry("code", "PLAN_END_UNAVAILABLE")
+                    .containsEntry("reason", "RESTRICTED");
+        } finally {
+            lift(restriction);
+        }
+    }
+
+    /**
+     * AC-1: 제한과 {@code T}에 닿은 DB 시각은 계획 종료를 사유와 함께 막는다 — 준비에서, 그리고 확정 트랜잭션 안에서 다시.
+     * 거기서의 거절은 허가 소비까지 함께 되돌린다. Story 3.2: 그 제한은 이 계획 하나의 동기화 제한이다.
      */
     @Test
     void aRestrictionOrAReachedEndMakesTheEndUnavailable() throws Exception {
@@ -320,7 +351,9 @@ class PlanEndTest extends PlanSyncTestBase {
         assertThat(prepared.statusCode()).isEqualTo(200);
         String grant = grantReferenceOf(signed.user());
 
-        restrictCommand(PlanEndApi.COMMAND);
+        // 이 계획 하나의 동기화 제한(Story 3.2): 계획 종료는 그 계획의 동기화 파이프라인에 속한다.
+        UUID restriction = restrict(com.bokrilog.operations.RestrictionFeature.SYNC,
+                com.bokrilog.operations.RestrictionScope.PLAN, v1.planId().toString());
         try {
             var ready = (SyncJobApi.Dashboard.Ready) sync.dashboard(signed.user()).dashboard();
             assertThat(ready.planEnd()).isEqualTo(new SyncJobApi.PlanEndAvailability("UNAVAILABLE", "RESTRICTED"));
@@ -340,7 +373,7 @@ class PlanEndTest extends PlanSyncTestBase {
                     .containsEntry("reason", "RESTRICTED");
         } finally {
             // Only this test's restriction: nothing else of the table is touched.
-            jdbc().sql("DELETE FROM operations_restriction WHERE command=:c").param("c", PlanEndApi.COMMAND).update();
+            lift(restriction);
         }
 
         // The plan's end T reached on the database clock.

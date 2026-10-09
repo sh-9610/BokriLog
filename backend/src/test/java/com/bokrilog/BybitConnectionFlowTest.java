@@ -139,7 +139,7 @@ class BybitConnectionFlowTest extends AuthFlowTestBase {
         String sessionId = sessionIdOf(user.cookie());
 
         // 운영 제한을 켠다. Bybit 준비가 그 게이트에서 거절된다.
-        restrictCommand(BybitConnectionService.COMMAND);
+        restrictGlobally(com.bokrilog.operations.RestrictionFeature.NEW_CONNECTION);
         HttpResponse<String> rejected = prepareBybitConnection(user.cookie(), user.csrfToken());
         assertThat(rejected.statusCode()).isEqualTo(403);
 

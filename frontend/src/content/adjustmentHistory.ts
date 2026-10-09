@@ -93,6 +93,8 @@ export const adjustmentHistoryContent = {
     stale: '이 결과의 조정 이력을 찾지 못했습니다. 대시보드의 값은 바뀌지 않았습니다.',
     denied: '이 계정의 조정 이력을 지금 볼 수 없습니다.',
     signedOut: '세션이 만료되어 조정 이력을 불러오지 못했습니다.',
+    /** 계산 표시 제한(Story 3.2). */
+    restricted: '운영상 제한으로 이 결과의 조정 이력을 지금 표시하지 않습니다.',
   },
   failure: {
     /** 첫 페이지 읽기가 실패했을 때. 받은 행이 아직 없다. */
@@ -111,6 +113,9 @@ export const adjustmentHistoryContent = {
       '이 계정의 조정 이력을 볼 수 없습니다. 계정 삭제가 진행 중이면 이력이 표시되지 않습니다.',
     signedOut: SESSION_EXPIRED,
     signInLink: '로그인 화면으로 이동',
+    /** 계산 표시 제한(Story 3.2). 다시 요청해도 같으므로 재시도를 권하지 않는다. */
+    restricted:
+      '운영상 제한으로 이 결과의 조정 이력을 지금 표시하지 않습니다. 기존 공식 기록은 바뀌거나 지워지지 않으며, 제한이 풀리면 다시 볼 수 있습니다.',
   },
   summary: {
     heading: '합계',

@@ -670,6 +670,8 @@ export type EvidenceView =
   | { readonly kind: 'ready'; readonly evidence: CalculationEvidence }
   | { readonly kind: 'failed'; readonly retryable: boolean }
   | { readonly kind: 'denied'; readonly cause: 'refused' | 'signedOut' }
+  /** 계산 표시 제한이 이 결과의 근거를 막는다(Story 3.2). 재시도가 없다. */
+  | { readonly kind: 'restricted' }
 
 export interface EvidenceState {
   readonly view: EvidenceView
@@ -737,7 +739,9 @@ export function useCalculationEvidence(
               ? { kind: 'ready', evidence: outcome.value }
               : outcome.kind === 'denied'
                 ? { kind: 'denied', cause: outcome.cause }
-                : { kind: 'failed', retryable: outcome.retryable },
+                : outcome.kind === 'restricted'
+                  ? { kind: 'restricted' }
+                  : { kind: 'failed', retryable: outcome.retryable },
           )
         },
       })
@@ -788,6 +792,8 @@ export function evidenceAnnouncement(view: EvidenceView): string | null {
       return copy.status.ready
     case 'failed':
       return view.retryable ? copy.status.retryable : copy.status.stale
+    case 'restricted':
+      return copy.status.restricted
     case 'denied':
       return view.cause === 'signedOut' ? copy.status.signedOut : copy.status.denied
   }

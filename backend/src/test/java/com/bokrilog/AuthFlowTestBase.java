@@ -3,6 +3,8 @@ package com.bokrilog;
 import com.bokrilog.DevOidcStub.TokenPlan;
 import com.bokrilog.identity.AccountDeletionApi;
 import com.bokrilog.identity.AccountLifecycleApi;
+import com.bokrilog.operations.RestrictionFeature;
+import com.bokrilog.operations.RestrictionScope;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
 import java.io.IOException;
@@ -892,15 +894,33 @@ abstract class AuthFlowTestBase {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    /** 운영 제한 하나를 건다. Epic 3의 운영자 표면이 없으므로 시험이 직접 행을 넣는다. */
-    void restrictCommand(String command) {
+    /**
+     * 운영 제한 하나를 건다(Story 3.2의 {@code 기능 × scope × target}). 시험이 직접 행을 넣는다 — 운영자 command의 준비·확정
+     * 왕복은 {@code OperatorRestrictionTest}가 본다. 효력은 이 문장의 DB 시각부터다.
+     *
+     * @return 그 제한의 ID. {@link #lift}로 이 행만 지운다
+     */
+    UUID restrict(RestrictionFeature feature, RestrictionScope scope, String target) {
+        UUID id = UUID.randomUUID();
         this.jdbc
-                .sql(
-                        "INSERT INTO operations_restriction (restriction_id, command) "
-                                + "VALUES (:id, :command)")
-                .param("id", UUID.randomUUID())
-                .param("command", command)
+                .sql("INSERT INTO operations_restriction (restriction_id, feature, scope, target, effective_from) "
+                        + "VALUES (:id, :feature, :scope, :target, statement_timestamp())")
+                .param("id", id)
+                .param("feature", feature.name())
+                .param("scope", scope.name())
+                .param("target", target)
                 .update();
+        return id;
+    }
+
+    /** 그 기능 전체를 막는 전역 제한. */
+    UUID restrictGlobally(RestrictionFeature feature) {
+        return restrict(feature, RestrictionScope.GLOBAL, RestrictionScope.GLOBAL_TARGET);
+    }
+
+    /** 시험이 건 제한 하나를 지운다. 해제 경로(Story 3.4)가 아니라 시험 정리다. 다른 행은 건드리지 않는다. */
+    void lift(UUID restrictionId) {
+        this.jdbc.sql("DELETE FROM operations_restriction WHERE restriction_id = :id").param("id", restrictionId).update();
     }
 
     long sourceConnectionCount() {

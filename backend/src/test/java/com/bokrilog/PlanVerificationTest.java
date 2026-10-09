@@ -775,8 +775,7 @@ class PlanVerificationTest extends PlanSyncTestBase {
             awaitBlockedOnPlanLock();
             switch (change) {
                 case "DELETION" -> accountDeletion().beginDeletion(user);
-                case "RESTRICTION" -> jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) "
-                        + "VALUES (gen_random_uuid(),'plan-sync')").update();
+                case "RESTRICTION" -> restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
                 default -> jdbc().sql("UPDATE sync_official_plan_result SET pointer_version=pointer_version+10 "
                         + "WHERE user_id=:u").param("u", user).update();
             }
@@ -884,15 +883,13 @@ class PlanVerificationTest extends PlanSyncTestBase {
         assertThat(get(VERIFICATION_PATH, cookie).statusCode()).as("the command path is not a read").isEqualTo(405);
         var notLong = postVerification(cookie, csrf, "CATCH_UP", v1, "verify-http-key-0004");
         assertThat(topLevelFieldsOf(notLong.body())).containsEntry("code", "NOT_LONG_GAP");
-        UUID restriction = UUID.randomUUID();
-        jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) VALUES (:id,'plan-sync')")
-                .param("id", restriction).update();
+        UUID restriction = restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
         var unavailable = postVerification(cookie, csrf, "PRECISION", v1, "verify-http-key-0005");
         assertThat(unavailable.statusCode()).isEqualTo(409);
         assertThat(topLevelFieldsOf(unavailable.body())).containsEntry("code", "VERIFICATION_UNAVAILABLE");
         assertThat(nested(topLevelFieldsOf(get(AuthSecurityConfig.DASHBOARD_PATH, cookie).body()), "verification"))
                 .containsEntry("availability", "UNAVAILABLE").containsEntry("reason", "RESTRICTED");
-        jdbc().sql("DELETE FROM operations_restriction WHERE restriction_id=:id").param("id", restriction).update();
+        lift(restriction);
         assertThat(BybitStubConfiguration.requestCount()).as("no provider call for a refusal").isZero();
 
         // A sync in progress: a verification is refused, never joined to it.

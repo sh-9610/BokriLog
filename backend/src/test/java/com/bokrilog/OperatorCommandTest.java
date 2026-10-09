@@ -33,7 +33,7 @@ class OperatorCommandTest extends OperatorTestBase {
         assertThat(topLevelFieldsOf(prepared.body())).containsOnlyKeys("operationId", "command", "scope", "target",
                         "reason", "confirmationPhrase", "policyVersion", "requestedAt")
                 .containsEntry("confirmationPhrase", phraseOf(target))
-                .containsEntry("policyVersion", "OPERATOR-COMMAND-1.0");
+                .containsEntry("policyVersion", com.bokrilog.operations.OperatorCommandApi.POLICY_VERSION);
         String operationId = operationIdIn(prepared.body());
         assertThat(operationId).startsWith("op_");
         assertThat(outcomesOf(operationId)).containsExactly("REQUESTED");

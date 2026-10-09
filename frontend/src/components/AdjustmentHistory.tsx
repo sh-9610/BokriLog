@@ -789,6 +789,12 @@ export function AdjustmentHistory({
                 )}
               </div>
             ) : null}
+            {view.kind === 'restricted' ? (
+              // 계산 표시 제한(Story 3.2): 문장 하나뿐이다. 다시 요청해도 같으므로 재시도를 두지 않는다.
+              <div className={styles.notice}>
+                <p>{copy.failure.restricted}</p>
+              </div>
+            ) : null}
             {/*
               One element per kind of control: a retry that succeeded goes away (focus then moves to the
               heading, above the rows it brought), while `더 보기` stays the same element across its reads.

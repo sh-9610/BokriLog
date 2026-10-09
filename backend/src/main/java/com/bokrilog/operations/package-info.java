@@ -24,5 +24,10 @@
  * com.bokrilog.operations.OperatorAuditApi}), 감사 데이터의 deletion port({@link
  * com.bokrilog.operations.OperationsDeletionApi})다. 재인증·일회성 허가·세션 회전·HTTP는 루트 패키지가 Epic 1의
  * 부품으로 한다 — 이 모듈은 servlet·세션·허가를 모른다.
+ *
+ * <p><b>Story 3.2가 제한을 {@code 기능 × scope × target}으로 넓혔다.</b> 판독은 {@link
+ * com.bokrilog.operations.OperationalRestrictionApi#evaluate} 하나이고({@code command} 문자열 판독은 없어졌다), 제한 행은
+ * 운영 command({@code restrict-<기능>})가 감사 {@code COMPLETED}와 같은 트랜잭션에서만 만든다. 대상(계획·portfolio·연결)이
+ * 있는지·누구의 것인지는 다른 모듈의 사실이라 이 모듈은 모른다 — 루트가 각 모듈 공개 API로 확인해 콜백으로 넘긴다.
  */
 package com.bokrilog.operations;

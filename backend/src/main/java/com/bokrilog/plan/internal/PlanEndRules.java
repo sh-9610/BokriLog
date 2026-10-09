@@ -42,7 +42,7 @@ final class PlanEndRules {
      *
      * @param activePlan whether {@code request.planId()} is the user's active plan
      * @param basis sync's read of that plan's official result; {@code null} when the plan was not found active
-     * @param restricted whether the {@code plan-end} command is restricted
+     * @param restricted 동기화·계산 표시 제한이 이 계획을 막는가(Story 3.2)
      */
     record Facts(boolean writable, boolean activePlan, @Nullable PlanEndBasisRead basis, boolean restricted) {}
 

@@ -554,8 +554,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 .as("classification needs review").isEmpty();
         assertThat(sync.admitCashflowConversion(null,otherIntent,"conversion-null-command-001")).isEmpty();
         assertThat(sync.admitCashflowConversion(other,otherIntent,"short")).as("invalid key").isEmpty();
-        jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) VALUES (:id,'initial-source-event-collection')")
-                .param("id",UUID.randomUUID()).update();
+        restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
         assertThat(sync.admitCashflowConversion(other,otherIntent,"conversion-restricted-command-001"))
                 .as("restricted").isEmpty();
         assertThat(sync.cashflowConversionState(other,otherIntent).permitted()).isFalse();
@@ -601,8 +600,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         UUID restrictedJob=sync.admitCashflowConversion(restricted,restrictedIntent,"conversion-restricted-command-001")
                 .orElseThrow().jobId();
         awaitKlineCall("SLOWUSDT",1);
-        jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) VALUES (:id,'initial-source-event-collection')")
-                .param("id",UUID.randomUUID()).update();
+        restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
         assertThat(awaitConversion(restrictedJob)).isEqualTo("CANCELLED");
         assertThat(jdbc().sql("SELECT count(*) FROM sync_cashflow_conversion_bundle WHERE user_id=:u").param("u",restricted)
                 .query(Integer.class).single()).isZero();
@@ -855,8 +853,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         // One transaction: the worker can never see the queued attempt without the restriction.
         UUID job=new TransactionTemplate(manager).execute(status -> {
             UUID admitted=sync.admitCashflowConversion(user,intent,"conversion-restrict-early-command-001").orElseThrow().jobId();
-            jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) VALUES (:id,'initial-source-event-collection')")
-                    .param("id",UUID.randomUUID()).update();
+            restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
             return admitted;
         });
         assertThat(awaitConversion(job)).isEqualTo("CANCELLED");
@@ -907,8 +904,8 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         // The restriction appears inside the publishing transaction, after the bundle row: the final
         // permission check sees it and the whole publication rolls back.
         jdbc().sql("CREATE FUNCTION restrict_on_conversion_bundle() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-                + "INSERT INTO operations_restriction(restriction_id,command) VALUES (gen_random_uuid(),"
-                + "'initial-source-event-collection'); RETURN NEW; END $$").update();
+                + "INSERT INTO operations_restriction(restriction_id,feature,scope,target) VALUES (gen_random_uuid(),"
+                + "'SYNC','GLOBAL','ALL'); RETURN NEW; END $$").update();
         jdbc().sql("CREATE TRIGGER restrict_on_conversion_bundle AFTER INSERT ON sync_cashflow_conversion_bundle "
                 + "FOR EACH ROW EXECUTE FUNCTION restrict_on_conversion_bundle()").update();
         try {
@@ -1274,11 +1271,12 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         UUID restricted=userIdOf(OidcStubConfiguration.issuer(),restrictedSubject).orElseThrow();
         store(restricted,DevBybitStub.Scenario.UTA2);
         UUID restrictedIntent=initialIntent(restricted,"state-restricted");
-        jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) VALUES (:id,:command)")
-                .param("id",UUID.randomUUID()).param("command","initial-source-event-collection").update();
+        UUID restriction=restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
         assertThat(sync.initialCollectionState(restricted,restrictedIntent).permitted()).isFalse();
         assertThat(get(AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/inputs?intentId="+restrictedIntent,restrictedCookie)
                 .statusCode()).isEqualTo(403);
+        // 동기화 제한은 첫 스냅샷도 막는다(Story 3.2): 다음 계정의 파이프라인 전에 푼다.
+        lift(restriction);
 
         String deletedSubject="initial-state-deleted-"+UUID.randomUUID();
         var deletedLogin=signIn(deletedSubject);
@@ -1665,8 +1663,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
     void restrictionAfterAdmissionBlocksDisplayAndPublication() throws Exception {
         UUID user=connect(DevBybitStub.Scenario.SLOW_WALLET);
         UUID job=sync.admit(user,"restrict-later").orElseThrow().jobId();
-        jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) "
-                + "VALUES (:id,'first-snapshot')").param("id",UUID.randomUUID()).update();
+        restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
         assertThat(sync.state(user).orElseThrow().restricted()).isTrue();
         assertThat(sync.state(user).orElseThrow().officialValue()).isNull();
         // The next claim ends the attempt as BLOCKED (or, had a claim come first, its publication does).
@@ -2006,8 +2003,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 new SyncJobApi.PublicationAdmission.Refused("IDEMPOTENCY_KEY_REQUIRED"));
         assertThat(sync.admitPlanPublication(owner,ownerIntent,null)).as("no key is invented for the caller")
                 .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("IDEMPOTENCY_KEY_REQUIRED"));
-        jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) VALUES (:id,'plan-publication')")
-                .param("id",UUID.randomUUID()).update();
+        restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
         assertThat(sync.admitPlanPublication(owner,ownerIntent,"refuse-restricted-command-001"))
                 .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("NOT_PERMITTED"));
         assertThat(sync.planPublicationState(owner,ownerIntent))
@@ -2189,8 +2185,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                     plans.erasePlanData(user);
                     source.eraseSourceData(user);
                 }
-                case "RESTRICTION" -> jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) "
-                        + "VALUES (:id,'plan-publication')").param("id",UUID.randomUUID()).update();
+                case "RESTRICTION" -> restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
                 case "MEMBERSHIP_ENDED" -> jdbc().sql("UPDATE portfolio_source_membership SET ended_at=now() "
                         + "WHERE portfolio_id IN (SELECT portfolio_id FROM portfolio WHERE user_id=:u)")
                         .param("u",user).update();
@@ -2682,11 +2677,11 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertThat(topLevelFieldsOf(get(path+"?intentId="+UUID.randomUUID(),cookie).body()))
                 .containsEntry("startable",false).containsEntry("reason","ACTIVE_PLAN_EXISTS");
 
-        // Restrictions on write commands stop new work; they do not hide the published result.
-        for (String command : new String[] {"plan-publication","first-snapshot","initial-source-event-collection"}) {
-            jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) VALUES (:id,:c)")
-                    .param("id",UUID.randomUUID()).param("c",command).update();
-        }
+        // 동기화·신규 연결·광고 제한은 새 작업을 막을 뿐 발행된 결과를 감추지 않는다(Story 3.2: 감추는 것은 계산 표시
+        // 제한뿐이다).
+        restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
+        restrictGlobally(com.bokrilog.operations.RestrictionFeature.NEW_CONNECTION);
+        restrictGlobally(com.bokrilog.operations.RestrictionFeature.ADVERTISING);
         assertThat(get(AuthSecurityConfig.DASHBOARD_PATH,cookie).statusCode()).isEqualTo(200);
         // The account's own access does: while its deletion is in progress the result is refused.
         accountDeletion().beginDeletion(user);
@@ -3223,8 +3218,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         try {
             blocked=publish(user,intent,"evidence-attempts-command-001");
             awaitBlockedOnPlanLock();
-            jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) VALUES (:id,'plan-publication')")
-                    .param("id",UUID.randomUUID()).update();
+            restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
         } finally {
             lock.close();
         }

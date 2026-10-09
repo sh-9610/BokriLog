@@ -2,10 +2,13 @@ import { CSRF_HEADER } from '../content/auth'
 import {
   AUDIT_LEDGER_SCOPE,
   OPERATOR_AUDIT_ENDPOINT,
+  OPERATOR_COMMANDS_ENDPOINT,
   OPERATOR_EXPORT_CANCEL_ENDPOINT,
   OPERATOR_EXPORT_CONFIRM_ENDPOINT,
   OPERATOR_EXPORT_ENDPOINT,
   OPERATOR_OPERATIONS_ENDPOINT,
+  OPERATOR_RESTRICTIONS_ENDPOINT,
+  type RestrictionCommand,
 } from '../content/operator'
 import { isInstant } from './instant'
 import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
@@ -231,6 +234,242 @@ export async function confirmExport(
 /** 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다. */
 export async function cancelExport(csrfToken: string | null): Promise<void> {
   await post(OPERATOR_EXPORT_CANCEL_ENDPOINT, csrfToken, null, null, SESSION_REQUEST_TIMEOUT_MS)
+}
+
+// ------------------------------------------------------------------ 제한(Story 3.2)
+
+/** 제한 생성의 영향 미리보기. 수만 담는다 — 식별자도 금융값도 없다. */
+export interface RestrictionImpact {
+  readonly blockedStages: readonly string[]
+  readonly affectedPlans: number
+  readonly affectedConnections: number
+  readonly remainingFeatures: readonly string[]
+}
+
+export interface PreparedRestriction {
+  readonly operationId: string
+  readonly command: RestrictionCommand
+  /** 원장의 범위(`<기능>:<scope>`). */
+  readonly scope: string
+  readonly target: string
+  readonly reason: string
+  readonly confirmationPhrase: string
+  readonly impact: RestrictionImpact
+}
+
+export interface CompletedRestriction {
+  readonly operationId: string
+  readonly restrictionId: string
+  readonly feature: string
+  readonly scope: string
+  readonly effectiveFrom: string
+}
+
+/** 효력 중인 제한 하나. 계정 삭제로 비식별된 target은 오지 않고 `targetErased`가 참이다. */
+export interface ActiveRestriction {
+  readonly restrictionId: string
+  readonly feature: string
+  readonly scope: string
+  readonly target: string | null
+  readonly targetErased: boolean
+  readonly effectiveFrom: string
+  readonly reason: string | null
+  readonly actorDigest: string | null
+}
+
+export type RestrictionPrepareOutcome =
+  | { readonly outcome: 'prepared'; readonly prepared: PreparedRestriction }
+  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
+
+export type RestrictionConfirmOutcome =
+  | { readonly outcome: 'completed'; readonly completed: CompletedRestriction }
+  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
+  /** 응답을 받지 못했거나 서버가 커밋 여부를 말하지 못했다. 자동으로 다시 실행하지 않는다. */
+  | { readonly outcome: 'unanswered' }
+
+export async function fetchRestrictions(
+  signal: AbortSignal,
+): Promise<ReadResult<readonly ActiveRestriction[]>> {
+  const result = await read(OPERATOR_RESTRICTIONS_ENDPOINT, signal)
+  if (result.status !== 'loaded') {
+    return result
+  }
+  const items = result.value.items
+  if (!Array.isArray(items)) {
+    return { status: 'failed', code: null }
+  }
+  const restrictions: ActiveRestriction[] = []
+  for (const item of items) {
+    const restriction = restrictionOf(item)
+    if (restriction === null) {
+      return { status: 'failed', code: null }
+    }
+    restrictions.push(restriction)
+  }
+  return { status: 'loaded', value: restrictions }
+}
+
+/** 제한 준비. 아직 아무것도 막지 않는다 — 허가를 발급하고 무장한 뒤 영향 미리보기와 확인 문구를 준다. */
+export async function prepareRestriction(
+  csrfToken: string | null,
+  command: RestrictionCommand,
+  scope: string,
+  target: string,
+  reason: string,
+  idempotencyKey: string,
+): Promise<RestrictionPrepareOutcome> {
+  const result = await post(
+    `${OPERATOR_COMMANDS_ENDPOINT}/${command}`,
+    csrfToken,
+    { scope, target, reason },
+    idempotencyKey,
+    SESSION_REQUEST_TIMEOUT_MS,
+  )
+  if (result.ok) {
+    const body = objectOf(result.payload)
+    const impact = body === null ? null : impactOf(body.impact)
+    if (
+      body !== null &&
+      impact !== null &&
+      body.command === command &&
+      typeof body.operationId === 'string' &&
+      typeof body.scope === 'string' &&
+      typeof body.target === 'string' &&
+      typeof body.reason === 'string' &&
+      typeof body.confirmationPhrase === 'string' &&
+      body.confirmationPhrase !== ''
+    ) {
+      return {
+        outcome: 'prepared',
+        prepared: {
+          operationId: body.operationId,
+          command,
+          scope: body.scope,
+          target: body.target,
+          reason: body.reason,
+          confirmationPhrase: body.confirmationPhrase,
+          impact,
+        },
+      }
+    }
+  }
+  return { outcome: 'refused', status: result.status, code: result.code }
+}
+
+/** 제한 확정. 같은 키의 재전송은 서버가 같은 결과를 재생한다. */
+export async function confirmRestriction(
+  csrfToken: string | null,
+  command: RestrictionCommand,
+  operationId: string,
+  confirmation: string,
+  idempotencyKey: string,
+): Promise<RestrictionConfirmOutcome> {
+  const result = await post(
+    `${OPERATOR_COMMANDS_ENDPOINT}/${command}/confirm`,
+    csrfToken,
+    { operationId, confirmation },
+    idempotencyKey,
+    SESSION_REQUEST_TIMEOUT_MS,
+  )
+  if (!result.received) {
+    return csrfToken === null
+      ? { outcome: 'refused', status: 0, code: null }
+      : { outcome: 'unanswered' }
+  }
+  if (result.ok) {
+    const body = objectOf(result.payload)
+    if (
+      body !== null &&
+      body.outcome === 'COMPLETED' &&
+      body.operationId === operationId &&
+      typeof body.restrictionId === 'string' &&
+      typeof body.feature === 'string' &&
+      typeof body.scope === 'string' &&
+      isInstant(body.effectiveFrom)
+    ) {
+      return {
+        outcome: 'completed',
+        completed: {
+          operationId,
+          restrictionId: body.restrictionId,
+          feature: body.feature,
+          scope: body.scope,
+          effectiveFrom: body.effectiveFrom,
+        },
+      }
+    }
+    return { outcome: 'unanswered' }
+  }
+  // 5xx는 커밋 여부를 단정하지 않는다(내보내기와 같은 근거).
+  if (result.status >= 500) {
+    return { outcome: 'unanswered' }
+  }
+  return { outcome: 'refused', status: result.status, code: result.code }
+}
+
+/** 제한 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다. */
+export async function cancelRestriction(
+  csrfToken: string | null,
+  command: RestrictionCommand,
+): Promise<void> {
+  await post(
+    `${OPERATOR_COMMANDS_ENDPOINT}/${command}/cancel`,
+    csrfToken,
+    null,
+    null,
+    SESSION_REQUEST_TIMEOUT_MS,
+  )
+}
+
+function impactOf(value: unknown): RestrictionImpact | null {
+  const body = objectOf(value)
+  if (
+    body === null ||
+    !stringArray(body.blockedStages) ||
+    !stringArray(body.remainingFeatures) ||
+    typeof body.affectedPlans !== 'number' ||
+    typeof body.affectedConnections !== 'number'
+  ) {
+    return null
+  }
+  return {
+    blockedStages: body.blockedStages,
+    affectedPlans: body.affectedPlans,
+    affectedConnections: body.affectedConnections,
+    remainingFeatures: body.remainingFeatures,
+  }
+}
+
+function restrictionOf(value: unknown): ActiveRestriction | null {
+  const body = objectOf(value)
+  if (
+    body === null ||
+    typeof body.restrictionId !== 'string' ||
+    typeof body.feature !== 'string' ||
+    typeof body.scope !== 'string' ||
+    typeof body.targetErased !== 'boolean' ||
+    !isInstant(body.effectiveFrom)
+  ) {
+    return null
+  }
+  const target = typeof body.target === 'string' ? body.target : null
+  if (target === null && !body.targetErased) {
+    return null
+  }
+  return {
+    restrictionId: body.restrictionId,
+    feature: body.feature,
+    scope: body.scope,
+    target: body.targetErased ? null : target,
+    targetErased: body.targetErased,
+    effectiveFrom: body.effectiveFrom,
+    reason: typeof body.reason === 'string' ? body.reason : null,
+    actorDigest: typeof body.actorDigest === 'string' ? body.actorDigest : null,
+  }
+}
+
+function stringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 
 // ------------------------------------------------------------------ 전송

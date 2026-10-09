@@ -2,27 +2,16 @@ package com.bokrilog.sync.internal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.bokrilog.plan.PlanConditionApi;
 import com.bokrilog.plan.PlanEndApi;
 import org.junit.jupiter.api.Test;
 
 /**
- * sync must not depend on plan (plan depends on sync), so sync keeps its own copies of the plan
- * module's command names. A restriction on the plan condition command stops sync admissions and
- * publications, and one on the plan end command (Story 2.13) is what the dashboard's plan-end part
- * reports as {@code RESTRICTED} — both only work while the names are the same strings.
+ * sync must not depend on plan (plan depends on sync), so sync keeps its own copies of the plan module's names.
+ *
+ * <p>Story 3.2가 command 이름 사본을 거뒀다: 제한은 이제 command가 아니라 기능·scope·target으로 이름 붙는다
+ * ({@code OperationalRestrictionApi}). 그래서 plan의 command 이름이 sync의 것과 같아야 할 이유가 더는 없다.
  */
 class SyncCommandNamesTest {
-
-    @Test
-    void theSyncCopyOfThePlanConditionCommandMatchesThePlanModule() {
-        assertThat(SyncJobService.PLAN_CONDITION_COMMAND).isEqualTo(PlanConditionApi.COMMAND);
-    }
-
-    @Test
-    void theSyncCopyOfThePlanEndCommandMatchesThePlanModule() {
-        assertThat(SyncJobService.PLAN_END_COMMAND).isEqualTo(PlanEndApi.COMMAND).isEqualTo("plan-end");
-    }
 
     /**
      * Story 2.13: sync reads the plan statuses, the end reasons and completion values of an end record, and reports the

@@ -66,6 +66,8 @@ export const planResultContent = {
     denied: '이 계정의 복리 계획 결과를 지금 볼 수 없습니다.',
     /** 세션이 끝난 읽기(401). 발행 섹션이 쓰는 세션 만료 문장과 같은 문장이다. */
     signedOut: SESSION_EXPIRED,
+    /** 운영 제한이 계산 결과의 표시를 멈췄다(Story 3.2). */
+    displayRestricted: '운영상 제한으로 지금은 복리 계획 계산 결과를 표시하지 않습니다.',
   },
   noPlanLabel: NO_PLAN_LABEL,
   preparingLabel: PREPARING_LABEL,
@@ -84,6 +86,16 @@ export const planResultContent = {
       ? '표시된 값은 마지막 정상 결과입니다. 새 응답은 버전이 맞지 않아 받지 않았습니다.'
       : `표시된 값은 ${measured}에 측정한 마지막 정상 결과입니다. 새 응답은 버전이 맞지 않아 받지 않았습니다.`,
   deniedHelp: '이 계정의 결과를 볼 수 없습니다. 계정 삭제가 진행 중이면 결과가 표시되지 않습니다.',
+  /**
+   * 계산 표시 제한 중 동기화 블록(Story 3.2). 이 동안 새 계산 버전은 발행되지 않으므로 이 화면에서 동기화를 요청하지
+   * 않는다. 재시도를 권하지 않는다.
+   */
+  displayRestrictedSync:
+    '계산 결과 표시가 제한된 동안에는 새 계산 버전을 발행하지 않으므로 이 화면에서 동기화를 요청하지 않습니다.',
+  /** 계산 표시 제한(Story 3.2)의 상태 이름과 설명. 재시도를 권하지 않는다 — 운영자가 풀어야 다시 보인다. */
+  displayRestrictedLabel: '계산 결과 표시 제한',
+  displayRestrictedHelp:
+    '운영상 제한으로 이 계획의 계산 결과·근거·조정 이력을 지금 표시하지 않습니다. 기존 공식 기록은 바뀌거나 지워지지 않으며, 제한이 풀리면 같은 결과가 다시 표시됩니다.',
   /** 세션이 끝난 읽기(401)에서 로그인 화면으로 가는 문서 링크. */
   signInLink: '로그인 화면으로 이동',
   reload: '다시 불러오기',
@@ -270,6 +282,27 @@ export function copyFor(
   fallback: string,
 ): string {
   return Object.hasOwn(table, code) ? (table[code] ?? fallback) : fallback
+}
+
+/**
+ * 계산 표시 제한 중의 다음 행동 문장(Story 3.2). 결과 값이 보이지 않으므로 "표시된 값" 문장을 붙이지 않고, 다시
+ * 불러오기를 권하지 않는다.
+ */
+export function restrictedNextActionCopy(code: string): string {
+  switch (code) {
+    case 'NONE':
+      return '지금 따로 할 조치는 없습니다.'
+    case 'PREPARE_NEXT_PLAN':
+      return '이 계획은 끝났습니다. 다음 계획은 계획 조건 화면에서 준비합니다.'
+    case 'WAIT_FOR_SYNC':
+    case 'SYNC':
+    case 'SYNC_FOR_OBSERVATION':
+    case 'VERIFY':
+    case 'CHOOSE_CONTINUATION':
+      return '계산 결과 표시 제한이 풀린 뒤 동기화·검증을 이어 갈 수 있습니다.'
+    default:
+      return '계산 결과 표시 제한이 풀린 뒤 다음 행동을 확인할 수 있습니다.'
+  }
 }
 
 /** 모르는 다음 행동 코드의 문장. */

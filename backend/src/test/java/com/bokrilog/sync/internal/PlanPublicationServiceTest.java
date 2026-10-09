@@ -13,6 +13,8 @@ import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.operations.OperationalRestrictionApi;
+import com.bokrilog.operations.RestrictionFeature;
+import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.PlanPublicationPort;
@@ -312,23 +314,41 @@ class PlanPublicationServiceTest {
     }
 
     /**
-     * A write restriction does not hide the result: only the account's own access gates the read. The registry is
-     * asked one thing only — whether the plan end is restricted (Story 2.13) — and that only says the plan cannot be
-     * ended now; the bundle is the same.
+     * 동기화 제한은 결과를 감추지 않는다: 읽기를 막는 것은 계정 자신의 접근뿐이다. 지금 계획을 끝낼 수 없다는 것만 말하고
+     * (종료는 계획의 동기화 파이프라인에 속한다 — Story 3.2) 묶음은 같으며 결과는 막히지 않는다.
      */
     @Test
-    void aCommandRestrictionDoesNotHideTheDashboard() {
+    void aSyncRestrictionDoesNotHideTheDashboard() {
         when(accounts.decide(USER, USER, AccountAccessKind.SENSITIVE)).thenReturn(AccessDecision.ALLOWED);
-        when(restrictions.isRestricted(anyString())).thenReturn(true);
+        when(restrictions.blocks(org.mockito.ArgumentMatchers.<java.util.Set<RestrictionFeature>>argThat(
+                features -> features != null && features.contains(RestrictionFeature.SYNC)), any())).thenReturn(true);
         bundle();
 
-        var dashboard = service(true).dashboard(USER).dashboard();
-        assertThat(dashboard).isInstanceOf(Dashboard.Ready.class);
-        assertThat(((Dashboard.Ready) dashboard).planEnd())
+        var read = service(true).dashboard(USER);
+        assertThat(read.dashboard()).isInstanceOf(Dashboard.Ready.class);
+        assertThat(((Dashboard.Ready) read.dashboard()).planEnd())
                 .isEqualTo(new com.bokrilog.sync.SyncJobApi.PlanEndAvailability("UNAVAILABLE", "RESTRICTED"));
-        verify(restrictions).isRestricted("plan-end");
-        verify(restrictions, never()).isRestricted(org.mockito.ArgumentMatchers.argThat(command ->
-                !"plan-end".equals(command)));
+        assertThat(read.displayRestricted()).isFalse();
+    }
+
+    /**
+     * 계산 표시 제한(Story 3.2)은 결과를 막는다: 묶음은 그대로 읽어 온전한지 판정하고(같은 Ready 묶음) 읽기는 결과가
+     * 막혔다고 말한다. 표시 제한은 계획·portfolio·버전의 계산 정책으로 묻는다.
+     */
+    @Test
+    void aCalculationDisplayRestrictionHoldsTheResultWithoutChangingTheBundle() {
+        when(accounts.decide(USER, USER, AccountAccessKind.SENSITIVE)).thenReturn(AccessDecision.ALLOWED);
+        when(restrictions.blocks(eq(java.util.EnumSet.of(RestrictionFeature.CALCULATION_DISPLAY)), any()))
+                .thenReturn(true);
+        bundle();
+
+        var read = service(true).dashboard(USER);
+        assertThat(read.dashboard()).isInstanceOf(Dashboard.Ready.class);
+        assertThat(read.displayRestricted()).isTrue();
+        ArgumentCaptor<RestrictionSubject> subject = ArgumentCaptor.forClass(RestrictionSubject.class);
+        verify(restrictions).blocks(eq(java.util.EnumSet.of(RestrictionFeature.CALCULATION_DISPLAY)), subject.capture());
+        assertThat(subject.getValue().planId()).isEqualTo(PLAN);
+        assertThat(subject.getValue().calculationPolicy()).isEqualTo("CALC-1.0");
     }
 
     // ---------------------------------------------------------------- Story 2.13 the ended plan's record
@@ -382,7 +402,9 @@ class PlanPublicationServiceTest {
         verify(planSyncs, never()).facts(any(), any());
         verify(planVerifications, never()).state(any(), any(), any());
         verify(repository, never()).freshness(any(), any(), any());
-        verify(restrictions, never()).isRestricted(anyString());
+        // 동기화 부분은 읽지 않는다: 그 결과의 표시 제한만 묻는다(Story 3.2).
+        verify(restrictions, never()).blocks(org.mockito.ArgumentMatchers.<java.util.Set<RestrictionFeature>>argThat(
+                features -> features != null && features.contains(RestrictionFeature.SYNC)), any());
     }
 
     /**

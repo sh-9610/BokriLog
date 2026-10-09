@@ -1,5 +1,6 @@
 package com.bokrilog;
 
+import com.bokrilog.operations.OperatorCommandApi;
 import jakarta.servlet.http.HttpSession;
 import java.io.Serial;
 import java.io.Serializable;
@@ -39,7 +40,8 @@ final class OperatorCommandFlow {
      * @param operationId 서버가 만든 불투명 ID
      * @param command command type. 허가의 command는 이 값에 접두사를 붙인 것이다
      * @param scope 검증을 지난 범위. 원장의 scope다
-     * @param target 정규화한 대상. 허가의 target이다
+     * @param target 정규화한 원 대상. 화면에 되돌려 주고 실행에 쓴다
+     * @param ledgerTarget 원장·허가의 target. 사용자에게 귀속된 제한 target은 keyed digest다(Story 3.2)
      * @param reason 검증을 지난 사유. 확정 본문은 이 값을 바꿀 수 없다
      * @param policyVersion 준비가 적용한 envelope 정책 버전
      * @param confirmationHash 허가와 같은 정규 hash. 원장에 남는 값이다
@@ -50,13 +52,15 @@ final class OperatorCommandFlow {
      * @param confirmation 서버가 만든 확인 문구 원문
      * @param sessionId 허가 발급 시각의 세션 id
      * @param armedAt 무장 시각
+     * @param restriction 제한 생성 command의 요청(Story 3.2). 그 밖은 {@code null}
      */
-    record Armed(UUID userId, String operationId, String command, String scope, String target, String reason,
-            String policyVersion, String confirmationHash, String requestDigest, Instant requestedAt,
-            String keyDigest, String grantReference, String confirmation, String sessionId, Instant armedAt)
+    record Armed(UUID userId, String operationId, String command, String scope, String target, String ledgerTarget,
+            String reason, String policyVersion, String confirmationHash, String requestDigest, Instant requestedAt,
+            String keyDigest, String grantReference, String confirmation, String sessionId, Instant armedAt,
+            OperatorCommandApi.@Nullable Restriction restriction)
             implements Serializable {
 
-        @Serial private static final long serialVersionUID = 1L;
+        @Serial private static final long serialVersionUID = 2L;
 
         boolean isLive(Instant now) {
             return now.isBefore(this.armedAt.plus(ARMED_LIFETIME));

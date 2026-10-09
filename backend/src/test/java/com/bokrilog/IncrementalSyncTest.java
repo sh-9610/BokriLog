@@ -656,8 +656,8 @@ class IncrementalSyncTest extends PlanSyncTestBase {
             awaitBlockedOnPlanLock();
             switch (change) {
                 case "DELETION" -> accountDeletion().beginDeletion(user);
-                case "RESTRICTION" -> jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) "
-                        + "VALUES (gen_random_uuid(),'plan-sync')").update();
+                case "RESTRICTION" -> restrict(com.bokrilog.operations.RestrictionFeature.SYNC,
+                        com.bokrilog.operations.RestrictionScope.PLAN, v1.planId().toString());
                 case "CONNECTION" -> revokeConnectionOf(user);
                 case "MEMBERSHIP" -> jdbc().sql("UPDATE portfolio_source_membership SET ended_at=now() WHERE portfolio_id "
                         + "IN (SELECT portfolio_id FROM portfolio WHERE user_id=:u)").param("u", user).update();
@@ -778,9 +778,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
                 "incremental-http-key-0003").statusCode()).as("no session").isIn(401, 403);
         assertThat(get(SYNC_PATH, cookie).statusCode()).as("the command path is not a read").isEqualTo(405);
         // Unavailable while a restriction stands: 409, and the dashboard says why; no provider call.
-        UUID restriction = UUID.randomUUID();
-        jdbc().sql("INSERT INTO operations_restriction(restriction_id,command) VALUES (:id,'plan-sync')")
-                .param("id", restriction).update();
+        UUID restriction = restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
         var unavailable = postSync(cookie, csrf, "MANUAL", "incremental-http-key-0004");
         assertThat(unavailable.statusCode()).isEqualTo(409);
         assertThat(unavailable.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
@@ -790,7 +788,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
         assertThat(syncView).containsEntry("availability", "UNAVAILABLE").containsEntry("reason", "RESTRICTED")
                 .containsEntry("retryAfterSeconds", null).containsEntry("latest", null);
         assertThat(topLevelFieldsOf(dashboard.body())).containsEntry("nextAction", "NONE");
-        jdbc().sql("DELETE FROM operations_restriction WHERE restriction_id=:id").param("id", restriction).update();
+        lift(restriction);
         assertThat(BybitStubConfiguration.requestCount()).isZero();
         assertThat(countOf("sync_plan_sync_job", user)).isZero();
         // A deleting account is refused before anything else.

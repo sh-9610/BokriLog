@@ -13,6 +13,8 @@ import {
   stubOperatorExportConfirm,
   stubOperatorExportPrepare,
   stubOperatorOperation,
+  stubOperatorRestrictionCommand,
+  stubOperatorRestrictions,
   stubSessionRequest,
 } from '../test/setup'
 import { OperatorScreen } from './OperatorScreen'
@@ -54,7 +56,7 @@ function entry(sequence: number, outcome = 'REQUESTED', code?: string): Record<s
     reason: `사유 ${String(sequence)}`,
     outcome,
     ...(code === undefined ? {} : { code, decidedAt: '2026-10-07T01:00:00Z' }),
-    policyVersion: 'OPERATOR-COMMAND-1.0',
+    policyVersion: 'OPERATOR-COMMAND-1.1',
     requestedAt: '2026-10-07T00:00:00Z',
     recordedAt: '2026-10-07T00:00:00Z',
     correlationId: 'test-correlation',
@@ -75,7 +77,7 @@ const PREPARED = {
   target: '2026-10-01~2026-10-07',
   reason: '분기 점검',
   confirmationPhrase: '감사 내보내기 AUDIT_LEDGER 2026-10-01~2026-10-07',
-  policyVersion: 'OPERATOR-COMMAND-1.0',
+  policyVersion: 'OPERATOR-COMMAND-1.1',
   requestedAt: '2026-10-07T00:00:00Z',
 }
 
@@ -103,12 +105,15 @@ async function openDialog(): Promise<HTMLElement> {
 beforeEach(() => {
   navigateToOperator()
   vi.mocked(replaceLocation).mockClear()
+  // 활성 제한 목록(Story 3.2). 운영자임이 감사 조회로 확인된 뒤에만 읽힌다. 시험이 다시 열면 그 응답이 이긴다.
+  stubOperatorRestrictions(() => Promise.resolve(jsonResponse({ items: [] })))
 })
 
 describe('OperatorScreen', () => {
   it('비운영자에게는 없는 화면과 같은 문장 하나만 그리고 운영자 제어를 DOM에 두지 않는다', async () => {
     stubSessionRequest(() => authenticated())
     stubOperatorAudit(() => error('NOT_FOUND', 404))
+    stubOperatorRestrictions(() => error('NOT_FOUND', 404))
     render(<OperatorScreen />)
 
     expect(
@@ -360,6 +365,7 @@ describe('OperatorScreen', () => {
   it('첫 감사 조회가 실패하면 운영자 제어를 그리지 않고 일반 문장을 낸다', async () => {
     stubSessionRequest(() => authenticated())
     stubOperatorAudit(() => error('INTERNAL_ERROR', 500))
+    stubOperatorRestrictions(() => error('NOT_FOUND', 404))
     render(<OperatorScreen />)
     await waitFor(() => {
       expect(screen.getByRole('status').textContent).toBe(copy.loadFailed)
@@ -410,5 +416,451 @@ describe('OperatorScreen', () => {
     await waitFor(() => {
       expect(replaceLocation).toHaveBeenCalledWith('/?auth=expired')
     })
+  })
+
+  // ------------------------------------------------------------------ Story 3.2 영향 범위 제한
+
+  const PLAN_ID = '0b3c1f6e-8a3d-4b2c-9f1e-2d4a6c8e0f12'
+
+  const PREPARED_RESTRICTION = {
+    operationId: 'op_restrict',
+    command: 'restrict-sync',
+    scope: 'SYNC:PLAN',
+    target: PLAN_ID,
+    reason: '계획 입력 이상',
+    confirmationPhrase: `동기화 제한 계획 ${PLAN_ID}`,
+    policyVersion: 'OPERATOR-COMMAND-1.1',
+    requestedAt: '2026-10-09T00:00:00Z',
+    impact: {
+      blockedStages: ['INCREMENTAL_SYNC', 'PLAN_END'],
+      affectedPlans: 1,
+      affectedConnections: 1,
+      remainingFeatures: ['NEW_CONNECTION', 'SYNC', 'CALCULATION_DISPLAY', 'ADVERTISING'],
+    },
+  }
+
+  function activeRestriction(overrides: Record<string, unknown>): Record<string, unknown> {
+    return {
+      restrictionId: 'r-1',
+      feature: 'SYNC',
+      scope: 'PLAN',
+      target: PLAN_ID,
+      targetErased: false,
+      effectiveFrom: '2026-10-09T00:00:00Z',
+      reason: '계획 입력 이상',
+      actorDigest: 'b'.repeat(64),
+      ...overrides,
+    }
+  }
+
+  async function openRestrictionSection(): Promise<HTMLElement> {
+    await openAsOperator()
+    return screen.findByRole('heading', { level: 2, name: copy.restriction.heading })
+  }
+
+  it('활성 제한을 구체 우선으로 그리고 비식별된 대상은 삭제됨으로만 보인다', async () => {
+    stubOperatorRestrictions(() =>
+      Promise.resolve(
+        jsonResponse({
+          items: [
+            activeRestriction({}),
+            activeRestriction({
+              restrictionId: 'r-2',
+              scope: 'PORTFOLIO',
+              target: undefined,
+              targetErased: true,
+            }),
+            activeRestriction({
+              restrictionId: 'r-3',
+              feature: 'NEW_CONNECTION',
+              scope: 'GLOBAL',
+              target: 'ALL',
+              reason: undefined,
+              actorDigest: undefined,
+            }),
+          ],
+        }),
+      ),
+    )
+    await openRestrictionSection()
+    const list = screen.getByRole('list', { name: copy.restriction.active.heading })
+    const rows = within(list).getAllByRole('listitem')
+    expect(rows).toHaveLength(3)
+    expect(rows[0]?.textContent).toContain(PLAN_ID)
+    expect(rows[1]?.textContent).toContain(copy.restriction.active.erased)
+    expect(rows[2]?.textContent).toContain('신규 연결')
+    expect(rows[2]?.textContent).toContain('전역')
+    expect(rows[2]?.textContent).toContain(copy.restriction.active.noReason)
+  })
+
+  it('기능이 받지 않는 범위는 고를 수 없다', async () => {
+    await openRestrictionSection()
+    fireEvent.change(screen.getByLabelText(copy.restriction.featureLabel), {
+      target: { value: 'NEW_CONNECTION' },
+    })
+    const scope = screen.getByLabelText(copy.restriction.scopeLabel)
+    expect(
+      within(scope)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['전역'])
+    fireEvent.change(screen.getByLabelText(copy.restriction.featureLabel), {
+      target: { value: 'CALCULATION_DISPLAY' },
+    })
+    expect(
+      within(screen.getByLabelText(copy.restriction.scopeLabel))
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['전역', '계획', '포트폴리오', '계산 정책 버전'])
+  })
+
+  it('제한 준비 → 미리보기·확인 문구 재입력 → 확정이 같은 키로 가고 목록을 다시 읽는다', async () => {
+    let listCalls = 0
+    stubOperatorRestrictions(() => {
+      listCalls += 1
+      return Promise.resolve(
+        jsonResponse({ items: listCalls === 1 ? [] : [activeRestriction({})] }),
+      )
+    })
+    await openRestrictionSection()
+    const keys: string[] = []
+    const bodies: unknown[] = []
+    stubOperatorRestrictionCommand('restrict-sync', 'prepare', (init) => {
+      keys.push(new Headers(init?.headers).get('Idempotency-Key') ?? '')
+      expect(new Headers(init?.headers).get(CSRF_HEADER)).toBe(CSRF_TOKEN)
+      bodies.push(JSON.parse(init?.body as string))
+      return Promise.resolve(jsonResponse(PREPARED_RESTRICTION))
+    })
+    stubOperatorRestrictionCommand('restrict-sync', 'confirm', (init) => {
+      keys.push(new Headers(init?.headers).get('Idempotency-Key') ?? '')
+      bodies.push(JSON.parse(init?.body as string))
+      return Promise.resolve(
+        jsonResponse({
+          operationId: 'op_restrict',
+          outcome: 'COMPLETED',
+          command: 'restrict-sync',
+          feature: 'SYNC',
+          scope: 'PLAN',
+          restrictionId: 'r-1',
+          effectiveFrom: '2026-10-09T00:00:01Z',
+        }),
+      )
+    })
+
+    fireEvent.change(screen.getByLabelText(copy.restriction.scopeLabel), {
+      target: { value: 'PLAN' },
+    })
+    fireEvent.change(screen.getByLabelText(copy.restriction.targetLabel), {
+      target: { value: PLAN_ID },
+    })
+    fireEvent.change(screen.getByLabelText(copy.restriction.reasonLabel), {
+      target: { value: '계획 입력 이상' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: copy.restriction.start }))
+    const dialog = await screen.findByRole('dialog', { name: copy.restrictionDialog.title })
+    // 취소가 기본 포커스이고, 미리보기는 수만 말한다.
+    expect(
+      within(dialog).getByRole('button', { name: copy.restrictionDialog.cancel }),
+    ).toHaveFocus()
+    expect(dialog.textContent).toContain('증분 동기화, 계획 종료')
+    expect(dialog.textContent).toContain(copy.restrictionDialog.affectedPlans(1))
+    expect(dialog.textContent).toContain(copy.restrictionDialog.kept)
+    const confirm = within(dialog).getByRole('button', { name: copy.restrictionDialog.confirm })
+    expect(confirm).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.change(within(dialog).getByRole('textbox'), {
+      target: { value: PREPARED_RESTRICTION.confirmationPhrase },
+    })
+    fireEvent.click(confirm)
+
+    const result = await screen.findByRole('heading', {
+      level: 3,
+      name: copy.restriction.result.heading,
+    })
+    await waitFor(() => {
+      expect(result).toHaveFocus()
+    })
+    expect(screen.getByRole('status').textContent).toBe(
+      copy.status.restrictionCompleted('동기화', '계획'),
+    )
+    expect(keys).toHaveLength(2)
+    expect(keys[0]).toBe(keys[1])
+    expect(bodies[0]).toEqual({ scope: 'PLAN', target: PLAN_ID, reason: '계획 입력 이상' })
+    expect(bodies[1]).toEqual({
+      operationId: 'op_restrict',
+      confirmation: PREPARED_RESTRICTION.confirmationPhrase,
+    })
+    await waitFor(() => {
+      expect(listCalls).toBe(2)
+    })
+    expect(
+      within(screen.getByRole('list', { name: copy.restriction.active.heading })).getAllByRole(
+        'listitem',
+      ),
+    ).toHaveLength(1)
+    expect(getObservedStorageEntries()).toEqual([])
+  })
+
+  it('전역 제한은 대상을 입력받지 않고 ALL을 보낸다', async () => {
+    await openRestrictionSection()
+    const bodies: unknown[] = []
+    stubOperatorRestrictionCommand('restrict-advertising', 'prepare', (init) => {
+      bodies.push(JSON.parse(init?.body as string))
+      return error('ALREADY_RESTRICTED', 409)
+    })
+    fireEvent.change(screen.getByLabelText(copy.restriction.featureLabel), {
+      target: { value: 'ADVERTISING' },
+    })
+    expect(screen.getByLabelText(copy.restriction.targetLabel)).toHaveAttribute('readonly')
+    fireEvent.change(screen.getByLabelText(copy.restriction.reasonLabel), {
+      target: { value: '광고 SDK 오류' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: copy.restriction.start }))
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toBe(
+        operatorRefusalMessage('ALREADY_RESTRICTED'),
+      )
+    })
+    expect(bodies).toEqual([{ scope: 'GLOBAL', target: 'ALL', reason: '광고 SDK 오류' }])
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('제한 목록이 404면(제한 권한 없음) 제한 영역을 그리지 않는다', async () => {
+    stubOperatorRestrictions(() => error('NOT_FOUND', 404))
+    await openAsOperator()
+    await waitFor(() => {
+      expect(getObservedAllowedRequests()).toContain('GET /api/operator/restrictions')
+    })
+    expect(
+      screen.queryByRole('heading', { name: copy.restriction.heading }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: copy.restriction.start })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: copy.audit.heading })).toBeInTheDocument()
+  })
+
+  // ------------------------------------------------------------------ Story 3.2 리뷰 patch: 영역별 판정·불확실·취소
+
+  it('command 권한만 가진 운영자는 감사 영역 없이 제한 영역을 본다', async () => {
+    stubSessionRequest(() => authenticated())
+    stubOperatorAudit(() => error('NOT_FOUND', 404))
+    stubOperatorRestrictions(() =>
+      Promise.resolve(jsonResponse({ items: [activeRestriction({})] })),
+    )
+    render(<OperatorScreen />)
+    expect(
+      await screen.findByRole('heading', { level: 2, name: copy.restriction.heading }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: copy.heading })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: copy.audit.heading })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: copy.export.start })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: copy.restriction.start })).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toBe(copy.status.restrictionsLoaded(1))
+    })
+  })
+
+  it('audit 권한만 가진 운영자는 제한 영역 없이 감사 영역을 본다', async () => {
+    stubOperatorRestrictions(() => error('NOT_FOUND', 404))
+    await openAsOperator()
+    await waitFor(() => {
+      expect(getObservedAllowedRequests()).toContain('GET /api/operator/restrictions')
+    })
+    expect(screen.getByRole('heading', { level: 2, name: copy.audit.heading })).toBeInTheDocument()
+    expect(
+      screen.queryByRole('heading', { name: copy.restriction.heading }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('첫 제한 목록 조회가 실패하면 실패 문장과 다시 조회만 보이고, 다시 조회가 성공하면 폼을 그린다', async () => {
+    let calls = 0
+    stubOperatorRestrictions(() => {
+      calls += 1
+      return calls === 1
+        ? error('INTERNAL_ERROR', 500)
+        : Promise.resolve(jsonResponse({ items: [] }))
+    })
+    await openRestrictionSection()
+    expect(await screen.findByText(copy.restriction.active.failed)).toBeInTheDocument()
+    // 실패와 "없음"을 함께 말하지 않는다.
+    expect(screen.queryByText(copy.restriction.active.empty)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: copy.restriction.start })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: copy.restriction.active.reload }))
+    expect(await screen.findByRole('button', { name: copy.restriction.start })).toBeInTheDocument()
+    expect(screen.getByText(copy.restriction.active.empty)).toBeInTheDocument()
+    expect(screen.queryByText(copy.restriction.active.failed)).not.toBeInTheDocument()
+  })
+
+  it('다시 조회가 실패하면 받아 둔 행을 두고 실패만 말한다', async () => {
+    let calls = 0
+    stubOperatorRestrictions(() => {
+      calls += 1
+      return calls === 1
+        ? Promise.resolve(jsonResponse({ items: [activeRestriction({})] }))
+        : error('INTERNAL_ERROR', 500)
+    })
+    await openRestrictionSection()
+    await screen.findByText(PLAN_ID)
+    fireEvent.click(screen.getByRole('button', { name: copy.restriction.active.reload }))
+    expect(await screen.findByText(copy.restriction.active.failed)).toBeInTheDocument()
+    expect(screen.getByText(PLAN_ID)).toBeInTheDocument()
+    expect(screen.queryByText(copy.restriction.active.empty)).not.toBeInTheDocument()
+  })
+
+  /** 계획 범위 동기화 제한을 준비해 대화상자를 연다. */
+  async function openRestrictionDialog(): Promise<HTMLElement> {
+    fireEvent.change(screen.getByLabelText(copy.restriction.scopeLabel), {
+      target: { value: 'PLAN' },
+    })
+    fireEvent.change(screen.getByLabelText(copy.restriction.targetLabel), {
+      target: { value: PLAN_ID },
+    })
+    fireEvent.change(screen.getByLabelText(copy.restriction.reasonLabel), {
+      target: { value: '계획 입력 이상' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: copy.restriction.start }))
+    return screen.findByRole('dialog', { name: copy.restrictionDialog.title })
+  }
+
+  const COMPLETED_RESTRICTION = {
+    operationId: 'op_restrict',
+    outcome: 'COMPLETED',
+    command: 'restrict-sync',
+    feature: 'SYNC',
+    scope: 'PLAN',
+    restrictionId: 'r-1',
+    effectiveFrom: '2026-10-09T00:00:01Z',
+  }
+
+  it('확정이 ALREADY_RESTRICTED로 거절되면 목록을 다시 읽는다', async () => {
+    let listCalls = 0
+    stubOperatorRestrictions(() => {
+      listCalls += 1
+      return Promise.resolve(
+        jsonResponse({ items: listCalls === 1 ? [] : [activeRestriction({})] }),
+      )
+    })
+    await openRestrictionSection()
+    stubOperatorRestrictionCommand('restrict-sync', 'prepare', () =>
+      Promise.resolve(jsonResponse(PREPARED_RESTRICTION)),
+    )
+    stubOperatorRestrictionCommand('restrict-sync', 'confirm', () =>
+      error('ALREADY_RESTRICTED', 409),
+    )
+    const dialog = await openRestrictionDialog()
+    fireEvent.change(within(dialog).getByRole('textbox'), {
+      target: { value: PREPARED_RESTRICTION.confirmationPhrase },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: copy.restrictionDialog.confirm }))
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toBe(
+        operatorRefusalMessage('ALREADY_RESTRICTED'),
+      )
+    })
+    await waitFor(() => {
+      expect(listCalls).toBe(2)
+    })
+    expect(await screen.findByText(PLAN_ID)).toBeInTheDocument()
+  })
+
+  it('제한 확정의 문구 불일치는 대화상자를 열어 둔 채 말한다', async () => {
+    await openRestrictionSection()
+    stubOperatorRestrictionCommand('restrict-sync', 'prepare', () =>
+      Promise.resolve(jsonResponse(PREPARED_RESTRICTION)),
+    )
+    let calls = 0
+    stubOperatorRestrictionCommand('restrict-sync', 'confirm', () => {
+      calls += 1
+      return error('CONFIRMATION_MISMATCH', 409)
+    })
+    const dialog = await openRestrictionDialog()
+    fireEvent.change(within(dialog).getByRole('textbox'), {
+      target: { value: PREPARED_RESTRICTION.confirmationPhrase },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: copy.restrictionDialog.confirm }))
+    expect(
+      await within(dialog).findByText(operatorRefusalMessage('CONFIRMATION_MISMATCH')),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('dialog')).toBe(dialog)
+    expect(calls).toBe(1)
+  })
+
+  it('제한 취소는 취소 요청을 보내고 대화상자를 닫는다', async () => {
+    await openRestrictionSection()
+    stubOperatorRestrictionCommand('restrict-sync', 'prepare', () =>
+      Promise.resolve(jsonResponse(PREPARED_RESTRICTION)),
+    )
+    stubOperatorRestrictionCommand('restrict-sync', 'cancel', () =>
+      Promise.resolve(new Response(null, { status: 204 })),
+    )
+    const dialog = await openRestrictionDialog()
+    fireEvent.click(within(dialog).getByRole('button', { name: copy.restrictionDialog.cancel }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+    expect(getObservedAllowedRequests()).toContain(
+      'POST /api/operator/commands/restrict-sync/cancel',
+    )
+    expect(screen.getByRole('status').textContent).toBe(copy.status.restrictionCancelled)
+  })
+
+  for (const [label, answer] of [
+    ['공통 본문 500', () => error('INTERNAL_ERROR', 500)],
+    ['무응답', () => Promise.reject(new Error('network'))],
+  ] as const) {
+    it(`제한 확정의 ${label}은 불확실이고 같은 키로 다시 확정하면 같은 요청이다`, async () => {
+      await openRestrictionSection()
+      stubOperatorRestrictionCommand('restrict-sync', 'prepare', () =>
+        Promise.resolve(jsonResponse(PREPARED_RESTRICTION)),
+      )
+      stubOperatorRestrictionCommand('restrict-sync', 'cancel', () =>
+        Promise.resolve(new Response(null, { status: 204 })),
+      )
+      const keys: string[] = []
+      let calls = 0
+      stubOperatorRestrictionCommand('restrict-sync', 'confirm', (init) => {
+        keys.push(new Headers(init?.headers).get('Idempotency-Key') ?? '')
+        calls += 1
+        return calls === 1 ? answer() : Promise.resolve(jsonResponse(COMPLETED_RESTRICTION))
+      })
+      const dialog = await openRestrictionDialog()
+      fireEvent.change(within(dialog).getByRole('textbox'), {
+        target: { value: PREPARED_RESTRICTION.confirmationPhrase },
+      })
+      fireEvent.click(within(dialog).getByRole('button', { name: copy.restrictionDialog.confirm }))
+      expect(await within(dialog).findByText(copy.restriction.uncertain)).toBeInTheDocument()
+      expect(screen.getByRole('dialog')).toBe(dialog)
+      expect(screen.queryByText(/바뀐 것은 없습니다/)).not.toBeInTheDocument()
+
+      fireEvent.click(within(dialog).getByRole('button', { name: copy.restrictionDialog.confirm }))
+      expect(
+        await screen.findByRole('heading', { level: 3, name: copy.restriction.result.heading }),
+      ).toBeInTheDocument()
+      expect(keys).toHaveLength(2)
+      expect(keys[1]).toBe(keys[0])
+    })
+  }
+
+  it('응답을 받지 못한 제한 확정 뒤 닫으면 operation 조회 칸에 그 operation을 채운다', async () => {
+    await openRestrictionSection()
+    stubOperatorRestrictionCommand('restrict-sync', 'prepare', () =>
+      Promise.resolve(jsonResponse(PREPARED_RESTRICTION)),
+    )
+    stubOperatorRestrictionCommand('restrict-sync', 'confirm', () =>
+      Promise.reject(new Error('network')),
+    )
+    stubOperatorRestrictionCommand('restrict-sync', 'cancel', () =>
+      Promise.resolve(new Response(null, { status: 204 })),
+    )
+    const dialog = await openRestrictionDialog()
+    fireEvent.change(within(dialog).getByRole('textbox'), {
+      target: { value: PREPARED_RESTRICTION.confirmationPhrase },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: copy.restrictionDialog.confirm }))
+    expect(await within(dialog).findByText(copy.restriction.uncertain)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: copy.restrictionDialog.cancel }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+    expect(screen.getByRole('status').textContent).toBe(copy.restriction.uncertainClosed)
+    expect(screen.getByLabelText(copy.operation.label)).toHaveValue('op_restrict')
   })
 })

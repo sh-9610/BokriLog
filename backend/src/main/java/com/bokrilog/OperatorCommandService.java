@@ -5,8 +5,12 @@ import com.bokrilog.ActionGrantService.ConsumptionRequest;
 import com.bokrilog.operations.OperatorAuditApi;
 import com.bokrilog.operations.OperatorCommandApi;
 import com.bokrilog.operations.OperatorCommandApi.AuditOutcome;
+import com.bokrilog.operations.OperatorCommandApi.CommandResult;
 import com.bokrilog.operations.OperatorCommandApi.Envelope;
 import com.bokrilog.operations.OperatorCommandApi.ExportResult;
+import com.bokrilog.operations.OperatorCommandApi.RestrictionCompletion;
+import com.bokrilog.operations.OperatorCommandApi.RestrictionResult;
+import com.bokrilog.operations.OperatorCommandApi.TargetCheck;
 import com.bokrilog.operations.OperatorPermission;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
@@ -20,6 +24,7 @@ import org.jspecify.annotations.Nullable;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication.Type;
 import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 /**
@@ -79,18 +84,34 @@ class OperatorCommandService {
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(OperatorCommandService.class);
 
-    /** 확정 트랜잭션을 되돌리기 위한 사설 타입. 스택도 메시지도 담지 않는다. */
+    /**
+     * 확정 트랜잭션을 되돌리기 위한 사설 타입. 스택도 메시지도 담지 않는다.
+     *
+     * <p>{@code code}는 원장 거절 code다 — 권한 회수({@value #ACCESS_REVOKED})는 404로, 제한의 대상·중복 거절(Story 3.2)은
+     * 그 code 그대로 답한다.
+     */
     private static final class Refused extends RuntimeException {
 
         @Serial private static final long serialVersionUID = 1L;
 
-        Refused() {
+        private final String code;
+
+        Refused(String code) {
             super(null, null, false, false);
+            this.code = code;
+        }
+
+        String code() {
+            return this.code;
         }
     }
 
     sealed interface Preparation {
-        record Armed(OperatorCommandFlow.Armed flow) implements Preparation {}
+        /**
+         * @param impact 제한 생성 command의 영향 미리보기(Story 3.2). 그 밖은 {@code null}
+         */
+        record Armed(OperatorCommandFlow.Armed flow, RestrictionTargets.@Nullable Impact impact)
+                implements Preparation {}
 
         record Refused(String code) implements Preparation {}
     }
@@ -99,9 +120,9 @@ class OperatorCommandService {
         /**
          * 실행됐다 — 이번 요청이 했거나({@code ran}), 같은 키의 앞선 실행의 재생이다.
          *
-         * @param rows 추출 결과의 allowlist 필드 묶음
+         * @param rows 추출 결과의 allowlist 필드 묶음. 제한 생성은 비어 있다
          */
-        record Completed(ExportResult result, List<OperatorAuditApi.Entry> rows, boolean ran) implements Outcome {}
+        record Completed(CommandResult result, List<OperatorAuditApi.Entry> rows, boolean ran) implements Outcome {}
 
         /** 실행하지 않았다. */
         record Refused(String code) implements Outcome {}
@@ -113,10 +134,15 @@ class OperatorCommandService {
 
     private final ActionGrantService grants;
 
-    OperatorCommandService(OperatorCommandApi commands, OperatorAccess access, ActionGrantService grants) {
+    /** 제한 대상의 확인과 영향 미리보기(Story 3.2). 다른 모듈의 사실은 이 어댑터가 각 모듈 공개 API로 본다. */
+    private final RestrictionTargets targets;
+
+    OperatorCommandService(OperatorCommandApi commands, OperatorAccess access, ActionGrantService grants,
+            RestrictionTargets targets) {
         this.commands = commands;
         this.access = access;
         this.grants = grants;
+        this.targets = targets;
     }
 
     /** 이 command type을 아는가. 모르는 type은 경로가 없는 것과 같다. */
@@ -151,6 +177,7 @@ class OperatorCommandService {
             return new Preparation.Refused(invalid.code());
         }
         var accepted = ((OperatorCommandApi.Validation.Valid) validation).accepted();
+        var restriction = accepted.restriction();
 
         var keyUse = this.commands.keyUse(userId, keyDigest, accepted.requestDigest());
         if (keyUse instanceof OperatorCommandApi.KeyUse.Conflict) {
@@ -170,16 +197,39 @@ class OperatorCommandService {
 
         String grantCommand = grantCommandOf(command);
         String phrase = accepted.confirmationPhrase();
+        // 허가·원장의 target은 원장 target이다 — 사용자에게 귀속된 제한 target은 digest로만 남는다(Story 3.2 AC-6).
+        String grantTarget = accepted.ledgerTarget();
         String confirmationHash = ActionGrant.canonicalConfirmationHash(ActionGrant.normalize(grantCommand),
-                ActionGrant.normalize(accepted.target()), phrase);
-        Envelope envelope = new Envelope(candidateId, userId, command, accepted.scope(), accepted.target(),
+                ActionGrant.normalize(grantTarget), phrase);
+        Envelope envelope = new Envelope(candidateId, userId, command, accepted.scope(), grantTarget,
                 accepted.reason(), confirmationHash, accepted.policyVersion(), requestedAt, keyDigest,
                 accepted.requestDigest());
 
-        var reference = this.grants.issue(session, userId, grantCommand, accepted.target(), phrase);
+        var reference = this.grants.issue(session, userId, grantCommand, grantTarget, phrase);
         if (reference.isEmpty()) {
             this.commands.recordDecision(envelope, AuditOutcome.DENIED, REAUTHENTICATION_REQUIRED, correlationId);
             return new Preparation.Refused(REAUTHENTICATION_REQUIRED);
+        }
+        /*
+         * 제한의 대상은 다른 모듈의 사실이다(Story 3.2). 멱등 키 판정과 재인증 확인 뒤에 본다 — 끝난 operation의 키는
+         * 충돌이, 재인증이 없는 요청은 재인증 요구가 대상의 상태보다 먼저 답한다. 없거나 상태가 맞지 않거나 이미 같은
+         * 제한이 있으면 방금의 허가를 무효화하고 아무것도 무장하지 않는다.
+         */
+        RestrictionTargets.Impact impact = null;
+        if (restriction != null) {
+            String refusal = null;
+            if (!(this.targets.check(restriction) instanceof TargetCheck.Valid valid)) {
+                refusal = OperatorCommandApi.TARGET_INVALID;
+            } else if (this.targets.alreadyRestricted(restriction)) {
+                refusal = OperatorCommandApi.ALREADY_RESTRICTED;
+            } else {
+                impact = this.targets.impact(restriction, valid);
+            }
+            if (refusal != null) {
+                this.grants.invalidateReference(userId, reference.get());
+                this.commands.recordRefusedProposal(userId, proposal, refusal, keyDigest, correlationId);
+                return new Preparation.Refused(refusal);
+            }
         }
         /*
          * 키 판정과 `REQUESTED` 추가를 원장 잠금 안의 한 트랜잭션으로 한다. 같은 새 키의 동시 준비 둘은 여기서 줄을
@@ -211,11 +261,11 @@ class OperatorCommandService {
         // 남아 있는 재인증 무장은 옛 의도다. 방금 허가가 신선한 재인증 위에 섰다.
         ReauthenticationFlow.discard(session);
         OperatorCommandFlow.Armed armed = new OperatorCommandFlow.Armed(userId, operationId, command,
-                accepted.scope(), accepted.target(), accepted.reason(), accepted.policyVersion(), confirmationHash,
-                accepted.requestDigest(), recorded, keyDigest, reference.get(), phrase, session.getId(),
-                Instant.now());
+                accepted.scope(), accepted.target(), grantTarget, accepted.reason(), accepted.policyVersion(),
+                confirmationHash, accepted.requestDigest(), recorded, keyDigest, reference.get(), phrase,
+                session.getId(), Instant.now(), restriction);
         OperatorCommandFlow.arm(session, armed);
-        return new Preparation.Armed(armed);
+        return new Preparation.Armed(armed, impact);
     }
 
     /**
@@ -258,35 +308,66 @@ class OperatorCommandService {
         }
 
         String grantCommand = grantCommandOf(command);
-        AtomicReference<@Nullable ExportResult> ran = new AtomicReference<>();
+        AtomicReference<@Nullable CommandResult> ran = new AtomicReference<>();
+        var restriction = armed.restriction();
         Consumption consumption;
         try {
             consumption = this.grants.consume(
-                    new ConsumptionRequest(session, userId, armed.grantReference(), grantCommand, armed.target(),
+                    new ConsumptionRequest(session, userId, armed.grantReference(), grantCommand, armed.ledgerTarget(),
                             confirmation, idempotencyKey),
                     () -> {
+                        if (restriction != null) {
+                            // 원장 잠금 → 최종 권한 → 대상 재검사 → 중복 → 제한 행 → 완료 행(Story 3.2 AC-3).
+                            var completion = this.commands.completeRestriction(envelope, restriction, correlationId,
+                                    () -> this.access.permits(userId, required), () -> this.targets.check(restriction));
+                            if (completion instanceof RestrictionCompletion.Refused refused) {
+                                throw new Refused(refused.code());
+                            }
+                            RestrictionResult result = ((RestrictionCompletion.Completed) completion).result();
+                            ran.set(result);
+                            return result.operationId() + "|" + result.restrictionId();
+                        }
                         ExportResult result = this.commands
                                 .completeExport(envelope, correlationId, () -> this.access.permits(userId, required))
-                                .orElseThrow(Refused::new);
+                                .orElseThrow(() -> new Refused(ACCESS_REVOKED));
                         ran.set(result);
                         return result.operationId() + "|" + result.upperSequence() + "|" + result.rowCount() + "|"
                                 + result.truncated();
                     });
-        } catch (Refused revoked) {
+        } catch (Refused refused) {
             // 소비·실행·완료 행이 함께 롤백됐다. 거절 행은 밖에서 쓰고, 이 무장은 다시 쓸 수 없으니 버린다.
-            recordQuietly(envelope, AuditOutcome.DENIED, ACCESS_REVOKED, correlationId);
+            recordQuietly(envelope, AuditOutcome.DENIED, refused.code(), correlationId);
             abandon(session, armed);
-            return new Outcome.Refused(NOT_FOUND);
+            return new Outcome.Refused(ACCESS_REVOKED.equals(refused.code()) ? NOT_FOUND : refused.code());
+        } catch (DuplicateKeyException duplicate) {
+            if (restriction == null) {
+                recordQuietly(envelope, AuditOutcome.FAILED, EXECUTION_FAILED, correlationId);
+                throw duplicate;
+            }
+            /*
+             * 활성 제한의 부분 유일 색인이 권위다(Story 3.2). 잠금 안의 중복 판정이 놓친 같은 제한(효력 시작 전인 행 등)을
+             * 색인이 거절했다 — 소비·제한 행·완료 행이 함께 롤백됐으므로 중복 거절과 같은 결말로 맺는다.
+             */
+            recordQuietly(envelope, AuditOutcome.DENIED, OperatorCommandApi.ALREADY_RESTRICTED, correlationId);
+            abandon(session, armed);
+            return new Outcome.Refused(OperatorCommandApi.ALREADY_RESTRICTED);
         } catch (RuntimeException failure) {
             // 롤백됐다. 실패 행을 남기되 그것마저 실패하면(같은 DB 장애) 삼킨다 — 응답은 어차피 500이다.
             recordQuietly(envelope, AuditOutcome.FAILED, EXECUTION_FAILED, correlationId);
             throw failure;
         }
-        ExportResult result = ran.get();
-        if (result != null) {
+        CommandResult executed = ran.get();
+        if (executed != null) {
             // 이 요청이 실행했다: 무장은 다 썼고 세션은 회전하며 재인증 시각은 지워진다(SECURITY-ACTION-1.0).
             OperatorCommandFlow.discard(session);
             SessionRotation.completeSensitiveCommand(httpRequest);
+            if (executed instanceof RestrictionResult restricted) {
+                // 기능과 scope만 남긴다. target·사유·수행자는 남기지 않는다.
+                LOG.info("operator command completed: command={} feature={} scope={}", command,
+                        restricted.feature(), restricted.scope());
+                return new Outcome.Completed(restricted, List.of(), true);
+            }
+            ExportResult result = (ExportResult) executed;
             LOG.info("operator command completed: command={} rows={} truncated={}", command, result.rowCount(),
                     result.truncated());
             List<OperatorAuditApi.Entry> rows;
@@ -358,15 +439,16 @@ class OperatorCommandService {
 
     private @Nullable Outcome replayed(UUID userId, String operationId, String keyDigest) {
         return switch (this.commands.replay(userId, operationId, keyDigest)) {
-            case OperatorCommandApi.Replay.Stored stored ->
-                    new Outcome.Completed(stored.result(), this.commands.exportRows(stored.result()), false);
+            case OperatorCommandApi.Replay.Stored stored -> new Outcome.Completed(stored.result(),
+                    stored.result() instanceof ExportResult export ? this.commands.exportRows(export) : List.of(),
+                    false);
             case OperatorCommandApi.Replay.Conflict conflict -> new Outcome.Refused(IDEMPOTENCY_CONFLICT);
             case OperatorCommandApi.Replay.None none -> null;
         };
     }
 
     private static Envelope envelopeOf(OperatorCommandFlow.Armed armed) {
-        return new Envelope(armed.operationId(), armed.userId(), armed.command(), armed.scope(), armed.target(),
+        return new Envelope(armed.operationId(), armed.userId(), armed.command(), armed.scope(), armed.ledgerTarget(),
                 armed.reason(), armed.confirmationHash(), armed.policyVersion(), armed.requestedAt(),
                 armed.keyDigest(), armed.requestDigest());
     }

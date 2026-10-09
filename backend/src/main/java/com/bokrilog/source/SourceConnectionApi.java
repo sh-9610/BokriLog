@@ -302,4 +302,19 @@ public interface SourceConnectionApi {
      * <p>멱등하다. 지울 것이 없는 계정에 다시 요청해도 실패가 아니다.
      */
     void eraseSourceData(@Nullable UUID userId);
+
+    // ------------------------------------------------------------------ Story 3.2
+
+    /**
+     * 운영 제한의 대상 확인에 쓰는 연결 하나(Story 3.2). 사용자 없이 id로 찾는다. 자격정보·제공자 계정 식별자를 담지 않는다.
+     *
+     * @param userId 소유자. 제한 행의 귀속이다
+     */
+    record ConnectionTarget(UUID connectionId, UUID userId, boolean revoked) {}
+
+    /** 그 연결. 없으면 빈 값이다. */
+    Optional<ConnectionTarget> connectionTarget(UUID connectionId);
+
+    /** 지금 활성인 연결의 수. 운영 제한의 영향 미리보기가 쓴다. */
+    long countActiveConnections();
 }

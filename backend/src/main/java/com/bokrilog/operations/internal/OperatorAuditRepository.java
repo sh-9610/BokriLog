@@ -201,21 +201,50 @@ class OperatorAuditRepository {
                 .optional();
     }
 
-    /** 완료 행의 저장된 결과. */
-    record Completed(String target, @Nullable String keyDigest, long upperSequence, int rowCount, boolean truncated) {}
+    /**
+     * 완료 행의 저장된 결과. 추출은 상한·행 수·잘림을, 제한 생성(Story 3.2)은 제한 ID·기능·scope·효력 시작을 {@code details}에
+     * 남긴다. 그 command의 것이 아닌 값은 비어 있다.
+     */
+    record Completed(String target, @Nullable String keyDigest, long upperSequence, int rowCount, boolean truncated,
+            @Nullable UUID restrictionId, @Nullable String feature, @Nullable String restrictionScope,
+            @Nullable Instant effectiveFrom) {}
 
     Optional<Completed> completed(UUID actorUserId, String operationId) {
         return this.jdbc.sql("SELECT target, details->>'keyDigest' AS key_digest, "
-                        + "CAST(details->>'upperSequence' AS bigint) AS upper_sequence, "
-                        + "CAST(details->>'rowCount' AS integer) AS row_count, "
-                        + "COALESCE(CAST(details->>'truncated' AS boolean), false) AS truncated "
+                        + "COALESCE(CAST(details->>'upperSequence' AS bigint), 0) AS upper_sequence, "
+                        + "COALESCE(CAST(details->>'rowCount' AS integer), 0) AS row_count, "
+                        + "COALESCE(CAST(details->>'truncated' AS boolean), false) AS truncated, "
+                        + "CAST(details->>'restrictionId' AS uuid) AS restriction_id, details->>'feature' AS feature, "
+                        + "details->>'restrictionScope' AS restriction_scope, "
+                        + "CAST(details->>'effectiveFrom' AS timestamptz) AS effective_from "
                         + "FROM operations_audit_event WHERE actor_user_id = :actor AND operation_id = :operationId "
                         + "AND outcome = 'COMPLETED' ORDER BY sequence LIMIT 1")
                 .param("actor", actorUserId)
                 .param("operationId", operationId)
                 .query((rs, row) -> new Completed(rs.getString("target"), rs.getString("key_digest"),
-                        rs.getLong("upper_sequence"), rs.getInt("row_count"), rs.getBoolean("truncated")))
+                        rs.getLong("upper_sequence"), rs.getInt("row_count"), rs.getBoolean("truncated"),
+                        rs.getObject("restriction_id", UUID.class), rs.getString("feature"),
+                        rs.getString("restriction_scope"), nullableInstant(rs, "effective_from")))
                 .optional();
+    }
+
+    /** 완료 행의 사유와 수행자 digest(Story 3.2: 활성 제한 목록이 그것을 만든 operation의 사실로 보인다). */
+    record CompletedFacts(String reason, String actorDigest) {}
+
+    /** operation ID마다 첫 완료 행의 사유·수행자 digest. 완료 행이 없는 operation은 빠진다. */
+    Map<String, CompletedFacts> completedFacts(java.util.Collection<String> operationIds) {
+        if (operationIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, CompletedFacts> facts = new LinkedHashMap<>();
+        this.jdbc.sql("SELECT DISTINCT ON (operation_id) operation_id, reason, actor_digest FROM operations_audit_event "
+                        + "WHERE outcome = 'COMPLETED' AND operation_id IN (:ids) ORDER BY operation_id, sequence")
+                .param("ids", List.copyOf(operationIds))
+                .query((java.sql.ResultSet rs) -> {
+                    facts.put(rs.getString("operation_id"),
+                            new CompletedFacts(rs.getString("reason"), rs.getString("actor_digest")));
+                });
+        return facts;
     }
 
     /**

@@ -48,7 +48,7 @@ import org.springframework.stereotype.Service;
  * <p><b>운영 제한으로 막지 않는다.</b> 해제는 사용자가 BokriLog의 접근을 줄이는 보호 방향 행동이다 — 자격정보를
  * 지우고 작업을 멈출 뿐 새 데이터를 만들지 않는다. 제한은 위험을 늘리는 쓰기(연결·동기화·발행)를 멈추려고 있으므로
  * 그 제한이 걸린 동안 사용자가 자기 자격정보를 지울 수 없게 하면 제한의 뜻이 뒤집힌다. 그래서 준비·확정 어디에도
- * {@code operations_restriction} 판독이 없다. 계정 접근(삭제 진행 포함)과 재인증·허가는 그대로 본다.
+ * 운영 제한 판독({@code OperationalRestrictionApi})이 없다. 계정 접근(삭제 진행 포함)과 재인증·허가는 그대로 본다.
  *
  * <p>Bybit 호출은 없다. BokriLog는 Bybit의 API Key를 원격 폐기하지 않는다. servlet 웹 애플리케이션에서만 배선한다.
  */

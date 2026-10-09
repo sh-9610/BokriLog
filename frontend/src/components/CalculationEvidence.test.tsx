@@ -688,6 +688,22 @@ describe('CalculationEvidence', () => {
     expect(reload).not.toHaveBeenCalled()
   })
 
+  it('409 계산 표시 제한은 제한 문장 하나를 보이고 재시도를 두지 않으며 대시보드를 다시 읽게 하지 않는다(Story 3.2)', async () => {
+    const reload = vi.fn()
+    answers(() =>
+      Promise.resolve(
+        json({ code: 'CALCULATION_DISPLAY_RESTRICTED', message: 'x', correlationId: 'c' }, 409),
+      ),
+    )
+    render(<Harness reload={reload} view={ready()} />)
+    fireEvent.click(toggle())
+    await within(region()).findByText(copy.failure.restricted)
+    expect(within(region()).queryByRole('button', { name: copy.retry })).not.toBeInTheDocument()
+    expect(region()).not.toHaveTextContent(copy.failure.stale)
+    expect(screen.getByTestId('announcement')).toHaveTextContent(copy.status.restricted)
+    expect(reload).not.toHaveBeenCalled()
+  })
+
   it('AC-8: a 403 drops the evidence and asks the dashboard to read again; a 401 does too, with a link back to the entry screen', async () => {
     const reload = vi.fn()
     answers(

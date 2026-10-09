@@ -5,6 +5,8 @@ import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.operations.OperationalRestrictionApi;
+import com.bokrilog.operations.RestrictionFeature;
+import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.PlanPublicationPort;
@@ -36,6 +38,7 @@ import java.time.Instant;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -66,8 +69,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 class PlanPublicationService {
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(PlanPublicationService.class);
-
-    static final String PUBLICATION_COMMAND = "plan-publication";
 
     private final PlanPublicationRepository repository;
     private final CashflowClassificationRepository classifications;
@@ -323,9 +324,9 @@ class PlanPublicationService {
         // confirmation that started first is either committed and seen here, or waits for this commit.
         plans.lockPlanWrites(user);
         if (!accounts.lockWriteAccess(user)) throw new PublicationBlocked("NOT_PERMITTED");
-        if (restricted()) throw new PublicationBlocked("NOT_PERMITTED");
-        if (!repository.lockOwned(lease)) throw new LeaseLost();
         Pinned pinned = loaded.pinned();
+        if (restricted(pinned.portfolioId(), pinned.connectionId())) throw new PublicationBlocked("NOT_PERMITTED");
+        if (!repository.lockOwned(lease)) throw new LeaseLost();
         if (!repository.databaseNow().isBefore(pinned.endAt())) throw new PublicationBlocked("PLAN_PERIOD_ENDED");
         Readiness verified = verified(lease);
         Inputs inputs = verified.inputs();
@@ -370,7 +371,8 @@ class PlanPublicationService {
         if (repository.pointFirst(planId, user, pinned.portfolioId(), calculationId) != 1)
             throw new PublicationBlocked("POINTER_CONFLICT");
         // The final check after every write: a restriction or deletion that raced in rolls it all back.
-        if (restricted() || accounts.decide(user, user, AccountAccessKind.WRITE) != AccessDecision.ALLOWED)
+        if (restricted(pinned.portfolioId(), pinned.connectionId())
+                || accounts.decide(user, user, AccountAccessKind.WRITE) != AccessDecision.ALLOWED)
             throw new PublicationBlocked("NOT_PERMITTED");
         if (repository.finishPublished(lease, planId, calculationId) != 1) throw new LeaseLost();
     }
@@ -593,8 +595,11 @@ class PlanPublicationService {
      * The dashboard read. The account's own access is checked, the bundle is read in one read-only
      * {@code REPEATABLE READ} transaction, and the access is checked again: a deletion that began or
      * finished while the bundle was read wins, and nothing of it is returned. Only the account's own
-     * access gates this read — a restriction on a write command stops new publications, it does not hide
-     * an existing result.
+     * access gates this read.
+     *
+     * <p>Story 3.2: 계산 표시 제한도 이 읽기를 막지 않는다. 묶음은 그대로 읽어 온전한지 판정하고, 그 결과가 제한에
+     * 걸렸는지({@code displayRestricted})를 같은 트랜잭션에서 함께 보고한다 — 결과 값을 빼는 것은 HTTP 표면이다. 공식
+     * 기록은 아무것도 바뀌지 않는다.
      *
      * <p>No log line here: the HTTP surface writes the one operational line per read with the status it
      * actually answers. This read reports what it learned about the bundle — consistent, inconsistent, or
@@ -603,32 +608,85 @@ class PlanPublicationService {
     DashboardRead dashboard(@Nullable UUID userId) {
         if (userId == null || !readable(userId))
             return new DashboardRead(new Dashboard.NotPermitted(), BundleConsistency.NOT_READ);
-        Dashboard bundle = Objects.requireNonNull(dashboardReads.execute(status -> bundle(userId)));
+        HeldBundle held = Objects.requireNonNull(dashboardReads.execute(status -> {
+            var shown = new AtomicReference<PlanPublicationPort.@Nullable ActivePlan>();
+            Dashboard read = bundle(userId, shown);
+            return new HeldBundle(read, displayRestricted(read, shown.get()));
+        }));
+        Dashboard bundle = held.dashboard();
         BundleConsistency consistency = bundle instanceof Dashboard.Unavailable ? BundleConsistency.INCONSISTENT
                 : BundleConsistency.CONSISTENT;
         // The same decision again, after the read: the bundle is dropped if the deletion won the race.
         if (!readable(userId)) return new DashboardRead(new Dashboard.NotPermitted(), consistency);
-        return new DashboardRead(bundle, consistency);
+        return new DashboardRead(bundle, consistency, held.displayRestricted());
+    }
+
+    /** 묶음과, 계산 표시 제한이 그 결과를 막는지. 같은 트랜잭션에서 읽는다(Story 3.2). */
+    private record HeldBundle(Dashboard dashboard, boolean displayRestricted) {}
+
+    /**
+     * 계산 표시 제한이 묶음의 결과를 막는가(Story 3.2) — 그 계획, 계획의 portfolio, 버전의 계산 정책, 또는 전역. 결과가
+     * 있는 묶음만 묻는다. 계획과 정책은 방금 읽은 묶음의 값이라 다시 조회하지 않는다. 판독이 실패하면 예외다
+     * (fail-closed: 결과를 보이지 않는다).
+     */
+    private boolean displayRestricted(Dashboard dashboard, PlanPublicationPort.@Nullable ActivePlan plan) {
+        DashboardResult result = switch (dashboard) {
+            case Dashboard.Ready ready -> ready.result();
+            case Dashboard.Ended ended -> ended.result();
+            case Dashboard.Completed completed -> completed.result();
+            default -> null;
+        };
+        if (result == null) return false;
+        if (plan == null || !plan.planId().equals(result.planId()))
+            throw new IllegalStateException("결과의 계획을 묶음이 고르지 않았다.");
+        return displayRestricted(plan.planId(), plan.portfolioId(), result.calculationPolicy());
+    }
+
+    /** 한 계획 결과의 계산 표시 제한. 대시보드·근거·조정 이력이 같은 것을 묻는다. */
+    boolean displayRestricted(UUID planId, @Nullable UUID portfolioId, String calculationPolicy) {
+        return restrictions.blocks(java.util.EnumSet.of(RestrictionFeature.CALCULATION_DISPLAY), RestrictionSubject
+                .none().withPlan(planId).withPortfolio(portfolioId).withCalculationPolicy(calculationPolicy));
+    }
+
+    /**
+     * 활성 계획의 종료를 제한이 막는가(Story 3.2) — plan 모듈의 판정과 같다: 동기화 또는 계산 표시가 그 계획, 계획의
+     * portfolio, 계산이 기록한 연결, 계산 정책에 걸렸는가.
+     */
+    private boolean planEndRestricted(PlanPublicationPort.ActivePlan plan, UUID connectionId, String calculationPolicy) {
+        return restrictions.blocks(java.util.EnumSet.of(RestrictionFeature.SYNC,
+                RestrictionFeature.CALCULATION_DISPLAY), RestrictionSubject.none().withPlan(plan.planId())
+                .withPortfolio(plan.portfolioId()).withConnection(connectionId)
+                .withCalculationPolicy(calculationPolicy));
     }
 
     DashboardRead historicalDashboard(@Nullable UUID user, UUID planId) {
         if (user==null || !readable(user)) return new DashboardRead(new Dashboard.NotPermitted(),BundleConsistency.NOT_READ);
-        Dashboard bundle=Objects.requireNonNull(dashboardReads.execute(status -> {
-            var selected=plans.historicalPlan(user,planId).orElse(null);
-            if (selected==null) return new Dashboard.NotFound();
-            if (ENDED_EARLY.equals(selected.status())) return endedBundle(user,selected);
-            if (selected.completion()==null) return new Dashboard.Unavailable();
-            var value=completedBundle(user,selected.plan(),selected.completion());
-            if (value instanceof Dashboard.Completed c) return new Dashboard.Completed(c.result(),
-                    DashboardTrust.PREPARE_NEXT_PLAN,new com.bokrilog.sync.SyncJobApi.PlanCompletionRecord(
-                        c.completion().scheduledEndAt(),c.completion().comparison(),c.completion().reason(),
-                        c.completion().observedValue(),c.completion().observedMeasuredAt(),c.completion().observationDelayMillis(),
-                        c.completion().completionTarget(),c.completion().postEndCashflowCount(),false),null,null,c.change());
-            return value;
+        HeldBundle held=Objects.requireNonNull(dashboardReads.execute(status -> {
+            var shown=new AtomicReference<PlanPublicationPort.@Nullable ActivePlan>();
+            Dashboard read=historicalBundle(user,planId,shown);
+            return new HeldBundle(read,displayRestricted(read,shown.get()));
         }));
+        Dashboard bundle=held.dashboard();
         var consistency=bundle instanceof Dashboard.Unavailable ? BundleConsistency.INCONSISTENT : BundleConsistency.CONSISTENT;
         if (!readable(user)) return new DashboardRead(new Dashboard.NotPermitted(),consistency);
-        return new DashboardRead(bundle,consistency);
+        return new DashboardRead(bundle,consistency,held.displayRestricted());
+    }
+
+    /** {@code shown}에는 고른 계획을 남긴다 — 표시 제한 판정이 다시 조회하지 않게(Story 3.2). */
+    private Dashboard historicalBundle(UUID user, UUID planId,
+            AtomicReference<PlanPublicationPort.@Nullable ActivePlan> shown) {
+        var selected=plans.historicalPlan(user,planId).orElse(null);
+        if (selected==null) return new Dashboard.NotFound();
+        shown.set(selected.plan());
+        if (ENDED_EARLY.equals(selected.status())) return endedBundle(user,selected);
+        if (selected.completion()==null) return new Dashboard.Unavailable();
+        var value=completedBundle(user,selected.plan(),selected.completion());
+        if (value instanceof Dashboard.Completed c) return new Dashboard.Completed(c.result(),
+                DashboardTrust.PREPARE_NEXT_PLAN,new com.bokrilog.sync.SyncJobApi.PlanCompletionRecord(
+                    c.completion().scheduledEndAt(),c.completion().comparison(),c.completion().reason(),
+                    c.completion().observedValue(),c.completion().observedMeasuredAt(),c.completion().observationDelayMillis(),
+                    c.completion().completionTarget(),c.completion().postEndCashflowCount(),false),null,null,c.change());
+        return value;
     }
 
     /**
@@ -639,18 +697,21 @@ class PlanPublicationService {
      * portfolio and its terms, the portfolio pointer cites the version's snapshot, and its metrics are a whole six —
      * or nothing of it is returned.
      */
-    private Dashboard bundle(UUID user) {
+    private Dashboard bundle(UUID user, AtomicReference<PlanPublicationPort.@Nullable ActivePlan> shown) {
         var plan = plans.activePlan(user).orElse(null);
         if (plan == null) {
             if (repository.publicationInProgress(user)) return new Dashboard.Preparing(DashboardTrust.WAIT_FOR_RESULT);
             var latest = plans.latestPlan(user).orElse(null);
             if (latest == null) return new Dashboard.NoPlan(DashboardTrust.CREATE_PLAN);
+            // 보이는 계획(Story 3.2): 표시 제한 판정이 이 값을 쓴다.
+            shown.set(latest.plan());
             if (COMPLETED.equals(latest.status()))
                 return latest.completion() == null ? new Dashboard.Unavailable()
                         : completedBundle(user, latest.plan(), latest.completion());
             // Any other status without an active plan is not one this story knows: shown as nothing, never in part.
             return ENDED_EARLY.equals(latest.status()) ? endedBundle(user, latest) : new Dashboard.Unavailable();
         }
+        shown.set(plan);
         // The database clock reached T (Story 2.14): the plan is not shown as an active plan that keeps accruing, even
         // before a sync request completes it — a GET writes nothing, so it only shows the completion not judged yet.
         if (!repository.databaseNow().isBefore(plan.endAt())) return completedBundle(user, plan, null);
@@ -693,7 +754,7 @@ class PlanPublicationService {
                 .orElse(null);
         if (trust == null) return new Dashboard.Unavailable();
         // Whether the plan can be ended now (Story 2.13), by the end's own order, against the same clock and long gap.
-        PlanEndAvailability planEnd = DashboardTrust.planEnd(restrictions.isRestricted(SyncJobService.PLAN_END_COMMAND),
+        PlanEndAvailability planEnd = DashboardTrust.planEnd(planEndRestricted(plan, lineage.connectionId(), calculation.calculationPolicy()),
                 facts.now(), calculation.endAt(), DashboardTrust.resultTooRecent(facts.now(), calculation.measuredAt(),
                         calculation.verifiedThrough()), facts.longGap());
         return new Dashboard.Ready(new DashboardResult(plan.planId(), ACTIVE, notation(calculation.principal()),
@@ -995,6 +1056,7 @@ class PlanPublicationService {
             case EvidenceOutcome.Found found -> BundleConsistency.CONSISTENT;
             case EvidenceOutcome.Unavailable unavailable -> BundleConsistency.INCONSISTENT;
             case EvidenceOutcome.NotFound notFound -> BundleConsistency.NOT_READ;
+            case EvidenceOutcome.Restricted restricted -> BundleConsistency.NOT_READ;
             case EvidenceOutcome.NotPermitted denied -> BundleConsistency.NOT_READ;
         };
         // The same decision again, after the read: the lineage is dropped if the deletion won the race.
@@ -1043,6 +1105,9 @@ class PlanPublicationService {
         UUID calculationId = pointer.calculationId();
         var calculation = repository.calculation(user, calculationId).orElse(null);
         if (calculation == null || !belongs(calculation, plan, pointer)) return new EvidenceOutcome.Unavailable();
+        // 참조가 현재 포인터다: 계산 표시 제한이 지금 그 결과를 막는다(Story 3.2).
+        if (displayRestricted(plan.planId(), plan.portfolioId(), calculation.calculationPolicy()))
+            return new EvidenceOutcome.Restricted();
         var end = shown.end();
         // The same AD-23 reliance as the dashboard for an active plan: both pointers advance in one publication
         // transaction. A terminal plan's record names its snapshot instead; the portfolio's pointer may move on (a
@@ -1437,20 +1502,22 @@ class PlanPublicationService {
     }
 
     private boolean writable(UUID user) {
-        return accounts.decide(user, user, AccountAccessKind.WRITE) == AccessDecision.ALLOWED && !restricted();
+        if (accounts.decide(user, user, AccountAccessKind.WRITE) != AccessDecision.ALLOWED) return false;
+        // 사용자의 지금 portfolio와 연결: 첫 발행이 그 위에서 돈다.
+        var membership = portfolios.activeSource(user).orElse(null);
+        var connection = sources.snapshotConnection(user).orElse(null);
+        return !restricted(membership == null ? null : membership.portfolioId(),
+                connection == null ? null : connection.connectionId());
     }
 
     /**
-     * The commands whose restriction also stops a publication. sync keeps its own copy of the plan
-     * condition command name, because sync must not depend on plan (plan depends on sync);
-     * {@code SyncCommandNamesTest} pins the copy to the plan module's constant.
+     * 첫 발행을 제한이 막는가(Story 3.2) — 그것이 끝맺는 파이프라인의 동기화, 또는 발행할 계산({@code CALC-1.0})의 표시가
+     * 그 portfolio·연결이나 전역에 걸렸는가. 아직 계획이 없으므로 계획 제한은 적용되지 않는다. 판독 실패는 예외다.
      */
-    private boolean restricted() {
-        return restrictions.isRestricted(PUBLICATION_COMMAND)
-                || restrictions.isRestricted(SyncJobService.INITIAL_INPUTS_COMMAND)
-                || restrictions.isRestricted(SyncJobService.PLAN_CONDITION_COMMAND)
-                || restrictions.isRestricted(SyncJobService.SYNC_COMMAND)
-                || restrictions.isRestricted(SyncJobService.CONNECTION_COMMAND);
+    private boolean restricted(@Nullable UUID portfolioId, @Nullable UUID connectionId) {
+        return restrictions.blocks(java.util.EnumSet.of(RestrictionFeature.SYNC, RestrictionFeature.CALCULATION_DISPLAY),
+                RestrictionSubject.none().withPortfolio(portfolioId).withConnection(connectionId)
+                        .withCalculationPolicy(PlanCalculator.CALCULATION_POLICY));
     }
 
     /** {@code P0 > 0}. The plan's start value is a plain decimal string. */

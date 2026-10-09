@@ -66,6 +66,8 @@ export const calculationEvidenceContent = {
     stale: '이 결과의 계산 근거를 찾지 못했습니다. 대시보드의 값은 바뀌지 않았습니다.',
     denied: '이 계정의 계산 근거를 지금 볼 수 없습니다.',
     signedOut: '세션이 만료되어 계산 근거를 불러오지 못했습니다.',
+    /** 계산 표시 제한(Story 3.2). */
+    restricted: '운영상 제한으로 이 결과의 계산 근거를 지금 표시하지 않습니다.',
   },
   /** 읽기가 끝나지 않았을 때. 대시보드 카드·세 축·상태는 그대로이고, 메모리의 최소 참조만 보인다. */
   failure: {
@@ -82,6 +84,9 @@ export const calculationEvidenceContent = {
       '이 계정의 계산 근거를 볼 수 없습니다. 계정 삭제가 진행 중이면 근거가 표시되지 않습니다.',
     signedOut: SESSION_EXPIRED,
     signInLink: '로그인 화면으로 이동',
+    /** 계산 표시 제한(Story 3.2). 다시 요청해도 같으므로 재시도를 권하지 않는다. */
+    restricted:
+      '운영상 제한으로 이 결과의 계산 근거를 지금 표시하지 않습니다. 기존 공식 기록은 바뀌거나 지워지지 않으며, 제한이 풀리면 다시 볼 수 있습니다.',
   },
   /** 여섯 절. 이 순서가 AC-1·AC-7의 읽기 순서다. Story 2.12의 `변경 근거`는 이 앞에 온다(`planVerification.ts`). */
   sections: {

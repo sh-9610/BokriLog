@@ -3,6 +3,8 @@ package com.bokrilog;
 import com.bokrilog.ActionGrantService.Consumption;
 import com.bokrilog.ActionGrantService.ConsumptionRequest;
 import com.bokrilog.operations.OperationalRestrictionApi;
+import com.bokrilog.operations.RestrictionFeature;
+import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.source.SourceCredentials;
@@ -59,8 +61,7 @@ class BybitConnectionService {
      * <p>{@code LinkService.COMMAND}·{@code UnlinkService.COMMAND}와 <b>다른 값</b>이어야 한다.
      * 허가는 이 문자열에 귀속하므로 값이 같으면 연결용으로 발급된 허가가 다른 작업에 쓰인다.
      *
-     * <p>같은 문자열을 {@code operations_restriction.command}가 쓴다. 운영 제한이 막는 것은 command
-     * 이므로 두 이름이 같아야 하고, 갈라지면 제한을 걸어도 아무것도 막히지 않는다.
+     * <p>운영 제한은 이 이름을 보지 않는다 — Story 3.2부터 제한은 기능({@code NEW_CONNECTION})·범위·대상으로 판독한다.
      */
     static final String COMMAND = "bybit-connection-create";
 
@@ -183,8 +184,17 @@ class BybitConnectionService {
      * 대조하지 않으므로 열어 두면 다른 UID가 그 계획의 portfolio에 붙는다.
      */
     private boolean refusesNewConnection(UUID userId) {
-        return this.restrictions.isRestricted(COMMAND) || this.sources.hasActiveConnection(userId)
+        return newConnectionRestricted() || this.sources.hasActiveConnection(userId)
                 || this.sources.hasRevokedConnection(userId);
+    }
+
+    /**
+     * 신규 연결 제한(Story 3.2). 전역 하나뿐이다 — 아직 없는 연결·계획에는 대상 차원이 없다. 이 기능만 본다: 동기화·계산
+     * 표시 제한은 새 연결을 막지 않는다(NFR-17의 독립성).
+     */
+    private boolean newConnectionRestricted() {
+        return this.restrictions.blocks(java.util.EnumSet.of(RestrictionFeature.NEW_CONNECTION),
+                RestrictionSubject.none());
     }
 
     /**
@@ -402,7 +412,7 @@ class BybitConnectionService {
                                  * "최종 저장 트랜잭션에서 다시 검사한다"가 다섯 중 하나에 대해
                                  * 성립하지 않는다. 사설 예외라 소비 UPDATE까지 함께 롤백된다.
                                  */
-                                if (this.restrictions.isRestricted(COMMAND)) {
+                                if (newConnectionRestricted()) {
                                     throw new StoreRejected(SourceRejectionReason.NOT_PERMITTED);
                                 }
                                 SourceConnectionApi.StoreOutcome outcome =

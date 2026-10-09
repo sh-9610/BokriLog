@@ -53,6 +53,16 @@ final class ActorDigest {
         return digest("operator:" + userId);
     }
 
+    /**
+     * 사용자에게 귀속된 제한 target의 digest(Story 3.2). 소문자 16진 64자.
+     *
+     * <p>수행자 digest와 접두사가 달라 같은 UUID가 두 자리에서 같은 값이 되지 않는다. 감사 원장의 target과 계정 삭제로
+     * 비식별된 제한 행의 target이 같은 값이라, 키를 가진 쪽만 둘을 묶을 수 있다.
+     */
+    String ofTarget(String scope, String target) {
+        return digest("restriction-target:" + scope + ":" + target);
+    }
+
     private String digest(String value) {
         try {
             Mac mac = Mac.getInstance(ALGORITHM);

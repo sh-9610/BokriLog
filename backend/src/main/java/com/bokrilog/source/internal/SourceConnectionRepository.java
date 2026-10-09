@@ -248,4 +248,21 @@ class SourceConnectionRepository {
                 .update();
         return connections;
     }
+
+    /** 운영 제한의 대상 확인(Story 3.2): id로 찾은 연결과 그 소유자, 해제 여부. */
+    Optional<com.bokrilog.source.SourceConnectionApi.ConnectionTarget> connectionTarget(UUID connectionId) {
+        return this.jdbc.sql("SELECT connection_id, user_id, status = 'REVOKED' FROM source_connection "
+                + "WHERE connection_id = :connectionId")
+            .param("connectionId", connectionId)
+            .query((rs, n) -> new com.bokrilog.source.SourceConnectionApi.ConnectionTarget(
+                rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getBoolean(3)))
+            .optional();
+    }
+
+    /** 활성 연결의 수(Story 3.2). */
+    long countActive() {
+        Long count = this.jdbc.sql("SELECT count(*) FROM source_connection WHERE status = 'ACTIVE'")
+            .query(Long.class).single();
+        return count == null ? 0L : count;
+    }
 }
