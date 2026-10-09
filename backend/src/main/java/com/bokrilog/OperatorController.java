@@ -57,6 +57,11 @@ import org.springframework.web.bind.annotation.RestController;
  *       {@code restrict-calculation-display}·{@code restrict-advertising})도 같은 세 경로다. 준비 응답은
  *       {@code impact {blockedStages, affectedPlans, affectedConnections, remainingFeatures}}(수만, 식별자 없음)를 더
  *       싣고, 확정 응답은 {@code {operationId, outcome, command, feature, scope, restrictionId, effectiveFrom}}이다.
+ *   <li>Story 3.4의 해제 command {@code lift-restriction}도 같은 세 경로다. 준비 본문은 {@code {target: <제한 ID>, reason:
+ *       <원인>, verification, evidenceRef, deployVersion, conditions[4]}}이고 응답 {@code impact}는 {@code {reopenedStages,
+ *       remainingRestrictions[{feature, scope, origin}], linkedSignals, latestSignalAt}}(식별자 없음)다. 확정 응답은
+ *       {@code {operationId, outcome, command, feature, scope, restrictionId, liftedAt, smoke {status, reopenedStages,
+ *       stillBlockedStages}}}이다.
  *   <li>{@code GET /api/operator/restrictions}(command 권한): 효력 중인 제한, 구체 우선. 출처(운영자·자동 정지, Story
  *       3.3)·기능·scope·target(비식별된 것은 {@code targetErased})·시작 시각·사유·수행자 digest.
  * </ul>
@@ -64,7 +69,9 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>거절은 공통 오류 모양이다: 400 본문 모양, 403 {@code REAUTHENTICATION_REQUIRED}(준비)·
  * {@code OPERATOR_COMMAND_NOT_CONFIRMED}(확정), 409 {@code CONFIRMATION_MISMATCH}·{@code IDEMPOTENCY_CONFLICT}, 422
  * {@code IDEMPOTENCY_KEY_REQUIRED}·{@code REASON_REQUIRED}·{@code REASON_INVALID}·{@code UNSUPPORTED_SCOPE}·
- * {@code TARGET_INVALID}·{@code ACTOR_NOT_ACCEPTED}, 409 {@code ALREADY_RESTRICTED}(Story 3.2), 실패는 500. 404 밖의 응답은 {@code no-store}다.
+ * {@code TARGET_INVALID}·{@code ACTOR_NOT_ACCEPTED}, 409 {@code ALREADY_RESTRICTED}(Story 3.2), 409
+ * {@code RESTRICTION_NOT_ACTIVE}·{@code NEW_SIGNAL_SINCE_PREPARE}과 422 {@code RECOVERY_CONDITION_MISSING}·
+ * {@code RECOVERY_EVIDENCE_INVALID}(Story 3.4), 실패는 500. 404 밖의 응답은 {@code no-store}다.
  *
  * <p>한 요청에 운영 로그 한 줄 — 단계·결과 code·상태·지연뿐이다. 수행자·대상·사유·operation ID·키·허가를 남기지 않는다.
  */
@@ -133,7 +140,19 @@ class OperatorController {
             Map.entry(OperatorCommandApi.ALREADY_RESTRICTED, new Refusal(HttpStatus.CONFLICT,
                     "같은 기능·범위·대상의 제한이 이미 효력 중입니다. 활성 제한 목록을 확인해 주세요.")),
             Map.entry(OperatorCommandApi.ACTOR_NOT_ACCEPTED, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
-                    "요청에 수행자를 담을 수 없습니다. 수행자는 로그인 세션이 정합니다.")));
+                    "요청에 수행자를 담을 수 없습니다. 수행자는 로그인 세션이 정합니다.")),
+            Map.entry(OperatorCommandApi.RESTRICTION_NOT_ACTIVE, new Refusal(HttpStatus.CONFLICT,
+                    "이 제한은 지금 효력 중이 아니어서 복구하지 않았습니다. 활성 제한 목록을 확인해 주세요.")),
+            Map.entry(OperatorCommandApi.RECOVERY_CONDITION_MISSING, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "복구 조건 네 가지를 모두 확인해야 복구를 준비할 수 있습니다.")),
+            Map.entry(OperatorCommandApi.RECOVERY_EVIDENCE_REQUIRED, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "수행한 검증·증거 참조·배포 버전을 모두 입력해 주세요.")),
+            Map.entry(OperatorCommandApi.RECOVERY_EVIDENCE_INVALID, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "수행한 검증과 증거 참조는 500자 이내의 한 줄 문장이어야 하고 이메일 주소를 담을 수 없습니다. "
+                            + "배포 버전은 영문·숫자와 . _ + - 만으로 64자 이내이고, 복구 조건은 아는 조건을 한 번씩만 "
+                            + "보냅니다.")),
+            Map.entry(OperatorCommandApi.NEW_SIGNAL_SINCE_PREPARE, new Refusal(HttpStatus.CONFLICT,
+                    "준비 뒤 이 제한에 새 자동 정지 신호가 연결되어 복구하지 않았습니다. 다시 검증한 뒤 새로 준비해 주세요.")));
 
     /** 감사 행 하나의 응답 모양. allowlist 필드뿐이다. */
     @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -154,13 +173,24 @@ class OperatorController {
 
     record OperationView(String operationId, List<EntryView> items) {}
 
+    /** 준비 응답의 미리보기: 제한 생성(Story 3.2)이거나 해제(Story 3.4)다. 식별자도 금융값도 없다. */
+    sealed interface PreparedImpactView permits ImpactView, LiftImpactView {}
+
     /** 제한 생성의 영향 미리보기(Story 3.2). 수만 담는다 — 식별자도 금융값도 없다. */
     record ImpactView(List<String> blockedStages, long affectedPlans, long affectedConnections,
-            List<String> remainingFeatures) {}
+            List<String> remainingFeatures) implements PreparedImpactView {}
 
+    /** 해제의 남는 제한 하나(Story 3.4). 식별자가 없다. */
+    record RemainingView(String feature, String scope, String origin) {}
+
+    /** 해제의 영향 미리보기(Story 3.4). 식별자도 금융값도 없다. 신호가 없으면 {@code latestSignalAt}은 {@code null}이다. */
+    record LiftImpactView(List<String> reopenedStages, List<RemainingView> remainingRestrictions, int linkedSignals,
+            @Nullable String latestSignalAt) implements PreparedImpactView {}
+
+    /** 준비 응답. {@code impact}는 감사 내보내기에 없다. */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record PreparedView(String operationId, String command, String scope, String target, String reason,
-            String confirmationPhrase, String policyVersion, String requestedAt, @Nullable ImpactView impact) {}
+            String confirmationPhrase, String policyVersion, String requestedAt, @Nullable PreparedImpactView impact) {}
 
     record CompletedView(String operationId, String outcome, String command, String target, long upperSequence,
             int rowCount, boolean truncated, List<EntryView> rows) {}
@@ -169,22 +199,32 @@ class OperatorController {
     record RestrictionCompletedView(String operationId, String outcome, String command, String feature, String scope,
             UUID restrictionId, String effectiveFrom) {}
 
+    /** 해제 커밋 뒤의 smoke(Story 3.4). */
+    record SmokeView(String status, List<String> reopenedStages, List<String> stillBlockedStages) {}
+
+    /** 해제의 확정 결과(Story 3.4). target 원문은 싣지 않는다 — 재생이 원장에서 온다. */
+    record LiftCompletedView(String operationId, String outcome, String command, String feature, String scope,
+            UUID restrictionId, String liftedAt, SmokeView smoke) {}
+
     /**
      * 효력 중인 제한 하나(Story 3.2). 비식별된 target은 싣지 않고 {@code targetErased}로 말한다. {@code origin}은 그 제한을
      * 만든 출처다(Story 3.3) — {@code OPERATOR}이거나 강한 신호의 자동 정지 {@code SIGNAL}이다. {@code linkedSignals}는 그
      * 제한을 만들었거나 그것에 연결된 강한 신호 수이고, 하나라도 있으면 출처와 무관하게 {@code requiresVerification}이 참이다
-     * — 화면은 {@code 수동 검증 필요}로 보이고 해제(Story 3.4)는 이 표시를 본다.
+     * — 화면은 {@code 수동 검증 필요}로 보이고 복구 미리보기(Story 3.4)는 신호 계보를 보인다. {@code reinstated}는 해제
+     * smoke가 어긋나 같은 범위로 되돌린 행이다(Story 3.4) — 그 행의 사유는 해제 원인이 아니라 표지
+     * {@code SMOKE_REVERTED}이고, 신호 수는 되돌린 원 제한의 계보까지 센다.
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record RestrictionView(UUID restrictionId, String feature, String scope, @Nullable String target,
             boolean targetErased, String effectiveFrom, @Nullable String reason, @Nullable String actorDigest,
-            String origin, int linkedSignals, boolean requiresVerification) {
+            String origin, int linkedSignals, boolean requiresVerification, boolean reinstated) {
 
         static RestrictionView of(OperationalRestrictionApi.ActiveRestriction restriction) {
             return new RestrictionView(restriction.restrictionId(), restriction.feature().name(),
                     restriction.scope().name(), restriction.target(), restriction.targetErased(),
                     restriction.effectiveFrom().toString(), restriction.reason(), restriction.actorDigest(),
-                    restriction.origin().name(), restriction.linkedSignals(), restriction.requiresVerification());
+                    restriction.origin().name(), restriction.linkedSignals(), restriction.requiresVerification(),
+                    restriction.reinstatedFrom() != null);
         }
     }
 
@@ -317,7 +357,8 @@ class OperatorController {
                     .body(new PreparedView(armed.flow().operationId(), armed.flow().command(), armed.flow().scope(),
                             armed.flow().target(), armed.flow().reason(), armed.flow().confirmation(),
                             armed.flow().policyVersion(), armed.flow().requestedAt().toString(),
-                            impactView(armed.impact()))), "PREPARED", started);
+                            armed.liftImpact() != null ? liftImpactView(armed.liftImpact())
+                                    : impactView(armed.impact()))), "PREPARED", started);
         };
     }
 
@@ -371,7 +412,23 @@ class OperatorController {
             case OperatorCommandApi.RestrictionResult restriction -> new RestrictionCompletedView(
                     restriction.operationId(), outcome, type, restriction.feature().name(),
                     restriction.scope().name(), restriction.restrictionId(), restriction.effectiveFrom().toString());
+            case OperatorCommandApi.LiftResult lift -> {
+                OperatorCommandService.Smoke smoke = completed.smoke();
+                if (smoke == null) {
+                    // 해제의 결과에는 언제나 smoke가 있다. 없으면 깨진 계약이다 — 500으로 답한다.
+                    throw new IllegalStateException("해제 결과에 smoke가 없다.");
+                }
+                yield new LiftCompletedView(lift.operationId(), outcome, type, lift.feature().name(),
+                        lift.scope().name(), lift.restrictionId(), lift.liftedAt().toString(),
+                        new SmokeView(smoke.status(), smoke.reopenedStages(), smoke.stillBlockedStages()));
+            }
         };
+    }
+
+    private static LiftImpactView liftImpactView(RestrictionTargets.LiftImpact impact) {
+        return new LiftImpactView(impact.reopenedStages(), impact.remainingRestrictions().stream()
+                .map(other -> new RemainingView(other.feature(), other.scope(), other.origin())).toList(),
+                impact.linkedSignals(), impact.latestSignalAt() == null ? null : impact.latestSignalAt().toString());
     }
 
     private static @Nullable ImpactView impactView(RestrictionTargets.@Nullable Impact impact) {
@@ -454,7 +511,41 @@ class OperatorController {
                 break;
             }
         }
-        return new OperatorCommandApi.Proposal(type, scope, target, reason, actorClaimed);
+        if (!OperatorCommandApi.LIFT_RESTRICTION.equals(type)) {
+            return new OperatorCommandApi.Proposal(type, scope, target, reason, actorClaimed);
+        }
+        /*
+         * 해제(Story 3.4)는 scope를 받지 않는다 — 대상은 제한 ID 하나이고 범위는 그 제한의 것이다. 증거 필드가 문자열이
+         * 아니거나 조건이 문자열 배열이 아니면 400이다. 비어 있는 것은 검증이 거절한다(422).
+         */
+        OperatorCommandApi.RecoveryInput recovery;
+        try {
+            recovery = new OperatorCommandApi.RecoveryInput(conditionsOf(node), stringOrNull(node, "verification"),
+                    stringOrNull(node, "evidenceRef"), stringOrNull(node, "deployVersion"));
+        } catch (IllegalArgumentException notText) {
+            return null;
+        }
+        return new OperatorCommandApi.Proposal(type, null, target, reason, actorClaimed, recovery);
+    }
+
+    /** 복구 조건 배열. 없으면 {@code null}, 배열이 아니거나 문자열이 아닌 원소가 있으면 예외(400)다. */
+    private static @Nullable List<String> conditionsOf(tools.jackson.databind.JsonNode node) {
+        tools.jackson.databind.JsonNode value = node.get("conditions");
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        // 조건은 넷이다. 그보다 긴 배열은 어떻게 읽어도 겹치거나 모르는 code를 담는다 — 본문 모양 오류다.
+        if (!value.isArray() || value.size() > OperatorCommandApi.RECOVERY_CONDITIONS.size()) {
+            throw new IllegalArgumentException("conditions");
+        }
+        List<String> conditions = new java.util.ArrayList<>();
+        for (tools.jackson.databind.JsonNode item : value) {
+            if (!item.isString()) {
+                throw new IllegalArgumentException("conditions");
+            }
+            conditions.add(item.asString());
+        }
+        return List.copyOf(conditions);
     }
 
     static @Nullable Confirmation confirmationOf(@Nullable String body) {

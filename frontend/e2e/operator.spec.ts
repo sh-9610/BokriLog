@@ -2,14 +2,18 @@ import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page } from '@playwright/test'
 
 import { authContent } from '../src/content/auth'
-import { operatorContent } from '../src/content/operator'
+import {
+  operatorContent,
+  recoverButtonLabel,
+  RECOVERY_CONDITION_LABELS,
+} from '../src/content/operator'
 
 /**
- * 보호된 운영자 화면의 실제 Chromium 검증(Story 3.1·3.2).
+ * 보호된 운영자 화면의 실제 Chromium 검증(Story 3.1·3.2·3.4).
  *
  * 두 층이다. 기본 `vite preview`에서도 성립하는 것 — 운영자 화면 chunk가 초기 로드에 없고 `/operator`에서만 받아진다는
  * 사실, 미인증 진입의 `next` — 은 언제나 돈다. 운영자 왕복(로그인 → 재인증 → 감사 내보내기, 그리고 Story 3.2의 전역 광고
- * 제한 `restrict-advertising`)과 비운영자의 404 화면은
+ * 제한 `restrict-advertising`과 Story 3.4의 그 제한 복구 `lift-restriction`)과 비운영자의 404 화면은
  * 백엔드와 dev-oidc 스텁이 함께 떠 있는 주입 origin에서만 돈다(`auth-entry.spec.ts`와 같은 게이트). 그 스택의 운영자
  * allowlist는 Google 스텁의 subject `e2e-operator`이고, compose 기본값(운영자 없음)이 아니라 `verify-same-origin.sh`가
  * 명시적으로 넣는다.
@@ -172,11 +176,14 @@ test.describe('운영자 화면 · 주입 origin', () => {
   })
 
   /**
-   * Story 3.2: 전역 광고 제한의 왕복. 광고는 아직 소비자가 없어(Epic 4) 다른 기능에 영향이 없다 — 같은 스택의 다른 시험을
-   * 흔들지 않는 유일한 전역 제한이다. 확인 대화상자는 영향 미리보기를 먼저 말하고, 대상명 `전역`을 담은 문구를 다시
-   * 입력해야 확정된다.
+   * Story 3.2·3.4: 전역 광고 제한을 만들고 같은 시험에서 복구한다. 광고는 아직 소비자가 없어(Epic 4) 다른 기능에 영향이
+   * 없다 — 같은 스택의 다른 시험을 흔들지 않는 유일한 전역 제한이다. 확인 대화상자는 미리보기를 먼저 말하고, 대상명
+   * `전역`을 담은 문구를 다시 입력해야 확정된다. 만든 제한을 끝에서 복구하므로 같은 스택에 이 시험을 다시 돌려도 준비가
+   * `ALREADY_RESTRICTED`로 막히지 않는다.
    */
-  test('운영자가 재인증 뒤 전역 광고 제한을 확정하고 활성 목록에서 본다', async ({ page }) => {
+  test('운영자가 재인증 뒤 전역 광고 제한을 확정하고 검증 증거와 함께 복구한다', async ({
+    page,
+  }) => {
     await signIn(page, OPERATOR_SUBJECT)
     await openOperator(page)
     const copy = operatorContent.restriction
@@ -220,6 +227,73 @@ test.describe('운영자 화면 · 주입 origin', () => {
 
     const after = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
     expect(after.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([])
+    expect(new URL(page.url()).search).toBe('')
+
+    // Story 3.4: 활성 목록의 그 행에서 복구한다. 확정이 재인증 시각을 지웠으므로 다시 본인 확인을 거친다.
+    const recovery = operatorContent.recovery
+    const recover = async (): Promise<void> => {
+      // 행마다의 복구 버튼은 기능·범위·대상을 붙인 이름으로 갈린다.
+      await page
+        .getByRole('list', { name: copy.active.heading })
+        .getByRole('button', {
+          name: recoverButtonLabel('ADVERTISING', 'GLOBAL', '전역'),
+          exact: true,
+        })
+        .click()
+      const group = page.getByRole('group', { name: recovery.heading })
+      await expect(page.getByRole('heading', { level: 3, name: recovery.heading })).toBeFocused()
+      for (const label of Object.values(RECOVERY_CONDITION_LABELS)) {
+        await group.getByLabel(label).check()
+      }
+      await group.getByLabel(recovery.reasonLabel).fill('e2e 광고 SDK 오류 원인 제거')
+      await group.getByLabel(recovery.verificationLabel).fill('e2e 광고 영향 범위 재현 시험 통과')
+      await group.getByLabel(recovery.evidenceLabel).fill('e2e 회귀 기록')
+      await group.getByLabel(recovery.deployVersionLabel).fill('e2e-1.0.0')
+      await group.getByRole('button', { name: recovery.start }).click()
+    }
+
+    await recover()
+    await expect(page.getByText(recovery.reauthLabel, { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
+    await consentWithSubject(page, OPERATOR_SUBJECT)
+    await page.waitForURL((url) => url.pathname !== '/' && !url.pathname.startsWith('/api/'))
+    await openOperator(page)
+
+    await recover()
+    const recoveryDialog = page.getByRole('dialog', {
+      name: operatorContent.recoveryDialog.title,
+    })
+    await expect(recoveryDialog).toBeVisible()
+    await expect(
+      recoveryDialog.getByRole('button', { name: operatorContent.recoveryDialog.cancel }),
+    ).toBeFocused()
+    await expect(recoveryDialog).toContainText(operatorContent.recoveryDialog.reopenedStages)
+    const dialogScan = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
+    expect(dialogScan.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual(
+      [],
+    )
+
+    await expect(recoveryDialog.locator('label strong')).toHaveText('복구 광고 전역')
+    await recoveryDialog.getByRole('textbox').fill('복구 광고 전역')
+    await recoveryDialog
+      .getByRole('button', { name: operatorContent.recoveryDialog.confirm })
+      .click()
+
+    const recovered = page.getByRole('heading', { level: 3, name: recovery.result.heading })
+    await expect(recovered).toBeFocused()
+    await expect(recoveryDialog).toHaveCount(0)
+    await expect(page.getByRole('status')).toContainText('광고 제한(전역)을 복구했습니다')
+    await expect(
+      page
+        .getByRole('list', { name: copy.active.heading })
+        .getByRole('listitem')
+        .filter({ hasText: '광고' }),
+    ).toHaveCount(0)
+
+    const recoveredScan = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
+    expect(
+      recoveredScan.violations.map((violation) => `${violation.id}: ${violation.help}`),
+    ).toEqual([])
     expect(new URL(page.url()).search).toBe('')
   })
 })

@@ -299,3 +299,33 @@
   min-block-size: var(--space-target-min);
   color: var(--color-primary);
 }
+
+/* 복구 조건(Story 3.4). 테두리 없는 묶음이고 각 조건은 글자를 함께 누를 수 있는 44px 행이다. */
+.fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  inline-size: 100%;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.checkboxLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-block-size: var(--space-target-min);
+  font-size: var(--type-body-font-size);
+  line-height: var(--type-body-line-height);
+  color: var(--color-ink-primary);
+}
+
+.checkbox {
+  flex: none;
+  inline-size: var(--space-5);
+  block-size: var(--space-target-min);
+  margin: 0;
+  accent-color: var(--color-primary);
+}

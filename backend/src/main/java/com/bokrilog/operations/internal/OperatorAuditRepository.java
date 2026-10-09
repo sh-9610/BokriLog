@@ -218,29 +218,46 @@ class OperatorAuditRepository {
     }
 
     /**
-     * 완료 행의 저장된 결과. 추출은 상한·행 수·잘림을, 제한 생성(Story 3.2)은 제한 ID·기능·scope·효력 시작을 {@code details}에
-     * 남긴다. 그 command의 것이 아닌 값은 비어 있다.
+     * 완료 행의 저장된 결과. 추출은 상한·행 수·잘림을, 제한 생성(Story 3.2)은 제한 ID·기능·scope·효력 시작을, 해제(Story
+     * 3.4)는 제한 ID·기능·scope·해제 시각·단계 배열(JSON 원문)을 {@code details}에 남긴다. 그 command의 것이 아닌 값은 비어
+     * 있다.
      */
-    record Completed(String target, @Nullable String keyDigest, long upperSequence, int rowCount, boolean truncated,
-            @Nullable UUID restrictionId, @Nullable String feature, @Nullable String restrictionScope,
-            @Nullable Instant effectiveFrom) {}
+    record Completed(String command, String target, @Nullable String keyDigest, long upperSequence, int rowCount,
+            boolean truncated, @Nullable UUID restrictionId, @Nullable String feature, @Nullable String restrictionScope,
+            @Nullable Instant effectiveFrom, @Nullable Instant liftedAt, @Nullable String reopenedStages,
+            @Nullable String stillBlockedStages) {}
 
     Optional<Completed> completed(UUID actorUserId, String operationId) {
-        return this.jdbc.sql("SELECT target, details->>'keyDigest' AS key_digest, "
+        return this.jdbc.sql("SELECT command, target, details->>'keyDigest' AS key_digest, "
                         + "COALESCE(CAST(details->>'upperSequence' AS bigint), 0) AS upper_sequence, "
                         + "COALESCE(CAST(details->>'rowCount' AS integer), 0) AS row_count, "
                         + "COALESCE(CAST(details->>'truncated' AS boolean), false) AS truncated, "
                         + "CAST(details->>'restrictionId' AS uuid) AS restriction_id, details->>'feature' AS feature, "
                         + "details->>'restrictionScope' AS restriction_scope, "
-                        + "CAST(details->>'effectiveFrom' AS timestamptz) AS effective_from "
+                        + "CAST(details->>'effectiveFrom' AS timestamptz) AS effective_from, "
+                        + "CAST(details->>'liftedAt' AS timestamptz) AS lifted_at, "
+                        + "CAST(details->'reopenedStages' AS text) AS reopened_stages, "
+                        + "CAST(details->'stillBlockedStages' AS text) AS still_blocked_stages "
                         + "FROM operations_audit_event WHERE actor_user_id = :actor AND operation_id = :operationId "
                         + "AND outcome = 'COMPLETED' ORDER BY sequence LIMIT 1")
                 .param("actor", actorUserId)
                 .param("operationId", operationId)
-                .query((rs, row) -> new Completed(rs.getString("target"), rs.getString("key_digest"),
-                        rs.getLong("upper_sequence"), rs.getInt("row_count"), rs.getBoolean("truncated"),
-                        rs.getObject("restriction_id", UUID.class), rs.getString("feature"),
-                        rs.getString("restriction_scope"), nullableInstant(rs, "effective_from")))
+                .query((rs, row) -> new Completed(rs.getString("command"), rs.getString("target"),
+                        rs.getString("key_digest"), rs.getLong("upper_sequence"), rs.getInt("row_count"),
+                        rs.getBoolean("truncated"), rs.getObject("restriction_id", UUID.class), rs.getString("feature"),
+                        rs.getString("restriction_scope"), nullableInstant(rs, "effective_from"),
+                        nullableInstant(rs, "lifted_at"), rs.getString("reopened_stages"),
+                        rs.getString("still_blocked_stages")))
+                .optional();
+    }
+
+    /** 그 operation의 행 가운데 그 code 중 하나를 가진 첫 행의 code(Story 3.4: 해제의 smoke 결말). */
+    Optional<String> firstCode(String operationId, List<String> codes) {
+        return this.jdbc.sql("SELECT details->>'code' FROM operations_audit_event WHERE operation_id = :o "
+                        + "AND details->>'code' IN (:codes) ORDER BY sequence LIMIT 1")
+                .param("o", operationId)
+                .param("codes", codes)
+                .query(String.class)
                 .optional();
     }
 

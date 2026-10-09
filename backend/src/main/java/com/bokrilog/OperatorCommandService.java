@@ -8,14 +8,23 @@ import com.bokrilog.operations.OperatorCommandApi.AuditOutcome;
 import com.bokrilog.operations.OperatorCommandApi.CommandResult;
 import com.bokrilog.operations.OperatorCommandApi.Envelope;
 import com.bokrilog.operations.OperatorCommandApi.ExportResult;
+import com.bokrilog.operations.OperatorCommandApi.LiftCompletion;
+import com.bokrilog.operations.OperatorCommandApi.LiftResult;
+import com.bokrilog.operations.OperatorCommandApi.LiftTarget;
+import com.bokrilog.operations.OperationalRestrictionApi;
+import com.bokrilog.operations.OperationalRestrictionApi.ActiveRestriction;
 import com.bokrilog.operations.OperatorCommandApi.RestrictionCompletion;
 import com.bokrilog.operations.OperatorCommandApi.RestrictionResult;
 import com.bokrilog.operations.OperatorCommandApi.TargetCheck;
 import com.bokrilog.operations.OperatorPermission;
+import com.bokrilog.operations.RestrictionFeature;
+import com.bokrilog.operations.RestrictionSubject;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import java.io.Serial;
 import java.time.Instant;
+import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -48,6 +57,10 @@ import org.springframework.stereotype.Service;
  *
  * <p><b>멱등은 두 층이다.</b> 원장의 {@code COMPLETED} 행이 같은 operation·같은 키의 저장 결과를 재생하고(다른 키는
  * 충돌), 허가의 {@code (user_id, operation_id)} 유일 색인이 동시 확정 둘 가운데 하나만 실행시킨다.
+ *
+ * <p><b>해제(Story 3.4)는 커밋 뒤 smoke가 있다.</b> 해제 트랜잭션이 커밋되면 같은 대상 차원으로 evaluator를 다시 불러 그
+ * 제한이 더는 보고되지 않는지와 남는 제한이 여전히 막는지를 본다. 어긋나면 해제를 되돌리지 않고 같은 범위의 새 제한과
+ * {@code FAILED}({@code SMOKE_FAILED}) 행을 별도 트랜잭션으로 쓴다 — 해제 사실과 되돌림 사실이 둘 다 원장에 남는다.
  *
  * <p>로그에 수행자·대상·사유·허가·키를 남기지 않는다. servlet 웹 애플리케이션에서만 배선한다.
  */
@@ -109,9 +122,10 @@ class OperatorCommandService {
     sealed interface Preparation {
         /**
          * @param impact 제한 생성 command의 영향 미리보기(Story 3.2). 그 밖은 {@code null}
+         * @param liftImpact 해제 command의 영향 미리보기(Story 3.4). 그 밖은 {@code null}
          */
-        record Armed(OperatorCommandFlow.Armed flow, RestrictionTargets.@Nullable Impact impact)
-                implements Preparation {}
+        record Armed(OperatorCommandFlow.Armed flow, RestrictionTargets.@Nullable Impact impact,
+                RestrictionTargets.@Nullable LiftImpact liftImpact) implements Preparation {}
 
         record Refused(String code) implements Preparation {}
     }
@@ -120,13 +134,32 @@ class OperatorCommandService {
         /**
          * 실행됐다 — 이번 요청이 했거나({@code ran}), 같은 키의 앞선 실행의 재생이다.
          *
-         * @param rows 추출 결과의 allowlist 필드 묶음. 제한 생성은 비어 있다
+         * @param rows 추출 결과의 allowlist 필드 묶음. 제한 생성·해제는 비어 있다
+         * @param smoke 해제의 커밋 뒤 smoke(Story 3.4). 그 밖은 {@code null}
          */
-        record Completed(CommandResult result, List<OperatorAuditApi.Entry> rows, boolean ran) implements Outcome {}
+        record Completed(CommandResult result, List<OperatorAuditApi.Entry> rows, boolean ran, @Nullable Smoke smoke)
+                implements Outcome {}
 
         /** 실행하지 않았다. */
         record Refused(String code) implements Outcome {}
     }
+
+    /** smoke 결말. 통과했거나, 어긋나 같은 범위를 새 제한으로 되돌렸거나, 원장에 결말이 아직 없다. */
+    static final String SMOKE_PASSED = OperatorCommandApi.LiftSmoke.PASSED.name();
+
+    static final String SMOKE_REVERTED = OperatorCommandApi.LiftSmoke.REVERTED.name();
+
+    static final String SMOKE_PENDING = OperatorCommandApi.LiftSmoke.PENDING.name();
+
+    /**
+     * 해제 커밋 뒤의 smoke(Story 3.4 AC-5).
+     *
+     * @param status {@value #SMOKE_PASSED}·{@value #SMOKE_REVERTED}·{@value #SMOKE_PENDING}(재전송이 원장에서 결말을 찾지
+     *     못했다 — smoke가 도는 중이거나 결말 기록이 실패했다)
+     * @param reopenedStages 다시 열린 단계. 되돌렸거나 결말을 모르면 비어 있다
+     * @param stillBlockedStages 해제한 제한의 단계 가운데 여전히 막힌 것. 되돌렸으면 그 단계 전부, 결말을 모르면 비어 있다
+     */
+    record Smoke(String status, List<String> reopenedStages, List<String> stillBlockedStages) {}
 
     private final OperatorCommandApi commands;
 
@@ -137,12 +170,16 @@ class OperatorCommandService {
     /** 제한 대상의 확인과 영향 미리보기(Story 3.2). 다른 모듈의 사실은 이 어댑터가 각 모듈 공개 API로 본다. */
     private final RestrictionTargets targets;
 
+    /** 해제 smoke의 판독(Story 3.4). 차단 판정의 유일한 출처라 smoke도 이것만 본다. */
+    private final OperationalRestrictionApi restrictions;
+
     OperatorCommandService(OperatorCommandApi commands, OperatorAccess access, ActionGrantService grants,
-            RestrictionTargets targets) {
+            RestrictionTargets targets, OperationalRestrictionApi restrictions) {
         this.commands = commands;
         this.access = access;
         this.grants = grants;
         this.targets = targets;
+        this.restrictions = restrictions;
     }
 
     /** 이 command type을 아는가. 모르는 type은 경로가 없는 것과 같다. */
@@ -178,6 +215,7 @@ class OperatorCommandService {
         }
         var accepted = ((OperatorCommandApi.Validation.Valid) validation).accepted();
         var restriction = accepted.restriction();
+        var lift = accepted.lift();
 
         var keyUse = this.commands.keyUse(userId, keyDigest, accepted.requestDigest());
         if (keyUse instanceof OperatorCommandApi.KeyUse.Conflict) {
@@ -232,12 +270,33 @@ class OperatorCommandService {
             }
         }
         /*
+         * 해제의 대상(Story 3.4)도 같은 자리에서 본다 — 없는 제한은 `TARGET_INVALID`, 이미 닫혔거나 시작 전인 제한은
+         * `RESTRICTION_NOT_ACTIVE`다. 열린 제한이면 다시 열릴 단계·남는 제한·신호 계보를 미리 보인다.
+         */
+        RestrictionTargets.LiftImpact liftImpact = null;
+        if (lift != null) {
+            LiftTarget current = lift.current();
+            String refusal = null;
+            if (current == null) {
+                refusal = OperatorCommandApi.TARGET_INVALID;
+            } else if (!current.open()) {
+                refusal = OperatorCommandApi.RESTRICTION_NOT_ACTIVE;
+            } else {
+                liftImpact = this.targets.liftImpact(lift.restrictionId(), current);
+            }
+            if (refusal != null) {
+                this.grants.invalidateReference(userId, reference.get());
+                this.commands.recordRefusedProposal(userId, proposal, refusal, keyDigest, correlationId);
+                return new Preparation.Refused(refusal);
+            }
+        }
+        /*
          * 키 판정과 `REQUESTED` 추가를 원장 잠금 안의 한 트랜잭션으로 한다. 같은 새 키의 동시 준비 둘은 여기서 줄을
          * 서고, 뒤의 것은 앞의 것이 쓴 operation을 받는다 — operation이 둘 생기지 않는다.
          */
         OperatorCommandApi.Claim claim;
         try {
-            claim = this.commands.claim(envelope, correlationId);
+            claim = this.commands.claim(envelope, lift, correlationId);
         } catch (RuntimeException failure) {
             // 감사 없는 허가를 남기지 않는다.
             this.grants.invalidateReference(userId, reference.get());
@@ -263,9 +322,9 @@ class OperatorCommandService {
         OperatorCommandFlow.Armed armed = new OperatorCommandFlow.Armed(userId, operationId, command,
                 accepted.scope(), accepted.target(), grantTarget, accepted.reason(), accepted.policyVersion(),
                 confirmationHash, accepted.requestDigest(), recorded, keyDigest, reference.get(), phrase,
-                session.getId(), Instant.now(), restriction);
+                session.getId(), Instant.now(), restriction, lift);
         OperatorCommandFlow.arm(session, armed);
-        return new Preparation.Armed(armed, impact);
+        return new Preparation.Armed(armed, impact, liftImpact);
     }
 
     /**
@@ -310,12 +369,35 @@ class OperatorCommandService {
         String grantCommand = grantCommandOf(command);
         AtomicReference<@Nullable CommandResult> ran = new AtomicReference<>();
         var restriction = armed.restriction();
+        var lift = armed.lift();
+        // 해제 확정이 원장 잠금 아래에서 본 남는 제한. 커밋 뒤 smoke가 이것이 여전히 막는지 본다.
+        AtomicReference<List<ActiveRestriction>> remaining = new AtomicReference<>(List.of());
         Consumption consumption;
         try {
             consumption = this.grants.consume(
                     new ConsumptionRequest(session, userId, armed.grantReference(), grantCommand, armed.ledgerTarget(),
                             confirmation, idempotencyKey),
                     () -> {
+                        if (lift != null) {
+                            /*
+                             * 원장 잠금 → 최종 권한 → 제한 행 잠금 → 열림·신호 계보 재검사 → 조건부 UPDATE → 기대 단계 →
+                             * 완료 행(Story 3.4 AC-1·AC-3). 남는 제한은 그 행을 닫은 뒤 잠금 안에서 센다.
+                             */
+                            LiftTarget current = java.util.Objects.requireNonNull(lift.current());
+                            var completion = this.commands.completeLift(envelope, lift, correlationId,
+                                    () -> this.access.permits(userId, required), () -> {
+                                        List<ActiveRestriction> others =
+                                                this.targets.remaining(lift.restrictionId(), current);
+                                        remaining.set(others);
+                                        return RestrictionTargets.expectation(current, others);
+                                    });
+                            if (completion instanceof LiftCompletion.Refused refused) {
+                                throw new Refused(refused.code());
+                            }
+                            LiftResult result = ((LiftCompletion.Completed) completion).result();
+                            ran.set(result);
+                            return result.operationId() + "|" + result.restrictionId() + "|" + result.liftedAt();
+                        }
                         if (restriction != null) {
                             // 원장 잠금 → 최종 권한 → 대상 재검사 → 중복 → 제한 행 → 완료 행(Story 3.2 AC-3).
                             var completion = this.commands.completeRestriction(envelope, restriction, correlationId,
@@ -365,7 +447,15 @@ class OperatorCommandService {
                 // 기능과 scope만 남긴다. target·사유·수행자는 남기지 않는다.
                 LOG.info("operator command completed: command={} feature={} scope={}", command,
                         restricted.feature(), restricted.scope());
-                return new Outcome.Completed(restricted, List.of(), true);
+                return new Outcome.Completed(restricted, List.of(), true, null);
+            }
+            if (executed instanceof LiftResult lifted && lift != null) {
+                Smoke smoke = smoke(envelope, lifted, java.util.Objects.requireNonNull(lift.current()),
+                        remaining.get(), correlationId);
+                // 기능·scope·smoke 결말만 남긴다. 제한 ID·target·사유·수행자는 남기지 않는다.
+                LOG.info("operator command completed: command={} feature={} scope={} smoke={}", command,
+                        lifted.feature(), lifted.scope(), smoke.status());
+                return new Outcome.Completed(lifted, List.of(), true, smoke);
             }
             ExportResult result = (ExportResult) executed;
             LOG.info("operator command completed: command={} rows={} truncated={}", command, result.rowCount(),
@@ -382,7 +472,7 @@ class OperatorCommandService {
                         unreadable.getClass().getName());
                 throw unreadable;
             }
-            return new Outcome.Completed(result, rows, true);
+            return new Outcome.Completed(result, rows, true, null);
         }
         // 허가가 같은 키의 앞선 실행을 답했거나(동시 확정) 거부했다. 원장이 답한다.
         Outcome settled = replayed(userId, operationId, keyDigest);
@@ -437,11 +527,80 @@ class OperatorCommandService {
         this.grants.invalidateReference(armed.userId(), armed.grantReference());
     }
 
+    /**
+     * 해제 커밋 뒤의 smoke(Story 3.4 AC-5). 해제한 제한이 막던 대상 차원으로 evaluator의 후보 전체
+     * ({@link OperationalRestrictionApi#matching})를 다시 읽는다:
+     *
+     * <ol>
+     *   <li>해제한 제한이 후보에 없다. 가장 구체적인 한 행만 보면 같은 구체성의 다른 행이 먼저 보고돼 해제한 행이 남아
+     *       있어도 통과한다 — 그래서 후보 전체에서 그 ID를 찾는다.
+     *   <li>원장 잠금 아래에서 센 남는 제한이 모두 후보에 있다. 빠진 행은 그 행이 지금도 열려 있는지 다시 본다 — 그사이
+     *       다른 운영자가 정상 해제했거나 계정 삭제로 비식별된 행은 실패로 세지 않는다.
+     * </ol>
+     *
+     * <p>결말은 언제나 원장에 남는다: 통과는 {@code APPROVED}({@code SMOKE_PASSED}) 행 하나, 어긋나거나 판독이 실패하면 같은
+     * 범위의 새 제한과 {@code FAILED}({@code SMOKE_FAILED}) 행을 별도 트랜잭션으로 쓴다(fail-closed). 그 쓰기가 실패하면
+     * 예외가 올라가 응답은 500이고, 같은 키의 재전송은 결말 행이 없으므로 {@value #SMOKE_PENDING}이다 — 통과로 재생하지 않는다.
+     */
+    private Smoke smoke(Envelope envelope, LiftResult lifted, LiftTarget target, List<ActiveRestriction> remaining,
+            String correlationId) {
+        boolean passed;
+        try {
+            RestrictionSubject subject = this.targets.subjectOf(target);
+            Set<RestrictionFeature> features = EnumSet.of(lifted.feature());
+            for (ActiveRestriction other : remaining) {
+                features.add(other.feature());
+            }
+            Set<UUID> reported = new HashSet<>();
+            for (ActiveRestriction found : this.restrictions.matching(features, subject, Set.of())) {
+                reported.add(found.restrictionId());
+            }
+            passed = !reported.contains(lifted.restrictionId());
+            for (ActiveRestriction other : remaining) {
+                if (!passed) {
+                    break;
+                }
+                if (!reported.contains(other.restrictionId())) {
+                    // 빠졌다. 지금도 열려 있고 원 target이 있는데 막지 않는다면 실패다. 정상적으로 닫혔으면 실패가 아니다.
+                    passed = this.restrictions.current(other.restrictionId())
+                            .filter(still -> !still.targetErased()).isEmpty();
+                }
+            }
+        } catch (RuntimeException unreadable) {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("operator lift smoke could not read: failure={}", unreadable.getClass().getName());
+            }
+            passed = false;
+        }
+        if (passed) {
+            this.commands.recordSmokePassed(envelope, lifted, correlationId);
+            return passed(lifted);
+        }
+        LOG.warn("operator lift smoke failed: feature={} scope={}", lifted.feature(), lifted.scope());
+        this.commands.revertLift(envelope, lifted, correlationId);
+        return reverted(lifted);
+    }
+
+    private static Smoke passed(LiftResult lifted) {
+        return new Smoke(SMOKE_PASSED, lifted.reopenedStages(), lifted.stillBlockedStages());
+    }
+
+    /** 되돌린 해제의 smoke: 다시 열린 단계가 없고 해제한 제한의 단계가 모두 막혀 있다. */
+    private static Smoke reverted(LiftResult lifted) {
+        return new Smoke(SMOKE_REVERTED, List.of(), RestrictionTargets.stages(lifted.feature(), lifted.scope()));
+    }
+
     private @Nullable Outcome replayed(UUID userId, String operationId, String keyDigest) {
         return switch (this.commands.replay(userId, operationId, keyDigest)) {
+            case OperatorCommandApi.Replay.Stored stored when stored.result() instanceof LiftResult lifted ->
+                    new Outcome.Completed(lifted, List.of(), false, switch (this.commands.liftSmoke(operationId)) {
+                        case PASSED -> passed(lifted);
+                        case REVERTED -> reverted(lifted);
+                        case PENDING -> new Smoke(SMOKE_PENDING, List.of(), List.of());
+                    });
             case OperatorCommandApi.Replay.Stored stored -> new Outcome.Completed(stored.result(),
                     stored.result() instanceof ExportResult export ? this.commands.exportRows(export) : List.of(),
-                    false);
+                    false, null);
             case OperatorCommandApi.Replay.Conflict conflict -> new Outcome.Refused(IDEMPOTENCY_CONFLICT);
             case OperatorCommandApi.Replay.None none -> null;
         };

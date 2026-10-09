@@ -3,6 +3,7 @@ import { useCallback, useLayoutEffect, useRef, useState, type ReactElement } fro
 import type { ActiveRestriction, AuditEntry } from '../session/operatorApi'
 
 import { OperatorExportDialog } from '../components/OperatorExportDialog'
+import { OperatorRecoveryDialog } from '../components/OperatorRecoveryDialog'
 import { OperatorRestrictionDialog } from '../components/OperatorRestrictionDialog'
 import { ProviderMark } from '../components/ProviderMark'
 import { ReauthPanel } from '../components/ReauthPanel'
@@ -17,11 +18,12 @@ import {
   SIGN_IN_PROVIDERS,
   type SignInProvider,
 } from '../content/auth'
-import { formatVerifiedAt } from '../content/connection'
 import { entryContent } from '../content/entry'
 import {
   CALCULATION_POLICY_TARGET,
+  DEPLOY_VERSION_MAX_LENGTH,
   featureLabel,
+  formatOperatorTime,
   GLOBAL_TARGET,
   ledgerCodeLabel,
   operatorContent,
@@ -30,11 +32,17 @@ import {
   OUTCOME_FILTERS,
   outcomeLabel,
   REASON_MAX_LENGTH,
+  recoverButtonLabel,
+  RECOVERY_CONDITION_LABELS,
+  RECOVERY_CONDITIONS,
   RESTRICTION_COMMANDS,
   RESTRICTION_FEATURES,
   RESTRICTION_SCOPES,
   scopeLabel,
   signalReasonLabel,
+  smokeStatusLabel,
+  stageLabel,
+  type RecoveryCondition,
   type RestrictionFeature,
   type RestrictionScope,
 } from '../content/operator'
@@ -46,6 +54,7 @@ import {
   type AuditFilter,
 } from '../session/useOperatorAudit'
 import { useOperatorExport } from '../session/useOperatorExport'
+import { useOperatorRecovery } from '../session/useOperatorRecovery'
 import { useOperatorRestriction } from '../session/useOperatorRestriction'
 import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate, type SessionGate } from '../session/useSessionState'
@@ -69,7 +78,7 @@ function AuditRow({ entry }: { readonly entry: AuditEntry }): ReactElement {
     <li className={styles.entry}>
       <div className={styles.entryRow}>
         <span className={styles.term}>{columns.recordedAt}</span>
-        <span className={styles.value}>{formatVerifiedAt(entry.recordedAt)}</span>
+        <span className={styles.value}>{formatOperatorTime(entry.recordedAt)}</span>
       </div>
       <div className={styles.entryRow}>
         <span className={styles.term}>{columns.outcome}</span>
@@ -102,14 +111,26 @@ function AuditRow({ entry }: { readonly entry: AuditEntry }): ReactElement {
   )
 }
 
+/** 제한의 화면 대상: 비식별이면 `삭제됨`, 전역이면 `전역`, 그 밖은 원 target이다. */
+function restrictionTargetLabel(restriction: ActiveRestriction): string {
+  if (restriction.targetErased) return copy.restriction.active.erased
+  if (restriction.scope === 'GLOBAL') return scopeLabel('GLOBAL')
+  return restriction.target ?? copy.restriction.active.erased
+}
+
 /**
  * 활성 제한 하나. 비식별된 대상은 `삭제됨`으로만 보인다 — 색이 아니라 글자로 말한다. 신호가 만들었거나 신호가 연결된
- * 제한(Story 3.3)은 `수동 검증 필요` 상태를 글자로 보이고, 자동 정지의 사유는 신호 종류의 문장이다.
+ * 제한(Story 3.3)은 `수동 검증 필요` 상태를 글자로 보이고, 자동 정지의 사유는 신호 종류의 문장이다. 행마다 그 제한
+ * 하나를 여는 `복구` 동작이 있다(Story 3.4).
  */
 function RestrictionRow({
+  busy,
+  onRecover,
   restriction,
 }: {
   readonly restriction: ActiveRestriction
+  readonly busy: boolean
+  readonly onRecover: (restriction: ActiveRestriction) => void
 }): ReactElement {
   const active = copy.restriction.active
   const columns = active.columns
@@ -133,26 +154,22 @@ function RestrictionRow({
       </div>
       <div className={styles.entryRow}>
         <span className={styles.term}>{columns.target}</span>
-        <span className={styles.value}>
-          {restriction.targetErased
-            ? copy.restriction.active.erased
-            : restriction.scope === 'GLOBAL'
-              ? scopeLabel('GLOBAL')
-              : restriction.target}
-        </span>
+        <span className={styles.value}>{restrictionTargetLabel(restriction)}</span>
       </div>
       <div className={styles.entryRow}>
         <span className={styles.term}>{columns.effectiveFrom}</span>
-        <span className={styles.value}>{formatVerifiedAt(restriction.effectiveFrom)}</span>
+        <span className={styles.value}>{formatOperatorTime(restriction.effectiveFrom)}</span>
       </div>
       <div className={styles.entryRow}>
         <span className={styles.term}>{columns.reason}</span>
         <span className={styles.value}>
-          {restriction.reason === null
-            ? copy.restriction.active.noReason
-            : restriction.origin === 'SIGNAL'
-              ? signalReasonLabel(restriction.reason)
-              : restriction.reason}
+          {restriction.reinstated
+            ? copy.restriction.active.reinstated
+            : restriction.reason === null
+              ? copy.restriction.active.noReason
+              : restriction.origin === 'SIGNAL'
+                ? signalReasonLabel(restriction.reason)
+                : restriction.reason}
         </span>
       </div>
       <div className={styles.entryRow}>
@@ -163,6 +180,22 @@ function RestrictionRow({
             : restriction.actorDigest.slice(0, 12)}
         </span>
       </div>
+      <button
+        aria-disabled={busy}
+        // 행마다 같은 글자라 이름에 기능·범위·대상을 붙여 가른다. 보이는 글자로 시작한다(label-in-name).
+        aria-label={recoverButtonLabel(
+          restriction.feature,
+          restriction.scope,
+          restrictionTargetLabel(restriction),
+        )}
+        className={styles.button}
+        onClick={() => {
+          if (!busy) onRecover(restriction)
+        }}
+        type="button"
+      >
+        {copy.restriction.active.recover}
+      </button>
     </li>
   )
 }
@@ -232,11 +265,30 @@ export function OperatorScreen(): ReactElement {
   const [scope, setScope] = useState<RestrictionScope>('GLOBAL')
   const [restrictionTarget, setRestrictionTarget] = useState(GLOBAL_TARGET)
   const [restrictionReason, setRestrictionReason] = useState('')
-  /** 화면의 단일 status가 말할 마지막 조작. 두 명령의 끝난 상태가 함께 남아도 사용자가 마지막에 누른 쪽을 말한다. */
-  const [lastCommand, setLastCommand] = useState<'export' | 'restriction'>('export')
+  /** 화면의 단일 status가 말할 마지막 조작. 세 명령의 끝난 상태가 함께 남아도 사용자가 마지막에 누른 쪽을 말한다. */
+  const [lastCommand, setLastCommand] = useState<'export' | 'recovery' | 'restriction'>('export')
+  // 제한 복구(Story 3.4): 활성 목록에서 고른 제한 하나와 그 증거 입력. 값은 메모리에만 있다.
+  const recovering = useOperatorRecovery(csrfToken, restricting.reloadList)
+  const [chosenRecovery, setRecoveryTarget] = useState<ActiveRestriction | null>(null)
+  /*
+   * 고른 제한은 지금 목록에 있을 때만 복구 영역을 연다. 복구가 끝나 목록을 다시 읽으면 그 행이 빠지고 폼도 사라진다 —
+   * 닫힌 제한의 폼이 남아 다시 준비되지 않는다. 남은 입력은 다음에 행을 고를 때 비운다.
+   */
+  const recoveryTarget =
+    chosenRecovery !== null &&
+    restricting.list.items.some((item) => item.restrictionId === chosenRecovery.restrictionId)
+      ? chosenRecovery
+      : null
+  const [conditions, setConditions] = useState<readonly RecoveryCondition[]>([])
+  const [cause, setCause] = useState('')
+  const [verification, setVerification] = useState('')
+  const [evidenceRef, setEvidenceRef] = useState('')
+  const [deployVersion, setDeployVersion] = useState('')
 
   const resultRef = useRef<HTMLHeadingElement>(null)
   const restrictionResultRef = useRef<HTMLHeadingElement>(null)
+  const recoveryHeadingRef = useRef<HTMLHeadingElement>(null)
+  const recoveryResultRef = useRef<HTMLHeadingElement>(null)
 
   // 완료의 결과는 사용자가 누른 조작의 결과다 — 그 제목으로 초점을 옮긴다(커밋과 함께, layout effect).
   const completed = exporting.phase === 'completed'
@@ -251,12 +303,26 @@ export function OperatorScreen(): ReactElement {
       restrictionResultRef.current?.focus()
     }
   }, [restricted])
+  // 행의 `복구`를 누른 결과는 복구 영역이다 — 그 제목으로 초점을 옮긴다.
+  const recoveryTargetId = recoveryTarget?.restrictionId ?? null
+  useLayoutEffect(() => {
+    if (recoveryTargetId !== null) {
+      recoveryHeadingRef.current?.focus()
+    }
+  }, [recoveryTargetId])
+  const recovered = recovering.phase === 'completed'
+  useLayoutEffect(() => {
+    if (recovered) {
+      recoveryResultRef.current?.focus()
+    }
+  }, [recovered])
 
   // 서버가 세션이 끝났다고 답했다. 만료의 결과는 이동 하나다(`useSessionGate`와 같은 규칙).
   const sessionEnded =
     audit.view.status === 'unauthenticated' ||
     exporting.sessionEnded ||
     restricting.sessionEnded ||
+    recovering.sessionEnded ||
     restricting.list.status === 'unauthenticated' ||
     lookup.lookup.status === 'unauthenticated'
   useLayoutEffect(() => {
@@ -292,10 +358,25 @@ export function OperatorScreen(): ReactElement {
   const restrictionDialogOpen =
     restricting.prepared !== null &&
     (restricting.phase === 'armed' || restricting.phase === 'confirming')
-  const dialogOpen = exportDialogOpen || restrictionDialogOpen
+  const recoveryDialogOpen =
+    recovering.prepared !== null &&
+    (recovering.phase === 'armed' || recovering.phase === 'confirming')
+  const dialogOpen = exportDialogOpen || restrictionDialogOpen || recoveryDialogOpen
   const busy =
-    exporting.busy || restricting.busy || reauthentication.pending || signOut.pending || dialogOpen
+    exporting.busy ||
+    restricting.busy ||
+    recovering.busy ||
+    reauthentication.pending ||
+    signOut.pending ||
+    dialogOpen
   const canRestrict = restrictionTarget.trim() !== '' && restrictionReason.trim() !== ''
+  const canRecover =
+    recoveryTarget !== null &&
+    RECOVERY_CONDITIONS.every((condition) => conditions.includes(condition)) &&
+    cause.trim() !== '' &&
+    verification.trim() !== '' &&
+    evidenceRef.trim() !== '' &&
+    deployVersion.trim() !== ''
   // 운영자 제어는 운영자임이 한 번 확인된 뒤에만 그린다. 첫 조회의 실패는 fail-closed다.
   /*
    * 두 영역은 각자의 조회로 판정한다(Story 3.2). 감사 영역(감사 원장·내보내기)은 감사 조회를 한 번이라도 읽은 뒤에만,
@@ -318,7 +399,9 @@ export function OperatorScreen(): ReactElement {
   const uncertainOperationId =
     lastCommand === 'restriction'
       ? restricting.uncertainOperationId
-      : exporting.uncertainOperationId
+      : lastCommand === 'recovery'
+        ? recovering.uncertainOperationId
+        : exporting.uncertainOperationId
   const operationValue =
     !operationEdited && uncertainOperationId !== null ? uncertainOperationId : operationInput
   const canPrepare = filter.from !== '' && filter.to !== '' && reason.trim() !== ''
@@ -359,7 +442,7 @@ export function OperatorScreen(): ReactElement {
 
           {/* 화면당 polite live region 하나. 진행·결과·거절을 여기서 말한다. */}
           <div
-            aria-busy={audit.view.loading || exporting.busy || restricting.busy}
+            aria-busy={audit.view.loading || exporting.busy || restricting.busy || recovering.busy}
             aria-live="polite"
             className={styles.notice}
             role="status"
@@ -370,8 +453,11 @@ export function OperatorScreen(): ReactElement {
                 gate,
                 signOut.pending,
                 reauthentication.pending,
-                lastCommand === 'restriction' ? restricting : exporting,
-                lastCommand,
+                lastCommand === 'restriction'
+                  ? restrictionSentence(restricting)
+                  : lastCommand === 'recovery'
+                    ? recoverySentence(recovering)
+                    : exportSentence(exporting),
                 lookup.lookup.status === 'loading',
                 audit.view,
                 auditVisible,
@@ -750,7 +836,7 @@ export function OperatorScreen(): ReactElement {
                           </p>
                           <p>
                             {copy.restriction.result.effectiveFrom}:{' '}
-                            {formatVerifiedAt(restricting.completed.effectiveFrom)}
+                            {formatOperatorTime(restricting.completed.effectiveFrom)}
                           </p>
                         </div>
                       )}
@@ -772,7 +858,26 @@ export function OperatorScreen(): ReactElement {
                   ) : (
                     <ol aria-labelledby={copy.restriction.active.id} className={styles.list}>
                       {restricting.list.items.map((restriction) => (
-                        <RestrictionRow key={restriction.restrictionId} restriction={restriction} />
+                        <RestrictionRow
+                          busy={busy}
+                          key={restriction.restrictionId}
+                          onRecover={(chosen) => {
+                            /*
+                             * 다른 행을 고르면 입력과 복구 상태 기계를 비운다 — 앞 제한의 증거·거절·결과·멱등 키가
+                             * 다음 제한에 실리지 않는다. 고른 행이 사라졌던 경우도 다른 행이다.
+                             */
+                            if (recoveryTarget?.restrictionId !== chosen.restrictionId) {
+                              setConditions([])
+                              setCause('')
+                              setVerification('')
+                              setEvidenceRef('')
+                              setDeployVersion('')
+                              recovering.reset()
+                            }
+                            setRecoveryTarget(chosen)
+                          }}
+                          restriction={restriction}
+                        />
                       ))}
                     </ol>
                   )}
@@ -786,6 +891,230 @@ export function OperatorScreen(): ReactElement {
                   >
                     {copy.restriction.active.reload}
                   </button>
+
+                  {recoveryTarget === null ? null : (
+                    <div aria-labelledby={copy.recovery.id} className={styles.result} role="group">
+                      <h3
+                        className={styles.sectionHeading}
+                        id={copy.recovery.id}
+                        ref={recoveryHeadingRef}
+                        tabIndex={-1}
+                      >
+                        {copy.recovery.heading}
+                      </h3>
+                      <p>{copy.recovery.body}</p>
+                      <p>
+                        {copy.recovery.selected}: {featureLabel(recoveryTarget.feature)} ·{' '}
+                        {scopeLabel(recoveryTarget.scope)} ·{' '}
+                        {restrictionTargetLabel(recoveryTarget)} ·{' '}
+                        {originLabel(recoveryTarget.origin)}
+                      </p>
+                      {recoveryTarget.requiresVerification ? (
+                        <p className={styles.help}>{copy.recovery.verificationNote}</p>
+                      ) : null}
+                      <form
+                        className={styles.form}
+                        onSubmit={(event) => {
+                          // 폼은 fetch로만 보낸다. `form-action 'none'` CSP를 유지한다.
+                          event.preventDefault()
+                        }}
+                      >
+                        <fieldset className={styles.fieldset}>
+                          <legend className={styles.label}>{copy.recovery.conditionsLegend}</legend>
+                          {RECOVERY_CONDITIONS.map((condition) => (
+                            <label className={styles.checkboxLabel} key={condition}>
+                              <input
+                                checked={conditions.includes(condition)}
+                                className={styles.checkbox}
+                                onChange={(event) => {
+                                  const checked = event.target.checked
+                                  setConditions((current) =>
+                                    checked
+                                      ? RECOVERY_CONDITIONS.filter(
+                                          (known) => known === condition || current.includes(known),
+                                        )
+                                      : current.filter((known) => known !== condition),
+                                  )
+                                }}
+                                type="checkbox"
+                              />
+                              <span>{RECOVERY_CONDITION_LABELS[condition]}</span>
+                            </label>
+                          ))}
+                        </fieldset>
+                        <div className={styles.wideField}>
+                          <label className={styles.label} htmlFor="operator-recovery-reason">
+                            {copy.recovery.reasonLabel}
+                          </label>
+                          <input
+                            aria-describedby="operator-recovery-text-help"
+                            autoComplete="off"
+                            className={styles.input}
+                            id="operator-recovery-reason"
+                            maxLength={REASON_MAX_LENGTH}
+                            onChange={(event) => {
+                              setCause(event.target.value)
+                            }}
+                            type="text"
+                            value={cause}
+                          />
+                        </div>
+                        <div className={styles.wideField}>
+                          <label className={styles.label} htmlFor="operator-recovery-verification">
+                            {copy.recovery.verificationLabel}
+                          </label>
+                          <input
+                            aria-describedby="operator-recovery-text-help"
+                            autoComplete="off"
+                            className={styles.input}
+                            id="operator-recovery-verification"
+                            maxLength={REASON_MAX_LENGTH}
+                            onChange={(event) => {
+                              setVerification(event.target.value)
+                            }}
+                            type="text"
+                            value={verification}
+                          />
+                        </div>
+                        <div className={styles.wideField}>
+                          <label className={styles.label} htmlFor="operator-recovery-evidence">
+                            {copy.recovery.evidenceLabel}
+                          </label>
+                          <input
+                            aria-describedby="operator-recovery-text-help"
+                            autoComplete="off"
+                            className={styles.input}
+                            id="operator-recovery-evidence"
+                            maxLength={REASON_MAX_LENGTH}
+                            onChange={(event) => {
+                              setEvidenceRef(event.target.value)
+                            }}
+                            type="text"
+                            value={evidenceRef}
+                          />
+                          <p className={styles.help} id="operator-recovery-text-help">
+                            {copy.recovery.textHelp}
+                          </p>
+                        </div>
+                        <div className={styles.wideField}>
+                          <label className={styles.label} htmlFor="operator-recovery-version">
+                            {copy.recovery.deployVersionLabel}
+                          </label>
+                          <input
+                            aria-describedby="operator-recovery-version-help"
+                            autoComplete="off"
+                            className={styles.input}
+                            id="operator-recovery-version"
+                            maxLength={DEPLOY_VERSION_MAX_LENGTH}
+                            onChange={(event) => {
+                              setDeployVersion(event.target.value)
+                            }}
+                            spellCheck={false}
+                            type="text"
+                            value={deployVersion}
+                          />
+                          <p className={styles.help} id="operator-recovery-version-help">
+                            {copy.recovery.deployVersionHelp}
+                          </p>
+                        </div>
+                      </form>
+                      <button
+                        aria-disabled={busy || !canRecover}
+                        className={styles.dangerButton}
+                        id={copy.recovery.startId}
+                        onClick={() => {
+                          if (busy || !canRecover) {
+                            return
+                          }
+                          setLastCommand('recovery')
+                          recovering.prepare({
+                            restrictionId: recoveryTarget.restrictionId,
+                            reason: cause.trim(),
+                            verification: verification.trim(),
+                            evidenceRef: evidenceRef.trim(),
+                            deployVersion: deployVersion.trim(),
+                            conditions,
+                          })
+                        }}
+                        type="button"
+                      >
+                        {copy.recovery.start}
+                      </button>
+                      <button
+                        aria-disabled={busy}
+                        className={styles.button}
+                        onClick={() => {
+                          if (!busy) setRecoveryTarget(null)
+                        }}
+                        type="button"
+                      >
+                        {copy.recovery.close}
+                      </button>
+
+                      {recovering.reauthRequired && lastCommand === 'recovery' ? (
+                        <div className={styles.result}>
+                          <p className={styles.label}>{copy.recovery.reauthLabel}</p>
+                          <div className={reauthStyles.providerList}>
+                            {SIGN_IN_PROVIDERS.map((provider) => (
+                              <button
+                                aria-disabled={busy}
+                                className={PROVIDER_BUTTON_CLASS[provider]}
+                                key={provider}
+                                onClick={() => {
+                                  if (busy) return
+                                  reauthentication.requestReauthentication(provider)
+                                }}
+                                type="button"
+                              >
+                                <ProviderMark provider={provider} />
+                                <span>{authContent.settings.reauth.labels[provider]}</span>
+                              </button>
+                            ))}
+                          </div>
+                          <p className={styles.help}>{authContent.reauth.boundary}</p>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+
+                  {recovering.completed === null ? null : (
+                    <div
+                      aria-labelledby={copy.recovery.result.id}
+                      className={styles.result}
+                      role="group"
+                    >
+                      <h3
+                        className={styles.label}
+                        id={copy.recovery.result.id}
+                        ref={recoveryResultRef}
+                        tabIndex={-1}
+                      >
+                        {copy.recovery.result.heading}
+                      </h3>
+                      <p>
+                        {copy.recovery.result.smoke}:{' '}
+                        {smokeStatusLabel(recovering.completed.smoke.status)}
+                      </p>
+                      <p>
+                        {copy.recovery.result.reopenedStages}:{' '}
+                        {stagesText(recovering.completed.smoke.reopenedStages)}
+                      </p>
+                      <p>
+                        {copy.recovery.result.stillBlockedStages}:{' '}
+                        {stagesText(recovering.completed.smoke.stillBlockedStages)}
+                      </p>
+                      <p>
+                        {copy.recovery.result.operation}: {recovering.completed.operationId}
+                      </p>
+                      <p>
+                        {copy.recovery.result.restriction}: {recovering.completed.restrictionId}
+                      </p>
+                      <p>
+                        {copy.recovery.result.liftedAt}:{' '}
+                        {formatOperatorTime(recovering.completed.liftedAt)}
+                      </p>
+                    </div>
+                  )}
                 </section>
               ) : null}
 
@@ -859,8 +1188,28 @@ export function OperatorScreen(): ReactElement {
           uncertain={restricting.uncertain}
         />
       ) : null}
+      {recoveryDialogOpen ? (
+        <OperatorRecoveryDialog
+          code={recovering.code}
+          confirming={recovering.phase === 'confirming'}
+          onCancel={recovering.cancel}
+          onConfirm={recovering.confirm}
+          prepared={recovering.prepared}
+          targetLabel={
+            recoveryTarget === null
+              ? recovering.prepared.target
+              : restrictionTargetLabel(recoveryTarget)
+          }
+          uncertain={recovering.uncertain}
+        />
+      ) : null}
     </>
   )
+}
+
+/** 단계 code 목록의 화면 문장. 비었으면 `없음`이다. */
+function stagesText(stages: readonly string[]): string {
+  return stages.length === 0 ? copy.recovery.result.none : stages.map(stageLabel).join(', ')
 }
 
 /** live region의 문장. 조작의 진행이 조회 상태보다 앞선다. */
@@ -869,8 +1218,7 @@ function statusText(
   gate: SessionGate,
   signingOut: boolean,
   reauthenticating: boolean,
-  command: ReturnType<typeof useOperatorExport> | ReturnType<typeof useOperatorRestriction>,
-  kind: 'export' | 'restriction',
+  sentence: string | null,
   lookingUp: boolean,
   audit: ReturnType<typeof useOperatorAudit>['view'],
   auditVisible: boolean,
@@ -880,7 +1228,6 @@ function statusText(
   if (!ready || signingOut || reauthenticating) {
     return liveRegionMessage(gate, signingOut, reauthenticating)
   }
-  const sentence = kind === 'export' ? exportSentence(command) : restrictionSentence(command)
   if (sentence !== null) {
     return sentence
   }
@@ -909,9 +1256,7 @@ function statusText(
 }
 
 /** 감사 내보내기의 진행·결과 문장. 말할 것이 없으면 `null`. */
-function exportSentence(
-  exporting: ReturnType<typeof useOperatorExport> | ReturnType<typeof useOperatorRestriction>,
-): string | null {
+function exportSentence(exporting: ReturnType<typeof useOperatorExport>): string | null {
   switch (exporting.phase) {
     case 'preparing':
       return copy.status.preparing
@@ -919,10 +1264,8 @@ function exportSentence(
       return exporting.uncertain ? copy.export.uncertain : copy.status.prepared
     case 'confirming':
       return copy.status.confirming
-    case 'completed': {
-      const done = exporting.completed
-      return copy.status.completed(done !== null && 'rowCount' in done ? done.rowCount : 0)
-    }
+    case 'completed':
+      return copy.status.completed(exporting.completed?.rowCount ?? 0)
     case 'cancelled':
       return exporting.uncertainOperationId === null
         ? copy.status.cancelled
@@ -936,7 +1279,7 @@ function exportSentence(
 
 /** 영향 범위 제한의 진행·결과 문장(Story 3.2). 말할 것이 없으면 `null`. */
 function restrictionSentence(
-  restricting: ReturnType<typeof useOperatorExport> | ReturnType<typeof useOperatorRestriction>,
+  restricting: ReturnType<typeof useOperatorRestriction>,
 ): string | null {
   switch (restricting.phase) {
     case 'preparing':
@@ -947,9 +1290,9 @@ function restrictionSentence(
       return copy.status.restrictionConfirming
     case 'completed': {
       const done = restricting.completed
-      return done !== null && 'feature' in done
-        ? copy.status.restrictionCompleted(featureLabel(done.feature), scopeLabel(done.scope))
-        : copy.status.restrictionConfirming
+      return done === null
+        ? copy.status.restrictionConfirming
+        : copy.status.restrictionCompleted(featureLabel(done.feature), scopeLabel(done.scope))
     }
     case 'cancelled':
       return restricting.uncertainOperationId === null
@@ -957,6 +1300,36 @@ function restrictionSentence(
         : copy.restriction.uncertainClosed
     case 'refused':
       return operatorRefusalMessage(restricting.code)
+    case 'idle':
+      return null
+  }
+}
+
+/** 제한 복구의 진행·결과 문장(Story 3.4). 말할 것이 없으면 `null`. */
+function recoverySentence(recovering: ReturnType<typeof useOperatorRecovery>): string | null {
+  switch (recovering.phase) {
+    case 'preparing':
+      return copy.status.recoveryPreparing
+    case 'armed':
+      return recovering.uncertain ? copy.recovery.uncertain : copy.status.recoveryPrepared
+    case 'confirming':
+      return copy.status.recoveryConfirming
+    case 'completed': {
+      const done = recovering.completed
+      if (done === null) return copy.status.recoveryConfirming
+      const feature = featureLabel(done.feature)
+      const scope = scopeLabel(done.scope)
+      if (done.smoke.status === 'PASSED') return copy.status.recoveryCompleted(feature, scope)
+      if (done.smoke.status === 'REVERTED') return copy.status.recoveryReverted(feature, scope)
+      // 결말이 원장에 아직 없다(PENDING) — 통과로도 되돌림으로도 말하지 않는다.
+      return copy.status.recoveryPending(feature, scope)
+    }
+    case 'cancelled':
+      return recovering.uncertainOperationId === null
+        ? copy.status.recoveryCancelled
+        : copy.recovery.uncertainClosed
+    case 'refused':
+      return operatorRefusalMessage(recovering.code)
     case 'idle':
       return null
   }

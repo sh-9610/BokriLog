@@ -14,8 +14,8 @@ import org.jspecify.annotations.Nullable;
  *
  * <p><b>이 모듈은 HTTP·세션·허가를 모른다.</b> 재인증·일회성 허가·세션 무장·회전은 루트({@code OperatorCommandService})가
  * Epic 1의 부품으로 하고, 여기서는 envelope의 검증(빈 사유·미지원 command·미지원 scope·클라이언트 actor·길이), 서버가
- * 정하는 확인 문구, 감사 행의 추가, 그리고 command의 실행을 한다 — 3.1의 {@value #AUDIT_EXPORT}와 3.2의 제한 생성 넷
- * ({@code restrict-<기능>}, {@link #restrictionFeatureOf}).
+ * 정하는 확인 문구, 감사 행의 추가, 그리고 command의 실행을 한다 — 3.1의 {@value #AUDIT_EXPORT}, 3.2의 제한 생성 넷
+ * ({@code restrict-<기능>}, {@link #restrictionFeatureOf}), 3.4의 제한 해제 {@value #LIFT_RESTRICTION}.
  *
  * <p><b>감사 없는 상태 변경이 없다.</b> 실행({@link #completeExport})은 호출자의 트랜잭션 안에서 결과 행을 쓰고 그
  * 트랜잭션이 허가 소비와 같다 — 하나가 실패하면 모두 롤백된다. 거절·실패·취소 행({@link #recordDecision})은 그 롤백
@@ -44,6 +44,22 @@ public interface OperatorCommandApi {
     /** 광고 제한(Story 3.2). 소비자는 Epic 4이고 지금은 제한 행과 감사만 생긴다. */
     String RESTRICT_ADVERTISING = "restrict-advertising";
 
+    /**
+     * 제한 해제(Story 3.4). target은 제한 ID 하나다. 제한이 닫히는 운영 경로는 이 command 하나뿐이다 — 시간·신호·재시작으로
+     * 닫히지 않는다.
+     */
+    String LIFT_RESTRICTION = "lift-restriction";
+
+    /**
+     * 복구 조건 네 code({@code OPS-SIGNAL-1.0} §6.2): 원인 제거, 영향 범위 재현 시험, 고정 회귀·소유권·pointer 검사 통과, 새
+     * 배포·버전 증거. 해제 준비는 넷을 모두 확인해야 한다. 원장에는 이 순서로 남는다.
+     */
+    List<String> RECOVERY_CONDITIONS = List.of("CAUSE_REMOVED", "IMPACT_REPRODUCED",
+            "REGRESSION_OWNERSHIP_POINTER_PASSED", "NEW_DEPLOY_EVIDENCE");
+
+    /** 배포 버전의 최대 길이(문자). 모양은 {@code [A-Za-z0-9._+-]}다. */
+    int MAX_DEPLOY_VERSION_CHARS = 64;
+
     /** 제한 생성 command가 막는 기능. 제한 command가 아니면 {@code null}이다. */
     static @Nullable RestrictionFeature restrictionFeatureOf(String command) {
         return switch (command) {
@@ -57,9 +73,11 @@ public interface OperatorCommandApi {
 
     /**
      * envelope·확인 문구·실행 규칙의 정책 버전. 규칙을 바꾸면 이 값도 바꾼다. 1.1(Story 3.2): 제한 command 넷, 원장 scope
-     * {@code <기능>:<scope>}, 사용자 귀속 target의 digest, 대상 검사를 멱등 키·재인증 판정 뒤에 하는 준비 순서.
+     * {@code <기능>:<scope>}, 사용자 귀속 target의 digest, 대상 검사를 멱등 키·재인증 판정 뒤에 하는 준비 순서. 1.2(Story
+     * 3.4): 해제 command {@value #LIFT_RESTRICTION}, 복구 조건 네 확인과 원인·검증·증거 참조·배포 버전, 확정 순간의 열림·신호
+     * 계보 재검사, 커밋 뒤 evaluator smoke와 그 실패의 되돌림.
      */
-    String POLICY_VERSION = "OPERATOR-COMMAND-1.1";
+    String POLICY_VERSION = "OPERATOR-COMMAND-1.2";
 
     /** 추출 한 번의 행 상한. 넘으면 앞쪽(오래된 순) 상한만큼이고 결과가 잘렸다고 말한다. */
     int MAX_EXPORT_ROWS = 10_000;
@@ -87,6 +105,33 @@ public interface OperatorCommandApi {
     /** 같은 기능·scope·target의 활성 제한이 이미 있다(Story 3.2). */
     String ALREADY_RESTRICTED = "ALREADY_RESTRICTED";
 
+    /** 해제 대상 제한이 지금 효력 중이 아니다 — 이미 닫혔거나 아직 시작 전이다(Story 3.4). */
+    String RESTRICTION_NOT_ACTIVE = "RESTRICTION_NOT_ACTIVE";
+
+    /** 복구 조건 네 가지를 모두 확인하지 않았다(Story 3.4). */
+    String RECOVERY_CONDITION_MISSING = "RECOVERY_CONDITION_MISSING";
+
+    /** 수행한 검증·증거 참조·배포 버전 가운데 비어 있는 것이 있다(Story 3.4). 원인이 비면 {@link #REASON_REQUIRED}다. */
+    String RECOVERY_EVIDENCE_REQUIRED = "RECOVERY_EVIDENCE_REQUIRED";
+
+    /**
+     * 수행한 검증·증거 참조가 사유 규칙(길이·제어 문자·이메일 모양)을 어겼거나, 배포 버전이 모양에 맞지 않거나, 모르는·겹친
+     * 복구 조건 code가 있다(Story 3.4).
+     */
+    String RECOVERY_EVIDENCE_INVALID = "RECOVERY_EVIDENCE_INVALID";
+
+    /** 준비 뒤 그 제한에 새 강한 신호가 연결됐다(Story 3.4). 다시 검증하고 새로 준비해야 한다. */
+    String NEW_SIGNAL_SINCE_PREPARE = "NEW_SIGNAL_SINCE_PREPARE";
+
+    /**
+     * 원장 code: 해제 커밋 뒤 evaluator smoke가 기대와 어긋나 같은 범위를 새 제한으로 되돌렸다(Story 3.4). 그 해제 operation의
+     * {@code FAILED} 행이다.
+     */
+    String SMOKE_FAILED = "SMOKE_FAILED";
+
+    /** 원장 code: 해제 커밋 뒤 evaluator smoke가 통과했다(Story 3.4). 그 해제 operation의 {@code APPROVED} 행이다. */
+    String SMOKE_PASSED = "SMOKE_PASSED";
+
     /** 요청 본문이 수행자를 주장했다. 수행자는 언제나 서버 세션이 정한다. */
     String ACTOR_NOT_ACCEPTED = "ACTOR_NOT_ACCEPTED";
 
@@ -96,9 +141,57 @@ public interface OperatorCommandApi {
      */
     String ACCESS_REVOKED = "ACCESS_REVOKED";
 
-    /** 클라이언트가 보낸 command 제안. 검증 전 원문이다. */
+    /**
+     * 클라이언트가 보낸 command 제안. 검증 전 원문이다.
+     *
+     * @param recovery 해제 command의 증거 입력(Story 3.4). 그 밖은 {@code null}
+     */
     record Proposal(String command, @Nullable String scope, @Nullable String target, @Nullable String reason,
-            boolean actorClaimed) {}
+            boolean actorClaimed, @Nullable RecoveryInput recovery) {
+
+        public Proposal(String command, @Nullable String scope, @Nullable String target, @Nullable String reason,
+                boolean actorClaimed) {
+            this(command, scope, target, reason, actorClaimed, null);
+        }
+    }
+
+    /**
+     * 해제 command의 증거 입력 원문(Story 3.4). 사유({@link Proposal#reason})가 원인이다.
+     *
+     * @param conditions 확인한 복구 조건 code. 본문이 배열이 아니면 {@code null}
+     */
+    record RecoveryInput(@Nullable List<String> conditions, @Nullable String verification,
+            @Nullable String evidenceRef, @Nullable String deployVersion) {}
+
+    /**
+     * 해제 대상 제한의 준비 시각 사실(Story 3.4). 제한 행의 기능·scope·target은 바뀌지 않으므로(비식별만 있다) 확정이
+     * 다시 읽지 않고 이 값을 쓴다. 연결 신호 수·최신 감지 시각은 확정 순간의 계보와 비교한다.
+     *
+     * @param target 원 target. 비식별됐으면 digest이고 {@code targetErased}가 참이다
+     * @param open 지금 효력 중이고 끝이 정해지지 않았다
+     */
+    record LiftTarget(RestrictionFeature feature, RestrictionScope scope, String target, boolean targetErased,
+            RestrictionOrigin origin, boolean open, int linkedSignals, @Nullable Instant latestSignalAt)
+            implements java.io.Serializable {
+
+        @java.io.Serial private static final long serialVersionUID = 1L;
+    }
+
+    /**
+     * 검증을 지난 해제 요청(Story 3.4). 세션 무장에 실린다.
+     *
+     * @param current 준비 시각의 제한. 그 ID의 제한이 없으면 {@code null}
+     * @param conditions {@link #RECOVERY_CONDITIONS} 순서의 확인한 조건
+     */
+    record Lift(UUID restrictionId, @Nullable LiftTarget current, List<String> conditions, String verification,
+            String evidenceRef, String deployVersion) implements java.io.Serializable {
+
+        @java.io.Serial private static final long serialVersionUID = 1L;
+
+        public Lift {
+            conditions = List.copyOf(conditions);
+        }
+    }
 
     /**
      * 검증을 지난 제한 요청(Story 3.2). 대상의 존재·상태는 아직 보지 않았다 — 그것은 다른 모듈의 사실이라 루트가 각 모듈
@@ -123,10 +216,11 @@ public interface OperatorCommandApi {
      * @param confirmationPhrase 서버가 정한 확인 문구. 사용자가 다시 입력해 확정에 실어 보낸다
      * @param requestDigest {@code command|scope|ledgerTarget|reason}의 SHA-256. 같은 멱등 키의 다른 입력을 가른다
      * @param restriction 제한 command의 요청. 그 밖은 {@code null}
+     * @param lift 해제 command의 요청(Story 3.4). 그 밖은 {@code null}
      */
     record Accepted(String command, String scope, String target, String ledgerTarget, String reason,
             String confirmationPhrase, String policyVersion, Set<OperatorPermission> permissions, String requestDigest,
-            @Nullable Restriction restriction) {}
+            @Nullable Restriction restriction, @Nullable Lift lift) {}
 
     sealed interface Validation {
         record Valid(Accepted accepted) implements Validation {}
@@ -192,7 +286,16 @@ public interface OperatorCommandApi {
      *
      * @param candidate 새 operation일 때 쓸 envelope. 그 {@code operationId}가 후보다
      */
-    Claim claim(Envelope candidate, String correlationId);
+    default Claim claim(Envelope candidate, String correlationId) {
+        return claim(candidate, null, correlationId);
+    }
+
+    /**
+     * {@link #claim(Envelope, String)}에 해제의 증거를 더해 {@code REQUESTED} 행의 {@code details}에 남긴다(Story 3.4).
+     *
+     * @param lift 해제 command의 요청. 그 밖은 {@code null}
+     */
+    Claim claim(Envelope candidate, @Nullable Lift lift, String correlationId);
 
     /**
      * {@code REQUESTED} 행을 쓴다. 자기 트랜잭션에서(또는 호출자의 것에 참여해) 쓴다.
@@ -227,7 +330,7 @@ public interface OperatorCommandApi {
     }
 
     /** 실행된 command의 결과. 원장의 {@code COMPLETED} 행이 같은 값을 재생한다. */
-    sealed interface CommandResult permits ExportResult, RestrictionResult {
+    sealed interface CommandResult permits ExportResult, RestrictionResult, LiftResult {
         String operationId();
     }
 
@@ -245,6 +348,23 @@ public interface OperatorCommandApi {
      */
     record RestrictionResult(String operationId, UUID restrictionId, RestrictionFeature feature,
             RestrictionScope scope, Instant effectiveFrom) implements CommandResult {}
+
+    /**
+     * 제한 해제의 결과(Story 3.4). 원장의 {@code COMPLETED} 행이 같은 값을 재생한다. smoke의 결말은 여기 없다 — 커밋 뒤의 일이라
+     * 그 operation의 smoke 행({@value #SMOKE_PASSED}·{@value #SMOKE_FAILED})이 말한다({@link #liftSmoke}).
+     *
+     * @param liftedAt 제한이 닫힌 시각(DB)
+     * @param reopenedStages 해제로 다시 열리는 단계 code
+     * @param stillBlockedStages 해제한 제한의 단계 가운데 남는 제한이 여전히 막는 것
+     */
+    record LiftResult(String operationId, UUID restrictionId, RestrictionFeature feature, RestrictionScope scope,
+            Instant liftedAt, List<String> reopenedStages, List<String> stillBlockedStages) implements CommandResult {
+
+        public LiftResult {
+            reopenedStages = List.copyOf(reopenedStages);
+            stillBlockedStages = List.copyOf(stillBlockedStages);
+        }
+    }
 
     /**
      * {@value #AUDIT_EXPORT}를 실행하고 {@code COMPLETED} 행을 쓴다. <b>호출자의 트랜잭션 안에서만</b> 부른다 — 그
@@ -297,6 +417,62 @@ public interface OperatorCommandApi {
      */
     RestrictionCompletion completeRestriction(Envelope envelope, Restriction restriction, String correlationId,
             BooleanSupplier finalAuthority, Supplier<TargetCheck> targetCheck);
+
+    /** 해제 뒤 기대하는 단계(Story 3.4). 남는 제한을 본 호출자가 원장 잠금 아래에서 만든다. */
+    record LiftExpectation(List<String> reopenedStages, List<String> stillBlockedStages) {}
+
+    /** 해제의 결말. */
+    sealed interface LiftCompletion {
+        record Completed(LiftResult result) implements LiftCompletion {}
+
+        /**
+         * 아무것도 바꾸지 않았다. 호출자가 트랜잭션을 되돌리고 거절 행을 밖에서 쓴다.
+         *
+         * @param code {@link #ACCESS_REVOKED}·{@link #TARGET_INVALID}·{@link #RESTRICTION_NOT_ACTIVE}·
+         *     {@link #NEW_SIGNAL_SINCE_PREPARE}
+         */
+        record Refused(String code) implements LiftCompletion {}
+    }
+
+    /**
+     * 해제 command를 실행하고 {@code COMPLETED} 행을 쓴다(Story 3.4 AC-1·AC-3). <b>호출자의 트랜잭션 안에서만</b> 부른다 — 그
+     * 트랜잭션이 허가 소비와 같다.
+     *
+     * <p>순서가 계약이다: 원장 추가 잠금 → 최종 권한({@code finalAuthority}) → 제한 행 잠금 → 열림·신호 계보 재검사 → 조건부
+     * UPDATE 한 문장 → {@code expectation} → {@code COMPLETED}. 신호({@code raise})도 원장 잠금을 먼저 쥐므로 잠금 뒤에는 새
+     * 신호가 그 제한에 연결될 수 없다. 갱신 행이 0이면 아무것도 쓰지 않는다. 신호 행·원장 행은 고치지 않는다.
+     *
+     * @param expectation 해제 뒤 기대하는 단계. 제한 행을 닫은 뒤 잠금 안에서 한 번 부른다
+     * @throws IllegalStateException 열린 트랜잭션이 없을 때
+     */
+    LiftCompletion completeLift(Envelope envelope, Lift lift, String correlationId, BooleanSupplier finalAuthority,
+            Supplier<LiftExpectation> expectation);
+
+    /**
+     * 해제 커밋 뒤 smoke가 어긋났다(Story 3.4 AC-5). 해제를 되돌리지 않는다 — 같은 기능·scope·target의 새 제한(출처 운영자,
+     * operation은 이 해제의 것)과 {@code FAILED}({@value #SMOKE_FAILED}) 행을 자기 트랜잭션 하나로 쓴다. 해제 사실과 되돌림
+     * 사실이 둘 다 원장에 남는다. 같은 대상에 이미 활성 제한이 생겼으면 새 행 없이 거절 행만 쓴다(이미 막혀 있다).
+     *
+     * @return 새 제한의 ID. 이미 막혀 있어 만들지 않았으면 빈 값
+     */
+    Optional<UUID> revertLift(Envelope envelope, LiftResult result, String correlationId);
+
+    /**
+     * smoke 통과를 그 해제 operation의 {@code APPROVED}({@value #SMOKE_PASSED}) 행 하나로 남긴다(Story 3.4). 자기 트랜잭션이다.
+     * 통과도 실패도 원장에 남아야 재전송이 smoke 결말을 지어내지 않는다.
+     */
+    void recordSmokePassed(Envelope envelope, LiftResult result, String correlationId);
+
+    /** 원장이 말하는 해제의 smoke 결말. */
+    enum LiftSmoke {
+        PASSED,
+        REVERTED,
+        /** smoke 행이 아직 없다 — smoke가 도는 중이거나(동시 재전송) 결말 기록이 실패했다. 통과로 접지 않는다. */
+        PENDING
+    }
+
+    /** 그 해제 operation의 smoke 결말. 재전송이 원장에서 읽는다. */
+    LiftSmoke liftSmoke(String operationId);
 
     /** 같은 operation·키의 저장된 결과. */
     sealed interface Replay {

@@ -35,6 +35,25 @@ class OperationalRestrictionRepository {
     private static final String EFFECTIVE = "statement_timestamp() >= r.effective_from "
             + "AND (r.effective_until IS NULL OR statement_timestamp() < r.effective_until)";
 
+    /**
+     * 열린 행 술어(Story 3.4): 지금 효력 중이고 끝이 정해지지 않았다. 신호의 연결 대상 판정({@link #activeRow}), 해제
+     * 대상의 열림({@link #liftFacts}), 해제 UPDATE({@link #lift})가 이 문자열 하나를 쓴다 — 미리 본 "열림"과 실제로 닫는
+     * 문장의 경계가 갈라지지 않는다.
+     */
+    private static final String OPEN = "r.effective_until IS NULL AND statement_timestamp() >= r.effective_from";
+
+    /**
+     * 제한 하나와 그 되돌림 계보(Story 3.4)를 잇는 재귀 CTE. 행 {@code r}에서 {@code reinstated_from}을 따라 원 제한까지
+     * 올라간다. 되돌림 행은 언제나 더 오래된 행을 가리키므로 사슬은 끝난다({@code UNION}이 중복도 거른다).
+     */
+    private static final String LINEAGE = "WITH RECURSIVE lineage(id) AS (SELECT r.restriction_id UNION "
+            + "SELECT p.reinstated_from FROM operations_restriction p JOIN lineage l ON p.restriction_id = l.id "
+            + "WHERE p.reinstated_from IS NOT NULL) ";
+
+    /** 그 제한과 계보에 연결된 강한 신호 수. */
+    private static final String LINKED_SIGNALS = "(" + LINEAGE + "SELECT count(*) FROM operations_signal s "
+            + "WHERE s.restriction_id IN (SELECT id FROM lineage)) AS linked_signals";
+
     /** 구체성 순서. {@link RestrictionScope#specificity()}에서 만든다 — 두 벌이 갈라지지 않는다. */
     private static final String SPECIFICITY = "CASE r.scope "
             + java.util.Arrays.stream(RestrictionScope.values())
@@ -50,8 +69,7 @@ class OperationalRestrictionRepository {
      * 자리는 {@link OperatorAuditRepository} 하나다(Story 3.1). 서비스가 {@code operation_id}로 거기서 채운다.
      */
     private static final String SELECT = "SELECT r.restriction_id, r.feature, r.scope, r.target, r.target_erased_at, "
-            + "r.effective_from, r.operation_id, r.origin, "
-            + "(SELECT count(*) FROM operations_signal s WHERE s.restriction_id = r.restriction_id) AS linked_signals "
+            + "r.effective_from, r.operation_id, r.origin, r.reinstated_from, " + LINKED_SIGNALS + " "
             + "FROM operations_restriction r ";
 
     /** 제한 행 하나와 그것을 만든 operation. 사유·수행자는 아직 비어 있다. */
@@ -70,6 +88,19 @@ class OperationalRestrictionRepository {
      * {@code excluding}의 제한은 고르지 않는다(Story 3.3 — 신호를 낸 작업의 자기 제한).
      */
     Optional<Row> effective(Set<RestrictionFeature> features, RestrictionSubject subject, Set<UUID> excluding) {
+        return matchingQuery(features, subject, excluding, " LIMIT 1").optional();
+    }
+
+    /**
+     * {@link #effective}가 고르는 후보 전체(Story 3.4) — 같은 술어·같은 순서이고 {@code LIMIT}만 없다. 해제 미리보기와
+     * smoke가 "해제 뒤에도 남는 제한"을 evaluator와 같은 규칙으로 센다.
+     */
+    List<Row> matching(Set<RestrictionFeature> features, RestrictionSubject subject, Set<UUID> excluding) {
+        return matchingQuery(features, subject, excluding, "").list();
+    }
+
+    private JdbcClient.MappedQuerySpec<Row> matchingQuery(Set<RestrictionFeature> features, RestrictionSubject subject,
+            Set<UUID> excluding, String limit) {
         return this.jdbc.sql(SELECT + "WHERE r.feature IN (:features) AND " + EFFECTIVE
                         + " AND NOT (r.restriction_id = ANY(CAST(:excluded AS uuid[]))) AND (r.scope = 'GLOBAL' "
                         + "OR (r.target_erased_at IS NULL AND ("
@@ -77,13 +108,20 @@ class OperationalRestrictionRepository {
                         + "OR (r.scope = 'PORTFOLIO' AND r.target = CAST(:portfolio AS text)) "
                         + "OR (r.scope = 'PROVIDER_CONNECTION' AND r.target = CAST(:connection AS text)) "
                         + "OR (r.scope = 'CALCULATION_POLICY_VERSION' AND r.target = CAST(:policy AS text))))) "
-                        + "ORDER BY " + ORDER + " LIMIT 1")
+                        + "ORDER BY " + ORDER + limit)
                 .param("features", features.stream().map(Enum::name).toList())
                 .param("plan", text(subject.planId()))
                 .param("portfolio", text(subject.portfolioId()))
                 .param("connection", text(subject.connectionId()))
                 .param("policy", subject.calculationPolicy())
                 .param("excluded", uuidArray(excluding))
+                .query(OperationalRestrictionRepository::row);
+    }
+
+    /** 그 제한이 지금 효력 중이면 그 행(Story 3.4 smoke — 남는 제한이 그사이 정상적으로 닫혔는지 본다). */
+    Optional<Row> current(UUID restrictionId) {
+        return this.jdbc.sql(SELECT + "WHERE r.restriction_id = :id AND " + EFFECTIVE)
+                .param("id", restrictionId)
                 .query(OperationalRestrictionRepository::row)
                 .optional();
     }
@@ -114,9 +152,8 @@ class OperationalRestrictionRepository {
      */
     Optional<Existing> activeRow(RestrictionFeature feature, RestrictionScope scope, String target) {
         return this.jdbc.sql("SELECT r.restriction_id, r.effective_from FROM operations_restriction r "
-                        + "WHERE r.feature = :feature AND r.scope = :scope AND r.target = :target "
-                        + "AND r.effective_until IS NULL AND statement_timestamp() >= r.effective_from "
-                        + "ORDER BY r.effective_from, r.restriction_id LIMIT 1")
+                        + "WHERE r.feature = :feature AND r.scope = :scope AND r.target = :target AND " + OPEN
+                        + " ORDER BY r.effective_from, r.restriction_id LIMIT 1")
                 .param("feature", feature.name())
                 .param("scope", scope.name())
                 .param("target", target)
@@ -150,6 +187,83 @@ class OperationalRestrictionRepository {
                 .single();
     }
 
+    /**
+     * 해제 대상 제한 하나의 사실(Story 3.4). {@code open}은 {@link #OPEN} 술어다. 연결 신호 수와 최신 감지 시각은 되돌림 계보
+     * ({@link #LINEAGE})까지 센 값이고, 준비가 본 계보와 확정 순간의 계보를 비교하는 데 쓴다 — 그 사이 새 신호가 연결됐으면
+     * 해제하지 않는다.
+     *
+     * @param target 원 target. 비식별됐으면 digest이고 {@code targetErased}가 참이다
+     */
+    record LiftFacts(UUID restrictionId, RestrictionFeature feature, RestrictionScope scope, String target,
+            boolean targetErased, RestrictionOrigin origin, boolean open, int linkedSignals,
+            @Nullable Instant latestSignalAt) {}
+
+    private static final String LIFT_FACTS = "SELECT r.restriction_id, r.feature, r.scope, r.target, "
+            + "r.target_erased_at, r.origin, (" + OPEN + ") AS open, " + LINKED_SIGNALS + ", (" + LINEAGE
+            + "SELECT max(s.detected_at) FROM operations_signal s WHERE s.restriction_id IN (SELECT id FROM lineage)) "
+            + "AS latest_signal_at FROM operations_restriction r WHERE r.restriction_id = :id";
+
+    /** 해제 대상의 사실. 잠그지 않는다 — 준비의 미리보기다. */
+    Optional<LiftFacts> liftFacts(UUID restrictionId) {
+        return this.jdbc.sql(LIFT_FACTS).param("id", restrictionId).query(OperationalRestrictionRepository::liftFacts)
+                .optional();
+    }
+
+    /**
+     * 해제 대상의 사실을 행 잠금 아래에서 읽는다. 호출자의 트랜잭션이 끝날 때까지 그 행을 쥔다 — 같은 제한의 동시 해제는
+     * 여기서 줄을 서고, 뒤의 것은 앞의 것이 닫은 행을 본다.
+     */
+    Optional<LiftFacts> lockForLift(UUID restrictionId) {
+        return this.jdbc.sql(LIFT_FACTS + " FOR UPDATE OF r").param("id", restrictionId)
+                .query(OperationalRestrictionRepository::liftFacts).optional();
+    }
+
+    /**
+     * 제한 하나를 닫는다(Story 3.4 AC-3). <b>{@code effective_until}을 쓰는 운영 SQL은 이 문장 하나뿐이다</b> — 시간 경과·
+     * 신호·재시작으로 닫히는 경로가 없다는 것을 {@code OperatorRecoveryTest}가 운영 소스를 훑어 강제한다. 술어는
+     * {@link #OPEN} 그대로라 이미 닫힌 행·효력 시작 전인 행은 0행이다. 호출자의 트랜잭션에 참여한다.
+     *
+     * @return 닫은 시각(DB). 0행이면 빈 값
+     */
+    Optional<Instant> lift(UUID restrictionId, String operationId) {
+        return this.jdbc.sql("UPDATE operations_restriction r SET effective_until = statement_timestamp(), "
+                        + "lifted_by_operation_id = :op WHERE r.restriction_id = :id AND " + OPEN
+                        + " RETURNING r.effective_until")
+                .param("op", operationId)
+                .param("id", restrictionId)
+                .query((rs, row) -> instant(rs, "effective_until"))
+                .optional();
+    }
+
+    /**
+     * 해제한 제한과 같은 기능·scope·target의 새 제한 한 행(Story 3.4 smoke 되돌림). 귀속·비식별 상태와 출처를 그 행에서
+     * 그대로 옮기고({@code SIGNAL}이면 {@code SIGNAL}) {@code reinstated_from}으로 그 행을 가리킨다 — 원식별자를 다시 들이지
+     * 않고, 목록과 다음 해제가 원 제한의 신호 계보를 본다. operation은 해제 operation이다. 호출자의 트랜잭션에 참여한다.
+     *
+     * @return 새 제한의 효력 시작. 원 행이 없으면 빈 값
+     */
+    Optional<Instant> reinstate(UUID restrictionId, UUID liftedRestrictionId, String operationId) {
+        return this.jdbc.sql("INSERT INTO operations_restriction (restriction_id, feature, scope, target, target_user_id, "
+                        + "target_erased_at, operation_id, origin, reinstated_from, effective_from) SELECT :id, feature, "
+                        + "scope, target, target_user_id, target_erased_at, :op, origin, restriction_id, "
+                        + "statement_timestamp() FROM operations_restriction WHERE restriction_id = :lifted "
+                        + "RETURNING effective_from")
+                .param("id", restrictionId)
+                .param("op", operationId)
+                .param("lifted", liftedRestrictionId)
+                .query((rs, row) -> instant(rs, "effective_from"))
+                .optional();
+    }
+
+    private static LiftFacts liftFacts(ResultSet rs, int index) throws SQLException {
+        OffsetDateTime latest = rs.getObject("latest_signal_at", OffsetDateTime.class);
+        return new LiftFacts(rs.getObject("restriction_id", UUID.class),
+                RestrictionFeature.valueOf(rs.getString("feature")), RestrictionScope.valueOf(rs.getString("scope")),
+                rs.getString("target"), rs.getObject("target_erased_at", OffsetDateTime.class) != null,
+                RestrictionOrigin.valueOf(rs.getString("origin")), rs.getBoolean("open"), rs.getInt("linked_signals"),
+                latest == null ? null : latest.toInstant());
+    }
+
     /** 그 사용자에게 귀속된, 아직 비식별하지 않은 제한 행. */
     record Attributed(UUID restrictionId, String scope, String target) {}
 
@@ -177,8 +291,8 @@ class OperationalRestrictionRepository {
         return new Row(new ActiveRestriction(rs.getObject("restriction_id", UUID.class),
                 RestrictionFeature.valueOf(rs.getString("feature")), RestrictionScope.valueOf(rs.getString("scope")),
                 erased ? null : rs.getString("target"), erased, instant(rs, "effective_from"), null, null,
-                RestrictionOrigin.valueOf(rs.getString("origin")), rs.getInt("linked_signals")),
-                rs.getString("operation_id"));
+                RestrictionOrigin.valueOf(rs.getString("origin")), rs.getInt("linked_signals"),
+                rs.getObject("reinstated_from", UUID.class)), rs.getString("operation_id"));
     }
 
     /** PostgreSQL {@code uuid[]} 리터럴 하나. UUID 글자에는 이스케이프할 문자가 없다. */

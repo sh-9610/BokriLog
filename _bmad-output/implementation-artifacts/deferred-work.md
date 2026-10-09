@@ -359,3 +359,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-3-strong-signal-auto-stop.md`
   summary: 강한 신호로 연결·동기화가 제한되면 사용자 API(`sync.initialCollectionJob` 등)가 사용자 자신의 수집 상태를 빈 값으로 감춰, 사용자는 무엇이 왜 멈췄는지 화면에서 알 수 없다.
   evidence: 3.3 구현에서 `FirstSnapshotTest`의 상태 확인이 사용자 API로는 불가능해져 DB 직접 조회로 바뀌어야 했다. 제한 중 사용자에게 보일 상태·문장은 제한과 공지를 매핑하는 Story 3.5의 입력이다(리뷰 blind-hunter, 2026-10-09).
+- source_spec: none
+  summary: Story 3.4 AC-6(베타 전·월 1회 훈련의 5분 수동 전역 정지·60초 자동 정지·선택 범위 복구를 실제 시각과 증거로 기록하고 자동시험과 구분)의 훈련 증거 기록을 3.4에서 떼어 운영 배포 증거(Story 3.8)와 함께 다룬다.
+  evidence: 훈련 기록은 해제 command와 독립적으로 배포 가능한 목표이고, "실제 훈련"과 개발·CI 리허설을 가르려면 배포 환경 표지가 필요한데 그 설정은 production 배포를 소유하는 3.8이 정한다. 3.4는 해제·smoke·자동 재개 차단에 집중한다(2026-10-10).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4-manual-recovery.md`
+  summary: 운영 command 무장(`OperatorCommandFlow.Armed`)의 직렬화 버전이 스토리마다 올라가(3.4에서 2→3) 배포 순간 Spring Session JDBC에 남은 무장 세션을 역직렬화하지 못하고, rollback 창에서 옛·새 인스턴스가 서로의 세션을 읽지 못한다.
+  evidence: `Armed`에 필드를 더할 때마다 `serialVersionUID`를 올리는 패턴이 3.2부터 반복된다. 진행 중 무장을 버리고 재준비를 요구할지, 호환 역직렬화를 둘지는 blue/green 배포·rollback 절차를 정하는 Story 3.8의 입력이다(리뷰 edge-case-hunter, 2026-10-10).

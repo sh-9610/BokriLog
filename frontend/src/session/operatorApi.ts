@@ -1,6 +1,7 @@
 import { CSRF_HEADER } from '../content/auth'
 import {
   AUDIT_LEDGER_SCOPE,
+  LIFT_RESTRICTION_COMMAND,
   OPERATOR_AUDIT_ENDPOINT,
   OPERATOR_COMMANDS_ENDPOINT,
   OPERATOR_EXPORT_CANCEL_ENDPOINT,
@@ -8,6 +9,7 @@ import {
   OPERATOR_EXPORT_ENDPOINT,
   OPERATOR_OPERATIONS_ENDPOINT,
   OPERATOR_RESTRICTIONS_ENDPOINT,
+  type RecoveryCondition,
   type RestrictionCommand,
 } from '../content/operator'
 import { isInstant } from './instant'
@@ -286,6 +288,8 @@ export interface ActiveRestriction {
    * 아니면 참으로 접는다(안전한 쪽).
    */
   readonly requiresVerification: boolean
+  /** 해제 smoke가 어긋나 같은 범위로 되돌린 행(Story 3.4). 서버가 말하지 않으면 거짓이다. */
+  readonly reinstated: boolean
 }
 
 export type RestrictionPrepareOutcome =
@@ -432,6 +436,236 @@ export async function cancelRestriction(
   )
 }
 
+// ------------------------------------------------------------------ 복구(Story 3.4)
+
+/** 복구 뒤에도 그 대상을 막는 다른 활성 제한 하나. 식별자가 없다. */
+export interface RemainingRestriction {
+  readonly feature: string
+  readonly scope: string
+  readonly origin: string
+}
+
+/** 복구의 미리보기. 식별자가 없다. */
+export interface RecoveryImpact {
+  readonly reopenedStages: readonly string[]
+  readonly remainingRestrictions: readonly RemainingRestriction[]
+  readonly linkedSignals: number
+  /** 연결된 신호의 최신 감지 시각. 신호가 없으면 `null`이다. */
+  readonly latestSignalAt: string | null
+}
+
+export interface PreparedRecovery {
+  readonly operationId: string
+  /** 원장의 범위(`<기능>:<scope>`). */
+  readonly scope: string
+  /** 제한 ID. */
+  readonly target: string
+  readonly reason: string
+  readonly confirmationPhrase: string
+  readonly impact: RecoveryImpact
+}
+
+export interface RecoverySmoke {
+  /**
+   * `PASSED`·`REVERTED`·`PENDING`(재전송에서 원장에 결말이 아직 없다). 모르는 값은 그대로 두고 화면이 결말을 단정하지
+   * 않는 문구로 접는다.
+   */
+  readonly status: string
+  readonly reopenedStages: readonly string[]
+  readonly stillBlockedStages: readonly string[]
+}
+
+export interface CompletedRecovery {
+  readonly operationId: string
+  readonly restrictionId: string
+  readonly feature: string
+  readonly scope: string
+  readonly liftedAt: string
+  readonly smoke: RecoverySmoke
+}
+
+/** 복구 준비의 입력. 원인은 사유 자리다. */
+export interface RecoveryInput {
+  readonly restrictionId: string
+  readonly reason: string
+  readonly verification: string
+  readonly evidenceRef: string
+  readonly deployVersion: string
+  readonly conditions: readonly RecoveryCondition[]
+}
+
+export type RecoveryPrepareOutcome =
+  | { readonly outcome: 'prepared'; readonly prepared: PreparedRecovery }
+  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
+
+export type RecoveryConfirmOutcome =
+  | { readonly outcome: 'completed'; readonly completed: CompletedRecovery }
+  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
+  /** 응답을 받지 못했거나 서버가 커밋 여부를 말하지 못했다. 자동으로 다시 실행하지 않는다. */
+  | { readonly outcome: 'unanswered' }
+
+const RECOVERY_ENDPOINT = `${OPERATOR_COMMANDS_ENDPOINT}/${LIFT_RESTRICTION_COMMAND}`
+
+/** 복구 준비. 아직 아무것도 열지 않는다 — 허가를 발급하고 무장한 뒤 미리보기와 확인 문구를 준다. */
+export async function prepareRecovery(
+  csrfToken: string | null,
+  input: RecoveryInput,
+  idempotencyKey: string,
+): Promise<RecoveryPrepareOutcome> {
+  const result = await post(
+    RECOVERY_ENDPOINT,
+    csrfToken,
+    {
+      target: input.restrictionId,
+      reason: input.reason,
+      verification: input.verification,
+      evidenceRef: input.evidenceRef,
+      deployVersion: input.deployVersion,
+      conditions: input.conditions,
+    },
+    idempotencyKey,
+    SESSION_REQUEST_TIMEOUT_MS,
+  )
+  if (result.ok) {
+    const body = objectOf(result.payload)
+    const impact = body === null ? null : recoveryImpactOf(body.impact)
+    if (
+      body !== null &&
+      impact !== null &&
+      body.command === LIFT_RESTRICTION_COMMAND &&
+      typeof body.operationId === 'string' &&
+      typeof body.scope === 'string' &&
+      body.target === input.restrictionId &&
+      typeof body.reason === 'string' &&
+      typeof body.confirmationPhrase === 'string' &&
+      body.confirmationPhrase !== ''
+    ) {
+      return {
+        outcome: 'prepared',
+        prepared: {
+          operationId: body.operationId,
+          scope: body.scope,
+          target: body.target,
+          reason: body.reason,
+          confirmationPhrase: body.confirmationPhrase,
+          impact,
+        },
+      }
+    }
+  }
+  return { outcome: 'refused', status: result.status, code: result.code }
+}
+
+/** 복구 확정. 같은 키의 재전송은 서버가 같은 결과와 smoke 결말을 재생한다. */
+export async function confirmRecovery(
+  csrfToken: string | null,
+  operationId: string,
+  confirmation: string,
+  idempotencyKey: string,
+): Promise<RecoveryConfirmOutcome> {
+  const result = await post(
+    `${RECOVERY_ENDPOINT}/confirm`,
+    csrfToken,
+    { operationId, confirmation },
+    idempotencyKey,
+    SESSION_REQUEST_TIMEOUT_MS,
+  )
+  if (!result.received) {
+    return csrfToken === null
+      ? { outcome: 'refused', status: 0, code: null }
+      : { outcome: 'unanswered' }
+  }
+  if (result.ok) {
+    const body = objectOf(result.payload)
+    const smoke = body === null ? null : smokeOf(body.smoke)
+    if (
+      body !== null &&
+      smoke !== null &&
+      body.outcome === 'COMPLETED' &&
+      body.operationId === operationId &&
+      typeof body.restrictionId === 'string' &&
+      typeof body.feature === 'string' &&
+      typeof body.scope === 'string' &&
+      isInstant(body.liftedAt)
+    ) {
+      return {
+        outcome: 'completed',
+        completed: {
+          operationId,
+          restrictionId: body.restrictionId,
+          feature: body.feature,
+          scope: body.scope,
+          liftedAt: body.liftedAt,
+          smoke,
+        },
+      }
+    }
+    return { outcome: 'unanswered' }
+  }
+  // 5xx는 커밋 여부를 단정하지 않는다(내보내기와 같은 근거).
+  if (result.status >= 500) {
+    return { outcome: 'unanswered' }
+  }
+  return { outcome: 'refused', status: result.status, code: result.code }
+}
+
+/** 복구 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다. */
+export async function cancelRecovery(csrfToken: string | null): Promise<void> {
+  await post(`${RECOVERY_ENDPOINT}/cancel`, csrfToken, null, null, SESSION_REQUEST_TIMEOUT_MS)
+}
+
+function recoveryImpactOf(value: unknown): RecoveryImpact | null {
+  const body = objectOf(value)
+  if (
+    body === null ||
+    !stringArray(body.reopenedStages) ||
+    !Array.isArray(body.remainingRestrictions) ||
+    typeof body.linkedSignals !== 'number'
+  ) {
+    return null
+  }
+  const latest = body.latestSignalAt
+  if (latest !== null && latest !== undefined && !isInstant(latest)) {
+    return null
+  }
+  const remaining: RemainingRestriction[] = []
+  for (const item of body.remainingRestrictions as unknown[]) {
+    const other = objectOf(item)
+    if (
+      other === null ||
+      typeof other.feature !== 'string' ||
+      typeof other.scope !== 'string' ||
+      typeof other.origin !== 'string'
+    ) {
+      return null
+    }
+    remaining.push({ feature: other.feature, scope: other.scope, origin: other.origin })
+  }
+  return {
+    reopenedStages: body.reopenedStages,
+    remainingRestrictions: remaining,
+    linkedSignals: body.linkedSignals,
+    latestSignalAt: typeof latest === 'string' ? latest : null,
+  }
+}
+
+function smokeOf(value: unknown): RecoverySmoke | null {
+  const body = objectOf(value)
+  if (
+    body === null ||
+    typeof body.status !== 'string' ||
+    !stringArray(body.reopenedStages) ||
+    !stringArray(body.stillBlockedStages)
+  ) {
+    return null
+  }
+  return {
+    status: body.status,
+    reopenedStages: body.reopenedStages,
+    stillBlockedStages: body.stillBlockedStages,
+  }
+}
+
 function impactOf(value: unknown): RestrictionImpact | null {
   const body = objectOf(value)
   if (
@@ -479,6 +713,7 @@ function restrictionOf(value: unknown): ActiveRestriction | null {
     actorDigest: typeof body.actorDigest === 'string' ? body.actorDigest : null,
     origin,
     requiresVerification: origin !== 'OPERATOR' || body.requiresVerification !== false,
+    reinstated: body.reinstated === true,
   }
 }
 

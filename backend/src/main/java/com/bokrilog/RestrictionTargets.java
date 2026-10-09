@@ -2,18 +2,25 @@ package com.bokrilog;
 
 import com.bokrilog.calculation.PlanCalculator;
 import com.bokrilog.operations.OperationalRestrictionApi;
+import com.bokrilog.operations.OperationalRestrictionApi.ActiveRestriction;
+import com.bokrilog.operations.OperatorCommandApi.LiftExpectation;
+import com.bokrilog.operations.OperatorCommandApi.LiftTarget;
 import com.bokrilog.operations.OperatorCommandApi.Restriction;
 import com.bokrilog.operations.OperatorCommandApi.TargetCheck;
 import com.bokrilog.operations.RestrictionFeature;
 import com.bokrilog.operations.RestrictionScope;
+import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.plan.PlanConditionApi;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import org.jspecify.annotations.Nullable;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication.Type;
 import org.springframework.stereotype.Component;
@@ -37,6 +44,10 @@ import org.springframework.stereotype.Component;
  * </ul>
  *
  * <p>미리보기는 수만 담는다 — 식별자도 금융값도 없다(AC-2·AC-6).
+ *
+ * <p><b>해제(Story 3.4).</b> 해제 대상이 막던 대상 차원({@link #subjectOf})과 그 차원을 해제 뒤에도 막는 다른 활성 제한
+ * ({@link #remaining})을 evaluator와 같은 술어({@link OperationalRestrictionApi#matching})로 센다. 미리보기·확정의 기대·
+ * smoke가 모두 이 두 메서드를 지난다 — 어느 하나가 다른 규칙으로 세지 않는다.
  */
 @Component
 @ConditionalOnWebApplication(type = Type.SERVLET)
@@ -79,6 +90,20 @@ class RestrictionTargets {
      */
     record Impact(List<String> blockedStages, long affectedPlans, long affectedConnections,
             List<String> remainingFeatures) {}
+
+    /**
+     * 해제의 영향 미리보기(Story 3.4). 식별자를 담지 않는다 — 남는 제한은 기능·scope·출처뿐이다.
+     *
+     * @param reopenedStages 해제로 다시 열리는 단계 code
+     * @param remainingRestrictions 해제 뒤에도 그 대상의 같은 단계를 막는 다른 활성 제한
+     * @param linkedSignals 그 제한을 만들었거나 그것에 연결된 강한 신호 수
+     * @param latestSignalAt 그 신호들의 최신 감지 시각(DB). 신호가 없으면 {@code null}
+     */
+    record LiftImpact(List<String> reopenedStages, List<Remaining> remainingRestrictions, int linkedSignals,
+            @Nullable Instant latestSignalAt) {}
+
+    /** 남는 제한 하나. */
+    record Remaining(String feature, String scope, String origin) {}
 
     private final PlanConditionApi plans;
 
@@ -169,6 +194,70 @@ class RestrictionTargets {
             }
         }
         return new Impact(stages(feature, scope), affectedPlans, affectedConnections, remaining(feature, scope));
+    }
+
+    /**
+     * 해제 대상이 막던 대상 차원(Story 3.4). 계획 제한은 그 계획의 portfolio·연결·계산 정책까지 담는다 — 계획의 검사
+     * 지점이 그 차원을 함께 넘기므로 더 넓은 portfolio·정책 제한도 같은 단계를 막는다. 비식별된 target은 원식별자가 없어
+     * 차원이 없다(전역만 적용된다 — evaluator도 비식별 행을 고르지 않는다).
+     */
+    RestrictionSubject subjectOf(LiftTarget target) {
+        if (target.targetErased() || target.scope() == RestrictionScope.GLOBAL) {
+            return RestrictionSubject.none();
+        }
+        return switch (target.scope()) {
+            case PLAN -> {
+                UUID plan = UUID.fromString(target.target());
+                yield this.plans.planTarget(plan)
+                        .map(found -> new RestrictionSubject(found.planId(), found.portfolioId(), found.connectionId(),
+                                found.calculationPolicy()))
+                        .orElseGet(() -> RestrictionSubject.none().withPlan(plan));
+            }
+            case PORTFOLIO -> RestrictionSubject.none().withPortfolio(UUID.fromString(target.target()));
+            case PROVIDER_CONNECTION -> RestrictionSubject.none().withConnection(UUID.fromString(target.target()));
+            case CALCULATION_POLICY_VERSION -> RestrictionSubject.none().withCalculationPolicy(target.target());
+            case GLOBAL -> RestrictionSubject.none();
+        };
+    }
+
+    /**
+     * 해제 뒤에도 그 대상의 단계를 막는 다른 활성 제한(Story 3.4). 해제한 제한의 단계를 막을 수 있는 기능만 묻는다 — 신규
+     * 연결 해제에 동기화 제한이 "남는 제한"으로 섞이지 않는다. 술어와 순서는 evaluator 그대로다(구체 우선).
+     */
+    List<ActiveRestriction> remaining(UUID liftedRestrictionId, LiftTarget target) {
+        List<String> lifted = stages(target.feature(), target.scope());
+        Set<RestrictionFeature> features = EnumSet.noneOf(RestrictionFeature.class);
+        for (RestrictionFeature candidate : RestrictionFeature.values()) {
+            if (stages(candidate, RestrictionScope.GLOBAL).stream().anyMatch(lifted::contains)) {
+                features.add(candidate);
+            }
+        }
+        return this.restrictions.matching(features, subjectOf(target), Set.of(liftedRestrictionId)).stream()
+                .filter(other -> stages(other.feature(), other.scope()).stream().anyMatch(lifted::contains))
+                .toList();
+    }
+
+    /** 해제 뒤 기대하는 단계: 해제한 제한의 단계 가운데 남는 제한이 막지 않는 것과 여전히 막는 것. */
+    static LiftExpectation expectation(LiftTarget target, List<ActiveRestriction> remaining) {
+        Set<String> blocked = new LinkedHashSet<>();
+        for (ActiveRestriction other : remaining) {
+            blocked.addAll(stages(other.feature(), other.scope()));
+        }
+        List<String> reopened = new ArrayList<>();
+        List<String> still = new ArrayList<>();
+        for (String stage : stages(target.feature(), target.scope())) {
+            (blocked.contains(stage) ? still : reopened).add(stage);
+        }
+        return new LiftExpectation(List.copyOf(reopened), List.copyOf(still));
+    }
+
+    /** 해제의 영향 미리보기. 준비가 열린 제한에만 부른다. */
+    LiftImpact liftImpact(UUID liftedRestrictionId, LiftTarget target) {
+        List<ActiveRestriction> others = remaining(liftedRestrictionId, target);
+        return new LiftImpact(expectation(target, others).reopenedStages(),
+                others.stream().map(other -> new Remaining(other.feature().name(), other.scope().name(),
+                        other.origin().name())).toList(),
+                target.linkedSignals(), target.latestSignalAt());
     }
 
     /**
