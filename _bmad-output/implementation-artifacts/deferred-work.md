@@ -347,3 +347,15 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-2-scoped-manual-restriction.md`
   summary: 계획 조건 조회(`PlanConditionService.state`)가 제한을 만나면 사용자의 열린 계획 조건 intent를 되돌릴 수 없게 무효화한다 — 운영 제한은 해제되면 끝나는 일시 상태인데 그 사이 진행하던 조건 확인이 사라진다.
   evidence: 무효화는 3.2 이전부터 전역 command 제한에 대해 있던 동작(`PlanConditionService.java` `state()`의 `invalidateOpen`)이고, 3.2의 portfolio·연결 scope가 그 발동 범위를 넓혔을 뿐이다. 제한 중 intent를 보존할지는 해제(3.4)·공지(3.5)와 함께 정해야 한다(리뷰 blind-hunter, 2026-10-09).
+- source_spec: none
+  summary: 강한 신호 1·8·9번(쓰기 가능 key의 저장 단계 도달, 5분 창 schema 검증 실패, 5분 창 credential 복호화 실패)의 감지 지점 연결을 Story 3.3 후속으로 미룬다.
+  evidence: 세 신호는 섞인 원인을 먼저 갈라야 한다 — `SourceVerification.Verified`에 readOnly 근거 없음, `RESPONSE_FORMAT`이 cursor 반복과 섞임, `CredentialCipher.open`이 키 부재와 태그 불일치를 구분하지 않음. 8·9번은 시간 창 집계 저장소도 새로 필요하다. 신호 기반을 먼저 검증하려고 3.3을 나눴다(2026-10-09).
+- source_spec: none
+  summary: 강한 신호 2번(교차 사용자 데이터 접근 성공·공식 pointer 혼합)은 안전한 감지 지점이 없어 연결하지 않는다.
+  evidence: 모든 읽기 쿼리가 `user_id`로 걸러 교차 접근 "성공"을 관측하는 단정이 없고, 대시보드의 계보 불일치(`Dashboard.Unavailable`)는 trust 판정 실패 같은 무결성 무관 원인과 같은 타입이다. 오탐 하나가 금융 read/write·신규 연결·sync 전역 정지가 되므로 원인을 구분한 단정이 먼저다(2026-10-09).
+- source_spec: none
+  summary: 강한 신호 3번(secret/token의 redaction canary·외부 telemetry 검출, DLP)은 telemetry 경로를 만드는 Story 3.7과 함께 연결한다.
+  evidence: 런타임 로그 redaction·canary·telemetry 코드가 없고(`SourceCredentials.toString` redacted 하나), Grafana Alloy 수집은 3.7 범위다(2026-10-09).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-3-strong-signal-auto-stop.md`
+  summary: 강한 신호로 연결·동기화가 제한되면 사용자 API(`sync.initialCollectionJob` 등)가 사용자 자신의 수집 상태를 빈 값으로 감춰, 사용자는 무엇이 왜 멈췄는지 화면에서 알 수 없다.
+  evidence: 3.3 구현에서 `FirstSnapshotTest`의 상태 확인이 사용자 API로는 불가능해져 DB 직접 조회로 바뀌어야 했다. 제한 중 사용자에게 보일 상태·문장은 제한과 공지를 매핑하는 Story 3.5의 입력이다(리뷰 blind-hunter, 2026-10-09).

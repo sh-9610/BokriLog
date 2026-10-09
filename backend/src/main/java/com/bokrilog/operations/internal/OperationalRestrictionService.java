@@ -31,12 +31,13 @@ class OperationalRestrictionService implements OperationalRestrictionApi {
     }
 
     @Override
-    public Optional<ActiveRestriction> evaluate(Set<RestrictionFeature> features, RestrictionSubject subject) {
+    public Optional<ActiveRestriction> evaluate(Set<RestrictionFeature> features, RestrictionSubject subject,
+            Set<java.util.UUID> excluding) {
         if (features.isEmpty()) {
             // 아무 기능도 묻지 않는 판독은 배선 실수다. "제한 없음"으로 접지 않는다(fail-closed).
             throw new IllegalArgumentException("막을 기능이 없다.");
         }
-        return this.repository.effective(features, subject).map(row -> enrich(List.of(row)).getFirst());
+        return this.repository.effective(features, subject, excluding).map(row -> enrich(List.of(row)).getFirst());
     }
 
     @Override
@@ -44,7 +45,10 @@ class OperationalRestrictionService implements OperationalRestrictionApi {
         return enrich(this.repository.active());
     }
 
-    /** 원장의 완료 행에서 사유·수행자 digest를 채운다. 운영 command가 만들지 않은 옛 행은 비어 있다. */
+    /**
+     * 원장의 완료 행에서 사유·수행자 digest를 채운다. 운영 command가 만들지 않은 옛 행은 비어 있다. 신호가 만든 행은 그
+     * 신호의 SYSTEM 완료 행에서 온다 — 사유는 신호 종류 code, 수행자는 SYSTEM digest다(Story 3.3).
+     */
     private List<ActiveRestriction> enrich(List<OperationalRestrictionRepository.Row> rows) {
         Map<String, OperatorAuditRepository.CompletedFacts> facts = this.audit.completedFacts(
                 rows.stream().map(OperationalRestrictionRepository.Row::operationId).filter(Objects::nonNull)
@@ -53,7 +57,8 @@ class OperationalRestrictionService implements OperationalRestrictionApi {
             ActiveRestriction base = row.restriction();
             var fact = row.operationId() == null ? null : facts.get(row.operationId());
             return fact == null ? base : new ActiveRestriction(base.restrictionId(), base.feature(), base.scope(),
-                    base.target(), base.targetErased(), base.effectiveFrom(), fact.reason(), fact.actorDigest());
+                    base.target(), base.targetErased(), base.effectiveFrom(), fact.reason(), fact.actorDigest(),
+                    base.origin(), base.linkedSignals());
         }).toList();
     }
 

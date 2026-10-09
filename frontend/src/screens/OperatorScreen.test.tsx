@@ -2,7 +2,12 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { authContent, CSRF_HEADER, SIGN_IN_PROVIDERS } from '../content/auth'
-import { operatorContent, operatorCopyStrings, operatorRefusalMessage } from '../content/operator'
+import {
+  operatorContent,
+  operatorCopyStrings,
+  operatorRefusalMessage,
+  UNKNOWN_ORIGIN_LABEL,
+} from '../content/operator'
 import { replaceLocation } from '../session/navigation'
 import {
   getObservedAllowedRequests,
@@ -449,6 +454,9 @@ describe('OperatorScreen', () => {
       effectiveFrom: '2026-10-09T00:00:00Z',
       reason: '계획 입력 이상',
       actorDigest: 'b'.repeat(64),
+      origin: 'OPERATOR',
+      linkedSignals: 0,
+      requiresVerification: false,
       ...overrides,
     }
   }
@@ -491,6 +499,69 @@ describe('OperatorScreen', () => {
     expect(rows[2]?.textContent).toContain('신규 연결')
     expect(rows[2]?.textContent).toContain('전역')
     expect(rows[2]?.textContent).toContain(copy.restriction.active.noReason)
+  })
+
+  it('자동 정지와 신호가 연결된 제한은 수동 검증 필요를 글자로 보이고 자동 정지의 사유는 신호 종류의 문장이다', async () => {
+    stubOperatorRestrictions(() =>
+      Promise.resolve(
+        jsonResponse({
+          items: [
+            activeRestriction({
+              restrictionId: 'r-signal',
+              scope: 'PROVIDER_CONNECTION',
+              reason: 'UNKNOWN_TRANSACTION_ENUM',
+              origin: 'SIGNAL',
+              linkedSignals: 1,
+              requiresVerification: true,
+            }),
+            activeRestriction({
+              restrictionId: 'r-linked',
+              origin: 'OPERATOR',
+              linkedSignals: 2,
+              requiresVerification: true,
+            }),
+            activeRestriction({ restrictionId: 'r-operator' }),
+          ],
+        }),
+      ),
+    )
+    await openRestrictionSection()
+    const list = screen.getByRole('list', { name: copy.restriction.active.heading })
+    const rows = within(list).getAllByRole('listitem')
+    expect(rows).toHaveLength(3)
+    expect(rows[0]?.textContent).toContain('자동 정지')
+    expect(rows[0]?.textContent).toContain(copy.restriction.active.states.verificationRequired)
+    expect(rows[0]?.textContent).toContain('미인식 거래 기록 종류')
+    expect(rows[0]?.textContent).not.toContain('UNKNOWN_TRANSACTION_ENUM')
+    // 운영자 제한이라도 신호가 연결되면 수동 검증이 필요하다. 사유는 운영자의 문장 그대로다.
+    expect(rows[1]?.textContent).toContain('운영자')
+    expect(rows[1]?.textContent).toContain(copy.restriction.active.states.verificationRequired)
+    expect(rows[1]?.textContent).toContain('계획 입력 이상')
+    expect(rows[2]?.textContent).toContain(copy.restriction.active.states.active)
+    expect(rows[2]?.textContent).not.toContain(copy.restriction.active.states.verificationRequired)
+  })
+
+  it('모르는 출처나 빠진 검증 표시는 그 행만 수동 검증 필요로 접는다', async () => {
+    stubOperatorRestrictions(() =>
+      Promise.resolve(
+        jsonResponse({
+          items: [
+            activeRestriction({ restrictionId: 'r-robot', origin: 'ROBOT' }),
+            activeRestriction({ restrictionId: 'r-silent', requiresVerification: undefined }),
+            activeRestriction({ restrictionId: 'r-plain' }),
+          ],
+        }),
+      ),
+    )
+    await openRestrictionSection()
+    const list = screen.getByRole('list', { name: copy.restriction.active.heading })
+    const rows = within(list).getAllByRole('listitem')
+    expect(rows).toHaveLength(3)
+    expect(rows[0]?.textContent).toContain(UNKNOWN_ORIGIN_LABEL)
+    expect(rows[0]?.textContent).not.toContain('ROBOT')
+    expect(rows[0]?.textContent).toContain(copy.restriction.active.states.verificationRequired)
+    expect(rows[1]?.textContent).toContain(copy.restriction.active.states.verificationRequired)
+    expect(rows[2]?.textContent).toContain(copy.restriction.active.states.active)
   })
 
   it('기능이 받지 않는 범위는 고를 수 없다', async () => {

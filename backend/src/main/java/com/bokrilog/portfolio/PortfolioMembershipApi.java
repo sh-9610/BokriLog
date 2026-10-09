@@ -78,6 +78,9 @@ public interface PortfolioMembershipApi {
      * {@link NextPublication.MembershipChanged}, 기대한 snapshot과 순번이 현재가 아니면
      * {@link NextPublication.PointerMoved}이고 둘 다 아무것도 쓰지 않는다. 거절을 받은 호출자는
      * 트랜잭션을 되돌린다.
+     *
+     * @throws PortfolioPointerInvariantViolation 포인터 행을 잠그고 대조한 뒤의 CAS가 실패했을 때(Story 3.3). 정상 경합이
+     *     아니라 불변식 위반이며 호출자가 강한 신호로 올린다
      */
     NextPublication publishNext(CandidateComponent component, UUID expectedSnapshotId, long expectedSequence);
 

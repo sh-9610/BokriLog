@@ -98,7 +98,7 @@ class PlanPublicationServiceTest {
         return new PlanPublicationService(repository, classifications, conversions, sources, portfolios, accounts,
                 restrictions, plans, new CalculationConformance(() -> conformant),
                 mock(PlatformTransactionManager.class), planSyncs, planSyncAttempts, planVerifications,
-                new ShownPlanAgreement(repository, planSyncAttempts, portfolios));
+                new ShownPlanAgreement(repository, planSyncAttempts, portfolios), mock(StrongSignals.class));
     }
 
     /** One eligible lineage: the account may write, nothing is restricted, and every input lines up. */
@@ -260,7 +260,7 @@ class PlanPublicationServiceTest {
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         PlanPublicationService service = new PlanPublicationService(repository, classifications, conversions, sources,
                 portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager, planSyncs,
-                planSyncAttempts, planVerifications, new ShownPlanAgreement(repository, planSyncAttempts, portfolios));
+                planSyncAttempts, planVerifications, new ShownPlanAgreement(repository, planSyncAttempts, portfolios), mock(StrongSignals.class));
 
         assertThat(service.dashboard(USER).dashboard()).isInstanceOf(Dashboard.Ready.class);
         assertThat(service.dashboard(USER).consistency()).isEqualTo(BundleConsistency.CONSISTENT);
@@ -292,7 +292,7 @@ class PlanPublicationServiceTest {
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         PlanPublicationService service = new PlanPublicationService(repository, classifications, conversions, sources,
                 portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager, planSyncs,
-                planSyncAttempts, planVerifications, new ShownPlanAgreement(repository, planSyncAttempts, portfolios));
+                planSyncAttempts, planVerifications, new ShownPlanAgreement(repository, planSyncAttempts, portfolios), mock(StrongSignals.class));
 
         // No bundle was read, so nothing is known about its consistency.
         assertThat(service.dashboard(USER))
@@ -647,7 +647,7 @@ class PlanPublicationServiceTest {
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         PlanPublicationService service = new PlanPublicationService(repository, classifications, conversions, sources,
                 portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager, planSyncs,
-                planSyncAttempts, planVerifications, new ShownPlanAgreement(repository, planSyncAttempts, portfolios));
+                planSyncAttempts, planVerifications, new ShownPlanAgreement(repository, planSyncAttempts, portfolios), mock(StrongSignals.class));
 
         var evidence = found(service.evidence(USER, REFERENCE));
         ArgumentCaptor<TransactionDefinition> definitions = ArgumentCaptor.forClass(TransactionDefinition.class);
@@ -710,7 +710,7 @@ class PlanPublicationServiceTest {
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         PlanPublicationService service = new PlanPublicationService(repository, classifications, conversions, sources,
                 portfolios, accounts, restrictions, plans, new CalculationConformance(() -> true), manager, planSyncs,
-                planSyncAttempts, planVerifications, new ShownPlanAgreement(repository, planSyncAttempts, portfolios));
+                planSyncAttempts, planVerifications, new ShownPlanAgreement(repository, planSyncAttempts, portfolios), mock(StrongSignals.class));
         var refused = new EvidenceRead(new EvidenceOutcome.NotPermitted(), BundleConsistency.NOT_READ);
         assertThat(service.evidence(USER, REFERENCE)).isEqualTo(refused);
         // The refusal comes first: a malformed reference does not tell a deleting account "not found".

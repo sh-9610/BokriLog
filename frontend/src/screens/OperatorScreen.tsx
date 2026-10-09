@@ -26,6 +26,7 @@ import {
   ledgerCodeLabel,
   operatorContent,
   operatorRefusalMessage,
+  originLabel,
   OUTCOME_FILTERS,
   outcomeLabel,
   REASON_MAX_LENGTH,
@@ -33,6 +34,7 @@ import {
   RESTRICTION_FEATURES,
   RESTRICTION_SCOPES,
   scopeLabel,
+  signalReasonLabel,
   type RestrictionFeature,
   type RestrictionScope,
 } from '../content/operator'
@@ -100,15 +102,29 @@ function AuditRow({ entry }: { readonly entry: AuditEntry }): ReactElement {
   )
 }
 
-/** 활성 제한 하나. 비식별된 대상은 `삭제됨`으로만 보인다 — 색이 아니라 글자로 말한다. */
+/**
+ * 활성 제한 하나. 비식별된 대상은 `삭제됨`으로만 보인다 — 색이 아니라 글자로 말한다. 신호가 만들었거나 신호가 연결된
+ * 제한(Story 3.3)은 `수동 검증 필요` 상태를 글자로 보이고, 자동 정지의 사유는 신호 종류의 문장이다.
+ */
 function RestrictionRow({
   restriction,
 }: {
   readonly restriction: ActiveRestriction
 }): ReactElement {
-  const columns = copy.restriction.active.columns
+  const active = copy.restriction.active
+  const columns = active.columns
   return (
     <li className={styles.entry}>
+      <div className={styles.entryRow}>
+        <span className={styles.term}>{columns.origin}</span>
+        <span className={styles.value}>{originLabel(restriction.origin)}</span>
+        <span className={styles.term}>{columns.state}</span>
+        <span className={styles.value}>
+          {restriction.requiresVerification
+            ? active.states.verificationRequired
+            : active.states.active}
+        </span>
+      </div>
       <div className={styles.entryRow}>
         <span className={styles.term}>{columns.feature}</span>
         <span className={styles.value}>{featureLabel(restriction.feature)}</span>
@@ -132,7 +148,11 @@ function RestrictionRow({
       <div className={styles.entryRow}>
         <span className={styles.term}>{columns.reason}</span>
         <span className={styles.value}>
-          {restriction.reason ?? copy.restriction.active.noReason}
+          {restriction.reason === null
+            ? copy.restriction.active.noReason
+            : restriction.origin === 'SIGNAL'
+              ? signalReasonLabel(restriction.reason)
+              : restriction.reason}
         </span>
       </div>
       <div className={styles.entryRow}>

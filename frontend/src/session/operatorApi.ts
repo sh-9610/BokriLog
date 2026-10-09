@@ -273,8 +273,19 @@ export interface ActiveRestriction {
   readonly target: string | null
   readonly targetErased: boolean
   readonly effectiveFrom: string
+  /** 운영자 command의 사유, 또는 자동 정지의 신호 종류 code. */
   readonly reason: string | null
   readonly actorDigest: string | null
+  /**
+   * 제한을 만든 출처(Story 3.3): `OPERATOR`·`SIGNAL`. 모르는 값은 그대로 두고 화면이 안전 문구로 접는다. 모양이 아니면
+   * 빈 문자열이다.
+   */
+  readonly origin: string
+  /**
+   * 수동 검증이 필요한가 — 신호가 만들었거나 신호가 하나라도 연결된 제한. 서버가 말하지 않았거나 출처가 운영자가
+   * 아니면 참으로 접는다(안전한 쪽).
+   */
+  readonly requiresVerification: boolean
 }
 
 export type RestrictionPrepareOutcome =
@@ -456,6 +467,7 @@ function restrictionOf(value: unknown): ActiveRestriction | null {
   if (target === null && !body.targetErased) {
     return null
   }
+  const origin = typeof body.origin === 'string' ? body.origin : ''
   return {
     restrictionId: body.restrictionId,
     feature: body.feature,
@@ -465,6 +477,8 @@ function restrictionOf(value: unknown): ActiveRestriction | null {
     effectiveFrom: body.effectiveFrom,
     reason: typeof body.reason === 'string' ? body.reason : null,
     actorDigest: typeof body.actorDigest === 'string' ? body.actorDigest : null,
+    origin,
+    requiresVerification: origin !== 'OPERATOR' || body.requiresVerification !== false,
   }
 }
 

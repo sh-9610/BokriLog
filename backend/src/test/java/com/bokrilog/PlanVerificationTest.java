@@ -413,7 +413,16 @@ class PlanVerificationTest extends PlanSyncTestBase {
                 .containsExactly("CONFLICT|true");
         assertThat(sourceRow(event)).isEqualTo(row);
         assertStillV1(user, v1);
-        assertVerificationHeld(user, "REVIEW_REQUIRED", "VERIFICATION_REVIEW_REQUIRED");
+        // Story 3.3: the conflict is a strong signal — the plan's sync is stopped automatically (its own collection still
+        // finished its record above), so the freshness says the sync is unavailable rather than the review.
+        assertThat(jdbc().sql("SELECT feature||':'||scope||':'||target||':'||origin FROM operations_restriction")
+                .query(String.class).list()).containsExactly("SYNC:PLAN:" + v1.planId() + ":SIGNAL");
+        var dashboard = readyDashboard(user);
+        var reliability = dashboard.result().trust().inputReliability();
+        assertThat(reliability.state()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(reliability.cause()).isEqualTo("VERIFICATION_REVIEW_REQUIRED");
+        assertThat(dashboard.result().trust().freshness().cause()).isEqualTo("SYNC_UNAVAILABLE");
+        assertThat(dashboard.verification().latest()).isNotNull();
     }
 
     // ------------------------------------------------------------------------------------------ PRICE_REVISION

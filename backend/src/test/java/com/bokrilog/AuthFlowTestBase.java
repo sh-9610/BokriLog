@@ -226,8 +226,9 @@ abstract class AuthFlowTestBase {
                                 + "identity_social_link, identity_account, identity_account_lifecycle "
                                 + "CASCADE")
                 .update();
-        // 운영 제한과 감사 원장은 어느 계정도 참조하지 않는다. 그래서 위 CASCADE가 비우지 못한다.
-        this.jdbc.sql("TRUNCATE TABLE operations_restriction, operations_audit_event").update();
+        // 운영 제한·강한 신호 기록·감사 원장은 어느 계정도 참조하지 않는다. 그래서 위 CASCADE가 비우지 못한다. 신호 행이
+        // 제한을 외래키로 가리키므로 함께 적는다. 판정표(`operations_signal_policy`)는 migration seed라 비우지 않는다.
+        this.jdbc.sql("TRUNCATE TABLE operations_signal, operations_restriction, operations_audit_event").update();
     }
 
     // ----------------------------------------------------------------------

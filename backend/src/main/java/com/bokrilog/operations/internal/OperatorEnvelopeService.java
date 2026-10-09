@@ -4,13 +4,12 @@ import com.bokrilog.operations.OperatorAuditApi;
 import com.bokrilog.operations.OperatorCommandApi;
 import com.bokrilog.operations.OperatorPermission;
 import com.bokrilog.operations.RestrictionFeature;
+import com.bokrilog.operations.RestrictionOrigin;
 import com.bokrilog.operations.RestrictionScope;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.EnumSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -44,7 +43,7 @@ import tools.jackson.databind.json.JsonMapper;
 @ConditionalOnWebApplication(type = Type.SERVLET)
 class OperatorEnvelopeService implements OperatorCommandApi {
 
-    /** 수행자 종류. 3.1은 운영자만 command를 낸다(SYSTEM은 3.3 자동 정지의 몫). */
+    /** 수행자 종류. 운영 command는 운영자만 낸다(SYSTEM 행은 Story 3.3 자동 정지가 {@code OperationalSignalService}로 쓴다). */
     static final String ACTOR_OPERATOR = "OPERATOR";
 
     /** 이메일 주소처럼 보이는 조각. 사유에 이메일을 남기지 않는다(AC-4). */
@@ -67,10 +66,6 @@ class OperatorEnvelopeService implements OperatorCommandApi {
 
     /** 거절 행에서 형식이 맞지 않아 원문을 남기지 않은 자리. */
     private static final String UNREADABLE = "-";
-
-    private static final SecureRandom RANDOM = new SecureRandom();
-
-    private static final Base64.Encoder OPERATION_ID_ENCODER = Base64.getUrlEncoder().withoutPadding();
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
@@ -226,9 +221,7 @@ class OperatorEnvelopeService implements OperatorCommandApi {
 
     @Override
     public String newOperationId() {
-        byte[] bytes = new byte[18];
-        RANDOM.nextBytes(bytes);
-        return "op_" + OPERATION_ID_ENCODER.encodeToString(bytes);
+        return OperationIds.next();
     }
 
     @Override
@@ -375,7 +368,7 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         UUID restrictionId = UUID.randomUUID();
         Instant effectiveFrom = this.restrictions.insert(restrictionId, restriction.feature(), restriction.scope(),
                 restriction.target(), restriction.scope().userAttributed() ? valid.ownerUserId() : null,
-                envelope.operationId());
+                envelope.operationId(), RestrictionOrigin.OPERATOR);
         Map<String, Object> details = new LinkedHashMap<>();
         details.put("keyDigest", envelope.idempotencyKeyDigest());
         details.put("restrictionId", restrictionId.toString());

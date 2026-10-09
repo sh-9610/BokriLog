@@ -161,6 +161,10 @@ class FirstSnapshotWorker {
                 stage.set("PUBLISH_FAILED");
                 service.finishCollection(lease,value,needsReview.get());
             }
+        } catch (StrongSignals.Unraised unraised) {
+            // 강한 신호를 기록하지 못했다(Story 3.3): 수집을 끝내지 않는다 — lease가 만료되면 다시 claim된다. 상한 세대면
+            // 검토 필요로 맺는다.
+            service.signalUnrecorded(lease);
         } catch (RuntimeException failure) {
             service.failCollection(lease,stage.get());
         } finally {
@@ -178,6 +182,9 @@ class FirstSnapshotWorker {
                 var value=((SourceConnectionApi.EquityResult.Observed)outcome).value();
                 service.publish(lease,value);
             }
+        } catch (StrongSignals.Unraised unraised) {
+            // 강한 신호를 기록하지 못했다(Story 3.3): 작업을 끝내지 않는다 — lease 규칙에 맡기고, 상한 세대면 실패로 맺는다.
+            service.signalUnrecorded(lease);
         } catch (RuntimeException failure) {
             service.fail(lease,"UNAVAILABLE");
         } finally {

@@ -219,10 +219,17 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
 
     @Override
     public Optional<CollectionIntent> collectionIntent(@Nullable UUID userId, UUID intentId) {
+        return collectionIntent(userId,intentId,java.util.Set.of());
+    }
+
+    /** {@link #collectionIntent}에서 그 제한들은 보지 않는다(Story 3.3: 신호를 낸 수집 작업의 자기 제한). */
+    private Optional<CollectionIntent> collectionIntent(@Nullable UUID userId, UUID intentId,
+            java.util.Set<UUID> excluding) {
         if (userId == null) return Optional.empty();
         return transactions.execute(status -> {
             // 초기 수집의 intent 판정이다(Story 3.2): 대응표에서 초기 수집은 동기화 하나만 본다 — 계산 표시 제한은 막지 않는다.
-            if (!writableUser(userId) || currentTerms(userId,intentId,false,SYNC_ONLY).isEmpty()) return Optional.empty();
+            if (!writableUser(userId) || currentTerms(userId,intentId,false,SYNC_ONLY,excluding).isEmpty())
+                return Optional.empty();
             var row = repository.collectionIntent(userId,intentId).orElse(null);
             if (row == null || !"OPEN".equals(row.status()) || !row.expiresAt().isAfter(Instant.now()))
                 return Optional.empty();
@@ -241,7 +248,13 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
 
     @Override
     public Optional<InitialInputsPlanPort.Intent> eligibleIntent(@Nullable UUID userId, UUID intentId) {
-        return collectionIntent(userId,intentId).map(i->new InitialInputsPlanPort.Intent(
+        return eligibleIntent(userId,intentId,java.util.Set.of());
+    }
+
+    @Override
+    public Optional<InitialInputsPlanPort.Intent> eligibleIntent(@Nullable UUID userId, UUID intentId,
+            java.util.Set<UUID> excluding) {
+        return collectionIntent(userId,intentId,excluding).map(i->new InitialInputsPlanPort.Intent(
                 i.intentId(),i.portfolioId(),i.connectionId(),i.providerAccountId(),i.t0()));
     }
 
@@ -354,12 +367,18 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
      */
     private Optional<Terms> currentTerms(UUID userId, UUID intentId, boolean lock,
             java.util.Set<RestrictionFeature> features) {
+        return currentTerms(userId,intentId,lock,features,java.util.Set.of());
+    }
+
+    private Optional<Terms> currentTerms(UUID userId, UUID intentId, boolean lock,
+            java.util.Set<RestrictionFeature> features, java.util.Set<UUID> excluding) {
         var row=repository.intentTerms(userId,intentId,lock).orElse(null);
         if (row==null || !"OPEN".equals(row.status())
                 || !CALENDAR_POLICY.equals(row.calendarPolicy()) || !CALCULATION_POLICY.equals(row.calculationPolicy())
                 || repository.activePlanForPortfolio(row.portfolioId())) return Optional.empty();
         // intent 자신의 portfolio·연결(Story 3.2): 둘 중 하나의 제한도 그 발행을 막는다.
-        if (restrictions.blocks(features,subjectOf(row.portfolioId(),row.connectionId()))) return Optional.empty();
+        if (restrictions.blocks(features,subjectOf(row.portfolioId(),row.connectionId()),excluding))
+            return Optional.empty();
         var s=eligibleSnapshot(userId).orElse(null);
         if (s==null || !s.portfolioId().equals(row.portfolioId()) || !s.snapshotId().equals(row.snapshotId())
                 || !s.membershipId().equals(row.membershipId()) || !s.connectionId().equals(row.connectionId())

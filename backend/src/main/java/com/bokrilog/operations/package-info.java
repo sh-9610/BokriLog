@@ -29,5 +29,10 @@
  * com.bokrilog.operations.OperationalRestrictionApi#evaluate} 하나이고({@code command} 문자열 판독은 없어졌다), 제한 행은
  * 운영 command({@code restrict-<기능>})가 감사 {@code COMPLETED}와 같은 트랜잭션에서만 만든다. 대상(계획·portfolio·연결)이
  * 있는지·누구의 것인지는 다른 모듈의 사실이라 이 모듈은 모른다 — 루트가 각 모듈 공개 API로 확인해 콜백으로 넘긴다.
+ *
+ * <p><b>Story 3.3이 강한 신호의 자동 정지를 더했다.</b> 판정표 {@code OPS-SIGNAL-1.0}은 버전 seed이고({@code
+ * operations_signal_policy}), 감지 지점(sync)은 {@link com.bokrilog.operations.OperationalSignalApi#raise} 하나를 부른다.
+ * raise는 자기 트랜잭션 하나에 신호 행·제한({@code origin='SIGNAL'})·감사 SYSTEM 행을 커밋하고 경보 WARN 한 줄을 남긴다.
+ * 백그라운드 detector는 없다 — 감지 순간에 동기로 정지한다. 신호는 제한을 풀거나 줄이지 못한다.
  */
 package com.bokrilog.operations;

@@ -57,8 +57,8 @@ import org.springframework.web.bind.annotation.RestController;
  *       {@code restrict-calculation-display}·{@code restrict-advertising})도 같은 세 경로다. 준비 응답은
  *       {@code impact {blockedStages, affectedPlans, affectedConnections, remainingFeatures}}(수만, 식별자 없음)를 더
  *       싣고, 확정 응답은 {@code {operationId, outcome, command, feature, scope, restrictionId, effectiveFrom}}이다.
- *   <li>{@code GET /api/operator/restrictions}(command 권한): 효력 중인 제한, 구체 우선. 기능·scope·target(비식별된
- *       것은 {@code targetErased})·시작 시각·사유·수행자 digest.
+ *   <li>{@code GET /api/operator/restrictions}(command 권한): 효력 중인 제한, 구체 우선. 출처(운영자·자동 정지, Story
+ *       3.3)·기능·scope·target(비식별된 것은 {@code targetErased})·시작 시각·사유·수행자 digest.
  * </ul>
  *
  * <p>거절은 공통 오류 모양이다: 400 본문 모양, 403 {@code REAUTHENTICATION_REQUIRED}(준비)·
@@ -169,15 +169,22 @@ class OperatorController {
     record RestrictionCompletedView(String operationId, String outcome, String command, String feature, String scope,
             UUID restrictionId, String effectiveFrom) {}
 
-    /** 효력 중인 제한 하나(Story 3.2). 비식별된 target은 싣지 않고 {@code targetErased}로 말한다. */
+    /**
+     * 효력 중인 제한 하나(Story 3.2). 비식별된 target은 싣지 않고 {@code targetErased}로 말한다. {@code origin}은 그 제한을
+     * 만든 출처다(Story 3.3) — {@code OPERATOR}이거나 강한 신호의 자동 정지 {@code SIGNAL}이다. {@code linkedSignals}는 그
+     * 제한을 만들었거나 그것에 연결된 강한 신호 수이고, 하나라도 있으면 출처와 무관하게 {@code requiresVerification}이 참이다
+     * — 화면은 {@code 수동 검증 필요}로 보이고 해제(Story 3.4)는 이 표시를 본다.
+     */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record RestrictionView(UUID restrictionId, String feature, String scope, @Nullable String target,
-            boolean targetErased, String effectiveFrom, @Nullable String reason, @Nullable String actorDigest) {
+            boolean targetErased, String effectiveFrom, @Nullable String reason, @Nullable String actorDigest,
+            String origin, int linkedSignals, boolean requiresVerification) {
 
         static RestrictionView of(OperationalRestrictionApi.ActiveRestriction restriction) {
             return new RestrictionView(restriction.restrictionId(), restriction.feature().name(),
                     restriction.scope().name(), restriction.target(), restriction.targetErased(),
-                    restriction.effectiveFrom().toString(), restriction.reason(), restriction.actorDigest());
+                    restriction.effectiveFrom().toString(), restriction.reason(), restriction.actorDigest(),
+                    restriction.origin().name(), restriction.linkedSignals(), restriction.requiresVerification());
         }
     }
 

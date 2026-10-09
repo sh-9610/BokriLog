@@ -232,6 +232,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 **운영자 표면 (Epic 3)**
 - 운영자는 배포 환경의 allowlist `BOKRILOG_OPERATORS`(`issuer|subject|command,audit;…`)만 정하고 요청마다 `identity` 공개 API로 풀어 세션 주체와 비교한다(세션에 역할을 심지 않는다). 운영 command는 `OperatorCommandService`가 Epic 1의 재인증·허가·`SessionRotation`으로 준비→확정→취소하고, 확정 트랜잭션 안에서 원장 잠금 뒤 최종 권한을 재검사한다. 감사 원장 `operations_audit_event`는 추가 전용이며 SQL은 `OperatorAuditRepository` 한 곳(INSERT·SELECT와 삭제 port의 비식별 UPDATE 하나)이고, 거절·실패 행은 롤백 뒤 따로 쓴다. 감사 digest 키 `BOKRILOG_AUDIT_DIGEST_KEY`가 비면 API가 뜨지 않는다. 운영자 화면은 `React.lazy` chunk다(3.1).
+- 강한 신호의 자동 정지는 `OperationalSignalApi.raise` 하나이고 감지 트랜잭션의 결말과 무관한 별도 트랜잭션에 제한·신호·감사 SYSTEM 행을 함께 커밋한다. 판정은 버전 seed `OPS-SIGNAL-1.0`이 하고, sync 쪽 감지 자리는 `StrongSignals` 하나다. 신호는 제한을 풀거나 줄이지 못하며, 신호가 하나라도 연결된 제한은 출처와 무관하게 `수동 검증 필요`이고 해제(3.4)는 그 표시를 본다(3.3).
 - 운영 제한은 `기능(NEW_CONNECTION·SYNC·CALCULATION_DISPLAY·ADVERTISING) × scope(GLOBAL·PLAN·PORTFOLIO·CALCULATION_POLICY_VERSION·PROVIDER_CONNECTION) × target`이고 판독은 `OperationalRestrictionApi.evaluate(기능 집합, RestrictionSubject)` 하나다 — 차단은 일치 행의 합집합, 보고는 가장 구체적인 행이며, 각 검사 지점은 자기가 가진 대상 차원만 넘긴다(넘기지 않은 차원의 구체 제한은 적용되지 않는다). 지점 대응은 연결 생성 → `NEW_CONNECTION`, 첫 스냅샷·초기 수집·증분 동기화(lease 포함) → `SYNC`, 계획 조건·발행·계획 종료 → `SYNC`·`CALCULATION_DISPLAY`, 대시보드 결과·근거·조정 이력 → `CALCULATION_DISPLAY`이고 연결 해제는 보지 않는다. 사용자 귀속 target은 원장에 keyed digest로만 남고 계정 삭제 시 `eraseRestrictionTargets`가 제한 행도 digest로 바꾼다. 제한 행은 `completeRestriction`이 원장 잠금 → 최종 권한 → 대상 재검사 → 중복 → INSERT → `COMPLETED` 순서로 쓰며, 대상 확인·영향 집계는 루트 `RestrictionTargets`가 각 모듈 공개 API로 한다(3.2).
 
 **시험·CI**

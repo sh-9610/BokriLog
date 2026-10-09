@@ -81,6 +81,8 @@ class PlanSyncService {
     /** The plan module's port (Story 2.14): the natural completion's transition and its completion record. */
     private final PlanPublicationPort plans;
     private final AccountAccessApi accounts;
+    /** 강한 신호(Story 3.3): 수집 페이지의 의미 충돌·미인식 enum, 발행의 result hash 불일치·portfolio CAS 위반. */
+    private final StrongSignals strongSignals;
     /**
      * What each running holder's collection did, for its attempt's one ending line (windows, pages, page retries). Keyed
      * by the holder's lease — the job and its fencing generation — so an earlier holder in this process and the one
@@ -105,7 +107,8 @@ class PlanSyncService {
             InitialCollectionRepository collections, CashflowClassificationRepository classifications,
             CashflowConversionRepository conversions, SourceConnectionApi sources, CalculationConformance conformance,
             PlanSyncGuard guard, PlanSyncPublisher publisher, PlanPublicationPort plans, AccountAccessApi accounts,
-            PlatformTransactionManager manager) {
+            StrongSignals strongSignals, PlatformTransactionManager manager) {
+        this.strongSignals = strongSignals;
         this.plans = plans;
         this.accounts = accounts;
         this.syncs = syncs;
@@ -469,9 +472,14 @@ class PlanSyncService {
             classifyConvertPublish(lease, alive, candidateId, tc, lastExtended, Set.of());
         } catch (PlanSyncPublisher.LeaseLost | Ended stopped) {
             // Another holder owns the attempt now, or a stage already ended it: nothing more is written.
+        } catch (StrongSignals.Unraised unraised) {
+            // 강한 신호를 기록하지 못했다(Story 3.3): 작업을 끝내지 않는다 — 신호 없이 사건이 닫히지 않게 lease 규칙에 맡긴다.
+            // 상한은 그 규칙 자체다: 다시 잡힌 시도는 중단(SYNC_INTERRUPTED)으로 맺고, 수집 중인 검증만 두 번까지 이어 간다.
         } catch (PublicationBlocked blocked) {
             end(lease, "BLOCKED", blocked.code());
         } catch (RuntimeException failure) {
+            // 발행이 강한 신호로 롤백됐으면(result hash 불일치·portfolio CAS 위반) 롤백 뒤 그 신호를 먼저 올린다(Story 3.3).
+            if (!signalRaised(lease, failure)) return;
             // The job id and the class name only: a message or cause can carry SQL, provider text or values.
             LOG.warn("plan sync interrupted: job={} failure={}", lease.jobId(), failure.getClass().getName());
             end(lease, "FAILED", "SYNC_FAILED");
@@ -479,6 +487,22 @@ class PlanSyncService {
             // The ending line took the counters if this holder ended the attempt; a holder that did not (its lease
             // was lost, it stopped) leaves nothing behind either — a resumed holder counts afresh.
             runs.remove(lease, stats);
+        }
+    }
+
+    /**
+     * 발행 트랜잭션을 롤백시킨 실패가 강한 신호면 그 신호를 올린다(Story 3.3, 순서: 롤백 → 신호 커밋). 신호가 아니거나
+     * 올렸거나 판정표가 거절했으면 참 — 작업은 기존대로 실패로 끝난다. 기록하지 못했으면 거짓 — 작업을 끝내지 않는다.
+     */
+    boolean signalRaised(PlanSyncRepository.Lease lease, RuntimeException failure) {
+        if (!StrongSignals.isStrong(failure)) return true;
+        try {
+            strongSignals.raiseFor(failure, lease.userId(), lease.jobId());
+            return true;
+        } catch (StrongSignals.Unraised unraised) {
+            return false;
+        } catch (IllegalArgumentException refused) {
+            return true;
         }
     }
 
@@ -1016,13 +1040,23 @@ class PlanSyncService {
         var result = sources.collectWindows(lease.userId(), lease.connectionId(), lease.t0(), tc, pending,
                 includeWallet, page -> {
                     if (!alive.getAsBoolean()) throw new PlanSyncPublisher.LeaseLost();
+                    List<InitialCollectionRepository.StrongObservation> strong = new ArrayList<>();
                     transactions.executeWithoutResult(status -> {
                         if (!syncs.lockOwned(lease) || !collections.lockOwned(child))
                             throw new PlanSyncPublisher.LeaseLost();
+                        // 이 시도가 이미 낸 강한 신호의 제한만은 빼고 본다(guard, Story 3.3).
                         String blocked = guard.blocked(lease);
                         if (blocked != null) throw new PublicationBlocked(blocked);
-                        collections.storePage(child, page.evidence(), page.events(), page.reviewRequired());
+                        collections.storePage(child, page.evidence(), page.events(), page.reviewRequired(), strong);
                     });
+                    /*
+                     * 강한 신호(Story 3.3 신호 6·7): 관측이 커밋된 뒤 종류마다 한 번 올린다 — 감지 지점의 별도 트랜잭션이다.
+                     * 작업의 결말은 기존 완료 규칙이 맺는다(진단이 있으니 검토 필요, 검증이면 대조 기록 포함). 기록하지
+                     * 못하면 작업은 끝나지 않는다(lease 규칙).
+                     */
+                    if (!strong.isEmpty())
+                        strongSignals.observations(strong, lease.userId(), child.jobId(), lease.connectionId(),
+                                lease.planId(), lease.jobId());
                 }, held);
         if (!alive.getAsBoolean()) return null;
         switch (result) {

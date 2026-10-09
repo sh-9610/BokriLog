@@ -1,6 +1,7 @@
 package com.bokrilog.portfolio.internal;
 
 import com.bokrilog.portfolio.PortfolioMembershipApi;
+import com.bokrilog.portfolio.PortfolioPointerInvariantViolation;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
@@ -70,7 +71,8 @@ class PortfolioMembershipService implements PortfolioMembershipApi {
                 component.policyVersion());
         if (this.repository.advancePointer(component.portfolioId(),expectedSnapshotId,expectedSequence,
                 snapshotId,next)!=1)
-            throw new IllegalStateException("portfolio pointer moved under its row lock");
+            // 잠금 아래의 CAS 실패는 경합이 아니라 불변식 위반이다(Story 3.3 신호 5). 호출자가 잡아 신호를 올린다.
+            throw new PortfolioPointerInvariantViolation(component.portfolioId(),component.userId());
         return new PublishedSnapshot(snapshotId,next);
     }
 

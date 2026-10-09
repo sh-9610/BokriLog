@@ -60,6 +60,41 @@ class PlanPublicationRepository {
             Instant tc, String currentValue, Instant measuredAt, int flowCount, String inputScopeHash,
             String calculationPolicy, String calendarPolicy) {}
 
+    /**
+     * 같은 canonical input·계산 정책의 다른 result hash(Story 3.3, 신호 4). 계산은 순수 함수라 같은 입력은 같은 결과여야
+     * 한다 — 다르면 계산 구현이나 기록이 결정적이지 않다는 뜻이고 정상 경합이 아니다. 던져지면 발행 트랜잭션이 롤백되고, 잡은
+     * 쪽이 롤백 뒤 강한 신호를 올린다.
+     *
+     * <p>메시지·원인·stack trace가 없다. 원 hash는 싣지 않는다 — 앞서 기록된 계산의 ID(내부 참조)와 감지 시각뿐이다.
+     */
+    static final class ResultHashMismatch extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        private final UUID calculationId;
+        private final String calculationPolicy;
+        private final Instant detectedAt;
+
+        ResultHashMismatch(UUID calculationId, String calculationPolicy, Instant detectedAt) {
+            super(null, null, false, false);
+            this.calculationId = calculationId;
+            this.calculationPolicy = calculationPolicy;
+            this.detectedAt = detectedAt;
+        }
+
+        /** 같은 입력·정책으로 앞서 기록된, 결과가 다른 계산. */
+        UUID calculationId() {
+            return this.calculationId;
+        }
+
+        String calculationPolicy() {
+            return this.calculationPolicy;
+        }
+
+        /** 감지 문장의 DB 시각. */
+        Instant detectedAt() {
+            return this.detectedAt;
+        }
+    }
+
     static final class PublicationBlocked extends RuntimeException {
         private static final long serialVersionUID = 1L;
         private final String code;
@@ -369,6 +404,26 @@ class PlanPublicationRepository {
             .param("reliability", r.inputReliability().name()).param("inputHash", r.inputHash())
             .param("resultHash", r.resultHash()).param("extended", utc(row.lastExtendedVerificationAt()))
             .param("previous", row.previousCalculationId()).param("kind", row.kind()).update();
+        /*
+         * 신호 4(Story 3.3): 같은 입력·정책으로 이미 기록된 계산의 result hash가 다르면 결정성이 깨졌다. 이 행을 쓴 바로 뒤
+         * 같은 트랜잭션에서 본다 — 예외가 이 행까지 함께 롤백한다. 사용자와 무관하게 본다(입력 hash에 사용자가 없다).
+         *
+         * 오탐이 없게 result hash를 정하는 입력을 모두 같게 둔다. 계산기의 input hash가 계산 정책·달력 정책·구현 버전·원금·
+         * 기간·주기·목표율·현재가치·기준 시각·모든 흐름(완료 계산이면 관측 시각과 종료 후 흐름 여부까지)을 덮는다
+         * (PlanFormula.inputHash). 계산 종류·달력 정책·구현 버전은 hash 안에도 있지만 열로도 같게 묶어 둔다. 이전 버전·검증
+         * 시각·발행 작업은 계산기 입력이 아니라 result hash를 바꾸지 않는다.
+         */
+        var mismatch = jdbc.sql("SELECT calculation_id, statement_timestamp() FROM sync_plan_calculation "
+                + "WHERE input_hash=:inputHash AND calculation_policy=:calc AND calendar_policy=:calendar "
+                + "AND implementation_version=:impl AND calculation_kind=:kind AND result_hash<>:resultHash "
+                + "AND calculation_id<>:id ORDER BY created_at, calculation_id LIMIT 1")
+            .param("inputHash", r.inputHash()).param("calc", r.calculationPolicy()).param("resultHash", r.resultHash())
+            .param("calendar", r.calendarPolicy()).param("impl", r.implementationVersion()).param("kind", row.kind())
+            .param("id", row.calculationId())
+            .query((rs, n) -> new ResultHashMismatch(rs.getObject(1, UUID.class), r.calculationPolicy(),
+                    rs.getObject(2, OffsetDateTime.class).toInstant()))
+            .optional();
+        if (mismatch.isPresent()) throw mismatch.get();
         for (PlanCalculator.MetricResult metric : r.metrics()) {
             jdbc.sql("INSERT INTO sync_plan_calculation_metric(calculation_id,metric,value_decimal,nature,unavailable_reason) "
                     + "VALUES (:id,:metric,:value,:nature,:reason)")

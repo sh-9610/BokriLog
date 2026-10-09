@@ -23,14 +23,18 @@ class OperationsDeletionService implements OperationsDeletionApi {
 
     private final OperationalRestrictionRepository restrictions;
 
+    /** 강한 신호 기록(Story 3.3). 그 사용자 귀속({@code target_user_id})도 함께 비운다. */
+    private final SignalRepository signals;
+
     private final ObjectProvider<ActorDigest> digest;
 
     private final TransactionTemplate transactions;
 
     OperationsDeletionService(OperatorAuditRepository audit, OperationalRestrictionRepository restrictions,
-            ObjectProvider<ActorDigest> digest, PlatformTransactionManager transactionManager) {
+            SignalRepository signals, ObjectProvider<ActorDigest> digest, PlatformTransactionManager transactionManager) {
         this.audit = audit;
         this.restrictions = restrictions;
+        this.signals = signals;
         this.digest = digest;
         this.transactions = new TransactionTemplate(transactionManager);
     }
@@ -46,15 +50,17 @@ class OperationsDeletionService implements OperationsDeletionApi {
             return 0;
         }
         Integer erased = this.transactions.execute(status -> {
+            // 신호 행의 귀속은 digest 키 없이 비운다 — target 원문이 없고 fingerprint는 처음부터 keyed digest의 hash다.
+            int signalRows = this.signals.eraseTargetUser(userId);
             var rows = this.restrictions.attributedTo(userId);
             if (rows.isEmpty()) {
-                return 0;
+                return signalRows;
             }
             ActorDigest keyed = this.digest.getIfAvailable();
             if (keyed == null) {
                 throw new IllegalStateException("제한 target을 비식별할 digest 키가 이 역할에 없다.");
             }
-            int count = 0;
+            int count = signalRows;
             for (var row : rows) {
                 count += this.restrictions.eraseTarget(row.restrictionId(), userId,
                         keyed.ofTarget(row.scope(), row.target()));

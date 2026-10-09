@@ -9,11 +9,13 @@ import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.sync.InitialInputsPlanPort;
 import com.bokrilog.sync.PlanPublicationPort;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
+import com.bokrilog.portfolio.PortfolioPointerInvariantViolation;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.SyncJobApi;
 import com.bokrilog.source.SourceConnectionApi.CollectionObservation;
 import com.bokrilog.sync.IdempotencyKey;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -46,6 +48,8 @@ class SyncJobService implements SyncJobApi {
     private final PlanSyncRepository planSyncAttempts;
     private final PlanVerificationService planVerifications;
     private final ConnectionRevocationRepository revocations;
+    /** 강한 신호(Story 3.3): 초기 수집의 의미 충돌·미인식 enum, 첫 스냅샷 준비의 portfolio CAS 위반. */
+    private final StrongSignals strongSignals;
 
     SyncJobService(SyncJobRepository jobs, InitialCollectionRepository initialJobs,
             CashflowClassificationRepository classifications, CashflowConversionRepository conversions,
@@ -53,7 +57,8 @@ class SyncJobService implements SyncJobApi {
             OperationalRestrictionApi restrictions, InitialInputsPlanPort plans, PlatformTransactionManager manager,
             PlanPublicationService publications, AdjustmentHistoryService adjustments, PlanSyncService planSyncs,
             PlanSyncRepository planSyncAttempts, PlanVerificationService planVerifications, PlanPublicationPort publicationPlans,
-            ConnectionRevocationRepository revocations) {
+            ConnectionRevocationRepository revocations, StrongSignals strongSignals) {
+        this.strongSignals=strongSignals;
         this.publicationPlans=publicationPlans;
         this.revocations=revocations;
         this.planSyncs=planSyncs;
@@ -78,11 +83,14 @@ class SyncJobService implements SyncJobApi {
      * 파이프라인은 이미 있는 연결 위에서 돈다(NFR-17의 독립성). 판독 실패는 예외다(fail-closed).
      */
     private boolean syncRestricted(UUID userId) {
+        return syncRestricted(userId,java.util.Set.of());
+    }
+    private boolean syncRestricted(UUID userId,java.util.Set<UUID> excluding) {
         var membership=portfolios.activeSource(userId).orElse(null);
         var connection=sources.snapshotConnection(userId).orElse(null);
         return restrictions.blocks(java.util.EnumSet.of(RestrictionFeature.SYNC),RestrictionSubject.none()
                 .withPortfolio(membership==null ? null : membership.portfolioId())
-                .withConnection(connection==null ? null : connection.connectionId()));
+                .withConnection(connection==null ? null : connection.connectionId()),excluding);
     }
     @Override
     public Optional<Job> admit(@Nullable UUID userId, String key) {
@@ -566,9 +574,11 @@ class SyncJobService implements SyncJobApi {
     }
     Optional<InitialCollectionRepository.Lease> claimInitial() {
         return transactions.execute(status -> initialJobs.claim().flatMap(lease -> {
-            var intent=plans.eligibleIntent(lease.userId(),lease.intentId()).orElse(null);
+            // 다시 잡힌 작업이 자기 강한 신호를 이미 냈으면 그 제한만은 빼고 본다(Story 3.3) — 처음 잡힌 것과 같은 결말이다.
+            var own=strongSignals.ownRestrictions(lease.jobId());
+            var intent=plans.eligibleIntent(lease.userId(),lease.intentId(),own).orElse(null);
             var connection=sources.snapshotConnection(lease.userId()).orElse(null);
-            if (!initialEligible(lease.userId())||intent==null||connection==null
+            if (!collectionEligible(lease,own)||intent==null||connection==null
                     ||!intent.portfolioId().equals(lease.portfolioId())
                     ||!intent.connectionId().equals(lease.connectionId())
                     ||!intent.providerAccountId().equals(lease.providerAccountId())
@@ -589,16 +599,26 @@ class SyncJobService implements SyncJobApi {
     }
     boolean storeCollectionPage(InitialCollectionRepository.Lease lease,
             com.bokrilog.source.SourceConnectionApi.CollectionPage page) {
-        return transactions.execute(status->{
-            if (!initialJobs.lockOwned(lease)||!initialEligible(lease.userId()))
+        List<InitialCollectionRepository.StrongObservation> strong=new ArrayList<>();
+        Boolean review=transactions.execute(status->{
+            if (!initialJobs.lockOwned(lease)||!collectionEligible(lease,strongSignals.ownRestrictions(lease.jobId())))
                 throw new IllegalStateException("collection lease lost");
-            return initialJobs.storePage(lease,page.evidence(),page.events(),page.reviewRequired());
+            return initialJobs.storePage(lease,page.evidence(),page.events(),page.reviewRequired(),strong);
         });
+        /*
+         * 강한 신호(Story 3.3 신호 6·7): 관측이 커밋된 뒤 종류마다 한 번 올린다 — 감지 지점의 별도 트랜잭션이다. 계획이 없는
+         * 수집이라 판정표가 연결을 고른다. 수집의 결말은 기존 규칙이 맺는다(검토 필요). 기록하지 못하면 수집은 끝나지 않는다
+         * (lease 규칙, 상한은 {@link #signalUnrecorded}).
+         */
+        if (!strong.isEmpty())
+            strongSignals.observations(strong,lease.userId(),lease.jobId(),lease.connectionId(),null,null);
+        return Boolean.TRUE.equals(review);
     }
     void finishCollection(InitialCollectionRepository.Lease lease,CollectionObservation input,boolean needsReview) {
         transactions.executeWithoutResult(status->{
-            if (!initialJobs.lockOwned(lease)||!initialEligible(lease.userId())) return;
-            var intent=plans.eligibleIntent(lease.userId(),lease.intentId()).orElse(null);
+            var own=strongSignals.ownRestrictions(lease.jobId());
+            if (!initialJobs.lockOwned(lease)||!collectionEligible(lease,own)) return;
+            var intent=plans.eligibleIntent(lease.userId(),lease.intentId(),own).orElse(null);
             var connection=sources.snapshotConnection(lease.userId()).orElse(null);
             if (intent==null||connection==null||!intent.portfolioId().equals(lease.portfolioId())
                     ||!intent.connectionId().equals(lease.connectionId())
@@ -610,9 +630,27 @@ class SyncJobService implements SyncJobApi {
                 initialJobs.finish(lease,"CANCELLED","NOT_PERMITTED");
                 return;
             }
-            var stored=initialJobs.complete(lease,input,needsReview);
+            // 강한 관측이 있는 수집은 무엇을 봤든 검토 필요다 — 앞선 holder가 본 것도 여기서 센다.
+            var stored=initialJobs.complete(lease,input,needsReview||initialJobs.hasStrongDiagnostics(lease.jobId()));
             initialJobs.finish(lease,stored.status(),stored.failureCode());
         });
+    }
+    /**
+     * 강한 신호를 기록하지 못한 수집(Story 3.3). 상한 세대 전에는 아무것도 하지 않는다 — lease가 만료되면 다시 잡혀 같은
+     * 관측을 다시 올린다. 상한 세대면 후보 없이 검토 필요({@code SIGNAL_UNRECORDED})로 맺는다.
+     */
+    void signalUnrecorded(InitialCollectionRepository.Lease lease) {
+        if (!StrongSignals.exhausted(lease.generation())) return;
+        boolean ended=Boolean.TRUE.equals(transactions.execute(status->initialJobs.lockOwned(lease)
+                &&initialJobs.finish(lease,"NEEDS_REVIEW",StrongSignals.SIGNAL_UNRECORDED)==1));
+        if (ended) StrongSignals.logUnrecordedEnding("initial-collection");
+    }
+    /** 첫 스냅샷·후속 기준 작업의 {@link #signalUnrecorded}. 상한 세대면 실패({@code SIGNAL_UNRECORDED})로 맺는다. */
+    void signalUnrecorded(SyncJobRepository.Lease lease) {
+        if (!StrongSignals.exhausted(lease.generation())) return;
+        boolean ended=Boolean.TRUE.equals(transactions.execute(status->jobs.lockOwned(lease)
+                &&jobs.finish(lease,"FAILED",StrongSignals.SIGNAL_UNRECORDED)==1));
+        if (ended) StrongSignals.logUnrecordedEnding("snapshot");
     }
     void failCollection(InitialCollectionRepository.Lease lease,String safeCode) {
         transactions.executeWithoutResult(status->{
@@ -700,7 +738,20 @@ class SyncJobService implements SyncJobApi {
         } catch (PublicationBlocked blocked) {
             block(lease);
             return false;
+        } catch (PortfolioPointerInvariantViolation violation) {
+            // 강한 신호(Story 3.3 신호 5): 발행은 이미 롤백됐다. 그 뒤 신호를 커밋하고, 작업은 기존대로 실패로 끝난다.
+            strongSignals.raiseFor(violation,lease.userId(),lease.jobId());
+            throw violation;
         }
+    }
+    /**
+     * 수집 작업이 이어 쓸 수 있는가: {@link #initialEligible}과 같되, 그 작업이 이미 낸 강한 신호의 제한({@code own})만은
+     * 빼고 본다(Story 3.3) — 그 수집은 검토 필요로만 맺고 후보를 만들지 않는다. 운영자 제한·다른 신호의 제한과 계정 쓰기
+     * 권한은 그대로 막는다.
+     */
+    private boolean collectionEligible(InitialCollectionRepository.Lease lease,java.util.Set<UUID> own) {
+        return accounts.decide(lease.userId(),lease.userId(),AccountAccessKind.WRITE)==AccessDecision.ALLOWED
+                && !syncRestricted(lease.userId(),own);
     }
     private boolean initialEligible(UUID userId) {
         return accounts.decide(userId,userId,AccountAccessKind.WRITE)==AccessDecision.ALLOWED

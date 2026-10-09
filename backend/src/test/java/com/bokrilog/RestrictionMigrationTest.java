@@ -49,6 +49,12 @@ class RestrictionMigrationTest extends PlanSyncTestBase {
                     .containsExactly("bybit-connection-create|NEW_CONNECTION|GLOBAL|ALL|true|true",
                             "made-up-command|SYNC|GLOBAL|ALL|true|true", "plan-sync|SYNC|GLOBAL|ALL|true|true");
 
+            // V19(Story 3.3)는 출처 열을 더한다. 되채운 옛 행은 운영자 출처다. 판독기는 현행 스키마 위에서 부른다.
+            org.flywaydb.core.Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").load()
+                    .migrate();
+            assertThat(probeJdbc.sql("SELECT DISTINCT origin FROM operations_restriction").query(String.class).list())
+                    .containsExactly("OPERATOR");
+
             OperationalRestrictionApi evaluator = evaluatorOn(probeJdbc);
             var subject = RestrictionSubject.none().withPlan(UUID.randomUUID()).withPortfolio(UUID.randomUUID());
             assertThat(evaluator.blocks(EnumSet.of(RestrictionFeature.NEW_CONNECTION), RestrictionSubject.none()))
