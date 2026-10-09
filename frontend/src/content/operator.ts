@@ -119,6 +119,39 @@ export function stageLabel(stage: string): string {
   return STAGE_LABELS[stage] ?? stage
 }
 
+/**
+ * 자동 정지(Story 3.3)의 사유인 신호 종류 code → 화면 문장. 판정표 `OPS-SIGNAL-1.0`의 아홉과 판정표를 읽지 못한 경우다.
+ * 모르는 code는 그대로 보인다 — 운영자 표면이라 원 code가 단서다.
+ */
+const SIGNAL_REASON_LABELS: Readonly<Record<string, string>> = {
+  WRITE_KEY_STORED: '쓰기 가능 키가 저장 단계에 도달',
+  CROSS_USER_ACCESS: '교차 사용자 접근 또는 공식 포인터 혼합',
+  SECRET_EXPOSED: '비밀 값 노출 검출',
+  RESULT_HASH_MISMATCH: '같은 입력의 다른 계산 결과',
+  PORTFOLIO_INVARIANT_VIOLATION: 'portfolio 포인터 불변식 위반',
+  SOURCE_ID_CONFLICT: '같은 원천 ID의 의미 충돌',
+  UNKNOWN_TRANSACTION_ENUM: '미인식 거래 기록 종류',
+  SCHEMA_VALIDATION_BURST: '여러 계정의 응답 형식 검증 실패',
+  CREDENTIAL_DECRYPTION_BURST: '여러 사용자의 자격정보 복호화 실패',
+  POLICY_UNAVAILABLE: '판정표를 읽지 못해 전역 정지',
+}
+
+export function signalReasonLabel(reason: string): string {
+  return SIGNAL_REASON_LABELS[reason] ?? reason
+}
+
+/** 제한의 출처(Story 3.3) → 화면 문장. 모르는 출처는 원 값이 아니라 안전한 문장 하나로 접는다. */
+const ORIGIN_LABELS: Readonly<Record<string, string>> = {
+  OPERATOR: '운영자',
+  SIGNAL: '자동 정지',
+}
+
+export const UNKNOWN_ORIGIN_LABEL = '확인되지 않은 출처'
+
+export function originLabel(origin: string): string {
+  return ORIGIN_LABELS[origin] ?? UNKNOWN_ORIGIN_LABEL
+}
+
 /** 감사 결과 값 → 화면 문장. 색만으로 결과를 가르지 않는다 — 글자가 결과를 말한다. */
 const OUTCOMES: Readonly<Record<string, string>> = {
   REQUESTED: '요청',
@@ -342,13 +375,20 @@ export const operatorContent = {
     active: {
       id: 'operator-restrictions-active',
       heading: '활성 제한',
-      body: '지금 효력 중인 제한입니다. 구체적인 범위가 먼저 보입니다. 해제는 이 화면에서 하지 않습니다.',
+      body: '지금 효력 중인 제한입니다. 구체적인 범위가 먼저 보입니다. 자동 정지는 스스로 풀리지 않고 수동 검증이 필요합니다. 해제는 이 화면에서 하지 않습니다.',
       empty: '효력 중인 제한이 없습니다.',
       failed: '활성 제한을 불러오지 못했습니다. 잠시 후 다시 조회해 주세요.',
       reload: '활성 제한 다시 조회',
       erased: '삭제됨',
       noReason: '기록 없음',
+      /** 상태(Story 3.3). 신호가 만들었거나 신호가 연결된 제한은 스스로 풀리지 않는다. */
+      states: {
+        active: '효력 중',
+        verificationRequired: '수동 검증 필요',
+      },
       columns: {
+        origin: '출처',
+        state: '상태',
         feature: '기능',
         scope: '범위',
         target: '대상',

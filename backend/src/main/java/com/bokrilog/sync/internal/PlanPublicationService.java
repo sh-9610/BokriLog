@@ -8,6 +8,7 @@ import com.bokrilog.operations.OperationalRestrictionApi;
 import com.bokrilog.operations.RestrictionFeature;
 import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
+import com.bokrilog.portfolio.PortfolioPointerInvariantViolation;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.PlanPublicationPort;
 import com.bokrilog.sync.SyncJobApi.BundleConsistency;
@@ -92,13 +93,17 @@ class PlanPublicationService {
     private final PlanVerificationService verifications;
     /** The shown plan's record against its pointer and version (Story 2.14): the dashboard's, evidence's and history's. */
     private final ShownPlanAgreement agreement;
+    /** 강한 신호(Story 3.3): 첫 발행의 result hash 불일치·portfolio CAS 위반. */
+    private final StrongSignals strongSignals;
 
     PlanPublicationService(PlanPublicationRepository repository, CashflowClassificationRepository classifications,
             CashflowConversionRepository conversions, SourceConnectionApi sources, PortfolioMembershipApi portfolios,
             AccountAccessApi accounts, OperationalRestrictionApi restrictions, PlanPublicationPort plans,
             CalculationConformance conformance, PlatformTransactionManager manager, PlanSyncService syncs,
-            PlanSyncRepository syncAttempts, PlanVerificationService verifications, ShownPlanAgreement agreement) {
+            PlanSyncRepository syncAttempts, PlanVerificationService verifications, ShownPlanAgreement agreement,
+            StrongSignals strongSignals) {
         this.agreement = agreement;
+        this.strongSignals = strongSignals;
         this.syncs = syncs;
         this.syncAttempts = syncAttempts;
         this.verifications = verifications;
@@ -295,6 +300,13 @@ class PlanPublicationService {
             }
             if (!alive.getAsBoolean()) return;
             publish(lease, loaded, (PlanCalculator.Result.Calculated) result);
+        } catch (StrongSignals.Unraised unraised) {
+            // 강한 신호를 기록하지 못했다(Story 3.3): 작업을 끝내지 않는다 — lease 규칙(재claim·재검증)에 맡긴다. 상한
+            // 세대면 실패로 맺는다. 이 표의 실패 code는 닫힌 목록이라 기존 code(중단)를 쓴다.
+            if (StrongSignals.exhausted(lease.generation())) {
+                finishFailed(lease, "PUBLICATION_INTERRUPTED");
+                StrongSignals.logUnrecordedEnding("plan-publication");
+            }
         } catch (RuntimeException failure) {
             // The job id and the class name only: a message or cause can carry SQL or values.
             LOG.warn("plan publication interrupted: job={} failure={}", lease.jobId(), failure.getClass().getName());
@@ -314,6 +326,10 @@ class PlanPublicationService {
             finishBlocked(lease, "ACTIVE_PLAN_EXISTS");
         } catch (LeaseLost lost) {
             // Another holder owns the attempt now. The late worker writes nothing, not even an ending.
+        } catch (PortfolioPointerInvariantViolation | PlanPublicationRepository.ResultHashMismatch strong) {
+            // 강한 신호(Story 3.3): 발행은 이미 롤백됐다. 그 뒤 신호를 커밋하고, 작업은 기존대로 실패로 끝난다(run).
+            strongSignals.raiseFor(strong, lease.userId(), lease.jobId());
+            throw strong;
         }
     }
 

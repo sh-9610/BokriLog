@@ -1388,9 +1388,13 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         BybitStubConfiguration.resetRequestCount();
         UUID job=sync.admitInitialInputs(user,intent,"unknown-log-command-001").orElseThrow().jobId();
 
-        assertThat(awaitInitial(user,job)).isEqualTo("NEEDS_REVIEW");
-        assertThat(sync.initialCollectionJob(user,job).orElseThrow().failureCode())
-                .isEqualTo("UNKNOWN_OR_MALFORMED_EVENT");
+        assertThat(awaitInitialRow(job)).isEqualTo("NEEDS_REVIEW");
+        // Story 3.3: 미인식 enum은 강한 신호다 — 그 연결의 동기화가 자동 정지되므로 사용자 API는 수집 상태를 감춘다.
+        assertThat(sync.initialCollectionJob(user,job)).isEmpty();
+        assertThat(jdbc().sql("SELECT failure_code FROM sync_initial_collection_job WHERE job_id=:j").param("j",job)
+                .query(String.class).single()).isEqualTo("UNKNOWN_OR_MALFORMED_EVENT");
+        assertThat(jdbc().sql("SELECT feature||':'||scope||':'||origin FROM operations_restriction")
+                .query(String.class).list()).containsExactly("SYNC:PROVIDER_CONNECTION:SIGNAL");
         assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_event_observation WHERE job_id=:j "
                 + "AND diagnostic_code='UNKNOWN_EVENT'").param("j",job).query(Integer.class).single()).isEqualTo(1);
         assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_event_observation o "
@@ -1472,8 +1476,12 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertThat(awaitInitial(user,first)).isEqualTo("INPUTS_COMPLETE");
         UUID second=sync.admitInitialInputs(user,intent,"event-conflict-command-002").orElseThrow().jobId();
 
-        assertThat(awaitInitial(user,second)).isEqualTo("NEEDS_REVIEW");
-        assertThat(sync.initialCollectionJob(user,second).orElseThrow().failureCode()).isEqualTo("SOURCE_REQUIRES_REVIEW");
+        assertThat(awaitInitialRow(second)).isEqualTo("NEEDS_REVIEW");
+        // Story 3.3: 같은 source ID의 의미 충돌은 강한 신호다 — 계획 없는 수집이라 그 연결의 동기화가 자동 정지된다.
+        assertThat(jdbc().sql("SELECT failure_code FROM sync_initial_collection_job WHERE job_id=:j").param("j",second)
+                .query(String.class).single()).isEqualTo("SOURCE_REQUIRES_REVIEW");
+        assertThat(jdbc().sql("SELECT feature||':'||scope||':'||origin FROM operations_restriction")
+                .query(String.class).list()).containsExactly("SYNC:PROVIDER_CONNECTION:SIGNAL");
         assertThat(jdbc().sql("SELECT cash_flow FROM sync_initial_source_event WHERE user_id=:u AND source_id='stable-event-id'")
                 .param("u",user).query(String.class).single()).isEqualTo("1");
         assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_event_observation "
@@ -2008,7 +2016,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
                 .isEqualTo(new SyncJobApi.PublicationAdmission.Refused("NOT_PERMITTED"));
         assertThat(sync.planPublicationState(owner,ownerIntent))
                 .isEqualTo(new SyncJobApi.PublicationState(true,null,false,"NOT_PERMITTED"));
-        jdbc().sql("TRUNCATE TABLE operations_restriction").update();
+        jdbc().sql("TRUNCATE TABLE operations_signal, operations_restriction").update();
         // The plan period ended (T <= the database clock): its own code, not "conditions required".
         jdbc().sql("UPDATE plan_condition_intent SET end_at=now()-interval '1 second' WHERE intent_id=:i")
                 .param("i",ownerIntent).update();
@@ -3223,7 +3231,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
             lock.close();
         }
         assertThat(awaitPublication(blocked)).isEqualTo("BLOCKED");
-        jdbc().sql("TRUNCATE TABLE operations_restriction").update();
+        jdbc().sql("TRUNCATE TABLE operations_signal, operations_restriction").update();
         jdbc().sql("CREATE FUNCTION fail_evidence_pointer() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
                 + "IF NEW.user_id='"+user+"'::uuid THEN RAISE EXCEPTION 'injected pointer failure'; END IF; "
                 + "RETURN NEW; END $$").update();
@@ -4809,6 +4817,16 @@ class FirstSnapshotTest extends AuthFlowTestBase {
     private String awaitInitial(UUID user,UUID job) throws InterruptedException {
         String status=pollUntil(Duration.ofSeconds(10),()->sync.initialCollectionJob(user,job).orElseThrow().status(),
                 FirstSnapshotTest::finished);
+        if (!finished(status)) throw new AssertionError("initial input collection did not finish");
+        return status;
+    }
+    /**
+     * 강한 신호(Story 3.3)를 내는 수집의 상태. 그 연결이 자동 정지되면 사용자 API가 수집 상태를 감추므로 신호 시험에서만
+     * 행을 직접 읽는다.
+     */
+    private String awaitInitialRow(UUID job) throws InterruptedException {
+        String status=pollUntil(Duration.ofSeconds(10),()->jdbc().sql("SELECT status FROM sync_initial_collection_job "
+                + "WHERE job_id=:j").param("j",job).query(String.class).single(),FirstSnapshotTest::finished);
         if (!finished(status)) throw new AssertionError("initial input collection did not finish");
         return status;
     }

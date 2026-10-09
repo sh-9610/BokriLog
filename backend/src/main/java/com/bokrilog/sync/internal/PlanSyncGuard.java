@@ -47,9 +47,12 @@ class PlanSyncGuard {
     private final AccountAccessApi accounts;
     private final OperationalRestrictionApi restrictions;
     private final PlanPublicationPort plans;
+    private final StrongSignals strongSignals;
 
     PlanSyncGuard(PlanPublicationRepository publications, SourceConnectionApi sources, PortfolioMembershipApi portfolios,
-            AccountAccessApi accounts, OperationalRestrictionApi restrictions, PlanPublicationPort plans) {
+            AccountAccessApi accounts, OperationalRestrictionApi restrictions, PlanPublicationPort plans,
+            StrongSignals strongSignals) {
+        this.strongSignals = strongSignals;
         this.publications = publications;
         this.sources = sources;
         this.portfolios = portfolios;
@@ -124,9 +127,16 @@ class PlanSyncGuard {
         return restrictions.blocks(EnumSet.of(RestrictionFeature.SYNC), subject(planId, portfolioId, connectionId));
     }
 
-    /** 작업의 {@link #syncRestricted}: 접수된 계획·portfolio·연결로 본다. */
+    /**
+     * 작업의 {@link #syncRestricted}: 접수된 계획·portfolio·연결로 본다. 그 시도가 낸 강한 신호의 제한만은 빼고 본다(Story
+     * 3.3) — 그 시도는 검토 필요로만 맺고 발행하지 않으며, 자기 제한에 막히면 검증의 대조 기록이 반쪽으로 남는다. 운영자
+     * 제한·다른 신호의 제한은 그대로 막는다. lease·모든 단계·인계(takeover)가 이 판정을 쓴다. 발행 판정
+     * ({@link #publicationRestricted})은 아무것도 빼지 않는다.
+     */
     boolean syncRestricted(PlanSyncRepository.Lease lease) {
-        return syncRestricted(lease.planId(), lease.portfolioId(), lease.connectionId());
+        return restrictions.blocks(EnumSet.of(RestrictionFeature.SYNC),
+                subject(lease.planId(), lease.portfolioId(), lease.connectionId()),
+                strongSignals.ownRestrictions(lease.jobId()));
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.bokrilog.sync.internal;
 
+import com.bokrilog.operations.SignalType;
 import com.bokrilog.source.SourceConnectionApi.CollectionEvent;
 import com.bokrilog.source.SourceConnectionApi.CollectionObservation;
 import com.bokrilog.source.SourceConnectionApi.PageEvidence;
@@ -145,7 +146,19 @@ class InitialCollectionRepository {
             .param("j",l.jobId()).param("u",l.userId()).param("g",l.generation()).query(Boolean.class).single();
     }
 
-    boolean storePage(Lease l, PageEvidence p, List<CollectionEvent> pageEvents, boolean pageReview) {
+    /**
+     * 강한 신호가 되는 관측 하나(Story 3.3): 같은 source ID의 의미 충돌({@code PROVIDER_ID_CONFLICT}, 신호 6)이나 미인식
+     * Transaction Log 종류({@code UNKNOWN_EVENT}, 신호 7). 관측 행의 ID(내부 참조)와 그 문장의 DB 시각만 담는다.
+     */
+    record StrongObservation(SignalType type, UUID observationId, Instant observedAt) {}
+
+    /**
+     * Stores one page and its diagnostics.
+     *
+     * @param strong receives every observation of this page that is a strong signal (Story 3.3); the caller raises them
+     */
+    boolean storePage(Lease l, PageEvidence p, List<CollectionEvent> pageEvents, boolean pageReview,
+            List<StrongObservation> strong) {
         UUID evidenceId=jdbc.sql("INSERT INTO sync_initial_page_evidence(evidence_id,job_id,user_id,event_type,range_start,range_end,"
                 + "cursor_hash,requested_at,received_at,item_count,first_event_at,last_event_at,has_next_page) "
                 + "VALUES (:id,:j,:u,:type,:start,:end,:cursor,:requested,:received,:count,:first,:last,:next) "
@@ -170,14 +183,17 @@ class InitialCollectionRepository {
         for (CollectionEvent event:pageEvents) {
             Parsed parsed=parse(event,l.t0(),tc);
             if (parsed.diagnostic()!=null) {
-                observation(l,evidenceId,event,parsed.diagnostic(),parsed.hash());
+                var observed=observation(l,evidenceId,event,parsed.diagnostic(),parsed.hash());
+                if ("UNKNOWN_EVENT".equals(parsed.diagnostic()))
+                    strong.add(new StrongObservation(SignalType.UNKNOWN_TRANSACTION_ENUM,observed.id(),observed.at()));
                 review=true;
             } else if (!parsed.time().equals(l.t0())) {
                 // The provider query includes its lower bound. t0 belongs to the wallet baseline,
                 // so a valid event exactly there is excluded rather than requiring review.
                 Parsed prior=valid.putIfAbsent(event.sourceId(),parsed);
                 if (prior!=null&&!prior.hash().equals(parsed.hash())) {
-                    observation(l,evidenceId,event,"PROVIDER_ID_CONFLICT",parsed.hash());
+                    var observed=observation(l,evidenceId,event,"PROVIDER_ID_CONFLICT",parsed.hash());
+                    strong.add(new StrongObservation(SignalType.SOURCE_ID_CONFLICT,observed.id(),observed.at()));
                     review=true;
                 }
             }
@@ -218,7 +234,8 @@ class InitialCollectionRepository {
                 if (existing==null) { review=true; continue; }
                 if (!existing.semanticHash().equals(entry.getValue().hash())) {
                     CollectionEvent event=pageEvents.stream().filter(x->entry.getKey().equals(x.sourceId())).findFirst().orElseThrow();
-                    observation(l,evidenceId,event,"PROVIDER_ID_CONFLICT",entry.getValue().hash());
+                    var observed=observation(l,evidenceId,event,"PROVIDER_ID_CONFLICT",entry.getValue().hash());
+                    strong.add(new StrongObservation(SignalType.SOURCE_ID_CONFLICT,observed.id(),observed.at()));
                     review=true;
                 } else matching.add(existing);
             }
@@ -475,6 +492,16 @@ class InitialCollectionRepository {
         return true;
     }
 
+    /**
+     * Whether the collection recorded a diagnostic that is a strong signal (Story 3.3): a semantic conflict of one source
+     * id or an unknown Transaction Log type. Such a collection can only end in review.
+     */
+    boolean hasStrongDiagnostics(UUID jobId) {
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_initial_event_observation WHERE job_id=:j "
+                + "AND diagnostic_code IN ('PROVIDER_ID_CONFLICT','UNKNOWN_EVENT'))")
+            .param("j",jobId).query(Boolean.class).single();
+    }
+
     /** Whether the collection recorded any event diagnostic (a missing id, an unknown type, a conflict, ...). */
     boolean hasDiagnostics(UUID jobId) {
         return jdbc.sql("SELECT EXISTS(SELECT 1 FROM sync_initial_event_observation WHERE job_id=:j)")
@@ -559,18 +586,24 @@ class InitialCollectionRepository {
                 .param("j",jobId).query(Integer.class).single();
     }
     private record RangePair(Instant start,Instant end,int typeCount,int finalPageCount) {}
-    private void observation(Lease l,UUID evidenceId,CollectionEvent e,String code,@Nullable String hash) {
+    /** A stored observation: its row and the database time of its insert. */
+    private record Observed(UUID id,Instant at) {}
+    private Observed observation(Lease l,UUID evidenceId,CollectionEvent e,String code,@Nullable String hash) {
         String safeSource=e.sourceId()!=null&&e.sourceId().getBytes(StandardCharsets.UTF_8).length<=MAX_SOURCE_ID_BYTES
                 ?e.sourceId():null;
         String safeFlow=e.cashFlow()!=null&&e.cashFlow().length()<=MAX_CASH_FLOW_CHARS?e.cashFlow():null;
-        jdbc.sql("INSERT INTO sync_initial_event_observation(observation_id,job_id,page_evidence_id,user_id,provider_account_id,"
+        UUID id=UUID.randomUUID();
+        Instant at=jdbc.sql("INSERT INTO sync_initial_event_observation(observation_id,job_id,page_evidence_id,user_id,provider_account_id,"
                 + "observed_connection_id,source_id,event_type,currency,cash_flow,transaction_time,account_type,"
-                + "semantic_hash,diagnostic_code) VALUES (:id,:j,:evidence,:u,:a,:c,:source,:type,:currency,:flow,:time,:account,:hash,:code)")
-            .param("id",UUID.randomUUID()).param("j",l.jobId()).param("evidence",evidenceId)
+                + "semantic_hash,diagnostic_code) VALUES (:id,:j,:evidence,:u,:a,:c,:source,:type,:currency,:flow,:time,:account,:hash,:code) "
+                + "RETURNING statement_timestamp()")
+            .param("id",id).param("j",l.jobId()).param("evidence",evidenceId)
             .param("u",l.userId()).param("a",l.providerAccountId()).param("c",l.connectionId())
             .param("source",safeSource).param("type",e.type()).param("currency",e.currency())
             .param("flow",safeFlow).param("time",e.transactionTime()==null?null:utc(e.transactionTime()))
-            .param("account",e.accountType()).param("hash",hash).param("code",code).update();
+            .param("account",e.accountType()).param("hash",hash).param("code",code)
+            .query((rs,n)->instant(rs,1)).single();
+        return new Observed(id,at);
     }
     /**
      * The completeness hash of a candidate. One formula with its classification's re-check

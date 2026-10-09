@@ -91,6 +91,22 @@ class OperatorAuditRepository {
                 .single();
     }
 
+    /** SYSTEM 수행자 종류(Story 3.3). V17 CHECK가 이 행의 {@code actor_user_id}를 NULL로 강제한다. */
+    static final String ACTOR_SYSTEM = "SYSTEM";
+
+    /**
+     * SYSTEM 행 하나를 추가한다(Story 3.3 자동 정지). 사람이 낸 command가 아니므로 사용자 귀속({@code actor_user_id})이
+     * 없고 수행자 digest는 SYSTEM 경로의 것이다. 호출자가 {@link #lockAppends}를 쥔 트랜잭션 안에서 부른다.
+     *
+     * @param detectedAt 요청 시각으로 남길 감지 시각(DB 시각). 결정 시각은 이 문장의 DB 시각이다
+     */
+    Instant appendSystem(String operationId, String systemDigest, String command, String scope, String target,
+            String reason, String outcome, String policyVersion, Instant detectedAt, String correlationId,
+            String detailsJson) {
+        return append(new NewRow(operationId, null, systemDigest, ACTOR_SYSTEM, command, scope, target, reason, outcome,
+                policyVersion, detectedAt, true, correlationId, detailsJson));
+    }
+
     /** 지금 원장의 마지막 {@code sequence}. 비었으면 0. {@link #lockAppends} 뒤에 읽어야 정확하다. */
     long maxSequence() {
         Long max = this.jdbc.sql("SELECT COALESCE(max(sequence), 0) FROM operations_audit_event")

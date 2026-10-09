@@ -81,7 +81,8 @@ class PlanSyncServiceTest {
     private PlanSyncService service() {
         return new PlanSyncService(syncs, publications, collections, classifications, conversions, sources,
                 new CalculationConformance(() -> true), guard, publisher, mock(PlanPublicationPort.class),
-                mock(com.bokrilog.identity.AccountAccessApi.class), mock(PlatformTransactionManager.class));
+                mock(com.bokrilog.identity.AccountAccessApi.class), mock(StrongSignals.class),
+                mock(PlatformTransactionManager.class));
     }
 
     /** An eligible plan at {@code now}: writable, a current version, nothing in progress, never synced. */
@@ -474,7 +475,7 @@ class PlanSyncServiceTest {
                             SourceRejectionReason.PROVIDER_UNAVAILABLE, 1, 0);
                 });
         service().run(lease, () -> true);
-        verify(collections, org.mockito.Mockito.times(1)).storePage(eq(child), any(), any(), eq(false));
+        verify(collections, org.mockito.Mockito.times(1)).storePage(eq(child), any(), any(), eq(false), any());
         assertThat(offered.get()).as("no page after the refused one is asked for").isEqualTo(2);
         verify(syncs).finish(lease, "BLOCKED", "NOT_PERMITTED");
         verify(classifications, never()).insertChild(any(), any(), any());
@@ -697,5 +698,33 @@ class PlanSyncServiceTest {
 
         assertThat(service().claim()).contains(lease);
         verify(syncs, never()).finish(any(), any(), any());
+    }
+
+    // ---------------------------------------------------------------- Story 3.3
+
+    /**
+     * 발행을 롤백시킨 실패의 세 갈래: 강한 신호가 아니면 신호 없이 기존 실패로, 올렸거나 판정표가 거절했으면 기존 실패로,
+     * 기록하지 못했으면 작업을 끝내지 않는다(거짓).
+     */
+    @Test
+    void signalRaisedHasThreeOutcomes() {
+        StrongSignals signals = mock(StrongSignals.class);
+        PlanSyncService service = new PlanSyncService(syncs, publications, collections, classifications, conversions,
+                sources, new CalculationConformance(() -> true), guard, publisher, mock(PlanPublicationPort.class),
+                mock(com.bokrilog.identity.AccountAccessApi.class), signals, mock(PlatformTransactionManager.class));
+        var violation = new com.bokrilog.portfolio.PortfolioPointerInvariantViolation(PORTFOLIO, USER);
+
+        assertThat(service.signalRaised(lease, new IllegalStateException("not a signal"))).isTrue();
+        verifyNoInteractions(signals);
+
+        assertThat(service.signalRaised(lease, violation)).isTrue();
+        verify(signals).raiseFor(violation, USER, JOB);
+
+        org.mockito.Mockito.doThrow(new StrongSignals.Unraised()).when(signals).raiseFor(violation, USER, JOB);
+        assertThat(service.signalRaised(lease, violation)).isFalse();
+
+        org.mockito.Mockito.doThrow(new IllegalArgumentException("refused")).when(signals)
+                .raiseFor(violation, USER, JOB);
+        assertThat(service.signalRaised(lease, violation)).isTrue();
     }
 }

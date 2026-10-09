@@ -25,9 +25,10 @@ public interface OperationsDeletionApi {
 
     /**
      * 그 사용자에게 귀속된 제한 target을 비식별한다 — target을 keyed digest로 바꾸고 {@code target_user_id}를 비우며 비식별
-     * 시각을 남긴다. 제한 자체(기능·scope·효력 구간)는 그대로다. 멱등이다.
+     * 시각을 남긴다. 제한 자체(기능·scope·효력 구간)는 그대로다. 강한 신호 행(Story 3.3 AC-6)의 {@code target_user_id}도
+     * 비운다 — 신호 행의 증거는 내부 참조뿐이고 fingerprint는 keyed digest의 hash라 다른 원식별자가 없다. 멱등이다.
      *
-     * @return 이번에 비식별한 행 수. 이미 비식별했으면 0
+     * @return 이번에 비식별한 행 수(제한 행과 신호 행의 합). 이미 비식별했으면 0
      * @throws IllegalStateException 비식별할 행이 있는데 digest 키를 쓸 수 없는 역할에서 불렀을 때
      */
     int eraseRestrictionTargets(@Nullable UUID userId);
