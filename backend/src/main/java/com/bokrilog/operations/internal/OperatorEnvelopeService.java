@@ -64,6 +64,9 @@ class OperatorEnvelopeService implements OperatorCommandApi {
     /** 계산 정책 버전의 모양(예: {@code CALC-1.0}). 실제로 아는 버전인지는 루트가 계산 모듈의 상수로 본다. */
     private static final Pattern POLICY_VERSION_TEXT = Pattern.compile("[A-Z][A-Z0-9]{0,15}-[0-9]{1,3}\\.[0-9]{1,3}");
 
+    /** 배포 버전의 모양(Story 3.4). */
+    private static final Pattern DEPLOY_VERSION = Pattern.compile("[A-Za-z0-9._+-]{1," + MAX_DEPLOY_VERSION_CHARS + "}");
+
     /** 거절 행에서 형식이 맞지 않아 원문을 남기지 않은 자리. */
     private static final String UNREADABLE = "-";
 
@@ -88,7 +91,8 @@ class OperatorEnvelopeService implements OperatorCommandApi {
 
     @Override
     public boolean isSupported(String command) {
-        return AUDIT_EXPORT.equals(command) || OperatorCommandApi.restrictionFeatureOf(command) != null;
+        return AUDIT_EXPORT.equals(command) || LIFT_RESTRICTION.equals(command)
+                || OperatorCommandApi.restrictionFeatureOf(command) != null;
     }
 
     @Override
@@ -97,8 +101,8 @@ class OperatorEnvelopeService implements OperatorCommandApi {
             // command이면서 감사 데이터를 꺼낸다 — 두 권한을 함께 요구한다(AC-5).
             return EnumSet.of(OperatorPermission.COMMAND, OperatorPermission.AUDIT);
         }
-        if (OperatorCommandApi.restrictionFeatureOf(command) != null) {
-            // 제한은 일반 운영 명령이다. 감사 데이터를 꺼내지 않는다.
+        if (OperatorCommandApi.restrictionFeatureOf(command) != null || LIFT_RESTRICTION.equals(command)) {
+            // 제한·해제는 일반 운영 명령이다. 감사 데이터를 꺼내지 않는다.
             return EnumSet.of(OperatorPermission.COMMAND);
         }
         throw new IllegalArgumentException("모르는 운영 command다.");
@@ -115,6 +119,9 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         RestrictionFeature feature = OperatorCommandApi.restrictionFeatureOf(proposal.command());
         if (feature != null) {
             return validateRestriction(proposal, feature);
+        }
+        if (LIFT_RESTRICTION.equals(proposal.command())) {
+            return validateLift(proposal);
         }
         String scope = proposal.scope() == null ? "" : proposal.scope().strip();
         if (!SCOPE_AUDIT_LEDGER.equals(scope)) {
@@ -135,7 +142,7 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         String phrase = "감사 내보내기 " + scope + " " + target;
         return new Validation.Valid(new Accepted(AUDIT_EXPORT, scope, target, target, reason, phrase, POLICY_VERSION,
                 permissionsOf(AUDIT_EXPORT), sha256(AUDIT_EXPORT + "\n" + scope + "\n" + target + "\n" + reason),
-                null));
+                null, null));
     }
 
     /**
@@ -167,7 +174,92 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         return new Validation.Valid(new Accepted(command, ledgerScope, target, ledgerTarget, reason,
                 restrictionPhrase(feature, scope, target), POLICY_VERSION, permissionsOf(command),
                 sha256(command + "\n" + ledgerScope + "\n" + ledgerTarget + "\n" + reason),
-                new Restriction(feature, scope, target)));
+                new Restriction(feature, scope, target), null));
+    }
+
+    /**
+     * 해제 command의 envelope 검증(Story 3.4 AC-1·AC-2). target(제한 ID)의 형식, 복구 조건 네 확인, 원인(사유)·수행한 검증·
+     * 증거 참조의 사유 규칙, 배포 버전의 모양을 본다. 그다음 같은 모듈의 제한 표에서 그 제한의 지금 사실을 읽어 원장 scope와
+     * 확인 문구를 정한다 — 없거나 닫힌 제한의 거절은 루트가 멱등 키·재인증 판정 <b>뒤</b>에 한다(3.2와 같은 준비 순서).
+     *
+     * <p>원장의 target은 제한 ID다. 제한 ID는 사용자 귀속 원식별자가 아니다(난수 행 ID). 요청 digest는 제한 ID와 증거
+     * 입력 전부로 만든다 — 같은 키로 다른 증거를 보내면 충돌이다.
+     */
+    private Validation validateLift(Proposal proposal) {
+        String text = proposal.target() == null ? "" : proposal.target().strip();
+        if (!UUID_TEXT.matcher(text).matches()) {
+            return new Validation.Invalid(TARGET_INVALID);
+        }
+        UUID restrictionId = UUID.fromString(text);
+        RecoveryInput recovery = proposal.recovery();
+        List<String> given = recovery == null || recovery.conditions() == null ? List.of() : recovery.conditions();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (String condition : given) {
+            // 모르는 code와 같은 code의 반복은 형식 오류다 — 넷을 확인했다는 사실을 개수로 꾸밀 수 없다.
+            if (!RECOVERY_CONDITIONS.contains(condition) || !seen.add(condition)) {
+                return new Validation.Invalid(RECOVERY_EVIDENCE_INVALID);
+            }
+        }
+        if (!seen.containsAll(RECOVERY_CONDITIONS)) {
+            return new Validation.Invalid(RECOVERY_CONDITION_MISSING);
+        }
+        String reason = proposal.reason() == null ? "" : proposal.reason().strip();
+        if (reason.isEmpty()) {
+            return new Validation.Invalid(REASON_REQUIRED);
+        }
+        if (!isAcceptableReason(reason)) {
+            return new Validation.Invalid(REASON_INVALID);
+        }
+        String verification = recovery == null || recovery.verification() == null ? ""
+                : recovery.verification().strip();
+        String evidenceRef = recovery == null || recovery.evidenceRef() == null ? "" : recovery.evidenceRef().strip();
+        String deployVersion = recovery == null || recovery.deployVersion() == null ? ""
+                : recovery.deployVersion().strip();
+        if (verification.isEmpty() || evidenceRef.isEmpty() || deployVersion.isEmpty()) {
+            return new Validation.Invalid(RECOVERY_EVIDENCE_REQUIRED);
+        }
+        if (!isAcceptableReason(verification) || !isAcceptableReason(evidenceRef)
+                || !DEPLOY_VERSION.matcher(deployVersion).matches()) {
+            return new Validation.Invalid(RECOVERY_EVIDENCE_INVALID);
+        }
+        LiftTarget current = this.restrictions.liftFacts(restrictionId)
+                .map(facts -> new LiftTarget(facts.feature(), facts.scope(), facts.target(), facts.targetErased(),
+                        facts.origin(), facts.open(), facts.linkedSignals(), facts.latestSignalAt()))
+                .orElse(null);
+        Lift lift = new Lift(restrictionId, current, RECOVERY_CONDITIONS, verification, evidenceRef, deployVersion);
+        String target = restrictionId.toString();
+        String ledgerScope = current == null ? UNREADABLE : ledgerScope(current.feature(), current.scope());
+        String phrase = current == null ? "복구 " + target
+                : liftPhrase(current.feature(), current.scope(), current.target(), current.targetErased());
+        String digest = sha256(LIFT_RESTRICTION + "\n" + target + "\n" + reason + "\n" + verification + "\n"
+                + evidenceRef + "\n" + deployVersion + "\n" + String.join(",", RECOVERY_CONDITIONS));
+        return new Validation.Valid(new Accepted(LIFT_RESTRICTION, ledgerScope, target, target, reason, phrase,
+                POLICY_VERSION, permissionsOf(LIFT_RESTRICTION), digest, null, lift));
+    }
+
+    /**
+     * 해제의 확인 문구(Story 3.4): {@code 복구 <기능> <scope> <target>}. 전역은 {@code 복구 <기능> 전역}이다 — 대상명 {@code 전역}을
+     * 다시 입력해야 확정된다. 비식별된 target은 digest 대신 {@code 삭제된 대상}이다.
+     */
+    static String liftPhrase(RestrictionFeature feature, RestrictionScope scope, String target, boolean erased) {
+        String what = featureWord(feature);
+        String targetLabel = erased ? "삭제된 대상" : target;
+        return switch (scope) {
+            case GLOBAL -> "복구 " + what + " 전역";
+            case PLAN -> "복구 " + what + " 계획 " + targetLabel;
+            case PORTFOLIO -> "복구 " + what + " 포트폴리오 " + targetLabel;
+            case PROVIDER_CONNECTION -> "복구 " + what + " 연결 " + targetLabel;
+            case CALCULATION_POLICY_VERSION -> "복구 " + what + " 계산 정책 " + targetLabel;
+        };
+    }
+
+    private static String featureWord(RestrictionFeature feature) {
+        return switch (feature) {
+            case NEW_CONNECTION -> "신규 연결";
+            case SYNC -> "동기화";
+            case CALCULATION_DISPLAY -> "계산 표시";
+            case ADVERTISING -> "광고";
+        };
     }
 
     /** 원장의 scope: {@code <기능>:<scope>}. */
@@ -204,12 +296,7 @@ class OperatorEnvelopeService implements OperatorCommandApi {
      * target 원문이다.
      */
     static String restrictionPhrase(RestrictionFeature feature, RestrictionScope scope, String target) {
-        String what = switch (feature) {
-            case NEW_CONNECTION -> "신규 연결";
-            case SYNC -> "동기화";
-            case CALCULATION_DISPLAY -> "계산 표시";
-            case ADVERTISING -> "광고";
-        };
+        String what = featureWord(feature);
         return switch (scope) {
             case GLOBAL -> what + " 제한 전역";
             case PLAN -> what + " 제한 계획 " + target;
@@ -242,7 +329,7 @@ class OperatorEnvelopeService implements OperatorCommandApi {
     }
 
     @Override
-    public Claim claim(Envelope candidate, String correlationId) {
+    public Claim claim(Envelope candidate, @Nullable Lift lift, String correlationId) {
         Claim claim = this.transactions.execute(status -> {
             this.repository.lockAppends();
             return switch (keyUse(candidate.actorUserId(), candidate.idempotencyKeyDigest(),
@@ -250,7 +337,7 @@ class OperatorEnvelopeService implements OperatorCommandApi {
                 case KeyUse.Conflict conflict -> new Claim.Conflict();
                 case KeyUse.Open open -> new Claim.Claimed(open.operationId(), open.requestedAt());
                 case KeyUse.Fresh fresh ->
-                        new Claim.Claimed(candidate.operationId(), recordRequested(candidate, correlationId));
+                        new Claim.Claimed(candidate.operationId(), recordRequested(candidate, lift, correlationId));
             };
         });
         if (claim == null) {
@@ -261,11 +348,34 @@ class OperatorEnvelopeService implements OperatorCommandApi {
 
     @Override
     public Instant recordRequested(Envelope envelope, String correlationId) {
+        return recordRequested(envelope, null, correlationId);
+    }
+
+    private Instant recordRequested(Envelope envelope, @Nullable Lift lift, String correlationId) {
         Map<String, Object> details = new LinkedHashMap<>();
         details.put("keyDigest", envelope.idempotencyKeyDigest());
         details.put("requestDigest", envelope.requestDigest());
         details.put("confirmationHash", envelope.confirmationHash());
+        if (lift != null) {
+            details.putAll(liftEvidence(lift));
+        }
         return append(envelope, AuditOutcome.REQUESTED, false, correlationId, details);
+    }
+
+    /**
+     * 해제의 증거(Story 3.4 AC-2). 원인은 원장의 사유 열이고 여기에는 나머지가 든다. 금융값·이메일·사용자 원식별자가 없다 —
+     * 텍스트는 사유 규칙을 지났고, 제한 ID는 난수 행 ID다.
+     */
+    private static Map<String, Object> liftEvidence(Lift lift) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("conditions", lift.conditions());
+        details.put("verification", lift.verification());
+        details.put("evidenceRef", lift.evidenceRef());
+        details.put("deployVersion", lift.deployVersion());
+        details.put("restrictionId", lift.restrictionId().toString());
+        LiftTarget current = lift.current();
+        details.put("linkedSignals", current == null ? 0 : current.linkedSignals());
+        return details;
     }
 
     @Override
@@ -381,6 +491,104 @@ class OperatorEnvelopeService implements OperatorCommandApi {
     }
 
     @Override
+    public LiftCompletion completeLift(Envelope envelope, Lift lift, String correlationId,
+            BooleanSupplier finalAuthority, Supplier<LiftExpectation> expectation) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            // 제한 행·감사 행·허가 소비가 한 트랜잭션이어야 한다. 밖에서 부르는 것은 배선 실수다.
+            throw new IllegalStateException("해제는 허가 소비의 트랜잭션 안에서만 쓴다.");
+        }
+        LiftTarget prepared = lift.current();
+        if (prepared == null) {
+            // 준비가 없는 제한을 무장하지 않는다. 여기 오는 것은 배선 실수다.
+            throw new IllegalStateException("준비가 본 해제 대상이 없다.");
+        }
+        this.repository.lockAppends();
+        // 잠금 뒤의 최종 권한. 거짓이면 이 트랜잭션은 아무것도 쓰지 않았다.
+        if (!finalAuthority.getAsBoolean()) {
+            return new LiftCompletion.Refused(ACCESS_REVOKED);
+        }
+        var locked = this.restrictions.lockForLift(lift.restrictionId()).orElse(null);
+        if (locked == null) {
+            return new LiftCompletion.Refused(TARGET_INVALID);
+        }
+        if (!locked.open()) {
+            return new LiftCompletion.Refused(RESTRICTION_NOT_ACTIVE);
+        }
+        // 준비 뒤 같은 제한에 새 신호가 연결됐으면 운영자가 본 증거가 그 신호를 다루지 않았다. 다시 검증해야 한다.
+        if (locked.linkedSignals() != prepared.linkedSignals()
+                || !java.util.Objects.equals(locked.latestSignalAt(), prepared.latestSignalAt())) {
+            return new LiftCompletion.Refused(NEW_SIGNAL_SINCE_PREPARE);
+        }
+        Instant liftedAt = this.restrictions.lift(lift.restrictionId(), envelope.operationId()).orElse(null);
+        if (liftedAt == null) {
+            /*
+             * 열림 판정과 UPDATE가 같은 술어(`OPEN`)이고 그 사이 행 잠금을 쥐고 있어 구조상 오지 않는 가지다. 그래도 영향 행
+             * 수가 곧 판정이다 — 0행을 성공으로 접지 않는다.
+             */
+            return new LiftCompletion.Refused(RESTRICTION_NOT_ACTIVE);
+        }
+        LiftExpectation expected = expectation.get();
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("keyDigest", envelope.idempotencyKeyDigest());
+        details.putAll(liftEvidence(lift));
+        details.put("feature", locked.feature().name());
+        details.put("restrictionScope", locked.scope().name());
+        details.put("liftedAt", liftedAt.toString());
+        details.put("reopenedStages", expected.reopenedStages());
+        details.put("stillBlockedStages", expected.stillBlockedStages());
+        append(envelope, AuditOutcome.COMPLETED, true, correlationId, details);
+        return new LiftCompletion.Completed(new LiftResult(envelope.operationId(), lift.restrictionId(),
+                locked.feature(), locked.scope(), liftedAt, expected.reopenedStages(), expected.stillBlockedStages()));
+    }
+
+    @Override
+    public Optional<UUID> revertLift(Envelope envelope, LiftResult result, String correlationId) {
+        Optional<UUID> reinstated = this.transactions.execute(status -> {
+            this.repository.lockAppends();
+            UUID created = null;
+            var lifted = this.restrictions.liftFacts(result.restrictionId()).orElse(null);
+            // 같은 대상에 이미 끝이 정해지지 않은 제한이 있으면(그 사이 신호·운영자가 만든 것) 이미 막혀 있다.
+            if (lifted != null && this.restrictions.activeRow(lifted.feature(), lifted.scope(), lifted.target())
+                    .isEmpty()) {
+                UUID candidate = UUID.randomUUID();
+                if (this.restrictions.reinstate(candidate, result.restrictionId(), envelope.operationId())
+                        .isPresent()) {
+                    created = candidate;
+                }
+            }
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("code", SMOKE_FAILED);
+            details.put("keyDigest", envelope.idempotencyKeyDigest());
+            details.put("restrictionId", result.restrictionId().toString());
+            if (created != null) {
+                details.put("reinstatedRestrictionId", created.toString());
+            }
+            // 새 제한 행과 실패 행이 한 커밋이다. 잠금은 이미 쥐었다(append가 다시 쥐어도 같은 트랜잭션이다).
+            append(envelope, AuditOutcome.FAILED, true, correlationId, details);
+            return Optional.ofNullable(created);
+        });
+        return reinstated == null ? Optional.empty() : reinstated;
+    }
+
+    @Override
+    public void recordSmokePassed(Envelope envelope, LiftResult result, String correlationId) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("code", SMOKE_PASSED);
+        details.put("keyDigest", envelope.idempotencyKeyDigest());
+        details.put("restrictionId", result.restrictionId().toString());
+        append(envelope, AuditOutcome.APPROVED, true, correlationId, details);
+    }
+
+    @Override
+    public LiftSmoke liftSmoke(String operationId) {
+        String code = this.repository.firstCode(operationId, List.of(SMOKE_PASSED, SMOKE_FAILED)).orElse(null);
+        if (SMOKE_PASSED.equals(code)) {
+            return LiftSmoke.PASSED;
+        }
+        return SMOKE_FAILED.equals(code) ? LiftSmoke.REVERTED : LiftSmoke.PENDING;
+    }
+
+    @Override
     public Replay replay(UUID actorUserId, String operationId, String idempotencyKeyDigest) {
         var completed = this.repository.completed(actorUserId, operationId).orElse(null);
         if (completed == null) {
@@ -388,6 +596,14 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         }
         if (!idempotencyKeyDigest.equals(completed.keyDigest())) {
             return new Replay.Conflict();
+        }
+        if (LIFT_RESTRICTION.equals(completed.command()) && completed.restrictionId() != null
+                && completed.feature() != null && completed.restrictionScope() != null
+                && completed.liftedAt() != null) {
+            return new Replay.Stored(new LiftResult(operationId, completed.restrictionId(),
+                    RestrictionFeature.valueOf(completed.feature()),
+                    RestrictionScope.valueOf(completed.restrictionScope()), completed.liftedAt(),
+                    stagesOf(completed.reopenedStages()), stagesOf(completed.stillBlockedStages())));
         }
         if (completed.restrictionId() != null && completed.feature() != null && completed.restrictionScope() != null
                 && completed.effectiveFrom() != null) {
@@ -397,6 +613,28 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         }
         return new Replay.Stored(new ExportResult(operationId, completed.target(), completed.upperSequence(),
                 completed.rowCount(), completed.truncated()));
+    }
+
+    /** 원장 {@code details}의 단계 배열(JSON 원문). 읽을 수 없으면 빈 목록이다 — 재생은 사실을 지어내지 않는다. */
+    private static List<String> stagesOf(@Nullable String json) {
+        if (json == null) {
+            return List.of();
+        }
+        try {
+            var node = JSON.readTree(json);
+            if (node == null || !node.isArray()) {
+                return List.of();
+            }
+            List<String> stages = new java.util.ArrayList<>();
+            for (var item : node) {
+                if (item.isString()) {
+                    stages.add(item.asString());
+                }
+            }
+            return List.copyOf(stages);
+        } catch (tools.jackson.core.JacksonException unreadable) {
+            return List.of();
+        }
     }
 
     @Override

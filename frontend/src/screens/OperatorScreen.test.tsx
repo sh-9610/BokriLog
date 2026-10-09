@@ -6,6 +6,11 @@ import {
   operatorContent,
   operatorCopyStrings,
   operatorRefusalMessage,
+  recoverButtonLabel,
+  RECOVERY_CONDITION_LABELS,
+  RECOVERY_CONDITIONS,
+  SMOKE_PENDING_LABEL,
+  smokeStatusLabel,
   UNKNOWN_ORIGIN_LABEL,
 } from '../content/operator'
 import { replaceLocation } from '../session/navigation'
@@ -933,5 +938,578 @@ describe('OperatorScreen', () => {
     })
     expect(screen.getByRole('status').textContent).toBe(copy.restriction.uncertainClosed)
     expect(screen.getByLabelText(copy.operation.label)).toHaveValue('op_restrict')
+  })
+
+  // ------------------------------------------------------------------ Story 3.4: 복구
+
+  const RESTRICTION_ID = '5d1b7a3c-2e4f-4a6b-8c9d-0e1f2a3b4c5d'
+
+  /** 행마다의 복구 버튼. 이름은 `복구: <기능> <범위> <대상>`이다. */
+  const RECOVER_BUTTON = /^복구: /
+
+  const PREPARED_RECOVERY = {
+    operationId: 'op_recover',
+    command: 'lift-restriction',
+    scope: 'SYNC:PLAN',
+    target: RESTRICTION_ID,
+    reason: '계산 입력 오류 수정',
+    confirmationPhrase: `복구 동기화 계획 ${PLAN_ID}`,
+    policyVersion: 'OPERATOR-COMMAND-1.2',
+    requestedAt: '2026-10-10T00:00:00Z',
+    impact: {
+      reopenedStages: ['INCREMENTAL_SYNC'],
+      remainingRestrictions: [
+        { feature: 'CALCULATION_DISPLAY', scope: 'PLAN', origin: 'OPERATOR' },
+      ],
+      linkedSignals: 0,
+      latestSignalAt: null,
+    },
+  }
+
+  function completedRecovery(status: string): Record<string, unknown> {
+    return {
+      operationId: 'op_recover',
+      outcome: 'COMPLETED',
+      command: 'lift-restriction',
+      feature: 'SYNC',
+      scope: 'PLAN',
+      restrictionId: RESTRICTION_ID,
+      liftedAt: '2026-10-10T00:00:05.123456Z',
+      smoke:
+        status === 'PASSED'
+          ? {
+              status,
+              reopenedStages: ['INCREMENTAL_SYNC'],
+              stillBlockedStages: ['INCREMENTAL_PUBLICATION', 'PLAN_END'],
+            }
+          : {
+              status,
+              reopenedStages: [],
+              stillBlockedStages: ['INCREMENTAL_SYNC', 'INCREMENTAL_PUBLICATION', 'PLAN_END'],
+            },
+    }
+  }
+
+  /** 활성 목록의 첫 행에서 복구를 연다. */
+  async function openRecovery(row: Record<string, unknown>): Promise<HTMLElement> {
+    stubOperatorRestrictions(() => Promise.resolve(jsonResponse({ items: [row] })))
+    await openRestrictionSection()
+    const list = screen.getByRole('list', { name: copy.restriction.active.heading })
+    fireEvent.click(within(list).getByRole('button', { name: RECOVER_BUTTON }))
+    return screen.findByRole('group', { name: copy.recovery.heading })
+  }
+
+  /** 복구 폼을 모두 채운다. */
+  function fillRecovery(group: HTMLElement): void {
+    for (const label of Object.values(RECOVERY_CONDITION_LABELS)) {
+      fireEvent.click(within(group).getByLabelText(label))
+    }
+    fireEvent.change(within(group).getByLabelText(copy.recovery.reasonLabel), {
+      target: { value: '계산 입력 오류 수정' },
+    })
+    fireEvent.change(within(group).getByLabelText(copy.recovery.verificationLabel), {
+      target: { value: '영향 범위 재현 시험 통과' },
+    })
+    fireEvent.change(within(group).getByLabelText(copy.recovery.evidenceLabel), {
+      target: { value: 'INC-42 회귀 기록' },
+    })
+    fireEvent.change(within(group).getByLabelText(copy.recovery.deployVersionLabel), {
+      target: { value: '1.4.2+build.7' },
+    })
+  }
+
+  it('활성 행의 복구는 폼으로 초점을 옮기고 조건 넷과 증거를 모두 채워야 준비한다', async () => {
+    const group = await openRecovery(activeRestriction({ restrictionId: RESTRICTION_ID }))
+    expect(screen.getByRole('heading', { level: 3, name: copy.recovery.heading })).toHaveFocus()
+    expect(group.textContent).toContain(PLAN_ID)
+    expect(group.textContent).not.toContain(copy.recovery.verificationNote)
+    let calls = 0
+    stubOperatorRestrictionCommand('lift-restriction', 'prepare', () => {
+      calls += 1
+      return error('RECOVERY_CONDITION_MISSING', 422)
+    })
+    const start = within(group).getByRole('button', { name: copy.recovery.start })
+    expect(start).toHaveAttribute('aria-disabled', 'true')
+    // 조건 셋만 확인하면 여전히 준비하지 않는다.
+    const labels = Object.values(RECOVERY_CONDITION_LABELS)
+    for (const label of labels.slice(0, 3)) {
+      fireEvent.click(within(group).getByLabelText(label))
+    }
+    fireEvent.change(within(group).getByLabelText(copy.recovery.reasonLabel), {
+      target: { value: '원인' },
+    })
+    fireEvent.change(within(group).getByLabelText(copy.recovery.verificationLabel), {
+      target: { value: '검증' },
+    })
+    fireEvent.change(within(group).getByLabelText(copy.recovery.evidenceLabel), {
+      target: { value: '증거' },
+    })
+    fireEvent.change(within(group).getByLabelText(copy.recovery.deployVersionLabel), {
+      target: { value: '1.0.0' },
+    })
+    fireEvent.click(start)
+    expect(start).toHaveAttribute('aria-disabled', 'true')
+    expect(calls).toBe(0)
+    fireEvent.click(within(group).getByLabelText(labels[3] ?? ''))
+    expect(start).toHaveAttribute('aria-disabled', 'false')
+    fireEvent.click(start)
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toBe(
+        operatorRefusalMessage('RECOVERY_CONDITION_MISSING'),
+      )
+    })
+    expect(calls).toBe(1)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('복구 준비 → 미리보기·문구 재입력 → 확정이 같은 키로 가고 smoke 결과를 말한다', async () => {
+    let listCalls = 0
+    stubOperatorRestrictions(() => {
+      listCalls += 1
+      return Promise.resolve(
+        jsonResponse({
+          items: listCalls === 1 ? [activeRestriction({ restrictionId: RESTRICTION_ID })] : [],
+        }),
+      )
+    })
+    await openRestrictionSection()
+    const list = screen.getByRole('list', { name: copy.restriction.active.heading })
+    fireEvent.click(within(list).getByRole('button', { name: RECOVER_BUTTON }))
+    const group = await screen.findByRole('group', { name: copy.recovery.heading })
+    const keys: string[] = []
+    const bodies: unknown[] = []
+    stubOperatorRestrictionCommand('lift-restriction', 'prepare', (init) => {
+      keys.push(new Headers(init?.headers).get('Idempotency-Key') ?? '')
+      expect(new Headers(init?.headers).get(CSRF_HEADER)).toBe(CSRF_TOKEN)
+      bodies.push(JSON.parse(init?.body as string))
+      return Promise.resolve(jsonResponse(PREPARED_RECOVERY))
+    })
+    stubOperatorRestrictionCommand('lift-restriction', 'confirm', (init) => {
+      keys.push(new Headers(init?.headers).get('Idempotency-Key') ?? '')
+      bodies.push(JSON.parse(init?.body as string))
+      return Promise.resolve(jsonResponse(completedRecovery('PASSED')))
+    })
+    fillRecovery(group)
+    fireEvent.click(within(group).getByRole('button', { name: copy.recovery.start }))
+
+    const dialog = await screen.findByRole('dialog', { name: copy.recoveryDialog.title })
+    // 취소가 기본 포커스이고 미리보기는 다시 열리는 단계와 남는 제한을 말한다. 신호가 없으면 계보 줄이 없다.
+    expect(within(dialog).getByRole('button', { name: copy.recoveryDialog.cancel })).toHaveFocus()
+    expect(dialog.textContent).toContain('증분 동기화')
+    expect(dialog.textContent).toContain('계산 표시(계획, 운영자)')
+    expect(dialog.textContent).not.toContain(copy.recoveryDialog.latestSignalAt)
+    expect(dialog.textContent).toContain(copy.recoveryDialog.kept)
+    const confirm = within(dialog).getByRole('button', { name: copy.recoveryDialog.confirm })
+    expect(confirm).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.change(within(dialog).getByRole('textbox'), {
+      target: { value: PREPARED_RECOVERY.confirmationPhrase },
+    })
+    fireEvent.click(confirm)
+
+    const result = await screen.findByRole('heading', {
+      level: 3,
+      name: copy.recovery.result.heading,
+    })
+    await waitFor(() => {
+      expect(result).toHaveFocus()
+    })
+    expect(screen.getByRole('status').textContent).toBe(
+      copy.status.recoveryCompleted('동기화', '계획'),
+    )
+    const resultBox = screen.getByRole('group', { name: copy.recovery.result.heading })
+    expect(resultBox.textContent).toContain(smokeStatusLabel('PASSED'))
+    expect(resultBox.textContent).toContain('새 계산 버전 발행, 계획 종료')
+    expect(keys).toHaveLength(2)
+    expect(keys[0]).toBe(keys[1])
+    expect(bodies[0]).toEqual({
+      target: RESTRICTION_ID,
+      reason: '계산 입력 오류 수정',
+      verification: '영향 범위 재현 시험 통과',
+      evidenceRef: 'INC-42 회귀 기록',
+      deployVersion: '1.4.2+build.7',
+      conditions: [...RECOVERY_CONDITIONS],
+    })
+    expect(bodies[1]).toEqual({
+      operationId: 'op_recover',
+      confirmation: PREPARED_RECOVERY.confirmationPhrase,
+    })
+    await waitFor(() => {
+      expect(listCalls).toBe(2)
+    })
+    // 다시 읽은 목록에 그 제한이 없다 — 복구 폼은 사라지고 결과만 남는다.
+    await waitFor(() => {
+      expect(group).not.toBeInTheDocument()
+    })
+    expect(
+      screen.getByRole('heading', { level: 3, name: copy.recovery.result.heading }),
+    ).toBeInTheDocument()
+    expect(getObservedStorageEntries()).toEqual([])
+  })
+
+  it('수동 검증 필요 행은 폼에서 그 사실을, 미리보기에서 신호 계보를 보인다', async () => {
+    const group = await openRecovery(
+      activeRestriction({
+        restrictionId: RESTRICTION_ID,
+        scope: 'PROVIDER_CONNECTION',
+        reason: 'UNKNOWN_TRANSACTION_ENUM',
+        origin: 'SIGNAL',
+        linkedSignals: 2,
+        requiresVerification: true,
+      }),
+    )
+    expect(group.textContent).toContain(copy.recovery.verificationNote)
+    expect(group.textContent).toContain('자동 정지')
+    stubOperatorRestrictionCommand('lift-restriction', 'prepare', () =>
+      Promise.resolve(
+        jsonResponse({
+          ...PREPARED_RECOVERY,
+          scope: 'SYNC:PROVIDER_CONNECTION',
+          impact: {
+            reopenedStages: ['INCREMENTAL_SYNC'],
+            remainingRestrictions: [],
+            linkedSignals: 2,
+            latestSignalAt: '2026-10-09T23:59:00.654321Z',
+          },
+        }),
+      ),
+    )
+    fillRecovery(group)
+    fireEvent.click(within(group).getByRole('button', { name: copy.recovery.start }))
+    const dialog = await screen.findByRole('dialog', { name: copy.recoveryDialog.title })
+    expect(dialog.textContent).toContain(copy.recoveryDialog.linkedSignals(2))
+    expect(dialog.textContent).toContain(copy.recoveryDialog.latestSignalAt)
+    expect(dialog.textContent).toContain(copy.recoveryDialog.noneRemaining)
+  })
+
+  it('smoke가 되돌렸으면 되돌림을 글자로 말한다', async () => {
+    const group = await openRecovery(activeRestriction({ restrictionId: RESTRICTION_ID }))
+    stubOperatorRestrictionCommand('lift-restriction', 'prepare', () =>
+      Promise.resolve(jsonResponse(PREPARED_RECOVERY)),
+    )
+    stubOperatorRestrictionCommand('lift-restriction', 'confirm', () =>
+      Promise.resolve(jsonResponse(completedRecovery('REVERTED'))),
+    )
+    fillRecovery(group)
+    fireEvent.click(within(group).getByRole('button', { name: copy.recovery.start }))
+    const dialog = await screen.findByRole('dialog', { name: copy.recoveryDialog.title })
+    fireEvent.change(within(dialog).getByRole('textbox'), {
+      target: { value: PREPARED_RECOVERY.confirmationPhrase },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: copy.recoveryDialog.confirm }))
+    await screen.findByRole('heading', { level: 3, name: copy.recovery.result.heading })
+    expect(screen.getByRole('status').textContent).toBe(
+      copy.status.recoveryReverted('동기화', '계획'),
+    )
+    const resultBox = screen.getByRole('group', { name: copy.recovery.result.heading })
+    expect(resultBox.textContent).toContain(smokeStatusLabel('REVERTED'))
+    expect(resultBox.textContent).toContain(
+      `${copy.recovery.result.reopenedStages}: ${copy.recovery.result.none}`,
+    )
+  })
+
+  it('준비 뒤 새 신호로 거절되면 그 문장을 말하고 목록을 다시 읽는다', async () => {
+    let listCalls = 0
+    stubOperatorRestrictions(() => {
+      listCalls += 1
+      return Promise.resolve(
+        jsonResponse({ items: [activeRestriction({ restrictionId: RESTRICTION_ID })] }),
+      )
+    })
+    await openRestrictionSection()
+    fireEvent.click(
+      within(screen.getByRole('list', { name: copy.restriction.active.heading })).getByRole(
+        'button',
+        { name: RECOVER_BUTTON },
+      ),
+    )
+    const group = await screen.findByRole('group', { name: copy.recovery.heading })
+    stubOperatorRestrictionCommand('lift-restriction', 'prepare', () =>
+      Promise.resolve(jsonResponse(PREPARED_RECOVERY)),
+    )
+    stubOperatorRestrictionCommand('lift-restriction', 'confirm', () =>
+      error('NEW_SIGNAL_SINCE_PREPARE', 409),
+    )
+    fillRecovery(group)
+    fireEvent.click(within(group).getByRole('button', { name: copy.recovery.start }))
+    const dialog = await screen.findByRole('dialog', { name: copy.recoveryDialog.title })
+    fireEvent.change(within(dialog).getByRole('textbox'), {
+      target: { value: PREPARED_RECOVERY.confirmationPhrase },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: copy.recoveryDialog.confirm }))
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toBe(
+        operatorRefusalMessage('NEW_SIGNAL_SINCE_PREPARE'),
+      )
+    })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(listCalls).toBe(2)
+    })
+  })
+
+  /** 복구를 준비해 대화상자를 연다. */
+  async function openRecoveryDialog(
+    row = activeRestriction({ restrictionId: RESTRICTION_ID }),
+  ): Promise<{ readonly group: HTMLElement; readonly dialog: HTMLElement }> {
+    const group = await openRecovery(row)
+    stubOperatorRestrictionCommand('lift-restriction', 'prepare', () =>
+      Promise.resolve(jsonResponse(PREPARED_RECOVERY)),
+    )
+    stubOperatorRestrictionCommand('lift-restriction', 'cancel', () =>
+      Promise.resolve(new Response(null, { status: 204 })),
+    )
+    fillRecovery(group)
+    // 실제 누름처럼 준비 버튼이 초점을 가진 채 연다 — 대화상자가 닫히면 그 자리로 돌아온다.
+    const start = within(group).getByRole('button', { name: copy.recovery.start })
+    start.focus()
+    fireEvent.click(start)
+    const dialog = await screen.findByRole('dialog', { name: copy.recoveryDialog.title })
+    return { group, dialog }
+  }
+
+  function twoRows(): void {
+    stubOperatorRestrictions(() =>
+      Promise.resolve(
+        jsonResponse({
+          items: [
+            activeRestriction({ restrictionId: RESTRICTION_ID }),
+            activeRestriction({
+              restrictionId: 'r-ads',
+              feature: 'ADVERTISING',
+              scope: 'GLOBAL',
+              target: 'ALL',
+            }),
+          ],
+        }),
+      ),
+    )
+  }
+
+  it('행의 복구 버튼은 기능·범위·대상으로 이름이 갈린다', async () => {
+    twoRows()
+    await openRestrictionSection()
+    const list = screen.getByRole('list', { name: copy.restriction.active.heading })
+    expect(
+      within(list).getByRole('button', { name: recoverButtonLabel('SYNC', 'PLAN', PLAN_ID) }),
+    ).toBeInTheDocument()
+    expect(
+      within(list).getByRole('button', {
+        name: recoverButtonLabel('ADVERTISING', 'GLOBAL', '전역'),
+      }),
+    ).toHaveTextContent(copy.restriction.active.recover)
+    expect(recoverButtonLabel('ADVERTISING', 'GLOBAL', '전역')).toBe('복구: 광고 전역')
+  })
+
+  it('복구 취소는 취소 요청을 보내고 준비 버튼으로 초점을 돌려준다', async () => {
+    const { dialog } = await openRecoveryDialog()
+    fireEvent.click(within(dialog).getByRole('button', { name: copy.recoveryDialog.cancel }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+    expect(getObservedAllowedRequests()).toContain(
+      'POST /api/operator/commands/lift-restriction/cancel',
+    )
+    expect(screen.getByRole('status').textContent).toBe(copy.status.recoveryCancelled)
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: copy.recovery.start })).toHaveFocus()
+    })
+  })
+
+  it('복구 확정의 문구 불일치는 대화상자를 열어 둔 채 말한다', async () => {
+    const { dialog } = await openRecoveryDialog()
+    let calls = 0
+    stubOperatorRestrictionCommand('lift-restriction', 'confirm', () => {
+      calls += 1
+      return error('CONFIRMATION_MISMATCH', 409)
+    })
+    fireEvent.change(within(dialog).getByRole('textbox'), {
+      target: { value: PREPARED_RECOVERY.confirmationPhrase },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: copy.recoveryDialog.confirm }))
+    expect(
+      await within(dialog).findByText(operatorRefusalMessage('CONFIRMATION_MISMATCH')),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('dialog')).toBe(dialog)
+    expect(calls).toBe(1)
+  })
+
+  for (const [label, answer] of [
+    ['공통 본문 500', () => error('INTERNAL_ERROR', 500)],
+    [
+      '비JSON 502',
+      () => Promise.resolve(new Response('<html>bad gateway</html>', { status: 502 })),
+    ],
+    ['무응답', () => Promise.reject(new Error('network'))],
+  ] as const) {
+    it(`복구 확정의 ${label}은 불확실이고 같은 키로 다시 확정하면 같은 요청이다`, async () => {
+      const { dialog } = await openRecoveryDialog()
+      const keys: string[] = []
+      let calls = 0
+      stubOperatorRestrictionCommand('lift-restriction', 'confirm', (init) => {
+        keys.push(new Headers(init?.headers).get('Idempotency-Key') ?? '')
+        calls += 1
+        return calls === 1 ? answer() : Promise.resolve(jsonResponse(completedRecovery('PASSED')))
+      })
+      fireEvent.change(within(dialog).getByRole('textbox'), {
+        target: { value: PREPARED_RECOVERY.confirmationPhrase },
+      })
+      fireEvent.click(within(dialog).getByRole('button', { name: copy.recoveryDialog.confirm }))
+      expect(await within(dialog).findByText(copy.recovery.uncertain)).toBeInTheDocument()
+      expect(screen.getByRole('dialog')).toBe(dialog)
+      expect(screen.queryByText(/바뀐 것은 없습니다/)).not.toBeInTheDocument()
+
+      fireEvent.click(within(dialog).getByRole('button', { name: copy.recoveryDialog.confirm }))
+      expect(
+        await screen.findByRole('heading', { level: 3, name: copy.recovery.result.heading }),
+      ).toBeInTheDocument()
+      expect(keys).toHaveLength(2)
+      expect(keys[1]).toBe(keys[0])
+    })
+  }
+
+  it('응답을 받지 못한 복구 확정 뒤 닫으면 operation 조회 칸에 그 operation을 채운다', async () => {
+    const { dialog } = await openRecoveryDialog()
+    stubOperatorRestrictionCommand('lift-restriction', 'confirm', () =>
+      Promise.reject(new Error('network')),
+    )
+    fireEvent.change(within(dialog).getByRole('textbox'), {
+      target: { value: PREPARED_RECOVERY.confirmationPhrase },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: copy.recoveryDialog.confirm }))
+    expect(await within(dialog).findByText(copy.recovery.uncertain)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: copy.recoveryDialog.cancel }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+    expect(screen.getByRole('status').textContent).toBe(copy.recovery.uncertainClosed)
+    expect(screen.getByLabelText(copy.operation.label)).toHaveValue('op_recover')
+  })
+
+  it('복구 준비가 본인 확인을 요구하면 그 자리에 로그인 수단을 보인다', async () => {
+    const group = await openRecovery(activeRestriction({ restrictionId: RESTRICTION_ID }))
+    stubOperatorRestrictionCommand('lift-restriction', 'prepare', () =>
+      error('REAUTHENTICATION_REQUIRED', 403),
+    )
+    fillRecovery(group)
+    fireEvent.click(within(group).getByRole('button', { name: copy.recovery.start }))
+    expect(await within(group).findByText(copy.recovery.reauthLabel)).toBeInTheDocument()
+    for (const provider of SIGN_IN_PROVIDERS) {
+      expect(
+        within(group).getByRole('button', { name: authContent.settings.reauth.labels[provider] }),
+      ).toBeInTheDocument()
+    }
+    expect(screen.getByRole('status').textContent).toBe(
+      operatorRefusalMessage('REAUTHENTICATION_REQUIRED'),
+    )
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('다른 행을 고르면 입력과 복구 상태를 비운다', async () => {
+    twoRows()
+    await openRestrictionSection()
+    const list = screen.getByRole('list', { name: copy.restriction.active.heading })
+    fireEvent.click(
+      within(list).getByRole('button', { name: recoverButtonLabel('SYNC', 'PLAN', PLAN_ID) }),
+    )
+    const group = await screen.findByRole('group', { name: copy.recovery.heading })
+    stubOperatorRestrictionCommand('lift-restriction', 'prepare', () =>
+      error('RECOVERY_EVIDENCE_INVALID', 422),
+    )
+    fillRecovery(group)
+    fireEvent.click(within(group).getByRole('button', { name: copy.recovery.start }))
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toBe(
+        operatorRefusalMessage('RECOVERY_EVIDENCE_INVALID'),
+      )
+    })
+
+    fireEvent.click(
+      within(list).getByRole('button', {
+        name: recoverButtonLabel('ADVERTISING', 'GLOBAL', '전역'),
+      }),
+    )
+    const next = screen.getByRole('group', { name: copy.recovery.heading })
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 3, name: copy.recovery.heading })).toHaveFocus()
+    })
+    expect(next.textContent).toContain('광고')
+    expect(within(next).getByLabelText(copy.recovery.reasonLabel)).toHaveValue('')
+    expect(within(next).getByLabelText(copy.recovery.deployVersionLabel)).toHaveValue('')
+    for (const label of Object.values(RECOVERY_CONDITION_LABELS)) {
+      expect(within(next).getByLabelText(label)).not.toBeChecked()
+    }
+    expect(screen.getByRole('status').textContent).not.toBe(
+      operatorRefusalMessage('RECOVERY_EVIDENCE_INVALID'),
+    )
+  })
+
+  it('비식별 대상은 행·복구 영역·대화상자 어디서나 삭제됨으로만 보인다', async () => {
+    const erased = activeRestriction({
+      restrictionId: RESTRICTION_ID,
+      target: undefined,
+      targetErased: true,
+    })
+    const { group, dialog } = await openRecoveryDialog(erased)
+    expect(group.textContent).toContain(copy.restriction.active.erased)
+    expect(group.textContent).not.toContain(PLAN_ID)
+    expect(dialog.textContent).toContain(
+      `${copy.recoveryDialog.target}: ${copy.restriction.active.erased}`,
+    )
+    expect(
+      screen.getByRole('button', {
+        name: recoverButtonLabel('SYNC', 'PLAN', copy.restriction.active.erased),
+        hidden: true,
+      }),
+    ).toBeInTheDocument()
+  })
+
+  it('smoke 결말이 아직 없으면(PENDING) 확인 중으로 말하고 operation 조회 칸을 채운다', async () => {
+    const { dialog } = await openRecoveryDialog()
+    stubOperatorRestrictionCommand('lift-restriction', 'confirm', () =>
+      Promise.resolve(
+        jsonResponse({
+          ...completedRecovery('PASSED'),
+          smoke: { status: 'PENDING', reopenedStages: [], stillBlockedStages: [] },
+        }),
+      ),
+    )
+    fireEvent.change(within(dialog).getByRole('textbox'), {
+      target: { value: PREPARED_RECOVERY.confirmationPhrase },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: copy.recoveryDialog.confirm }))
+    await screen.findByRole('heading', { level: 3, name: copy.recovery.result.heading })
+    expect(screen.getByRole('status').textContent).toBe(
+      copy.status.recoveryPending('동기화', '계획'),
+    )
+    const resultBox = screen.getByRole('group', { name: copy.recovery.result.heading })
+    expect(resultBox.textContent).toContain(SMOKE_PENDING_LABEL)
+    expect(resultBox.textContent).not.toContain(smokeStatusLabel('PASSED'))
+    expect(screen.getByLabelText(copy.operation.label)).toHaveValue('op_recover')
+  })
+
+  it('smoke 되돌림 행은 사유 대신 되돌림 표지를 보인다', async () => {
+    stubOperatorRestrictions(() =>
+      Promise.resolve(
+        jsonResponse({
+          items: [
+            activeRestriction({
+              restrictionId: RESTRICTION_ID,
+              reason: '해제 원인 문장',
+              reinstated: true,
+              origin: 'SIGNAL',
+              linkedSignals: 1,
+              requiresVerification: true,
+            }),
+          ],
+        }),
+      ),
+    )
+    await openRestrictionSection()
+    const row = within(
+      screen.getByRole('list', { name: copy.restriction.active.heading }),
+    ).getByRole('listitem')
+    expect(row.textContent).toContain(copy.restriction.active.reinstated)
+    expect(row.textContent).not.toContain('해제 원인 문장')
+    expect(row.textContent).toContain(copy.restriction.active.states.verificationRequired)
   })
 })

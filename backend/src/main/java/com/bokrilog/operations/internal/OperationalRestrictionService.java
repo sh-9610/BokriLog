@@ -41,6 +41,20 @@ class OperationalRestrictionService implements OperationalRestrictionApi {
     }
 
     @Override
+    public List<ActiveRestriction> matching(Set<RestrictionFeature> features, RestrictionSubject subject,
+            Set<java.util.UUID> excluding) {
+        if (features.isEmpty()) {
+            throw new IllegalArgumentException("막을 기능이 없다.");
+        }
+        return enrich(this.repository.matching(features, subject, excluding));
+    }
+
+    @Override
+    public Optional<ActiveRestriction> current(java.util.UUID restrictionId) {
+        return this.repository.current(restrictionId).map(row -> enrich(List.of(row)).getFirst());
+    }
+
+    @Override
     public List<ActiveRestriction> active() {
         return enrich(this.repository.active());
     }
@@ -56,9 +70,14 @@ class OperationalRestrictionService implements OperationalRestrictionApi {
         return rows.stream().map(row -> {
             ActiveRestriction base = row.restriction();
             var fact = row.operationId() == null ? null : facts.get(row.operationId());
-            return fact == null ? base : new ActiveRestriction(base.restrictionId(), base.feature(), base.scope(),
-                    base.target(), base.targetErased(), base.effectiveFrom(), fact.reason(), fact.actorDigest(),
-                    base.origin(), base.linkedSignals());
+            if (fact == null) {
+                return base;
+            }
+            // 되돌림 행의 operation은 해제다(Story 3.4). 그 완료 행의 사유는 해제 원인이라 이 행의 사유가 아니다.
+            String reason = base.reinstatedFrom() == null ? fact.reason() : REINSTATED_REASON;
+            return new ActiveRestriction(base.restrictionId(), base.feature(), base.scope(), base.target(),
+                    base.targetErased(), base.effectiveFrom(), reason, fact.actorDigest(), base.origin(),
+                    base.linkedSignals(), base.reinstatedFrom());
         }).toList();
     }
 

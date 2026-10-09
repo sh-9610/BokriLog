@@ -1,5 +1,5 @@
 /**
- * 보호된 운영자 화면의 카피와 경로(Story 3.1·3.2).
+ * 보호된 운영자 화면의 카피와 경로(Story 3.1·3.2·3.3·3.4).
  *
  * 화면과 시험이 같은 문자열을 참조한다. 이 모듈은 운영자 화면 chunk(`screens/OperatorScreen`)만 import한다 — 일반
  * 번들의 초기 화면에 운영자 제어의 카피가 섞이지 않는다. 경로 상수 `OPERATOR_PATH`는 예외로 `content/auth.ts`가
@@ -88,6 +88,79 @@ const SCOPE_LABELS: Readonly<Record<string, string>> = {
   PORTFOLIO: '포트폴리오',
   CALCULATION_POLICY_VERSION: '계산 정책 버전',
   PROVIDER_CONNECTION: '연결',
+}
+
+// ------------------------------------------------------------------ 복구(Story 3.4)
+
+/** 제한 해제 command. 백엔드 `OperatorCommandApi.LIFT_RESTRICTION`과 같은 값이다. 제한이 닫히는 경로는 이것 하나다. */
+export const LIFT_RESTRICTION_COMMAND = 'lift-restriction'
+
+/**
+ * 복구 조건 네 code(`OPS-SIGNAL-1.0` §6.2). 서버 `OperatorCommandApi.RECOVERY_CONDITIONS`와 같은 집합·순서다. 넷을 모두
+ * 확인해야 복구를 준비할 수 있다.
+ */
+export const RECOVERY_CONDITIONS = [
+  'CAUSE_REMOVED',
+  'IMPACT_REPRODUCED',
+  'REGRESSION_OWNERSHIP_POINTER_PASSED',
+  'NEW_DEPLOY_EVIDENCE',
+] as const
+
+export type RecoveryCondition = (typeof RECOVERY_CONDITIONS)[number]
+
+export const RECOVERY_CONDITION_LABELS: Readonly<Record<RecoveryCondition, string>> = {
+  CAUSE_REMOVED: '원인을 제거했습니다',
+  IMPACT_REPRODUCED: '영향 범위를 재현 시험으로 확인했습니다',
+  REGRESSION_OWNERSHIP_POINTER_PASSED: '고정 회귀·소유권·포인터 검사를 통과했습니다',
+  NEW_DEPLOY_EVIDENCE: '새 배포·버전 증거가 있습니다',
+}
+
+/** 배포 버전의 최대 길이. 서버 규칙(`OperatorCommandApi.MAX_DEPLOY_VERSION_CHARS`)과 같다. */
+export const DEPLOY_VERSION_MAX_LENGTH = 64
+
+const SMOKE_LABELS: Readonly<Record<string, string>> = {
+  PASSED: '통과 — 해제한 제한이 더는 보고되지 않고 남는 제한은 그대로 막습니다.',
+  REVERTED:
+    '되돌림 — 확인이 어긋나 같은 범위를 새 제한으로 다시 막았습니다. 해제와 되돌림이 모두 감사 원장에 남았습니다.',
+}
+
+/**
+ * 복구 smoke의 결말 → 화면 문장. `PENDING`(원장에 결말이 아직 없다)과 모르는 값은 결말을 단정하지 않는 "확인 중" 문장
+ * 하나로 접는다 — 통과로도 되돌림으로도 말하지 않는다.
+ */
+export function smokeStatusLabel(status: string): string {
+  return SMOKE_LABELS[status] ?? SMOKE_PENDING_LABEL
+}
+
+export const SMOKE_PENDING_LABEL =
+  '확인 중 — 복구 확인의 결말이 아직 감사 원장에 없습니다. 아래 operation 조회로 확인해 주세요.'
+
+/** smoke 되돌림 행(Story 3.4)의 사유 표지. 서버 `OperationalRestrictionApi.REINSTATED_REASON`과 같은 값이다. */
+export const REINSTATED_REASON = 'SMOKE_REVERTED'
+
+/**
+ * 행마다의 복구 버튼의 접근 가능한 이름. 보이는 글자 `복구`로 시작하고 기능·범위·대상을 붙여 행끼리 갈린다. 전역은
+ * 대상이 없다.
+ */
+export function recoverButtonLabel(feature: string, scope: string, target: string): string {
+  const base = `복구: ${featureLabel(feature)} ${scopeLabel(scope)}`
+  return scope === 'GLOBAL' ? base : `${base} ${target}`
+}
+
+/**
+ * 운영자 화면의 시각 표시(KST). 운영자 chunk가 다른 화면의 카피 모듈에 기대지 않도록 여기 둔다. 읽을 수 없는 값은 빈
+ * 문자열이다.
+ */
+export function formatOperatorTime(value: string): string {
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) {
+    return ''
+  }
+  return new Intl.DateTimeFormat('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(parsed)
 }
 
 /** 막히는 단계 code → 화면 문장. 모르는 code는 그대로 보인다. */
@@ -194,6 +267,14 @@ const REFUSALS: Readonly<Record<string, string>> = {
   ALREADY_RESTRICTED:
     '같은 기능·범위·대상의 제한이 이미 효력 중입니다. 활성 제한 목록을 확인해 주세요.',
   ACTOR_NOT_ACCEPTED: '요청에 수행자를 담을 수 없습니다. 수행자는 로그인 세션이 정합니다.',
+  RESTRICTION_NOT_ACTIVE:
+    '이 제한은 지금 효력 중이 아니어서 복구하지 않았습니다. 활성 제한 목록을 확인해 주세요.',
+  RECOVERY_CONDITION_MISSING: '복구 조건 네 가지를 모두 확인해야 복구를 준비할 수 있습니다.',
+  RECOVERY_EVIDENCE_REQUIRED: '수행한 검증·증거 참조·배포 버전을 모두 입력해 주세요.',
+  RECOVERY_EVIDENCE_INVALID:
+    '수행한 검증과 증거 참조는 500자 이내의 한 줄 문장이어야 하고 이메일 주소를 담을 수 없습니다. 배포 버전은 영문·숫자와 . _ + - 만으로 64자 이내이고, 복구 조건은 아는 조건을 한 번씩만 보냅니다.',
+  NEW_SIGNAL_SINCE_PREPARE:
+    '준비 뒤 이 제한에 새 자동 정지 신호가 연결되어 복구하지 않았습니다. 다시 검증한 뒤 새로 준비해 주세요.',
   UNAUTHENTICATED: '로그인이 필요합니다. 다시 로그인해 주세요.',
   NOT_FOUND: '요청한 운영 명령을 찾지 못했습니다.',
 }
@@ -235,6 +316,13 @@ const LEDGER_CODES: Readonly<Record<string, string>> = {
   TARGET_INVALID: '대상 형식·상태 오류',
   ALREADY_RESTRICTED: '이미 제한됨',
   ACTOR_NOT_ACCEPTED: '수행자 주장 거절',
+  RESTRICTION_NOT_ACTIVE: '효력 중이 아닌 제한',
+  RECOVERY_CONDITION_MISSING: '복구 조건 누락',
+  RECOVERY_EVIDENCE_REQUIRED: '복구 증거 누락',
+  RECOVERY_EVIDENCE_INVALID: '복구 증거 형식 오류',
+  NEW_SIGNAL_SINCE_PREPARE: '준비 뒤 새 신호',
+  SMOKE_FAILED: '복구 확인 실패로 다시 제한',
+  SMOKE_PASSED: '복구 확인 통과',
 }
 
 export function ledgerCodeLabel(code: string): string {
@@ -281,6 +369,16 @@ export const operatorContent = {
     checking: '화면을 확인하고 있습니다.',
     restrictionsLoading: '활성 제한을 불러오고 있습니다.',
     restrictionsLoaded: (count: number): string => `활성 제한 ${String(count)}건을 표시합니다.`,
+    recoveryPreparing: '복구를 준비하고 있습니다.',
+    recoveryPrepared: '복구 확인 대화상자를 열었습니다.',
+    recoveryConfirming: '복구를 실행하고 있습니다.',
+    recoveryCompleted: (feature: string, scope: string): string =>
+      `${feature} 제한(${scope})을 복구했습니다. 확인 결과를 아래에 표시합니다.`,
+    recoveryReverted: (feature: string, scope: string): string =>
+      `${feature} 제한(${scope})을 복구했지만 확인이 어긋나 같은 범위를 다시 제한했습니다.`,
+    recoveryPending: (feature: string, scope: string): string =>
+      `${feature} 제한(${scope})을 복구했습니다. 복구 확인의 결말은 아직 확인 중입니다. operation 조회로 확인해 주세요.`,
+    recoveryCancelled: '복구를 취소했습니다. 바뀐 것은 없습니다.',
   },
   audit: {
     id: 'operator-audit',
@@ -375,12 +473,16 @@ export const operatorContent = {
     active: {
       id: 'operator-restrictions-active',
       heading: '활성 제한',
-      body: '지금 효력 중인 제한입니다. 구체적인 범위가 먼저 보입니다. 자동 정지는 스스로 풀리지 않고 수동 검증이 필요합니다. 해제는 이 화면에서 하지 않습니다.',
+      body: '지금 효력 중인 제한입니다. 구체적인 범위가 먼저 보입니다. 제한은 스스로 풀리지 않습니다. 각 행의 복구로 검증 증거를 확인한 뒤 그 제한 하나만 수동으로 해제합니다.',
       empty: '효력 중인 제한이 없습니다.',
       failed: '활성 제한을 불러오지 못했습니다. 잠시 후 다시 조회해 주세요.',
       reload: '활성 제한 다시 조회',
+      /** 행마다의 복구 동작(Story 3.4). */
+      recover: '복구',
       erased: '삭제됨',
       noReason: '기록 없음',
+      /** smoke 되돌림 행의 사유(Story 3.4). 해제 원인이 아니라 되돌림이라는 사실을 말한다. */
+      reinstated: '복구 확인 실패로 같은 범위를 다시 제한(smoke 되돌림)',
       /** 상태(Story 3.3). 신호가 만들었거나 신호가 연결된 제한은 스스로 풀리지 않는다. */
       states: {
         active: '효력 중',
@@ -415,12 +517,72 @@ export const operatorContent = {
     remainingFeatures: '계속 쓸 수 있는 기능',
     noneRemaining: '없음',
     effect:
-      '확정하면 위 단계가 바로 멈추고 그 사실이 감사 원장에 남습니다. 이 화면에서는 제한을 해제할 수 없습니다.',
+      '확정하면 위 단계가 바로 멈추고 그 사실이 감사 원장에 남습니다. 제한은 스스로 풀리지 않고, 검증 증거를 확인한 뒤 활성 제한 목록의 복구로만 해제합니다.',
     kept: '기존 공식 기록과 포인터는 바뀌거나 지워지지 않습니다.',
     phraseLabel: '확인 문구를 그대로 입력하세요',
     cancel: '취소',
     confirm: '제한 실행',
     confirming: '제한을 실행하고 있습니다.',
+  },
+  recovery: {
+    id: 'operator-recovery',
+    /** 준비 버튼의 id. 대화상자가 호출점을 모를 때 포커스를 돌려줄 자리다. */
+    startId: 'operator-recovery-start',
+    heading: '제한 복구',
+    body: '복구는 아래 제한 하나만 닫습니다. 더 넓은 범위의 제한과 다른 기능의 제한은 그대로 막습니다. 복구 조건 네 가지와 원인·수행한 검증·증거 참조·배포 버전이 필요하고, 최근 본인 확인과 확인 문구 재입력을 거칩니다.',
+    selected: '복구할 제한',
+    verificationNote:
+      '자동 정지 신호가 연결된 제한입니다. 확인 대화상자에서 연결된 신호의 수와 최신 감지 시각을 확인하세요. 준비 뒤 새 신호가 연결되면 복구하지 않습니다.',
+    conditionsLegend: '복구 조건(모두 필수)',
+    reasonLabel: '원인(필수)',
+    verificationLabel: '수행한 검증(필수)',
+    evidenceLabel: '증거 참조(필수)',
+    deployVersionLabel: '배포 버전(필수)',
+    textHelp: '500자 이내 한 줄. 이메일 주소·금융 정보를 적지 않습니다.',
+    deployVersionHelp: '영문·숫자와 . _ + - 만으로 64자 이내(예: 1.4.2+build.7).',
+    start: '복구 준비',
+    close: '복구 닫기',
+    reauthLabel: '본인 확인 필요',
+    result: {
+      id: 'operator-recovery-result',
+      heading: '복구 결과',
+      operation: 'operation ID',
+      restriction: '제한 ID',
+      liftedAt: '해제 시각',
+      smoke: '복구 확인',
+      reopenedStages: '다시 열린 단계',
+      stillBlockedStages: '여전히 막힌 단계',
+      none: '없음',
+    },
+    uncertainClosed:
+      '응답을 받지 못한 복구는 실행됐을 수 있습니다. 아래 operation 조회와 활성 제한 목록으로 상태를 확인해 주세요.',
+    uncertain:
+      '응답을 받지 못해 실행 여부를 알 수 없습니다. 자동으로 다시 실행하지 않습니다. 같은 문구로 다시 실행하면 같은 요청으로 처리되며, 대화상자를 닫은 뒤 operation 조회로 상태를 확인할 수도 있습니다.',
+  },
+  recoveryDialog: {
+    titleId: 'operator-recovery-title',
+    descriptionId: 'operator-recovery-description',
+    progressId: 'operator-recovery-progress',
+    inputId: 'operator-recovery-phrase',
+    title: '이 제한을 복구할까요?',
+    feature: '기능',
+    scope: '범위',
+    target: '대상',
+    reason: '원인',
+    impactHeading: '복구 미리보기',
+    reopenedStages: '다시 열리는 단계',
+    noneReopened: '없음(남는 제한이 계속 막습니다)',
+    remaining: '남는 제한',
+    noneRemaining: '없음',
+    linkedSignals: (count: number): string => `연결된 자동 정지 신호 ${String(count)}건`,
+    latestSignalAt: '최신 신호 감지',
+    effect:
+      '확정하면 이 제한 하나가 바로 닫히고 그 사실과 증거가 감사 원장에 남습니다. 닫은 뒤 확인이 어긋나면 같은 범위를 새 제한으로 다시 막습니다.',
+    kept: '다른 제한·신호 기록·감사 원장의 기존 기록은 바뀌거나 지워지지 않습니다.',
+    phraseLabel: '확인 문구를 그대로 입력하세요',
+    cancel: '취소',
+    confirm: '복구 실행',
+    confirming: '복구를 실행하고 있습니다.',
   },
   operation: {
     id: 'operator-operation',
@@ -446,4 +608,8 @@ export const operatorCopyStrings: readonly string[] = [
   operatorContent.restriction.active.body,
   operatorContent.restrictionDialog.effect,
   operatorContent.restrictionDialog.kept,
+  operatorContent.recovery.body,
+  operatorContent.recovery.verificationNote,
+  operatorContent.recoveryDialog.effect,
+  operatorContent.recoveryDialog.kept,
 ]

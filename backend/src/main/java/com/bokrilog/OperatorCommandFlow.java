@@ -53,14 +53,15 @@ final class OperatorCommandFlow {
      * @param sessionId 허가 발급 시각의 세션 id
      * @param armedAt 무장 시각
      * @param restriction 제한 생성 command의 요청(Story 3.2). 그 밖은 {@code null}
+     * @param lift 해제 command의 요청과 준비 시각의 제한 사실(Story 3.4). 그 밖은 {@code null}
      */
     record Armed(UUID userId, String operationId, String command, String scope, String target, String ledgerTarget,
             String reason, String policyVersion, String confirmationHash, String requestDigest, Instant requestedAt,
             String keyDigest, String grantReference, String confirmation, String sessionId, Instant armedAt,
-            OperatorCommandApi.@Nullable Restriction restriction)
+            OperatorCommandApi.@Nullable Restriction restriction, OperatorCommandApi.@Nullable Lift lift)
             implements Serializable {
 
-        @Serial private static final long serialVersionUID = 2L;
+        @Serial private static final long serialVersionUID = 3L;
 
         boolean isLive(Instant now) {
             return now.isBefore(this.armedAt.plus(ARMED_LIFETIME));
