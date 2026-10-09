@@ -34,5 +34,10 @@
  * operations_signal_policy}), 감지 지점(sync)은 {@link com.bokrilog.operations.OperationalSignalApi#raise} 하나를 부른다.
  * raise는 자기 트랜잭션 하나에 신호 행·제한({@code origin='SIGNAL'})·감사 SYSTEM 행을 커밋하고 경보 WARN 한 줄을 남긴다.
  * 백그라운드 detector는 없다 — 감지 순간에 동기로 정지한다. 신호는 제한을 풀거나 줄이지 못한다.
+ *
+ * <p><b>Story 3.5가 서비스 공지를 더했다.</b> 사건과 공지 버전은 추가 전용이고({@code operations_notice_incident}·
+ * {@code operations_notice_version}), 운영 command {@code publish-notice} 하나가 감사 {@code COMPLETED}와 같은
+ * 트랜잭션에서 쓴다. 사용자 조회({@link com.bokrilog.operations.ServiceNoticeApi#forSubjects})는 효력 제한을 먼저 읽고
+ * 그것을 덮는 공지를 싣는다 — 공지는 제한을 풀거나 숨기지 않는다.
  */
 package com.bokrilog.operations;

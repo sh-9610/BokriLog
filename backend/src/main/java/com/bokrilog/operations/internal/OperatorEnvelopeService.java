@@ -6,10 +6,16 @@ import com.bokrilog.operations.OperatorPermission;
 import com.bokrilog.operations.RestrictionFeature;
 import com.bokrilog.operations.RestrictionOrigin;
 import com.bokrilog.operations.RestrictionScope;
+import com.bokrilog.operations.ServiceNoticeApi;
+import com.bokrilog.operations.ServiceNoticeApi.NoticeStatus;
+import com.bokrilog.operations.ServiceNoticeApi.NoticeVersion;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeParseException;
+import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -17,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
@@ -67,6 +74,38 @@ class OperatorEnvelopeService implements OperatorCommandApi {
     /** 배포 버전의 모양(Story 3.4). */
     private static final Pattern DEPLOY_VERSION = Pattern.compile("[A-Za-z0-9._+-]{1," + MAX_DEPLOY_VERSION_CHARS + "}");
 
+    /** 숫자 6자리 이상 연속(Story 3.5). 공지 메시지에 금융값·식별자가 실리지 않게 한다. */
+    private static final Pattern LONG_DIGITS = Pattern.compile("\\p{Nd}{6,}");
+
+    /**
+     * 구분자({@code ,} {@code .} 공백 {@code :} {@code -})로 이은 숫자 묶음(Story 3.5 리뷰). 묶음 안 숫자의 합이 6자리
+     * 이상이면 금융값·식별자로 보고 거절한다 — {@code 12,345,678}·{@code 1 234 567}처럼 끊어 쓴 값도 막는다.
+     */
+    private static final Pattern DIGIT_GROUP = Pattern.compile("\\p{Nd}+(?:[,.:\\s-]\\p{Nd}+)*");
+
+    /** IPv4 주소와 {@code 호스트:포트} 모양(Story 3.5 리뷰). 내부 주소를 사용자 화면에 내보내지 않는다. */
+    private static final Pattern NETWORK_LIKE = Pattern.compile(
+            "\\p{Nd}{1,3}(?:\\.\\p{Nd}{1,3}){3}|[A-Za-z]:\\p{Nd}{2,5}(?!\\p{Nd})");
+
+    /** 통화 기호·통화 code와 붙은 숫자(Story 3.5 리뷰). 금액을 공지에 싣지 않는다. */
+    private static final Pattern MONEY_LIKE = Pattern.compile(
+            "(?i)[$₩€¥£]\\s*\\p{Nd}|\\p{Nd}[\\p{Nd},.]*\\s*(?:USDT|USD|원)|(?:USDT|USD)\\s*\\p{Nd}");
+
+    /**
+     * 화면 카피 금지 표현(Story 3.5 리뷰): 실시간·정확 보장·손실 공포·수익 축하·스트릭·배지. 프런트엔드
+     * {@code content/copyRules.ts}의 {@code FORBIDDEN_COPY_WORDS}와 같은 목록이다 — 시험({@code ServiceNoticeTest})이 두 목록을
+     * 대조한다. 운영자 한 줄도 사용자 화면에 그대로 나가므로 같은 규칙을 지난다.
+     */
+    static final List<String> FORBIDDEN_COPY_WORDS = List.of("실시간", "정확", "보장", "축하", "손실", "수익을 내",
+            "스트릭", "배지");
+
+    /**
+     * URL·도메인·경로 모양(Story 3.5). 스킴({@code x://}), {@code www.}, {@code 이름.최상위} 도메인, 공백 뒤의 {@code /경로}다.
+     * 공지 메시지가 외부 주소나 내부 경로를 사용자에게 내보내지 않게 한다.
+     */
+    private static final Pattern URL_LIKE = Pattern.compile(
+            "(?i)([a-z][a-z0-9+.-]*://|www\\.|[a-z0-9-]+\\.[a-z]{2,}\\b|(^|[\\s(\\[])/[A-Za-z0-9._~-])");
+
     /** 거절 행에서 형식이 맞지 않아 원문을 남기지 않은 자리. */
     private static final String UNREADABLE = "-";
 
@@ -77,21 +116,25 @@ class OperatorEnvelopeService implements OperatorCommandApi {
     /** 제한 표(Story 3.2). 같은 모듈의 repository다 — 제한 행은 감사 행과 같은 트랜잭션에서만 생긴다. */
     private final OperationalRestrictionRepository restrictions;
 
+    /** 공지 표(Story 3.5). 같은 모듈의 repository다 — 공지 행은 감사 행과 같은 트랜잭션에서만 생긴다. */
+    private final ServiceNoticeRepository notices;
+
     private final ActorDigest digest;
 
     private final TransactionTemplate transactions;
 
     OperatorEnvelopeService(OperatorAuditRepository repository, OperationalRestrictionRepository restrictions,
-            ActorDigest digest, PlatformTransactionManager transactionManager) {
+            ServiceNoticeRepository notices, ActorDigest digest, PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.restrictions = restrictions;
+        this.notices = notices;
         this.digest = digest;
         this.transactions = new TransactionTemplate(transactionManager);
     }
 
     @Override
     public boolean isSupported(String command) {
-        return AUDIT_EXPORT.equals(command) || LIFT_RESTRICTION.equals(command)
+        return AUDIT_EXPORT.equals(command) || LIFT_RESTRICTION.equals(command) || PUBLISH_NOTICE.equals(command)
                 || OperatorCommandApi.restrictionFeatureOf(command) != null;
     }
 
@@ -101,8 +144,9 @@ class OperatorEnvelopeService implements OperatorCommandApi {
             // command이면서 감사 데이터를 꺼낸다 — 두 권한을 함께 요구한다(AC-5).
             return EnumSet.of(OperatorPermission.COMMAND, OperatorPermission.AUDIT);
         }
-        if (OperatorCommandApi.restrictionFeatureOf(command) != null || LIFT_RESTRICTION.equals(command)) {
-            // 제한·해제는 일반 운영 명령이다. 감사 데이터를 꺼내지 않는다.
+        if (OperatorCommandApi.restrictionFeatureOf(command) != null || LIFT_RESTRICTION.equals(command)
+                || PUBLISH_NOTICE.equals(command)) {
+            // 제한·해제·공지 발행은 일반 운영 명령이다. 감사 데이터를 꺼내지 않는다.
             return EnumSet.of(OperatorPermission.COMMAND);
         }
         throw new IllegalArgumentException("모르는 운영 command다.");
@@ -123,6 +167,9 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         if (LIFT_RESTRICTION.equals(proposal.command())) {
             return validateLift(proposal);
         }
+        if (PUBLISH_NOTICE.equals(proposal.command())) {
+            return validateNotice(proposal);
+        }
         String scope = proposal.scope() == null ? "" : proposal.scope().strip();
         if (!SCOPE_AUDIT_LEDGER.equals(scope)) {
             return new Validation.Invalid(UNSUPPORTED_SCOPE);
@@ -142,7 +189,7 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         String phrase = "감사 내보내기 " + scope + " " + target;
         return new Validation.Valid(new Accepted(AUDIT_EXPORT, scope, target, target, reason, phrase, POLICY_VERSION,
                 permissionsOf(AUDIT_EXPORT), sha256(AUDIT_EXPORT + "\n" + scope + "\n" + target + "\n" + reason),
-                null, null));
+                null, null, null));
     }
 
     /**
@@ -174,7 +221,7 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         return new Validation.Valid(new Accepted(command, ledgerScope, target, ledgerTarget, reason,
                 restrictionPhrase(feature, scope, target), POLICY_VERSION, permissionsOf(command),
                 sha256(command + "\n" + ledgerScope + "\n" + ledgerTarget + "\n" + reason),
-                new Restriction(feature, scope, target), null));
+                new Restriction(feature, scope, target), null, null));
     }
 
     /**
@@ -234,7 +281,208 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         String digest = sha256(LIFT_RESTRICTION + "\n" + target + "\n" + reason + "\n" + verification + "\n"
                 + evidenceRef + "\n" + deployVersion + "\n" + String.join(",", RECOVERY_CONDITIONS));
         return new Validation.Valid(new Accepted(LIFT_RESTRICTION, ledgerScope, target, target, reason, phrase,
-                POLICY_VERSION, permissionsOf(LIFT_RESTRICTION), digest, null, lift));
+                POLICY_VERSION, permissionsOf(LIFT_RESTRICTION), digest, null, lift, null));
+    }
+
+    /**
+     * 공지 발행의 envelope 검증(Story 3.5 AC-1·AC-6). 형식 — 상태·사건·메시지·덮는 제한 ID·다음 안내 시각 — 을 보고, 그다음
+     * 같은 모듈의 공지·제한 표에서 지금 사실(사건의 최신 버전, 덮는 제한의 기능과 열림, DB 시각의 다음 안내 창)을 읽어 쓸
+     * 버전 번호·영향 기능·확인 문구를 정한다. 상태 거절({@code TARGET_INVALID}·{@code INCIDENT_CLOSED}·
+     * {@code NEXT_UPDATE_INVALID})은 {@link Notice#refusal}에 싣고 루트가 멱등 키·재인증 판정 <b>뒤</b>에 적용한다(3.2·3.4와
+     * 같은 준비 순서).
+     *
+     * <p>새 사건은 조사 중으로만 열고, 기존 사건은 범위 변경·복구만 받는다 — 그 밖의 조합은 {@code UNSUPPORTED_SCOPE}다.
+     * 복구 공지가 덮는 제한을 비워 보내면 직전 버전의 것을 잇는다(이미 닫힌 제한은 운영자 화면의 활성 목록에 없다).
+     */
+    private Validation validateNotice(Proposal proposal) {
+        NoticeStatus status = noticeStatusOf(proposal.scope());
+        if (status == null) {
+            return new Validation.Invalid(UNSUPPORTED_SCOPE);
+        }
+        String incidentText = proposal.target() == null ? "" : proposal.target().strip();
+        UUID incidentId = null;
+        if (!NEW_INCIDENT.equals(incidentText)) {
+            if (!UUID_TEXT.matcher(incidentText).matches()) {
+                return new Validation.Invalid(TARGET_INVALID);
+            }
+            incidentId = UUID.fromString(incidentText);
+        }
+        if ((incidentId == null) != (status == NoticeStatus.INVESTIGATING)) {
+            return new Validation.Invalid(UNSUPPORTED_SCOPE);
+        }
+        String message = proposal.reason() == null ? "" : proposal.reason().strip();
+        if (message.isEmpty()) {
+            return new Validation.Invalid(REASON_REQUIRED);
+        }
+        if (!isAcceptableMessage(message)) {
+            return new Validation.Invalid(REASON_INVALID);
+        }
+        NoticeInput input = proposal.notice();
+        List<String> given = input == null || input.covers() == null ? List.of() : input.covers();
+        if (given.size() > ServiceNoticeApi.MAX_COVERS) {
+            return new Validation.Invalid(TARGET_INVALID);
+        }
+        // 글자 순서로 정렬한다 — 저장·요청 digest·화면이 같은 순서를 본다(UUID의 비교 순서는 글자 순서가 아니다).
+        Set<UUID> requested = new TreeSet<>(java.util.Comparator.comparing(UUID::toString));
+        for (String text : given) {
+            String cover = text == null ? "" : text.strip();
+            // 모양이 아니거나 같은 제한을 두 번 담았다 — 덮는 범위를 개수로 꾸밀 수 없다.
+            if (!UUID_TEXT.matcher(cover).matches() || !requested.add(UUID.fromString(cover))) {
+                return new Validation.Invalid(TARGET_INVALID);
+            }
+        }
+        if (requested.isEmpty() && status != NoticeStatus.RECOVERED) {
+            return new Validation.Invalid(TARGET_INVALID);
+        }
+        String nextText = input == null || input.nextUpdateAt() == null ? "" : input.nextUpdateAt().strip();
+        Instant nextUpdateAt = null;
+        if (status == NoticeStatus.RECOVERED) {
+            if (!nextText.isEmpty()) {
+                return new Validation.Invalid(NEXT_UPDATE_INVALID);
+            }
+        } else {
+            nextUpdateAt = instantOf(nextText);
+            if (nextUpdateAt == null) {
+                return new Validation.Invalid(NEXT_UPDATE_INVALID);
+            }
+        }
+
+        // 지금 사실. 거절은 싣기만 하고 루트가 멱등 키·재인증 뒤에 적용한다.
+        String refusal = null;
+        int version = 1;
+        List<UUID> covers = List.copyOf(requested);
+        if (incidentId != null) {
+            NoticeVersion latest = this.notices.latest(incidentId).orElse(null);
+            if (latest == null) {
+                refusal = TARGET_INVALID;
+            } else {
+                version = latest.version() + 1;
+                if (latest.status() == NoticeStatus.RECOVERED) {
+                    refusal = INCIDENT_CLOSED;
+                } else if (covers.isEmpty()) {
+                    covers = latest.covers();
+                }
+            }
+        }
+        Set<RestrictionFeature> affected = EnumSet.noneOf(RestrictionFeature.class);
+        if (refusal == null) {
+            refusal = coverRefusal(status, covers, affected);
+        }
+        if (refusal == null && nextUpdateAt != null
+                && !this.notices.withinNextUpdateWindow(nextUpdateAt, ServiceNoticeApi.MAX_NEXT_UPDATE.toSeconds())) {
+            refusal = NEXT_UPDATE_INVALID;
+        }
+        String target = incidentId == null ? NEW_INCIDENT : incidentId.toString();
+        String ledgerScope = NOTICE_SCOPE_PREFIX + status.name();
+        // 확인 문구가 사건·범위를 묶는다(item-7): 새 사건은 덮는 제한 수, 기존 사건은 사건 ID 앞 8자와 버전.
+        String phrase = incidentId == null ? "공지 발행 새 사건 제한 " + covers.size() + "건"
+                : "공지 " + noticeStatusWord(status) + " " + incidentId.toString().substring(0, 8) + " v" + version;
+        String digest = sha256(PUBLISH_NOTICE + "\n" + ledgerScope + "\n" + target + "\n" + message + "\n"
+                + requested.stream().map(UUID::toString).collect(java.util.stream.Collectors.joining(","))
+                + "\n" + (nextUpdateAt == null ? "-" : nextUpdateAt.toString()));
+        Notice notice = new Notice(incidentId, version, status, message, covers, List.copyOf(affected),
+                ServiceNoticeApi.continuing(affected), nextUpdateAt, refusal);
+        return new Validation.Valid(new Accepted(PUBLISH_NOTICE, ledgerScope, target, target, message, phrase,
+                POLICY_VERSION, permissionsOf(PUBLISH_NOTICE), digest, null, null, notice));
+    }
+
+    /**
+     * 덮는 제한의 판정과 영향 기능. 모두 있어야 하고, 진행 중인 공지는 지금 열린 제한만 덮는다(복구 공지는 닫힌 제한을
+     * 가리킬 수 있다). 거절할 것이 없으면 {@code null}이고 {@code affected}에 그 제한들의 기능을 채운다.
+     */
+    private @Nullable String coverRefusal(NoticeStatus status, Collection<UUID> covers,
+            Set<RestrictionFeature> affected) {
+        if (covers.isEmpty()) {
+            return TARGET_INVALID;
+        }
+        var facts = this.restrictions.coverFacts(covers);
+        if (facts.size() != covers.size()) {
+            return TARGET_INVALID;
+        }
+        for (var fact : facts) {
+            // 진행 중인 공지는 지금 열린 제한만, 복구 공지는 모두 닫힌 제한만 덮는다 — 아직 막고 있는 제한을 "복구됨"으로
+            // 알리지 않는다.
+            if ((status == NoticeStatus.RECOVERED) == fact.open()) {
+                return TARGET_INVALID;
+            }
+            affected.add(fact.feature());
+        }
+        return null;
+    }
+
+    private static @Nullable NoticeStatus noticeStatusOf(@Nullable String text) {
+        String status = text == null ? "" : text.strip();
+        for (NoticeStatus known : NoticeStatus.values()) {
+            if (known.name().equals(status)) {
+                return known;
+            }
+        }
+        return null;
+    }
+
+    /** 다음 안내 시각. 오프셋을 가진 ISO-8601만 읽는다 — 시간대를 추측하지 않는다. */
+    private static @Nullable Instant instantOf(String text) {
+        if (text.isEmpty() || text.length() > 64) {
+            return null;
+        }
+        try {
+            OffsetDateTime parsed = OffsetDateTime.parse(text);
+            // 데이터베이스 시각 범위 밖(예: `+300000-…`)은 비교 전에 거절한다 — 판정 문장이 실패해 500이 되지 않게.
+            if (parsed.getYear() < 1970 || parsed.getYear() > 9999) {
+                return null;
+            }
+            return parsed.toInstant();
+        } catch (DateTimeParseException unreadable) {
+            return null;
+        }
+    }
+
+    /** 공지 상태의 확인 문구 낱말. 사용자 화면의 상태 표지와 같은 말이다. */
+    static String noticeStatusWord(NoticeStatus status) {
+        return switch (status) {
+            case INVESTIGATING -> "조사 중";
+            case SCOPE_CHANGED -> "범위 변경";
+            case RECOVERED -> "복구됨";
+        };
+    }
+
+    /**
+     * 공지 메시지 규칙(Story 3.5 AC-1): 사유 규칙(제어 문자·이메일 모양 거절)에 더해 200자 이내이고, 숫자 6자리 이상
+     * 연속과 URL·도메인·경로 모양이 없다 — 금융값·식별자·내부 경로가 사용자 화면에 실리지 않게 한다.
+     */
+    static boolean isAcceptableMessage(String message) {
+        return !message.isEmpty() && message.length() <= ServiceNoticeApi.MAX_MESSAGE_CHARS
+                && !CONTROL.matcher(message).find() && !EMAIL_LIKE.matcher(message).find()
+                && !LONG_DIGITS.matcher(message).find() && !URL_LIKE.matcher(message).find()
+                && !longDigitGroup(message) && !NETWORK_LIKE.matcher(message).find()
+                && !MONEY_LIKE.matcher(message).find()
+                && FORBIDDEN_COPY_WORDS.stream().noneMatch(message::contains);
+    }
+
+    /** 구분자로 이은 숫자 묶음 가운데 숫자 합이 6자리 이상인 것이 있는가. */
+    private static boolean longDigitGroup(String message) {
+        var groups = DIGIT_GROUP.matcher(message);
+        while (groups.find()) {
+            long digits = groups.group().codePoints().filter(Character::isDigit).count();
+            if (digits >= 6) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 버전 기본키 위반인가 — 같은 사건·같은 번호를 다른 발행이 먼저 썼다. 원인 사슬에서 제약 이름을 찾는다. 다른 무결성
+     * 위반(사건 행·복구 유일 색인·CHECK)은 번호 충돌이 아니다.
+     */
+    static boolean versionConflict(org.springframework.dao.DataIntegrityViolationException failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            String message = cause.getMessage();
+            if (message != null && message.contains("\"" + ServiceNoticeRepository.VERSION_PRIMARY_KEY + "\"")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -415,8 +663,20 @@ class OperatorEnvelopeService implements OperatorCommandApi {
                 ledgerTarget = known.userAttributed() ? this.digest.ofTarget(known.name(), normalized) : normalized;
             }
         }
+        boolean keepReason = isAcceptableReason(reason);
+        if (PUBLISH_NOTICE.equals(proposal.command())) {
+            /*
+             * 공지 발행의 거절 행(Story 3.5): scope는 아는 상태일 때만 `NOTICE:<상태>`, target은 `NEW`이거나 사건 ID 모양일
+             * 때만, 메시지는 공지 메시지 규칙을 지날 때만 남긴다 — 숫자열·URL 때문에 거절된 메시지가 거절 행을 타고 원장에
+             * 들어가는 길을 막는다.
+             */
+            NoticeStatus status = noticeStatusOf(scope);
+            ledgerScope = status == null ? UNREADABLE : NOTICE_SCOPE_PREFIX + status.name();
+            ledgerTarget = NEW_INCIDENT.equals(target) || UUID_TEXT.matcher(target).matches() ? target : UNREADABLE;
+            keepReason = isAcceptableMessage(reason);
+        }
         var envelope = new Envelope(operationId, actorUserId, proposal.command(), ledgerScope, ledgerTarget,
-                isAcceptableReason(reason) ? reason : UNREADABLE, "", POLICY_VERSION, null, idempotencyKeyDigest, "");
+                keepReason ? reason : UNREADABLE, "", POLICY_VERSION, null, idempotencyKeyDigest, "");
         recordDecision(envelope, AuditOutcome.DENIED, code, correlationId);
         return operationId;
     }
@@ -488,6 +748,73 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         append(envelope, AuditOutcome.COMPLETED, true, correlationId, details);
         return new RestrictionCompletion.Completed(new RestrictionResult(envelope.operationId(), restrictionId,
                 restriction.feature(), restriction.scope(), effectiveFrom));
+    }
+
+    @Override
+    public NoticeCompletion completeNotice(Envelope envelope, Notice notice, String supportContact,
+            String correlationId, BooleanSupplier finalAuthority) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            // 공지 행·감사 행·허가 소비가 한 트랜잭션이어야 한다. 밖에서 부르는 것은 배선 실수다.
+            throw new IllegalStateException("공지 발행은 허가 소비의 트랜잭션 안에서만 쓴다.");
+        }
+        this.repository.lockAppends();
+        // 잠금 뒤의 최종 권한. 거짓이면 이 트랜잭션은 아무것도 쓰지 않았다.
+        if (!finalAuthority.getAsBoolean()) {
+            return new NoticeCompletion.Refused(ACCESS_REVOKED);
+        }
+        UUID incidentId = notice.incidentId();
+        if (incidentId != null) {
+            // 같은 잠금 아래라 그 사이 다른 발행이 끼어들 수 없다. 준비가 본 최신 버전 뒤에 끼었으면 충돌이다.
+            NoticeVersion latest = this.notices.latest(incidentId).orElse(null);
+            if (latest == null) {
+                return new NoticeCompletion.Refused(TARGET_INVALID);
+            }
+            if (latest.status() == NoticeStatus.RECOVERED) {
+                return new NoticeCompletion.Refused(INCIDENT_CLOSED);
+            }
+            if (latest.version() != notice.version() - 1) {
+                return new NoticeCompletion.Refused(NOTICE_VERSION_CONFLICT);
+            }
+        }
+        // 확정 순간의 덮는 제한. 준비 뒤 해제된 제한을 진행 중인 공지가 덮지 않는다.
+        Set<RestrictionFeature> affected = EnumSet.noneOf(RestrictionFeature.class);
+        String refusal = coverRefusal(notice.status(), notice.covers(), affected);
+        if (refusal != null) {
+            return new NoticeCompletion.Refused(refusal);
+        }
+        Instant nextUpdateAt = notice.nextUpdateAt();
+        if (nextUpdateAt != null
+                && !this.notices.withinNextUpdateWindow(nextUpdateAt, ServiceNoticeApi.MAX_NEXT_UPDATE.toSeconds())) {
+            return new NoticeCompletion.Refused(NEXT_UPDATE_INVALID);
+        }
+        if (incidentId == null) {
+            incidentId = UUID.randomUUID();
+            this.notices.insertIncident(incidentId, envelope.operationId());
+        }
+        List<RestrictionFeature> affectedFeatures = List.copyOf(affected);
+        ServiceNoticeRepository.Written written;
+        try {
+            written = this.notices.insertVersion(incidentId, notice.version(), notice.status(), notice.message(),
+                    affectedFeatures, ServiceNoticeApi.continuing(affectedFeatures), nextUpdateAt, notice.covers(),
+                    envelope.operationId(), supportContact);
+        } catch (org.springframework.dao.DuplicateKeyException duplicate) {
+            if (!versionConflict(duplicate)) {
+                throw duplicate;
+            }
+            // 같은 번호를 기본키가 거절했다. 이 트랜잭션은 더 쓰지 않고 호출자가 되돌린다.
+            return new NoticeCompletion.Refused(NOTICE_VERSION_CONFLICT);
+        }
+        // 메시지 원문은 원장의 사유 열에만 있다. 부가 사실은 사건·버전·상태·덮는 제한 수다.
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("keyDigest", envelope.idempotencyKeyDigest());
+        details.put("incidentId", incidentId.toString());
+        details.put("version", notice.version());
+        details.put("status", notice.status().name());
+        details.put("covers", notice.covers().size());
+        details.put("publishedAt", written.createdAt().toString());
+        append(envelope, AuditOutcome.COMPLETED, true, correlationId, details);
+        return new NoticeCompletion.Completed(new NoticeResult(envelope.operationId(), incidentId, notice.version(),
+                notice.status(), written.createdAt()));
     }
 
     @Override
@@ -596,6 +923,12 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         }
         if (!idempotencyKeyDigest.equals(completed.keyDigest())) {
             return new Replay.Conflict();
+        }
+        if (PUBLISH_NOTICE.equals(completed.command()) && completed.incidentId() != null
+                && completed.noticeVersion() != null && completed.noticeStatus() != null
+                && completed.publishedAt() != null) {
+            return new Replay.Stored(new NoticeResult(operationId, completed.incidentId(), completed.noticeVersion(),
+                    NoticeStatus.valueOf(completed.noticeStatus()), completed.publishedAt()));
         }
         if (LIFT_RESTRICTION.equals(completed.command()) && completed.restrictionId() != null
                 && completed.feature() != null && completed.restrictionScope() != null

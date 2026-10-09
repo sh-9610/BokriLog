@@ -1,8 +1,9 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactElement } from 'react'
 
-import type { ActiveRestriction, AuditEntry } from '../session/operatorApi'
+import type { ActiveRestriction, AuditEntry, NoticeIncident } from '../session/operatorApi'
 
 import { OperatorExportDialog } from '../components/OperatorExportDialog'
+import { OperatorNoticeDialog } from '../components/OperatorNoticeDialog'
 import { OperatorRecoveryDialog } from '../components/OperatorRecoveryDialog'
 import { OperatorRestrictionDialog } from '../components/OperatorRestrictionDialog'
 import { ProviderMark } from '../components/ProviderMark'
@@ -18,19 +19,28 @@ import {
   SIGN_IN_PROVIDERS,
   type SignInProvider,
 } from '../content/auth'
+import { containsForbiddenCopy } from '../content/copyRules'
 import { entryContent } from '../content/entry'
 import {
   CALCULATION_POLICY_TARGET,
   DEPLOY_VERSION_MAX_LENGTH,
   featureLabel,
+  featuresText,
+  FOLLOW_UP_NOTICE_STATUSES,
   formatOperatorTime,
   GLOBAL_TARGET,
+  incidentOptionLabel,
   ledgerCodeLabel,
+  NEW_INCIDENT,
+  NOTICE_MESSAGE_MAX_LENGTH,
+  noticeStatusLabel,
+  noticeTime,
   operatorContent,
   operatorRefusalMessage,
   originLabel,
   OUTCOME_FILTERS,
   outcomeLabel,
+  PUBLISH_NOTICE_COMMAND,
   REASON_MAX_LENGTH,
   recoverButtonLabel,
   RECOVERY_CONDITION_LABELS,
@@ -42,10 +52,12 @@ import {
   signalReasonLabel,
   smokeStatusLabel,
   stageLabel,
+  type FollowUpNoticeStatus,
   type RecoveryCondition,
   type RestrictionFeature,
   type RestrictionScope,
 } from '../content/operator'
+import { kstInputToIso } from '../content/serviceNotice'
 import { replaceLocation } from '../session/navigation'
 import {
   defaultAuditFilter,
@@ -54,6 +66,7 @@ import {
   type AuditFilter,
 } from '../session/useOperatorAudit'
 import { useOperatorExport } from '../session/useOperatorExport'
+import { useOperatorNotice } from '../session/useOperatorNotice'
 import { useOperatorRecovery } from '../session/useOperatorRecovery'
 import { useOperatorRestriction } from '../session/useOperatorRestriction'
 import { useReauthentication } from '../session/useReauthentication'
@@ -200,6 +213,75 @@ function RestrictionRow({
   )
 }
 
+/**
+ * 공지 사건 하나와 그 버전 이력(Story 3.5, 읽기 전용). 상태는 글자로 말한다 — 색만으로 가르지 않는다. 버전은 오래된
+ * 순이고 고치거나 지우는 조작이 없다.
+ */
+function IncidentRow({ incident }: { readonly incident: NoticeIncident }): ReactElement {
+  const history = copy.notice.history
+  const columns = history.columns
+  return (
+    <li className={styles.entry}>
+      <div className={styles.entryRow}>
+        <span className={styles.term}>{columns.incident}</span>
+        <span className={styles.value}>{incident.incidentId}</span>
+      </div>
+      <div className={styles.entryRow}>
+        <span className={styles.term}>{columns.startedAt}</span>
+        <span className={styles.value}>{noticeTime(incident.startedAt)}</span>
+        <span className={styles.term}>{columns.state}</span>
+        <span className={styles.value}>{incident.closed ? history.closed : history.open}</span>
+      </div>
+      <ol className={styles.list}>
+        {incident.versions.map((version) => (
+          <li className={styles.entry} key={version.version}>
+            <div className={styles.entryRow}>
+              <span className={styles.term}>{columns.version}</span>
+              <span className={styles.value}>
+                v{String(version.version)} {noticeStatusLabel(version.status)}
+              </span>
+              <span className={styles.term}>{columns.createdAt}</span>
+              <span className={styles.value}>{noticeTime(version.createdAt)}</span>
+            </div>
+            <div className={styles.entryRow}>
+              <span className={styles.term}>{columns.affected}</span>
+              <span className={styles.value}>{featuresText(version.affectedFeatures)}</span>
+              <span className={styles.term}>{columns.continuing}</span>
+              <span className={styles.value}>{featuresText(version.continuingFeatures)}</span>
+            </div>
+            <div className={styles.entryRow}>
+              <span className={styles.term}>{columns.message}</span>
+              <span className={styles.value}>{version.message}</span>
+            </div>
+            <div className={styles.entryRow}>
+              {version.recoveredAt === null ? (
+                <>
+                  <span className={styles.term}>{columns.nextUpdateAt}</span>
+                  <span className={styles.value}>
+                    {version.nextUpdateAt === null ? '' : noticeTime(version.nextUpdateAt)}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className={styles.term}>{columns.recoveredAt}</span>
+                  <span className={styles.value}>{noticeTime(version.recoveredAt)}</span>
+                </>
+              )}
+              <span className={styles.term}>{columns.covers}</span>
+              <span className={styles.value}>{String(version.covers.length)}</span>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </li>
+  )
+}
+
+/** `datetime-local` 입력을 서울 시각(KST)으로 읽어 ISO-8601로. 브라우저 시간대를 쓰지 않는다. 읽을 수 없으면 `null`이다. */
+function nextUpdateIso(value: string): string | null {
+  return kstInputToIso(value)
+}
+
 /** 범위가 정하는 대상의 기본값. 전역은 고정값, 계산 정책 버전은 이 빌드가 아는 버전이다. */
 function defaultTarget(scope: RestrictionScope): string {
   if (scope === 'GLOBAL') return GLOBAL_TARGET
@@ -265,8 +347,10 @@ export function OperatorScreen(): ReactElement {
   const [scope, setScope] = useState<RestrictionScope>('GLOBAL')
   const [restrictionTarget, setRestrictionTarget] = useState(GLOBAL_TARGET)
   const [restrictionReason, setRestrictionReason] = useState('')
-  /** 화면의 단일 status가 말할 마지막 조작. 세 명령의 끝난 상태가 함께 남아도 사용자가 마지막에 누른 쪽을 말한다. */
-  const [lastCommand, setLastCommand] = useState<'export' | 'recovery' | 'restriction'>('export')
+  /** 화면의 단일 status가 말할 마지막 조작. 네 명령의 끝난 상태가 함께 남아도 사용자가 마지막에 누른 쪽을 말한다. */
+  const [lastCommand, setLastCommand] = useState<'export' | 'notice' | 'recovery' | 'restriction'>(
+    'export',
+  )
   // 제한 복구(Story 3.4): 활성 목록에서 고른 제한 하나와 그 증거 입력. 값은 메모리에만 있다.
   const recovering = useOperatorRecovery(csrfToken, restricting.reloadList)
   const [chosenRecovery, setRecoveryTarget] = useState<ActiveRestriction | null>(null)
@@ -284,8 +368,42 @@ export function OperatorScreen(): ReactElement {
   const [verification, setVerification] = useState('')
   const [evidenceRef, setEvidenceRef] = useState('')
   const [deployVersion, setDeployVersion] = useState('')
+  /*
+   * 서비스 공지(Story 3.5): 사건 목록은 command 권한이 제한 목록으로 확인된 뒤에만 읽는다. 입력은 메모리에만 있다. 덮는
+   * 제한은 활성 제한 목록에서 고른다 — 목록에서 빠진(닫힌) 제한은 고른 값에서도 빠진다.
+   */
+  const noticing = useOperatorNotice(ready && restricting.list.everLoaded, csrfToken)
+  const [noticeIncident, setNoticeIncident] = useState(NEW_INCIDENT)
+  const [noticeStatus, setNoticeStatus] = useState<FollowUpNoticeStatus>('SCOPE_CHANGED')
+  const [chosenCovers, setNoticeCovers] = useState<readonly string[]>([])
+  const [noticeMessage, setNoticeMessage] = useState('')
+  const [noticeNext, setNoticeNext] = useState('')
+  const noticeCovers = chosenCovers.filter((id) =>
+    restricting.list.items.some((item) => item.restrictionId === id),
+  )
+  const openIncidents = noticing.list.items.filter((incident) => !incident.closed)
+  // 고른 사건이 목록에서 사라졌거나 닫혔으면 새 사건으로 접는다 — 닫힌 사건에 다음 버전을 준비하지 않는다.
+  const incidentChoice = openIncidents.some((incident) => incident.incidentId === noticeIncident)
+    ? noticeIncident
+    : NEW_INCIDENT
+  const effectiveNoticeStatus = incidentChoice === NEW_INCIDENT ? 'INVESTIGATING' : noticeStatus
+  const noticeRecovering = effectiveNoticeStatus === 'RECOVERED'
+  /*
+   * 복구 공지는 덮는 제한을 고르지 않는다 — 서버가 직전 버전의 것을 잇고, 그 제한이 모두 닫혀 있어야 받는다. 그 가운데 아직
+   * 활성 목록에 있는(효력 중인) 제한의 수를 미리 말한다.
+   */
+  const recoveringStillOpen = noticeRecovering
+    ? (openIncidents
+        .find((incident) => incident.incidentId === incidentChoice)
+        ?.versions.at(-1)
+        ?.covers.filter((id) => restricting.list.items.some((item) => item.restrictionId === id))
+        .length ?? 0)
+    : 0
+  // 운영자 한 줄도 사용자 화면에 나간다. 화면 카피 금지 표현이 있으면 미리 막는다(서버도 같은 목록으로 거절한다).
+  const noticeMessageForbidden = containsForbiddenCopy(noticeMessage)
 
   const resultRef = useRef<HTMLHeadingElement>(null)
+  const noticeResultRef = useRef<HTMLHeadingElement>(null)
   const restrictionResultRef = useRef<HTMLHeadingElement>(null)
   const recoveryHeadingRef = useRef<HTMLHeadingElement>(null)
   const recoveryResultRef = useRef<HTMLHeadingElement>(null)
@@ -316,6 +434,12 @@ export function OperatorScreen(): ReactElement {
       recoveryResultRef.current?.focus()
     }
   }, [recovered])
+  const published = noticing.phase === 'completed'
+  useLayoutEffect(() => {
+    if (published) {
+      noticeResultRef.current?.focus()
+    }
+  }, [published])
 
   // 서버가 세션이 끝났다고 답했다. 만료의 결과는 이동 하나다(`useSessionGate`와 같은 규칙).
   const sessionEnded =
@@ -323,7 +447,9 @@ export function OperatorScreen(): ReactElement {
     exporting.sessionEnded ||
     restricting.sessionEnded ||
     recovering.sessionEnded ||
+    noticing.sessionEnded ||
     restricting.list.status === 'unauthenticated' ||
+    noticing.list.status === 'unauthenticated' ||
     lookup.lookup.status === 'unauthenticated'
   useLayoutEffect(() => {
     if (sessionEnded) {
@@ -361,11 +487,15 @@ export function OperatorScreen(): ReactElement {
   const recoveryDialogOpen =
     recovering.prepared !== null &&
     (recovering.phase === 'armed' || recovering.phase === 'confirming')
-  const dialogOpen = exportDialogOpen || restrictionDialogOpen || recoveryDialogOpen
+  const noticeDialogOpen =
+    noticing.prepared !== null && (noticing.phase === 'armed' || noticing.phase === 'confirming')
+  const dialogOpen =
+    exportDialogOpen || restrictionDialogOpen || recoveryDialogOpen || noticeDialogOpen
   const busy =
     exporting.busy ||
     restricting.busy ||
     recovering.busy ||
+    noticing.busy ||
     reauthentication.pending ||
     signOut.pending ||
     dialogOpen
@@ -377,6 +507,14 @@ export function OperatorScreen(): ReactElement {
     verification.trim() !== '' &&
     evidenceRef.trim() !== '' &&
     deployVersion.trim() !== ''
+  const canNotice =
+    noticing.list.supportContactConfigured &&
+    noticeMessage.trim() !== '' &&
+    !noticeMessageForbidden &&
+    (noticeRecovering
+      ? recoveringStillOpen === 0
+      : noticeCovers.length > 0 && nextUpdateIso(noticeNext) !== null)
+
   // 운영자 제어는 운영자임이 한 번 확인된 뒤에만 그린다. 첫 조회의 실패는 fail-closed다.
   /*
    * 두 영역은 각자의 조회로 판정한다(Story 3.2). 감사 영역(감사 원장·내보내기)은 감사 조회를 한 번이라도 읽은 뒤에만,
@@ -387,6 +525,10 @@ export function OperatorScreen(): ReactElement {
   const listLoaded = restricting.list.everLoaded
   const restrictionVisible =
     ready && (listLoaded || (auditVisible && restricting.list.status === 'failed'))
+  // 공지 영역(Story 3.5)은 제한 영역이 보인 뒤, 사건 목록을 한 번이라도 읽었거나 그 읽기만 실패했을 때 그린다.
+  const noticeVisible =
+    restrictionVisible &&
+    (noticing.list.everLoaded || (listLoaded && noticing.list.status === 'failed'))
   const operatorVisible = auditVisible || restrictionVisible
   const settled = audit.view.status !== 'checking' && restricting.list.status !== 'checking'
   const loadFailed =
@@ -401,7 +543,9 @@ export function OperatorScreen(): ReactElement {
       ? restricting.uncertainOperationId
       : lastCommand === 'recovery'
         ? recovering.uncertainOperationId
-        : exporting.uncertainOperationId
+        : lastCommand === 'notice'
+          ? noticing.uncertainOperationId
+          : exporting.uncertainOperationId
   const operationValue =
     !operationEdited && uncertainOperationId !== null ? uncertainOperationId : operationInput
   const canPrepare = filter.from !== '' && filter.to !== '' && reason.trim() !== ''
@@ -442,7 +586,13 @@ export function OperatorScreen(): ReactElement {
 
           {/* 화면당 polite live region 하나. 진행·결과·거절을 여기서 말한다. */}
           <div
-            aria-busy={audit.view.loading || exporting.busy || restricting.busy || recovering.busy}
+            aria-busy={
+              audit.view.loading ||
+              exporting.busy ||
+              restricting.busy ||
+              recovering.busy ||
+              noticing.busy
+            }
             aria-live="polite"
             className={styles.notice}
             role="status"
@@ -457,7 +607,9 @@ export function OperatorScreen(): ReactElement {
                   ? restrictionSentence(restricting)
                   : lastCommand === 'recovery'
                     ? recoverySentence(recovering)
-                    : exportSentence(exporting),
+                    : lastCommand === 'notice'
+                      ? noticeSentence(noticing)
+                      : exportSentence(exporting),
                 lookup.lookup.status === 'loading',
                 audit.view,
                 auditVisible,
@@ -1118,6 +1270,281 @@ export function OperatorScreen(): ReactElement {
                 </section>
               ) : null}
 
+              {noticeVisible ? (
+                <section aria-labelledby={copy.notice.id} className={styles.section}>
+                  <h2 className={styles.sectionHeading} id={copy.notice.id}>
+                    {copy.notice.heading}
+                  </h2>
+                  <p>{copy.notice.body}</p>
+                  {noticing.list.everLoaded && !noticing.list.supportContactConfigured ? (
+                    <p className={styles.help}>{copy.notice.contactMissing}</p>
+                  ) : null}
+                  {noticing.list.everLoaded ? (
+                    <>
+                      <form
+                        className={styles.form}
+                        onSubmit={(event) => {
+                          // 폼은 fetch로만 보낸다. `form-action 'none'` CSP를 유지한다.
+                          event.preventDefault()
+                        }}
+                      >
+                        <div className={styles.wideField}>
+                          <label className={styles.label} htmlFor="operator-notice-incident">
+                            {copy.notice.incidentLabel}
+                          </label>
+                          <select
+                            className={styles.input}
+                            id="operator-notice-incident"
+                            onChange={(event) => {
+                              const next = event.target.value
+                              setNoticeIncident(next)
+                              // 기존 사건을 고르면 그 최신 버전이 덮던 제한 가운데 아직 활성인 것을 미리 고른다.
+                              const chosen = openIncidents.find(
+                                (incident) => incident.incidentId === next,
+                              )
+                              setNoticeCovers(chosen?.versions.at(-1)?.covers ?? [])
+                            }}
+                            value={incidentChoice}
+                          >
+                            <option value={NEW_INCIDENT}>{copy.notice.newIncident}</option>
+                            {openIncidents.map((incident) => {
+                              const latest = incident.versions.at(-1)
+                              return (
+                                <option key={incident.incidentId} value={incident.incidentId}>
+                                  {incidentOptionLabel(
+                                    incident.startedAt,
+                                    latest?.version ?? 0,
+                                    latest?.status ?? '',
+                                    incident.incidentId,
+                                  )}
+                                </option>
+                              )
+                            })}
+                          </select>
+                        </div>
+                        {incidentChoice === NEW_INCIDENT ? null : (
+                          <div className={styles.field}>
+                            <label className={styles.label} htmlFor="operator-notice-status">
+                              {copy.notice.statusLabel}
+                            </label>
+                            <select
+                              className={styles.input}
+                              id="operator-notice-status"
+                              onChange={(event) => {
+                                setNoticeStatus(event.target.value as FollowUpNoticeStatus)
+                              }}
+                              value={noticeStatus}
+                            >
+                              {FOLLOW_UP_NOTICE_STATUSES.map((status) => (
+                                <option key={status} value={status}>
+                                  {noticeStatusLabel(status)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                        {noticeRecovering ? (
+                          <div className={styles.wideField}>
+                            <p className={styles.help}>{copy.notice.recoveredCovers}</p>
+                            {recoveringStillOpen === 0 ? null : (
+                              <p className={styles.empty}>
+                                {copy.notice.recoveredStillOpen(recoveringStillOpen)}
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <fieldset
+                            aria-describedby="operator-notice-covers-help"
+                            className={styles.fieldset}
+                          >
+                            <legend className={styles.label}>{copy.notice.coversLegend}</legend>
+                            {restricting.list.items.length === 0 ? (
+                              <p className={styles.empty}>{copy.notice.noActive}</p>
+                            ) : (
+                              restricting.list.items.map((item) => (
+                                <label className={styles.checkboxLabel} key={item.restrictionId}>
+                                  <input
+                                    checked={noticeCovers.includes(item.restrictionId)}
+                                    className={styles.checkbox}
+                                    onChange={(event) => {
+                                      const checked = event.target.checked
+                                      setNoticeCovers((current) =>
+                                        checked
+                                          ? [...current, item.restrictionId]
+                                          : current.filter((id) => id !== item.restrictionId),
+                                      )
+                                    }}
+                                    type="checkbox"
+                                  />
+                                  <span>
+                                    {copy.notice.coverLabel(
+                                      featureLabel(item.feature),
+                                      scopeLabel(item.scope),
+                                      item.scope === 'GLOBAL' ? '' : restrictionTargetLabel(item),
+                                    )}
+                                  </span>
+                                </label>
+                              ))
+                            )}
+                            <p className={styles.help} id="operator-notice-covers-help">
+                              {copy.notice.coversHelp}
+                            </p>
+                          </fieldset>
+                        )}
+                        <div className={styles.wideField}>
+                          <label className={styles.label} htmlFor="operator-notice-message">
+                            {copy.notice.messageLabel}
+                          </label>
+                          <input
+                            aria-describedby="operator-notice-message-help"
+                            aria-invalid={noticeMessageForbidden}
+                            autoComplete="off"
+                            className={styles.input}
+                            id="operator-notice-message"
+                            maxLength={NOTICE_MESSAGE_MAX_LENGTH}
+                            onChange={(event) => {
+                              setNoticeMessage(event.target.value)
+                            }}
+                            type="text"
+                            value={noticeMessage}
+                          />
+                          <p className={styles.help} id="operator-notice-message-help">
+                            {noticeMessageForbidden
+                              ? copy.notice.messageForbidden
+                              : copy.notice.messageHelp}
+                          </p>
+                        </div>
+                        {noticeRecovering ? null : (
+                          <div className={styles.wideField}>
+                            <label className={styles.label} htmlFor="operator-notice-next">
+                              {copy.notice.nextUpdateLabel}
+                            </label>
+                            <input
+                              aria-describedby="operator-notice-next-help"
+                              className={styles.input}
+                              id="operator-notice-next"
+                              onChange={(event) => {
+                                setNoticeNext(event.target.value)
+                              }}
+                              type="datetime-local"
+                              value={noticeNext}
+                            />
+                            <p className={styles.help} id="operator-notice-next-help">
+                              {copy.notice.nextUpdateHelp}
+                            </p>
+                          </div>
+                        )}
+                      </form>
+                      <button
+                        aria-disabled={busy || !canNotice}
+                        className={styles.dangerButton}
+                        id={copy.notice.startId}
+                        onClick={() => {
+                          if (busy || !canNotice) {
+                            return
+                          }
+                          setLastCommand('notice')
+                          noticing.prepare({
+                            incident: incidentChoice,
+                            status: effectiveNoticeStatus,
+                            // 복구 공지는 비워 보낸다 — 서버가 직전 버전이 덮던 제한을 잇는다.
+                            covers: noticeRecovering ? [] : noticeCovers,
+                            message: noticeMessage.trim(),
+                            nextUpdateAt: noticeRecovering ? null : nextUpdateIso(noticeNext),
+                          })
+                        }}
+                        type="button"
+                      >
+                        {copy.notice.start}
+                      </button>
+
+                      {noticing.reauthRequired && lastCommand === 'notice' ? (
+                        <div className={styles.result}>
+                          <p className={styles.label}>{copy.notice.reauthLabel}</p>
+                          <div className={reauthStyles.providerList}>
+                            {SIGN_IN_PROVIDERS.map((provider) => (
+                              <button
+                                aria-disabled={busy}
+                                className={PROVIDER_BUTTON_CLASS[provider]}
+                                key={provider}
+                                onClick={() => {
+                                  if (busy) return
+                                  reauthentication.requestReauthentication(provider)
+                                }}
+                                type="button"
+                              >
+                                <ProviderMark provider={provider} />
+                                <span>{authContent.settings.reauth.labels[provider]}</span>
+                              </button>
+                            ))}
+                          </div>
+                          <p className={styles.help}>{authContent.reauth.boundary}</p>
+                        </div>
+                      ) : null}
+
+                      {noticing.completed === null ? null : (
+                        <div
+                          aria-labelledby={copy.notice.result.id}
+                          className={styles.result}
+                          role="group"
+                        >
+                          <h3
+                            className={styles.label}
+                            id={copy.notice.result.id}
+                            ref={noticeResultRef}
+                            tabIndex={-1}
+                          >
+                            {copy.notice.result.heading}
+                          </h3>
+                          <p>
+                            {copy.notice.result.version}: v{String(noticing.completed.version)}{' '}
+                            {noticeStatusLabel(noticing.completed.status)}
+                          </p>
+                          <p>
+                            {copy.notice.result.incident}: {noticing.completed.incidentId}
+                          </p>
+                          <p>
+                            {copy.notice.result.operation}: {noticing.completed.operationId}
+                          </p>
+                          <p>
+                            {copy.notice.result.publishedAt}:{' '}
+                            {noticeTime(noticing.completed.publishedAt)}
+                          </p>
+                        </div>
+                      )}
+                    </>
+                  ) : null}
+
+                  <h3 className={styles.label} id={copy.notice.history.id}>
+                    {copy.notice.history.heading}
+                  </h3>
+                  {noticing.list.status === 'failed' ? (
+                    <p className={styles.empty}>{copy.notice.history.failed}</p>
+                  ) : null}
+                  {noticing.list.items.length === 0 ? (
+                    noticing.list.status === 'loaded' ? (
+                      <p className={styles.empty}>{copy.notice.history.empty}</p>
+                    ) : null
+                  ) : (
+                    <ol aria-labelledby={copy.notice.history.id} className={styles.list}>
+                      {noticing.list.items.map((incident) => (
+                        <IncidentRow incident={incident} key={incident.incidentId} />
+                      ))}
+                    </ol>
+                  )}
+                  <button
+                    aria-disabled={noticing.list.loading}
+                    className={styles.button}
+                    onClick={() => {
+                      if (!noticing.list.loading) noticing.reloadList()
+                    }}
+                    type="button"
+                  >
+                    {copy.notice.history.reload}
+                  </button>
+                </section>
+              ) : null}
+
               <section aria-labelledby={copy.operation.id} className={styles.section}>
                 <h2 className={styles.sectionHeading} id={copy.operation.id}>
                   {copy.operation.heading}
@@ -1186,6 +1613,16 @@ export function OperatorScreen(): ReactElement {
           onConfirm={restricting.confirm}
           prepared={restricting.prepared}
           uncertain={restricting.uncertain}
+        />
+      ) : null}
+      {noticeDialogOpen ? (
+        <OperatorNoticeDialog
+          code={noticing.code}
+          confirming={noticing.phase === 'confirming'}
+          onCancel={noticing.cancel}
+          onConfirm={noticing.confirm}
+          prepared={noticing.prepared}
+          uncertain={noticing.uncertain}
         />
       ) : null}
       {recoveryDialogOpen ? (
@@ -1300,6 +1737,36 @@ function restrictionSentence(
         : copy.restriction.uncertainClosed
     case 'refused':
       return operatorRefusalMessage(restricting.code)
+    case 'idle':
+      return null
+  }
+}
+
+/** 서비스 공지 발행의 진행·결과 문장(Story 3.5). 말할 것이 없으면 `null`. */
+function noticeSentence(noticing: ReturnType<typeof useOperatorNotice>): string | null {
+  switch (noticing.phase) {
+    case 'preparing':
+      return copy.status.noticePreparing
+    case 'armed':
+      return noticing.uncertain ? copy.notice.uncertain : copy.status.noticePrepared
+    case 'confirming':
+      return copy.status.noticeConfirming
+    case 'completed': {
+      const done = noticing.completed
+      return done === null
+        ? copy.status.noticeConfirming
+        : copy.status.noticeCompleted(done.version, noticeStatusLabel(done.status))
+    }
+    case 'cancelled':
+      return noticing.uncertainOperationId === null
+        ? copy.status.noticeCancelled
+        : copy.notice.uncertainClosed
+    case 'refused':
+      return operatorRefusalMessage(
+        noticing.code,
+        PUBLISH_NOTICE_COMMAND,
+        noticing.requestedStatus ?? undefined,
+      )
     case 'idle':
       return null
   }

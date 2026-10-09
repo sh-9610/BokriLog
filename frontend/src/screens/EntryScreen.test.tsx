@@ -9,7 +9,11 @@ import {
   signInCopyStrings,
 } from '../content/auth'
 import { entryContent, entryCopyStrings } from '../content/entry'
-import { getObservedRequests, getObservedStorageEntries } from '../test/setup'
+import {
+  getObservedNoticeRequests,
+  getObservedRequests,
+  getObservedStorageEntries,
+} from '../test/setup'
 import { EntryScreen } from './EntryScreen'
 
 function headingLevels(): number[] {
@@ -101,10 +105,14 @@ describe('EntryScreen', () => {
     expect(document.getElementById(target)?.tagName.toLowerCase()).toBe('main')
   })
 
-  it('렌더만으로 네트워크 요청이 발생하지 않는다', () => {
+  it('렌더만으로 네트워크 요청이 발생하지 않는다', async () => {
     render(<EntryScreen />)
+    // 효과·마이크로태스크가 돌 틈을 준다 — 늦게 나가는 요청도 센다.
+    await Promise.resolve()
 
     expect(getObservedRequests()).toEqual([])
+    // 서비스 공지 조회(Story 3.5)는 로그인 화면만 보낸다. 진입 화면은 그것도 0건이다.
+    expect(getObservedNoticeRequests()).toEqual([])
   })
 
   it('렌더만으로 브라우저 저장소 항목이 생기지 않는다', () => {

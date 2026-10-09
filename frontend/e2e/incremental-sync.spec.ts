@@ -16,6 +16,7 @@ import {
   publishAndOpenResult,
   startConversionByKeyboard,
 } from './support/firstPlan'
+import { tabStopsOutsideNotices } from './support/tabStops'
 
 const injectedOrigin = process.env.PLAYWRIGHT_BASE_URL?.trim() ?? ''
 
@@ -263,11 +264,7 @@ test.describe('활성 계획의 증분 동기화', () => {
         timeout: 15_000,
       },
     )
-    const reached: string[] = []
-    for (let step = 0; step < 9; step += 1) {
-      await page.keyboard.press('Tab')
-      reached.push(await page.evaluate(() => document.activeElement?.textContent.trim() ?? ''))
-    }
+    const reached = await tabStopsOutsideNotices(page, 9)
     expect(reached).toEqual([
       entryContent.skipLink,
       authContent.settings.link,

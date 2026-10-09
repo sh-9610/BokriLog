@@ -147,6 +147,8 @@ forbidden_fragments=(
   # Story 3.1의 운영자 allowlist와 감사 digest 키.
   'BOKRILOG_OPERATORS'
   'BOKRILOG_AUDIT_DIGEST_KEY'
+  # Story 3.5의 지원 연락처 설정 이름.
+  'BOKRILOG_SUPPORT_CONTACT'
   'SPRING_PROFILES_ACTIVE'
   'NGINX_ENTRYPOINT_QUIET_LOGS'
   # 재인증이 제공자에게 보내는 최근 인증 요청·증거. 인가 요청의 `claims`와 ID Token의 claim
@@ -263,6 +265,12 @@ operator_subject="operator-verify-$$"
 BOKRILOG_OPERATORS="${operator_issuer}|${operator_subject}|command,audit;${operator_issuer}|e2e-operator|command,audit"
 BOKRILOG_AUDIT_DIGEST_KEY="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
 export BOKRILOG_OPERATORS BOKRILOG_AUDIT_DIGEST_KEY
+
+# 서비스 공지(Story 3.5)의 지원 연락처. compose 기본값은 비어 있어(공지 발행 거절) 이 스크립트가 개발용 주소를 넣는다 —
+# 이어 도는 Playwright 회귀(`e2e/operator.spec.ts`)가 공지를 발행하고 사용자 화면의 연락처 링크를 본다. `.test`는
+# 예약 최상위 도메인이라 실제로 전달되는 주소가 아니다.
+BOKRILOG_SUPPORT_CONTACT='support@bokrilog.test'
+export BOKRILOG_SUPPORT_CONTACT
 
 # 스키마 마이그레이션을 `up` 앞에서 한 번만 실행한다(AD-12).
 #

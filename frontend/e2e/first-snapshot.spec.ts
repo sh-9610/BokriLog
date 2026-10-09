@@ -24,6 +24,7 @@ import {
   publishAndOpenResult,
   startConversionByKeyboard,
 } from './support/firstPlan'
+import { tabStopsOutsideNotices } from './support/tabStops'
 
 const injectedOrigin = process.env.PLAYWRIGHT_BASE_URL?.trim() ?? ''
 const MINUTE_MS = 60_000
@@ -167,11 +168,7 @@ async function expectKeyboardOrder(page: Page): Promise<void> {
       .getByRole('region', { name: planResultContent.heading })
       .getByRole('region', { name: planResultContent.currentHeading }),
   ).toBeVisible({ timeout: 15_000 })
-  const reached: string[] = []
-  for (let step = 0; step < 9; step += 1) {
-    await page.keyboard.press('Tab')
-    reached.push(await page.evaluate(() => document.activeElement?.textContent.trim() ?? ''))
-  }
+  const reached = await tabStopsOutsideNotices(page, 9)
   expect(reached).toEqual([
     entryContent.skipLink,
     authContent.settings.link,

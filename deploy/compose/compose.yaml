@@ -173,6 +173,10 @@ services:
       # 감사 digest 키. 이름만 여기 있고 **값은 이 파일에 없다**(위 key ring과 같은 근거). 비면 백엔드가 기동을
       # 거부한다 — `verify-same-origin.sh`가 실행 시점에 만들고, 손으로 띄울 때는 `DEVELOPMENT.md`의 명령으로 넣는다.
       BOKRILOG_AUDIT_DIGEST_KEY: ${BOKRILOG_AUDIT_DIGEST_KEY:-}
+      # 서비스 공지(Story 3.5)의 지원 연락처. **기본값은 비어 있다** — 비면 공지 발행이 거절되고 사용자 공지에 연락처가
+      # 없다(허위 지원 경로를 만들지 않는다). 개발·CI의 값은 `verify-same-origin.sh`가 개발용 주소로 넣고 그 스택에
+      # 이어 도는 Playwright 회귀가 그 값을 쓴다.
+      BOKRILOG_SUPPORT_CONTACT: ${BOKRILOG_SUPPORT_CONTACT:-}
     healthcheck:
       # alpine 베이스의 busybox wget이다. 이미지에 도구를 더 넣지 않는다.
       test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1:8080/api/status']

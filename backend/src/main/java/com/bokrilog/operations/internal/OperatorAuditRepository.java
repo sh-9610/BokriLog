@@ -219,13 +219,14 @@ class OperatorAuditRepository {
 
     /**
      * 완료 행의 저장된 결과. 추출은 상한·행 수·잘림을, 제한 생성(Story 3.2)은 제한 ID·기능·scope·효력 시작을, 해제(Story
-     * 3.4)는 제한 ID·기능·scope·해제 시각·단계 배열(JSON 원문)을 {@code details}에 남긴다. 그 command의 것이 아닌 값은 비어
-     * 있다.
+     * 3.4)는 제한 ID·기능·scope·해제 시각·단계 배열(JSON 원문)을, 공지 발행(Story 3.5)은 사건 ID·버전·상태·발행 시각을
+     * {@code details}에 남긴다. 그 command의 것이 아닌 값은 비어 있다.
      */
     record Completed(String command, String target, @Nullable String keyDigest, long upperSequence, int rowCount,
             boolean truncated, @Nullable UUID restrictionId, @Nullable String feature, @Nullable String restrictionScope,
             @Nullable Instant effectiveFrom, @Nullable Instant liftedAt, @Nullable String reopenedStages,
-            @Nullable String stillBlockedStages) {}
+            @Nullable String stillBlockedStages, @Nullable UUID incidentId, @Nullable Integer noticeVersion,
+            @Nullable String noticeStatus, @Nullable Instant publishedAt) {}
 
     Optional<Completed> completed(UUID actorUserId, String operationId) {
         return this.jdbc.sql("SELECT command, target, details->>'keyDigest' AS key_digest, "
@@ -237,7 +238,10 @@ class OperatorAuditRepository {
                         + "CAST(details->>'effectiveFrom' AS timestamptz) AS effective_from, "
                         + "CAST(details->>'liftedAt' AS timestamptz) AS lifted_at, "
                         + "CAST(details->'reopenedStages' AS text) AS reopened_stages, "
-                        + "CAST(details->'stillBlockedStages' AS text) AS still_blocked_stages "
+                        + "CAST(details->'stillBlockedStages' AS text) AS still_blocked_stages, "
+                        + "CAST(details->>'incidentId' AS uuid) AS incident_id, "
+                        + "CAST(details->>'version' AS integer) AS notice_version, details->>'status' AS notice_status, "
+                        + "CAST(details->>'publishedAt' AS timestamptz) AS published_at "
                         + "FROM operations_audit_event WHERE actor_user_id = :actor AND operation_id = :operationId "
                         + "AND outcome = 'COMPLETED' ORDER BY sequence LIMIT 1")
                 .param("actor", actorUserId)
@@ -247,7 +251,9 @@ class OperatorAuditRepository {
                         rs.getBoolean("truncated"), rs.getObject("restriction_id", UUID.class), rs.getString("feature"),
                         rs.getString("restriction_scope"), nullableInstant(rs, "effective_from"),
                         nullableInstant(rs, "lifted_at"), rs.getString("reopened_stages"),
-                        rs.getString("still_blocked_stages")))
+                        rs.getString("still_blocked_stages"), rs.getObject("incident_id", UUID.class),
+                        rs.getObject("notice_version", Integer.class), rs.getString("notice_status"),
+                        nullableInstant(rs, "published_at")))
                 .optional();
     }
 

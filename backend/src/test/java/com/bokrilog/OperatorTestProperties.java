@@ -14,6 +14,9 @@ import org.springframework.test.context.DynamicPropertyRegistry;
  */
 final class OperatorTestProperties {
 
+    /** 시험 컨텍스트의 지원 연락처. */
+    static final String SUPPORT_CONTACT = "support@bokrilog.test";
+
     /** 이 JVM의 digest 키. 컨텍스트가 몇 개 뜨든 같은 값이라 컨텍스트 캐시 키가 갈리지 않는다. */
     static final String AUDIT_DIGEST_KEY = newKey();
 
@@ -22,6 +25,9 @@ final class OperatorTestProperties {
     static void registerProperties(DynamicPropertyRegistry registry) {
         registry.add("bokrilog.operations.audit-digest-key", () -> AUDIT_DIGEST_KEY);
         registry.add("bokrilog.operations.operators", () -> "");
+        // 서비스 공지(Story 3.5)의 지원 연락처. 예약 최상위 도메인 `.test`의 개발용 주소다. 비어 있는 경우는
+        // `SupportContact.reinterpret` 훅으로 시험한다.
+        registry.add("bokrilog.operations.support-contact", () -> SUPPORT_CONTACT);
     }
 
     private static String newKey() {
