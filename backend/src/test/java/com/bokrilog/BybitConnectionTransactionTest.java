@@ -216,7 +216,7 @@ class BybitConnectionTransactionTest extends AuthFlowTestBase {
         doAnswer(
                         invocation -> {
                             observed.set(true);
-                            restrictCommand(BybitConnectionService.COMMAND);
+                            restrictGlobally(com.bokrilog.operations.RestrictionFeature.NEW_CONNECTION);
                             return invocation.callRealMethod();
                         })
                 .when(this.sources)

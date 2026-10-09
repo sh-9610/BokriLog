@@ -104,7 +104,7 @@ export function OperatorExportDialog({
             </p>
           ) : null}
           {code !== null && !confirming ? (
-            <p className={styles.notice}>{operatorRefusalMessage(code)}</p>
+            <p className={styles.notice}>{operatorRefusalMessage(code, 'audit-export')}</p>
           ) : null}
           {uncertain && !confirming ? (
             <p className={styles.notice}>{operatorContent.export.uncertain}</p>

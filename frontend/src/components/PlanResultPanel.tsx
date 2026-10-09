@@ -24,8 +24,10 @@ import {
   planResultContent as copy,
   copyFor,
   nextActionCopy,
+  restrictedNextActionCopy,
   type MetricName,
 } from '../content/planResult'
+import { planSyncContent } from '../content/planSync'
 import { planVerificationContent } from '../content/planVerification'
 import { formatAmount, formatPercent, formatSeoulTime, percentFromRatio } from '../format/decimal'
 import { isInstant } from '../session/instant'
@@ -453,6 +455,15 @@ function Notice({
       </div>
     )
   }
+  if (view.kind === 'displayRestricted') {
+    // Story 3.2: 제한을 글로 말하고 재시도를 두지 않는다 — 다시 불러오기가 아니라 운영자가 푼다.
+    return (
+      <div className={styles.notice}>
+        <p className={styles.noticeName}>{copy.displayRestrictedLabel}</p>
+        <p>{copy.displayRestrictedHelp}</p>
+      </div>
+    )
+  }
   if (view.kind === 'denied') {
     return (
       <div className={styles.notice}>
@@ -468,6 +479,54 @@ function Notice({
     )
   }
   return null
+}
+
+/**
+ * 계산 표시 제한 중 결과 값 대신 남는 블록(Story 3.2): 동기화 상태, 계획 종료 가용성, 다음 행동. 모두 읽기 전용이다 —
+ * 제한 동안 새 계산 버전은 발행되지 않고 계획 종료도 받지 않으므로 조작 버튼을 두지 않고, 재시도도 두지 않는다.
+ */
+function RestrictedBlocks({
+  view,
+}: {
+  readonly view: Extract<DashboardView, { readonly kind: 'displayRestricted' }>
+}): ReactElement {
+  const { sync, planEnd } = view
+  return (
+    <>
+      {view.shownState === 'ENDED' ? null : (
+        <section aria-labelledby="plan-result-restricted-sync" className={styles.group}>
+          <h3 id="plan-result-restricted-sync">{planSyncContent.action}</h3>
+          {sync.availability === 'UNAVAILABLE' ? (
+            <p>
+              {planSyncContent.unavailableLabel}:{' '}
+              {copyFor(planSyncContent.reasons, sync.reason ?? '', planSyncContent.unknownReason)}
+            </p>
+          ) : sync.availability === 'IN_PROGRESS' ? (
+            <p>{planSyncContent.runningHelp}</p>
+          ) : (
+            <p>{copy.displayRestrictedSync}</p>
+          )}
+        </section>
+      )}
+      {view.shownState === 'READY' && planEnd.availability === 'UNAVAILABLE' ? (
+        <section aria-labelledby="plan-result-restricted-end" className={styles.group}>
+          <h3 id="plan-result-restricted-end">{planEndContent.area.heading}</h3>
+          <p>
+            {planEndContent.area.unavailableLabel}:{' '}
+            {copyFor(
+              planEndContent.area.reasons,
+              planEnd.reason ?? '',
+              planEndContent.area.unknownReason,
+            )}
+          </p>
+        </section>
+      ) : null}
+      <section aria-labelledby="plan-result-restricted-next" className={styles.group}>
+        <h3 id="plan-result-restricted-next">{copy.nextActionHeading}</h3>
+        <p>{restrictedNextActionCopy(view.nextAction)}</p>
+      </section>
+    </>
+  )
 }
 
 /**
@@ -543,7 +602,10 @@ export function PlanResultPanel({
   const inactive = terminal !== null
   const [current, ...rest] = result?.metrics ?? []
   const measured = result === null ? null : seoulOrNull(result.measuredAt)
-  const hasNextAction = view.kind !== 'checking' && view.kind !== 'denied'
+  // 결과가 막힌 동안(Story 3.2)에는 일반 다음 행동 블록을 두지 않는다 — 그 다시 불러오기가 제한의 재시도 버튼이 된다.
+  // 대신 아래 제한 블록이 다음 행동을 말한다.
+  const hasNextAction =
+    view.kind !== 'checking' && view.kind !== 'denied' && view.kind !== 'displayRestricted'
   const hasResult = result !== null
   const heading = useRef<HTMLHeadingElement>(null)
   // The element inside the panel that last had focus, until focus leaves the panel for another element.
@@ -736,6 +798,8 @@ export function PlanResultPanel({
           </button>
         </section>
       ) : null}
+
+      {view.kind === 'displayRestricted' ? <RestrictedBlocks view={view} /> : null}
 
       {result === null || completion !== null ? null : <Conditions result={result} />}
 

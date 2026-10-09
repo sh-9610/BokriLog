@@ -4,6 +4,8 @@ import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.operations.OperationalRestrictionApi;
+import com.bokrilog.operations.RestrictionFeature;
+import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.plan.PlanConditionApi;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.portfolio.PortfolioMembershipApi.FirstOfficialSnapshot;
@@ -89,7 +91,7 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
             if (ends.terminalPlanExists(userId) && sync.currentNextBaseline(userId).isEmpty())
                 return new State(false,PLAN_ENDED,null,null,null);
             FirstOfficialSnapshot s=eligibleSnapshot(userId).orElse(null);
-            if (s==null) {
+            if (s==null || !eligibleRestrictions(subjectOf(s.portfolioId(),s.connectionId()))) {
                 repository.invalidateOpen(userId);
                 return new State(false,"NOT_ELIGIBLE",null,null,null);
             }
@@ -132,7 +134,8 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
                 repository.lockUser(userId);
                 Instant now=Instant.now();
                 repository.invalidateExpired(userId,now);
-                if (!accounts.lockWriteAccess(userId) || !eligibleRestrictions() || !sameSnapshot(userId,s)) {
+                if (!accounts.lockWriteAccess(userId) || !eligibleRestrictions(subjectOf(s.portfolioId(),s.connectionId()))
+                        || !sameSnapshot(userId,s)) {
                     repository.invalidateOpen(userId);
                     return false;
                 }
@@ -156,7 +159,8 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
         try {
             return transactions.execute(status -> {
                 repository.lockUser(userId);
-                if (!accounts.lockWriteAccess(userId) || !eligibleRestrictions())
+                if (!accounts.lockWriteAccess(userId) || !eligibleRestrictions(RestrictionSubject.none()
+                        .withCalculationPolicy(CALCULATION_POLICY)))
                     return new Confirmation(false,false,null,null);
                 // An active plan takes no new conditions — whatever the reference is: unknown, from another
                 // session, of another policy, or a replay. Checked before the reference is read, so every
@@ -172,6 +176,9 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
                 if (c==null
                         || !c.calendarPolicy().equals(CALENDAR_POLICY)
                         || !c.calculationPolicy().equals(CALCULATION_POLICY)) return new Confirmation(false,false,null,null);
+                // 확인은 자기 portfolio·연결을 가리킨다: 둘 중 하나의 제한도 확인을 막는다(Story 3.2).
+                if (!eligibleRestrictions(subjectOf(c.portfolioId(),c.connectionId())))
+                    return new Confirmation(false,false,null,null);
                 var prior=repository.idempotency(userId,idempotencyKey).orElse(null);
                 if (prior!=null) {
                     return new Confirmation(prior.canonicalHash().equals(c.canonicalHash()),
@@ -214,7 +221,8 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
     public Optional<CollectionIntent> collectionIntent(@Nullable UUID userId, UUID intentId) {
         if (userId == null) return Optional.empty();
         return transactions.execute(status -> {
-            if (!eligibleUser(userId) || currentTerms(userId,intentId,false).isEmpty()) return Optional.empty();
+            // 초기 수집의 intent 판정이다(Story 3.2): 대응표에서 초기 수집은 동기화 하나만 본다 — 계산 표시 제한은 막지 않는다.
+            if (!writableUser(userId) || currentTerms(userId,intentId,false,SYNC_ONLY).isEmpty()) return Optional.empty();
             var row = repository.collectionIntent(userId,intentId).orElse(null);
             if (row == null || !"OPEN".equals(row.status()) || !row.expiresAt().isAfter(Instant.now()))
                 return Optional.empty();
@@ -238,6 +246,17 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
     }
 
     @Override
+    public Optional<PlanConditionApi.PlanTarget> planTarget(UUID planId) {
+        return repository.planTarget(planId);
+    }
+
+    @Override
+    public long countPlans(boolean activeOnly, @Nullable UUID userId, @Nullable UUID portfolioId,
+            @Nullable String calculationPolicy) {
+        return repository.countPlans(activeOnly,userId,portfolioId,calculationPolicy);
+    }
+
+    @Override
     public void erasePlanData(@Nullable UUID userId) {
         if (userId!=null) transactions.executeWithoutResult(status -> repository.erase(userId));
     }
@@ -247,7 +266,7 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
     @Override
     public Optional<Terms> publishableTerms(@Nullable UUID userId, UUID intentId) {
         if (userId==null || !eligibleUser(userId)) return Optional.empty();
-        return transactions.execute(status -> currentTerms(userId,intentId,false));
+        return transactions.execute(status -> currentTerms(userId,intentId,false,CONDITION_FEATURES));
     }
 
     @Override
@@ -310,7 +329,7 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
         requireCallerTransaction();
         if (!eligibleUser(userId)) return Optional.empty();
         // The intent row is locked here: a racing confirmation's replacement waits for this commit.
-        var current=currentTerms(userId,expected.intentId(),true).orElse(null);
+        var current=currentTerms(userId,expected.intentId(),true,CONDITION_FEATURES).orElse(null);
         if (current==null || !current.equals(expected)) return Optional.empty();
         var row=repository.intentTerms(userId,expected.intentId(),false).orElseThrow();
         if (!row.endAt().isAfter(repository.databaseNow())) return Optional.empty();
@@ -333,11 +352,14 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
      * the database clock and answers {@code PLAN_PERIOD_ENDED} on its own; {@link #createActivePlan}
      * checks it again against the database clock under the intent's row lock.
      */
-    private Optional<Terms> currentTerms(UUID userId, UUID intentId, boolean lock) {
+    private Optional<Terms> currentTerms(UUID userId, UUID intentId, boolean lock,
+            java.util.Set<RestrictionFeature> features) {
         var row=repository.intentTerms(userId,intentId,lock).orElse(null);
         if (row==null || !"OPEN".equals(row.status())
                 || !CALENDAR_POLICY.equals(row.calendarPolicy()) || !CALCULATION_POLICY.equals(row.calculationPolicy())
                 || repository.activePlanForPortfolio(row.portfolioId())) return Optional.empty();
+        // intent 자신의 portfolio·연결(Story 3.2): 둘 중 하나의 제한도 그 발행을 막는다.
+        if (restrictions.blocks(features,subjectOf(row.portfolioId(),row.connectionId()))) return Optional.empty();
         var s=eligibleSnapshot(userId).orElse(null);
         if (s==null || !s.portfolioId().equals(row.portfolioId()) || !s.snapshotId().equals(row.snapshotId())
                 || !s.membershipId().equals(row.membershipId()) || !s.connectionId().equals(row.connectionId())
@@ -366,15 +388,36 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
                 .orElse(null);
     }
 
-    private boolean eligibleUser(@Nullable UUID userId) {
-        return userId!=null && accounts.decide(userId,userId,AccountAccessKind.WRITE)==AccessDecision.ALLOWED
-                && eligibleRestrictions();
+    /** 계정 자신의 쓰기 접근만 본다. 제한은 호출자가 자기 기능으로 따로 본다. */
+    private boolean writableUser(@Nullable UUID userId) {
+        return userId!=null && accounts.decide(userId,userId,AccountAccessKind.WRITE)==AccessDecision.ALLOWED;
     }
 
-    private boolean eligibleRestrictions() {
-        return !restrictions.isRestricted(COMMAND)
-                && !restrictions.isRestricted("first-snapshot")
-                && !restrictions.isRestricted("bybit-connection-create");
+    /** 계획 조건·첫 발행이 보는 기능(Story 3.2). */
+    private static final java.util.Set<RestrictionFeature> CONDITION_FEATURES=java.util.Collections.unmodifiableSet(
+            java.util.EnumSet.of(RestrictionFeature.SYNC,RestrictionFeature.CALCULATION_DISPLAY));
+
+    /** 초기 수집이 보는 기능(Story 3.2). */
+    private static final java.util.Set<RestrictionFeature> SYNC_ONLY=java.util.Collections.unmodifiableSet(
+            java.util.EnumSet.of(RestrictionFeature.SYNC));
+
+    private boolean eligibleUser(@Nullable UUID userId) {
+        return userId!=null && accounts.decide(userId,userId,AccountAccessKind.WRITE)==AccessDecision.ALLOWED
+                && eligibleRestrictions(RestrictionSubject.none().withCalculationPolicy(CALCULATION_POLICY));
+    }
+
+    /**
+     * 계획 조건을 막는 기능(Story 3.2): 동기화 — 조건은 발행으로만 이어진다 — 와 계산 표시 — 미리보기는 정책
+     * {@code CALC-1.0}의 계산을 보인다. 신규 연결 제한은 막지 않는다: 조건은 이미 있는 연결 위에서 돈다(NFR-17의 독립성).
+     * 호출자가 가진 차원만 넘기고, 판독 실패는 예외다(fail-closed).
+     */
+    private boolean eligibleRestrictions(RestrictionSubject subject) {
+        return !restrictions.blocks(CONDITION_FEATURES,subject);
+    }
+
+    private static RestrictionSubject subjectOf(UUID portfolioId, UUID connectionId) {
+        return RestrictionSubject.none().withPortfolio(portfolioId).withConnection(connectionId)
+                .withCalculationPolicy(CALCULATION_POLICY);
     }
 
     private Optional<FirstOfficialSnapshot> eligibleSnapshot(UUID userId) {

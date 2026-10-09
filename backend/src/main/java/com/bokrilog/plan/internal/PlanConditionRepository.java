@@ -256,4 +256,27 @@ class PlanConditionRepository {
     private static Instant instant(java.sql.ResultSet rs, int column) throws java.sql.SQLException {
         return rs.getObject(column,OffsetDateTime.class).toInstant();
     }
+
+    /** 운영 제한의 대상 확인(Story 3.2): id로 찾은 계획. */
+    java.util.Optional<com.bokrilog.plan.PlanConditionApi.PlanTarget> planTarget(UUID planId) {
+        return jdbc.sql("SELECT plan_id,user_id,portfolio_id,connection_id,status,calculation_policy "
+                + "FROM plan_definition WHERE plan_id=:p")
+            .param("p",planId)
+            .query((rs,n)->new com.bokrilog.plan.PlanConditionApi.PlanTarget(rs.getObject(1,UUID.class),
+                rs.getObject(2,UUID.class),rs.getObject(3,UUID.class),rs.getObject(4,UUID.class),rs.getString(5),
+                rs.getString(6)))
+            .optional();
+    }
+
+    /** 조건에 맞는 계획의 수(Story 3.2). {@code null}인 조건은 거르지 않는다. */
+    long countPlans(boolean activeOnly, @org.jspecify.annotations.Nullable UUID userId,
+            @org.jspecify.annotations.Nullable UUID portfolioId, @org.jspecify.annotations.Nullable String policy) {
+        Long count=jdbc.sql("SELECT count(*) FROM plan_definition WHERE (NOT :active OR status='ACTIVE') "
+                + "AND (CAST(:u AS uuid) IS NULL OR user_id=CAST(:u AS uuid)) "
+                + "AND (CAST(:p AS uuid) IS NULL OR portfolio_id=CAST(:p AS uuid)) "
+                + "AND (CAST(:c AS text) IS NULL OR calculation_policy=CAST(:c AS text))")
+            .param("active",activeOnly).param("u",userId).param("p",portfolioId).param("c",policy)
+            .query(Long.class).single();
+        return count==null ? 0L : count;
+    }
 }

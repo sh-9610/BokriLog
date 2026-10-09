@@ -344,3 +344,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-1-operator-surface-audit-ledger.md`
   summary: 운영 command 사유는 자유 텍스트이고 이메일 모양만 거절하므로 전화번호·이름·Bybit UID 같은 개인정보가 영구 원장에 들어갈 수 있고, `eraseActor`는 `reason`·`target`을 비식별하지 않는다.
   evidence: `OperatorEnvelopeService`의 사유 검증과 `OperatorAuditRepository.eraseActor`의 UPDATE 범위. 사유 필드의 보존·삭제 분류는 법정 분리 보존 결정(G-5, SPEC Ask First)과 함께 정해야 한다(리뷰 blind-hunter, 2026-10-08).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2-scoped-manual-restriction.md`
+  summary: 계획 조건 조회(`PlanConditionService.state`)가 제한을 만나면 사용자의 열린 계획 조건 intent를 되돌릴 수 없게 무효화한다 — 운영 제한은 해제되면 끝나는 일시 상태인데 그 사이 진행하던 조건 확인이 사라진다.
+  evidence: 무효화는 3.2 이전부터 전역 command 제한에 대해 있던 동작(`PlanConditionService.java` `state()`의 `invalidateOpen`)이고, 3.2의 portfolio·연결 scope가 그 발동 범위를 넓혔을 뿐이다. 제한 중 intent를 보존할지는 해제(3.4)·공지(3.5)와 함께 정해야 한다(리뷰 blind-hunter, 2026-10-09).

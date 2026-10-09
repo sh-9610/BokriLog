@@ -492,7 +492,7 @@ class PlanCompletionTest extends PlanSyncTestBase {
         UUID disconnected = connect(DevBybitStub.Scenario.UTA2);
         publishedPlan(disconnected, "completion-disconnected", null);
         reachEnd(disconnected, ready(disconnected));
-        restrictCommand("plan-sync");
+        UUID restriction = restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
         try {
             assertThat(sync.admitPlanSync(restricted, SyncJobApi.SyncTrigger.ENTRY, key("restricted", 1)))
                     .isEqualTo(new SyncJobApi.SyncAdmission.Refused("SYNC_UNAVAILABLE"));
@@ -504,7 +504,7 @@ class PlanCompletionTest extends PlanSyncTestBase {
             assertThat(dashboard.sync().reason()).isEqualTo("RESTRICTED");
             assertThat(dashboard.nextAction()).isEqualTo("SYNC_FOR_OBSERVATION");
         } finally {
-            jdbc().sql("DELETE FROM operations_restriction WHERE command='plan-sync'").update();
+            lift(restriction);
         }
         revokeConnectionOf(disconnected);
         assertThat(sync.admitPlanSync(disconnected, SyncJobApi.SyncTrigger.ENTRY, "completion-disconnected-1"))

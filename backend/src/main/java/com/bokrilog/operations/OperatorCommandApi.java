@@ -6,6 +6,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -13,8 +14,8 @@ import org.jspecify.annotations.Nullable;
  *
  * <p><b>이 모듈은 HTTP·세션·허가를 모른다.</b> 재인증·일회성 허가·세션 무장·회전은 루트({@code OperatorCommandService})가
  * Epic 1의 부품으로 하고, 여기서는 envelope의 검증(빈 사유·미지원 command·미지원 scope·클라이언트 actor·길이), 서버가
- * 정하는 확인 문구, 감사 행의 추가, 그리고 command의 실행(3.1에는 {@value #AUDIT_EXPORT} 하나)을 한다. 3.2는 같은
- * 자리에 command type을 더하기만 한다.
+ * 정하는 확인 문구, 감사 행의 추가, 그리고 command의 실행을 한다 — 3.1의 {@value #AUDIT_EXPORT}와 3.2의 제한 생성 넷
+ * ({@code restrict-<기능>}, {@link #restrictionFeatureOf}).
  *
  * <p><b>감사 없는 상태 변경이 없다.</b> 실행({@link #completeExport})은 호출자의 트랜잭션 안에서 결과 행을 쓰고 그
  * 트랜잭션이 허가 소비와 같다 — 하나가 실패하면 모두 롤백된다. 거절·실패·취소 행({@link #recordDecision})은 그 롤백
@@ -31,8 +32,34 @@ public interface OperatorCommandApi {
     /** {@value #AUDIT_EXPORT}가 받는 유일한 scope. */
     String SCOPE_AUDIT_LEDGER = "AUDIT_LEDGER";
 
-    /** envelope·확인 문구·실행 규칙의 정책 버전. 규칙을 바꾸면 이 값도 바꾼다. */
-    String POLICY_VERSION = "OPERATOR-COMMAND-1.0";
+    /** 신규 연결 제한(Story 3.2). */
+    String RESTRICT_NEW_CONNECTION = "restrict-new-connection";
+
+    /** 동기화 제한(Story 3.2). */
+    String RESTRICT_SYNC = "restrict-sync";
+
+    /** 계산 표시 제한(Story 3.2). */
+    String RESTRICT_CALCULATION_DISPLAY = "restrict-calculation-display";
+
+    /** 광고 제한(Story 3.2). 소비자는 Epic 4이고 지금은 제한 행과 감사만 생긴다. */
+    String RESTRICT_ADVERTISING = "restrict-advertising";
+
+    /** 제한 생성 command가 막는 기능. 제한 command가 아니면 {@code null}이다. */
+    static @Nullable RestrictionFeature restrictionFeatureOf(String command) {
+        return switch (command) {
+            case RESTRICT_NEW_CONNECTION -> RestrictionFeature.NEW_CONNECTION;
+            case RESTRICT_SYNC -> RestrictionFeature.SYNC;
+            case RESTRICT_CALCULATION_DISPLAY -> RestrictionFeature.CALCULATION_DISPLAY;
+            case RESTRICT_ADVERTISING -> RestrictionFeature.ADVERTISING;
+            default -> null;
+        };
+    }
+
+    /**
+     * envelope·확인 문구·실행 규칙의 정책 버전. 규칙을 바꾸면 이 값도 바꾼다. 1.1(Story 3.2): 제한 command 넷, 원장 scope
+     * {@code <기능>:<scope>}, 사용자 귀속 target의 digest, 대상 검사를 멱등 키·재인증 판정 뒤에 하는 준비 순서.
+     */
+    String POLICY_VERSION = "OPERATOR-COMMAND-1.1";
 
     /** 추출 한 번의 행 상한. 넘으면 앞쪽(오래된 순) 상한만큼이고 결과가 잘렸다고 말한다. */
     int MAX_EXPORT_ROWS = 10_000;
@@ -54,8 +81,11 @@ public interface OperatorCommandApi {
     /** 이 command가 받지 않는 scope다. */
     String UNSUPPORTED_SCOPE = "UNSUPPORTED_SCOPE";
 
-    /** 대상이 이 command의 형식이 아니다. */
+    /** 대상이 이 command의 형식이 아니거나, 없거나, 상태가 맞지 않다. */
     String TARGET_INVALID = "TARGET_INVALID";
+
+    /** 같은 기능·scope·target의 활성 제한이 이미 있다(Story 3.2). */
+    String ALREADY_RESTRICTED = "ALREADY_RESTRICTED";
 
     /** 요청 본문이 수행자를 주장했다. 수행자는 언제나 서버 세션이 정한다. */
     String ACTOR_NOT_ACCEPTED = "ACTOR_NOT_ACCEPTED";
@@ -71,14 +101,32 @@ public interface OperatorCommandApi {
             boolean actorClaimed) {}
 
     /**
+     * 검증을 지난 제한 요청(Story 3.2). 대상의 존재·상태는 아직 보지 않았다 — 그것은 다른 모듈의 사실이라 루트가 각 모듈
+     * 공개 API로 본다.
+     *
+     * <p>세션 무장에 실리므로 직렬화할 수 있다.
+     *
+     * @param target 정규화한 원 target. 전역이면 {@link RestrictionScope#GLOBAL_TARGET}이다
+     */
+    record Restriction(RestrictionFeature feature, RestrictionScope scope, String target)
+            implements java.io.Serializable {
+
+        @java.io.Serial private static final long serialVersionUID = 1L;
+    }
+
+    /**
      * 검증을 지난 제안.
      *
-     * @param target 정규화한 대상. 허가의 target이자 원장의 target이다
+     * @param scope 원장의 scope. 제한 command는 {@code <기능>:<scope>}다
+     * @param target 정규화한 원 대상. 화면에 되돌려 주고 실행에 쓴다
+     * @param ledgerTarget 원장·허가의 target. 사용자에게 귀속된 제한 target은 keyed digest이고 그 밖은 {@code target}과 같다
      * @param confirmationPhrase 서버가 정한 확인 문구. 사용자가 다시 입력해 확정에 실어 보낸다
-     * @param requestDigest {@code command|scope|target|reason}의 SHA-256. 같은 멱등 키의 다른 입력을 가른다
+     * @param requestDigest {@code command|scope|ledgerTarget|reason}의 SHA-256. 같은 멱등 키의 다른 입력을 가른다
+     * @param restriction 제한 command의 요청. 그 밖은 {@code null}
      */
-    record Accepted(String command, String scope, String target, String reason, String confirmationPhrase,
-            String policyVersion, Set<OperatorPermission> permissions, String requestDigest) {}
+    record Accepted(String command, String scope, String target, String ledgerTarget, String reason,
+            String confirmationPhrase, String policyVersion, Set<OperatorPermission> permissions, String requestDigest,
+            @Nullable Restriction restriction) {}
 
     sealed interface Validation {
         record Valid(Accepted accepted) implements Validation {}
@@ -91,6 +139,7 @@ public interface OperatorCommandApi {
      *
      * @param operationId 서버가 만든 불투명 ID
      * @param actorUserId 세션이 정한 수행자. 클라이언트 값이 아니다
+     * @param target 원장의 target({@link Accepted#ledgerTarget}). 사용자 귀속 원식별자가 아니다
      * @param confirmationHash 허가와 같은 정규 hash({@code ActionGrant.canonicalConfirmationHash}). 원문은 남기지 않는다
      * @param requestedAt 요청 시각(원장의 DB 시각). 첫 기록 전에는 {@code null}
      * @param idempotencyKeyDigest 멱등 키의 SHA-256. 키 원문은 남기지 않는다
@@ -177,11 +226,25 @@ public interface OperatorCommandApi {
         COMPLETED
     }
 
+    /** 실행된 command의 결과. 원장의 {@code COMPLETED} 행이 같은 값을 재생한다. */
+    sealed interface CommandResult permits ExportResult, RestrictionResult {
+        String operationId();
+    }
+
     /**
      * 추출 실행의 결과. 허가에 저장되는 것은 이 값뿐이다(허가 결과 상한 4KiB) — 행 묶음은 원장을
      * {@code sequence <= upperSequence}로 다시 읽어 만든다. 원장이 추가 전용이라 결정적이다.
      */
-    record ExportResult(String operationId, String target, long upperSequence, int rowCount, boolean truncated) {}
+    record ExportResult(String operationId, String target, long upperSequence, int rowCount, boolean truncated)
+            implements CommandResult {}
+
+    /**
+     * 제한 생성의 결과(Story 3.2). target 원문을 담지 않는다 — 재생이 원장에서 오고 원장에는 원문이 없다.
+     *
+     * @param effectiveFrom 제한의 효력 시작(DB 시각)
+     */
+    record RestrictionResult(String operationId, UUID restrictionId, RestrictionFeature feature,
+            RestrictionScope scope, Instant effectiveFrom) implements CommandResult {}
 
     /**
      * {@value #AUDIT_EXPORT}를 실행하고 {@code COMPLETED} 행을 쓴다. <b>호출자의 트랜잭션 안에서만</b> 부른다 — 그
@@ -197,11 +260,49 @@ public interface OperatorCommandApi {
      */
     Optional<ExportResult> completeExport(Envelope envelope, String correlationId, BooleanSupplier finalAuthority);
 
+    /** 확정 순간 대상 재검사의 답(Story 3.2). */
+    sealed interface TargetCheck {
+        /**
+         * 대상이 여전히 그 제한의 대상이다.
+         *
+         * @param ownerUserId 대상이 귀속된 사용자. 전역·계산 정책 버전은 {@code null}
+         */
+        record Valid(@Nullable UUID ownerUserId) implements TargetCheck {}
+
+        /** 대상이 사라졌거나 상태가 맞지 않다. */
+        record Invalid() implements TargetCheck {}
+    }
+
+    /** 제한 생성의 결말. */
+    sealed interface RestrictionCompletion {
+        record Completed(RestrictionResult result) implements RestrictionCompletion {}
+
+        /**
+         * 아무것도 쓰지 않았다. 호출자가 트랜잭션을 되돌리고 거절 행을 밖에서 쓴다.
+         *
+         * @param code 거절 code — {@link #ACCESS_REVOKED}·{@link #TARGET_INVALID}·{@link #ALREADY_RESTRICTED}
+         */
+        record Refused(String code) implements RestrictionCompletion {}
+    }
+
+    /**
+     * 제한 생성 command를 실행하고 {@code COMPLETED} 행을 쓴다(Story 3.2 AC-3). <b>호출자의 트랜잭션 안에서만</b> 부른다 —
+     * 그 트랜잭션이 허가 소비와 같다.
+     *
+     * <p>순서가 계약이다: 원장 추가 잠금 → 최종 권한({@code finalAuthority}) → 대상 재검사({@code targetCheck}) → 활성 중복
+     * 판정 → 제한 INSERT → {@code COMPLETED}. 잠금 뒤라 같은 제한의 동시 확정 둘이 줄을 서고, 뒤의 것은 앞의 것이 커밋한
+     * 행을 보고 {@link #ALREADY_RESTRICTED}로 거절된다(최후 권위는 부분 유일 색인이다).
+     *
+     * @throws IllegalStateException 열린 트랜잭션이 없을 때
+     */
+    RestrictionCompletion completeRestriction(Envelope envelope, Restriction restriction, String correlationId,
+            BooleanSupplier finalAuthority, Supplier<TargetCheck> targetCheck);
+
     /** 같은 operation·키의 저장된 결과. */
     sealed interface Replay {
         record None() implements Replay {}
 
-        record Stored(ExportResult result) implements Replay {}
+        record Stored(CommandResult result) implements Replay {}
 
         /** 그 operation이 이 키가 아닌 키로 끝났다. */
         record Conflict() implements Replay {}

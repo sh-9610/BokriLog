@@ -369,10 +369,12 @@ function judge(
     case 'retryable':
       return keep
     // A plan ended early (Story 2.13) is no longer synced: whatever was followed or said about it is over.
+    // 결과가 막힌 대시보드(Story 3.2)도 작업을 대조할 묶음이 없다 — 따라가던 것과 말한 것을 끝낸다.
     case 'denied':
     case 'NO_PLAN':
     case 'PREPARING':
     case 'ENDED':
+    case 'displayRestricted':
       return {
         followed: null,
         outcome: null,

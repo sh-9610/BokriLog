@@ -3,6 +3,9 @@ package com.bokrilog.sync.internal;
 import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
+import com.bokrilog.operations.OperationalRestrictionApi;
+import com.bokrilog.operations.RestrictionFeature;
+import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.sync.PlanPublicationPort;
 import com.bokrilog.sync.SyncJobApi.AdjustmentHistory;
@@ -58,12 +61,15 @@ class AdjustmentHistoryService {
     private final AccountAccessApi accounts;
     private final PlanPublicationPort plans;
     private final ShownPlanAgreement agreement;
+    /** 계산 표시 제한(Story 3.2): 결과를 막으면 그 결과의 조정 이력도 막는다. */
+    private final OperationalRestrictionApi restrictions;
     private final TransactionTemplate reads;
 
     AdjustmentHistoryService(PlanPublicationRepository publications, AdjustmentHistoryRepository history,
             PortfolioMembershipApi portfolios, AccountAccessApi accounts, PlanPublicationPort plans,
-            ShownPlanAgreement agreement, PlatformTransactionManager manager) {
+            ShownPlanAgreement agreement, OperationalRestrictionApi restrictions, PlatformTransactionManager manager) {
         this.agreement = agreement;
+        this.restrictions = restrictions;
         this.publications = publications;
         this.history = history;
         this.portfolios = portfolios;
@@ -96,6 +102,7 @@ class AdjustmentHistoryService {
             case AdjustmentOutcome.Found found -> BundleConsistency.CONSISTENT;
             case AdjustmentOutcome.Unavailable unavailable -> BundleConsistency.INCONSISTENT;
             case AdjustmentOutcome.NotFound notFound -> BundleConsistency.NOT_READ;
+            case AdjustmentOutcome.Restricted restricted -> BundleConsistency.NOT_READ;
             case AdjustmentOutcome.NotPermitted denied -> BundleConsistency.NOT_READ;
         };
         // The same decision again, after the read: the page is dropped if the deletion won the race.
@@ -138,6 +145,11 @@ class AdjustmentHistoryService {
         var calculation = publications.calculation(user, calculationId).orElse(null);
         if (calculation == null || !PlanPublicationService.belongs(calculation, plan, pointer))
             return new AdjustmentOutcome.Unavailable();
+        // 참조가 현재 포인터다: 계산 표시 제한이 지금 그 결과를 막는다(Story 3.2).
+        if (restrictions.blocks(java.util.EnumSet.of(RestrictionFeature.CALCULATION_DISPLAY), RestrictionSubject.none()
+                .withPlan(plan.planId()).withPortfolio(plan.portfolioId())
+                .withCalculationPolicy(calculation.calculationPolicy())))
+            return new AdjustmentOutcome.Restricted();
         // The dashboard's and the evidence's own judgment: the portfolio pointer for an active plan, the end record for
         // a plan ended early, the completion record and its observation for a completed one (Story 2.14).
         if (!agreement.agrees(user, shown, pointer, calculation)) return new AdjustmentOutcome.Unavailable();

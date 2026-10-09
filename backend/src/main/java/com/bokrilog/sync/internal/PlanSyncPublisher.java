@@ -96,6 +96,8 @@ class PlanSyncPublisher {
         if (!syncs.lockOwned(lease)) throw new LeaseLost();
         String blocked = guard.blocked(lease);
         if (blocked != null) throw new PublicationBlocked(blocked);
+        // 새 공식 버전은 보이게 될 계산이다(Story 3.2): 그 표시 제한도 발행을 막는다.
+        if (guard.publicationRestricted(lease)) throw new PublicationBlocked("NOT_PERMITTED");
         var base = publications.calculation(user, lease.baseCalculationId()).orElse(null);
         if (base == null) throw new PublicationBlocked("POINTER_CONFLICT");
         var portfolio = portfolios.officialValue(user).orElse(null);
@@ -147,7 +149,7 @@ class PlanSyncPublisher {
                 calculationId) != 1)
             throw new PublicationBlocked("POINTER_CONFLICT");
         // The final check after every write: a restriction or deletion that raced in rolls it all back.
-        if (guard.restricted() || !guard.writable(user)) throw new PublicationBlocked("NOT_PERMITTED");
+        if (guard.publicationRestricted(lease) || !guard.writable(user)) throw new PublicationBlocked("NOT_PERMITTED");
         return syncs.finishSucceeded(lease, calculationId, version).orElseThrow(LeaseLost::new);
     }
 
@@ -180,7 +182,7 @@ class PlanSyncPublisher {
             if (value == null || !plans.recordCompletionObservation(user, lease.planId(), published.snapshotId(),
                     value, observation.measuredAt()))
                 throw new PublicationBlocked("INPUTS_CHANGED");
-            finalCheck(user);
+            finalCheck(lease);
             return endsHere ? syncs.finishWithoutResult(lease).orElseThrow(LeaseLost::new) : null;
         });
     }
@@ -196,7 +198,7 @@ class PlanSyncPublisher {
             var completion = plans.completion(user, lease.planId(), false).orElse(null);
             if (completion == null || !completion.observed()) throw new PublicationBlocked("PLAN_CHANGED");
             publishWallet(lease, observation);
-            finalCheck(user);
+            finalCheck(lease);
             return syncs.finishWithoutResult(lease).orElseThrow(LeaseLost::new);
         }));
     }
@@ -259,7 +261,7 @@ class PlanSyncPublisher {
             if (!plans.recordCompletionComparison(user, lease.planId(), judgment.comparison(), judgment.reason(),
                     calculationId, judgment.postEndCashflowCount()))
                 throw new PublicationBlocked("INPUTS_CHANGED");
-            finalCheck(user);
+            finalCheck(lease);
             return syncs.finishSucceeded(lease, calculationId, lease.basePointerVersion() + 1)
                     .orElseThrow(LeaseLost::new);
         }));
@@ -273,11 +275,13 @@ class PlanSyncPublisher {
         if (!syncs.lockOwned(lease)) throw new LeaseLost();
         String blocked = guard.blocked(lease);
         if (blocked != null) throw new PublicationBlocked(blocked);
+        if (guard.publicationRestricted(lease)) throw new PublicationBlocked("NOT_PERMITTED");
     }
 
     /** The final check after every write: a restriction or deletion that raced in rolls it all back. */
-    private void finalCheck(UUID user) {
-        if (guard.restricted() || !guard.writable(user)) throw new PublicationBlocked("NOT_PERMITTED");
+    private void finalCheck(PlanSyncRepository.Lease lease) {
+        if (guard.publicationRestricted(lease) || !guard.writable(lease.userId()))
+            throw new PublicationBlocked("NOT_PERMITTED");
     }
 
     /**

@@ -120,7 +120,7 @@ class BybitConnectionTest extends AuthFlowTestBase {
     @Test
     void 운영_제한이_걸리면_외부_호출_없이_거부된다() throws Exception {
         Session session = signInAndReauthenticate("restricted");
-        restrictCommand(BybitConnectionService.COMMAND);
+        restrictGlobally(com.bokrilog.operations.RestrictionFeature.NEW_CONNECTION);
 
         HttpResponse<String> prepared = prepareBybitConnection(session.cookie(), session.csrfToken());
 

@@ -5,10 +5,11 @@ import { authContent } from '../src/content/auth'
 import { operatorContent } from '../src/content/operator'
 
 /**
- * 보호된 운영자 화면의 실제 Chromium 검증(Story 3.1).
+ * 보호된 운영자 화면의 실제 Chromium 검증(Story 3.1·3.2).
  *
  * 두 층이다. 기본 `vite preview`에서도 성립하는 것 — 운영자 화면 chunk가 초기 로드에 없고 `/operator`에서만 받아진다는
- * 사실, 미인증 진입의 `next` — 은 언제나 돈다. 운영자 왕복(로그인 → 재인증 → 감사 내보내기)과 비운영자의 404 화면은
+ * 사실, 미인증 진입의 `next` — 은 언제나 돈다. 운영자 왕복(로그인 → 재인증 → 감사 내보내기, 그리고 Story 3.2의 전역 광고
+ * 제한 `restrict-advertising`)과 비운영자의 404 화면은
  * 백엔드와 dev-oidc 스텁이 함께 떠 있는 주입 origin에서만 돈다(`auth-entry.spec.ts`와 같은 게이트). 그 스택의 운영자
  * allowlist는 Google 스텁의 subject `e2e-operator`이고, compose 기본값(운영자 없음)이 아니라 `verify-same-origin.sh`가
  * 명시적으로 넣는다.
@@ -132,17 +133,17 @@ test.describe('운영자 화면 · 주입 origin', () => {
     expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth)
 
     // 준비 → 최근 본인 확인 요구 → 재인증. 자동으로 이어 하지 않는다.
-    const reason = page.getByLabel(operatorContent.export.reasonLabel)
+    const reason = page.getByLabel(operatorContent.export.reasonLabel, { exact: true })
     await reason.fill('e2e 정기 점검')
     await page.getByRole('button', { name: operatorContent.export.start }).click()
-    await expect(page.getByText(operatorContent.export.reauthLabel)).toBeVisible()
+    await expect(page.getByText(operatorContent.export.reauthLabel, { exact: true })).toBeVisible()
     await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
     await consentWithSubject(page, OPERATOR_SUBJECT)
     await page.waitForURL((url) => url.pathname !== '/' && !url.pathname.startsWith('/api/'))
     // 재인증은 세션의 목적지로 돌아온다(첫 로그인이면 온보딩, `next=/operator` 로그인이면 이 화면). 어느 쪽이든 다시 연다.
     await openOperator(page)
 
-    await page.getByLabel(operatorContent.export.reasonLabel).fill('e2e 정기 점검')
+    await page.getByLabel(operatorContent.export.reasonLabel, { exact: true }).fill('e2e 정기 점검')
     await page.getByRole('button', { name: operatorContent.export.start }).click()
     const dialog = page.getByRole('dialog', { name: operatorContent.dialog.title })
     await expect(dialog).toBeVisible()
@@ -168,5 +169,57 @@ test.describe('운영자 화면 · 주입 origin', () => {
       session: window.sessionStorage.length,
     }))
     expect(storage).toEqual({ local: 0, session: 0 })
+  })
+
+  /**
+   * Story 3.2: 전역 광고 제한의 왕복. 광고는 아직 소비자가 없어(Epic 4) 다른 기능에 영향이 없다 — 같은 스택의 다른 시험을
+   * 흔들지 않는 유일한 전역 제한이다. 확인 대화상자는 영향 미리보기를 먼저 말하고, 대상명 `전역`을 담은 문구를 다시
+   * 입력해야 확정된다.
+   */
+  test('운영자가 재인증 뒤 전역 광고 제한을 확정하고 활성 목록에서 본다', async ({ page }) => {
+    await signIn(page, OPERATOR_SUBJECT)
+    await openOperator(page)
+    const copy = operatorContent.restriction
+    await expect(page.getByRole('heading', { level: 2, name: copy.heading })).toBeVisible()
+
+    const prepare = async (): Promise<void> => {
+      await page.getByLabel(copy.featureLabel).selectOption('ADVERTISING')
+      await expect(page.getByLabel(copy.targetLabel)).toHaveValue(copy.globalTarget)
+      await page.getByLabel(copy.reasonLabel).fill('e2e 광고 오류 범위 제한')
+      await page.getByRole('button', { name: copy.start }).click()
+    }
+
+    // 준비 → 최근 본인 확인 요구 → 재인증. 자동으로 이어 하지 않는다.
+    await prepare()
+    await expect(page.getByText(copy.reauthLabel, { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
+    await consentWithSubject(page, OPERATOR_SUBJECT)
+    await page.waitForURL((url) => url.pathname !== '/' && !url.pathname.startsWith('/api/'))
+    await openOperator(page)
+
+    await prepare()
+    const dialog = page.getByRole('dialog', { name: operatorContent.restrictionDialog.title })
+    await expect(dialog).toBeVisible()
+    await expect(
+      dialog.getByRole('button', { name: operatorContent.restrictionDialog.cancel }),
+    ).toBeFocused()
+    await expect(dialog).toContainText(operatorContent.restrictionDialog.affectedPlans(0))
+    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
+    expect(results.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([])
+
+    await expect(dialog.locator('label strong')).toHaveText('광고 제한 전역')
+    await dialog.getByRole('textbox').fill('광고 제한 전역')
+    await dialog.getByRole('button', { name: operatorContent.restrictionDialog.confirm }).click()
+
+    const result = page.getByRole('heading', { level: 3, name: copy.result.heading })
+    await expect(result).toBeFocused()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByRole('status')).toContainText('광고 제한(전역)이 효력을 가졌습니다')
+    const active = page.getByRole('list', { name: copy.active.heading })
+    await expect(active.getByRole('listitem').filter({ hasText: '광고' })).toHaveCount(1)
+
+    const after = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
+    expect(after.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([])
+    expect(new URL(page.url()).search).toBe('')
   })
 })

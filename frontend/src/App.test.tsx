@@ -20,6 +20,7 @@ import {
   getObservedRequests,
   stubLinkStatusRequest,
   stubOperatorAudit,
+  stubOperatorRestrictions,
   stubPlanConditionState,
   stubSessionRequest,
 } from './test/setup'
@@ -272,6 +273,14 @@ describe('App 경로 맵', () => {
       ),
     )
     stubOperatorAudit(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ code: 'NOT_FOUND', message: 'x', correlationId: 'c' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+    stubOperatorRestrictions(() =>
       Promise.resolve(
         new Response(JSON.stringify({ code: 'NOT_FOUND', message: 'x', correlationId: 'c' }), {
           status: 404,

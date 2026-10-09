@@ -147,4 +147,9 @@ class PortfolioMembershipService implements PortfolioMembershipApi {
         }
         this.repository.eraseOf(userId);
     }
+
+    @Override
+    public Optional<PortfolioTarget> portfolioTarget(UUID portfolioId) {
+        return this.repository.portfolioTarget(portfolioId);
+    }
 }

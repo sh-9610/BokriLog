@@ -68,7 +68,7 @@ class AdjustmentHistoryServiceTest {
     private final PlanPublicationPort plans = mock(PlanPublicationPort.class);
     private final AdjustmentHistoryService service = new AdjustmentHistoryService(publications, history, portfolios,
             accounts, plans, new ShownPlanAgreement(publications, mock(PlanSyncRepository.class), portfolios),
-            mock(PlatformTransactionManager.class));
+            mock(com.bokrilog.operations.OperationalRestrictionApi.class), mock(PlatformTransactionManager.class));
 
     private static AdjustmentQuery query(AdjustmentDirection direction, String cursor) {
         return new AdjustmentQuery(PLAN, 1, CALCULATION, direction, cursor);

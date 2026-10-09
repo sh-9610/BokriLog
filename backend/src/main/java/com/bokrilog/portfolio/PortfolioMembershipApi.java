@@ -139,4 +139,18 @@ public interface PortfolioMembershipApi {
      * <p>멱등하다. 지울 것이 없는 계정에 다시 요청해도 실패가 아니다.
      */
     void erasePortfolioData(@Nullable UUID userId);
+
+    // ------------------------------------------------------------------ Story 3.2
+
+    /**
+     * 운영 제한의 대상 확인에 쓰는 portfolio 하나(Story 3.2). 사용자 없이 id로 찾는다 — 운영자 표면이 부르며, 응답·로그에
+     * 원식별자를 내지 않는 것은 호출자 책임이다.
+     *
+     * @param userId 소유자. 제한 행의 귀속이다
+     * @param hasActiveSource 지금 활성 source membership이 있는가
+     */
+    record PortfolioTarget(UUID portfolioId, UUID userId, boolean hasActiveSource) {}
+
+    /** 그 portfolio. 없으면 빈 값이다. */
+    Optional<PortfolioTarget> portfolioTarget(UUID portfolioId);
 }

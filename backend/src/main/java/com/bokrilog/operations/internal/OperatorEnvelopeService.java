@@ -3,6 +3,8 @@ package com.bokrilog.operations.internal;
 import com.bokrilog.operations.OperatorAuditApi;
 import com.bokrilog.operations.OperatorCommandApi;
 import com.bokrilog.operations.OperatorPermission;
+import com.bokrilog.operations.RestrictionFeature;
+import com.bokrilog.operations.RestrictionScope;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -18,7 +20,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
+import org.jspecify.annotations.Nullable;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication.Type;
 import org.springframework.stereotype.Service;
@@ -54,6 +58,13 @@ class OperatorEnvelopeService implements OperatorCommandApi {
 
     private static final Pattern SAFE_TARGET = Pattern.compile("[0-9A-Za-z~:._-]{1,128}");
 
+    /** 정규 UUID(대소문자 무관). {@link UUID#fromString}만으로는 줄인 묶음도 받는다. */
+    private static final Pattern UUID_TEXT =
+            Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
+
+    /** 계산 정책 버전의 모양(예: {@code CALC-1.0}). 실제로 아는 버전인지는 루트가 계산 모듈의 상수로 본다. */
+    private static final Pattern POLICY_VERSION_TEXT = Pattern.compile("[A-Z][A-Z0-9]{0,15}-[0-9]{1,3}\\.[0-9]{1,3}");
+
     /** 거절 행에서 형식이 맞지 않아 원문을 남기지 않은 자리. */
     private static final String UNREADABLE = "-";
 
@@ -65,20 +76,24 @@ class OperatorEnvelopeService implements OperatorCommandApi {
 
     private final OperatorAuditRepository repository;
 
+    /** 제한 표(Story 3.2). 같은 모듈의 repository다 — 제한 행은 감사 행과 같은 트랜잭션에서만 생긴다. */
+    private final OperationalRestrictionRepository restrictions;
+
     private final ActorDigest digest;
 
     private final TransactionTemplate transactions;
 
-    OperatorEnvelopeService(OperatorAuditRepository repository, ActorDigest digest,
-            PlatformTransactionManager transactionManager) {
+    OperatorEnvelopeService(OperatorAuditRepository repository, OperationalRestrictionRepository restrictions,
+            ActorDigest digest, PlatformTransactionManager transactionManager) {
         this.repository = repository;
+        this.restrictions = restrictions;
         this.digest = digest;
         this.transactions = new TransactionTemplate(transactionManager);
     }
 
     @Override
     public boolean isSupported(String command) {
-        return AUDIT_EXPORT.equals(command);
+        return AUDIT_EXPORT.equals(command) || OperatorCommandApi.restrictionFeatureOf(command) != null;
     }
 
     @Override
@@ -86,6 +101,10 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         if (AUDIT_EXPORT.equals(command)) {
             // command이면서 감사 데이터를 꺼낸다 — 두 권한을 함께 요구한다(AC-5).
             return EnumSet.of(OperatorPermission.COMMAND, OperatorPermission.AUDIT);
+        }
+        if (OperatorCommandApi.restrictionFeatureOf(command) != null) {
+            // 제한은 일반 운영 명령이다. 감사 데이터를 꺼내지 않는다.
+            return EnumSet.of(OperatorPermission.COMMAND);
         }
         throw new IllegalArgumentException("모르는 운영 command다.");
     }
@@ -97,6 +116,10 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         }
         if (!isSupported(proposal.command())) {
             throw new IllegalArgumentException("모르는 운영 command다.");
+        }
+        RestrictionFeature feature = OperatorCommandApi.restrictionFeatureOf(proposal.command());
+        if (feature != null) {
+            return validateRestriction(proposal, feature);
         }
         String scope = proposal.scope() == null ? "" : proposal.scope().strip();
         if (!SCOPE_AUDIT_LEDGER.equals(scope)) {
@@ -115,8 +138,90 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         }
         String target = period.target();
         String phrase = "감사 내보내기 " + scope + " " + target;
-        return new Validation.Valid(new Accepted(AUDIT_EXPORT, scope, target, reason, phrase, POLICY_VERSION,
-                permissionsOf(AUDIT_EXPORT), sha256(AUDIT_EXPORT + "\n" + scope + "\n" + target + "\n" + reason)));
+        return new Validation.Valid(new Accepted(AUDIT_EXPORT, scope, target, target, reason, phrase, POLICY_VERSION,
+                permissionsOf(AUDIT_EXPORT), sha256(AUDIT_EXPORT + "\n" + scope + "\n" + target + "\n" + reason),
+                null));
+    }
+
+    /**
+     * 제한 생성 command의 envelope 검증(Story 3.2 AC-1). 조합(기능 × scope)과 target의 <b>형식</b>만 본다 — 대상의
+     * 존재·상태·중복은 다른 모듈과 제한 표의 사실이라 루트가 본다.
+     *
+     * <p>원장의 scope는 {@code <기능>:<scope>}이고, 사용자에게 귀속된 target은 원장·허가·요청 digest에 keyed digest로만
+     * 들어간다(AC-6). 원문은 확인 문구와 제한 행에만 있다.
+     */
+    private Validation validateRestriction(Proposal proposal, RestrictionFeature feature) {
+        RestrictionScope scope = scopeOf(proposal.scope());
+        if (scope == null || !feature.admits(scope)) {
+            return new Validation.Invalid(UNSUPPORTED_SCOPE);
+        }
+        String target = restrictionTarget(scope, proposal.target());
+        if (target == null) {
+            return new Validation.Invalid(TARGET_INVALID);
+        }
+        String reason = proposal.reason() == null ? "" : proposal.reason().strip();
+        if (reason.isEmpty()) {
+            return new Validation.Invalid(REASON_REQUIRED);
+        }
+        if (!isAcceptableReason(reason)) {
+            return new Validation.Invalid(REASON_INVALID);
+        }
+        String ledgerScope = ledgerScope(feature, scope);
+        String ledgerTarget = scope.userAttributed() ? this.digest.ofTarget(scope.name(), target) : target;
+        String command = proposal.command();
+        return new Validation.Valid(new Accepted(command, ledgerScope, target, ledgerTarget, reason,
+                restrictionPhrase(feature, scope, target), POLICY_VERSION, permissionsOf(command),
+                sha256(command + "\n" + ledgerScope + "\n" + ledgerTarget + "\n" + reason),
+                new Restriction(feature, scope, target)));
+    }
+
+    /** 원장의 scope: {@code <기능>:<scope>}. */
+    static String ledgerScope(RestrictionFeature feature, RestrictionScope scope) {
+        return feature.name() + ":" + scope.name();
+    }
+
+    private static @Nullable RestrictionScope scopeOf(@Nullable String text) {
+        String scope = text == null ? "" : text.strip();
+        for (RestrictionScope known : RestrictionScope.values()) {
+            if (known.name().equals(scope)) {
+                return known;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * target의 형식. 전역은 {@code ALL} 하나, 계획·portfolio·연결은 정규 UUID(소문자로 정규화), 계산 정책 버전은 버전 모양.
+     * 맞지 않으면 {@code null}이다.
+     */
+    private static @Nullable String restrictionTarget(RestrictionScope scope, @Nullable String text) {
+        String target = text == null ? "" : text.strip();
+        return switch (scope) {
+            case GLOBAL -> RestrictionScope.GLOBAL_TARGET.equals(target) ? target : null;
+            case PLAN, PORTFOLIO, PROVIDER_CONNECTION ->
+                    UUID_TEXT.matcher(target).matches() ? UUID.fromString(target).toString() : null;
+            case CALCULATION_POLICY_VERSION -> POLICY_VERSION_TEXT.matcher(target).matches() ? target : null;
+        };
+    }
+
+    /**
+     * 서버가 정하는 확인 문구. 전역 제한은 대상명 {@code 전역}을 담는다(AC-2) — 다시 입력해야 확정된다. 나머지는 범위 이름과
+     * target 원문이다.
+     */
+    static String restrictionPhrase(RestrictionFeature feature, RestrictionScope scope, String target) {
+        String what = switch (feature) {
+            case NEW_CONNECTION -> "신규 연결";
+            case SYNC -> "동기화";
+            case CALCULATION_DISPLAY -> "계산 표시";
+            case ADVERTISING -> "광고";
+        };
+        return switch (scope) {
+            case GLOBAL -> what + " 제한 전역";
+            case PLAN -> what + " 제한 계획 " + target;
+            case PORTFOLIO -> what + " 제한 포트폴리오 " + target;
+            case PROVIDER_CONNECTION -> what + " 제한 연결 " + target;
+            case CALCULATION_POLICY_VERSION -> what + " 제한 계산 정책 " + target;
+        };
     }
 
     @Override
@@ -188,9 +293,26 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         String scope = proposal.scope() == null ? "" : proposal.scope().strip();
         String target = proposal.target() == null ? "" : proposal.target().strip();
         String reason = proposal.reason() == null ? "" : proposal.reason().strip();
-        var envelope = new Envelope(operationId, actorUserId, proposal.command(),
-                SAFE_SCOPE.matcher(scope).matches() ? scope : UNREADABLE,
-                SAFE_TARGET.matcher(target).matches() ? target : UNREADABLE,
+        String ledgerScope = SAFE_SCOPE.matcher(scope).matches() ? scope : UNREADABLE;
+        String ledgerTarget = SAFE_TARGET.matcher(target).matches() ? target : UNREADABLE;
+        RestrictionFeature feature = OperatorCommandApi.restrictionFeatureOf(proposal.command());
+        if (feature != null) {
+            /*
+             * 제한 command의 거절 행: scope는 아는 이름일 때만 `<기능>:<scope>`이고, target은 그 scope의 모양일 때만 남긴다 —
+             * 사용자 귀속 자리(계획·portfolio·연결)는 digest로, 전역·계산 정책 버전은 원문으로. 모르는 scope이거나 모양이
+             * 아니면 남기지 않는다 — 거절된 요청을 타고 원식별자가 원장에 들어가는 길을 막는다.
+             */
+            RestrictionScope known = scopeOf(scope);
+            ledgerScope = known == null ? UNREADABLE : ledgerScope(feature, known);
+            String normalized = known == null ? null : restrictionTarget(known, target);
+            if (normalized == null) {
+                // 모르는 scope이거나 그 scope의 모양이 아니다. 무엇인지 알 수 없는 값은 남기지 않는다.
+                ledgerTarget = UNREADABLE;
+            } else {
+                ledgerTarget = known.userAttributed() ? this.digest.ofTarget(known.name(), normalized) : normalized;
+            }
+        }
+        var envelope = new Envelope(operationId, actorUserId, proposal.command(), ledgerScope, ledgerTarget,
                 isAcceptableReason(reason) ? reason : UNREADABLE, "", POLICY_VERSION, null, idempotencyKeyDigest, "");
         recordDecision(envelope, AuditOutcome.DENIED, code, correlationId);
         return operationId;
@@ -232,6 +354,40 @@ class OperatorEnvelopeService implements OperatorCommandApi {
     }
 
     @Override
+    public RestrictionCompletion completeRestriction(Envelope envelope, Restriction restriction, String correlationId,
+            BooleanSupplier finalAuthority, Supplier<TargetCheck> targetCheck) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            // 제한 행·감사 행·허가 소비가 한 트랜잭션이어야 한다. 밖에서 부르는 것은 배선 실수다.
+            throw new IllegalStateException("제한 생성은 허가 소비의 트랜잭션 안에서만 쓴다.");
+        }
+        this.repository.lockAppends();
+        // 잠금 뒤의 최종 권한. 거짓이면 이 트랜잭션은 아무것도 쓰지 않았다.
+        if (!finalAuthority.getAsBoolean()) {
+            return new RestrictionCompletion.Refused(ACCESS_REVOKED);
+        }
+        // 확정 순간의 대상. 준비 뒤 계획이 끝났거나 연결이 해제됐으면 제한을 만들지 않는다.
+        if (!(targetCheck.get() instanceof TargetCheck.Valid valid)) {
+            return new RestrictionCompletion.Refused(TARGET_INVALID);
+        }
+        if (this.restrictions.isActive(restriction.feature(), restriction.scope(), restriction.target())) {
+            return new RestrictionCompletion.Refused(ALREADY_RESTRICTED);
+        }
+        UUID restrictionId = UUID.randomUUID();
+        Instant effectiveFrom = this.restrictions.insert(restrictionId, restriction.feature(), restriction.scope(),
+                restriction.target(), restriction.scope().userAttributed() ? valid.ownerUserId() : null,
+                envelope.operationId());
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("keyDigest", envelope.idempotencyKeyDigest());
+        details.put("restrictionId", restrictionId.toString());
+        details.put("feature", restriction.feature().name());
+        details.put("restrictionScope", restriction.scope().name());
+        details.put("effectiveFrom", effectiveFrom.toString());
+        append(envelope, AuditOutcome.COMPLETED, true, correlationId, details);
+        return new RestrictionCompletion.Completed(new RestrictionResult(envelope.operationId(), restrictionId,
+                restriction.feature(), restriction.scope(), effectiveFrom));
+    }
+
+    @Override
     public Replay replay(UUID actorUserId, String operationId, String idempotencyKeyDigest) {
         var completed = this.repository.completed(actorUserId, operationId).orElse(null);
         if (completed == null) {
@@ -239,6 +395,12 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         }
         if (!idempotencyKeyDigest.equals(completed.keyDigest())) {
             return new Replay.Conflict();
+        }
+        if (completed.restrictionId() != null && completed.feature() != null && completed.restrictionScope() != null
+                && completed.effectiveFrom() != null) {
+            return new Replay.Stored(new RestrictionResult(operationId, completed.restrictionId(),
+                    RestrictionFeature.valueOf(completed.feature()),
+                    RestrictionScope.valueOf(completed.restrictionScope()), completed.effectiveFrom()));
         }
         return new Replay.Stored(new ExportResult(operationId, completed.target(), completed.upperSequence(),
                 completed.rowCount(), completed.truncated()));

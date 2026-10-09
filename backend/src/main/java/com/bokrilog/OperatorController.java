@@ -1,5 +1,6 @@
 package com.bokrilog;
 
+import com.bokrilog.operations.OperationalRestrictionApi;
 import com.bokrilog.operations.OperatorAuditApi;
 import com.bokrilog.operations.OperatorCommandApi;
 import com.bokrilog.operations.OperatorPermission;
@@ -52,12 +53,18 @@ import org.springframework.web.bind.annotation.RestController;
  *       키의 재전송도 같은 묶음이다(회전 없음).
  *   <li>{@code POST /api/operator/commands/{type}/cancel}: 무장과 그 허가를 버리고 {@code CANCELLED} 행을 남긴다. 무장이
  *       없어도 204.
+ *   <li>Story 3.2의 제한 생성 command 넷({@code restrict-new-connection}·{@code restrict-sync}·
+ *       {@code restrict-calculation-display}·{@code restrict-advertising})도 같은 세 경로다. 준비 응답은
+ *       {@code impact {blockedStages, affectedPlans, affectedConnections, remainingFeatures}}(수만, 식별자 없음)를 더
+ *       싣고, 확정 응답은 {@code {operationId, outcome, command, feature, scope, restrictionId, effectiveFrom}}이다.
+ *   <li>{@code GET /api/operator/restrictions}(command 권한): 효력 중인 제한, 구체 우선. 기능·scope·target(비식별된
+ *       것은 {@code targetErased})·시작 시각·사유·수행자 digest.
  * </ul>
  *
  * <p>거절은 공통 오류 모양이다: 400 본문 모양, 403 {@code REAUTHENTICATION_REQUIRED}(준비)·
  * {@code OPERATOR_COMMAND_NOT_CONFIRMED}(확정), 409 {@code CONFIRMATION_MISMATCH}·{@code IDEMPOTENCY_CONFLICT}, 422
  * {@code IDEMPOTENCY_KEY_REQUIRED}·{@code REASON_REQUIRED}·{@code REASON_INVALID}·{@code UNSUPPORTED_SCOPE}·
- * {@code TARGET_INVALID}·{@code ACTOR_NOT_ACCEPTED}, 실패는 500. 404 밖의 응답은 {@code no-store}다.
+ * {@code TARGET_INVALID}·{@code ACTOR_NOT_ACCEPTED}, 409 {@code ALREADY_RESTRICTED}(Story 3.2), 실패는 500. 404 밖의 응답은 {@code no-store}다.
  *
  * <p>한 요청에 운영 로그 한 줄 — 단계·결과 code·상태·지연뿐이다. 수행자·대상·사유·operation ID·키·허가를 남기지 않는다.
  */
@@ -66,6 +73,9 @@ import org.springframework.web.bind.annotation.RestController;
 class OperatorController {
 
     static final String OPERATIONS_PATH = AuthSecurityConfig.OPERATOR_API_PATH + "/operations";
+
+    /** 효력 중인 제한의 목록(Story 3.2). command 권한이다. */
+    static final String RESTRICTIONS_PATH = AuthSecurityConfig.OPERATOR_API_PATH + "/restrictions";
 
     static final String CONFIRM_SEGMENT = "confirm";
 
@@ -85,7 +95,8 @@ class OperatorController {
 
     private static final Pattern COMMAND_FILTER = Pattern.compile("[a-z][a-z0-9-]{0,63}");
 
-    private static final Pattern SCOPE_FILTER = Pattern.compile("[A-Z][A-Z_]{0,63}");
+    /** 감사 scope 필터. 제한 command의 원장 scope는 {@code <기능>:<scope>}다(Story 3.2). */
+    private static final Pattern SCOPE_FILTER = Pattern.compile("[A-Z][A-Z_]{0,30}(:[A-Z][A-Z_]{0,30})?");
 
     private static final Pattern DATE = Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
 
@@ -95,6 +106,9 @@ class OperatorController {
             tools.jackson.databind.json.JsonMapper.builder().build();
 
     private record Refusal(HttpStatus status, String message) {}
+
+    /** 감사 내보내기의 {@code TARGET_INVALID} 문장. 대상이 기간이다. */
+    static final String EXPORT_TARGET_INVALID = "대상 기간이 올바르지 않습니다. 시작일과 종료일을 366일 이내로 지정해 주세요.";
 
     /** 거절 code → 상태와 안전한 문장. 닫힌 맵이며 machine 값은 code뿐이다. */
     private static final Map<String, Refusal> REFUSALS = Map.ofEntries(
@@ -115,7 +129,9 @@ class OperatorController {
             Map.entry(OperatorCommandApi.UNSUPPORTED_SCOPE, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
                     "이 운영 명령이 지원하지 않는 범위입니다.")),
             Map.entry(OperatorCommandApi.TARGET_INVALID, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
-                    "대상 기간이 올바르지 않습니다. 시작일과 종료일을 366일 이내로 지정해 주세요.")),
+                    "대상이 올바르지 않거나 지금 이 명령의 대상이 될 수 없습니다. 대상을 확인해 주세요.")),
+            Map.entry(OperatorCommandApi.ALREADY_RESTRICTED, new Refusal(HttpStatus.CONFLICT,
+                    "같은 기능·범위·대상의 제한이 이미 효력 중입니다. 활성 제한 목록을 확인해 주세요.")),
             Map.entry(OperatorCommandApi.ACTOR_NOT_ACCEPTED, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
                     "요청에 수행자를 담을 수 없습니다. 수행자는 로그인 세션이 정합니다.")));
 
@@ -138,11 +154,34 @@ class OperatorController {
 
     record OperationView(String operationId, List<EntryView> items) {}
 
+    /** 제한 생성의 영향 미리보기(Story 3.2). 수만 담는다 — 식별자도 금융값도 없다. */
+    record ImpactView(List<String> blockedStages, long affectedPlans, long affectedConnections,
+            List<String> remainingFeatures) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     record PreparedView(String operationId, String command, String scope, String target, String reason,
-            String confirmationPhrase, String policyVersion, String requestedAt) {}
+            String confirmationPhrase, String policyVersion, String requestedAt, @Nullable ImpactView impact) {}
 
     record CompletedView(String operationId, String outcome, String command, String target, long upperSequence,
             int rowCount, boolean truncated, List<EntryView> rows) {}
+
+    /** 제한 생성의 확정 결과(Story 3.2). target 원문은 싣지 않는다 — 같은 키의 재생은 원장에서 오고 원장에는 원문이 없다. */
+    record RestrictionCompletedView(String operationId, String outcome, String command, String feature, String scope,
+            UUID restrictionId, String effectiveFrom) {}
+
+    /** 효력 중인 제한 하나(Story 3.2). 비식별된 target은 싣지 않고 {@code targetErased}로 말한다. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record RestrictionView(UUID restrictionId, String feature, String scope, @Nullable String target,
+            boolean targetErased, String effectiveFrom, @Nullable String reason, @Nullable String actorDigest) {
+
+        static RestrictionView of(OperationalRestrictionApi.ActiveRestriction restriction) {
+            return new RestrictionView(restriction.restrictionId(), restriction.feature().name(),
+                    restriction.scope().name(), restriction.target(), restriction.targetErased(),
+                    restriction.effectiveFrom().toString(), restriction.reason(), restriction.actorDigest());
+        }
+    }
+
+    record RestrictionListView(List<RestrictionView> items) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record OperatorError(String code, String message, String correlationId) {}
@@ -151,15 +190,19 @@ class OperatorController {
 
     private final OperatorAuditApi audit;
 
+    private final OperationalRestrictionApi restrictions;
+
     /**
      * 핸들러 안의 이중 검사. 게이트({@link OperatorGate})가 먼저 판정하지만 경로 판정이 어긋나는 날(인코딩·매핑 변경)
      * 그 검사 하나에 기대지 않는다 — 여기서도 같은 권한을 보고 같은 404를 낸다.
      */
     private final OperatorAccess access;
 
-    OperatorController(OperatorCommandService commands, OperatorAuditApi audit, OperatorAccess access) {
+    OperatorController(OperatorCommandService commands, OperatorAuditApi audit, OperationalRestrictionApi restrictions,
+            OperatorAccess access) {
         this.commands = commands;
         this.audit = audit;
+        this.restrictions = restrictions;
         this.access = access;
     }
 
@@ -210,6 +253,26 @@ class OperatorController {
                 .body(new OperationView(operationId, rows.stream().map(EntryView::of).toList())), "OK", started);
     }
 
+    // ------------------------------------------------------------------ 활성 제한(Story 3.2)
+
+    @GetMapping(path = RESTRICTIONS_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<?> restrictions(HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
+        long started = System.nanoTime();
+        String correlationId = correlationIdOf(request);
+        if (!this.access.permits(currentUserId(), Set.of(OperatorPermission.COMMAND))) {
+            return notFound("restrictions", response, started);
+        }
+        List<RestrictionView> items;
+        try {
+            items = this.restrictions.active().stream().map(RestrictionView::of).toList();
+        } catch (RuntimeException failure) {
+            return answer("restrictions", internal(failure, correlationId), "ERROR", started);
+        }
+        return answer("restrictions", ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(new RestrictionListView(items)), "OK", started);
+    }
+
     // ------------------------------------------------------------------ 운영 command
 
     @PostMapping(path = OperatorGate.COMMANDS_PATH + "/{type}", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -241,13 +304,13 @@ class OperatorController {
         return switch (preparation) {
             case OperatorCommandService.Preparation.Refused refused ->
                     OperatorCommandService.NOT_FOUND.equals(refused.code()) ? notFound("prepare", response, started)
-                            : answer("prepare", refused(refused.code(), correlationId), refused.code(), started);
+                            : answer("prepare", refused(refused.code(), type, correlationId), refused.code(), started);
             case OperatorCommandService.Preparation.Armed armed -> answer("prepare", ResponseEntity.ok()
                     .cacheControl(CacheControl.noStore())
                     .body(new PreparedView(armed.flow().operationId(), armed.flow().command(), armed.flow().scope(),
                             armed.flow().target(), armed.flow().reason(), armed.flow().confirmation(),
-                            armed.flow().policyVersion(), armed.flow().requestedAt().toString())), "PREPARED",
-                    started);
+                            armed.flow().policyVersion(), armed.flow().requestedAt().toString(),
+                            impactView(armed.impact()))), "PREPARED", started);
         };
     }
 
@@ -285,15 +348,28 @@ class OperatorController {
         return switch (outcome) {
             case OperatorCommandService.Outcome.Refused refused ->
                     OperatorCommandService.NOT_FOUND.equals(refused.code()) ? notFound("confirm", response, started)
-                            : answer("confirm", refused(refused.code(), correlationId), refused.code(), started);
+                            : answer("confirm", refused(refused.code(), type, correlationId), refused.code(), started);
             case OperatorCommandService.Outcome.Completed completed -> answer("confirm", ResponseEntity.ok()
                     .cacheControl(CacheControl.noStore())
-                    .body(new CompletedView(completed.result().operationId(),
-                            OperatorCommandApi.AuditOutcome.COMPLETED.name(), type, completed.result().target(),
-                            completed.result().upperSequence(), completed.result().rowCount(),
-                            completed.result().truncated(), completed.rows().stream().map(EntryView::of).toList())),
-                    completed.ran() ? "COMPLETED" : "REPLAYED", started);
+                    .body(completedBody(type, completed)), completed.ran() ? "COMPLETED" : "REPLAYED", started);
         };
+    }
+
+    private static Object completedBody(String type, OperatorCommandService.Outcome.Completed completed) {
+        String outcome = OperatorCommandApi.AuditOutcome.COMPLETED.name();
+        return switch (completed.result()) {
+            case OperatorCommandApi.ExportResult export -> new CompletedView(export.operationId(), outcome, type,
+                    export.target(), export.upperSequence(), export.rowCount(), export.truncated(),
+                    completed.rows().stream().map(EntryView::of).toList());
+            case OperatorCommandApi.RestrictionResult restriction -> new RestrictionCompletedView(
+                    restriction.operationId(), outcome, type, restriction.feature().name(),
+                    restriction.scope().name(), restriction.restrictionId(), restriction.effectiveFrom().toString());
+        };
+    }
+
+    private static @Nullable ImpactView impactView(RestrictionTargets.@Nullable Impact impact) {
+        return impact == null ? null : new ImpactView(impact.blockedStages(), impact.affectedPlans(),
+                impact.affectedConnections(), impact.remainingFeatures());
     }
 
     @PostMapping(path = OperatorGate.COMMANDS_PATH + "/{type}/" + AuthSecurityConfig.CANCEL_SEGMENT)
@@ -469,6 +545,17 @@ class OperatorController {
         response.sendError(HttpStatus.NOT_FOUND.value());
         log(step, "NOT_FOUND", HttpStatus.NOT_FOUND.value(), started);
         return null;
+    }
+
+    /**
+     * command별 문장이 있는 거절. {@code TARGET_INVALID}는 감사 내보내기의 기간 안내와 제한 command의 대상 안내가 다르다
+     * (Story 3.2) — 같은 code의 다른 문장이며 machine 값은 code 하나다.
+     */
+    private static ResponseEntity<?> refused(String code, String command, String correlationId) {
+        if (OperatorCommandApi.TARGET_INVALID.equals(code) && OperatorCommandApi.AUDIT_EXPORT.equals(command)) {
+            return error(HttpStatus.UNPROCESSABLE_CONTENT, code, EXPORT_TARGET_INVALID, correlationId);
+        }
+        return refused(code, correlationId);
     }
 
     private static ResponseEntity<?> refused(String code, String correlationId) {

@@ -297,7 +297,8 @@ class PlanSyncService {
 
     @Nullable String completedUnavailableReason(UUID user, PlanSyncGuard.Base base) {
         var lineage = base.lineage();
-        return guard.completionUnavailableReason(user, lineage.membershipId(), base.calculation().portfolioId(),
+        return guard.completionUnavailableReason(user, base.plan().planId(), lineage.membershipId(),
+                base.calculation().portfolioId(),
                 lineage.connectionId(), lineage.providerAccountId());
     }
 
@@ -323,7 +324,8 @@ class PlanSyncService {
 
     @Nullable String unavailableReason(UUID user, PlanSyncGuard.Base base, Instant now) {
         var lineage = base.lineage();
-        return guard.unavailableReason(user, lineage.membershipId(), base.calculation().portfolioId(),
+        return guard.unavailableReason(user, base.plan().planId(), lineage.membershipId(),
+                base.calculation().portfolioId(),
                 lineage.connectionId(), lineage.providerAccountId(), base.calculation().endAt(), now);
     }
 
@@ -389,6 +391,14 @@ class PlanSyncService {
             if (claimed == null) return null;
             if (claimed.interrupted()) {
                 syncs.finish(claimed.lease(), "FAILED", "SYNC_INTERRUPTED").ifPresent(interrupted::set);
+                return null;
+            }
+            /*
+             * lease는 그 자체가 검사 지점이다(Story 3.2): 접수 뒤 작업의 계획·portfolio·연결에 걸린 동기화 제한은 다음
+             * 단계를 기다리지 않고 여기, claim 트랜잭션 안에서 작업을 끝낸다 — 제공자 호출 전이다.
+             */
+            if (guard.syncRestricted(claimed.lease())) {
+                syncs.finish(claimed.lease(), "BLOCKED", PlanSyncGuard.NOT_PERMITTED).ifPresent(interrupted::set);
                 return null;
             }
             return claimed.lease();

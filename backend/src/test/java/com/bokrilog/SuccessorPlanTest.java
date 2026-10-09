@@ -242,8 +242,9 @@ class SuccessorPlanTest extends PlanSyncTestBase {
             UUID user=connect(DevBybitStub.Scenario.UTA2); early(user);
             var pointer=portfolio.officialValue(user).orElseThrow();
             Object lease=reserved(user);
+            UUID restriction=null;
             if ("deletion".equals(cause)) accountDeletion().beginDeletion(user);
-            if ("restriction".equals(cause)) restrictCommand("plan-condition-create");
+            if ("restriction".equals(cause)) restriction=restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
             if ("connection".equals(cause)) revokeConnectionOf(user);
             try {
                 Instant now=Instant.now();
@@ -251,7 +252,7 @@ class SuccessorPlanTest extends PlanSyncTestBase {
                 assertThat(portfolio.officialValue(user)).contains(pointer);
                 assertThat(sync.currentNextBaseline(user)).isEmpty();
             } finally {
-                if ("restriction".equals(cause)) jdbc().sql("DELETE FROM operations_restriction WHERE command='plan-condition-create'").update();
+                if (restriction!=null) lift(restriction);
             }
         }
     }

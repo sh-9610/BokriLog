@@ -99,6 +99,16 @@ class DashboardController {
     static final String MESSAGE_ADJUSTMENT_HISTORY_UNAVAILABLE=
             "조정 이력을 한 묶음으로 확인하지 못해 보내지 않았습니다. 잠시 후 다시 시도해 주세요.";
 
+    /**
+     * 계산 표시 제한의 안정 machine code(Story 3.2): 운영 제한이 막은 결과의 근거·조정 이력. 클라이언트가 다시 물어도
+     * 바뀌지 않는다 — 제한은 운영자가 푼다.
+     */
+    static final String CALCULATION_DISPLAY_RESTRICTED="CALCULATION_DISPLAY_RESTRICTED";
+    static final String MESSAGE_CALCULATION_DISPLAY_RESTRICTED=
+            "운영상 제한으로 지금은 계산 결과를 표시하지 않습니다. 기존 공식 기록은 그대로 보존됩니다.";
+    /** 계산 표시 제한이 결과를 막는 동안 대시보드의 {@code calculationDisplay} 값. */
+    static final String DISPLAY_RESTRICTED="RESTRICTED";
+
     /** A canonical UUID (either case). {@link UUID#fromString} alone also accepts shortened groups. */
     private static final java.util.regex.Pattern UUID_TEXT=java.util.regex.Pattern.compile(
             "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
@@ -118,17 +128,30 @@ class DashboardController {
             "SYNC_UNAVAILABLE","지금은 동기화할 수 없습니다. 대시보드에서 이유를 확인해 주세요.",
             "IDEMPOTENCY_CONFLICT","같은 요청 키가 다른 동기화 요청에 이미 쓰였습니다. 새로 요청해 주세요.");
 
+    /**
+     * @param calculationDisplay 계산 표시 제한이 결과를 막는 동안 {@value #DISPLAY_RESTRICTED}(Story 3.2). 그 밖에는 없다
+     * @param plan 결과가 막힌 동안 보이는 계획의 정체성. 그 밖에는 없다(결과가 그것을 싣는다)
+     */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record DashboardView(String state,String nextAction,@Nullable ResultView result,@Nullable SyncView sync,
             @Nullable VerificationView verification,@Nullable ChangeView change,@Nullable PlanEndView planEnd,
-            @Nullable EndView end,@Nullable CompletionView completion,@Nullable PostEndView postEnd) {
+            @Nullable EndView end,@Nullable CompletionView completion,@Nullable PostEndView postEnd,
+            @Nullable String calculationDisplay,@Nullable PlanIdentityView plan) {
 
         DashboardView(String state,String nextAction,@Nullable ResultView result,@Nullable SyncView sync,
                 @Nullable VerificationView verification,@Nullable ChangeView change,@Nullable PlanEndView planEnd,
                 @Nullable EndView end) {
-            this(state,nextAction,result,sync,verification,change,planEnd,end,null,null);
+            this(state,nextAction,result,sync,verification,change,planEnd,end,null,null,null,null);
+        }
+
+        DashboardView(String state,String nextAction,@Nullable ResultView result,@Nullable SyncView sync,
+                @Nullable VerificationView verification,@Nullable ChangeView change,@Nullable PlanEndView planEnd,
+                @Nullable EndView end,@Nullable CompletionView completion,@Nullable PostEndView postEnd) {
+            this(state,nextAction,result,sync,verification,change,planEnd,end,completion,postEnd,null,null);
         }
     }
+    /** 결과가 막힌 동안 보이는 계획의 정체성(Story 3.2): 어느 계획이고 어떤 상태인가. */
+    record PlanIdentityView(UUID planId,String planStatus) {}
     /**
      * A completed plan's completion facts (Story 2.14). Every key is sent; absent values are {@code null}. The observed
      * value is the first normal value after {@code T}, never the valuation at {@code T}.
@@ -245,7 +268,7 @@ class DashboardController {
             log("ERROR",failed.getStatusCode().value(),started,"unknown");
             return failed;
         }
-        ResponseEntity<?> answer=switch (read.dashboard()) {
+        ResponseEntity<?> answer=read.displayRestricted() ? restricted(read.dashboard()) : switch (read.dashboard()) {
             case SyncJobApi.Dashboard.NotPermitted denied -> {
                 response.sendError(403);
                 yield null;
@@ -291,6 +314,44 @@ class DashboardController {
         };
         log(state,answer==null?response.getStatus():answer.getStatusCode().value(),started,consistent);
         return answer;
+    }
+
+    /**
+     * 계산 표시 제한이 결과를 막은 대시보드(Story 3.2). 상태·계획 정체성·다음 행동과 계산 값이 아닌 블록 — 동기화·정밀
+     * 검증 상태, 계획 종료 가용성, 종료 기록의 사실, 완료 기록의 사실, 종료 후 현재가치 — 은 그대로 싣고
+     * {@code calculationDisplay: RESTRICTED}를 더한다. 빼는 것은 계산 값이다: 결과({@code result}), 버전 변경
+     * ({@code change}), 완료 기록의 완료 목표값. 결과가 있는 묶음만 제한으로 표시된다.
+     */
+    private static ResponseEntity<?> restricted(SyncJobApi.Dashboard dashboard) {
+        return switch (dashboard) {
+            case SyncJobApi.Dashboard.Ready ready -> ok(new DashboardView("READY",ready.nextAction(),null,
+                    syncView(ready.sync()),verificationView(ready.verification()),null,
+                    new PlanEndView(ready.planEnd().availability(),ready.planEnd().reason()),null,null,null,
+                    DISPLAY_RESTRICTED,identity(ready.result())));
+            case SyncJobApi.Dashboard.Ended ended -> ok(new DashboardView("ENDED",ended.nextAction(),null,null,null,
+                    null,null,endView(ended.end()),null,null,DISPLAY_RESTRICTED,identity(ended.result())));
+            case SyncJobApi.Dashboard.Completed completed -> ok(new DashboardView("COMPLETED",completed.nextAction(),
+                    null,completed.sync()==null ? null : syncView(completed.sync()),null,null,null,null,
+                    withoutCalculation(completionView(completed.completion())),
+                    completed.postEnd()==null ? null : new PostEndView(completed.postEnd().value(),
+                            completed.postEnd().measuredAt().toString()),
+                    DISPLAY_RESTRICTED,identity(completed.result())));
+            default -> throw new IllegalStateException("결과가 없는 묶음은 표시 제한 대상이 아니다.");
+        };
+    }
+
+    /**
+     * 완료 기록에서 계산 값만 뺀 것(Story 3.2). 완료 목표값은 계산 버전이 낸 값이라 비우고, 예정 종료·비교 상태·첫 관측의
+     * 측정값과 시각·지연·종료 뒤 입출금 수 같은 기록 사실은 남긴다.
+     */
+    static CompletionView withoutCalculation(CompletionView view) {
+        return new CompletionView(view.scheduledEndAt(),view.comparison(),view.reason(),view.observedValue(),
+                view.observedMeasuredAt(),view.observationDelayMillis(),null,view.postEndCashflowCount(),
+                view.retryable());
+    }
+
+    private static PlanIdentityView identity(SyncJobApi.DashboardResult result) {
+        return new PlanIdentityView(result.planId(),result.planStatus());
     }
 
     private static void log(String state,int status,long started,String consistent) {
@@ -667,12 +728,16 @@ class DashboardController {
                     error(HttpStatus.NOT_FOUND,ApiErrorHandler.CODE_NOT_FOUND,ApiErrorHandler.MESSAGE_NOT_FOUND,request);
             case SyncJobApi.EvidenceOutcome.Unavailable unavailable ->
                     error(HttpStatus.SERVICE_UNAVAILABLE,EVIDENCE_UNAVAILABLE,MESSAGE_EVIDENCE_UNAVAILABLE,request);
+            case SyncJobApi.EvidenceOutcome.Restricted restricted ->
+                    error(HttpStatus.CONFLICT,CALCULATION_DISPLAY_RESTRICTED,MESSAGE_CALCULATION_DISPLAY_RESTRICTED,
+                            request);
             case SyncJobApi.EvidenceOutcome.Found found ->
                     ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(evidenceView(found.evidence()));
         };
         String state=switch (read.outcome()) {
             case SyncJobApi.EvidenceOutcome.NotPermitted denied -> "DENIED";
             case SyncJobApi.EvidenceOutcome.NotFound notFound -> "NOT_FOUND";
+            case SyncJobApi.EvidenceOutcome.Restricted restricted -> "RESTRICTED";
             case SyncJobApi.EvidenceOutcome.Unavailable unavailable -> "INCONSISTENT";
             case SyncJobApi.EvidenceOutcome.Found found -> "FOUND";
         };
@@ -843,12 +908,16 @@ class DashboardController {
             case SyncJobApi.AdjustmentOutcome.Unavailable unavailable ->
                     error(HttpStatus.SERVICE_UNAVAILABLE,ADJUSTMENT_HISTORY_UNAVAILABLE,
                             MESSAGE_ADJUSTMENT_HISTORY_UNAVAILABLE,request);
+            case SyncJobApi.AdjustmentOutcome.Restricted restricted ->
+                    error(HttpStatus.CONFLICT,CALCULATION_DISPLAY_RESTRICTED,MESSAGE_CALCULATION_DISPLAY_RESTRICTED,
+                            request);
             case SyncJobApi.AdjustmentOutcome.Found found ->
                     ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(adjustmentsView(found.history()));
         };
         String state=switch (read.outcome()) {
             case SyncJobApi.AdjustmentOutcome.NotPermitted denied -> "DENIED";
             case SyncJobApi.AdjustmentOutcome.NotFound notFound -> "NOT_FOUND";
+            case SyncJobApi.AdjustmentOutcome.Restricted restricted -> "RESTRICTED";
             case SyncJobApi.AdjustmentOutcome.Unavailable unavailable -> "INCONSISTENT";
             case SyncJobApi.AdjustmentOutcome.Found found -> "FOUND";
         };

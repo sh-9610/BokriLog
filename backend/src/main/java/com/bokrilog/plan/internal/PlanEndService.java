@@ -4,6 +4,8 @@ import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.operations.OperationalRestrictionApi;
+import com.bokrilog.operations.RestrictionFeature;
+import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.plan.PlanEndApi;
 import com.bokrilog.sync.SyncJobApi;
 import java.time.Instant;
@@ -60,7 +62,7 @@ class PlanEndService implements PlanEndApi {
             boolean active = writable && this.ends.activePlan(userId, request.planId(), false);
             var basis = active ? this.sync.planEndBasis(userId, request.planId()) : null;
             return PlanEndRules.judge(request, new PlanEndRules.Facts(writable, active, basis,
-                    this.restrictions.isRestricted(COMMAND)));
+                    restricted(request.planId())));
         }));
     }
 
@@ -74,7 +76,7 @@ class PlanEndService implements PlanEndApi {
         boolean active = writable && this.ends.activePlan(userId, request.planId(), true);
         SyncJobApi.PlanEndBasisRead basis = active ? this.sync.planEndBasis(userId, request.planId()) : null;
         var refusal = PlanEndRules.judge(request, new PlanEndRules.Facts(writable, active, basis,
-                this.restrictions.isRestricted(COMMAND))).orElse(null);
+                restricted(request.planId()))).orElse(null);
         if (refusal != null) throw new Refused(refusal.code(), refusal.reason());
         // Eligible means the read was a consistent basis (PlanEndRules refuses every other read).
         SyncJobApi.PlanEndBasis official = (SyncJobApi.PlanEndBasis) Objects.requireNonNull(basis);
@@ -89,6 +91,20 @@ class PlanEndService implements PlanEndApi {
                 gap ? official.cashflowVerifiedThrough() : null, gap ? endedAt : null, idempotencyKey,
                 request.requestHash()));
         return new Ended(request.planId(), request.reason(), endedAt);
+    }
+
+    /**
+     * 이 계획의 종료를 제한이 막는가(Story 3.2) — 동기화 또는 계산 표시가 그 계획, 계획의 portfolio·연결, 계산 정책에
+     * 걸렸는가. 대시보드의 계획 종료 가용성과 같은 기능·차원을 본다. 판독 실패는 예외다(fail-closed).
+     */
+    private boolean restricted(java.util.UUID planId) {
+        RestrictionSubject subject = RestrictionSubject.none().withPlan(planId);
+        var target = this.plans.planTarget(planId).orElse(null);
+        if (target != null)
+            subject = subject.withPortfolio(target.portfolioId()).withConnection(target.connectionId())
+                    .withCalculationPolicy(target.calculationPolicy());
+        return this.restrictions.blocks(java.util.EnumSet.of(RestrictionFeature.SYNC,
+                RestrictionFeature.CALCULATION_DISPLAY), subject);
     }
 
     @Override

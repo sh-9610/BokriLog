@@ -44,10 +44,12 @@ import {
 import { FIRST_SNAPSHOT_PATH } from '../content/firstSnapshot'
 import {
   OPERATOR_AUDIT_ENDPOINT,
+  OPERATOR_COMMANDS_ENDPOINT,
   OPERATOR_EXPORT_CANCEL_ENDPOINT,
   OPERATOR_EXPORT_CONFIRM_ENDPOINT,
   OPERATOR_EXPORT_ENDPOINT,
   OPERATOR_OPERATIONS_ENDPOINT,
+  OPERATOR_RESTRICTIONS_ENDPOINT,
 } from '../content/operator'
 import { PLAN_END_CANCEL_PATH, PLAN_END_CONFIRM_PATH, PLAN_END_PATH } from '../content/planEnd'
 import { DASHBOARD_PATH } from '../content/planResult'
@@ -370,6 +372,23 @@ export function stubOperatorExportConfirm(responder: RequestResponder): void {
 }
 export function stubOperatorExportCancel(responder: RequestResponder): void {
   responders.set(requestKey('POST', OPERATOR_EXPORT_CANCEL_ENDPOINT), responder)
+}
+
+/** 활성 제한 목록(Story 3.2). */
+export function stubOperatorRestrictions(responder: RequestResponder): void {
+  responders.set(requestKey('GET', OPERATOR_RESTRICTIONS_ENDPOINT), responder)
+}
+
+/**
+ * 제한 command 하나의 준비·확정·취소(Story 3.2). `step`이 `prepare`면 command 경로 자체, 아니면 그 아래 단계다.
+ */
+export function stubOperatorRestrictionCommand(
+  command: string,
+  step: 'cancel' | 'confirm' | 'prepare',
+  responder: RequestResponder,
+): void {
+  const base = `${OPERATOR_COMMANDS_ENDPOINT}/${command}`
+  responders.set(requestKey('POST', step === 'prepare' ? base : `${base}/${step}`), responder)
 }
 
 /** 허용된 세션 확인 요청의 기록. 몇 번 불렸는지 단정하는 데 쓴다. */

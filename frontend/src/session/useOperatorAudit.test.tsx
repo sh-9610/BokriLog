@@ -22,7 +22,7 @@ function entry(sequence: number): Record<string, unknown> {
     target: '2026-10-01~2026-10-07',
     reason: '사유',
     outcome: 'REQUESTED',
-    policyVersion: 'OPERATOR-COMMAND-1.0',
+    policyVersion: 'OPERATOR-COMMAND-1.1',
     requestedAt: '2026-10-07T00:00:00Z',
     recordedAt: '2026-10-07T00:00:00Z',
     correlationId: 'c',

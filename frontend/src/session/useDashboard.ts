@@ -1036,6 +1036,21 @@ function parseCompletedSync(value: unknown): SyncStatus {
  */
 export type DashboardResponse =
   | { readonly state: 'NO_PLAN' | 'PREPARING'; readonly nextAction: string }
+  /**
+   * 계산 표시 제한이 보이는 계획의 결과를 막는다(Story 3.2). 서버는 상태·계획 정체성·다음 행동과 계산 값이 아닌
+   * 블록(동기화·정밀 검증 상태, 계획 종료 가용성)을 두고 결과를 뺀다. 공식 기록은 바뀌지 않았고 화면은 값을 보이지
+   * 않는다.
+   */
+  | {
+      readonly state: 'DISPLAY_RESTRICTED'
+      readonly shownState: 'READY' | 'ENDED' | 'COMPLETED'
+      readonly nextAction: string
+      readonly planId: string
+      readonly planStatus: string
+      readonly sync: SyncStatus
+      readonly verification: VerificationStatus
+      readonly planEnd: PlanEndStatus
+    }
   | {
       readonly state: 'READY'
       readonly nextAction: string
@@ -1069,7 +1084,9 @@ export type DashboardResponse =
  * added (`VERIFY` after a sync that ended in review), and the one of a plan ended early (Story 2.13). A pair
  * outside these is not an answer this screen understands.
  */
-const NEXT_ACTIONS: Readonly<Record<DashboardResponse['state'], readonly string[]>> = {
+const NEXT_ACTIONS: Readonly<
+  Record<Exclude<DashboardResponse['state'], 'DISPLAY_RESTRICTED'>, readonly string[]>
+> = {
   NO_PLAN: ['CREATE_PLAN'],
   PREPARING: ['WAIT_FOR_RESULT'],
   READY: ['NONE', 'WAIT_FOR_SYNC', 'SYNC', 'VERIFY', 'CHOOSE_CONTINUATION'],
@@ -1103,6 +1120,7 @@ export function parseDashboard(value: unknown, historical = false): DashboardRes
   const row = record(value)
   if (row === null || typeof row.nextAction !== 'string') return null
   if (historical && row.state !== 'ENDED' && row.state !== 'COMPLETED') return null
+  if (row.calculationDisplay !== undefined) return parseDisplayRestricted(row, row.nextAction)
   if (row.state === 'NO_PLAN' || row.state === 'PREPARING') {
     return row.result === undefined && NEXT_ACTIONS[row.state].includes(row.nextAction)
       ? { state: row.state, nextAction: row.nextAction }
@@ -1155,6 +1173,43 @@ export function parseDashboard(value: unknown, historical = false): DashboardRes
     verification: parseVerificationStatus(row.verification),
     change: parseVersionChange(row.change, row.result.basisAt),
     planEnd: parsePlanEndStatus(row.planEnd),
+  }
+}
+
+/** 계산 표시 제한이 결과를 막는 동안의 `calculationDisplay` 값(Story 3.2). */
+const DISPLAY_RESTRICTED = 'RESTRICTED'
+
+/**
+ * 계산 표시 제한이 결과를 막은 대시보드(Story 3.2): 결과가 있는 세 상태 가운데 하나, 그 상태가 가질 수 있는 다음 행동,
+ * 계획 정체성, 그리고 결과 없음 — 결과를 실었거나 이 화면이 모르는 `calculationDisplay` 값이면 온전한 답이 아니다.
+ * 동기화·정밀 검증·계획 종료 블록은 `READY`의 것처럼 읽을 수 있는 만큼 읽고(`COMPLETED`는 동기화만), 그 밖의 상태에는
+ * 뜻이 없으므로 모름으로 둔다.
+ */
+function parseDisplayRestricted(
+  row: Record<string, unknown>,
+  nextAction: string,
+): DashboardResponse | null {
+  if (row.calculationDisplay !== DISPLAY_RESTRICTED || row.result !== undefined) return null
+  const state = row.state
+  if (state !== 'READY' && state !== 'ENDED' && state !== 'COMPLETED') return null
+  if (!NEXT_ACTIONS[state].includes(nextAction)) return null
+  const plan = record(row.plan)
+  if (plan === null || !strings(plan, ['planId', 'planStatus'])) return null
+  return {
+    state: 'DISPLAY_RESTRICTED',
+    shownState: state,
+    nextAction,
+    planId: plan.planId as string,
+    planStatus: plan.planStatus as string,
+    sync:
+      state === 'READY'
+        ? parseSyncStatus(row.sync)
+        : state === 'COMPLETED'
+          ? parseCompletedSync(row.sync)
+          : UNKNOWN_SYNC,
+    verification:
+      state === 'READY' ? parseVerificationStatus(row.verification) : UNKNOWN_VERIFICATION,
+    planEnd: state === 'READY' ? parsePlanEndStatus(row.planEnd) : UNKNOWN_PLAN_END,
   }
 }
 
@@ -1232,6 +1287,21 @@ export type DashboardView =
   | ({ readonly kind: 'lastGood' } & Accepted)
   | { readonly kind: 'retryable'; readonly kept: Accepted | null }
   | { readonly kind: 'denied'; readonly cause: 'refused' | 'signedOut' }
+  /**
+   * 계산 표시 제한이 보이는 계획의 결과를 막는다(Story 3.2). 금융값은 메모리에 두지 않는다. 화면은 제한 문장과 계산 값이
+   * 아닌 블록(동기화 상태·계획 종료 가용성·다음 행동)을 보이고 재시도를 두지 않는다 — 제한은 다시 불러오기가 아니라
+   * 운영자가 푼다.
+   */
+  | {
+      readonly kind: 'displayRestricted'
+      readonly shownState: 'READY' | 'ENDED' | 'COMPLETED'
+      readonly nextAction: string
+      readonly planId: string
+      readonly planStatus: string
+      readonly sync: SyncStatus
+      readonly verification: VerificationStatus
+      readonly planEnd: PlanEndStatus
+    }
 
 export interface Dashboard {
   readonly historical?: boolean
@@ -1365,6 +1435,25 @@ export function useDashboard(ready: boolean, planId: string | null = null): Dash
         const parsed = parseDashboard(payload, planId !== null)
         if (parsed === null) {
           settle(failed())
+          return
+        }
+        if (parsed.state === 'DISPLAY_RESTRICTED') {
+          if (planId !== null && parsed.planId !== planId) {
+            settle(failed())
+            return
+          }
+          // 결과가 막혔다: 금융값을 메모리에 남기지 않는다(Story 3.2).
+          accepted.current = null
+          settle({
+            kind: 'displayRestricted',
+            shownState: parsed.shownState,
+            nextAction: parsed.nextAction,
+            planId: parsed.planId,
+            planStatus: parsed.planStatus,
+            sync: parsed.sync,
+            verification: parsed.verification,
+            planEnd: parsed.planEnd,
+          })
           return
         }
         if (parsed.state !== 'READY' && parsed.state !== 'ENDED' && parsed.state !== 'COMPLETED') {
@@ -1645,6 +1734,8 @@ export function dashboardAnnouncement(
       return view.kept === null ? copy.status.retryable : copy.status.versionConflict
     case 'denied':
       return view.cause === 'signedOut' ? copy.status.signedOut : copy.status.denied
+    case 'displayRestricted':
+      return copy.status.displayRestricted
   }
 }
 
