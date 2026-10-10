@@ -14,6 +14,8 @@
  *    `stubAdjustmentHistory`, `stubDashboardSync`, `stubDashboardVerification`, `stubPlanEndPrepare`,
  *    `stubPlanEndConfirm`, `stubPlanEndCancel`).
  *    전역 거부는 그대로다. 아래 `responders` 절의 근거를 참고한다.
+ * 5. 서비스 공지 조회(`GET /api/notices`, Story 3.5)만 예외로 기본 응답(빈 공지)이 있다. 아래
+ *    `defaultServiceNotices`의 근거를 참고한다.
  */
 
 import '@testing-library/jest-dom/vitest'
@@ -48,6 +50,7 @@ import {
   OPERATOR_EXPORT_CANCEL_ENDPOINT,
   OPERATOR_EXPORT_CONFIRM_ENDPOINT,
   OPERATOR_EXPORT_ENDPOINT,
+  OPERATOR_NOTICES_ENDPOINT,
   OPERATOR_OPERATIONS_ENDPOINT,
   OPERATOR_RESTRICTIONS_ENDPOINT,
 } from '../content/operator'
@@ -55,11 +58,14 @@ import { PLAN_END_CANCEL_PATH, PLAN_END_CONFIRM_PATH, PLAN_END_PATH } from '../c
 import { DASHBOARD_PATH } from '../content/planResult'
 import { DASHBOARD_SYNC_PATH } from '../content/planSync'
 import { DASHBOARD_VERIFICATION_PATH } from '../content/planVerification'
+import { SERVICE_NOTICES_PATH } from '../content/serviceNotice'
 
 const observedRequests: string[] = []
 const observedIndexedDbNames: string[] = []
 const observedSessionRequests: string[] = []
 const observedAllowedRequests: string[] = []
+/** 기본 응답이 답한 공지 조회(Story 3.5). 허용 기록과 따로 센다 — 진입 화면의 "요청 0건"은 이것도 0이어야 한다. */
+const observedNoticeRequests: string[] = []
 
 /**
  * 열린 요청과 그것에 답할 함수. 키는 `"<메서드> <URL>"`이다.
@@ -374,6 +380,23 @@ export function stubOperatorExportCancel(responder: RequestResponder): void {
   responders.set(requestKey('POST', OPERATOR_EXPORT_CANCEL_ENDPOINT), responder)
 }
 
+/**
+ * 서비스 공지 조회 하나를 이 시험 동안만 연다(Story 3.5). 연 응답이 기본 응답을 이기고, 연 요청은 허용 기록에 남는다.
+ *
+ * 대시보드와 설정 화면은 세션이 준비되면 언제나 이 요청을 보낸다. 그래서 열지 않은 시험에는 기록에 남지 않는 기본 응답
+ * (빈 공지)이 답한다(`defaultServiceNotices`) — 공지와 무관한 시험의 요청 목록 단정이 이 요청 하나 때문에 모두 바뀌지
+ * 않게 한다. 그 요청도 따로 기록된다(`getObservedNoticeRequests`) — 진입 화면은 그것도 0건이다. 다른 요청의 전역 거부는
+ * 그대로다.
+ */
+export function stubServiceNotices(responder: RequestResponder): void {
+  responders.set(requestKey('GET', SERVICE_NOTICES_PATH), responder)
+}
+
+/** 공지 사건 목록(Story 3.5, 운영자 화면). */
+export function stubOperatorNotices(responder: RequestResponder): void {
+  responders.set(requestKey('GET', OPERATOR_NOTICES_ENDPOINT), responder)
+}
+
 /** 활성 제한 목록(Story 3.2). */
 export function stubOperatorRestrictions(responder: RequestResponder): void {
   responders.set(requestKey('GET', OPERATOR_RESTRICTIONS_ENDPOINT), responder)
@@ -403,6 +426,11 @@ export function getObservedSessionRequests(): readonly string[] {
  */
 export function getObservedAllowedRequests(): readonly string[] {
   return [...observedAllowedRequests]
+}
+
+/** 기본 응답(빈 공지)이 답한 공지 조회의 기록. 시험이 연 응답의 기록은 `getObservedAllowedRequests`에 남는다. */
+export function getObservedNoticeRequests(): readonly string[] {
+  return [...observedNoticeRequests]
 }
 
 /** 지금까지 관측된 네트워크 요청. 비어 있어야 한다. */
@@ -438,6 +466,23 @@ function clearCookies(): void {
       document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`
     }
   }
+}
+
+/**
+ * 열지 않은 시험의 공지 조회 응답: 공지가 없다. 허용 기록이 아니라 `observedNoticeRequests`에 남긴다 — 위
+ * `stubServiceNotices`의 근거와 같다. 만료는
+ * 지금부터 5분 뒤다(서버 상한과 같다).
+ */
+function defaultServiceNotices(): Response {
+  const now = Date.now()
+  return new Response(
+    JSON.stringify({
+      asOf: new Date(now).toISOString(),
+      expiresAt: new Date(now + 5 * 60_000).toISOString(),
+      items: [],
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )
 }
 
 function refuse(kind: string, url: string): Error {
@@ -479,6 +524,10 @@ globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Respo
       observedSessionRequests.push(url)
     }
     return responder(init)
+  }
+  if (method === 'GET' && url === SERVICE_NOTICES_PATH) {
+    observedNoticeRequests.push(requestKey(method, url))
+    return Promise.resolve(defaultServiceNotices())
   }
   const queryAt = url.indexOf('?')
   const queryResponder =
@@ -528,6 +577,7 @@ beforeEach(() => {
   observedIndexedDbNames.length = 0
   observedSessionRequests.length = 0
   observedAllowedRequests.length = 0
+  observedNoticeRequests.length = 0
 })
 
 afterEach(() => {
@@ -539,6 +589,7 @@ afterEach(() => {
   observedIndexedDbNames.length = 0
   observedSessionRequests.length = 0
   observedAllowedRequests.length = 0
+  observedNoticeRequests.length = 0
   window.localStorage.clear()
   window.sessionStorage.clear()
   // 한 시험이 남긴 쿠키가 다음 시험의 저장소 단정을 엉뚱하게 실패시키지 않게 한다.

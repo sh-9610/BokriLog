@@ -1,5 +1,5 @@
 import AxeBuilder from '@axe-core/playwright'
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 
 import { authContent } from '../src/content/auth'
 import {
@@ -7,6 +7,7 @@ import {
   recoverButtonLabel,
   RECOVERY_CONDITION_LABELS,
 } from '../src/content/operator'
+import { serviceNoticeContent } from '../src/content/serviceNotice'
 
 /**
  * 보호된 운영자 화면의 실제 Chromium 검증(Story 3.1·3.2·3.4).
@@ -14,7 +15,9 @@ import {
  * 두 층이다. 기본 `vite preview`에서도 성립하는 것 — 운영자 화면 chunk가 초기 로드에 없고 `/operator`에서만 받아진다는
  * 사실, 미인증 진입의 `next` — 은 언제나 돈다. 운영자 왕복(로그인 → 재인증 → 감사 내보내기, 그리고 Story 3.2의 전역 광고
  * 제한 `restrict-advertising`과 Story 3.4의 그 제한 복구 `lift-restriction`)과 비운영자의 404 화면은
- * 백엔드와 dev-oidc 스텁이 함께 떠 있는 주입 origin에서만 돈다(`auth-entry.spec.ts`와 같은 게이트). 그 스택의 운영자
+ * 백엔드와 dev-oidc 스텁이 함께 떠 있는 주입 origin에서만 돈다(`auth-entry.spec.ts`와 같은 게이트). Story 3.5의 서비스
+ * 공지(`publish-notice`)는 그 광고 제한을 덮어 발행하고, 같은 사용자의 대시보드에서 공지를 본 뒤 복구 공지로 맺는다. 그
+ * 스택의 지원 연락처는 `verify-same-origin.sh`가 넣는 개발용 주소다. 그 스택의 운영자
  * allowlist는 Google 스텁의 subject `e2e-operator`이고, compose 기본값(운영자 없음)이 아니라 `verify-same-origin.sh`가
  * 명시적으로 넣는다.
  */
@@ -51,6 +54,70 @@ async function signIn(page: Page, subject: string): Promise<void> {
   await page.getByRole('link', { name: authContent.signIn.labels.google }).click()
   await consentWithSubject(page, subject)
   await page.waitForURL((url) => url.pathname !== '/' && !url.pathname.startsWith('/api/'))
+}
+
+/** 스택의 지원 연락처(`verify-same-origin.sh`가 넣는 개발용 주소). */
+const SUPPORT_CONTACT = 'support@bokrilog.test'
+
+/** 숫자 없는 짧은 표지. 공지 메시지는 숫자 6자리 이상 연속을 받지 않으므로 시각 대신 이것으로 실행을 가른다. */
+function letters(): string {
+  return Array.from({ length: 8 }, () =>
+    String.fromCharCode(97 + Math.floor(Math.random() * 26)),
+  ).join('')
+}
+
+/**
+ * 운영 명령 하나를 준비해 확인 대화상자를 연다. 최근 본인 확인이 없으면 화면이 세 로그인 수단을 보이고, 확인을 마친 뒤
+ * 다시 준비한다 — 자동으로 이어 하지 않는다. 방금 로그인한 세션은 본인 확인을 요구받지 않을 수 있으므로 두 갈래를 다
+ * 받는다.
+ */
+async function preparedDialog(
+  page: Page,
+  title: string,
+  reauthLabel: string,
+  prepare: () => Promise<void>,
+): Promise<Locator> {
+  await prepare()
+  const dialog = page.getByRole('dialog', { name: title })
+  const reauth = page.getByText(reauthLabel, { exact: true })
+  await expect(dialog.or(reauth)).toBeVisible()
+  if (await reauth.isVisible()) {
+    await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
+    await consentWithSubject(page, OPERATOR_SUBJECT)
+    await page.waitForURL((url) => url.pathname !== '/' && !url.pathname.startsWith('/api/'))
+    await openOperator(page)
+    await prepare()
+  }
+  await expect(dialog).toBeVisible()
+  return dialog
+}
+
+/** 대시보드의 서비스 공지 영역에서 그 메시지의 항목. 접근성·320px 검사를 함께 한다. */
+async function dashboardNotice(page: Page, message: string): Promise<Locator> {
+  await page.goto('/dashboard')
+  const region = page.getByRole('region', { name: serviceNoticeContent.heading })
+  await expect(region).toBeVisible()
+  const item = region.getByRole('listitem').filter({ hasText: message })
+  await expect(item).toHaveCount(1)
+  await expect(item.getByRole('link', { name: SUPPORT_CONTACT })).toHaveAttribute(
+    'href',
+    `mailto:${SUPPORT_CONTACT}`,
+  )
+  // 공지 영역은 정적이다 — live region을 더하지 않는다. 재시도 버튼이 없다.
+  await expect(region.getByRole('status')).toHaveCount(0)
+  await expect(region.locator('[aria-live]')).toHaveCount(0)
+  await expect(region.getByRole('button')).toHaveCount(0)
+  const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
+  expect(results.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([])
+  await page.setViewportSize(NARROW_VIEWPORT)
+  await expect(item).toBeVisible()
+  const metrics = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }))
+  expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth)
+  await page.setViewportSize({ width: 1280, height: 720 })
+  return item
 }
 
 /** 운영자 화면을 열고 감사 원장 구역이 그려질 때까지 기다린다. */
@@ -176,14 +243,17 @@ test.describe('운영자 화면 · 주입 origin', () => {
   })
 
   /**
-   * Story 3.2·3.4: 전역 광고 제한을 만들고 같은 시험에서 복구한다. 광고는 아직 소비자가 없어(Epic 4) 다른 기능에 영향이
-   * 없다 — 같은 스택의 다른 시험을 흔들지 않는 유일한 전역 제한이다. 확인 대화상자는 미리보기를 먼저 말하고, 대상명
-   * `전역`을 담은 문구를 다시 입력해야 확정된다. 만든 제한을 끝에서 복구하므로 같은 스택에 이 시험을 다시 돌려도 준비가
-   * `ALREADY_RESTRICTED`로 막히지 않는다.
+   * Story 3.2·3.4·3.5: 전역 광고 제한을 만들고, 그 제한을 덮는 서비스 공지를 발행해 같은 사용자의 대시보드에서 본 뒤,
+   * 제한을 복구하고 복구 공지로 맺는다. 광고는 아직 소비자가 없어(Epic 4) 다른 기능에 영향이 없다 — 같은 스택의 다른 시험을
+   * 흔들지 않는 유일한 전역 제한이다. 확인 대화상자는 미리보기를 먼저 말하고, 대상명 `전역`을 담은 문구를 다시 입력해야
+   * 확정된다. 만든 제한을 끝에서 복구하므로 같은 스택에 이 시험을 다시 돌려도 준비가 `ALREADY_RESTRICTED`로 막히지 않는다.
+   * 복구 공지는 72시간 동안 남으므로 항목은 이 실행의 메시지로 가른다.
    */
-  test('운영자가 재인증 뒤 전역 광고 제한을 확정하고 검증 증거와 함께 복구한다', async ({
+  test('운영자가 전역 광고 제한을 확정하고 공지한 뒤 검증 증거와 함께 복구하고 복구를 공지한다', async ({
     page,
   }) => {
+    // 본인 확인 왕복이 여럿이다(제한·공지·복구·복구 공지).
+    test.slow()
     await signIn(page, OPERATOR_SUBJECT)
     await openOperator(page)
     const copy = operatorContent.restriction
@@ -229,7 +299,59 @@ test.describe('운영자 화면 · 주입 origin', () => {
     expect(after.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([])
     expect(new URL(page.url()).search).toBe('')
 
-    // Story 3.4: 활성 목록의 그 행에서 복구한다. 확정이 재인증 시각을 지웠으므로 다시 본인 확인을 거친다.
+    // Story 3.5: 그 제한을 덮는 새 사건 공지. 영향·계속 가능 기능은 서버가 그 제한에서 계산한다.
+    const notice = operatorContent.notice
+    const noticeDialog = operatorContent.noticeDialog
+    const marker = letters()
+    const investigating = `e2e 광고 오류 조사 ${marker}`
+    // 다음 안내 시각은 서울 시각(KST)으로 입력한다 — 브라우저 시간대와 무관하다.
+    const nextUpdate = new Intl.DateTimeFormat('sv-SE', {
+      timeZone: 'Asia/Seoul',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    })
+      .format(new Date(Date.now() + 2 * 60 * 60 * 1000))
+      .replace(' ', 'T')
+    const publishNew = async (): Promise<void> => {
+      const section = page.getByRole('region', { name: notice.heading })
+      await section.getByLabel(notice.incidentLabel, { exact: true }).selectOption('NEW')
+      await section.getByRole('checkbox', { name: /광고 · 전역/ }).check()
+      await section.getByLabel(notice.messageLabel).fill(investigating)
+      await section.getByLabel(notice.nextUpdateLabel).fill(nextUpdate)
+      await section.getByRole('button', { name: notice.start }).click()
+    }
+    const opened = await preparedDialog(page, noticeDialog.title, notice.reauthLabel, publishNew)
+    await expect(opened.getByRole('button', { name: noticeDialog.cancel })).toBeFocused()
+    await expect(opened).toContainText(`${noticeDialog.affected}: 광고`)
+    await expect(opened).toContainText(
+      `${noticeDialog.continuing}: 새 거래소 연결, 동기화와 새 계산 반영, 계산 결과 표시`,
+    )
+    const noticeScan = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()
+    expect(noticeScan.violations.map((violation) => `${violation.id}: ${violation.help}`)).toEqual(
+      [],
+    )
+    await expect(opened.locator('label strong')).toHaveText('공지 발행 새 사건 제한 1건')
+    await opened.getByRole('textbox').fill('공지 발행 새 사건 제한 1건')
+    await opened.getByRole('button', { name: noticeDialog.confirm }).click()
+    const published = page.getByRole('group', { name: notice.result.heading })
+    await expect(page.getByRole('heading', { level: 3, name: notice.result.heading })).toBeFocused()
+    const incidentText = await published.getByText(`${notice.result.incident}:`).innerText()
+    const incident = incidentText.split(':')[1]?.trim() ?? ''
+    expect(incident).toMatch(/^[0-9a-f-]{36}$/)
+
+    // 같은 사용자가 다시 로그인해 대시보드에서 공지를 본다(첫 로그인 세션은 온보딩으로 밀린다).
+    await page.getByRole('button', { name: authContent.signOut.label }).click()
+    await page.waitForURL((url) => url.pathname === '/')
+    await signIn(page, OPERATOR_SUBJECT)
+    const shown = await dashboardNotice(page, investigating)
+    await expect(shown).toContainText(`${serviceNoticeContent.stateLabel}: 조사 중`)
+    await openOperator(page)
+
+    // Story 3.4: 활성 목록의 그 행에서 복구한다. 최근 본인 확인이 없으면 다시 거친다.
     const recovery = operatorContent.recovery
     const recover = async (): Promise<void> => {
       // 행마다의 복구 버튼은 기능·범위·대상을 붙인 이름으로 갈린다.
@@ -252,18 +374,12 @@ test.describe('운영자 화면 · 주입 origin', () => {
       await group.getByRole('button', { name: recovery.start }).click()
     }
 
-    await recover()
-    await expect(page.getByText(recovery.reauthLabel, { exact: true })).toBeVisible()
-    await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
-    await consentWithSubject(page, OPERATOR_SUBJECT)
-    await page.waitForURL((url) => url.pathname !== '/' && !url.pathname.startsWith('/api/'))
-    await openOperator(page)
-
-    await recover()
-    const recoveryDialog = page.getByRole('dialog', {
-      name: operatorContent.recoveryDialog.title,
-    })
-    await expect(recoveryDialog).toBeVisible()
+    const recoveryDialog = await preparedDialog(
+      page,
+      operatorContent.recoveryDialog.title,
+      recovery.reauthLabel,
+      recover,
+    )
     await expect(
       recoveryDialog.getByRole('button', { name: operatorContent.recoveryDialog.cancel }),
     ).toBeFocused()
@@ -295,5 +411,44 @@ test.describe('운영자 화면 · 주입 origin', () => {
       recoveredScan.violations.map((violation) => `${violation.id}: ${violation.help}`),
     ).toEqual([])
     expect(new URL(page.url()).search).toBe('')
+
+    // Story 3.5: 같은 사건의 복구 공지. 덮는 제한은 비워 두면 직전 버전의 것을 잇는다(닫힌 제한은 목록에 없다).
+    const fixed = `e2e 광고 오류 원인 수정 ${marker}`
+    const publishRecovered = async (): Promise<void> => {
+      const section = page.getByRole('region', { name: notice.heading })
+      await section.getByLabel(notice.incidentLabel, { exact: true }).selectOption(incident)
+      await section.getByLabel(notice.statusLabel).selectOption('RECOVERED')
+      await expect(section.getByLabel(notice.nextUpdateLabel)).toHaveCount(0)
+      await section.getByLabel(notice.messageLabel).fill(fixed)
+      await section.getByRole('button', { name: notice.start }).click()
+    }
+    const closing = await preparedDialog(
+      page,
+      noticeDialog.title,
+      notice.reauthLabel,
+      publishRecovered,
+    )
+    await expect(closing.locator('label strong')).toHaveText(
+      `공지 복구됨 ${incident.slice(0, 8)} v2`,
+    )
+    await closing.getByRole('textbox').fill(`공지 복구됨 ${incident.slice(0, 8)} v2`)
+    await closing.getByRole('button', { name: noticeDialog.confirm }).click()
+    await expect(page.getByRole('heading', { level: 3, name: notice.result.heading })).toBeFocused()
+    await expect(page.getByRole('status')).toContainText('공지 v2(복구됨)를 발행했습니다')
+    const history = page.getByRole('list', { name: notice.history.heading })
+    await expect(history.getByRole('listitem').filter({ hasText: incident }).first()).toContainText(
+      notice.history.closed,
+    )
+
+    // 같은 사용자의 대시보드: 복구 공지가 복구 시각과 함께 남는다.
+    const closed = await dashboardNotice(page, fixed)
+    await expect(closed).toContainText(`${serviceNoticeContent.stateLabel}: 복구됨`)
+    await expect(closed).toContainText(serviceNoticeContent.recoveredAt)
+    expect(new URL(page.url()).search).toBe('')
+    const storage = await page.evaluate(() => ({
+      local: window.localStorage.length,
+      session: window.sessionStorage.length,
+    }))
+    expect(storage).toEqual({ local: 0, session: 0 })
   })
 })

@@ -25,11 +25,24 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * API 프로세스가 기동을 거부한다(검사는 servlet 역할의 digest 빈이 한다 — 스키마만 바꾸는 migrate 역할은 이 키를
  * 받지 않는다). 값은 응답·로그 어디에도 나가지 않는다.
  *
+ * <p>{@code support-contact}(env {@code BOKRILOG_SUPPORT_CONTACT})는 서비스 공지(Story 3.5)가 싣는 지원 연락처 이메일이다.
+ * 비어 있으면 공지 발행이 {@code SUPPORT_CONTACT_UNCONFIGURED}로 거절되고 사용자 공지에 연락처가 없다 — 허위·빈 지원
+ * 경로를 만들지 않는다. 이메일 모양이 아니면 allowlist와 같은 이유로 기동을 거부한다.
+ *
  * @param operators allowlist 원문
  * @param auditDigestKey actor digest 키(base64)
+ * @param supportContact 지원 연락처 이메일. 비어 있으면 없다
  */
 @ConfigurationProperties("bokrilog.operations")
-public record OperatorProperties(@Nullable String operators, @Nullable String auditDigestKey) {
+public record OperatorProperties(@Nullable String operators, @Nullable String auditDigestKey,
+        @Nullable String supportContact) {
+
+    /** 지원 연락처의 모양. 한 주소이고 공백·꺾쇠·따옴표가 없다(mailto 링크에 그대로 싣는다). */
+    private static final java.util.regex.Pattern SUPPORT_CONTACT =
+            java.util.regex.Pattern.compile("[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}");
+
+    /** 지원 연락처의 최대 길이(RFC 5321 경로 상한). */
+    private static final int MAX_SUPPORT_CONTACT_CHARS = 254;
 
     /** allowlist 한 줄. {@code issuer}·{@code subject}는 설정 그대로이며 응답·로그·감사 행에 나가지 않는다. */
     public record Operator(String issuer, String subject, Set<OperatorPermission> permissions) {
@@ -42,6 +55,24 @@ public record OperatorProperties(@Nullable String operators, @Nullable String au
     public OperatorProperties {
         // 형식 검사가 곧 기동 거부다. 메시지에 값을 담지 않는다 — 기동 로그에 allowlist가 남는다.
         parseOperators(operators);
+        supportContact = parseSupportContact(supportContact);
+    }
+
+    /**
+     * 지원 연락처를 푼다. 비었으면 {@code null}이고, 양 끝 공백을 걷은 값이 이메일 모양이 아니면 형식 오류다. 시험이 연락처를
+     * 바꿀 때도 같은 함수를 지난다(루트 {@code SupportContact}의 재해석 훅).
+     *
+     * @throws IllegalArgumentException 형식 오류. 메시지에 값을 담지 않는다
+     */
+    public static @Nullable String parseSupportContact(@Nullable String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        String contact = text.strip();
+        if (contact.length() > MAX_SUPPORT_CONTACT_CHARS || !SUPPORT_CONTACT.matcher(contact).matches()) {
+            throw new IllegalArgumentException("bokrilog.operations.support-contact가 이메일 주소 형식이 아니다.");
+        }
+        return contact;
     }
 
     /** 파싱한 allowlist. 비면 운영자가 없다. */

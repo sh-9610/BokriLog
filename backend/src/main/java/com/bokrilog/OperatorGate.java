@@ -24,7 +24,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * 만들므로 {@code /api/operator/nope}의 404와 글자까지 같다. 게이트가 없으면 매핑된 경로의 잘못된 메서드가 405로 답해
  * 경로의 존재를 비운영자에게 알려 준다.
  *
- * <p>경로별 권한: {@code /api/operator/commands/**}·{@code /api/operator/restrictions}(Story 3.2)는 {@code command},
+ * <p>경로별 권한: {@code /api/operator/commands/**}·{@code /api/operator/restrictions}(Story 3.2)·
+ * {@code /api/operator/notices}(Story 3.5)는 {@code command},
  * {@code /api/operator/audit}는 {@code audit}, 그 밖
  * (operation 조회)은 운영자이기만 하면 된다. command마다 더 요구하는 권한(감사 내보내기의 {@code audit})은 서비스가 다시
  * 본다. 판정은 요청마다 allowlist를 다시 푼다({@link OperatorAccess}) — 회수가 다음 요청에 바로 반영된다.
@@ -95,6 +96,9 @@ final class OperatorGate extends OncePerRequestFilter {
         }
         if (uri.equals(OperatorController.RESTRICTIONS_PATH)
                 || uri.startsWith(OperatorController.RESTRICTIONS_PATH + "/")) {
+            return Set.of(OperatorPermission.COMMAND);
+        }
+        if (uri.equals(OperatorController.NOTICES_PATH) || uri.startsWith(OperatorController.NOTICES_PATH + "/")) {
             return Set.of(OperatorPermission.COMMAND);
         }
         if (uri.equals(AUDIT_PATH) || uri.startsWith(AUDIT_PATH + "/")) {

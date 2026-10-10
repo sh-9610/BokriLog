@@ -1,5 +1,5 @@
 /**
- * 보호된 운영자 화면의 카피와 경로(Story 3.1·3.2·3.3·3.4).
+ * 보호된 운영자 화면의 카피와 경로(Story 3.1·3.2·3.3·3.4·3.5).
  *
  * 화면과 시험이 같은 문자열을 참조한다. 이 모듈은 운영자 화면 chunk(`screens/OperatorScreen`)만 import한다 — 일반
  * 번들의 초기 화면에 운영자 제어의 카피가 섞이지 않는다. 경로 상수 `OPERATOR_PATH`는 예외로 `content/auth.ts`가
@@ -9,6 +9,7 @@
  */
 
 import { OPERATOR_PATH } from './auth'
+import { noticeFeatureCodesText, noticeTimeText } from './serviceNotice'
 
 /** 운영자 표면의 API 경로. 백엔드 `OperatorGate`·`OperatorController`와 같은 값이다. */
 export const OPERATOR_AUDIT_ENDPOINT = '/api/operator/audit'
@@ -21,6 +22,9 @@ export const OPERATOR_EXPORT_ENDPOINT = `${OPERATOR_COMMANDS_ENDPOINT}/audit-exp
 
 /** 효력 중인 제한의 목록(Story 3.2). command 권한이다. */
 export const OPERATOR_RESTRICTIONS_ENDPOINT = '/api/operator/restrictions'
+
+/** 공지 사건 목록(Story 3.5). command 권한이다. */
+export const OPERATOR_NOTICES_ENDPOINT = '/api/operator/notices'
 
 export const OPERATOR_EXPORT_CONFIRM_ENDPOINT = `${OPERATOR_EXPORT_ENDPOINT}/confirm`
 
@@ -117,6 +121,56 @@ export const RECOVERY_CONDITION_LABELS: Readonly<Record<RecoveryCondition, strin
 
 /** 배포 버전의 최대 길이. 서버 규칙(`OperatorCommandApi.MAX_DEPLOY_VERSION_CHARS`)과 같다. */
 export const DEPLOY_VERSION_MAX_LENGTH = 64
+
+// ------------------------------------------------------------------ 서비스 공지(Story 3.5)
+
+/** 공지 발행 command. 백엔드 `OperatorCommandApi.PUBLISH_NOTICE`와 같은 값이다. 공지 행은 이것만 쓴다. */
+export const PUBLISH_NOTICE_COMMAND = 'publish-notice'
+
+/** 새 사건을 여는 공지 발행의 대상. */
+export const NEW_INCIDENT = 'NEW'
+
+/** 공지 메시지의 최대 길이. 서버 규칙(`ServiceNoticeApi.MAX_MESSAGE_CHARS`)과 같다. */
+export const NOTICE_MESSAGE_MAX_LENGTH = 200
+
+/** 기존 사건이 받는 상태. 새 사건은 언제나 `INVESTIGATING`이다(서버가 같은 조합을 검증한다). */
+export const FOLLOW_UP_NOTICE_STATUSES = ['SCOPE_CHANGED', 'RECOVERED'] as const
+
+export type FollowUpNoticeStatus = (typeof FOLLOW_UP_NOTICE_STATUSES)[number]
+
+const NOTICE_STATUS_LABELS: Readonly<Record<string, string>> = {
+  INVESTIGATING: '조사 중',
+  SCOPE_CHANGED: '범위 변경',
+  RECOVERED: '복구됨',
+}
+
+/** 공지 상태 → 화면 문장. 사용자 화면의 상태 표지와 같은 말이다. 모르는 값은 그대로 보인다(운영자 표면이다). */
+export function noticeStatusLabel(status: string): string {
+  return NOTICE_STATUS_LABELS[status] ?? status
+}
+
+/**
+ * 공지의 기능 목록 문장. 사용자 화면의 서비스 공지와 같은 문장이다(`content/serviceNotice`) — 운영자가 미리 본 문장이 곧
+ * 사용자가 볼 문장이다. 비었으면 `없음`이다.
+ */
+export function featuresText(features: readonly string[]): string {
+  return noticeFeatureCodesText(features)
+}
+
+/** 공지 시각. 사용자 화면과 같은 서울 시각에 `KST`를 붙인다. */
+export function noticeTime(value: string): string {
+  return noticeTimeText(value)
+}
+
+/** 사건 선택지의 이름: 시작 시각·최신 버전·상태. 사건 ID 앞 8자로 같은 시각의 사건을 가른다. */
+export function incidentOptionLabel(
+  startedAt: string,
+  version: number,
+  status: string,
+  incidentId: string,
+): string {
+  return `${noticeTimeText(startedAt)} 시작 · v${String(version)} ${noticeStatusLabel(status)} · ${incidentId.slice(0, 8)}`
+}
 
 const SMOKE_LABELS: Readonly<Record<string, string>> = {
   PASSED: '통과 — 해제한 제한이 더는 보고되지 않고 남는 제한은 그대로 막습니다.',
@@ -275,6 +329,13 @@ const REFUSALS: Readonly<Record<string, string>> = {
     '수행한 검증과 증거 참조는 500자 이내의 한 줄 문장이어야 하고 이메일 주소를 담을 수 없습니다. 배포 버전은 영문·숫자와 . _ + - 만으로 64자 이내이고, 복구 조건은 아는 조건을 한 번씩만 보냅니다.',
   NEW_SIGNAL_SINCE_PREPARE:
     '준비 뒤 이 제한에 새 자동 정지 신호가 연결되어 복구하지 않았습니다. 다시 검증한 뒤 새로 준비해 주세요.',
+  SUPPORT_CONTACT_UNCONFIGURED:
+    '지원 연락처가 설정되지 않아 공지를 발행하지 않았습니다. 배포 설정을 확인해 주세요.',
+  NOTICE_VERSION_CONFLICT:
+    '준비 뒤 같은 사건의 공지가 먼저 발행되어 발행하지 않았습니다. 사건 목록을 확인하고 새로 준비해 주세요.',
+  INCIDENT_CLOSED: '복구로 닫힌 사건이라 새 공지를 발행하지 않았습니다. 새 사건으로 발행해 주세요.',
+  NEXT_UPDATE_INVALID:
+    '다음 안내 시각은 지금보다 미래이고 7일 이내여야 합니다. 복구 공지에는 다음 안내 시각을 넣지 않습니다.',
   UNAUTHENTICATED: '로그인이 필요합니다. 다시 로그인해 주세요.',
   NOT_FOUND: '요청한 운영 명령을 찾지 못했습니다.',
 }
@@ -286,16 +347,40 @@ const UNKNOWN_REFUSAL =
 const EXPORT_TARGET_INVALID =
   '대상 기간이 올바르지 않습니다. 시작일과 종료일을 366일 이내로 지정해 주세요.'
 
+/** 공지 발행의 거절 문장(서버 `OperatorController.NOTICE_*`와 같다). 대상이 사건과 덮는 제한이고 사유가 메시지다. */
+const NOTICE_REFUSALS: Readonly<Record<string, string>> = {
+  TARGET_INVALID:
+    '사건이 없거나, 덮을 제한이 없거나 지금 효력 중이 아닙니다. 사건 목록과 활성 제한 목록을 확인해 주세요.',
+  REASON_INVALID:
+    '공지 메시지는 200자 이내의 한 줄 문장이어야 하고 이메일 주소·숫자 6자리 이상 연속·URL·경로를 담을 수 없습니다.',
+  REASON_REQUIRED: '공지 메시지를 입력해 주세요.',
+}
+
+/** 복구 공지의 `TARGET_INVALID` 문장(서버 `OperatorController.NOTICE_RECOVERY_TARGET_INVALID`와 같다). */
+const NOTICE_RECOVERY_TARGET_INVALID =
+  '사건이 없거나 아직 효력 중인 제한이 있어 복구 공지를 낼 수 없습니다. 제한을 먼저 복구하고 사건 목록을 확인해 주세요.'
+
 /**
  * 거절 code → 화면 문장. `TARGET_INVALID`는 command별로 다르다(Story 3.2) — 감사 내보내기는 기간 안내, 제한 command는
  * 대상 안내다. command를 모르면 제한 쪽 문장이다.
  */
-export function operatorRefusalMessage(code: string | null, command?: string): string {
+export function operatorRefusalMessage(
+  code: string | null,
+  command?: string,
+  noticeStatus?: string,
+): string {
   if (code === null) {
     return UNKNOWN_REFUSAL
   }
   if (code === 'TARGET_INVALID' && command === 'audit-export') {
     return EXPORT_TARGET_INVALID
+  }
+  if (command === PUBLISH_NOTICE_COMMAND) {
+    if (code === 'TARGET_INVALID' && noticeStatus === 'RECOVERED') {
+      return NOTICE_RECOVERY_TARGET_INVALID
+    }
+    const notice = NOTICE_REFUSALS[code]
+    if (notice !== undefined) return notice
   }
   return REFUSALS[code] ?? UNKNOWN_REFUSAL
 }
@@ -323,6 +408,10 @@ const LEDGER_CODES: Readonly<Record<string, string>> = {
   NEW_SIGNAL_SINCE_PREPARE: '준비 뒤 새 신호',
   SMOKE_FAILED: '복구 확인 실패로 다시 제한',
   SMOKE_PASSED: '복구 확인 통과',
+  SUPPORT_CONTACT_UNCONFIGURED: '지원 연락처 미설정',
+  NOTICE_VERSION_CONFLICT: '공지 버전 충돌',
+  INCIDENT_CLOSED: '닫힌 사건',
+  NEXT_UPDATE_INVALID: '다음 안내 시각 오류',
 }
 
 export function ledgerCodeLabel(code: string): string {
@@ -379,6 +468,12 @@ export const operatorContent = {
     recoveryPending: (feature: string, scope: string): string =>
       `${feature} 제한(${scope})을 복구했습니다. 복구 확인의 결말은 아직 확인 중입니다. operation 조회로 확인해 주세요.`,
     recoveryCancelled: '복구를 취소했습니다. 바뀐 것은 없습니다.',
+    noticePreparing: '공지 발행을 준비하고 있습니다.',
+    noticePrepared: '공지 확인 대화상자를 열었습니다.',
+    noticeConfirming: '공지를 발행하고 있습니다.',
+    noticeCompleted: (version: number, status: string): string =>
+      `공지 v${String(version)}(${status})를 발행했습니다. 사용자 화면의 서비스 공지에 보입니다.`,
+    noticeCancelled: '공지 발행을 취소했습니다. 바뀐 것은 없습니다.',
   },
   audit: {
     id: 'operator-audit',
@@ -584,6 +679,98 @@ export const operatorContent = {
     confirm: '복구 실행',
     confirming: '복구를 실행하고 있습니다.',
   },
+  notice: {
+    id: 'operator-notice',
+    /** 준비 버튼의 id. 대화상자가 호출점을 모를 때 포커스를 돌려줄 자리다. */
+    startId: 'operator-notice-start',
+    heading: '서비스 공지',
+    body: '효력 중인 제한을 사용자 화면의 서비스 공지로 안내합니다. 영향을 받는 기능과 계속 쓸 수 있는 기능은 고른 제한에서 서버가 계산하고, 운영자는 원인 수준의 한 줄만 씁니다. 공지는 버전으로 쌓이며 고치거나 지울 수 없고, 제한을 풀지 않습니다.',
+    contactMissing:
+      '지원 연락처가 설정되지 않아 공지를 발행할 수 없습니다. 배포 설정의 지원 연락처를 먼저 채워 주세요.',
+    incidentLabel: '사건',
+    newIncident: '새 사건(조사 중)',
+    statusLabel: '상태',
+    coversLegend: '덮을 활성 제한',
+    coversHelp: '진행 중인 공지는 지금 효력 중인 제한만 덮습니다.',
+    /** 복구 공지는 덮는 제한을 고르지 않는다 — 직전 버전이 덮던 제한을 서버가 잇는다. */
+    recoveredCovers:
+      '복구 공지는 직전 버전이 덮던 제한을 그대로 잇습니다. 그 제한이 모두 복구(해제)된 뒤에만 낼 수 있습니다.',
+    /** 복구 공지를 고른 사건이 덮던 제한 가운데 아직 효력 중인 것이 있다. */
+    recoveredStillOpen: (count: number): string =>
+      `이 사건이 덮던 제한 가운데 ${String(count)}건이 아직 효력 중이라 복구 공지를 낼 수 없습니다. 활성 제한 목록에서 먼저 복구해 주세요.`,
+    /** 메시지에 화면 카피 금지 표현이 있다(`content/copyRules`). 서버도 같은 목록으로 거절한다. */
+    messageForbidden:
+      '공지 메시지에 화면에 쓰지 않는 표현이 있습니다. 시점·결과를 단정하거나 손익을 강조하는 표현을 빼 주세요.',
+    noActive: '덮을 수 있는 활성 제한이 없습니다.',
+    coverLabel: (feature: string, scope: string, target: string): string =>
+      `${feature} · ${scope}${target === '' ? '' : ` · ${target}`}`,
+    messageLabel: '공지 메시지(필수)',
+    messageHelp:
+      '200자 이내 한 줄. 이메일 주소·숫자 6자리 이상 연속·URL·경로·금융 정보를 적지 않습니다.',
+    nextUpdateLabel: '다음 안내 시각(KST)',
+    nextUpdateHelp:
+      '서울 시각(KST)으로 입력합니다. 지금보다 미래이고 7일 이내여야 합니다. 복구 공지에는 넣지 않습니다.',
+    start: '공지 발행 준비',
+    reauthLabel: '본인 확인 필요',
+    result: {
+      id: 'operator-notice-result',
+      heading: '공지 발행 결과',
+      operation: 'operation ID',
+      incident: '사건 ID',
+      version: '버전',
+      publishedAt: '발행 시각',
+    },
+    history: {
+      id: 'operator-notice-history',
+      heading: '사건 이력',
+      empty: '발행한 공지가 없습니다.',
+      failed: '사건 목록을 불러오지 못했습니다. 잠시 후 다시 조회해 주세요.',
+      reload: '사건 목록 다시 조회',
+      closed: '닫힘(복구됨)',
+      open: '진행 중',
+      columns: {
+        incident: '사건 ID',
+        startedAt: '시작 시각',
+        state: '상태',
+        version: '버전',
+        affected: '멈춘 기능',
+        continuing: '계속 쓸 수 있는 기능',
+        message: '메시지',
+        nextUpdateAt: '다음 안내 예정',
+        recoveredAt: '복구 시각',
+        covers: '덮는 제한',
+        createdAt: '발행 시각',
+      },
+    },
+    uncertainClosed:
+      '응답을 받지 못한 공지 발행은 실행됐을 수 있습니다. 아래 operation 조회와 사건 이력으로 상태를 확인해 주세요.',
+    uncertain:
+      '응답을 받지 못해 실행 여부를 알 수 없습니다. 자동으로 다시 실행하지 않습니다. 같은 문구로 다시 실행하면 같은 요청으로 처리되며, 대화상자를 닫은 뒤 operation 조회로 상태를 확인할 수도 있습니다.',
+  },
+  noticeDialog: {
+    titleId: 'operator-notice-title',
+    descriptionId: 'operator-notice-description',
+    progressId: 'operator-notice-progress',
+    inputId: 'operator-notice-phrase',
+    title: '이 공지를 발행할까요?',
+    incident: '사건',
+    newIncident: '새 사건',
+    version: '버전',
+    status: '상태',
+    message: '메시지',
+    impactHeading: '공지 미리보기(서버 계산)',
+    affected: '멈춘 기능',
+    continuing: '계속 쓸 수 있는 기능',
+    covers: (count: number): string => `덮는 제한 ${String(count)}건`,
+    nextUpdateAt: '다음 안내 예정',
+    effect:
+      '확정하면 이 버전이 사용자 화면의 서비스 공지에 바로 보이고 그 사실이 감사 원장에 남습니다. 발행한 버전은 고치거나 지울 수 없습니다.',
+    kept: '공지는 제한을 풀거나 바꾸지 않습니다. 앞 버전은 그대로 남습니다.',
+    phraseLabel: '확인 문구를 그대로 입력하세요',
+    cancel: '취소',
+    confirm: '공지 발행',
+    confirming: '공지를 발행하고 있습니다.',
+  },
   operation: {
     id: 'operator-operation',
     heading: 'operation 조회',
@@ -612,4 +799,11 @@ export const operatorCopyStrings: readonly string[] = [
   operatorContent.recovery.verificationNote,
   operatorContent.recoveryDialog.effect,
   operatorContent.recoveryDialog.kept,
+  operatorContent.notice.body,
+  operatorContent.notice.contactMissing,
+  operatorContent.notice.coversHelp,
+  operatorContent.notice.recoveredCovers,
+  operatorContent.notice.messageForbidden,
+  operatorContent.noticeDialog.effect,
+  operatorContent.noticeDialog.kept,
 ]

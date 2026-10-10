@@ -257,6 +257,14 @@ class AuthSecurityConfig {
      */
     static final String OPERATOR_API_PATH = "/api/operator";
 
+    /**
+     * 인증 사용자의 서비스 공지(Story 3.5). 그 사용자에게 적용되는 효력 제한과 그것을 덮는 공지만 나간다.
+     *
+     * <p>인가와 CSRF·{@code Origin}이 같은 판정 함수({@link #isNoticesPath})를 본다. 읽기 전용 {@code GET}이라 CSRF 판정은
+     * 닿지 않지만 술어는 하나로 둔다. 하위 경로도 같은 판정에 걸려 인증 없이는 401, 인증되면 같은 404다.
+     */
+    static final String NOTICES_PATH = "/api/notices";
+
     /** Bybit 연결 표면의 경로. 이 계층에서 그 경로를 정의하는 상수는 이것 하나다. */
     static final String BYBIT_CONNECTION_PATH = CONNECTIONS_BASE_URI + "/bybit";
 
@@ -1227,7 +1235,7 @@ class AuthSecurityConfig {
          * 갈린 상태 자체가 이 함수가 하나로 유지되는 이유와 부딪힌다.
          */
         return isConnectionsPath(uri) || isSnapshotPath(uri) || isPlanConditionsPath(uri)
-                || isDashboardPath(uri) || isOperatorPath(uri);
+                || isDashboardPath(uri) || isOperatorPath(uri) || isNoticesPath(uri);
     }
 
     /**
@@ -1244,7 +1252,7 @@ class AuthSecurityConfig {
     static boolean requiresAuthentication(HttpServletRequest request) {
         String uri = applicationPath(request);
         return isConnectionsPath(uri) || isSnapshotPath(uri) || isPlanConditionsPath(uri) || isDashboardPath(uri)
-                || isOperatorPath(uri);
+                || isOperatorPath(uri) || isNoticesPath(uri);
     }
 
     /**
@@ -1288,6 +1296,11 @@ class AuthSecurityConfig {
      */
     static boolean isOperatorPath(String uri) {
         return uri.equals(OPERATOR_API_PATH) || uri.startsWith(OPERATOR_API_PATH + "/");
+    }
+
+    /** 서비스 공지와 그 모든 하위 경로(Story 3.5). 인가·CSRF·{@code Origin}이 이 함수 하나를 본다. */
+    private static boolean isNoticesPath(String uri) {
+        return uri.equals(NOTICES_PATH) || uri.startsWith(NOTICES_PATH + "/");
     }
 
     private static boolean isConnectionsPath(String uri) {

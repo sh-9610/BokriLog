@@ -22,6 +22,7 @@ import {
   stubOperatorExportCancel,
   stubOperatorExportConfirm,
   stubOperatorExportPrepare,
+  stubOperatorNotices,
   stubOperatorOperation,
   stubOperatorRestrictionCommand,
   stubOperatorRestrictions,
@@ -117,6 +118,10 @@ beforeEach(() => {
   vi.mocked(replaceLocation).mockClear()
   // 활성 제한 목록(Story 3.2). 운영자임이 감사 조회로 확인된 뒤에만 읽힌다. 시험이 다시 열면 그 응답이 이긴다.
   stubOperatorRestrictions(() => Promise.resolve(jsonResponse({ items: [] })))
+  // 공지 사건 목록(Story 3.5). 제한 목록이 읽힌 뒤에만 읽힌다. 공지 흐름은 `OperatorNotice.test.tsx`가 본다.
+  stubOperatorNotices(() =>
+    Promise.resolve(jsonResponse({ supportContactConfigured: true, items: [] })),
+  )
 })
 
 describe('OperatorScreen', () => {

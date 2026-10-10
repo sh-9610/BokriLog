@@ -4,6 +4,8 @@ import com.bokrilog.operations.OperationalRestrictionApi;
 import com.bokrilog.operations.OperatorAuditApi;
 import com.bokrilog.operations.OperatorCommandApi;
 import com.bokrilog.operations.OperatorPermission;
+import com.bokrilog.operations.RestrictionFeature;
+import com.bokrilog.operations.ServiceNoticeApi;
 import com.bokrilog.sync.IdempotencyKey;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.servlet.http.HttpServletRequest;
@@ -64,6 +66,12 @@ import org.springframework.web.bind.annotation.RestController;
  *       stillBlockedStages}}}이다.
  *   <li>{@code GET /api/operator/restrictions}(command 권한): 효력 중인 제한, 구체 우선. 출처(운영자·자동 정지, Story
  *       3.3)·기능·scope·target(비식별된 것은 {@code targetErased})·시작 시각·사유·수행자 digest.
+ *   <li>Story 3.5의 공지 발행 command {@code publish-notice}도 같은 세 경로다. 준비 본문은 {@code {incident: "NEW"|<사건 ID>,
+ *       status, covers[<제한 ID>], message, nextUpdateAt}}이고 응답 {@code impact}는 {@code {incident, version, status,
+ *       affectedFeatures, continuingFeatures, covers, nextUpdateAt}}이다. 확정 응답은 {@code {operationId, outcome, command,
+ *       incidentId, version, status, publishedAt}}이다.
+ *   <li>{@code GET /api/operator/notices}(command 권한, Story 3.5): 최근 사건과 그 버전 이력(읽기 전용), 그리고 지원 연락처가
+ *       설정됐는지({@code supportContactConfigured}).
  * </ul>
  *
  * <p>거절은 공통 오류 모양이다: 400 본문 모양, 403 {@code REAUTHENTICATION_REQUIRED}(준비)·
@@ -71,7 +79,8 @@ import org.springframework.web.bind.annotation.RestController;
  * {@code IDEMPOTENCY_KEY_REQUIRED}·{@code REASON_REQUIRED}·{@code REASON_INVALID}·{@code UNSUPPORTED_SCOPE}·
  * {@code TARGET_INVALID}·{@code ACTOR_NOT_ACCEPTED}, 409 {@code ALREADY_RESTRICTED}(Story 3.2), 409
  * {@code RESTRICTION_NOT_ACTIVE}·{@code NEW_SIGNAL_SINCE_PREPARE}과 422 {@code RECOVERY_CONDITION_MISSING}·
- * {@code RECOVERY_EVIDENCE_INVALID}(Story 3.4), 실패는 500. 404 밖의 응답은 {@code no-store}다.
+ * {@code RECOVERY_EVIDENCE_INVALID}(Story 3.4), 422 {@code SUPPORT_CONTACT_UNCONFIGURED}·{@code NEXT_UPDATE_INVALID}과 409
+ * {@code NOTICE_VERSION_CONFLICT}·{@code INCIDENT_CLOSED}(Story 3.5), 실패는 500. 404 밖의 응답은 {@code no-store}다.
  *
  * <p>한 요청에 운영 로그 한 줄 — 단계·결과 code·상태·지연뿐이다. 수행자·대상·사유·operation ID·키·허가를 남기지 않는다.
  */
@@ -83,6 +92,9 @@ class OperatorController {
 
     /** 효력 중인 제한의 목록(Story 3.2). command 권한이다. */
     static final String RESTRICTIONS_PATH = AuthSecurityConfig.OPERATOR_API_PATH + "/restrictions";
+
+    /** 공지 사건 목록(Story 3.5). command 권한이다. */
+    static final String NOTICES_PATH = AuthSecurityConfig.OPERATOR_API_PATH + "/notices";
 
     static final String CONFIRM_SEGMENT = "confirm";
 
@@ -152,7 +164,30 @@ class OperatorController {
                             + "배포 버전은 영문·숫자와 . _ + - 만으로 64자 이내이고, 복구 조건은 아는 조건을 한 번씩만 "
                             + "보냅니다.")),
             Map.entry(OperatorCommandApi.NEW_SIGNAL_SINCE_PREPARE, new Refusal(HttpStatus.CONFLICT,
-                    "준비 뒤 이 제한에 새 자동 정지 신호가 연결되어 복구하지 않았습니다. 다시 검증한 뒤 새로 준비해 주세요.")));
+                    "준비 뒤 이 제한에 새 자동 정지 신호가 연결되어 복구하지 않았습니다. 다시 검증한 뒤 새로 준비해 주세요.")),
+            Map.entry(OperatorCommandApi.SUPPORT_CONTACT_UNCONFIGURED, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "지원 연락처가 설정되지 않아 공지를 발행하지 않았습니다. 배포 설정을 확인해 주세요.")),
+            Map.entry(OperatorCommandApi.NOTICE_VERSION_CONFLICT, new Refusal(HttpStatus.CONFLICT,
+                    "준비 뒤 같은 사건의 공지가 먼저 발행되어 발행하지 않았습니다. 사건 목록을 확인하고 새로 준비해 주세요.")),
+            Map.entry(OperatorCommandApi.INCIDENT_CLOSED, new Refusal(HttpStatus.CONFLICT,
+                    "복구로 닫힌 사건이라 새 공지를 발행하지 않았습니다. 새 사건으로 발행해 주세요.")),
+            Map.entry(OperatorCommandApi.NEXT_UPDATE_INVALID, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "다음 안내 시각은 지금보다 미래이고 7일 이내여야 합니다. 복구 공지에는 다음 안내 시각을 넣지 않습니다.")));
+
+    /** 공지 발행의 {@code REASON_INVALID} 문장. 메시지 규칙이 사유 규칙보다 좁다(Story 3.5). */
+    static final String NOTICE_MESSAGE_INVALID = "공지 메시지는 200자 이내의 한 줄 문장이어야 하고 이메일 주소·숫자 6자리 이상 "
+            + "연속·URL·경로를 담을 수 없습니다.";
+
+    /** 공지 발행의 {@code TARGET_INVALID} 문장. 대상이 사건과 덮는 제한이다(Story 3.5). */
+    static final String NOTICE_TARGET_INVALID = "사건이 없거나, 덮을 제한이 없거나 지금 효력 중이 아닙니다. 사건 목록과 활성 "
+            + "제한 목록을 확인해 주세요.";
+
+    /** 복구 공지의 {@code TARGET_INVALID} 문장. 덮는 제한이 아직 효력 중이거나 사건이 없다(Story 3.5 리뷰). */
+    static final String NOTICE_RECOVERY_TARGET_INVALID = "사건이 없거나 아직 효력 중인 제한이 있어 복구 공지를 낼 수 "
+            + "없습니다. 제한을 먼저 복구하고 사건 목록을 확인해 주세요.";
+
+    /** 공지 발행의 {@code REASON_REQUIRED} 문장. */
+    static final String NOTICE_MESSAGE_REQUIRED = "공지 메시지를 입력해 주세요.";
 
     /** 감사 행 하나의 응답 모양. allowlist 필드뿐이다. */
     @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -173,8 +208,23 @@ class OperatorController {
 
     record OperationView(String operationId, List<EntryView> items) {}
 
-    /** 준비 응답의 미리보기: 제한 생성(Story 3.2)이거나 해제(Story 3.4)다. 식별자도 금융값도 없다. */
-    sealed interface PreparedImpactView permits ImpactView, LiftImpactView {}
+    /**
+     * 준비 응답의 미리보기: 제한 생성(Story 3.2)·해제(Story 3.4)·공지 발행(Story 3.5)이다. 앞의 둘은 식별자가 없고, 공지
+     * 발행은 운영자가 고른 제한 ID만 되돌려 준다.
+     */
+    sealed interface PreparedImpactView permits ImpactView, LiftImpactView, NoticeImpactView {}
+
+    /**
+     * 공지 발행의 미리보기(Story 3.5). 영향·계속 가능 기능은 덮는 제한에서 서버가 계산했다.
+     *
+     * @param incident {@code NEW}이거나 사건 ID
+     * @param version 쓸 버전 번호
+     * @param nextUpdateAt 진행 중인 공지의 다음 안내 시각. 복구 공지는 없다
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record NoticeImpactView(String incident, int version, String status, List<String> affectedFeatures,
+            List<String> continuingFeatures, List<UUID> covers, @Nullable String nextUpdateAt)
+            implements PreparedImpactView {}
 
     /** 제한 생성의 영향 미리보기(Story 3.2). 수만 담는다 — 식별자도 금융값도 없다. */
     record ImpactView(List<String> blockedStages, long affectedPlans, long affectedConnections,
@@ -198,6 +248,35 @@ class OperatorController {
     /** 제한 생성의 확정 결과(Story 3.2). target 원문은 싣지 않는다 — 같은 키의 재생은 원장에서 오고 원장에는 원문이 없다. */
     record RestrictionCompletedView(String operationId, String outcome, String command, String feature, String scope,
             UUID restrictionId, String effectiveFrom) {}
+
+    /** 공지 발행의 확정 결과(Story 3.5). 메시지 원문은 싣지 않는다 — 재생이 원장에서 온다. */
+    record NoticeCompletedView(String operationId, String outcome, String command, UUID incidentId, int version,
+            String status, String publishedAt) {}
+
+    /** 공지 버전 하나(Story 3.5, 운영자 목록). */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record NoticeVersionView(int version, @Nullable Integer previousVersion, String status,
+            List<String> affectedFeatures, List<String> continuingFeatures, String message,
+            @Nullable String nextUpdateAt, @Nullable String recoveredAt, List<UUID> covers, String operationId,
+            String supportContact, String createdAt) {
+
+        static NoticeVersionView of(ServiceNoticeApi.NoticeVersion version) {
+            return new NoticeVersionView(version.version(), version.previousVersion(), version.status().name(),
+                    names(version.affectedFeatures()), names(version.continuingFeatures()), version.message(),
+                    version.nextUpdateAt() == null ? null : version.nextUpdateAt().toString(),
+                    version.recoveredAt() == null ? null : version.recoveredAt().toString(), version.covers(),
+                    version.operationId(), version.supportContact(), version.createdAt().toString());
+        }
+    }
+
+    /** 사건 하나와 그 버전 이력(오래된 순). {@code closed}는 복구로 닫혀 새 버전을 받지 않는다는 뜻이다. */
+    record IncidentView(UUID incidentId, String startedAt, boolean closed, List<NoticeVersionView> versions) {}
+
+    record IncidentListView(boolean supportContactConfigured, List<IncidentView> items) {}
+
+    static List<String> names(List<RestrictionFeature> features) {
+        return features.stream().map(Enum::name).toList();
+    }
 
     /** 해제 커밋 뒤의 smoke(Story 3.4). */
     record SmokeView(String status, List<String> reopenedStages, List<String> stillBlockedStages) {}
@@ -239,6 +318,12 @@ class OperatorController {
 
     private final OperationalRestrictionApi restrictions;
 
+    /** 공지 사건 목록(Story 3.5). */
+    private final ServiceNoticeApi notices;
+
+    /** 공지 발행의 지원 연락처(Story 3.5). 목록이 설정 여부만 알린다. */
+    private final SupportContact supportContact;
+
     /**
      * 핸들러 안의 이중 검사. 게이트({@link OperatorGate})가 먼저 판정하지만 경로 판정이 어긋나는 날(인코딩·매핑 변경)
      * 그 검사 하나에 기대지 않는다 — 여기서도 같은 권한을 보고 같은 404를 낸다.
@@ -246,10 +331,12 @@ class OperatorController {
     private final OperatorAccess access;
 
     OperatorController(OperatorCommandService commands, OperatorAuditApi audit, OperationalRestrictionApi restrictions,
-            OperatorAccess access) {
+            ServiceNoticeApi notices, SupportContact supportContact, OperatorAccess access) {
         this.commands = commands;
         this.audit = audit;
         this.restrictions = restrictions;
+        this.notices = notices;
+        this.supportContact = supportContact;
         this.access = access;
     }
 
@@ -320,6 +407,28 @@ class OperatorController {
                 .body(new RestrictionListView(items)), "OK", started);
     }
 
+    // ------------------------------------------------------------------ 공지 사건(Story 3.5)
+
+    @GetMapping(path = NOTICES_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<?> notices(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        long started = System.nanoTime();
+        String correlationId = correlationIdOf(request);
+        if (!this.access.permits(currentUserId(), Set.of(OperatorPermission.COMMAND))) {
+            return notFound("notices", response, started);
+        }
+        List<IncidentView> items;
+        try {
+            items = this.notices.incidents().stream()
+                    .map(incident -> new IncidentView(incident.incidentId(), incident.startedAt().toString(),
+                            incident.closed(), incident.versions().stream().map(NoticeVersionView::of).toList()))
+                    .toList();
+        } catch (RuntimeException failure) {
+            return answer("notices", internal(failure, correlationId), "ERROR", started);
+        }
+        return answer("notices", ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(new IncidentListView(this.supportContact.value() != null, items)), "OK", started);
+    }
+
     // ------------------------------------------------------------------ 운영 command
 
     @PostMapping(path = OperatorGate.COMMANDS_PATH + "/{type}", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -351,14 +460,15 @@ class OperatorController {
         return switch (preparation) {
             case OperatorCommandService.Preparation.Refused refused ->
                     OperatorCommandService.NOT_FOUND.equals(refused.code()) ? notFound("prepare", response, started)
-                            : answer("prepare", refused(refused.code(), type, correlationId), refused.code(), started);
+                            : answer("prepare", refused(refused.code(), type,
+                                    refused.detail() == null ? proposal.scope() : refused.detail(), correlationId),
+                                    refused.code(), started);
             case OperatorCommandService.Preparation.Armed armed -> answer("prepare", ResponseEntity.ok()
                     .cacheControl(CacheControl.noStore())
                     .body(new PreparedView(armed.flow().operationId(), armed.flow().command(), armed.flow().scope(),
                             armed.flow().target(), armed.flow().reason(), armed.flow().confirmation(),
                             armed.flow().policyVersion(), armed.flow().requestedAt().toString(),
-                            armed.liftImpact() != null ? liftImpactView(armed.liftImpact())
-                                    : impactView(armed.impact()))), "PREPARED", started);
+                            preparedImpact(armed))), "PREPARED", started);
         };
     }
 
@@ -396,7 +506,8 @@ class OperatorController {
         return switch (outcome) {
             case OperatorCommandService.Outcome.Refused refused ->
                     OperatorCommandService.NOT_FOUND.equals(refused.code()) ? notFound("confirm", response, started)
-                            : answer("confirm", refused(refused.code(), type, correlationId), refused.code(), started);
+                            : answer("confirm", refused(refused.code(), type, refused.detail(), correlationId),
+                                    refused.code(), started);
             case OperatorCommandService.Outcome.Completed completed -> answer("confirm", ResponseEntity.ok()
                     .cacheControl(CacheControl.noStore())
                     .body(completedBody(type, completed)), completed.ran() ? "COMPLETED" : "REPLAYED", started);
@@ -409,6 +520,8 @@ class OperatorController {
             case OperatorCommandApi.ExportResult export -> new CompletedView(export.operationId(), outcome, type,
                     export.target(), export.upperSequence(), export.rowCount(), export.truncated(),
                     completed.rows().stream().map(EntryView::of).toList());
+            case OperatorCommandApi.NoticeResult notice -> new NoticeCompletedView(notice.operationId(), outcome, type,
+                    notice.incidentId(), notice.version(), notice.status().name(), notice.publishedAt().toString());
             case OperatorCommandApi.RestrictionResult restriction -> new RestrictionCompletedView(
                     restriction.operationId(), outcome, type, restriction.feature().name(),
                     restriction.scope().name(), restriction.restrictionId(), restriction.effectiveFrom().toString());
@@ -423,6 +536,16 @@ class OperatorController {
                         new SmokeView(smoke.status(), smoke.reopenedStages(), smoke.stillBlockedStages()));
             }
         };
+    }
+
+    private static @Nullable PreparedImpactView preparedImpact(OperatorCommandService.Preparation.Armed armed) {
+        OperatorCommandApi.Notice notice = armed.flow().notice();
+        if (notice != null) {
+            return new NoticeImpactView(armed.flow().target(), notice.version(), notice.status().name(),
+                    names(notice.affectedFeatures()), names(notice.continuingFeatures()), notice.covers(),
+                    notice.nextUpdateAt() == null ? null : notice.nextUpdateAt().toString());
+        }
+        return armed.liftImpact() != null ? liftImpactView(armed.liftImpact()) : impactView(armed.impact());
     }
 
     private static LiftImpactView liftImpactView(RestrictionTargets.LiftImpact impact) {
@@ -511,6 +634,20 @@ class OperatorController {
                 break;
             }
         }
+        if (OperatorCommandApi.PUBLISH_NOTICE.equals(type)) {
+            /*
+             * 공지 발행(Story 3.5)은 자기 이름의 필드를 받는다 — 사건(`incident`)이 target, 상태(`status`)가 scope, 메시지
+             * (`message`)가 사유 자리다. 문자열이 아니거나 덮는 제한이 문자열 배열이 아니면 400이다. 비어 있는 것은 검증이
+             * 거절한다(422).
+             */
+            try {
+                return new OperatorCommandApi.Proposal(type, stringOrNull(node, "status"),
+                        stringOrNull(node, "incident"), stringOrNull(node, "message"), actorClaimed, null,
+                        new OperatorCommandApi.NoticeInput(coversOf(node), stringOrNull(node, "nextUpdateAt")));
+            } catch (IllegalArgumentException notText) {
+                return null;
+            }
+        }
         if (!OperatorCommandApi.LIFT_RESTRICTION.equals(type)) {
             return new OperatorCommandApi.Proposal(type, scope, target, reason, actorClaimed);
         }
@@ -546,6 +683,25 @@ class OperatorController {
             conditions.add(item.asString());
         }
         return List.copyOf(conditions);
+    }
+
+    /** 덮을 제한 ID 배열(Story 3.5). 없으면 {@code null}, 배열이 아니거나 상한을 넘거나 문자열이 아닌 원소가 있으면 예외(400)다. */
+    private static @Nullable List<String> coversOf(tools.jackson.databind.JsonNode node) {
+        tools.jackson.databind.JsonNode value = node.get("covers");
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        if (!value.isArray() || value.size() > ServiceNoticeApi.MAX_COVERS) {
+            throw new IllegalArgumentException("covers");
+        }
+        List<String> covers = new java.util.ArrayList<>();
+        for (tools.jackson.databind.JsonNode item : value) {
+            if (!item.isString()) {
+                throw new IllegalArgumentException("covers");
+            }
+            covers.add(item.asString());
+        }
+        return List.copyOf(covers);
     }
 
     static @Nullable Confirmation confirmationOf(@Nullable String body) {
@@ -650,8 +806,28 @@ class OperatorController {
      * (Story 3.2) — 같은 code의 다른 문장이며 machine 값은 code 하나다.
      */
     private static ResponseEntity<?> refused(String code, String command, String correlationId) {
+        return refused(code, command, null, correlationId);
+    }
+
+    /**
+     * @param detail 공지 발행이면 공지 상태. 복구 공지의 {@code TARGET_INVALID}는 덮는 제한이 아직 효력 중이라는 문장이다
+     */
+    private static ResponseEntity<?> refused(String code, String command, @Nullable String detail,
+            String correlationId) {
         if (OperatorCommandApi.TARGET_INVALID.equals(code) && OperatorCommandApi.AUDIT_EXPORT.equals(command)) {
             return error(HttpStatus.UNPROCESSABLE_CONTENT, code, EXPORT_TARGET_INVALID, correlationId);
+        }
+        if (OperatorCommandApi.PUBLISH_NOTICE.equals(command)) {
+            String message = switch (code) {
+                case OperatorCommandApi.TARGET_INVALID -> "RECOVERED".equals(detail == null ? null : detail.strip())
+                        ? NOTICE_RECOVERY_TARGET_INVALID : NOTICE_TARGET_INVALID;
+                case OperatorCommandApi.REASON_INVALID -> NOTICE_MESSAGE_INVALID;
+                case OperatorCommandApi.REASON_REQUIRED -> NOTICE_MESSAGE_REQUIRED;
+                default -> null;
+            };
+            if (message != null) {
+                return error(HttpStatus.UNPROCESSABLE_CONTENT, code, message, correlationId);
+            }
         }
         return refused(code, correlationId);
     }

@@ -11,6 +11,8 @@ import com.bokrilog.operations.OperatorCommandApi.ExportResult;
 import com.bokrilog.operations.OperatorCommandApi.LiftCompletion;
 import com.bokrilog.operations.OperatorCommandApi.LiftResult;
 import com.bokrilog.operations.OperatorCommandApi.LiftTarget;
+import com.bokrilog.operations.OperatorCommandApi.NoticeCompletion;
+import com.bokrilog.operations.OperatorCommandApi.NoticeResult;
 import com.bokrilog.operations.OperationalRestrictionApi;
 import com.bokrilog.operations.OperationalRestrictionApi.ActiveRestriction;
 import com.bokrilog.operations.OperatorCommandApi.RestrictionCompletion;
@@ -61,6 +63,10 @@ import org.springframework.stereotype.Service;
  * <p><b>해제(Story 3.4)는 커밋 뒤 smoke가 있다.</b> 해제 트랜잭션이 커밋되면 같은 대상 차원으로 evaluator를 다시 불러 그
  * 제한이 더는 보고되지 않는지와 남는 제한이 여전히 막는지를 본다. 어긋나면 해제를 되돌리지 않고 같은 범위의 새 제한과
  * {@code FAILED}({@code SMOKE_FAILED}) 행을 별도 트랜잭션으로 쓴다 — 해제 사실과 되돌림 사실이 둘 다 원장에 남는다.
+ *
+ * <p><b>공지 발행(Story 3.5)은 지원 연락처가 있어야 한다.</b> 배포 설정이 비면 준비와 확정이 모두
+ * {@code SUPPORT_CONTACT_UNCONFIGURED}로 거절한다 — 허위·빈 지원 경로를 공지에 싣지 않는다. 버전 번호·덮는 제한·다음 안내
+ * 시각은 준비가 한 번, 확정 트랜잭션이 원장 잠금 아래에서 한 번 더 본다.
  *
  * <p>로그에 수행자·대상·사유·허가·키를 남기지 않는다. servlet 웹 애플리케이션에서만 배선한다.
  */
@@ -127,7 +133,15 @@ class OperatorCommandService {
         record Armed(OperatorCommandFlow.Armed flow, RestrictionTargets.@Nullable Impact impact,
                 RestrictionTargets.@Nullable LiftImpact liftImpact) implements Preparation {}
 
-        record Refused(String code) implements Preparation {}
+        /**
+         * @param detail 공지 발행(Story 3.5)이면 요청한 공지 상태 — 같은 거절 code의 문장을 가른다. 그 밖은 {@code null}
+         */
+        record Refused(String code, @Nullable String detail) implements Preparation {
+
+            Refused(String code) {
+                this(code, null);
+            }
+        }
     }
 
     sealed interface Outcome {
@@ -140,8 +154,17 @@ class OperatorCommandService {
         record Completed(CommandResult result, List<OperatorAuditApi.Entry> rows, boolean ran, @Nullable Smoke smoke)
                 implements Outcome {}
 
-        /** 실행하지 않았다. */
-        record Refused(String code) implements Outcome {}
+        /**
+         * 실행하지 않았다.
+         *
+         * @param detail 공지 발행(Story 3.5)이면 무장된 공지 상태 — 같은 거절 code의 문장을 가른다. 그 밖은 {@code null}
+         */
+        record Refused(String code, @Nullable String detail) implements Outcome {
+
+            Refused(String code) {
+                this(code, null);
+            }
+        }
     }
 
     /** smoke 결말. 통과했거나, 어긋나 같은 범위를 새 제한으로 되돌렸거나, 원장에 결말이 아직 없다. */
@@ -173,13 +196,17 @@ class OperatorCommandService {
     /** 해제 smoke의 판독(Story 3.4). 차단 판정의 유일한 출처라 smoke도 이것만 본다. */
     private final OperationalRestrictionApi restrictions;
 
+    /** 공지 발행의 지원 연락처(Story 3.5). 비면 발행하지 않는다. */
+    private final SupportContact supportContact;
+
     OperatorCommandService(OperatorCommandApi commands, OperatorAccess access, ActionGrantService grants,
-            RestrictionTargets targets, OperationalRestrictionApi restrictions) {
+            RestrictionTargets targets, OperationalRestrictionApi restrictions, SupportContact supportContact) {
         this.commands = commands;
         this.access = access;
         this.grants = grants;
         this.targets = targets;
         this.restrictions = restrictions;
+        this.supportContact = supportContact;
     }
 
     /** 이 command type을 아는가. 모르는 type은 경로가 없는 것과 같다. */
@@ -216,6 +243,7 @@ class OperatorCommandService {
         var accepted = ((OperatorCommandApi.Validation.Valid) validation).accepted();
         var restriction = accepted.restriction();
         var lift = accepted.lift();
+        var notice = accepted.notice();
 
         var keyUse = this.commands.keyUse(userId, keyDigest, accepted.requestDigest());
         if (keyUse instanceof OperatorCommandApi.KeyUse.Conflict) {
@@ -291,6 +319,21 @@ class OperatorCommandService {
             }
         }
         /*
+         * 공지 발행(Story 3.5)의 상태 거절도 같은 자리다 — 없는 사건·덮을 수 없는 제한은 `TARGET_INVALID`, 복구로 닫힌
+         * 사건은 `INCIDENT_CLOSED`, 지금보다 미래·7일 이내가 아닌 다음 안내 시각은 `NEXT_UPDATE_INVALID`다.
+         */
+        if (notice != null && (this.supportContact.value() == null || notice.refusal() != null)) {
+            /*
+             * 연락처가 비었으면 어떤 공지도 발행하지 않는다 — 멱등 키·재인증 판정 뒤, 대상 판정 앞의 자리다(3.2·3.4와 같은
+             * 키 → 재인증 → 대상 순서).
+             */
+            String refusal = this.supportContact.value() == null ? OperatorCommandApi.SUPPORT_CONTACT_UNCONFIGURED
+                    : java.util.Objects.requireNonNull(notice.refusal());
+            this.grants.invalidateReference(userId, reference.get());
+            this.commands.recordRefusedProposal(userId, proposal, refusal, keyDigest, correlationId);
+            return new Preparation.Refused(refusal, notice.status().name());
+        }
+        /*
          * 키 판정과 `REQUESTED` 추가를 원장 잠금 안의 한 트랜잭션으로 한다. 같은 새 키의 동시 준비 둘은 여기서 줄을
          * 서고, 뒤의 것은 앞의 것이 쓴 operation을 받는다 — operation이 둘 생기지 않는다.
          */
@@ -322,7 +365,7 @@ class OperatorCommandService {
         OperatorCommandFlow.Armed armed = new OperatorCommandFlow.Armed(userId, operationId, command,
                 accepted.scope(), accepted.target(), grantTarget, accepted.reason(), accepted.policyVersion(),
                 confirmationHash, accepted.requestDigest(), recorded, keyDigest, reference.get(), phrase,
-                session.getId(), Instant.now(), restriction, lift);
+                session.getId(), Instant.now(), restriction, lift, notice);
         OperatorCommandFlow.arm(session, armed);
         return new Preparation.Armed(armed, impact, liftImpact);
     }
@@ -370,6 +413,7 @@ class OperatorCommandService {
         AtomicReference<@Nullable CommandResult> ran = new AtomicReference<>();
         var restriction = armed.restriction();
         var lift = armed.lift();
+        var notice = armed.notice();
         // 해제 확정이 원장 잠금 아래에서 본 남는 제한. 커밋 뒤 smoke가 이것이 여전히 막는지 본다.
         AtomicReference<List<ActiveRestriction>> remaining = new AtomicReference<>(List.of());
         Consumption consumption;
@@ -378,6 +422,24 @@ class OperatorCommandService {
                     new ConsumptionRequest(session, userId, armed.grantReference(), grantCommand, armed.ledgerTarget(),
                             confirmation, idempotencyKey),
                     () -> {
+                        if (notice != null) {
+                            /*
+                             * 원장 잠금 → 최종 권한 → 사건의 최신 버전 → 덮는 제한 → 다음 안내 시각 → (사건 행) → 버전 행 →
+                             * 완료 행(Story 3.5 AC-3·AC-6). 연락처가 그사이 비었으면 아무것도 쓰지 않는다.
+                             */
+                            String contact = this.supportContact.value();
+                            if (contact == null) {
+                                throw new Refused(OperatorCommandApi.SUPPORT_CONTACT_UNCONFIGURED);
+                            }
+                            var completion = this.commands.completeNotice(envelope, notice, contact, correlationId,
+                                    () -> this.access.permits(userId, required));
+                            if (completion instanceof NoticeCompletion.Refused refused) {
+                                throw new Refused(refused.code());
+                            }
+                            NoticeResult result = ((NoticeCompletion.Completed) completion).result();
+                            ran.set(result);
+                            return result.operationId() + "|" + result.incidentId() + "|" + result.version();
+                        }
                         if (lift != null) {
                             /*
                              * 원장 잠금 → 최종 권한 → 제한 행 잠금 → 열림·신호 계보 재검사 → 조건부 UPDATE → 기대 단계 →
@@ -420,9 +482,14 @@ class OperatorCommandService {
             // 소비·실행·완료 행이 함께 롤백됐다. 거절 행은 밖에서 쓰고, 이 무장은 다시 쓸 수 없으니 버린다.
             recordQuietly(envelope, AuditOutcome.DENIED, refused.code(), correlationId);
             abandon(session, armed);
-            return new Outcome.Refused(ACCESS_REVOKED.equals(refused.code()) ? NOT_FOUND : refused.code());
+            return new Outcome.Refused(ACCESS_REVOKED.equals(refused.code()) ? NOT_FOUND : refused.code(),
+                    notice == null ? null : notice.status().name());
         } catch (DuplicateKeyException duplicate) {
             if (restriction == null) {
+                /*
+                 * 공지 발행(Story 3.5)의 버전 기본키 위반은 `completeNotice`가 제약 이름으로 가려 번호 충돌로 맺는다. 여기
+                 * 오는 것은 그 밖의 무결성 위반이라 실행 실패다 — 전부 롤백됐다.
+                 */
                 recordQuietly(envelope, AuditOutcome.FAILED, EXECUTION_FAILED, correlationId);
                 throw duplicate;
             }
@@ -443,6 +510,12 @@ class OperatorCommandService {
             // 이 요청이 실행했다: 무장은 다 썼고 세션은 회전하며 재인증 시각은 지워진다(SECURITY-ACTION-1.0).
             OperatorCommandFlow.discard(session);
             SessionRotation.completeSensitiveCommand(httpRequest);
+            if (executed instanceof NoticeResult published) {
+                // 상태·버전만 남긴다. 사건 ID·메시지·수행자는 남기지 않는다.
+                LOG.info("operator command completed: command={} status={} version={}", command, published.status(),
+                        published.version());
+                return new Outcome.Completed(published, List.of(), true, null);
+            }
             if (executed instanceof RestrictionResult restricted) {
                 // 기능과 scope만 남긴다. target·사유·수행자는 남기지 않는다.
                 LOG.info("operator command completed: command={} feature={} scope={}", command,

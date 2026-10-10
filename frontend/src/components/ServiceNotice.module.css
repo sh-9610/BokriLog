@@ -1,0 +1,86 @@
+/*
+ * 서비스 공지 영역(Story 3.5). DESIGN.md의 service-notice 토큰(정보 색)을 쓴다. 상태는 글자가 말하고 표면은 묶기만 한다.
+ * 모든 줄이 감긴다 — 320px·400% 확대에서 가로 스크롤에 기대지 않는다.
+ */
+.region {
+  display: grid;
+  gap: var(--space-3);
+  min-inline-size: 0;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background-color: var(--component-service-notice-background);
+  color: var(--component-service-notice-foreground);
+  overflow-wrap: anywhere;
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--component-service-notice-border);
+}
+
+.heading {
+  margin: 0;
+  font-family: var(--type-section-title-font-family);
+  font-size: var(--type-section-title-font-size);
+  font-weight: var(--type-section-title-font-weight);
+  line-height: var(--type-section-title-line-height);
+  letter-spacing: var(--type-section-title-letter-spacing);
+}
+
+.list {
+  display: grid;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: grid;
+  gap: var(--space-2);
+  min-inline-size: 0;
+}
+
+.state {
+  margin: 0;
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+.message {
+  margin: 0;
+}
+
+.facts {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.facts > div {
+  display: grid;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
+.facts dt {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+.facts dd {
+  min-inline-size: 0;
+  margin: 0;
+}
+
+/*
+ * 문의 링크. 최소 목표 크기 44px은 모든 핵심 조작의 바닥선이다(EXPERIENCE.md Accessibility Floor). 포커스 표시는
+ * global.css의 전역 `:focus-visible`이 처리한다.
+ */
+.link {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--space-target-min);
+  color: var(--color-primary);
+  overflow-wrap: anywhere;
+}

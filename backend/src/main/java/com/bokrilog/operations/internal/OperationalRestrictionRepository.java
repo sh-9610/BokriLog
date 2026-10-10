@@ -102,13 +102,8 @@ class OperationalRestrictionRepository {
     private JdbcClient.MappedQuerySpec<Row> matchingQuery(Set<RestrictionFeature> features, RestrictionSubject subject,
             Set<UUID> excluding, String limit) {
         return this.jdbc.sql(SELECT + "WHERE r.feature IN (:features) AND " + EFFECTIVE
-                        + " AND NOT (r.restriction_id = ANY(CAST(:excluded AS uuid[]))) AND (r.scope = 'GLOBAL' "
-                        + "OR (r.target_erased_at IS NULL AND ("
-                        + "(r.scope = 'PLAN' AND r.target = CAST(:plan AS text)) "
-                        + "OR (r.scope = 'PORTFOLIO' AND r.target = CAST(:portfolio AS text)) "
-                        + "OR (r.scope = 'PROVIDER_CONNECTION' AND r.target = CAST(:connection AS text)) "
-                        + "OR (r.scope = 'CALCULATION_POLICY_VERSION' AND r.target = CAST(:policy AS text))))) "
-                        + "ORDER BY " + ORDER + limit)
+                        + " AND NOT (r.restriction_id = ANY(CAST(:excluded AS uuid[]))) AND " + SUBJECT
+                        + " ORDER BY " + ORDER + limit)
                 .param("features", features.stream().map(Enum::name).toList())
                 .param("plan", text(subject.planId()))
                 .param("portfolio", text(subject.portfolioId()))
@@ -116,6 +111,70 @@ class OperationalRestrictionRepository {
                 .param("policy", subject.calculationPolicy())
                 .param("excluded", uuidArray(excluding))
                 .query(OperationalRestrictionRepository::row);
+    }
+
+    /**
+     * 대상 일치 술어. 넘기지 않은 차원({@code null})의 구체 제한은 일치하지 않고, 비식별된 target은 원식별자와 같을 수
+     * 없다. 전역은 어떤 대상에도 일치한다. 판독({@link #matching})과 공지의 복구 대상 판정({@link #matchingAmong}, Story
+     * 3.5)이 이 술어 하나를 쓴다({@link #subject(String)}).
+     */
+    private static final String SUBJECT = subject("");
+
+    /** 대상 일치 술어. 매개변수 이름 끝에 {@code suffix}를 붙인다 — 한 문장에 차원 여럿을 OR로 묶을 때 쓴다. */
+    private static String subject(String suffix) {
+        return "(r.scope = 'GLOBAL' OR (r.target_erased_at IS NULL AND ("
+                + "(r.scope = 'PLAN' AND r.target = CAST(:plan" + suffix + " AS text)) "
+                + "OR (r.scope = 'PORTFOLIO' AND r.target = CAST(:portfolio" + suffix + " AS text)) "
+                + "OR (r.scope = 'PROVIDER_CONNECTION' AND r.target = CAST(:connection" + suffix + " AS text)) "
+                + "OR (r.scope = 'CALCULATION_POLICY_VERSION' AND r.target = CAST(:policy" + suffix + " AS text)))))";
+    }
+
+    /**
+     * 그 제한들 가운데 그 대상 차원들 중 하나에라도 일치하는 것(Story 3.5). 문장 하나다. 효력 구간을 보지 않는다 — 복구
+     * 공지가 덮는 제한은 이미 닫혔고, 판정은 "그 사건의 제한에 이 사용자가 영향을 받았는가"다. 대상 술어는 판독과 같다.
+     */
+    Set<UUID> matchingAmong(java.util.Collection<UUID> restrictionIds, List<RestrictionSubject> subjects) {
+        if (restrictionIds.isEmpty() || subjects.isEmpty()) {
+            return Set.of();
+        }
+        List<String> predicates = new java.util.ArrayList<>();
+        java.util.Map<String, Object> params = new java.util.LinkedHashMap<>();
+        params.put("ids", uuidArray(Set.copyOf(restrictionIds)));
+        for (int index = 0; index < subjects.size(); index++) {
+            RestrictionSubject subject = subjects.get(index);
+            String suffix = "_" + index;
+            predicates.add(subject(suffix));
+            params.put("plan" + suffix, text(subject.planId()));
+            params.put("portfolio" + suffix, text(subject.portfolioId()));
+            params.put("connection" + suffix, text(subject.connectionId()));
+            params.put("policy" + suffix, subject.calculationPolicy());
+        }
+        return Set.copyOf(this.jdbc.sql("SELECT r.restriction_id FROM operations_restriction r "
+                        + "WHERE r.restriction_id = ANY(CAST(:ids AS uuid[])) AND (" + String.join(" OR ", predicates)
+                        + ")")
+                .params(params)
+                .query((rs, row) -> rs.getObject("restriction_id", UUID.class))
+                .list());
+    }
+
+    /**
+     * 공지가 덮을 제한 하나의 사실(Story 3.5). {@code open}은 {@link #OPEN} 술어다 — 진행 중인 공지는 지금 효력 중이고
+     * 끝이 정해지지 않은 제한만 덮는다.
+     */
+    record CoverFacts(UUID restrictionId, RestrictionFeature feature, boolean open) {}
+
+    /** 그 제한들의 사실. 없는 ID는 빠진다. 잠그지 않는다 — 확정은 원장 추가 잠금 아래에서 다시 읽는다. */
+    List<CoverFacts> coverFacts(java.util.Collection<UUID> restrictionIds) {
+        if (restrictionIds.isEmpty()) {
+            return List.of();
+        }
+        return this.jdbc.sql("SELECT r.restriction_id, r.feature, (" + OPEN + ") AS open "
+                        + "FROM operations_restriction r WHERE r.restriction_id = ANY(CAST(:ids AS uuid[])) "
+                        + "ORDER BY r.restriction_id")
+                .param("ids", uuidArray(Set.copyOf(restrictionIds)))
+                .query((rs, row) -> new CoverFacts(rs.getObject("restriction_id", UUID.class),
+                        RestrictionFeature.valueOf(rs.getString("feature")), rs.getBoolean("open")))
+                .list();
     }
 
     /** 그 제한이 지금 효력 중이면 그 행(Story 3.4 smoke — 남는 제한이 그사이 정상적으로 닫혔는지 본다). */

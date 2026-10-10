@@ -15,7 +15,8 @@ import org.jspecify.annotations.Nullable;
  * <p><b>이 모듈은 HTTP·세션·허가를 모른다.</b> 재인증·일회성 허가·세션 무장·회전은 루트({@code OperatorCommandService})가
  * Epic 1의 부품으로 하고, 여기서는 envelope의 검증(빈 사유·미지원 command·미지원 scope·클라이언트 actor·길이), 서버가
  * 정하는 확인 문구, 감사 행의 추가, 그리고 command의 실행을 한다 — 3.1의 {@value #AUDIT_EXPORT}, 3.2의 제한 생성 넷
- * ({@code restrict-<기능>}, {@link #restrictionFeatureOf}), 3.4의 제한 해제 {@value #LIFT_RESTRICTION}.
+ * ({@code restrict-<기능>}, {@link #restrictionFeatureOf}), 3.4의 제한 해제 {@value #LIFT_RESTRICTION}, 3.5의 서비스 공지
+ * 발행 {@value #PUBLISH_NOTICE}.
  *
  * <p><b>감사 없는 상태 변경이 없다.</b> 실행({@link #completeExport})은 호출자의 트랜잭션 안에서 결과 행을 쓰고 그
  * 트랜잭션이 허가 소비와 같다 — 하나가 실패하면 모두 롤백된다. 거절·실패·취소 행({@link #recordDecision})은 그 롤백
@@ -57,6 +58,19 @@ public interface OperatorCommandApi {
     List<String> RECOVERY_CONDITIONS = List.of("CAUSE_REMOVED", "IMPACT_REPRODUCED",
             "REGRESSION_OWNERSHIP_POINTER_PASSED", "NEW_DEPLOY_EVIDENCE");
 
+    /**
+     * 서비스 공지 발행(Story 3.5). target은 새 사건이면 {@value #NEW_INCIDENT}, 기존 사건이면 그 사건 ID이고 원장 scope는
+     * {@code NOTICE:<상태>}다. 사유 자리가 운영자 한 줄 메시지다 — 공지의 메시지 규칙(200자·이메일·숫자 6자리 이상 연속·
+     * URL 모양 거절)을 지난 값만 원장에 남는다. 공지 행은 이 command만 쓴다.
+     */
+    String PUBLISH_NOTICE = "publish-notice";
+
+    /** 새 사건을 여는 공지 발행의 target. */
+    String NEW_INCIDENT = "NEW";
+
+    /** 공지 발행의 원장 scope 접두사. 뒤에 상태가 붙는다({@code NOTICE:INVESTIGATING}). */
+    String NOTICE_SCOPE_PREFIX = "NOTICE:";
+
     /** 배포 버전의 최대 길이(문자). 모양은 {@code [A-Za-z0-9._+-]}다. */
     int MAX_DEPLOY_VERSION_CHARS = 64;
 
@@ -75,9 +89,12 @@ public interface OperatorCommandApi {
      * envelope·확인 문구·실행 규칙의 정책 버전. 규칙을 바꾸면 이 값도 바꾼다. 1.1(Story 3.2): 제한 command 넷, 원장 scope
      * {@code <기능>:<scope>}, 사용자 귀속 target의 digest, 대상 검사를 멱등 키·재인증 판정 뒤에 하는 준비 순서. 1.2(Story
      * 3.4): 해제 command {@value #LIFT_RESTRICTION}, 복구 조건 네 확인과 원인·검증·증거 참조·배포 버전, 확정 순간의 열림·신호
-     * 계보 재검사, 커밋 뒤 evaluator smoke와 그 실패의 되돌림.
+     * 계보 재검사, 커밋 뒤 evaluator smoke와 그 실패의 되돌림. 1.3(Story 3.5): 공지 발행 command {@value #PUBLISH_NOTICE},
+     * 메시지 규칙(200자, 구분자로 이은 숫자 6자리 이상·IP·포트·통화 금액·URL·경로·이메일·화면 금지 표현 거절), 지원
+     * 연락처가 비면 거절(멱등 키·재인증 판정 뒤), 복구 공지는 덮는 제한이 모두 닫혀 있어야 함, 사건·범위를 담은 확인 문구,
+     * 확정 순간의 버전 연속·사건 닫힘·덮는 제한·다음 안내 시각 재검사와 지원 연락처의 버전 고정.
      */
-    String POLICY_VERSION = "OPERATOR-COMMAND-1.2";
+    String POLICY_VERSION = "OPERATOR-COMMAND-1.3";
 
     /** 추출 한 번의 행 상한. 넘으면 앞쪽(오래된 순) 상한만큼이고 결과가 잘렸다고 말한다. */
     int MAX_EXPORT_ROWS = 10_000;
@@ -132,6 +149,21 @@ public interface OperatorCommandApi {
     /** 원장 code: 해제 커밋 뒤 evaluator smoke가 통과했다(Story 3.4). 그 해제 operation의 {@code APPROVED} 행이다. */
     String SMOKE_PASSED = "SMOKE_PASSED";
 
+    /** 지원 연락처 설정이 비어 있어 공지를 발행하지 않았다(Story 3.5). 허위·빈 지원 경로를 만들지 않는다. */
+    String SUPPORT_CONTACT_UNCONFIGURED = "SUPPORT_CONTACT_UNCONFIGURED";
+
+    /** 같은 사건의 다음 번호가 이미 발행됐다 — 준비가 본 최신 버전 뒤에 다른 버전이 끼었다(Story 3.5). */
+    String NOTICE_VERSION_CONFLICT = "NOTICE_VERSION_CONFLICT";
+
+    /** 복구로 닫힌 사건이라 새 버전을 받지 않는다(Story 3.5). */
+    String INCIDENT_CLOSED = "INCIDENT_CLOSED";
+
+    /**
+     * 다음 안내 시각이 없거나, 읽을 수 없거나, 지금보다 미래·7일 이내가 아니거나, 복구 공지에 실렸다(Story 3.5). 판정은 DB
+     * 시각이다.
+     */
+    String NEXT_UPDATE_INVALID = "NEXT_UPDATE_INVALID";
+
     /** 요청 본문이 수행자를 주장했다. 수행자는 언제나 서버 세션이 정한다. */
     String ACTOR_NOT_ACCEPTED = "ACTOR_NOT_ACCEPTED";
 
@@ -145,13 +177,51 @@ public interface OperatorCommandApi {
      * 클라이언트가 보낸 command 제안. 검증 전 원문이다.
      *
      * @param recovery 해제 command의 증거 입력(Story 3.4). 그 밖은 {@code null}
+     * @param notice 공지 발행 command의 입력(Story 3.5). 그 밖은 {@code null}. 상태는 {@code scope}, 사건은
+     *     {@code target}, 메시지는 {@code reason} 자리다
      */
     record Proposal(String command, @Nullable String scope, @Nullable String target, @Nullable String reason,
-            boolean actorClaimed, @Nullable RecoveryInput recovery) {
+            boolean actorClaimed, @Nullable RecoveryInput recovery, @Nullable NoticeInput notice) {
 
         public Proposal(String command, @Nullable String scope, @Nullable String target, @Nullable String reason,
                 boolean actorClaimed) {
-            this(command, scope, target, reason, actorClaimed, null);
+            this(command, scope, target, reason, actorClaimed, null, null);
+        }
+
+        public Proposal(String command, @Nullable String scope, @Nullable String target, @Nullable String reason,
+                boolean actorClaimed, @Nullable RecoveryInput recovery) {
+            this(command, scope, target, reason, actorClaimed, recovery, null);
+        }
+    }
+
+    /**
+     * 공지 발행의 입력 원문(Story 3.5). 상태·사건·메시지는 {@link Proposal}의 scope·target·reason 자리다.
+     *
+     * @param covers 덮을 제한 ID. 본문이 배열이 아니면 {@code null}
+     * @param nextUpdateAt 다음 안내 시각(ISO-8601, 오프셋 포함). 없으면 {@code null}
+     */
+    record NoticeInput(@Nullable List<String> covers, @Nullable String nextUpdateAt) {}
+
+    /**
+     * 검증을 지난 공지 발행(Story 3.5). 세션 무장에 실린다. 영향·계속 가능 기능은 덮는 제한의 기능에서 서버가 계산했다.
+     *
+     * @param incidentId 기존 사건. 새 사건이면 {@code null}이고 사건 ID는 확정이 만든다
+     * @param version 쓸 버전 번호. 준비가 본 최신 버전의 다음 번호다
+     * @param covers 덮을 제한 ID(정렬, 중복 없음)
+     * @param nextUpdateAt 진행 중인 공지의 다음 안내 시각. 복구 공지는 {@code null}
+     * @param refusal 준비 시각에 본 상태 거절({@link #TARGET_INVALID}·{@link #INCIDENT_CLOSED}·
+     *     {@link #NEXT_UPDATE_INVALID}). 루트가 멱등 키·재인증 판정 뒤에 적용한다. 무장되는 값은 언제나 {@code null}이다
+     */
+    record Notice(@Nullable UUID incidentId, int version, ServiceNoticeApi.NoticeStatus status, String message,
+            List<UUID> covers, List<RestrictionFeature> affectedFeatures, List<RestrictionFeature> continuingFeatures,
+            @Nullable Instant nextUpdateAt, @Nullable String refusal) implements java.io.Serializable {
+
+        @java.io.Serial private static final long serialVersionUID = 1L;
+
+        public Notice {
+            covers = List.copyOf(covers);
+            affectedFeatures = List.copyOf(affectedFeatures);
+            continuingFeatures = List.copyOf(continuingFeatures);
         }
     }
 
@@ -217,10 +287,11 @@ public interface OperatorCommandApi {
      * @param requestDigest {@code command|scope|ledgerTarget|reason}의 SHA-256. 같은 멱등 키의 다른 입력을 가른다
      * @param restriction 제한 command의 요청. 그 밖은 {@code null}
      * @param lift 해제 command의 요청(Story 3.4). 그 밖은 {@code null}
+     * @param notice 공지 발행 command의 요청(Story 3.5). 그 밖은 {@code null}
      */
     record Accepted(String command, String scope, String target, String ledgerTarget, String reason,
             String confirmationPhrase, String policyVersion, Set<OperatorPermission> permissions, String requestDigest,
-            @Nullable Restriction restriction, @Nullable Lift lift) {}
+            @Nullable Restriction restriction, @Nullable Lift lift, @Nullable Notice notice) {}
 
     sealed interface Validation {
         record Valid(Accepted accepted) implements Validation {}
@@ -330,7 +401,7 @@ public interface OperatorCommandApi {
     }
 
     /** 실행된 command의 결과. 원장의 {@code COMPLETED} 행이 같은 값을 재생한다. */
-    sealed interface CommandResult permits ExportResult, RestrictionResult, LiftResult {
+    sealed interface CommandResult permits ExportResult, RestrictionResult, LiftResult, NoticeResult {
         String operationId();
     }
 
@@ -365,6 +436,14 @@ public interface OperatorCommandApi {
             stillBlockedStages = List.copyOf(stillBlockedStages);
         }
     }
+
+    /**
+     * 공지 발행의 결과(Story 3.5). 원장의 {@code COMPLETED} 행이 같은 값을 재생한다. 메시지 원문을 담지 않는다.
+     *
+     * @param publishedAt 버전을 쓴 DB 시각
+     */
+    record NoticeResult(String operationId, UUID incidentId, int version, ServiceNoticeApi.NoticeStatus status,
+            Instant publishedAt) implements CommandResult {}
 
     /**
      * {@value #AUDIT_EXPORT}를 실행하고 {@code COMPLETED} 행을 쓴다. <b>호출자의 트랜잭션 안에서만</b> 부른다 — 그
@@ -417,6 +496,35 @@ public interface OperatorCommandApi {
      */
     RestrictionCompletion completeRestriction(Envelope envelope, Restriction restriction, String correlationId,
             BooleanSupplier finalAuthority, Supplier<TargetCheck> targetCheck);
+
+    /** 공지 발행의 결말(Story 3.5). */
+    sealed interface NoticeCompletion {
+        record Completed(NoticeResult result) implements NoticeCompletion {}
+
+        /**
+         * 아무것도 쓰지 않았다. 호출자가 트랜잭션을 되돌리고 거절 행을 밖에서 쓴다.
+         *
+         * @param code {@link #ACCESS_REVOKED}·{@link #TARGET_INVALID}·{@link #NOTICE_VERSION_CONFLICT}·
+         *     {@link #INCIDENT_CLOSED}·{@link #NEXT_UPDATE_INVALID}
+         */
+        record Refused(String code) implements NoticeCompletion {}
+    }
+
+    /**
+     * 공지 발행 command를 실행하고 {@code COMPLETED} 행을 쓴다(Story 3.5 AC-3·AC-6). <b>호출자의 트랜잭션 안에서만</b>
+     * 부른다 — 그 트랜잭션이 허가 소비와 같다.
+     *
+     * <p>순서가 계약이다: 원장 추가 잠금 → 최종 권한({@code finalAuthority}) → 사건의 최신 버전(없음·닫힘·번호 어긋남) →
+     * 덮는 제한(진행 중이면 모두 지금 열려 있어야 하고, 복구면 모두 닫혀 있어야 한다) → 다음 안내 시각(DB 시각) → (새
+     * 사건이면 사건 행) → 버전 행(확정 시점의 지원 연락처를 함께 고정한다) → {@code COMPLETED}. 모든 발행이 같은 잠금을
+     * 쥐므로 같은 사건의 동시 발행 둘이 줄을 서고, 뒤의 것은 앞의 것이 쓴 버전을 보고 {@link #NOTICE_VERSION_CONFLICT}로
+     * 거절된다. 최후 권위는 버전 기본키다 — 그 제약의 위반만 같은 code이고, 다른 무결성 위반은 실행 실패로 올라간다.
+     *
+     * @param supportContact 확정 시점의 지원 연락처. 버전 행에 그대로 남는다
+     * @throws IllegalStateException 열린 트랜잭션이 없을 때
+     */
+    NoticeCompletion completeNotice(Envelope envelope, Notice notice, String supportContact, String correlationId,
+            BooleanSupplier finalAuthority);
 
     /** 해제 뒤 기대하는 단계(Story 3.4). 남는 제한을 본 호출자가 원장 잠금 아래에서 만든다. */
     record LiftExpectation(List<String> reopenedStages, List<String> stillBlockedStages) {}

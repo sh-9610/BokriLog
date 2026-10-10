@@ -4,6 +4,7 @@ import { BybitConnectionForm } from '../components/BybitConnectionForm'
 import { ConnectionRevokeDialog } from '../components/ConnectionRevokeDialog'
 import { ProviderMark } from '../components/ProviderMark'
 import { ReauthPanel } from '../components/ReauthPanel'
+import { ServiceNotice } from '../components/ServiceNotice'
 import { SignOutButton } from '../components/SignOutButton'
 import { UnlinkDialog } from '../components/UnlinkDialog'
 import {
@@ -25,6 +26,7 @@ import { fetchLinkedProviders } from '../session/linkProvider'
 import { useBybitConnection, type ConnectionNotice } from '../session/useBybitConnection'
 import { useLinking } from '../session/useLinking'
 import { useReauthentication } from '../session/useReauthentication'
+import { useServiceNotices } from '../session/useServiceNotices'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
 import { useUnlinking } from '../session/useUnlinking'
@@ -136,6 +138,8 @@ export function SettingsScreen(): ReactElement {
   const signOut = useSignOut(csrfToken)
   const reauthentication = useReauthentication(csrfToken)
   const linking = useLinking(csrfToken)
+  // 서비스 공지(Story 3.5). 세션이 확인된 뒤에만 읽고 값은 메모리에만 있다.
+  const notices = useServiceNotices(gate === 'ready')
 
   const [linked, setLinked] = useState<readonly SignInProvider[]>([])
   const [linkStatus, setLinkStatus] = useState<LinkStatus>('checking')
@@ -404,6 +408,11 @@ export function SettingsScreen(): ReactElement {
               </p>
             )}
           </div>
+
+          {/*
+          서비스 공지(Story 3.5). 상단에, 계정 정보 블록 밖에 둔다. 정적 영역이라 위 live region을 늘리지 않는다.
+        */}
+          {ready ? <ServiceNotice view={notices} /> : null}
 
           {reauthRequired ? (
             <ReauthPanel

@@ -7,6 +7,7 @@ import { PlanEndDialog } from '../components/PlanEndDialog'
 import { PlanHistoryPanel } from '../components/PlanHistoryPanel'
 import { PlanResultPanel } from '../components/PlanResultPanel'
 import { ReauthPanel } from '../components/ReauthPanel'
+import { ServiceNotice } from '../components/ServiceNotice'
 import { SignOutButton } from '../components/SignOutButton'
 import { authContent, reauthNoticeKindOf, SETTINGS_PATH } from '../content/auth'
 import { entryContent } from '../content/entry'
@@ -22,6 +23,7 @@ import {
 import { useDashboardSync } from '../session/useDashboardSync'
 import { usePlanEnd } from '../session/usePlanEnd'
 import { useReauthentication } from '../session/useReauthentication'
+import { useServiceNotices } from '../session/useServiceNotices'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
 import { EntryScreen } from './EntryScreen'
@@ -83,6 +85,8 @@ export function SignedInScreen(): ReactElement {
   const planEnd = usePlanEnd(dashboard, csrfToken)
   // Whether the first-snapshot panel leads the dashboard, and how (`planPresenceOf` gives the reasons).
   const presence = planPresenceOf(dashboard.view)
+  // 서비스 공지(Story 3.5): 대시보드 응답과 따로 읽고 따로 그린다 — 마지막 정상값과 섞이지 않는다.
+  const notices = useServiceNotices(gate === 'ready')
 
   if (gate === 'unauthenticated') {
     /*
@@ -189,6 +193,12 @@ export function SignedInScreen(): ReactElement {
               </p>
             )}
           </div>
+
+          {/*
+          서비스 공지(Story 3.5). 상단에, 마지막 정상값을 보이는 결과 패널 밖에 둔다. 정적 영역(landmark region)이라 위
+          live region을 늘리지 않고, 공지가 바뀌어도 대시보드 문장에 섞어 말하지 않는다.
+        */}
+          {ready ? <ServiceNotice view={notices} /> : null}
 
           {reauthRequired ? (
             <ReauthPanel

@@ -7,8 +7,10 @@ import {
   OPERATOR_EXPORT_CANCEL_ENDPOINT,
   OPERATOR_EXPORT_CONFIRM_ENDPOINT,
   OPERATOR_EXPORT_ENDPOINT,
+  OPERATOR_NOTICES_ENDPOINT,
   OPERATOR_OPERATIONS_ENDPOINT,
   OPERATOR_RESTRICTIONS_ENDPOINT,
+  PUBLISH_NOTICE_COMMAND,
   type RecoveryCondition,
   type RestrictionCommand,
 } from '../content/operator'
@@ -612,6 +614,305 @@ export async function confirmRecovery(
 /** 복구 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다. */
 export async function cancelRecovery(csrfToken: string | null): Promise<void> {
   await post(`${RECOVERY_ENDPOINT}/cancel`, csrfToken, null, null, SESSION_REQUEST_TIMEOUT_MS)
+}
+
+// ------------------------------------------------------------------ 서비스 공지(Story 3.5)
+
+/** 공지 버전 하나(운영자 목록). 영향·계속 가능 기능은 서버가 덮는 제한에서 계산했다. */
+export interface NoticeVersionEntry {
+  readonly version: number
+  readonly previousVersion: number | null
+  readonly status: string
+  readonly affectedFeatures: readonly string[]
+  readonly continuingFeatures: readonly string[]
+  readonly message: string
+  readonly nextUpdateAt: string | null
+  readonly recoveredAt: string | null
+  readonly covers: readonly string[]
+  readonly operationId: string
+  readonly createdAt: string
+}
+
+/** 사건 하나와 그 버전 이력(오래된 순). `closed`면 새 버전을 받지 않는다. */
+export interface NoticeIncident {
+  readonly incidentId: string
+  readonly startedAt: string
+  readonly closed: boolean
+  readonly versions: readonly NoticeVersionEntry[]
+}
+
+export interface NoticeIncidentList {
+  readonly supportContactConfigured: boolean
+  readonly items: readonly NoticeIncident[]
+}
+
+/** 공지 발행 준비의 입력. 사건은 `NEW`이거나 기존 사건 ID다. */
+export interface NoticeInput {
+  readonly incident: string
+  readonly status: string
+  readonly covers: readonly string[]
+  readonly message: string
+  /** 진행 중인 공지의 다음 안내 시각(ISO-8601). 복구 공지는 `null`이다. */
+  readonly nextUpdateAt: string | null
+}
+
+/** 공지 발행의 미리보기. 영향·계속 가능 기능은 서버가 계산했다. */
+export interface NoticeImpact {
+  readonly incident: string
+  readonly version: number
+  readonly status: string
+  readonly affectedFeatures: readonly string[]
+  readonly continuingFeatures: readonly string[]
+  readonly covers: readonly string[]
+  readonly nextUpdateAt: string | null
+}
+
+export interface PreparedNotice {
+  readonly operationId: string
+  readonly scope: string
+  readonly target: string
+  /** 운영자 한 줄 메시지(원장의 사유 자리). */
+  readonly reason: string
+  readonly confirmationPhrase: string
+  readonly impact: NoticeImpact
+}
+
+export interface CompletedNotice {
+  readonly operationId: string
+  readonly incidentId: string
+  readonly version: number
+  readonly status: string
+  readonly publishedAt: string
+}
+
+export type NoticePrepareOutcome =
+  | { readonly outcome: 'prepared'; readonly prepared: PreparedNotice }
+  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
+
+export type NoticeConfirmOutcome =
+  | { readonly outcome: 'completed'; readonly completed: CompletedNotice }
+  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
+  /** 응답을 받지 못했거나 서버가 커밋 여부를 말하지 못했다. 자동으로 다시 실행하지 않는다. */
+  | { readonly outcome: 'unanswered' }
+
+const NOTICE_ENDPOINT = `${OPERATOR_COMMANDS_ENDPOINT}/${PUBLISH_NOTICE_COMMAND}`
+
+/** 공지 사건 목록. 하나라도 모양이 어긋나면 목록 전체를 믿지 않는다. */
+export async function fetchNoticeIncidents(
+  signal: AbortSignal,
+): Promise<ReadResult<NoticeIncidentList>> {
+  const result = await read(OPERATOR_NOTICES_ENDPOINT, signal)
+  if (result.status !== 'loaded') {
+    return result
+  }
+  const body = result.value
+  if (typeof body.supportContactConfigured !== 'boolean' || !Array.isArray(body.items)) {
+    return { status: 'failed', code: null }
+  }
+  const items: NoticeIncident[] = []
+  for (const item of body.items as unknown[]) {
+    const incident = incidentOf(item)
+    if (incident === null) {
+      return { status: 'failed', code: null }
+    }
+    items.push(incident)
+  }
+  return {
+    status: 'loaded',
+    value: { supportContactConfigured: body.supportContactConfigured, items },
+  }
+}
+
+/** 공지 발행 준비. 아직 아무것도 쓰지 않는다 — 허가를 발급하고 무장한 뒤 미리보기와 확인 문구를 준다. */
+export async function prepareNotice(
+  csrfToken: string | null,
+  input: NoticeInput,
+  idempotencyKey: string,
+): Promise<NoticePrepareOutcome> {
+  const result = await post(
+    NOTICE_ENDPOINT,
+    csrfToken,
+    {
+      incident: input.incident,
+      status: input.status,
+      covers: input.covers,
+      message: input.message,
+      ...(input.nextUpdateAt === null ? {} : { nextUpdateAt: input.nextUpdateAt }),
+    },
+    idempotencyKey,
+    SESSION_REQUEST_TIMEOUT_MS,
+  )
+  if (result.ok) {
+    const body = objectOf(result.payload)
+    const impact = body === null ? null : noticeImpactOf(body.impact)
+    if (
+      body !== null &&
+      impact !== null &&
+      body.command === PUBLISH_NOTICE_COMMAND &&
+      typeof body.operationId === 'string' &&
+      typeof body.scope === 'string' &&
+      body.target === input.incident &&
+      typeof body.reason === 'string' &&
+      typeof body.confirmationPhrase === 'string' &&
+      body.confirmationPhrase !== ''
+    ) {
+      return {
+        outcome: 'prepared',
+        prepared: {
+          operationId: body.operationId,
+          scope: body.scope,
+          target: body.target,
+          reason: body.reason,
+          confirmationPhrase: body.confirmationPhrase,
+          impact,
+        },
+      }
+    }
+  }
+  return { outcome: 'refused', status: result.status, code: result.code }
+}
+
+/** 공지 발행 확정. 같은 키의 재전송은 서버가 같은 결과를 재생한다. */
+export async function confirmNotice(
+  csrfToken: string | null,
+  operationId: string,
+  confirmation: string,
+  idempotencyKey: string,
+): Promise<NoticeConfirmOutcome> {
+  const result = await post(
+    `${NOTICE_ENDPOINT}/confirm`,
+    csrfToken,
+    { operationId, confirmation },
+    idempotencyKey,
+    SESSION_REQUEST_TIMEOUT_MS,
+  )
+  if (!result.received) {
+    return csrfToken === null
+      ? { outcome: 'refused', status: 0, code: null }
+      : { outcome: 'unanswered' }
+  }
+  if (result.ok) {
+    const body = objectOf(result.payload)
+    if (
+      body !== null &&
+      body.outcome === 'COMPLETED' &&
+      body.operationId === operationId &&
+      typeof body.incidentId === 'string' &&
+      typeof body.version === 'number' &&
+      typeof body.status === 'string' &&
+      isInstant(body.publishedAt)
+    ) {
+      return {
+        outcome: 'completed',
+        completed: {
+          operationId,
+          incidentId: body.incidentId,
+          version: body.version,
+          status: body.status,
+          publishedAt: body.publishedAt,
+        },
+      }
+    }
+    return { outcome: 'unanswered' }
+  }
+  // 5xx는 커밋 여부를 단정하지 않는다(내보내기와 같은 근거).
+  if (result.status >= 500) {
+    return { outcome: 'unanswered' }
+  }
+  return { outcome: 'refused', status: result.status, code: result.code }
+}
+
+/** 공지 발행 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다. */
+export async function cancelNotice(csrfToken: string | null): Promise<void> {
+  await post(`${NOTICE_ENDPOINT}/cancel`, csrfToken, null, null, SESSION_REQUEST_TIMEOUT_MS)
+}
+
+function noticeImpactOf(value: unknown): NoticeImpact | null {
+  const body = objectOf(value)
+  if (
+    body === null ||
+    typeof body.incident !== 'string' ||
+    typeof body.version !== 'number' ||
+    typeof body.status !== 'string' ||
+    !stringArray(body.affectedFeatures) ||
+    !stringArray(body.continuingFeatures) ||
+    !stringArray(body.covers)
+  ) {
+    return null
+  }
+  const next = body.nextUpdateAt
+  if (next !== undefined && next !== null && !isInstant(next)) {
+    return null
+  }
+  return {
+    incident: body.incident,
+    version: body.version,
+    status: body.status,
+    affectedFeatures: body.affectedFeatures,
+    continuingFeatures: body.continuingFeatures,
+    covers: body.covers,
+    nextUpdateAt: typeof next === 'string' ? next : null,
+  }
+}
+
+function incidentOf(value: unknown): NoticeIncident | null {
+  const body = objectOf(value)
+  if (
+    body === null ||
+    typeof body.incidentId !== 'string' ||
+    !isInstant(body.startedAt) ||
+    typeof body.closed !== 'boolean' ||
+    !Array.isArray(body.versions) ||
+    body.versions.length === 0
+  ) {
+    return null
+  }
+  const versions: NoticeVersionEntry[] = []
+  for (const item of body.versions as unknown[]) {
+    const version = objectOf(item)
+    if (
+      version === null ||
+      typeof version.version !== 'number' ||
+      typeof version.status !== 'string' ||
+      !stringArray(version.affectedFeatures) ||
+      !stringArray(version.continuingFeatures) ||
+      typeof version.message !== 'string' ||
+      !stringArray(version.covers) ||
+      typeof version.operationId !== 'string' ||
+      !isInstant(version.createdAt)
+    ) {
+      return null
+    }
+    const previous = version.previousVersion
+    const next = version.nextUpdateAt
+    const recovered = version.recoveredAt
+    if (
+      (previous !== undefined && previous !== null && typeof previous !== 'number') ||
+      (next !== undefined && next !== null && !isInstant(next)) ||
+      (recovered !== undefined && recovered !== null && !isInstant(recovered))
+    ) {
+      return null
+    }
+    versions.push({
+      version: version.version,
+      previousVersion: typeof previous === 'number' ? previous : null,
+      status: version.status,
+      affectedFeatures: version.affectedFeatures,
+      continuingFeatures: version.continuingFeatures,
+      message: version.message,
+      nextUpdateAt: typeof next === 'string' ? next : null,
+      recoveredAt: typeof recovered === 'string' ? recovered : null,
+      covers: version.covers,
+      operationId: version.operationId,
+      createdAt: version.createdAt,
+    })
+  }
+  return {
+    incidentId: body.incidentId,
+    startedAt: body.startedAt,
+    closed: body.closed,
+    versions,
+  }
 }
 
 function recoveryImpactOf(value: unknown): RecoveryImpact | null {

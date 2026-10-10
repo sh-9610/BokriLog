@@ -365,3 +365,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-4-manual-recovery.md`
   summary: 운영 command 무장(`OperatorCommandFlow.Armed`)의 직렬화 버전이 스토리마다 올라가(3.4에서 2→3) 배포 순간 Spring Session JDBC에 남은 무장 세션을 역직렬화하지 못하고, rollback 창에서 옛·새 인스턴스가 서로의 세션을 읽지 못한다.
   evidence: `Armed`에 필드를 더할 때마다 `serialVersionUID`를 올리는 패턴이 3.2부터 반복된다. 진행 중 무장을 버리고 재준비를 요구할지, 호환 역직렬화를 둘지는 blue/green 배포·rollback 절차를 정하는 Story 3.8의 입력이다(리뷰 edge-case-hunter, 2026-10-10).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-5-service-notice.md`
+  summary: 운영자 화면의 운영 command 상태 기계(준비·확정·취소·멱등 키·불확실·목록 sequence)가 `useOperatorRestriction`·`useOperatorRecovery`·`useOperatorNotice` 세 벌로 복사됐다 — 다음 운영 command가 네 번째 사본을 만들기 전에 공통 훅 하나로 묶어야 한다.
+  evidence: 3.2·3.4가 같은 패턴을 복사했고 3.5가 셋째를 더했다(리뷰 blind-hunter, 2026-10-10). AI-8이 확인 대화상자·참조 조회를 공통 부품으로 정리한 것과 같은 성격의 일이며, 스토리 범위 밖 리팩터로 따로 다룬다.
