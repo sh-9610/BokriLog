@@ -2,12 +2,17 @@ package com.bokrilog;
 
 import com.bokrilog.ActionGrantService.Consumption;
 import com.bokrilog.ActionGrantService.ConsumptionRequest;
+import com.bokrilog.identity.AccessDecision;
+import com.bokrilog.identity.AccountAccessApi;
+import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.operations.OperatorAuditApi;
 import com.bokrilog.operations.OperatorCommandApi;
 import com.bokrilog.operations.OperatorCommandApi.AuditOutcome;
 import com.bokrilog.operations.OperatorCommandApi.CommandResult;
 import com.bokrilog.operations.OperatorCommandApi.Envelope;
 import com.bokrilog.operations.OperatorCommandApi.ExportResult;
+import com.bokrilog.operations.OperatorCommandApi.InquiryCompletion;
+import com.bokrilog.operations.OperatorCommandApi.InquiryResult;
 import com.bokrilog.operations.OperatorCommandApi.LiftCompletion;
 import com.bokrilog.operations.OperatorCommandApi.LiftResult;
 import com.bokrilog.operations.OperatorCommandApi.LiftTarget;
@@ -67,6 +72,10 @@ import org.springframework.stereotype.Service;
  * <p><b>공지 발행(Story 3.5)은 지원 연락처가 있어야 한다.</b> 배포 설정이 비면 준비와 확정이 모두
  * {@code SUPPORT_CONTACT_UNCONFIGURED}로 거절한다 — 허위·빈 지원 경로를 공지에 싣지 않는다. 버전 번호·덮는 제한·다음 안내
  * 시각은 준비가 한 번, 확정 트랜잭션이 원장 잠금 아래에서 한 번 더 본다.
+ *
+ * <p><b>문의 처리(Story 3.6)는 확정 순간에 상태를 다시 본다.</b> 준비가 본 전이를 확정 트랜잭션이 문의 행 잠금 아래에서
+ * 다시 판정한다 — 그 사이 다른 처리가 상태를 옮겼거나 보존·계정 삭제로 문의가 사라졌으면 쓰지 않는다. 답변 원문은 원장·로그에
+ * 들어가지 않는다.
  *
  * <p>로그에 수행자·대상·사유·허가·키를 남기지 않는다. servlet 웹 애플리케이션에서만 배선한다.
  */
@@ -199,8 +208,13 @@ class OperatorCommandService {
     /** 공지 발행의 지원 연락처(Story 3.5). 비면 발행하지 않는다. */
     private final SupportContact supportContact;
 
+    /** 문의 주인 계정의 상태(Story 3.6). 삭제가 시작된 계정의 문의에는 답변을 쓰지 않는다. */
+    private final AccountAccessApi accounts;
+
     OperatorCommandService(OperatorCommandApi commands, OperatorAccess access, ActionGrantService grants,
-            RestrictionTargets targets, OperationalRestrictionApi restrictions, SupportContact supportContact) {
+            RestrictionTargets targets, OperationalRestrictionApi restrictions, SupportContact supportContact,
+            AccountAccessApi accounts) {
+        this.accounts = accounts;
         this.commands = commands;
         this.access = access;
         this.grants = grants;
@@ -244,6 +258,7 @@ class OperatorCommandService {
         var restriction = accepted.restriction();
         var lift = accepted.lift();
         var notice = accepted.notice();
+        var inquiry = accepted.inquiry();
 
         var keyUse = this.commands.keyUse(userId, keyDigest, accepted.requestDigest());
         if (keyUse instanceof OperatorCommandApi.KeyUse.Conflict) {
@@ -334,6 +349,16 @@ class OperatorCommandService {
             return new Preparation.Refused(refusal, notice.status().name());
         }
         /*
+         * 문의 처리(Story 3.6)의 상태 거절도 같은 자리다 — 없는 문의는 `TARGET_INVALID`, 지금 상태에서 옮길 수 없는 전이
+         * (역행·같은 상태·답변 건너뛰기)는 `INQUIRY_TRANSITION_INVALID`다.
+         */
+        if (inquiry != null && inquiry.refusal() != null) {
+            String refusal = java.util.Objects.requireNonNull(inquiry.refusal());
+            this.grants.invalidateReference(userId, reference.get());
+            this.commands.recordRefusedProposal(userId, proposal, refusal, keyDigest, correlationId);
+            return new Preparation.Refused(refusal);
+        }
+        /*
          * 키 판정과 `REQUESTED` 추가를 원장 잠금 안의 한 트랜잭션으로 한다. 같은 새 키의 동시 준비 둘은 여기서 줄을
          * 서고, 뒤의 것은 앞의 것이 쓴 operation을 받는다 — operation이 둘 생기지 않는다.
          */
@@ -365,7 +390,7 @@ class OperatorCommandService {
         OperatorCommandFlow.Armed armed = new OperatorCommandFlow.Armed(userId, operationId, command,
                 accepted.scope(), accepted.target(), grantTarget, accepted.reason(), accepted.policyVersion(),
                 confirmationHash, accepted.requestDigest(), recorded, keyDigest, reference.get(), phrase,
-                session.getId(), Instant.now(), restriction, lift, notice);
+                session.getId(), Instant.now(), restriction, lift, notice, inquiry);
         OperatorCommandFlow.arm(session, armed);
         return new Preparation.Armed(armed, impact, liftImpact);
     }
@@ -414,6 +439,7 @@ class OperatorCommandService {
         var restriction = armed.restriction();
         var lift = armed.lift();
         var notice = armed.notice();
+        var inquiry = armed.inquiry();
         // 해제 확정이 원장 잠금 아래에서 본 남는 제한. 커밋 뒤 smoke가 이것이 여전히 막는지 본다.
         AtomicReference<List<ActiveRestriction>> remaining = new AtomicReference<>(List.of());
         Consumption consumption;
@@ -422,6 +448,21 @@ class OperatorCommandService {
                     new ConsumptionRequest(session, userId, armed.grantReference(), grantCommand, armed.ledgerTarget(),
                             confirmation, idempotencyKey),
                     () -> {
+                        if (inquiry != null) {
+                            /*
+                             * 원장 잠금 → 최종 권한 → 문의 행 잠금 → 전이 재검사 → 조건부 UPDATE → 완료 행(Story 3.6 AC-5).
+                             */
+                            var completion = this.commands.completeInquiry(envelope, inquiry, correlationId,
+                                    () -> this.access.permits(userId, required),
+                                    owner -> this.accounts.decide(owner, owner, AccountAccessKind.SENSITIVE)
+                                            == AccessDecision.ALLOWED);
+                            if (completion instanceof InquiryCompletion.Refused refused) {
+                                throw new Refused(refused.code());
+                            }
+                            InquiryResult result = ((InquiryCompletion.Completed) completion).result();
+                            ran.set(result);
+                            return result.operationId() + "|" + result.status() + "|" + result.transitionedAt();
+                        }
                         if (notice != null) {
                             /*
                              * 원장 잠금 → 최종 권한 → 사건의 최신 버전 → 덮는 제한 → 다음 안내 시각 → (사건 행) → 버전 행 →
@@ -510,6 +551,11 @@ class OperatorCommandService {
             // 이 요청이 실행했다: 무장은 다 썼고 세션은 회전하며 재인증 시각은 지워진다(SECURITY-ACTION-1.0).
             OperatorCommandFlow.discard(session);
             SessionRotation.completeSensitiveCommand(httpRequest);
+            if (executed instanceof InquiryResult handled) {
+                // 상태만 남긴다. reference·답변·사유·수행자는 남기지 않는다.
+                LOG.info("operator command completed: command={} status={}", command, handled.status());
+                return new Outcome.Completed(handled, List.of(), true, null);
+            }
             if (executed instanceof NoticeResult published) {
                 // 상태·버전만 남긴다. 사건 ID·메시지·수행자는 남기지 않는다.
                 LOG.info("operator command completed: command={} status={} version={}", command, published.status(),

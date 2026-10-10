@@ -99,7 +99,7 @@ class OperatorRecoveryTest extends OperatorTestBase {
         Map<String, Object> fields = topLevelFieldsOf(prepared.body());
         assertThat(fields).containsEntry("command", LIFT).containsEntry("scope", "SYNC:PLAN")
                 .containsEntry("target", restrictionId.toString()).containsEntry("reason", "원인 계산 오류 수정")
-                .containsEntry("policyVersion", "OPERATOR-COMMAND-1.3")
+                .containsEntry("policyVersion", "OPERATOR-COMMAND-1.4")
                 .containsEntry("confirmationPhrase", "복구 동기화 계획 " + owner.planId());
         Map<String, Object> impact = mapOf(fields.get("impact"));
         assertThat(impact).containsEntry("reopenedStages", PLAN_SYNC_STAGES)

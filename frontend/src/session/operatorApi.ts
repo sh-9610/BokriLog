@@ -7,10 +7,13 @@ import {
   OPERATOR_EXPORT_CANCEL_ENDPOINT,
   OPERATOR_EXPORT_CONFIRM_ENDPOINT,
   OPERATOR_EXPORT_ENDPOINT,
+  OPERATOR_INQUIRIES_ENDPOINT,
+  OPERATOR_INQUIRY_METRICS_ENDPOINT,
   OPERATOR_NOTICES_ENDPOINT,
   OPERATOR_OPERATIONS_ENDPOINT,
   OPERATOR_RESTRICTIONS_ENDPOINT,
   PUBLISH_NOTICE_COMMAND,
+  UPDATE_INQUIRY_COMMAND,
   type RecoveryCondition,
   type RestrictionCommand,
 } from '../content/operator'
@@ -825,6 +828,375 @@ export async function confirmNotice(
 /** 공지 발행 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다. */
 export async function cancelNotice(csrfToken: string | null): Promise<void> {
   await post(`${NOTICE_ENDPOINT}/cancel`, csrfToken, null, null, SESSION_REQUEST_TIMEOUT_MS)
+}
+
+// ------------------------------------------------------------------ 문의 처리(Story 3.6)
+
+/** 운영자 목록의 문의 하나. 본문·답변이 없고 회신 이메일은 마스킹한 값이다. 사용자 식별자가 없다. */
+export interface OperatorInquiry {
+  readonly reference: string
+  readonly category: string
+  readonly title: string
+  readonly status: string
+  readonly receivedAt: string
+  readonly targetAt: string | null
+  readonly targetState: string
+  readonly firstAnsweredAt: string | null
+  /** 첫 답변이 목표 안이었는가. 답변 전이거나 목표 미정이면 `null`이다. */
+  readonly targetMet: boolean | null
+  readonly contact: string
+  /** 마스킹한 회신 이메일(`a***@d***`). 서비스 안 회신이면 `null`이다. */
+  readonly replyEmail: string | null
+  readonly resolvedAt: string | null
+}
+
+/** 운영자 상세: 요약에 본문·답변과 회신 이메일 원문을 더한다(운영자가 자기 메일로 회신하는 용도). */
+export interface OperatorInquiryDetail {
+  readonly summary: OperatorInquiry
+  readonly description: string
+  readonly answer: string | null
+  /** 회신 이메일 원문. 서비스 안 회신이면 `null`이다. */
+  readonly replyEmail: string | null
+}
+
+/** 기간 집계. 수만 담는다 — 달성 선언 문장이 없다. */
+export interface InquiryMetrics {
+  readonly from: string
+  readonly to: string
+  readonly asOf: string
+  readonly calendarVersion: string
+  readonly due: number
+  readonly metTarget: number
+  /** 달성률(%). 분모가 0이면 `null`이다. */
+  readonly ratePercent: number | null
+  readonly calendarPending: number
+  readonly measured: number
+  readonly totalBusinessMinutes: number
+  readonly medianBusinessMinutes: number | null
+  /** 기간이 보존 경계보다 앞서면 그 경계(그 이전 해결 문의는 지워져 집계에 없다). 아니면 `null`이다. */
+  readonly purgeHorizon: string | null
+}
+
+/** 문의 처리 준비의 입력. 답변은 답변 완료 전이에만 싣는다. */
+export interface InquiryUpdateInput {
+  readonly reference: string
+  readonly status: string
+  readonly reason: string
+  readonly answer: string | null
+}
+
+export interface InquiryUpdateImpact {
+  readonly reference: string
+  readonly currentStatus: string | null
+  readonly nextStatus: string
+  readonly targetAt: string | null
+  readonly answerProvided: boolean
+}
+
+export interface PreparedInquiryUpdate {
+  readonly operationId: string
+  readonly scope: string
+  readonly target: string
+  readonly reason: string
+  readonly confirmationPhrase: string
+  readonly impact: InquiryUpdateImpact
+}
+
+export interface CompletedInquiryUpdate {
+  readonly operationId: string
+  readonly status: string
+  readonly transitionedAt: string
+}
+
+export type InquiryPrepareOutcome =
+  | { readonly outcome: 'prepared'; readonly prepared: PreparedInquiryUpdate }
+  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
+
+export type InquiryConfirmOutcome =
+  | { readonly outcome: 'completed'; readonly completed: CompletedInquiryUpdate }
+  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
+  /** 응답을 받지 못했거나 서버가 커밋 여부를 말하지 못했다. 자동으로 다시 실행하지 않는다. */
+  | { readonly outcome: 'unanswered' }
+
+const INQUIRY_ENDPOINT = `${OPERATOR_COMMANDS_ENDPOINT}/${UPDATE_INQUIRY_COMMAND}`
+
+const INQUIRY_REFERENCE = /^Q-[A-Z2-7]{10}$/
+
+/**
+ * 문의 목록. 미해결이 먼저다. 상태를 주면 그 상태만이다(쿼리에는 상태 code만 싣는다). 하나라도 모양이 어긋나면 목록 전체를
+ * 믿지 않는다.
+ */
+export async function fetchInquiries(
+  signal: AbortSignal,
+  status: string | null = null,
+): Promise<ReadResult<readonly OperatorInquiry[]>> {
+  const path =
+    status === null
+      ? OPERATOR_INQUIRIES_ENDPOINT
+      : `${OPERATOR_INQUIRIES_ENDPOINT}?${new URLSearchParams({ status }).toString()}`
+  const result = await read(path, signal)
+  if (result.status !== 'loaded') {
+    return result
+  }
+  const items = result.value.items
+  if (!Array.isArray(items)) {
+    return { status: 'failed', code: null }
+  }
+  const inquiries: OperatorInquiry[] = []
+  for (const item of items) {
+    const inquiry = operatorInquiryOf(item)
+    if (inquiry === null) {
+      return { status: 'failed', code: null }
+    }
+    inquiries.push(inquiry)
+  }
+  return { status: 'loaded', value: inquiries }
+}
+
+/** 문의 상세. 본문은 여기에서만 온다. reference가 모양이 아니면 묻지 않는다. */
+export async function fetchInquiryDetail(
+  reference: string,
+  signal: AbortSignal,
+): Promise<ReadResult<OperatorInquiryDetail>> {
+  if (!INQUIRY_REFERENCE.test(reference)) {
+    return { status: 'notFound' }
+  }
+  const result = await read(`${OPERATOR_INQUIRIES_ENDPOINT}/${reference}`, signal)
+  if (result.status !== 'loaded') {
+    return result
+  }
+  const summary = operatorInquiryOf(result.value.summary)
+  const answer = result.value.answer
+  const replyEmail = result.value.replyEmail
+  if (
+    summary === null ||
+    typeof result.value.description !== 'string' ||
+    (answer !== undefined && answer !== null && typeof answer !== 'string') ||
+    (replyEmail !== undefined && replyEmail !== null && typeof replyEmail !== 'string')
+  ) {
+    return { status: 'failed', code: null }
+  }
+  return {
+    status: 'loaded',
+    value: {
+      summary,
+      description: result.value.description,
+      answer: typeof answer === 'string' ? answer : null,
+      replyEmail: typeof replyEmail === 'string' ? replyEmail : null,
+    },
+  }
+}
+
+/** 기간 집계. 기간은 KST 날짜(`YYYY-MM-DD`)이고 양 끝을 포함한다. */
+export async function fetchInquiryMetrics(
+  from: string,
+  to: string,
+  signal: AbortSignal,
+): Promise<ReadResult<InquiryMetrics>> {
+  const params = new URLSearchParams({ from, to })
+  const result = await read(`${OPERATOR_INQUIRY_METRICS_ENDPOINT}?${params.toString()}`, signal)
+  if (result.status !== 'loaded') {
+    return result
+  }
+  const body = result.value
+  const counts = [
+    body.due,
+    body.metTarget,
+    body.calendarPending,
+    body.measured,
+    body.totalBusinessMinutes,
+  ]
+  if (
+    typeof body.from !== 'string' ||
+    typeof body.to !== 'string' ||
+    !isInstant(body.asOf) ||
+    typeof body.calendarVersion !== 'string' ||
+    !counts.every((count) => typeof count === 'number' && Number.isInteger(count) && count >= 0) ||
+    (body.ratePercent !== null && typeof body.ratePercent !== 'number') ||
+    (body.medianBusinessMinutes !== null && typeof body.medianBusinessMinutes !== 'number') ||
+    (body.purgeHorizon !== undefined && body.purgeHorizon !== null && !isInstant(body.purgeHorizon))
+  ) {
+    return { status: 'failed', code: null }
+  }
+  return {
+    status: 'loaded',
+    value: {
+      from: body.from,
+      to: body.to,
+      asOf: body.asOf,
+      calendarVersion: body.calendarVersion,
+      due: body.due as number,
+      metTarget: body.metTarget as number,
+      ratePercent: body.ratePercent,
+      calendarPending: body.calendarPending as number,
+      measured: body.measured as number,
+      totalBusinessMinutes: body.totalBusinessMinutes as number,
+      medianBusinessMinutes: body.medianBusinessMinutes,
+      purgeHorizon: typeof body.purgeHorizon === 'string' ? body.purgeHorizon : null,
+    },
+  }
+}
+
+/** 문의 처리 준비. 아직 아무것도 쓰지 않는다 — 허가를 발급하고 무장한 뒤 미리보기와 확인 문구를 준다. */
+export async function prepareInquiryUpdate(
+  csrfToken: string | null,
+  input: InquiryUpdateInput,
+  idempotencyKey: string,
+): Promise<InquiryPrepareOutcome> {
+  const result = await post(
+    INQUIRY_ENDPOINT,
+    csrfToken,
+    {
+      reference: input.reference,
+      status: input.status,
+      reason: input.reason,
+      ...(input.answer === null ? {} : { answer: input.answer }),
+    },
+    idempotencyKey,
+    SESSION_REQUEST_TIMEOUT_MS,
+  )
+  if (result.ok) {
+    const body = objectOf(result.payload)
+    const impact = body === null ? null : inquiryImpactOf(body.impact)
+    if (
+      body !== null &&
+      impact !== null &&
+      body.command === UPDATE_INQUIRY_COMMAND &&
+      typeof body.operationId === 'string' &&
+      typeof body.scope === 'string' &&
+      body.target === input.reference &&
+      typeof body.reason === 'string' &&
+      typeof body.confirmationPhrase === 'string' &&
+      body.confirmationPhrase !== ''
+    ) {
+      return {
+        outcome: 'prepared',
+        prepared: {
+          operationId: body.operationId,
+          scope: body.scope,
+          target: body.target,
+          reason: body.reason,
+          confirmationPhrase: body.confirmationPhrase,
+          impact,
+        },
+      }
+    }
+  }
+  return { outcome: 'refused', status: result.status, code: result.code }
+}
+
+/** 문의 처리 확정. 같은 키의 재전송은 서버가 같은 결과를 재생한다. */
+export async function confirmInquiryUpdate(
+  csrfToken: string | null,
+  operationId: string,
+  confirmation: string,
+  idempotencyKey: string,
+): Promise<InquiryConfirmOutcome> {
+  const result = await post(
+    `${INQUIRY_ENDPOINT}/confirm`,
+    csrfToken,
+    { operationId, confirmation },
+    idempotencyKey,
+    SESSION_REQUEST_TIMEOUT_MS,
+  )
+  if (!result.received) {
+    return csrfToken === null
+      ? { outcome: 'refused', status: 0, code: null }
+      : { outcome: 'unanswered' }
+  }
+  if (result.ok) {
+    const body = objectOf(result.payload)
+    if (
+      body !== null &&
+      body.outcome === 'COMPLETED' &&
+      body.operationId === operationId &&
+      typeof body.status === 'string' &&
+      isInstant(body.transitionedAt)
+    ) {
+      return {
+        outcome: 'completed',
+        completed: { operationId, status: body.status, transitionedAt: body.transitionedAt },
+      }
+    }
+    return { outcome: 'unanswered' }
+  }
+  // 5xx는 커밋 여부를 단정하지 않는다(내보내기와 같은 근거).
+  if (result.status >= 500) {
+    return { outcome: 'unanswered' }
+  }
+  return { outcome: 'refused', status: result.status, code: result.code }
+}
+
+/** 문의 처리 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다. */
+export async function cancelInquiryUpdate(csrfToken: string | null): Promise<void> {
+  await post(`${INQUIRY_ENDPOINT}/cancel`, csrfToken, null, null, SESSION_REQUEST_TIMEOUT_MS)
+}
+
+function nullableInstant(value: unknown): value is string | null | undefined {
+  return value === undefined || value === null || isInstant(value)
+}
+
+function operatorInquiryOf(value: unknown): OperatorInquiry | null {
+  const body = objectOf(value)
+  if (
+    body === null ||
+    typeof body.reference !== 'string' ||
+    !INQUIRY_REFERENCE.test(body.reference) ||
+    typeof body.category !== 'string' ||
+    typeof body.title !== 'string' ||
+    typeof body.status !== 'string' ||
+    !isInstant(body.receivedAt) ||
+    typeof body.targetState !== 'string' ||
+    typeof body.contact !== 'string' ||
+    !nullableInstant(body.targetAt) ||
+    !nullableInstant(body.firstAnsweredAt) ||
+    !nullableInstant(body.resolvedAt) ||
+    (body.targetMet !== undefined &&
+      body.targetMet !== null &&
+      typeof body.targetMet !== 'boolean') ||
+    (body.replyEmail !== undefined &&
+      body.replyEmail !== null &&
+      typeof body.replyEmail !== 'string')
+  ) {
+    return null
+  }
+  return {
+    reference: body.reference,
+    category: body.category,
+    title: body.title,
+    status: body.status,
+    receivedAt: body.receivedAt,
+    targetAt: typeof body.targetAt === 'string' ? body.targetAt : null,
+    targetState: body.targetState,
+    firstAnsweredAt: typeof body.firstAnsweredAt === 'string' ? body.firstAnsweredAt : null,
+    targetMet: typeof body.targetMet === 'boolean' ? body.targetMet : null,
+    contact: body.contact,
+    replyEmail: typeof body.replyEmail === 'string' ? body.replyEmail : null,
+    resolvedAt: typeof body.resolvedAt === 'string' ? body.resolvedAt : null,
+  }
+}
+
+function inquiryImpactOf(value: unknown): InquiryUpdateImpact | null {
+  const body = objectOf(value)
+  if (
+    body === null ||
+    typeof body.reference !== 'string' ||
+    typeof body.nextStatus !== 'string' ||
+    typeof body.answerProvided !== 'boolean' ||
+    (body.currentStatus !== undefined &&
+      body.currentStatus !== null &&
+      typeof body.currentStatus !== 'string') ||
+    !nullableInstant(body.targetAt)
+  ) {
+    return null
+  }
+  return {
+    reference: body.reference,
+    currentStatus: typeof body.currentStatus === 'string' ? body.currentStatus : null,
+    nextStatus: body.nextStatus,
+    targetAt: typeof body.targetAt === 'string' ? body.targetAt : null,
+    answerProvided: body.answerProvided,
+  }
 }
 
 function noticeImpactOf(value: unknown): NoticeImpact | null {

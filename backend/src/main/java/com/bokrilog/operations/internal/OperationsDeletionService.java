@@ -28,11 +28,16 @@ class OperationsDeletionService implements OperationsDeletionApi {
 
     private final ObjectProvider<ActorDigest> digest;
 
+    /** 사용자 문의(Story 3.6). 삭제의 답은 행 삭제다. */
+    private final SupportInquiryRepository inquiries;
+
     private final TransactionTemplate transactions;
 
     OperationsDeletionService(OperatorAuditRepository audit, OperationalRestrictionRepository restrictions,
-            SignalRepository signals, ObjectProvider<ActorDigest> digest, PlatformTransactionManager transactionManager) {
+            SignalRepository signals, ObjectProvider<ActorDigest> digest, SupportInquiryRepository inquiries,
+            PlatformTransactionManager transactionManager) {
         this.audit = audit;
+        this.inquiries = inquiries;
         this.restrictions = restrictions;
         this.signals = signals;
         this.digest = digest;
@@ -66,6 +71,19 @@ class OperationsDeletionService implements OperationsDeletionApi {
                         keyed.ofTarget(row.scope(), row.target()));
             }
             return count;
+        });
+        return erased == null ? 0 : erased;
+    }
+
+    @Override
+    public int eraseInquiries(@Nullable UUID userId) {
+        if (userId == null) {
+            return 0;
+        }
+        // 접수와 같은 사용자 잠금 아래에서 지운다 — 도는 중인 접수 트랜잭션과 줄을 서고 그 중간을 지우지 않는다.
+        Integer erased = this.transactions.execute(status -> {
+            this.inquiries.lockUser(userId);
+            return this.inquiries.eraseUser(userId);
         });
         return erased == null ? 0 : erased;
     }

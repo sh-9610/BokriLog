@@ -229,8 +229,10 @@ abstract class AuthFlowTestBase {
         // 운영 제한·강한 신호 기록·감사 원장은 어느 계정도 참조하지 않는다. 그래서 위 CASCADE가 비우지 못한다. 신호 행이
         // 제한을 외래키로 가리키므로 함께 적는다. 판정표(`operations_signal_policy`)는 migration seed라 비우지 않는다.
         // 공지(Story 3.5)도 어느 계정도 참조하지 않는다. 버전 행이 사건 행을 외래키로 가리키므로 함께 적는다.
+        // 문의(Story 3.6)도 계정 표를 외래키로 가리키지 않는다. 영업일 달력(`support_business_calendar`·
+        // `support_calendar_year`)은 migration seed라 비우지 않는다.
         this.jdbc.sql("TRUNCATE TABLE operations_signal, operations_restriction, operations_audit_event, "
-                + "operations_notice_version, operations_notice_incident").update();
+                + "operations_notice_version, operations_notice_incident, support_inquiry").update();
     }
 
     // ----------------------------------------------------------------------

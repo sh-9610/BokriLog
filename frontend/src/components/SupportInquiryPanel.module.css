@@ -1,0 +1,289 @@
+/*
+ * 설정 화면의 `문의` 영역(Story 3.6).
+ *
+ * `DESIGN.md`가 소유하는 범주(색·타이포그래피·모서리·간격)는 tokens.css의 변수만 참조한다. 구조적 1px 테두리 두께만
+ * 리터럴이다(대응하는 토큰이 없다). 입력 칸은 `secure-input-form` 토큰을, 목록 행은 `history-row` 토큰을 쓴다 — 새
+ * 토큰을 만들지 않았다.
+ *
+ * 모든 줄이 감긴다 — 320px·400% 확대에서 가로 스크롤에 기대지 않는다. 조작 대상은 최소 44px이다(EXPERIENCE.md
+ * Accessibility Floor). 포커스 표시는 global.css의 전역 `:focus-visible`이 처리한다.
+ */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-inline-size: 0;
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-surface-raised);
+  overflow-wrap: anywhere;
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--color-border-default);
+}
+
+.heading {
+  font-family: var(--type-section-title-font-family);
+  font-size: var(--type-section-title-font-size);
+  font-weight: var(--type-section-title-font-weight);
+  line-height: var(--type-section-title-line-height);
+  letter-spacing: var(--type-section-title-letter-spacing);
+  color: var(--color-ink-primary);
+}
+
+.subheading {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  color: var(--color-ink-primary);
+}
+
+/* 민감값 금지 안내. 색이 아니라 문장이 뜻을 말한다. */
+.sensitive {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-trust-review-bg);
+  color: var(--color-trust-review);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-inline-size: 0;
+  padding: var(--space-4);
+  border-radius: var(--component-secure-input-form-radius);
+  background-color: var(--component-secure-input-form-background);
+  color: var(--component-secure-input-form-foreground);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--component-secure-input-form-border);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-inline-size: 0;
+}
+
+/* 영구 라벨. 값이 들어와도 사라지지 않는다. */
+.label {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  color: var(--color-ink-primary);
+}
+
+.input,
+.textarea {
+  inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: var(--space-target-min);
+  padding-inline: var(--space-3);
+  border-radius: var(--component-secure-input-form-radius);
+  background-color: var(--color-surface-base);
+  color: var(--component-secure-input-form-foreground);
+  font-family: var(--type-body-font-family);
+  font-size: var(--type-body-font-size);
+  line-height: var(--type-body-line-height);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--component-secure-input-form-border);
+}
+
+.textarea {
+  padding-block: var(--space-2);
+  resize: vertical;
+}
+
+/* 문제가 붙은 칸. 테두리 색만으로 뜻을 만들지 않으며 아래 문장이 그것을 말한다. */
+.input[aria-invalid='true'],
+.textarea[aria-invalid='true'] {
+  border-color: var(--color-trust-unavailable);
+}
+
+.help {
+  font-size: var(--type-meta-font-size);
+  font-weight: var(--type-meta-font-weight);
+  line-height: var(--type-meta-line-height);
+  color: var(--color-ink-secondary);
+}
+
+.fieldError {
+  font-size: var(--type-meta-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-meta-line-height);
+  color: var(--color-trust-unavailable);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding-inline: var(--space-4);
+  border-radius: var(--component-sync-control-radius);
+  background-color: var(--component-sync-control-background);
+  color: var(--component-sync-control-foreground);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+/*
+ * 보조 조작(목록 다시 불러오기). 사용자 화면이므로 운영자 표면 토큰을 쓰지 않는다 — 입력 폼 표면(`secure-input-form`)과
+ * 같은 표면·경계에 주 색 글자를 쓴다. 새 토큰을 만들지 않았다.
+ */
+.secondary {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding-inline: var(--space-4);
+  border-radius: var(--component-secure-input-form-radius);
+  background-color: var(--component-secure-input-form-background);
+  color: var(--color-primary);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--component-secure-input-form-border);
+}
+
+/*
+ * 누를 수 없는 상태. `:disabled`가 아니라 `[aria-disabled='true']`다 — 포커스를 남긴다(`BybitConnectionForm.module.css`와
+ * 같은 관용). 커서를 바꾸지 않는다.
+ */
+.submit[aria-disabled='true'],
+.secondary[aria-disabled='true'] {
+  background-color: var(--color-surface-subtle);
+  color: var(--color-ink-secondary);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--color-border-default);
+}
+
+/* 접수 확인 블록. 정적 콘텐츠이고 live region이 아니다. */
+.receipt {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background-color: var(--color-trust-confirmed-bg);
+  color: var(--color-trust-confirmed);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--color-trust-confirmed);
+}
+
+.facts {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.facts > div {
+  display: grid;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
+.facts dt {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+.facts dd {
+  min-inline-size: 0;
+  margin: 0;
+}
+
+/* 접수 번호. 읽어 옮겨 적는 불투명 값이라 등폭 글꼴이다(DESIGN.md의 불투명 값 관용). */
+.reference {
+  font-family: var(--type-mono-font-family);
+  font-size: var(--type-mono-font-size);
+  font-weight: var(--type-mono-font-weight);
+  line-height: var(--type-mono-line-height);
+}
+
+/* 보낸 내용 펼치기. 펼치는 자리도 최소 44px 조작 대상이다. */
+.details {
+  min-inline-size: 0;
+}
+
+.summary {
+  display: flex;
+  align-items: center;
+  min-block-size: var(--space-target-min);
+  color: var(--color-primary);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+/* 운영자 답변·보낸 내용. 줄바꿈을 그대로 보인다. */
+.answer {
+  white-space: pre-wrap;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: grid;
+  gap: var(--space-2);
+  min-inline-size: 0;
+  padding-block: var(--space-4);
+  background-color: var(--component-history-row-background);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border-block-end: 1px solid var(--component-history-row-divider);
+}
+
+.item:last-child {
+  border-block-end: none;
+}
+
+.itemTitle {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  color: var(--color-ink-primary);
+}
+
+.muted {
+  color: var(--color-ink-secondary);
+}
+
+.fallback {
+  color: var(--color-ink-secondary);
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--space-target-min);
+  color: var(--color-primary);
+  overflow-wrap: anywhere;
+}

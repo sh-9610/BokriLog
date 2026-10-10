@@ -212,6 +212,15 @@ docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --b
 
 새 마이그레이션은 `backend/src/main/resources/db/migration/V<n>__<이름>.sql`로 더한다. 이미 적용된 파일은 고치지 않는다. Flyway가 체크섬으로 검증하므로 수정하면 다음 기동이 검증 실패로 멈춘다.
 
+#### 영업일 달력 seed 갱신(Story 3.6)
+
+문의의 답변 목표("접수 다음 영업일부터 세 번째 영업일 18:00 KST")는 버전 seed 달력이 정한다. 지금 버전은 `KR-HOLIDAY-2026.1`(`V22__support_inquiry.sql`, 2026·2027)이다. 달력이 담지 않은 연도의 날을 지나야 하는 접수는 막지 않고 목표를 정하지 않는다(`CALENDAR_PENDING`, 화면 문장 "답변 목표를 아직 정하지 못했습니다") — 2027-12-30 접수가 그 첫 사례다. 새 버전 달력이 그 연도를 담게 되면 다음 조회 트랜잭션(보존 삭제와 같은 자리)이 그 미정 목표를 접수 시각으로 계산해 채우고 `calendar_version`을 새 버전으로 남긴다. 다음 해 달력을 더하는 순서는 다음과 같다.
+
+1. 그 해 월력요항(우주항공청)이 발표되고 「관공서의 공휴일에 관한 규정」 개정·인사혁신처 공지(대체공휴일·임시공휴일·선거일)를 확인한 뒤에 시작한다. 발표 전 날짜를 추측해 넣지 않는다. 2028년 달력 추가는 Ask First다.
+2. **기존 V22를 고치지 않는다.** 새 버전(예: `KR-HOLIDAY-2027.1`)으로 새 마이그레이션(`V<n>__support_calendar_<연도>.sql`)을 쓰고, 그 버전에 담을 모든 연도(앞 버전의 연도 포함)의 `support_calendar_year` 행과 공휴일 행을 넣는다. 머리말에 출처와 확인일을 적는다.
+3. `SupportInquiryApi.CALENDAR_VERSION`을 새 버전으로 바꾼다. 이미 목표가 정해진 문의는 접수 시점의 `calendar_version`·`target_at`을 그대로 가진다(소급 재계산하지 않는다). 미정(`CALENDAR_PENDING`) 문의만 다음 조회가 채운다. 집계의 처리 영업시간은 문의마다 그 행의 `calendar_version` 달력으로 센다.
+4. `BusinessDayCalendarTest`의 fixture를 새 버전 seed와 맞추고(그 시험은 지금 버전을 넣은 최신 마이그레이션을 찾아 seed = fixture를 단정한다) 새 해의 경계(연말·설 연휴·대체공휴일) 사례를 더한다.
+
 ### 구조와 규칙
 
 | 경로 | 역할 |

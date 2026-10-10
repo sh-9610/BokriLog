@@ -15,7 +15,8 @@
  *    `stubPlanEndConfirm`, `stubPlanEndCancel`).
  *    전역 거부는 그대로다. 아래 `responders` 절의 근거를 참고한다.
  * 5. 서비스 공지 조회(`GET /api/notices`, Story 3.5)만 예외로 기본 응답(빈 공지)이 있다. 아래
- *    `defaultServiceNotices`의 근거를 참고한다.
+ *    `defaultServiceNotices`의 근거를 참고한다. 설정 화면의 문의 목록(`GET /api/support/inquiries`, Story 3.6)도
+ *    같은 근거로 기본 응답(빈 목록)이 있다(`defaultSupportInquiries`).
  */
 
 import '@testing-library/jest-dom/vitest'
@@ -50,6 +51,8 @@ import {
   OPERATOR_EXPORT_CANCEL_ENDPOINT,
   OPERATOR_EXPORT_CONFIRM_ENDPOINT,
   OPERATOR_EXPORT_ENDPOINT,
+  OPERATOR_INQUIRIES_ENDPOINT,
+  OPERATOR_INQUIRY_METRICS_ENDPOINT,
   OPERATOR_NOTICES_ENDPOINT,
   OPERATOR_OPERATIONS_ENDPOINT,
   OPERATOR_RESTRICTIONS_ENDPOINT,
@@ -59,6 +62,7 @@ import { DASHBOARD_PATH } from '../content/planResult'
 import { DASHBOARD_SYNC_PATH } from '../content/planSync'
 import { DASHBOARD_VERIFICATION_PATH } from '../content/planVerification'
 import { SERVICE_NOTICES_PATH } from '../content/serviceNotice'
+import { SUPPORT_INQUIRIES_PATH } from '../content/support'
 
 const observedRequests: string[] = []
 const observedIndexedDbNames: string[] = []
@@ -66,6 +70,8 @@ const observedSessionRequests: string[] = []
 const observedAllowedRequests: string[] = []
 /** 기본 응답이 답한 공지 조회(Story 3.5). 허용 기록과 따로 센다 — 진입 화면의 "요청 0건"은 이것도 0이어야 한다. */
 const observedNoticeRequests: string[] = []
+/** 기본 응답이 답한 문의 목록 조회(Story 3.6). 공지와 같은 근거로 허용 기록과 따로 센다. */
+const observedSupportRequests: string[] = []
 
 /**
  * 열린 요청과 그것에 답할 함수. 키는 `"<메서드> <URL>"`이다.
@@ -392,6 +398,38 @@ export function stubServiceNotices(responder: RequestResponder): void {
   responders.set(requestKey('GET', SERVICE_NOTICES_PATH), responder)
 }
 
+/**
+ * 문의 목록 조회 하나를 이 시험 동안만 연다(Story 3.6). 연 응답이 기본 응답(빈 목록)을 이기고 허용 기록에 남는다. 설정 화면은
+ * 세션이 준비되면 언제나 이 요청을 보내므로, 열지 않은 시험에는 기록에 남지 않는 기본 응답이 답한다 — 공지 조회와 같은
+ * 근거다.
+ */
+export function stubSupportInquiries(responder: RequestResponder): void {
+  responders.set(requestKey('GET', SUPPORT_INQUIRIES_PATH), responder)
+}
+
+/** 문의 접수(Story 3.6). 기본 응답이 없다 — 열지 않은 접수는 전역 거부다. */
+export function stubSupportSubmit(responder: RequestResponder): void {
+  responders.set(requestKey('POST', SUPPORT_INQUIRIES_PATH), responder)
+}
+
+/** 문의 목록(Story 3.6, 운영자 화면). 상태 필터는 쿼리로 가므로 쿼리가 있는 요청도 같은 응답 함수가 받는다. */
+export function stubOperatorInquiries(responder: QueryResponder): void {
+  queryResponders.set(requestKey('GET', OPERATOR_INQUIRIES_ENDPOINT), responder)
+  responders.set(requestKey('GET', OPERATOR_INQUIRIES_ENDPOINT), (init) =>
+    responder(OPERATOR_INQUIRIES_ENDPOINT, init),
+  )
+}
+
+/** 문의 상세 하나(Story 3.6, 운영자 화면). */
+export function stubOperatorInquiryDetail(reference: string, responder: RequestResponder): void {
+  responders.set(requestKey('GET', `${OPERATOR_INQUIRIES_ENDPOINT}/${reference}`), responder)
+}
+
+/** 문의 기간 집계(Story 3.6, 운영자 화면). 기간은 쿼리로 가므로 경로만 보고 연다. */
+export function stubOperatorInquiryMetrics(responder: QueryResponder): void {
+  queryResponders.set(requestKey('GET', OPERATOR_INQUIRY_METRICS_ENDPOINT), responder)
+}
+
 /** 공지 사건 목록(Story 3.5, 운영자 화면). */
 export function stubOperatorNotices(responder: RequestResponder): void {
   responders.set(requestKey('GET', OPERATOR_NOTICES_ENDPOINT), responder)
@@ -433,6 +471,11 @@ export function getObservedNoticeRequests(): readonly string[] {
   return [...observedNoticeRequests]
 }
 
+/** 기본 응답(빈 목록)이 답한 문의 목록 조회의 기록(Story 3.6). */
+export function getObservedSupportRequests(): readonly string[] {
+  return [...observedSupportRequests]
+}
+
 /** 지금까지 관측된 네트워크 요청. 비어 있어야 한다. */
 export function getObservedRequests(): readonly string[] {
   return [...observedRequests]
@@ -466,6 +509,14 @@ function clearCookies(): void {
       document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`
     }
   }
+}
+
+/** 열지 않은 시험의 문의 목록 응답: 문의가 없고 공개 지원 이메일도 없다. 기록은 `observedSupportRequests`에 남긴다. */
+function defaultSupportInquiries(): Response {
+  return new Response(JSON.stringify({ supportContact: null, items: [] }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
 }
 
 /**
@@ -529,6 +580,10 @@ globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Respo
     observedNoticeRequests.push(requestKey(method, url))
     return Promise.resolve(defaultServiceNotices())
   }
+  if (method === 'GET' && url === SUPPORT_INQUIRIES_PATH) {
+    observedSupportRequests.push(requestKey(method, url))
+    return Promise.resolve(defaultSupportInquiries())
+  }
   const queryAt = url.indexOf('?')
   const queryResponder =
     queryAt < 0 ? undefined : queryResponders.get(requestKey(method, url.slice(0, queryAt)))
@@ -578,6 +633,7 @@ beforeEach(() => {
   observedSessionRequests.length = 0
   observedAllowedRequests.length = 0
   observedNoticeRequests.length = 0
+  observedSupportRequests.length = 0
 })
 
 afterEach(() => {
@@ -590,6 +646,7 @@ afterEach(() => {
   observedSessionRequests.length = 0
   observedAllowedRequests.length = 0
   observedNoticeRequests.length = 0
+  observedSupportRequests.length = 0
   window.localStorage.clear()
   window.sessionStorage.clear()
   // 한 시험이 남긴 쿠키가 다음 시험의 저장소 단정을 엉뚱하게 실패시키지 않게 한다.

@@ -6,6 +6,7 @@ import { ProviderMark } from '../components/ProviderMark'
 import { ReauthPanel } from '../components/ReauthPanel'
 import { ServiceNotice } from '../components/ServiceNotice'
 import { SignOutButton } from '../components/SignOutButton'
+import { SupportInquiryPanel } from '../components/SupportInquiryPanel'
 import { UnlinkDialog } from '../components/UnlinkDialog'
 import {
   authContent,
@@ -29,6 +30,7 @@ import { useReauthentication } from '../session/useReauthentication'
 import { useServiceNotices } from '../session/useServiceNotices'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
+import { supportSentence, useSupportInquiries } from '../session/useSupportInquiries'
 import { useUnlinking } from '../session/useUnlinking'
 import { EntryScreen } from './EntryScreen'
 import styles from './SettingsScreen.module.css'
@@ -161,7 +163,7 @@ export function SettingsScreen(): ReactElement {
    * 자기 표지를 비우는 순간 그 자리로 옛 문장이 올라온다. 마지막으로 만진 흐름이 그 자리를
    * 소유하게 하면 그 되살아남이 구조적으로 불가능해진다.
    */
-  const [lastFlow, setLastFlow] = useState<'auth' | 'connection'>('auth')
+  const [lastFlow, setLastFlow] = useState<'auth' | 'connection' | 'support'>('auth')
 
   const onUnlinked = useCallback((removed: SignInProvider): void => {
     /*
@@ -177,6 +179,8 @@ export function SettingsScreen(): ReactElement {
 
   const unlinking = useUnlinking(csrfToken, onUnlinked)
   const connection = useBybitConnection(csrfToken, gate === 'ready')
+  // 문의(Story 3.6). 세션이 확인된 뒤에만 읽고 값은 메모리에만 있다.
+  const support = useSupportInquiries(gate === 'ready', csrfToken)
 
   /**
    * 해제 결과 문장의 자리.
@@ -319,11 +323,13 @@ export function SettingsScreen(): ReactElement {
    * 화면당 polite live region은 하나여야 한다.
    */
   const resultMessage =
-    lastFlow === 'connection'
-      ? connectionNoticeText(connection.notice, connection.confirmation !== null)
-      : unlinking.notice === null
-        ? null
-        : authContent.notices[unlinking.notice]
+    lastFlow === 'support'
+      ? supportSentence(support.notice)
+      : lastFlow === 'connection'
+        ? connectionNoticeText(connection.notice, connection.confirmation !== null)
+        : unlinking.notice === null
+          ? null
+          : authContent.notices[unlinking.notice]
 
   return (
     <>
@@ -736,6 +742,18 @@ export function SettingsScreen(): ReactElement {
                   ))}
                 </div>
               </section>
+
+              {/*
+                문의(Story 3.6). 화면의 마지막 영역이다 — 앞 영역들의 키보드 순서를 바꾸지 않는다. 결과는 위 live region이
+                한 번 말하고, 접수 확인은 이 영역 안의 정적 블록이다.
+              */}
+              <SupportInquiryPanel
+                blocked={busy}
+                onAction={() => {
+                  setLastFlow('support')
+                }}
+                support={support}
+              />
             </>
           ) : null}
         </main>
