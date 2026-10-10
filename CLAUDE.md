@@ -150,7 +150,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 ## 현재 진행 지점
 
-기획은 완료됐고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. **Epic 1(11개)은 닫혔고 회고도 끝났다**(`epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건은 `sprint-status.yaml`의 `action_items`가 소유). **Epic 2(16개)도 모두 `develop`에 머지됐고** M2-2(2.7)·M2-3(2.12)·M2-4(2.13~2.16) 검증 지점이 닫혔다. Epic 2 회고도 끝났다(`epic-2-retro-2026-10-05.md`, 판정 `accepted-with-open-items`, 액션 13건). 회고 액션 AI-8의 백엔드 묶음(민감 command 공통 부품 정리)과 Epic 1 액션 item-1(재인증 시각 연쇄 승인)은 `spec-sensitive-command-commons.md`(PR #71)가 닫았다. AI-8의 프런트엔드 묶음(D-4)과 재인증 게이트 안내(105번)는 `spec-frontend-dialog-commons.md`(PR #73)가 닫았다. **Epic 3은 Story 3.1(보호된 운영자 표면과 추가 전용 감사 원장, PR #75), 3.2(영향 범위만 수동 제한, PR #77), 3.3(강한 신호 자동 정지, PR #79), 3.4(검증 증거 확인 뒤 수동 복구, PR #81)가 머지됐고 다음은 Story 3.5(제한·장애·복구 상태의 서비스 내부 공지)다** — 효력 중인 제한(구체 우선 순서·출처·`수동 검증 필요`)을 사용자 범위로 매핑하는 첫 사용자 표면이며, 3.2·3.3이 남긴 "제한 중 사용자 상태 표시" defer가 입력이다. 강한 신호 1·8·9번 연결(3.3 후속)과 훈련 증거 기록(3.4 AC-6, 3.8과 함께)은 `deferred-work.md`에 남아 있다. item-7(확인 hash 판별력)은 운영 command 쪽이 3.1에서 닫혔고(확인 문구 재입력), Epic 1·2 command의 hash는 ERD 정정 몫으로 남는다. `RECONNECT-1.0`(AI-1)은 Epic 3 완료 뒤 Epic 2 보완 스토리로 배치하고 그때까지 해제 사용자의 새 연결 영구 차단은 accepted deviation이다. 실연동 게이트는 둘이며 둘 다 별도 출시 게이트가 소유한다 — Epic 1의 세 제공자 왕복, Epic 2의 Bybit 연결 정책·실연동(실제 검증 계정과 regional reserved IP 필요).
+기획은 완료됐고 구현 계약은 `ERD-1.0.0`이 권위 기준이다. **Epic 1(11개)은 닫혔고 회고도 끝났다**(`epic-1-retro-2026-09-25.md`, 판정 `accepted-with-open-items`, 액션 12건은 `sprint-status.yaml`의 `action_items`가 소유). **Epic 2(16개)도 모두 `develop`에 머지됐고** M2-2(2.7)·M2-3(2.12)·M2-4(2.13~2.16) 검증 지점이 닫혔다. Epic 2 회고도 끝났다(`epic-2-retro-2026-10-05.md`, 판정 `accepted-with-open-items`, 액션 13건). 회고 액션 AI-8의 백엔드 묶음(민감 command 공통 부품 정리)과 Epic 1 액션 item-1(재인증 시각 연쇄 승인)은 `spec-sensitive-command-commons.md`(PR #71)가 닫았다. AI-8의 프런트엔드 묶음(D-4)과 재인증 게이트 안내(105번)는 `spec-frontend-dialog-commons.md`(PR #73)가 닫았다. **Epic 3은 Story 3.1(운영자 표면·감사 원장, PR #75), 3.2(영향 범위 수동 제한, PR #77), 3.3(강한 신호 자동 정지, PR #79), 3.4(검증 뒤 수동 복구, PR #81), 3.5(서비스 내부 공지, PR #83)가 머지됐고 다음은 Story 3.6(사용자 문의 접수와 영업일 3일 답변 목표)이다** — 3.5 공지가 버전마다 고정한 지원 연락처(`BOKRILOG_SUPPORT_CONTACT`)를 인증 사용자 웹 폼이 대체·보완하는 첫 문의 경로다. 강한 신호 1·8·9번 연결(3.3 후속), 훈련 증거 기록(3.4 AC-6, 3.8과 함께), 운영자 command 상태 기계 공통화(3.5 defer)는 `deferred-work.md`에 남아 있다. item-7(확인 hash 판별력)은 운영 command 쪽이 3.1에서 닫혔고(확인 문구 재입력), Epic 1·2 command의 hash는 ERD 정정 몫으로 남는다. `RECONNECT-1.0`(AI-1)은 Epic 3 완료 뒤 Epic 2 보완 스토리로 배치하고 그때까지 해제 사용자의 새 연결 영구 차단은 accepted deviation이다. 실연동 게이트는 둘이며 둘 다 별도 출시 게이트가 소유한다 — Epic 1의 세 제공자 왕복, Epic 2의 Bybit 연결 정책·실연동(실제 검증 계정과 regional reserved IP 필요).
 
 스토리마다 무엇을 도입했고 리뷰가 무엇을 잡았는지는 아래 표의 SPEC이 소유한다. 그 코드를 건드릴 때 해당 SPEC의 `## Design Notes`와 "구현에서 확정한 것"을 읽는다.
 
@@ -193,6 +193,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 3.2 영향 범위 수동 제한 | done | `spec-3-2-scoped-manual-restriction.md`, PR #77 머지 커밋 `f64e5fe` |
 | 3.3 강한 신호 자동 정지 | done | `spec-3-3-strong-signal-auto-stop.md`, PR #79 머지 커밋 `168e471` |
 | 3.4 검증 뒤 수동 복구 | done | `spec-3-4-manual-recovery.md`, PR #81 머지 커밋 `c17d54a` |
+| 3.5 서비스 내부 공지 | done | `spec-3-5-service-notice.md`, PR #83 머지 커밋 `6a13ad8` |
 
 ## 스토리가 고정한 계약
 
