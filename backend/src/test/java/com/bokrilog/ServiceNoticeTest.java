@@ -82,7 +82,7 @@ class ServiceNoticeTest extends OperatorTestBase {
         Map<String, Object> fields = topLevelFieldsOf(prepared.body());
         assertThat(fields).containsEntry("command", PUBLISH).containsEntry("scope", "NOTICE:INVESTIGATING")
                 .containsEntry("target", "NEW").containsEntry("reason", "동기화 지연 원인 조사 중")
-                .containsEntry("policyVersion", "OPERATOR-COMMAND-1.3")
+                .containsEntry("policyVersion", "OPERATOR-COMMAND-1.4")
                 .containsEntry("confirmationPhrase", "공지 발행 새 사건 제한 1건");
         Map<String, Object> impact = mapOf(fields.get("impact"));
         assertThat(impact).containsEntry("incident", "NEW").containsEntry("version", 1)

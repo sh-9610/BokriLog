@@ -39,5 +39,10 @@
  * {@code operations_notice_version}), 운영 command {@code publish-notice} 하나가 감사 {@code COMPLETED}와 같은
  * 트랜잭션에서 쓴다. 사용자 조회({@link com.bokrilog.operations.ServiceNoticeApi#forSubjects})는 효력 제한을 먼저 읽고
  * 그것을 덮는 공지를 싣는다 — 공지는 제한을 풀거나 숨기지 않는다.
+ *
+ * <p><b>Story 3.6이 사용자 문의를 더했다.</b> 접수({@link com.bokrilog.operations.SupportInquiryApi#submit})는 민감값 규칙을
+ * 지난 문의를 버전 seed 영업일 달력({@code support_business_calendar})으로 계산한 답변 목표와 함께 한 INSERT로 쓰고,
+ * 상태·답변은 운영 command {@code update-inquiry} 하나가 감사 {@code COMPLETED}와 같은 트랜잭션에서 바꾼다. 해결 뒤 90일이
+ * 지난 문의는 조회 트랜잭션이 먼저 지운다(백그라운드 없음). 원장에는 reference의 keyed digest만 남는다.
  */
 package com.bokrilog.operations;

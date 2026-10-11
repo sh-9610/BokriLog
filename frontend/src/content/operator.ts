@@ -1,5 +1,5 @@
 /**
- * 보호된 운영자 화면의 카피와 경로(Story 3.1·3.2·3.3·3.4·3.5).
+ * 보호된 운영자 화면의 카피와 경로(Story 3.1·3.2·3.3·3.4·3.5·3.6).
  *
  * 화면과 시험이 같은 문자열을 참조한다. 이 모듈은 운영자 화면 chunk(`screens/OperatorScreen`)만 import한다 — 일반
  * 번들의 초기 화면에 운영자 제어의 카피가 섞이지 않는다. 경로 상수 `OPERATOR_PATH`는 예외로 `content/auth.ts`가
@@ -10,6 +10,12 @@
 
 import { OPERATOR_PATH } from './auth'
 import { noticeFeatureCodesText, noticeTimeText } from './serviceNotice'
+import {
+  INQUIRY_CATEGORIES,
+  INQUIRY_STATUSES,
+  inquiryCategoryLabel,
+  inquiryStatusLabel,
+} from './support'
 
 /** 운영자 표면의 API 경로. 백엔드 `OperatorGate`·`OperatorController`와 같은 값이다. */
 export const OPERATOR_AUDIT_ENDPOINT = '/api/operator/audit'
@@ -25,6 +31,12 @@ export const OPERATOR_RESTRICTIONS_ENDPOINT = '/api/operator/restrictions'
 
 /** 공지 사건 목록(Story 3.5). command 권한이다. */
 export const OPERATOR_NOTICES_ENDPOINT = '/api/operator/notices'
+
+/** 문의 목록·상세(Story 3.6). command 권한이다. */
+export const OPERATOR_INQUIRIES_ENDPOINT = '/api/operator/inquiries'
+
+/** 문의 기간 집계(Story 3.6). */
+export const OPERATOR_INQUIRY_METRICS_ENDPOINT = `${OPERATOR_INQUIRIES_ENDPOINT}/metrics`
 
 export const OPERATOR_EXPORT_CONFIRM_ENDPOINT = `${OPERATOR_EXPORT_ENDPOINT}/confirm`
 
@@ -170,6 +182,63 @@ export function incidentOptionLabel(
   incidentId: string,
 ): string {
   return `${noticeTimeText(startedAt)} 시작 · v${String(version)} ${noticeStatusLabel(status)} · ${incidentId.slice(0, 8)}`
+}
+
+// ------------------------------------------------------------------ 문의 처리(Story 3.6)
+
+/** 문의 처리 command. 백엔드 `OperatorCommandApi.UPDATE_INQUIRY`와 같은 값이다. 문의 상태·답변은 이것만 쓴다. */
+export const UPDATE_INQUIRY_COMMAND = 'update-inquiry'
+
+/** 운영자가 옮길 수 있는 상태. 접수(`RECEIVED`)는 사용자 접수만 만든다. */
+export const INQUIRY_NEXT_STATUSES = ['IN_PROGRESS', 'ANSWERED', 'RESOLVED'] as const
+
+export type InquiryNextStatus = (typeof INQUIRY_NEXT_STATUSES)[number]
+
+/** 목록 필터가 받는 상태. 서버 `SupportInquiryApi.Status`와 같은 집합이다. */
+export const INQUIRY_FILTER_STATUSES = INQUIRY_STATUSES
+
+/**
+ * 지금 상태에서 갈 수 있는 다음 상태. 서버 `SupportInquiryApi.Status.canMoveTo`와 같은 규칙이다 — 앞으로만 가고 해결은 답변
+ * 완료에서만 간다. 해결된 문의는 비어 있다.
+ */
+export function inquiryNextStatuses(status: string): readonly InquiryNextStatus[] {
+  switch (status) {
+    case 'RECEIVED':
+      return ['IN_PROGRESS', 'ANSWERED']
+    case 'IN_PROGRESS':
+      return ['ANSWERED']
+    case 'ANSWERED':
+      return ['RESOLVED']
+    default:
+      return []
+  }
+}
+
+/** 답변의 최대 길이. 서버 규칙(`SupportInquiryApi.MAX_ANSWER_CHARS`)과 같다. */
+export const INQUIRY_ANSWER_MAX_LENGTH = 1000
+
+/** 문의 상태 → 화면 문장. 사용자 화면과 같은 말이다. 모르는 값은 그대로 보인다(운영자 표면이다). */
+export function inquiryStatusText(status: string): string {
+  const known = INQUIRY_STATUSES.find((value) => value === status)
+  return known === undefined ? status : inquiryStatusLabel(known)
+}
+
+/** 문의 범주 → 화면 문장. 사용자 화면과 같은 말이다. */
+export function inquiryCategoryText(category: string): string {
+  const known = INQUIRY_CATEGORIES.find((value) => value === category)
+  return known === undefined ? category : inquiryCategoryLabel(known)
+}
+
+/** 첫 답변의 목표 달성 여부 → 문장. 수만 말하고 평가하지 않는다. */
+export function inquiryTargetMetText(targetMet: boolean | null): string {
+  if (targetMet === null) return '해당 없음'
+  return targetMet ? '목표 안' : '목표 넘김'
+}
+
+/** 영업 분 → 시간 문장(소수 첫째 자리까지). */
+export function businessMinutesText(minutes: number | null): string {
+  if (minutes === null) return '해당 없음'
+  return `${(Math.round((minutes / 60) * 10) / 10).toFixed(1)}시간`
 }
 
 const SMOKE_LABELS: Readonly<Record<string, string>> = {
@@ -336,6 +405,12 @@ const REFUSALS: Readonly<Record<string, string>> = {
   INCIDENT_CLOSED: '복구로 닫힌 사건이라 새 공지를 발행하지 않았습니다. 새 사건으로 발행해 주세요.',
   NEXT_UPDATE_INVALID:
     '다음 안내 시각은 지금보다 미래이고 7일 이내여야 합니다. 복구 공지에는 다음 안내 시각을 넣지 않습니다.',
+  INQUIRY_TRANSITION_INVALID:
+    '이 문의를 그 상태로 옮길 수 없습니다. 상태는 접수 → 처리 중 → 답변 완료 → 해결 순서로만 바뀌고 답변 완료를 건너뛸 수 없습니다. 문의 목록을 다시 조회해 주세요.',
+  INQUIRY_ANSWER_REQUIRED: '답변 완료로 옮기려면 답변을 입력해 주세요.',
+  INQUIRY_ANSWER_INVALID: '답변은 1000자 이내여야 하고 답변 완료로 옮길 때만 실을 수 있습니다.',
+  INQUIRY_SENSITIVE_CONTENT:
+    '답변에 자격정보·지갑 주소·금융값·이메일처럼 보이는 값이 있어 받지 않았습니다. 그 값을 빼고 다시 입력해 주세요.',
   UNAUTHENTICATED: '로그인이 필요합니다. 다시 로그인해 주세요.',
   NOT_FOUND: '요청한 운영 명령을 찾지 못했습니다.',
 }
@@ -356,6 +431,10 @@ const NOTICE_REFUSALS: Readonly<Record<string, string>> = {
   REASON_REQUIRED: '공지 메시지를 입력해 주세요.',
 }
 
+/** 문의 처리의 `TARGET_INVALID` 문장(서버 `OperatorController.INQUIRY_TARGET_INVALID`와 같다). */
+const INQUIRY_TARGET_INVALID =
+  '문의를 찾지 못했습니다. 보존 기간이 지났거나 삭제된 문의일 수 있습니다. 문의 목록을 다시 조회해 주세요.'
+
 /** 복구 공지의 `TARGET_INVALID` 문장(서버 `OperatorController.NOTICE_RECOVERY_TARGET_INVALID`와 같다). */
 const NOTICE_RECOVERY_TARGET_INVALID =
   '사건이 없거나 아직 효력 중인 제한이 있어 복구 공지를 낼 수 없습니다. 제한을 먼저 복구하고 사건 목록을 확인해 주세요.'
@@ -374,6 +453,9 @@ export function operatorRefusalMessage(
   }
   if (code === 'TARGET_INVALID' && command === 'audit-export') {
     return EXPORT_TARGET_INVALID
+  }
+  if (code === 'TARGET_INVALID' && command === UPDATE_INQUIRY_COMMAND) {
+    return INQUIRY_TARGET_INVALID
   }
   if (command === PUBLISH_NOTICE_COMMAND) {
     if (code === 'TARGET_INVALID' && noticeStatus === 'RECOVERED') {
@@ -412,6 +494,10 @@ const LEDGER_CODES: Readonly<Record<string, string>> = {
   NOTICE_VERSION_CONFLICT: '공지 버전 충돌',
   INCIDENT_CLOSED: '닫힌 사건',
   NEXT_UPDATE_INVALID: '다음 안내 시각 오류',
+  INQUIRY_TRANSITION_INVALID: '문의 상태 전이 불가',
+  INQUIRY_ANSWER_REQUIRED: '답변 없음',
+  INQUIRY_ANSWER_INVALID: '답변 형식 오류',
+  INQUIRY_SENSITIVE_CONTENT: '답변 민감값',
 }
 
 export function ledgerCodeLabel(code: string): string {
@@ -474,6 +560,12 @@ export const operatorContent = {
     noticeCompleted: (version: number, status: string): string =>
       `공지 v${String(version)}(${status})를 발행했습니다. 사용자 화면의 서비스 공지에 보입니다.`,
     noticeCancelled: '공지 발행을 취소했습니다. 바뀐 것은 없습니다.',
+    inquiryPreparing: '문의 처리를 준비하고 있습니다.',
+    inquiryPrepared: '문의 처리 확인 대화상자를 열었습니다.',
+    inquiryConfirming: '문의 처리를 기록하고 있습니다.',
+    inquiryCompleted: (status: string): string =>
+      `문의를 ${status}(으)로 기록했습니다. 사용자 화면의 문의 목록에 보입니다.`,
+    inquiryCancelled: '문의 처리를 취소했습니다. 바뀐 것은 없습니다.',
   },
   audit: {
     id: 'operator-audit',
@@ -771,6 +863,111 @@ export const operatorContent = {
     confirm: '공지 발행',
     confirming: '공지를 발행하고 있습니다.',
   },
+  inquiry: {
+    id: 'operator-inquiry',
+    /** 준비 버튼의 id. 대화상자가 호출점을 모를 때 포커스를 돌려줄 자리다. */
+    startId: 'operator-inquiry-start',
+    heading: '문의 처리',
+    body: '사용자 문의의 상태와 답변을 기록합니다. 목록은 최소화한 정보만 보이고 본문은 상세에서만 보입니다. 회신 이메일은 가려서 보입니다. 상태는 접수 → 처리 중 → 답변 완료 → 해결 순서로만 바뀌고, 모든 처리가 감사 원장에 남습니다(답변 원문은 남지 않습니다).',
+    listHeading: '문의 목록',
+    filterLabel: '상태로 거르기',
+    filterAll: '전부(미해결 먼저)',
+    lookupLabel: '접수 번호로 열기',
+    lookupButton: '접수 번호로 열기',
+    noNextStatus: '해결된 문의라 더 옮길 상태가 없습니다.',
+    empty: '문의가 없습니다.',
+    failed: '문의 목록을 불러오지 못했습니다. 잠시 후 다시 조회해 주세요.',
+    reload: '문의 목록 다시 조회',
+    select: (reference: string): string => `${reference} 상세 보기`,
+    columns: {
+      reference: '접수 번호',
+      category: '종류',
+      title: '제목',
+      status: '상태',
+      receivedAt: '접수 시각',
+      targetAt: '답변 목표',
+      firstAnsweredAt: '첫 답변',
+      targetMet: '목표 대비',
+      contact: '회신',
+      replyEmail: '회신 이메일(가림)',
+      resolvedAt: '해결 시각',
+    },
+    targetPending: '답변 목표 미정',
+    contactLabels: { IN_APP: '서비스 안', EMAIL: '서비스 안·이메일 주소 있음' } as Readonly<
+      Record<string, string>
+    >,
+    detail: {
+      id: 'operator-inquiry-detail',
+      heading: '문의 상세',
+      description: '내용',
+      answer: '답변',
+      replyEmail: '회신 이메일',
+      loading: '문의 상세를 불러오고 있습니다.',
+      notFound: '그 문의를 찾지 못했습니다. 보존 기간이 지났거나 삭제된 문의일 수 있습니다.',
+      failed: '문의 상세를 불러오지 못했습니다. 잠시 후 다시 조회해 주세요.',
+    },
+    statusLabel: '옮길 상태',
+    answerLabel: '답변(답변 완료일 때 필수)',
+    answerHelp:
+      '1000자 이내. 사용자 화면에 그대로 보입니다. 자격정보·지갑 주소·금액·이메일을 적지 않습니다.',
+    reasonLabel: '처리 사유(필수)',
+    reasonHelp: '500자 이내 한 줄. 감사 원장에 남습니다. 이메일 주소를 적지 않습니다.',
+    start: '문의 처리 준비',
+    reauthLabel: '본인 확인 필요',
+    result: {
+      id: 'operator-inquiry-result',
+      heading: '문의 처리 결과',
+      operation: 'operation ID',
+      status: '상태',
+      transitionedAt: '기록 시각',
+    },
+    metrics: {
+      id: 'operator-inquiry-metrics',
+      heading: '답변 목표 집계',
+      body: '기간(KST 날짜, 양 끝 포함) 안에 답변 목표 시각이 지난 문의를 셉니다. 목표 미정 문의는 따로 셉니다. 처리 영업시간은 영업일 09:00~18:00(KST)만 셉니다.',
+      fromLabel: '시작일',
+      toLabel: '종료일',
+      run: '집계',
+      loading: '집계하고 있습니다.',
+      failed: '집계하지 못했습니다. 기간을 확인해 주세요.',
+      due: '목표 시각이 지난 문의',
+      met: '목표 안 첫 답변',
+      rate: '달성률',
+      pending: '목표 미정(따로 셈)',
+      measured: '처리 영업시간을 센 문의',
+      median: '처리 영업시간 중앙값',
+      total: '처리 영업시간 합계',
+      none: '해당 없음',
+      asOf: '집계 시각',
+      /** 기간이 보존 경계보다 앞선다. 그 이전에 해결된 문의는 지워져 집계에 없다. */
+      purgeHorizon: (time: string): string =>
+        `${time} 이전에 해결된 문의는 보존 기간이 지나 삭제돼 집계에 없습니다.`,
+      calendar: '영업일 달력',
+    },
+    uncertainClosed:
+      '응답을 받지 못한 문의 처리는 실행됐을 수 있습니다. 아래 operation 조회와 문의 목록으로 상태를 확인해 주세요.',
+    uncertain:
+      '응답을 받지 못해 실행 여부를 알 수 없습니다. 자동으로 다시 실행하지 않습니다. 같은 문구로 다시 실행하면 같은 요청으로 처리되며, 대화상자를 닫은 뒤 operation 조회로 상태를 확인할 수도 있습니다.',
+  },
+  inquiryDialog: {
+    titleId: 'operator-inquiry-title',
+    descriptionId: 'operator-inquiry-description',
+    progressId: 'operator-inquiry-progress',
+    inputId: 'operator-inquiry-phrase',
+    title: '이 문의 처리를 기록할까요?',
+    reference: '접수 번호',
+    transition: '상태',
+    targetAt: '답변 목표',
+    answer: '답변',
+    reason: '처리 사유',
+    effect:
+      '확정하면 문의 상태가 바로 바뀌고 사용자 화면의 문의 목록에 보이며 그 사실이 감사 원장에 남습니다. 상태는 되돌릴 수 없습니다.',
+    kept: '답변 원문은 문의에만 남고 감사 원장에는 상태와 접수 번호의 digest만 남습니다.',
+    phraseLabel: '확인 문구를 그대로 입력하세요',
+    cancel: '취소',
+    confirm: '문의 처리 기록',
+    confirming: '문의 처리를 기록하고 있습니다.',
+  },
   operation: {
     id: 'operator-operation',
     heading: 'operation 조회',
@@ -806,4 +1003,9 @@ export const operatorCopyStrings: readonly string[] = [
   operatorContent.notice.messageForbidden,
   operatorContent.noticeDialog.effect,
   operatorContent.noticeDialog.kept,
+  operatorContent.inquiry.body,
+  operatorContent.inquiry.answerHelp,
+  operatorContent.inquiry.metrics.body,
+  operatorContent.inquiryDialog.effect,
+  operatorContent.inquiryDialog.kept,
 ]

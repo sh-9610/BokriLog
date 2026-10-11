@@ -9,6 +9,7 @@ import com.bokrilog.operations.RestrictionScope;
 import com.bokrilog.operations.ServiceNoticeApi;
 import com.bokrilog.operations.ServiceNoticeApi.NoticeStatus;
 import com.bokrilog.operations.ServiceNoticeApi.NoticeVersion;
+import com.bokrilog.operations.SupportInquiryApi;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -74,22 +75,9 @@ class OperatorEnvelopeService implements OperatorCommandApi {
     /** 배포 버전의 모양(Story 3.4). */
     private static final Pattern DEPLOY_VERSION = Pattern.compile("[A-Za-z0-9._+-]{1," + MAX_DEPLOY_VERSION_CHARS + "}");
 
-    /** 숫자 6자리 이상 연속(Story 3.5). 공지 메시지에 금융값·식별자가 실리지 않게 한다. */
-    private static final Pattern LONG_DIGITS = Pattern.compile("\\p{Nd}{6,}");
-
-    /**
-     * 구분자({@code ,} {@code .} 공백 {@code :} {@code -})로 이은 숫자 묶음(Story 3.5 리뷰). 묶음 안 숫자의 합이 6자리
-     * 이상이면 금융값·식별자로 보고 거절한다 — {@code 12,345,678}·{@code 1 234 567}처럼 끊어 쓴 값도 막는다.
-     */
-    private static final Pattern DIGIT_GROUP = Pattern.compile("\\p{Nd}+(?:[,.:\\s-]\\p{Nd}+)*");
-
     /** IPv4 주소와 {@code 호스트:포트} 모양(Story 3.5 리뷰). 내부 주소를 사용자 화면에 내보내지 않는다. */
     private static final Pattern NETWORK_LIKE = Pattern.compile(
             "\\p{Nd}{1,3}(?:\\.\\p{Nd}{1,3}){3}|[A-Za-z]:\\p{Nd}{2,5}(?!\\p{Nd})");
-
-    /** 통화 기호·통화 code와 붙은 숫자(Story 3.5 리뷰). 금액을 공지에 싣지 않는다. */
-    private static final Pattern MONEY_LIKE = Pattern.compile(
-            "(?i)[$₩€¥£]\\s*\\p{Nd}|\\p{Nd}[\\p{Nd},.]*\\s*(?:USDT|USD|원)|(?:USDT|USD)\\s*\\p{Nd}");
 
     /**
      * 화면 카피 금지 표현(Story 3.5 리뷰): 실시간·정확 보장·손실 공포·수익 축하·스트릭·배지. 프런트엔드
@@ -119,15 +107,20 @@ class OperatorEnvelopeService implements OperatorCommandApi {
     /** 공지 표(Story 3.5). 같은 모듈의 repository다 — 공지 행은 감사 행과 같은 트랜잭션에서만 생긴다. */
     private final ServiceNoticeRepository notices;
 
+    /** 문의 표(Story 3.6). 같은 모듈의 repository다 — 운영 처리는 감사 행과 같은 트랜잭션에서만 문의 행을 바꾼다. */
+    private final SupportInquiryRepository inquiries;
+
     private final ActorDigest digest;
 
     private final TransactionTemplate transactions;
 
     OperatorEnvelopeService(OperatorAuditRepository repository, OperationalRestrictionRepository restrictions,
-            ServiceNoticeRepository notices, ActorDigest digest, PlatformTransactionManager transactionManager) {
+            ServiceNoticeRepository notices, SupportInquiryRepository inquiries, ActorDigest digest,
+            PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.restrictions = restrictions;
         this.notices = notices;
+        this.inquiries = inquiries;
         this.digest = digest;
         this.transactions = new TransactionTemplate(transactionManager);
     }
@@ -135,7 +128,7 @@ class OperatorEnvelopeService implements OperatorCommandApi {
     @Override
     public boolean isSupported(String command) {
         return AUDIT_EXPORT.equals(command) || LIFT_RESTRICTION.equals(command) || PUBLISH_NOTICE.equals(command)
-                || OperatorCommandApi.restrictionFeatureOf(command) != null;
+                || UPDATE_INQUIRY.equals(command) || OperatorCommandApi.restrictionFeatureOf(command) != null;
     }
 
     @Override
@@ -145,8 +138,8 @@ class OperatorEnvelopeService implements OperatorCommandApi {
             return EnumSet.of(OperatorPermission.COMMAND, OperatorPermission.AUDIT);
         }
         if (OperatorCommandApi.restrictionFeatureOf(command) != null || LIFT_RESTRICTION.equals(command)
-                || PUBLISH_NOTICE.equals(command)) {
-            // 제한·해제·공지 발행은 일반 운영 명령이다. 감사 데이터를 꺼내지 않는다.
+                || PUBLISH_NOTICE.equals(command) || UPDATE_INQUIRY.equals(command)) {
+            // 제한·해제·공지 발행·문의 처리는 일반 운영 명령이다. 감사 데이터를 꺼내지 않는다.
             return EnumSet.of(OperatorPermission.COMMAND);
         }
         throw new IllegalArgumentException("모르는 운영 command다.");
@@ -170,6 +163,9 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         if (PUBLISH_NOTICE.equals(proposal.command())) {
             return validateNotice(proposal);
         }
+        if (UPDATE_INQUIRY.equals(proposal.command())) {
+            return validateInquiry(proposal);
+        }
         String scope = proposal.scope() == null ? "" : proposal.scope().strip();
         if (!SCOPE_AUDIT_LEDGER.equals(scope)) {
             return new Validation.Invalid(UNSUPPORTED_SCOPE);
@@ -189,7 +185,7 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         String phrase = "감사 내보내기 " + scope + " " + target;
         return new Validation.Valid(new Accepted(AUDIT_EXPORT, scope, target, target, reason, phrase, POLICY_VERSION,
                 permissionsOf(AUDIT_EXPORT), sha256(AUDIT_EXPORT + "\n" + scope + "\n" + target + "\n" + reason),
-                null, null, null));
+                null, null, null, null));
     }
 
     /**
@@ -221,7 +217,7 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         return new Validation.Valid(new Accepted(command, ledgerScope, target, ledgerTarget, reason,
                 restrictionPhrase(feature, scope, target), POLICY_VERSION, permissionsOf(command),
                 sha256(command + "\n" + ledgerScope + "\n" + ledgerTarget + "\n" + reason),
-                new Restriction(feature, scope, target), null, null));
+                new Restriction(feature, scope, target), null, null, null));
     }
 
     /**
@@ -281,7 +277,7 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         String digest = sha256(LIFT_RESTRICTION + "\n" + target + "\n" + reason + "\n" + verification + "\n"
                 + evidenceRef + "\n" + deployVersion + "\n" + String.join(",", RECOVERY_CONDITIONS));
         return new Validation.Valid(new Accepted(LIFT_RESTRICTION, ledgerScope, target, target, reason, phrase,
-                POLICY_VERSION, permissionsOf(LIFT_RESTRICTION), digest, null, lift, null));
+                POLICY_VERSION, permissionsOf(LIFT_RESTRICTION), digest, null, lift, null, null));
     }
 
     /**
@@ -383,7 +379,98 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         Notice notice = new Notice(incidentId, version, status, message, covers, List.copyOf(affected),
                 ServiceNoticeApi.continuing(affected), nextUpdateAt, refusal);
         return new Validation.Valid(new Accepted(PUBLISH_NOTICE, ledgerScope, target, target, message, phrase,
-                POLICY_VERSION, permissionsOf(PUBLISH_NOTICE), digest, null, null, notice));
+                POLICY_VERSION, permissionsOf(PUBLISH_NOTICE), digest, null, null, notice, null));
+    }
+
+    /**
+     * 문의 처리의 envelope 검증(Story 3.6 AC-5). 형식 — 옮길 상태·reference·사유·답변(필수 여부·길이·민감값) — 을 보고, 그다음
+     * 같은 모듈의 문의 표에서 지금 상태를 읽어 전이를 판정한다. 상태 거절({@code TARGET_INVALID}·
+     * {@code INQUIRY_TRANSITION_INVALID})은 {@link Inquiry#refusal}에 싣고 루트가 멱등 키·재인증 판정 <b>뒤</b>에 적용한다
+     * (3.2·3.4·3.5와 같은 준비 순서).
+     *
+     * <p>원장의 target은 reference의 keyed digest다 — reference는 사용자 귀속 문의를 가리키는 식별자다. 요청 digest는 답변의
+     * SHA-256을 담는다(답변 원문은 원장에 없다). 같은 키로 다른 답변을 보내면 충돌이다.
+     */
+    private Validation validateInquiry(Proposal proposal) {
+        SupportInquiryApi.Status to = inquiryStatusOf(proposal.scope());
+        if (to == null) {
+            return new Validation.Invalid(UNSUPPORTED_SCOPE);
+        }
+        String reference = proposal.target() == null ? "" : proposal.target().strip();
+        if (!InquiryRules.REFERENCE.matcher(reference).matches()) {
+            return new Validation.Invalid(TARGET_INVALID);
+        }
+        String reason = proposal.reason() == null ? "" : proposal.reason().strip();
+        if (reason.isEmpty()) {
+            return new Validation.Invalid(REASON_REQUIRED);
+        }
+        if (!isAcceptableReason(reason)) {
+            return new Validation.Invalid(REASON_INVALID);
+        }
+        String given = proposal.inquiry() == null ? null : proposal.inquiry().answer();
+        String answer = null;
+        if (to == SupportInquiryApi.Status.ANSWERED) {
+            if (given == null || given.isBlank()) {
+                return new Validation.Invalid(INQUIRY_ANSWER_REQUIRED);
+            }
+            answer = InquiryRules.answer(given);
+            if (answer == null) {
+                return new Validation.Invalid(INQUIRY_ANSWER_INVALID);
+            }
+            if (InquiryRules.sensitive(answer).isPresent()) {
+                return new Validation.Invalid(INQUIRY_SENSITIVE_CONTENT);
+            }
+        } else if (given != null && !given.isBlank()) {
+            // 답변은 `ANSWERED` 전이에만 싣는다. 다른 전이에 실린 답변을 조용히 버리지 않는다.
+            return new Validation.Invalid(INQUIRY_ANSWER_INVALID);
+        }
+        var current = this.inquiries.current(reference).orElse(null);
+        String refusal = null;
+        if (current == null) {
+            refusal = TARGET_INVALID;
+        } else if (!current.status().canMoveTo(to)) {
+            refusal = INQUIRY_TRANSITION_INVALID;
+        }
+        Inquiry inquiry = new Inquiry(reference, current == null ? null : current.status(), to,
+                current == null ? null : current.targetAt(), answer, refusal);
+        String ledgerScope = INQUIRY_SCOPE_PREFIX + to.name();
+        String ledgerTarget = this.digest.ofInquiry(reference);
+        String digest = sha256(UPDATE_INQUIRY + "\n" + ledgerScope + "\n" + ledgerTarget + "\n" + reason + "\n"
+                + (answer == null ? "-" : sha256("inquiry-answer\n" + answer)));
+        return new Validation.Valid(new Accepted(UPDATE_INQUIRY, ledgerScope, reference, ledgerTarget, reason,
+                inquiryPhrase(to, reference), POLICY_VERSION, permissionsOf(UPDATE_INQUIRY), digest, null, null, null,
+                inquiry));
+    }
+
+    /** 운영자가 옮길 수 있는 상태. 접수({@code RECEIVED})는 접수만 만든다. */
+    private static SupportInquiryApi.@Nullable Status inquiryStatusOf(@Nullable String text) {
+        String status = text == null ? "" : text.strip();
+        for (SupportInquiryApi.Status known : SupportInquiryApi.Status.values()) {
+            if (known != SupportInquiryApi.Status.RECEIVED && known.name().equals(status)) {
+                return known;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 문의 처리의 확인 문구: {@code 문의 <상태 낱말> <reference>}. reference를 담아 문구가 그 문의 하나를 가리킨다(item-7).
+     */
+    static String inquiryPhrase(SupportInquiryApi.Status to, String reference) {
+        return "문의 " + inquiryStatusWord(to) + " " + reference;
+    }
+
+    /**
+     * 문의 상태의 확인 문구 낱말. 사용자 화면의 상태 표지({@code content/support.ts}의 상태 문장)와 글자까지 같은 말이다 —
+     * 시험({@code SupportInquiryTest})이 둘을 대조한다.
+     */
+    static String inquiryStatusWord(SupportInquiryApi.Status status) {
+        return switch (status) {
+            case RECEIVED -> "접수됨";
+            case IN_PROGRESS -> "처리 중";
+            case ANSWERED -> "답변 완료";
+            case RESOLVED -> "해결됨";
+        };
     }
 
     /**
@@ -453,22 +540,10 @@ class OperatorEnvelopeService implements OperatorCommandApi {
     static boolean isAcceptableMessage(String message) {
         return !message.isEmpty() && message.length() <= ServiceNoticeApi.MAX_MESSAGE_CHARS
                 && !CONTROL.matcher(message).find() && !EMAIL_LIKE.matcher(message).find()
-                && !LONG_DIGITS.matcher(message).find() && !URL_LIKE.matcher(message).find()
-                && !longDigitGroup(message) && !NETWORK_LIKE.matcher(message).find()
-                && !MONEY_LIKE.matcher(message).find()
+                // 금융값 모양(숫자열·끊어 쓴 숫자·금액)은 문의 규칙(Story 3.6)과 같은 한 벌이다.
+                && !InquiryRules.financialLike(message) && !URL_LIKE.matcher(message).find()
+                && !NETWORK_LIKE.matcher(message).find()
                 && FORBIDDEN_COPY_WORDS.stream().noneMatch(message::contains);
-    }
-
-    /** 구분자로 이은 숫자 묶음 가운데 숫자 합이 6자리 이상인 것이 있는가. */
-    private static boolean longDigitGroup(String message) {
-        var groups = DIGIT_GROUP.matcher(message);
-        while (groups.find()) {
-            long digits = groups.group().codePoints().filter(Character::isDigit).count();
-            if (digits >= 6) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -675,6 +750,16 @@ class OperatorEnvelopeService implements OperatorCommandApi {
             ledgerTarget = NEW_INCIDENT.equals(target) || UUID_TEXT.matcher(target).matches() ? target : UNREADABLE;
             keepReason = isAcceptableMessage(reason);
         }
+        if (UPDATE_INQUIRY.equals(proposal.command())) {
+            /*
+             * 문의 처리의 거절 행(Story 3.6): scope는 옮길 수 있는 상태일 때만 `INQUIRY:<상태>`, target은 reference 모양일
+             * 때만 그 keyed digest로 남긴다 — reference 원문과 답변은 거절 행에도 들어가지 않는다.
+             */
+            SupportInquiryApi.Status status = inquiryStatusOf(scope);
+            ledgerScope = status == null ? UNREADABLE : INQUIRY_SCOPE_PREFIX + status.name();
+            ledgerTarget = InquiryRules.REFERENCE.matcher(target).matches() ? this.digest.ofInquiry(target)
+                    : UNREADABLE;
+        }
         var envelope = new Envelope(operationId, actorUserId, proposal.command(), ledgerScope, ledgerTarget,
                 keepReason ? reason : UNREADABLE, "", POLICY_VERSION, null, idempotencyKeyDigest, "");
         recordDecision(envelope, AuditOutcome.DENIED, code, correlationId);
@@ -818,6 +903,47 @@ class OperatorEnvelopeService implements OperatorCommandApi {
     }
 
     @Override
+    public InquiryCompletion completeInquiry(Envelope envelope, Inquiry inquiry, String correlationId,
+            BooleanSupplier finalAuthority, java.util.function.Predicate<UUID> ownerUsable) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            // 문의 행·감사 행·허가 소비가 한 트랜잭션이어야 한다. 밖에서 부르는 것은 배선 실수다.
+            throw new IllegalStateException("문의 처리는 허가 소비의 트랜잭션 안에서만 쓴다.");
+        }
+        this.repository.lockAppends();
+        // 잠금 뒤의 최종 권한. 거짓이면 이 트랜잭션은 아무것도 쓰지 않았다.
+        if (!finalAuthority.getAsBoolean()) {
+            return new InquiryCompletion.Refused(ACCESS_REVOKED);
+        }
+        // 확정 순간의 문의. 준비 뒤 보존 삭제·계정 삭제로 사라졌거나 다른 처리가 상태를 옮겼으면 쓰지 않는다.
+        var locked = this.inquiries.lockForTransition(inquiry.reference()).orElse(null);
+        if (locked == null) {
+            return new InquiryCompletion.Refused(TARGET_INVALID);
+        }
+        // 주인 계정의 삭제가 시작됐으면 그 문의는 곧 지워질 대상이다. 답변을 쓰지 않는다(없는 문의와 같은 거절).
+        if (!ownerUsable.test(locked.ownerUserId())) {
+            return new InquiryCompletion.Refused(TARGET_INVALID);
+        }
+        if (!locked.status().canMoveTo(inquiry.to())) {
+            return new InquiryCompletion.Refused(INQUIRY_TRANSITION_INVALID);
+        }
+        Instant transitionedAt = this.inquiries.transition(inquiry.reference(), locked.status(), inquiry.to(),
+                inquiry.answer(), envelope.operationId()).orElse(null);
+        if (transitionedAt == null) {
+            // 행 잠금 아래 같은 술어라 구조상 오지 않는 가지다. 그래도 영향 행 수가 곧 판정이다 — 0행을 성공으로 접지 않는다.
+            return new InquiryCompletion.Refused(INQUIRY_TRANSITION_INVALID);
+        }
+        // 상태·reference digest·전이 시각뿐이다. 제목·본문·이메일·답변 원문은 넣지 않는다.
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("keyDigest", envelope.idempotencyKeyDigest());
+        details.put("status", inquiry.to().name());
+        details.put("referenceDigest", envelope.target());
+        details.put("transitionedAt", transitionedAt.toString());
+        append(envelope, AuditOutcome.COMPLETED, true, correlationId, details);
+        return new InquiryCompletion.Completed(new InquiryResult(envelope.operationId(), inquiry.to(),
+                transitionedAt));
+    }
+
+    @Override
     public LiftCompletion completeLift(Envelope envelope, Lift lift, String correlationId,
             BooleanSupplier finalAuthority, Supplier<LiftExpectation> expectation) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
@@ -924,11 +1050,16 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         if (!idempotencyKeyDigest.equals(completed.keyDigest())) {
             return new Replay.Conflict();
         }
+        if (UPDATE_INQUIRY.equals(completed.command()) && completed.status() != null
+                && completed.transitionedAt() != null) {
+            return new Replay.Stored(new InquiryResult(operationId,
+                    SupportInquiryApi.Status.valueOf(completed.status()), completed.transitionedAt()));
+        }
         if (PUBLISH_NOTICE.equals(completed.command()) && completed.incidentId() != null
-                && completed.noticeVersion() != null && completed.noticeStatus() != null
+                && completed.noticeVersion() != null && completed.status() != null
                 && completed.publishedAt() != null) {
             return new Replay.Stored(new NoticeResult(operationId, completed.incidentId(), completed.noticeVersion(),
-                    NoticeStatus.valueOf(completed.noticeStatus()), completed.publishedAt()));
+                    NoticeStatus.valueOf(completed.status()), completed.publishedAt()));
         }
         if (LIFT_RESTRICTION.equals(completed.command()) && completed.restrictionId() != null
                 && completed.feature() != null && completed.restrictionScope() != null

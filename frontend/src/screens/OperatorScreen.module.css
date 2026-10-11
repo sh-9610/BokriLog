@@ -329,3 +329,43 @@
   margin: 0;
   accent-color: var(--color-primary);
 }
+
+/* 문의 답변 입력(Story 3.6). 입력 칸과 같은 표면이고 여러 줄을 받는다. */
+.textarea {
+  inline-size: 100%;
+  min-block-size: var(--space-target-min);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface-base);
+  color: var(--color-ink-primary);
+  font-family: var(--type-body-font-family);
+  font-size: var(--type-body-font-size);
+  line-height: var(--type-body-line-height);
+  resize: vertical;
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--color-border-strong);
+}
+
+/* 문의 본문·답변. 사용자가 쓴 줄바꿈을 그대로 보인다. */
+.preserved {
+  white-space: pre-wrap;
+}
+
+/* 문의 집계(Story 3.6). 수만 보인다 — 좁은 폭에서 한 줄씩 감긴다. */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.metrics > div {
+  display: grid;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
+.metrics dd {
+  margin: 0;
+}

@@ -16,7 +16,7 @@ import org.jspecify.annotations.Nullable;
  * Epic 1의 부품으로 하고, 여기서는 envelope의 검증(빈 사유·미지원 command·미지원 scope·클라이언트 actor·길이), 서버가
  * 정하는 확인 문구, 감사 행의 추가, 그리고 command의 실행을 한다 — 3.1의 {@value #AUDIT_EXPORT}, 3.2의 제한 생성 넷
  * ({@code restrict-<기능>}, {@link #restrictionFeatureOf}), 3.4의 제한 해제 {@value #LIFT_RESTRICTION}, 3.5의 서비스 공지
- * 발행 {@value #PUBLISH_NOTICE}.
+ * 발행 {@value #PUBLISH_NOTICE}, 3.6의 문의 처리 {@value #UPDATE_INQUIRY}.
  *
  * <p><b>감사 없는 상태 변경이 없다.</b> 실행({@link #completeExport})은 호출자의 트랜잭션 안에서 결과 행을 쓰고 그
  * 트랜잭션이 허가 소비와 같다 — 하나가 실패하면 모두 롤백된다. 거절·실패·취소 행({@link #recordDecision})은 그 롤백
@@ -71,6 +71,16 @@ public interface OperatorCommandApi {
     /** 공지 발행의 원장 scope 접두사. 뒤에 상태가 붙는다({@code NOTICE:INVESTIGATING}). */
     String NOTICE_SCOPE_PREFIX = "NOTICE:";
 
+    /**
+     * 문의 처리(Story 3.6). target은 문의 reference이고 scope는 옮길 상태({@code IN_PROGRESS}·{@code ANSWERED}·
+     * {@code RESOLVED})다 — 원장 scope는 {@code INQUIRY:<상태>}이고 원장 target은 reference의 keyed digest다. 답변 원문은
+     * 문의 행에만 남고 원장·{@code details}·로그에 들어가지 않는다. 문의의 상태·답변은 이 command만 쓴다.
+     */
+    String UPDATE_INQUIRY = "update-inquiry";
+
+    /** 문의 처리의 원장 scope 접두사. 뒤에 옮길 상태가 붙는다({@code INQUIRY:ANSWERED}). */
+    String INQUIRY_SCOPE_PREFIX = "INQUIRY:";
+
     /** 배포 버전의 최대 길이(문자). 모양은 {@code [A-Za-z0-9._+-]}다. */
     int MAX_DEPLOY_VERSION_CHARS = 64;
 
@@ -92,9 +102,11 @@ public interface OperatorCommandApi {
      * 계보 재검사, 커밋 뒤 evaluator smoke와 그 실패의 되돌림. 1.3(Story 3.5): 공지 발행 command {@value #PUBLISH_NOTICE},
      * 메시지 규칙(200자, 구분자로 이은 숫자 6자리 이상·IP·포트·통화 금액·URL·경로·이메일·화면 금지 표현 거절), 지원
      * 연락처가 비면 거절(멱등 키·재인증 판정 뒤), 복구 공지는 덮는 제한이 모두 닫혀 있어야 함, 사건·범위를 담은 확인 문구,
-     * 확정 순간의 버전 연속·사건 닫힘·덮는 제한·다음 안내 시각 재검사와 지원 연락처의 버전 고정.
+     * 확정 순간의 버전 연속·사건 닫힘·덮는 제한·다음 안내 시각 재검사와 지원 연락처의 버전 고정. 1.4(Story 3.6): 문의 처리
+     * command {@value #UPDATE_INQUIRY}, 상태 전이 단조({@code ANSWERED} 건너뛰기 금지)와 답변 필수·민감값 규칙, 원장 target·
+     * {@code details}의 reference digest, 확정 순간의 행 잠금·전이 재검사.
      */
-    String POLICY_VERSION = "OPERATOR-COMMAND-1.3";
+    String POLICY_VERSION = "OPERATOR-COMMAND-1.4";
 
     /** 추출 한 번의 행 상한. 넘으면 앞쪽(오래된 순) 상한만큼이고 결과가 잘렸다고 말한다. */
     int MAX_EXPORT_ROWS = 10_000;
@@ -164,6 +176,18 @@ public interface OperatorCommandApi {
      */
     String NEXT_UPDATE_INVALID = "NEXT_UPDATE_INVALID";
 
+    /** 문의 상태를 그 상태로 옮길 수 없다 — 역행·같은 상태·{@code ANSWERED} 건너뛰기(Story 3.6). */
+    String INQUIRY_TRANSITION_INVALID = "INQUIRY_TRANSITION_INVALID";
+
+    /** {@code ANSWERED} 전이에 답변이 없다(Story 3.6). */
+    String INQUIRY_ANSWER_REQUIRED = "INQUIRY_ANSWER_REQUIRED";
+
+    /** 답변이 길이·제어 문자 규칙을 어겼거나 {@code ANSWERED}가 아닌 전이에 답변을 실었다(Story 3.6). */
+    String INQUIRY_ANSWER_INVALID = "INQUIRY_ANSWER_INVALID";
+
+    /** 답변에 민감값 모양이 있다(Story 3.6). 사용자 접수의 거절과 같은 code다. */
+    String INQUIRY_SENSITIVE_CONTENT = "INQUIRY_SENSITIVE_CONTENT";
+
     /** 요청 본문이 수행자를 주장했다. 수행자는 언제나 서버 세션이 정한다. */
     String ACTOR_NOT_ACCEPTED = "ACTOR_NOT_ACCEPTED";
 
@@ -179,19 +203,50 @@ public interface OperatorCommandApi {
      * @param recovery 해제 command의 증거 입력(Story 3.4). 그 밖은 {@code null}
      * @param notice 공지 발행 command의 입력(Story 3.5). 그 밖은 {@code null}. 상태는 {@code scope}, 사건은
      *     {@code target}, 메시지는 {@code reason} 자리다
+     * @param inquiry 문의 처리 command의 입력(Story 3.6). 그 밖은 {@code null}. 옮길 상태는 {@code scope}, reference는
+     *     {@code target}, 운영 사유는 {@code reason} 자리다
      */
     record Proposal(String command, @Nullable String scope, @Nullable String target, @Nullable String reason,
-            boolean actorClaimed, @Nullable RecoveryInput recovery, @Nullable NoticeInput notice) {
+            boolean actorClaimed, @Nullable RecoveryInput recovery, @Nullable NoticeInput notice,
+            @Nullable InquiryInput inquiry) {
 
         public Proposal(String command, @Nullable String scope, @Nullable String target, @Nullable String reason,
                 boolean actorClaimed) {
-            this(command, scope, target, reason, actorClaimed, null, null);
+            this(command, scope, target, reason, actorClaimed, null, null, null);
         }
 
         public Proposal(String command, @Nullable String scope, @Nullable String target, @Nullable String reason,
                 boolean actorClaimed, @Nullable RecoveryInput recovery) {
-            this(command, scope, target, reason, actorClaimed, recovery, null);
+            this(command, scope, target, reason, actorClaimed, recovery, null, null);
         }
+
+        public Proposal(String command, @Nullable String scope, @Nullable String target, @Nullable String reason,
+                boolean actorClaimed, @Nullable RecoveryInput recovery, @Nullable NoticeInput notice) {
+            this(command, scope, target, reason, actorClaimed, recovery, notice, null);
+        }
+    }
+
+    /**
+     * 문의 처리의 입력 원문(Story 3.6). 옮길 상태·reference·사유는 {@link Proposal}의 scope·target·reason 자리다.
+     *
+     * @param answer {@code ANSWERED} 전이의 답변. 그 밖의 전이에는 없어야 한다
+     */
+    record InquiryInput(@Nullable String answer) {}
+
+    /**
+     * 검증을 지난 문의 처리(Story 3.6). 세션 무장에 실린다. 답변 원문은 무장(서버 세션)과 확정이 쓰는 문의 행에만 있다.
+     *
+     * @param from 준비 시각에 본 상태. 문의가 없으면 {@code null}
+     * @param targetAt 준비 시각에 본 답변 목표 시각. 미정이거나 문의가 없으면 {@code null}
+     * @param answer {@code ANSWERED} 전이의 답변. 그 밖은 {@code null}
+     * @param refusal 준비 시각에 본 상태 거절({@link #TARGET_INVALID}·{@link #INQUIRY_TRANSITION_INVALID}). 루트가 멱등 키·
+     *     재인증 판정 뒤에 적용한다. 무장되는 값은 언제나 {@code null}이다
+     */
+    record Inquiry(String reference, SupportInquiryApi.@Nullable Status from, SupportInquiryApi.Status to,
+            @Nullable Instant targetAt, @Nullable String answer, @Nullable String refusal)
+            implements java.io.Serializable {
+
+        @java.io.Serial private static final long serialVersionUID = 1L;
     }
 
     /**
@@ -288,10 +343,12 @@ public interface OperatorCommandApi {
      * @param restriction 제한 command의 요청. 그 밖은 {@code null}
      * @param lift 해제 command의 요청(Story 3.4). 그 밖은 {@code null}
      * @param notice 공지 발행 command의 요청(Story 3.5). 그 밖은 {@code null}
+     * @param inquiry 문의 처리 command의 요청(Story 3.6). 그 밖은 {@code null}
      */
     record Accepted(String command, String scope, String target, String ledgerTarget, String reason,
             String confirmationPhrase, String policyVersion, Set<OperatorPermission> permissions, String requestDigest,
-            @Nullable Restriction restriction, @Nullable Lift lift, @Nullable Notice notice) {}
+            @Nullable Restriction restriction, @Nullable Lift lift, @Nullable Notice notice,
+            @Nullable Inquiry inquiry) {}
 
     sealed interface Validation {
         record Valid(Accepted accepted) implements Validation {}
@@ -401,7 +458,7 @@ public interface OperatorCommandApi {
     }
 
     /** 실행된 command의 결과. 원장의 {@code COMPLETED} 행이 같은 값을 재생한다. */
-    sealed interface CommandResult permits ExportResult, RestrictionResult, LiftResult, NoticeResult {
+    sealed interface CommandResult permits ExportResult, RestrictionResult, LiftResult, NoticeResult, InquiryResult {
         String operationId();
     }
 
@@ -444,6 +501,15 @@ public interface OperatorCommandApi {
      */
     record NoticeResult(String operationId, UUID incidentId, int version, ServiceNoticeApi.NoticeStatus status,
             Instant publishedAt) implements CommandResult {}
+
+    /**
+     * 문의 처리의 결과(Story 3.6). 원장의 {@code COMPLETED} 행이 같은 값을 재생한다. reference·답변 원문을 담지 않는다 — 원장에는
+     * reference의 digest만 있다.
+     *
+     * @param transitionedAt 상태를 옮긴 DB 시각
+     */
+    record InquiryResult(String operationId, SupportInquiryApi.Status status, Instant transitionedAt)
+            implements CommandResult {}
 
     /**
      * {@value #AUDIT_EXPORT}를 실행하고 {@code COMPLETED} 행을 쓴다. <b>호출자의 트랜잭션 안에서만</b> 부른다 — 그
@@ -525,6 +591,33 @@ public interface OperatorCommandApi {
      */
     NoticeCompletion completeNotice(Envelope envelope, Notice notice, String supportContact, String correlationId,
             BooleanSupplier finalAuthority);
+
+    /** 문의 처리의 결말(Story 3.6). */
+    sealed interface InquiryCompletion {
+        record Completed(InquiryResult result) implements InquiryCompletion {}
+
+        /**
+         * 아무것도 쓰지 않았다. 호출자가 트랜잭션을 되돌리고 거절 행을 밖에서 쓴다.
+         *
+         * @param code {@link #ACCESS_REVOKED}·{@link #TARGET_INVALID}·{@link #INQUIRY_TRANSITION_INVALID}
+         */
+        record Refused(String code) implements InquiryCompletion {}
+    }
+
+    /**
+     * 문의 처리 command를 실행하고 {@code COMPLETED} 행을 쓴다(Story 3.6 AC-5). <b>호출자의 트랜잭션 안에서만</b> 부른다 — 그
+     * 트랜잭션이 허가 소비와 같다.
+     *
+     * <p>순서가 계약이다: 원장 추가 잠금 → 최종 권한({@code finalAuthority}) → 문의 행 잠금(없으면 {@link #TARGET_INVALID}) →
+     * 문의 주인 계정의 상태({@code ownerUsable}, 삭제가 시작됐으면 {@link #TARGET_INVALID}) → 지금 상태에서의 전이 재검사 →
+     * 조건부 UPDATE 한 문장(첫 {@code ANSWERED}가 첫 답변 시각·목표 달성 여부를 쓴다) → {@code COMPLETED}({@code details}는
+     * 상태·reference digest·전이 시각뿐이다).
+     *
+     * @param ownerUsable 문의 주인 계정이 지금 쓸 수 있는가. 계정 상태는 identity의 사실이라 루트가 공개 API로 본다
+     * @throws IllegalStateException 열린 트랜잭션이 없을 때
+     */
+    InquiryCompletion completeInquiry(Envelope envelope, Inquiry inquiry, String correlationId,
+            BooleanSupplier finalAuthority, java.util.function.Predicate<UUID> ownerUsable);
 
     /** 해제 뒤 기대하는 단계(Story 3.4). 남는 제한을 본 호출자가 원장 잠금 아래에서 만든다. */
     record LiftExpectation(List<String> reopenedStages, List<String> stillBlockedStages) {}

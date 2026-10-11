@@ -1,8 +1,14 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactElement } from 'react'
 
-import type { ActiveRestriction, AuditEntry, NoticeIncident } from '../session/operatorApi'
+import type {
+  ActiveRestriction,
+  AuditEntry,
+  NoticeIncident,
+  OperatorInquiry,
+} from '../session/operatorApi'
 
 import { OperatorExportDialog } from '../components/OperatorExportDialog'
+import { OperatorInquiryDialog } from '../components/OperatorInquiryDialog'
 import { OperatorNoticeDialog } from '../components/OperatorNoticeDialog'
 import { OperatorRecoveryDialog } from '../components/OperatorRecoveryDialog'
 import { OperatorRestrictionDialog } from '../components/OperatorRestrictionDialog'
@@ -22,6 +28,7 @@ import {
 import { containsForbiddenCopy } from '../content/copyRules'
 import { entryContent } from '../content/entry'
 import {
+  businessMinutesText,
   CALCULATION_POLICY_TARGET,
   DEPLOY_VERSION_MAX_LENGTH,
   featureLabel,
@@ -30,6 +37,12 @@ import {
   formatOperatorTime,
   GLOBAL_TARGET,
   incidentOptionLabel,
+  INQUIRY_ANSWER_MAX_LENGTH,
+  INQUIRY_FILTER_STATUSES,
+  inquiryCategoryText,
+  inquiryNextStatuses,
+  inquiryStatusText,
+  inquiryTargetMetText,
   ledgerCodeLabel,
   NEW_INCIDENT,
   NOTICE_MESSAGE_MAX_LENGTH,
@@ -52,7 +65,9 @@ import {
   signalReasonLabel,
   smokeStatusLabel,
   stageLabel,
+  UPDATE_INQUIRY_COMMAND,
   type FollowUpNoticeStatus,
+  type InquiryNextStatus,
   type RecoveryCondition,
   type RestrictionFeature,
   type RestrictionScope,
@@ -66,6 +81,7 @@ import {
   type AuditFilter,
 } from '../session/useOperatorAudit'
 import { useOperatorExport } from '../session/useOperatorExport'
+import { useOperatorInquiry } from '../session/useOperatorInquiry'
 import { useOperatorNotice } from '../session/useOperatorNotice'
 import { useOperatorRecovery } from '../session/useOperatorRecovery'
 import { useOperatorRestriction } from '../session/useOperatorRestriction'
@@ -277,6 +293,89 @@ function IncidentRow({ incident }: { readonly incident: NoticeIncident }): React
   )
 }
 
+/**
+ * 문의 하나(Story 3.6, 최소화한 목록). 본문·답변이 없고 회신 이메일은 가린 값이다. 상태·달성 여부는 글자로 말한다 — 색만으로
+ * 가르지 않는다. `상세 보기`가 본문을 연다.
+ */
+function InquiryRow({
+  disabled,
+  inquiry,
+  onSelect,
+}: {
+  readonly inquiry: OperatorInquiry
+  readonly disabled: boolean
+  readonly onSelect: () => void
+}): ReactElement {
+  const columns = copy.inquiry.columns
+  return (
+    <li className={styles.entry}>
+      <div className={styles.entryRow}>
+        <span className={styles.term}>{columns.reference}</span>
+        <span className={styles.value}>{inquiry.reference}</span>
+        <span className={styles.term}>{columns.status}</span>
+        <span className={`${styles.value ?? ''} ${styles.outcome ?? ''}`}>
+          {inquiryStatusText(inquiry.status)}
+        </span>
+        <span className={styles.term}>{columns.category}</span>
+        <span className={styles.value}>{inquiryCategoryText(inquiry.category)}</span>
+      </div>
+      <div className={styles.entryRow}>
+        <span className={styles.term}>{columns.title}</span>
+        <span className={styles.value}>{inquiry.title}</span>
+      </div>
+      <div className={styles.entryRow}>
+        <span className={styles.term}>{columns.receivedAt}</span>
+        <span className={styles.value}>{noticeTime(inquiry.receivedAt)}</span>
+        <span className={styles.term}>{columns.targetAt}</span>
+        <span className={styles.value}>
+          {inquiry.targetAt === null ? copy.inquiry.targetPending : noticeTime(inquiry.targetAt)}
+        </span>
+      </div>
+      <div className={styles.entryRow}>
+        <span className={styles.term}>{columns.firstAnsweredAt}</span>
+        <span className={styles.value}>
+          {inquiry.firstAnsweredAt === null ? '-' : noticeTime(inquiry.firstAnsweredAt)}
+        </span>
+        <span className={styles.term}>{columns.targetMet}</span>
+        <span className={styles.value}>{inquiryTargetMetText(inquiry.targetMet)}</span>
+      </div>
+      <div className={styles.entryRow}>
+        <span className={styles.term}>{columns.contact}</span>
+        <span className={styles.value}>
+          {copy.inquiry.contactLabels[inquiry.contact] ?? inquiry.contact}
+        </span>
+        {inquiry.replyEmail === null ? null : (
+          <>
+            <span className={styles.term}>{columns.replyEmail}</span>
+            <span className={styles.value}>{inquiry.replyEmail}</span>
+          </>
+        )}
+      </div>
+      <button
+        aria-disabled={disabled}
+        className={styles.button}
+        onClick={() => {
+          if (!disabled) onSelect()
+        }}
+        type="button"
+      >
+        {copy.inquiry.select(inquiry.reference)}
+      </button>
+    </li>
+  )
+}
+
+/** 오늘(KST)의 `YYYY-MM-DD`. 집계 기간의 기본값이다. */
+function kstToday(offsetDays = 0): string {
+  const shifted = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000)
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(shifted)
+}
+
 /** `datetime-local` 입력을 서울 시각(KST)으로 읽어 ISO-8601로. 브라우저 시간대를 쓰지 않는다. 읽을 수 없으면 `null`이다. */
 function nextUpdateIso(value: string): string | null {
   return kstInputToIso(value)
@@ -348,9 +447,9 @@ export function OperatorScreen(): ReactElement {
   const [restrictionTarget, setRestrictionTarget] = useState(GLOBAL_TARGET)
   const [restrictionReason, setRestrictionReason] = useState('')
   /** 화면의 단일 status가 말할 마지막 조작. 네 명령의 끝난 상태가 함께 남아도 사용자가 마지막에 누른 쪽을 말한다. */
-  const [lastCommand, setLastCommand] = useState<'export' | 'notice' | 'recovery' | 'restriction'>(
-    'export',
-  )
+  const [lastCommand, setLastCommand] = useState<
+    'export' | 'inquiry' | 'notice' | 'recovery' | 'restriction'
+  >('export')
   // 제한 복구(Story 3.4): 활성 목록에서 고른 제한 하나와 그 증거 입력. 값은 메모리에만 있다.
   const recovering = useOperatorRecovery(csrfToken, restricting.reloadList)
   const [chosenRecovery, setRecoveryTarget] = useState<ActiveRestriction | null>(null)
@@ -401,12 +500,38 @@ export function OperatorScreen(): ReactElement {
     : 0
   // 운영자 한 줄도 사용자 화면에 나간다. 화면 카피 금지 표현이 있으면 미리 막는다(서버도 같은 목록으로 거절한다).
   const noticeMessageForbidden = containsForbiddenCopy(noticeMessage)
+  /*
+   * 문의 처리(Story 3.6): 문의 목록은 command 권한이 제한 목록으로 확인된 뒤에만 읽는다. 고른 문의 하나의 상세에서만 본문이
+   * 보이고, 그 상세 아래에서 상태·답변을 준비한다. 입력은 메모리에만 있다.
+   */
+  const inquiring = useOperatorInquiry(ready && restricting.list.everLoaded, csrfToken)
+  const [chosenInquiryStatus, setInquiryStatus] = useState<InquiryNextStatus | null>(null)
+  const [inquiryLookup, setInquiryLookup] = useState('')
+  const [inquiryAnswer, setInquiryAnswer] = useState('')
+  const [inquiryReason, setInquiryReason] = useState('')
+  const [metricsFrom, setMetricsFrom] = useState(() => kstToday(-30))
+  const [metricsTo, setMetricsTo] = useState(() => kstToday())
+  const selectedInquiry = inquiring.detail.status === 'idle' ? null : inquiring.detail.reference
+  /*
+   * 처리 폼의 상태 선택은 지금 상태에서 갈 수 있는 다음 전이만이다. 고른 값이 그 안에 없으면(다른 문의를 골랐거나 상태가
+   * 바뀌었다) 첫 전이로 접는다. 해결된 문의는 고를 것이 없다.
+   */
+  const nextInquiryStatuses =
+    inquiring.detail.status === 'loaded'
+      ? inquiryNextStatuses(inquiring.detail.value.summary.status)
+      : []
+  const inquiryStatus: InquiryNextStatus | null =
+    chosenInquiryStatus !== null && nextInquiryStatuses.includes(chosenInquiryStatus)
+      ? chosenInquiryStatus
+      : (nextInquiryStatuses[0] ?? null)
 
   const resultRef = useRef<HTMLHeadingElement>(null)
   const noticeResultRef = useRef<HTMLHeadingElement>(null)
   const restrictionResultRef = useRef<HTMLHeadingElement>(null)
   const recoveryHeadingRef = useRef<HTMLHeadingElement>(null)
   const recoveryResultRef = useRef<HTMLHeadingElement>(null)
+  const inquiryDetailRef = useRef<HTMLHeadingElement>(null)
+  const inquiryResultRef = useRef<HTMLHeadingElement>(null)
 
   // 완료의 결과는 사용자가 누른 조작의 결과다 — 그 제목으로 초점을 옮긴다(커밋과 함께, layout effect).
   const completed = exporting.phase === 'completed'
@@ -440,6 +565,18 @@ export function OperatorScreen(): ReactElement {
       noticeResultRef.current?.focus()
     }
   }, [published])
+  // 행의 `상세 보기`를 누른 결과는 문의 상세다 — 그 제목으로 초점을 옮긴다.
+  useLayoutEffect(() => {
+    if (selectedInquiry !== null) {
+      inquiryDetailRef.current?.focus()
+    }
+  }, [selectedInquiry])
+  const inquiryRecorded = inquiring.phase === 'completed'
+  useLayoutEffect(() => {
+    if (inquiryRecorded) {
+      inquiryResultRef.current?.focus()
+    }
+  }, [inquiryRecorded])
 
   // 서버가 세션이 끝났다고 답했다. 만료의 결과는 이동 하나다(`useSessionGate`와 같은 규칙).
   const sessionEnded =
@@ -448,8 +585,10 @@ export function OperatorScreen(): ReactElement {
     restricting.sessionEnded ||
     recovering.sessionEnded ||
     noticing.sessionEnded ||
+    inquiring.sessionEnded ||
     restricting.list.status === 'unauthenticated' ||
     noticing.list.status === 'unauthenticated' ||
+    inquiring.list.status === 'unauthenticated' ||
     lookup.lookup.status === 'unauthenticated'
   useLayoutEffect(() => {
     if (sessionEnded) {
@@ -489,13 +628,20 @@ export function OperatorScreen(): ReactElement {
     (recovering.phase === 'armed' || recovering.phase === 'confirming')
   const noticeDialogOpen =
     noticing.prepared !== null && (noticing.phase === 'armed' || noticing.phase === 'confirming')
+  const inquiryDialogOpen =
+    inquiring.prepared !== null && (inquiring.phase === 'armed' || inquiring.phase === 'confirming')
   const dialogOpen =
-    exportDialogOpen || restrictionDialogOpen || recoveryDialogOpen || noticeDialogOpen
+    exportDialogOpen ||
+    restrictionDialogOpen ||
+    recoveryDialogOpen ||
+    noticeDialogOpen ||
+    inquiryDialogOpen
   const busy =
     exporting.busy ||
     restricting.busy ||
     recovering.busy ||
     noticing.busy ||
+    inquiring.busy ||
     reauthentication.pending ||
     signOut.pending ||
     dialogOpen
@@ -515,6 +661,12 @@ export function OperatorScreen(): ReactElement {
       ? recoveringStillOpen === 0
       : noticeCovers.length > 0 && nextUpdateIso(noticeNext) !== null)
 
+  const canInquire =
+    inquiring.detail.status === 'loaded' &&
+    inquiryStatus !== null &&
+    inquiryReason.trim() !== '' &&
+    (inquiryStatus !== 'ANSWERED' || inquiryAnswer.trim() !== '')
+
   // 운영자 제어는 운영자임이 한 번 확인된 뒤에만 그린다. 첫 조회의 실패는 fail-closed다.
   /*
    * 두 영역은 각자의 조회로 판정한다(Story 3.2). 감사 영역(감사 원장·내보내기)은 감사 조회를 한 번이라도 읽은 뒤에만,
@@ -529,6 +681,10 @@ export function OperatorScreen(): ReactElement {
   const noticeVisible =
     restrictionVisible &&
     (noticing.list.everLoaded || (listLoaded && noticing.list.status === 'failed'))
+  // 문의 영역(Story 3.6)도 제한 영역이 보인 뒤, 문의 목록을 한 번이라도 읽었거나 그 읽기만 실패했을 때 그린다.
+  const inquiryVisible =
+    restrictionVisible &&
+    (inquiring.list.everLoaded || (listLoaded && inquiring.list.status === 'failed'))
   const operatorVisible = auditVisible || restrictionVisible
   const settled = audit.view.status !== 'checking' && restricting.list.status !== 'checking'
   const loadFailed =
@@ -545,7 +701,9 @@ export function OperatorScreen(): ReactElement {
         ? recovering.uncertainOperationId
         : lastCommand === 'notice'
           ? noticing.uncertainOperationId
-          : exporting.uncertainOperationId
+          : lastCommand === 'inquiry'
+            ? inquiring.uncertainOperationId
+            : exporting.uncertainOperationId
   const operationValue =
     !operationEdited && uncertainOperationId !== null ? uncertainOperationId : operationInput
   const canPrepare = filter.from !== '' && filter.to !== '' && reason.trim() !== ''
@@ -591,7 +749,8 @@ export function OperatorScreen(): ReactElement {
               exporting.busy ||
               restricting.busy ||
               recovering.busy ||
-              noticing.busy
+              noticing.busy ||
+              inquiring.busy
             }
             aria-live="polite"
             className={styles.notice}
@@ -609,7 +768,9 @@ export function OperatorScreen(): ReactElement {
                     ? recoverySentence(recovering)
                     : lastCommand === 'notice'
                       ? noticeSentence(noticing)
-                      : exportSentence(exporting),
+                      : lastCommand === 'inquiry'
+                        ? inquirySentence(inquiring)
+                        : exportSentence(exporting),
                 lookup.lookup.status === 'loading',
                 audit.view,
                 auditVisible,
@@ -1545,6 +1706,438 @@ export function OperatorScreen(): ReactElement {
                 </section>
               ) : null}
 
+              {inquiryVisible ? (
+                <section aria-labelledby={copy.inquiry.id} className={styles.section}>
+                  <h2 className={styles.sectionHeading} id={copy.inquiry.id}>
+                    {copy.inquiry.heading}
+                  </h2>
+                  <p>{copy.inquiry.body}</p>
+
+                  <form
+                    className={styles.form}
+                    onSubmit={(event) => {
+                      // reference로 바로 연다 — 목록 상한 밖의 문의도 열 수 있다.
+                      event.preventDefault()
+                      const reference = inquiryLookup.trim().toUpperCase()
+                      if (reference === '' || busy) return
+                      if (reference !== selectedInquiry) {
+                        setInquiryAnswer('')
+                        setInquiryReason('')
+                        setInquiryStatus(null)
+                      }
+                      inquiring.select(reference)
+                    }}
+                  >
+                    <div className={styles.field}>
+                      <label className={styles.label} htmlFor="operator-inquiry-filter">
+                        {copy.inquiry.filterLabel}
+                      </label>
+                      <select
+                        className={styles.input}
+                        id="operator-inquiry-filter"
+                        onChange={(event) => {
+                          inquiring.filterList(
+                            event.target.value === '' ? null : event.target.value,
+                          )
+                        }}
+                        value={inquiring.listFilter ?? ''}
+                      >
+                        <option value="">{copy.inquiry.filterAll}</option>
+                        {INQUIRY_FILTER_STATUSES.map((status) => (
+                          <option key={status} value={status}>
+                            {inquiryStatusText(status)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className={styles.field}>
+                      <label className={styles.label} htmlFor="operator-inquiry-lookup">
+                        {copy.inquiry.lookupLabel}
+                      </label>
+                      <input
+                        autoComplete="off"
+                        className={styles.input}
+                        id="operator-inquiry-lookup"
+                        onChange={(event) => {
+                          setInquiryLookup(event.target.value)
+                        }}
+                        spellCheck={false}
+                        type="text"
+                        value={inquiryLookup}
+                      />
+                    </div>
+                    <button className={styles.button} type="submit">
+                      {copy.inquiry.lookupButton}
+                    </button>
+                  </form>
+
+                  <h3 className={styles.label} id="operator-inquiry-list">
+                    {copy.inquiry.listHeading}
+                  </h3>
+                  {inquiring.list.status === 'failed' ? (
+                    <p className={styles.empty}>{copy.inquiry.failed}</p>
+                  ) : null}
+                  {inquiring.list.items.length === 0 ? (
+                    inquiring.list.status === 'loaded' ? (
+                      <p className={styles.empty}>{copy.inquiry.empty}</p>
+                    ) : null
+                  ) : (
+                    <ol aria-labelledby="operator-inquiry-list" className={styles.list}>
+                      {inquiring.list.items.map((inquiry) => (
+                        <InquiryRow
+                          disabled={busy}
+                          inquiry={inquiry}
+                          key={inquiry.reference}
+                          onSelect={() => {
+                            // 다른 문의를 고르면 그 문의의 입력(상태 선택 포함)으로 새로 시작한다.
+                            if (inquiry.reference !== selectedInquiry) {
+                              setInquiryAnswer('')
+                              setInquiryReason('')
+                              setInquiryStatus(null)
+                            }
+                            inquiring.select(inquiry.reference)
+                          }}
+                        />
+                      ))}
+                    </ol>
+                  )}
+                  <button
+                    aria-disabled={inquiring.list.loading}
+                    className={styles.button}
+                    onClick={() => {
+                      if (!inquiring.list.loading) inquiring.reloadList()
+                    }}
+                    type="button"
+                  >
+                    {copy.inquiry.reload}
+                  </button>
+
+                  {selectedInquiry === null ? null : (
+                    <div
+                      aria-labelledby={copy.inquiry.detail.id}
+                      className={styles.result}
+                      role="group"
+                    >
+                      <h3
+                        className={styles.label}
+                        id={copy.inquiry.detail.id}
+                        ref={inquiryDetailRef}
+                        tabIndex={-1}
+                      >
+                        {copy.inquiry.detail.heading} {selectedInquiry}
+                      </h3>
+                      {inquiring.detail.status === 'loading' ? (
+                        <p className={styles.empty}>{copy.inquiry.detail.loading}</p>
+                      ) : inquiring.detail.status === 'notFound' ? (
+                        <p className={styles.empty}>{copy.inquiry.detail.notFound}</p>
+                      ) : inquiring.detail.status === 'failed' ? (
+                        <p className={styles.empty}>{copy.inquiry.detail.failed}</p>
+                      ) : inquiring.detail.status === 'loaded' ? (
+                        <>
+                          <p className={styles.term}>{copy.inquiry.columns.status}</p>
+                          <p className={styles.value}>
+                            {inquiryStatusText(inquiring.detail.value.summary.status)}
+                          </p>
+                          <p className={styles.term}>{copy.inquiry.columns.title}</p>
+                          <p className={styles.value}>{inquiring.detail.value.summary.title}</p>
+                          <p className={styles.term}>{copy.inquiry.detail.description}</p>
+                          <p className={`${styles.value ?? ''} ${styles.preserved ?? ''}`}>
+                            {inquiring.detail.value.description}
+                          </p>
+                          {inquiring.detail.value.replyEmail === null ? null : (
+                            <>
+                              {/* 원문은 상세에만 있다 — 운영자가 자기 메일로 회신하는 용도다. */}
+                              <p className={styles.term}>{copy.inquiry.detail.replyEmail}</p>
+                              <p className={styles.value}>{inquiring.detail.value.replyEmail}</p>
+                            </>
+                          )}
+                          {inquiring.detail.value.answer === null ? null : (
+                            <>
+                              <p className={styles.term}>{copy.inquiry.detail.answer}</p>
+                              <p className={`${styles.value ?? ''} ${styles.preserved ?? ''}`}>
+                                {inquiring.detail.value.answer}
+                              </p>
+                            </>
+                          )}
+
+                          {inquiryStatus === null ? (
+                            <p className={styles.empty}>{copy.inquiry.noNextStatus}</p>
+                          ) : (
+                            <>
+                              <form
+                                className={styles.form}
+                                onSubmit={(event) => {
+                                  // 폼은 fetch로만 보낸다. `form-action 'none'` CSP를 유지한다.
+                                  event.preventDefault()
+                                }}
+                              >
+                                <div className={styles.field}>
+                                  <label className={styles.label} htmlFor="operator-inquiry-status">
+                                    {copy.inquiry.statusLabel}
+                                  </label>
+                                  <select
+                                    className={styles.input}
+                                    id="operator-inquiry-status"
+                                    onChange={(event) => {
+                                      setInquiryStatus(event.target.value as InquiryNextStatus)
+                                    }}
+                                    value={inquiryStatus}
+                                  >
+                                    {nextInquiryStatuses.map((status) => (
+                                      <option key={status} value={status}>
+                                        {inquiryStatusText(status)}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                                {inquiryStatus === 'ANSWERED' ? (
+                                  <div className={styles.wideField}>
+                                    <label
+                                      className={styles.label}
+                                      htmlFor="operator-inquiry-answer"
+                                    >
+                                      {copy.inquiry.answerLabel}
+                                    </label>
+                                    <textarea
+                                      aria-describedby="operator-inquiry-answer-help"
+                                      className={styles.textarea}
+                                      id="operator-inquiry-answer"
+                                      maxLength={INQUIRY_ANSWER_MAX_LENGTH}
+                                      onChange={(event) => {
+                                        setInquiryAnswer(event.target.value)
+                                      }}
+                                      rows={5}
+                                      value={inquiryAnswer}
+                                    />
+                                    <p className={styles.help} id="operator-inquiry-answer-help">
+                                      {copy.inquiry.answerHelp}
+                                    </p>
+                                  </div>
+                                ) : null}
+                                <div className={styles.wideField}>
+                                  <label className={styles.label} htmlFor="operator-inquiry-reason">
+                                    {copy.inquiry.reasonLabel}
+                                  </label>
+                                  <input
+                                    aria-describedby="operator-inquiry-reason-help"
+                                    autoComplete="off"
+                                    className={styles.input}
+                                    id="operator-inquiry-reason"
+                                    maxLength={REASON_MAX_LENGTH}
+                                    onChange={(event) => {
+                                      setInquiryReason(event.target.value)
+                                    }}
+                                    type="text"
+                                    value={inquiryReason}
+                                  />
+                                  <p className={styles.help} id="operator-inquiry-reason-help">
+                                    {copy.inquiry.reasonHelp}
+                                  </p>
+                                </div>
+                              </form>
+                              <button
+                                aria-disabled={busy || !canInquire}
+                                className={styles.dangerButton}
+                                id={copy.inquiry.startId}
+                                onClick={() => {
+                                  if (busy || !canInquire) {
+                                    return
+                                  }
+                                  setLastCommand('inquiry')
+                                  inquiring.prepare({
+                                    reference: selectedInquiry,
+                                    status: inquiryStatus,
+                                    reason: inquiryReason.trim(),
+                                    answer:
+                                      inquiryStatus === 'ANSWERED' ? inquiryAnswer.trim() : null,
+                                  })
+                                }}
+                                type="button"
+                              >
+                                {copy.inquiry.start}
+                              </button>
+                            </>
+                          )}
+                        </>
+                      ) : null}
+                    </div>
+                  )}
+
+                  {inquiring.reauthRequired && lastCommand === 'inquiry' ? (
+                    <div className={styles.result}>
+                      <p className={styles.label}>{copy.inquiry.reauthLabel}</p>
+                      <div className={reauthStyles.providerList}>
+                        {SIGN_IN_PROVIDERS.map((provider) => (
+                          <button
+                            aria-disabled={busy}
+                            className={PROVIDER_BUTTON_CLASS[provider]}
+                            key={provider}
+                            onClick={() => {
+                              if (busy) return
+                              reauthentication.requestReauthentication(provider)
+                            }}
+                            type="button"
+                          >
+                            <ProviderMark provider={provider} />
+                            <span>{authContent.settings.reauth.labels[provider]}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <p className={styles.help}>{authContent.reauth.boundary}</p>
+                    </div>
+                  ) : null}
+
+                  {inquiring.completed === null ? null : (
+                    <div
+                      aria-labelledby={copy.inquiry.result.id}
+                      className={styles.result}
+                      role="group"
+                    >
+                      <h3
+                        className={styles.label}
+                        id={copy.inquiry.result.id}
+                        ref={inquiryResultRef}
+                        tabIndex={-1}
+                      >
+                        {copy.inquiry.result.heading}
+                      </h3>
+                      <p>
+                        {copy.inquiry.result.status}:{' '}
+                        {inquiryStatusText(inquiring.completed.status)}
+                      </p>
+                      <p>
+                        {copy.inquiry.result.operation}: {inquiring.completed.operationId}
+                      </p>
+                      <p>
+                        {copy.inquiry.result.transitionedAt}:{' '}
+                        {noticeTime(inquiring.completed.transitionedAt)}
+                      </p>
+                    </div>
+                  )}
+
+                  <div
+                    aria-labelledby={copy.inquiry.metrics.id}
+                    className={styles.result}
+                    role="group"
+                  >
+                    <h3 className={styles.label} id={copy.inquiry.metrics.id}>
+                      {copy.inquiry.metrics.heading}
+                    </h3>
+                    <p className={styles.help}>{copy.inquiry.metrics.body}</p>
+                    <form
+                      className={styles.form}
+                      onSubmit={(event) => {
+                        event.preventDefault()
+                        inquiring.loadMetrics(metricsFrom, metricsTo)
+                      }}
+                    >
+                      <div className={styles.field}>
+                        <label className={styles.label} htmlFor="operator-inquiry-metrics-from">
+                          {copy.inquiry.metrics.fromLabel}
+                        </label>
+                        <input
+                          className={styles.input}
+                          id="operator-inquiry-metrics-from"
+                          onChange={(event) => {
+                            setMetricsFrom(event.target.value)
+                          }}
+                          type="date"
+                          value={metricsFrom}
+                        />
+                      </div>
+                      <div className={styles.field}>
+                        <label className={styles.label} htmlFor="operator-inquiry-metrics-to">
+                          {copy.inquiry.metrics.toLabel}
+                        </label>
+                        <input
+                          className={styles.input}
+                          id="operator-inquiry-metrics-to"
+                          onChange={(event) => {
+                            setMetricsTo(event.target.value)
+                          }}
+                          type="date"
+                          value={metricsTo}
+                        />
+                      </div>
+                      <button className={styles.button} type="submit">
+                        {copy.inquiry.metrics.run}
+                      </button>
+                    </form>
+                    {inquiring.metrics.status === 'loading' ? (
+                      <p className={styles.empty}>{copy.inquiry.metrics.loading}</p>
+                    ) : inquiring.metrics.status === 'failed' ? (
+                      <p className={styles.empty}>{copy.inquiry.metrics.failed}</p>
+                    ) : inquiring.metrics.status === 'loaded' ? (
+                      <>
+                        {inquiring.metrics.value.purgeHorizon === null ? null : (
+                          <p className={styles.help}>
+                            {copy.inquiry.metrics.purgeHorizon(
+                              noticeTime(inquiring.metrics.value.purgeHorizon),
+                            )}
+                          </p>
+                        )}
+                        <dl className={styles.metrics}>
+                          <div>
+                            <dt className={styles.term}>{copy.inquiry.metrics.due}</dt>
+                            <dd className={styles.value}>{String(inquiring.metrics.value.due)}</dd>
+                          </div>
+                          <div>
+                            <dt className={styles.term}>{copy.inquiry.metrics.met}</dt>
+                            <dd className={styles.value}>
+                              {String(inquiring.metrics.value.metTarget)}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className={styles.term}>{copy.inquiry.metrics.rate}</dt>
+                            <dd className={styles.value}>
+                              {inquiring.metrics.value.ratePercent === null
+                                ? copy.inquiry.metrics.none
+                                : `${inquiring.metrics.value.ratePercent.toFixed(1)}%`}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className={styles.term}>{copy.inquiry.metrics.pending}</dt>
+                            <dd className={styles.value}>
+                              {String(inquiring.metrics.value.calendarPending)}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className={styles.term}>{copy.inquiry.metrics.measured}</dt>
+                            <dd className={styles.value}>
+                              {String(inquiring.metrics.value.measured)}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className={styles.term}>{copy.inquiry.metrics.median}</dt>
+                            <dd className={styles.value}>
+                              {businessMinutesText(inquiring.metrics.value.medianBusinessMinutes)}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className={styles.term}>{copy.inquiry.metrics.total}</dt>
+                            <dd className={styles.value}>
+                              {businessMinutesText(inquiring.metrics.value.totalBusinessMinutes)}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className={styles.term}>{copy.inquiry.metrics.calendar}</dt>
+                            <dd className={styles.value}>
+                              {inquiring.metrics.value.calendarVersion}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className={styles.term}>{copy.inquiry.metrics.asOf}</dt>
+                            <dd className={styles.value}>
+                              {noticeTime(inquiring.metrics.value.asOf)}
+                            </dd>
+                          </div>
+                        </dl>
+                      </>
+                    ) : null}
+                  </div>
+                </section>
+              ) : null}
+
               <section aria-labelledby={copy.operation.id} className={styles.section}>
                 <h2 className={styles.sectionHeading} id={copy.operation.id}>
                   {copy.operation.heading}
@@ -1623,6 +2216,17 @@ export function OperatorScreen(): ReactElement {
           onConfirm={noticing.confirm}
           prepared={noticing.prepared}
           uncertain={noticing.uncertain}
+        />
+      ) : null}
+      {inquiryDialogOpen ? (
+        <OperatorInquiryDialog
+          answer={inquiring.answer}
+          code={inquiring.code}
+          confirming={inquiring.phase === 'confirming'}
+          onCancel={inquiring.cancel}
+          onConfirm={inquiring.confirm}
+          prepared={inquiring.prepared}
+          uncertain={inquiring.uncertain}
         />
       ) : null}
       {recoveryDialogOpen ? (
@@ -1767,6 +2371,32 @@ function noticeSentence(noticing: ReturnType<typeof useOperatorNotice>): string 
         PUBLISH_NOTICE_COMMAND,
         noticing.requestedStatus ?? undefined,
       )
+    case 'idle':
+      return null
+  }
+}
+
+/** 문의 처리의 진행·결과 문장(Story 3.6). 말할 것이 없으면 `null`. */
+function inquirySentence(inquiring: ReturnType<typeof useOperatorInquiry>): string | null {
+  switch (inquiring.phase) {
+    case 'preparing':
+      return copy.status.inquiryPreparing
+    case 'armed':
+      return inquiring.uncertain ? copy.inquiry.uncertain : copy.status.inquiryPrepared
+    case 'confirming':
+      return copy.status.inquiryConfirming
+    case 'completed': {
+      const done = inquiring.completed
+      return done === null
+        ? copy.status.inquiryConfirming
+        : copy.status.inquiryCompleted(inquiryStatusText(done.status))
+    }
+    case 'cancelled':
+      return inquiring.uncertainOperationId === null
+        ? copy.status.inquiryCancelled
+        : copy.inquiry.uncertainClosed
+    case 'refused':
+      return operatorRefusalMessage(inquiring.code, UPDATE_INQUIRY_COMMAND)
     case 'idle':
       return null
   }

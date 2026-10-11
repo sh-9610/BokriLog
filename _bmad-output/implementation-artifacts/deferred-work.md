@@ -368,3 +368,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-5-service-notice.md`
   summary: 운영자 화면의 운영 command 상태 기계(준비·확정·취소·멱등 키·불확실·목록 sequence)가 `useOperatorRestriction`·`useOperatorRecovery`·`useOperatorNotice` 세 벌로 복사됐다 — 다음 운영 command가 네 번째 사본을 만들기 전에 공통 훅 하나로 묶어야 한다.
   evidence: 3.2·3.4가 같은 패턴을 복사했고 3.5가 셋째를 더했다(리뷰 blind-hunter, 2026-10-10). AI-8이 확인 대화상자·참조 조회를 공통 부품으로 정리한 것과 같은 성격의 일이며, 스토리 범위 밖 리팩터로 따로 다룬다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-6-support-inquiry.md`
+  summary: 운영자가 잘못 쓴 답변을 정정·보충할 길(`ANSWERED → ANSWERED`)이 없고, 사용자가 답변에 후속 응답하거나 해결 여부를 표시·재개할 길도 없다 — 추가 질문은 새 문의(24시간 5건 상한 적용)로만 가능하다.
+  evidence: `update-inquiry` 전이가 `RECEIVED → IN_PROGRESS → ANSWERED → RESOLVED` 단조이고 사용자 API는 접수·조회뿐이다(리뷰 blind-hunter, 2026-10-10). 대화형 스레드는 SUPPORT-1.0 범위 밖의 새 기능이라 실제 운영 데이터가 쌓인 뒤 판단한다.

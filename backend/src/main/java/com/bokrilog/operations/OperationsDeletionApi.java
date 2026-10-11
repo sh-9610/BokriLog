@@ -12,6 +12,10 @@ import org.jspecify.annotations.Nullable;
  * digest와 사실은 둔다. 다른 사용자의 행과 SYSTEM·전역 행은 바뀌지 않는다. 행을 지우지 않는다 — 원장은 추가 전용이고,
  * 제한 행을 지우면 그 제한이 풀린다.
  *
+ * <p><b>문의(Story 3.6)는 다르다.</b> 문의 행(제목·본문·회신 이메일·답변)은 "사용자 귀속 데이터"이고 운영 사실이 아니다 —
+ * 삭제의 답은 비식별이 아니라 행 삭제다({@link #eraseInquiries}). 멱등 기록은 문의 행 자체이므로 함께 사라진다. 문의를 처리한
+ * 운영 command의 감사 행은 reference의 keyed digest만 담으므로 그대로 둔다.
+ *
  * <p>실제 계정 삭제 요청과의 통합(orchestration)은 Epic 5가 한다. 이 port는 그때 부를 모듈 경계다.
  */
 public interface OperationsDeletionApi {
@@ -32,4 +36,12 @@ public interface OperationsDeletionApi {
      * @throws IllegalStateException 비식별할 행이 있는데 digest 키를 쓸 수 없는 역할에서 불렀을 때
      */
     int eraseRestrictionTargets(@Nullable UUID userId);
+
+    /**
+     * 그 사용자의 문의를 지운다(Story 3.6 AC-6) — 문의 행과 그 행이 곧 멱등 기록이다. 다른 사용자의 문의는 바뀌지 않는다.
+     * 멱등이다.
+     *
+     * @return 이번에 지운 행 수. 이미 지웠으면 0
+     */
+    int eraseInquiries(@Nullable UUID userId);
 }

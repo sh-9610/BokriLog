@@ -64,6 +64,14 @@ final class ActorDigest {
     }
 
     /**
+     * 문의 reference의 digest(Story 3.6). 소문자 16진 64자. 운영 처리의 원장 target과 {@code details}가 이 값만 담는다 —
+     * reference 원문은 사용자 귀속 문의를 가리키므로 원장에 남기지 않는다. 다른 digest와 접두사가 달라 겹치지 않는다.
+     */
+    String ofInquiry(String reference) {
+        return digest("inquiry-reference:" + reference);
+    }
+
+    /**
      * 사람이 아닌 SYSTEM 수행자의 digest(Story 3.3). 소문자 16진 64자. 감사 원장은 모든 행에 수행자 digest를 요구하므로
      * 자동 정지 경로의 이름을 묶는다 — 운영자·target digest와 접두사가 달라 겹치지 않는다.
      */

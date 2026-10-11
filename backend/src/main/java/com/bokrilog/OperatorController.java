@@ -6,6 +6,7 @@ import com.bokrilog.operations.OperatorCommandApi;
 import com.bokrilog.operations.OperatorPermission;
 import com.bokrilog.operations.RestrictionFeature;
 import com.bokrilog.operations.ServiceNoticeApi;
+import com.bokrilog.operations.SupportInquiryApi;
 import com.bokrilog.sync.IdempotencyKey;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.servlet.http.HttpServletRequest;
@@ -72,6 +73,14 @@ import org.springframework.web.bind.annotation.RestController;
  *       incidentId, version, status, publishedAt}}이다.
  *   <li>{@code GET /api/operator/notices}(command 권한, Story 3.5): 최근 사건과 그 버전 이력(읽기 전용), 그리고 지원 연락처가
  *       설정됐는지({@code supportContactConfigured}).
+ *   <li>Story 3.6의 문의 처리 command {@code update-inquiry}도 같은 세 경로다. 준비 본문은 {@code {reference, status, reason,
+ *       answer}}이고 응답 {@code impact}는 {@code {reference, currentStatus, nextStatus, targetAt, answerProvided}}다. 확정
+ *       응답은 {@code {operationId, outcome, command, status, transitionedAt}}이다(reference·답변 원문 없음).
+ *   <li>{@code GET /api/operator/inquiries?status}(command 권한, Story 3.6): 최소화한 문의 목록 — 범주·제목·상태·접수·목표·
+ *       첫 답변·달성 여부와 마스킹한 회신 이메일. 미해결이 먼저이고 {@code status}로 거른다. 본문과 회신 이메일 원문은
+ *       {@code GET /api/operator/inquiries/{reference}}에서만 보인다.
+ *       {@code GET /api/operator/inquiries/metrics?from&to}는 그 기간(KST 날짜, 양 끝 포함)의 답변 목표 달성 수·처리 영업시간을
+ *       돌려준다. 읽을 수 없는 기간은 400이다.
  * </ul>
  *
  * <p>거절은 공통 오류 모양이다: 400 본문 모양, 403 {@code REAUTHENTICATION_REQUIRED}(준비)·
@@ -95,6 +104,12 @@ class OperatorController {
 
     /** 공지 사건 목록(Story 3.5). command 권한이다. */
     static final String NOTICES_PATH = AuthSecurityConfig.OPERATOR_API_PATH + "/notices";
+
+    /** 문의 목록·상세·집계(Story 3.6). command 권한이다. */
+    static final String INQUIRIES_PATH = AuthSecurityConfig.OPERATOR_API_PATH + "/inquiries";
+
+    /** 문의 집계의 하위 경로. reference 모양({@code Q-…})과 겹치지 않는다. */
+    static final String INQUIRY_METRICS_PATH = INQUIRIES_PATH + "/metrics";
 
     static final String CONFIRM_SEGMENT = "confirm";
 
@@ -172,7 +187,20 @@ class OperatorController {
             Map.entry(OperatorCommandApi.INCIDENT_CLOSED, new Refusal(HttpStatus.CONFLICT,
                     "복구로 닫힌 사건이라 새 공지를 발행하지 않았습니다. 새 사건으로 발행해 주세요.")),
             Map.entry(OperatorCommandApi.NEXT_UPDATE_INVALID, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
-                    "다음 안내 시각은 지금보다 미래이고 7일 이내여야 합니다. 복구 공지에는 다음 안내 시각을 넣지 않습니다.")));
+                    "다음 안내 시각은 지금보다 미래이고 7일 이내여야 합니다. 복구 공지에는 다음 안내 시각을 넣지 않습니다.")),
+            Map.entry(OperatorCommandApi.INQUIRY_TRANSITION_INVALID, new Refusal(HttpStatus.CONFLICT,
+                    "이 문의를 그 상태로 옮길 수 없습니다. 상태는 접수 → 처리 중 → 답변 완료 → 해결 순서로만 바뀌고 답변 완료를 "
+                            + "건너뛸 수 없습니다. 문의 목록을 다시 조회해 주세요.")),
+            Map.entry(OperatorCommandApi.INQUIRY_ANSWER_REQUIRED, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "답변 완료로 옮기려면 답변을 입력해 주세요.")),
+            Map.entry(OperatorCommandApi.INQUIRY_ANSWER_INVALID, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "답변은 1000자 이내여야 하고 답변 완료로 옮길 때만 실을 수 있습니다.")),
+            Map.entry(OperatorCommandApi.INQUIRY_SENSITIVE_CONTENT, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
+                    "답변에 자격정보·지갑 주소·금융값·이메일처럼 보이는 값이 있어 받지 않았습니다. 그 값을 빼고 다시 입력해 주세요.")));
+
+    /** 문의 처리의 {@code TARGET_INVALID} 문장. 대상이 문의 reference다(Story 3.6). */
+    static final String INQUIRY_TARGET_INVALID = "문의를 찾지 못했습니다. 보존 기간이 지났거나 삭제된 문의일 수 있습니다. 문의 "
+            + "목록을 다시 조회해 주세요.";
 
     /** 공지 발행의 {@code REASON_INVALID} 문장. 메시지 규칙이 사유 규칙보다 좁다(Story 3.5). */
     static final String NOTICE_MESSAGE_INVALID = "공지 메시지는 200자 이내의 한 줄 문장이어야 하고 이메일 주소·숫자 6자리 이상 "
@@ -212,7 +240,17 @@ class OperatorController {
      * 준비 응답의 미리보기: 제한 생성(Story 3.2)·해제(Story 3.4)·공지 발행(Story 3.5)이다. 앞의 둘은 식별자가 없고, 공지
      * 발행은 운영자가 고른 제한 ID만 되돌려 준다.
      */
-    sealed interface PreparedImpactView permits ImpactView, LiftImpactView, NoticeImpactView {}
+    sealed interface PreparedImpactView permits ImpactView, LiftImpactView, NoticeImpactView, InquiryImpactView {}
+
+    /**
+     * 문의 처리의 미리보기(Story 3.6). 답변 원문은 되돌려 주지 않는다 — 운영자가 방금 쓴 값이고 화면이 들고 있다.
+     *
+     * @param currentStatus 준비 시각의 상태
+     * @param targetAt 답변 목표 시각. 미정이면 없다
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record InquiryImpactView(String reference, @Nullable String currentStatus, String nextStatus,
+            @Nullable String targetAt, boolean answerProvided) implements PreparedImpactView {}
 
     /**
      * 공지 발행의 미리보기(Story 3.5). 영향·계속 가능 기능은 덮는 제한에서 서버가 계산했다.
@@ -252,6 +290,44 @@ class OperatorController {
     /** 공지 발행의 확정 결과(Story 3.5). 메시지 원문은 싣지 않는다 — 재생이 원장에서 온다. */
     record NoticeCompletedView(String operationId, String outcome, String command, UUID incidentId, int version,
             String status, String publishedAt) {}
+
+    /** 문의 처리의 확정 결과(Story 3.6). reference·답변 원문은 싣지 않는다 — 재생이 원장에서 오고 원장에는 digest뿐이다. */
+    record InquiryCompletedView(String operationId, String outcome, String command, String status,
+            String transitionedAt) {}
+
+    /** 운영자 목록의 문의 하나(Story 3.6). 본문·답변이 없고 회신 이메일은 마스킹했다. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record InquirySummaryView(String reference, String category, String title, String status, String receivedAt,
+            @Nullable String targetAt, String targetState, @Nullable String firstAnsweredAt, @Nullable Boolean targetMet,
+            String contact, @Nullable String replyEmail, @Nullable String resolvedAt) {
+
+        static InquirySummaryView of(SupportInquiryApi.OperatorInquiry inquiry) {
+            return new InquirySummaryView(inquiry.reference(), inquiry.category().name(), inquiry.title(),
+                    inquiry.status().name(), inquiry.receivedAt().toString(), text(inquiry.targetAt()),
+                    inquiry.targetState().name(), text(inquiry.firstAnsweredAt()), inquiry.targetMet(),
+                    inquiry.contact().name(), inquiry.maskedReplyEmail(), text(inquiry.resolvedAt()));
+        }
+    }
+
+    record InquiryListView(List<InquirySummaryView> items) {}
+
+    /**
+     * 운영자 상세(Story 3.6): 요약에 본문·답변과 회신 이메일 원문을 더한다. 원문은 운영자가 자기 메일로 회신하는 유일한 용도라
+     * 상세에만 있다(요약·목록은 마스킹).
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record InquiryDetailView(InquirySummaryView summary, String description, @Nullable String answer,
+            @Nullable String replyEmail) {}
+
+    /** 문의 집계(Story 3.6). 수만 담는다 — 달성 선언 문장이 없다. */
+    @JsonInclude(JsonInclude.Include.ALWAYS)
+    record InquiryMetricsView(String from, String to, String asOf, String calendarVersion, long due, long metTarget,
+            java.math.@Nullable BigDecimal ratePercent, long calendarPending, long measured, long totalBusinessMinutes,
+            java.math.@Nullable BigDecimal medianBusinessMinutes, @Nullable String purgeHorizon) {}
+
+    private static @Nullable String text(java.time.@Nullable Instant instant) {
+        return instant == null ? null : instant.toString();
+    }
 
     /** 공지 버전 하나(Story 3.5, 운영자 목록). */
     @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -324,6 +400,9 @@ class OperatorController {
     /** 공지 발행의 지원 연락처(Story 3.5). 목록이 설정 여부만 알린다. */
     private final SupportContact supportContact;
 
+    /** 문의 목록·상세·집계(Story 3.6). */
+    private final SupportInquiryApi inquiries;
+
     /**
      * 핸들러 안의 이중 검사. 게이트({@link OperatorGate})가 먼저 판정하지만 경로 판정이 어긋나는 날(인코딩·매핑 변경)
      * 그 검사 하나에 기대지 않는다 — 여기서도 같은 권한을 보고 같은 404를 낸다.
@@ -331,8 +410,10 @@ class OperatorController {
     private final OperatorAccess access;
 
     OperatorController(OperatorCommandService commands, OperatorAuditApi audit, OperationalRestrictionApi restrictions,
-            ServiceNoticeApi notices, SupportContact supportContact, OperatorAccess access) {
+            ServiceNoticeApi notices, SupportContact supportContact, SupportInquiryApi inquiries,
+            OperatorAccess access) {
         this.commands = commands;
+        this.inquiries = inquiries;
         this.audit = audit;
         this.restrictions = restrictions;
         this.notices = notices;
@@ -429,6 +510,87 @@ class OperatorController {
                 .body(new IncidentListView(this.supportContact.value() != null, items)), "OK", started);
     }
 
+    // ------------------------------------------------------------------ 문의(Story 3.6)
+
+    @GetMapping(path = INQUIRIES_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<?> inquiries(@RequestParam(required = false) @Nullable String status,
+            HttpServletRequest request, HttpServletResponse response) throws IOException {
+        long started = System.nanoTime();
+        String correlationId = correlationIdOf(request);
+        if (!this.access.permits(currentUserId(), Set.of(OperatorPermission.COMMAND))) {
+            return notFound("inquiries", response, started);
+        }
+        SupportInquiryApi.Status filter = null;
+        if (status != null) {
+            try {
+                filter = SupportInquiryApi.Status.valueOf(status);
+            } catch (IllegalArgumentException unknown) {
+                return answer("inquiries", badRequest(correlationId), "BAD_REQUEST", started);
+            }
+        }
+        List<InquirySummaryView> items;
+        try {
+            items = this.inquiries.recent(filter).stream().map(InquirySummaryView::of).toList();
+        } catch (RuntimeException failure) {
+            return answer("inquiries", internal(failure, correlationId), "ERROR", started);
+        }
+        return answer("inquiries", ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(new InquiryListView(items)), "OK", started);
+    }
+
+    @GetMapping(path = INQUIRY_METRICS_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<?> inquiryMetrics(@RequestParam(required = false) @Nullable String from,
+            @RequestParam(required = false) @Nullable String to, HttpServletRequest request,
+            HttpServletResponse response) throws IOException {
+        long started = System.nanoTime();
+        String correlationId = correlationIdOf(request);
+        if (!this.access.permits(currentUserId(), Set.of(OperatorPermission.COMMAND))) {
+            return notFound("inquiry-metrics", response, started);
+        }
+        LocalDate fromDate = dateOf(from);
+        LocalDate toDate = dateOf(to);
+        if (fromDate == null || toDate == null || toDate.isBefore(fromDate)
+                || java.time.temporal.ChronoUnit.DAYS.between(fromDate, toDate) + 1
+                        > SupportInquiryApi.MAX_METRICS_DAYS) {
+            return answer("inquiry-metrics", badRequest(correlationId), "BAD_REQUEST", started);
+        }
+        SupportInquiryApi.Metrics metrics;
+        try {
+            metrics = this.inquiries.metrics(fromDate, toDate);
+        } catch (RuntimeException failure) {
+            return answer("inquiry-metrics", internal(failure, correlationId), "ERROR", started);
+        }
+        return answer("inquiry-metrics", ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(new InquiryMetricsView(metrics.from().toString(), metrics.to().toString(),
+                        metrics.asOf().toString(), metrics.calendarVersion(), metrics.due(), metrics.metTarget(),
+                        metrics.ratePercent(), metrics.calendarPending(), metrics.measured(),
+                        metrics.totalBusinessMinutes(), metrics.medianBusinessMinutes(),
+                        text(metrics.purgeHorizon()))), "OK", started);
+    }
+
+    @GetMapping(path = INQUIRIES_PATH + "/{reference}", produces = MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<?> inquiry(@PathVariable String reference, HttpServletRequest request,
+            HttpServletResponse response) throws IOException {
+        long started = System.nanoTime();
+        String correlationId = correlationIdOf(request);
+        if (!this.access.permits(currentUserId(), Set.of(OperatorPermission.COMMAND))) {
+            return notFound("inquiry", response, started);
+        }
+        java.util.Optional<SupportInquiryApi.OperatorInquiryDetail> found;
+        try {
+            found = this.inquiries.detail(reference);
+        } catch (RuntimeException failure) {
+            return answer("inquiry", internal(failure, correlationId), "ERROR", started);
+        }
+        if (found.isEmpty()) {
+            return notFound("inquiry", response, started);
+        }
+        SupportInquiryApi.OperatorInquiryDetail detail = found.get();
+        return answer("inquiry", ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(new InquiryDetailView(InquirySummaryView.of(detail.summary()), detail.description(),
+                        detail.answer(), detail.replyEmail())), "OK", started);
+    }
+
     // ------------------------------------------------------------------ 운영 command
 
     @PostMapping(path = OperatorGate.COMMANDS_PATH + "/{type}", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -520,6 +682,8 @@ class OperatorController {
             case OperatorCommandApi.ExportResult export -> new CompletedView(export.operationId(), outcome, type,
                     export.target(), export.upperSequence(), export.rowCount(), export.truncated(),
                     completed.rows().stream().map(EntryView::of).toList());
+            case OperatorCommandApi.InquiryResult inquiry -> new InquiryCompletedView(inquiry.operationId(), outcome,
+                    type, inquiry.status().name(), inquiry.transitionedAt().toString());
             case OperatorCommandApi.NoticeResult notice -> new NoticeCompletedView(notice.operationId(), outcome, type,
                     notice.incidentId(), notice.version(), notice.status().name(), notice.publishedAt().toString());
             case OperatorCommandApi.RestrictionResult restriction -> new RestrictionCompletedView(
@@ -539,6 +703,11 @@ class OperatorController {
     }
 
     private static @Nullable PreparedImpactView preparedImpact(OperatorCommandService.Preparation.Armed armed) {
+        OperatorCommandApi.Inquiry inquiry = armed.flow().inquiry();
+        if (inquiry != null) {
+            return new InquiryImpactView(inquiry.reference(), inquiry.from() == null ? null : inquiry.from().name(),
+                    inquiry.to().name(), text(inquiry.targetAt()), inquiry.answer() != null);
+        }
         OperatorCommandApi.Notice notice = armed.flow().notice();
         if (notice != null) {
             return new NoticeImpactView(armed.flow().target(), notice.version(), notice.status().name(),
@@ -632,6 +801,20 @@ class OperatorController {
             if (node.has(name)) {
                 actorClaimed = true;
                 break;
+            }
+        }
+        if (OperatorCommandApi.UPDATE_INQUIRY.equals(type)) {
+            /*
+             * 문의 처리(Story 3.6)는 자기 이름의 필드를 받는다 — reference(`reference`)가 target, 옮길 상태(`status`)가
+             * scope, 운영 사유(`reason`)가 사유, 답변(`answer`)은 따로다. 문자열이 아니면 400이고 비어 있는 것은 검증이
+             * 거절한다(422).
+             */
+            try {
+                return new OperatorCommandApi.Proposal(type, stringOrNull(node, "status"),
+                        stringOrNull(node, "reference"), reason, actorClaimed, null, null,
+                        new OperatorCommandApi.InquiryInput(stringOrNull(node, "answer")));
+            } catch (IllegalArgumentException notText) {
+                return null;
             }
         }
         if (OperatorCommandApi.PUBLISH_NOTICE.equals(type)) {
@@ -816,6 +999,9 @@ class OperatorController {
             String correlationId) {
         if (OperatorCommandApi.TARGET_INVALID.equals(code) && OperatorCommandApi.AUDIT_EXPORT.equals(command)) {
             return error(HttpStatus.UNPROCESSABLE_CONTENT, code, EXPORT_TARGET_INVALID, correlationId);
+        }
+        if (OperatorCommandApi.TARGET_INVALID.equals(code) && OperatorCommandApi.UPDATE_INQUIRY.equals(command)) {
+            return error(HttpStatus.UNPROCESSABLE_CONTENT, code, INQUIRY_TARGET_INVALID, correlationId);
         }
         if (OperatorCommandApi.PUBLISH_NOTICE.equals(command)) {
             String message = switch (code) {
