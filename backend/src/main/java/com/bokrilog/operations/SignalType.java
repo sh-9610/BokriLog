@@ -13,8 +13,9 @@ import java.util.Set;
  * 빈 신호가 판정표 장애를 타고 전역 정지로 승격하지 않게. 판정표 행의 필수 증거와 같아야 한다(시험이 맞춘다).
  *
  * <p>이번 스토리가 실제 감지 지점에 연결한 것은 넷이다({@link #RESULT_HASH_MISMATCH}·{@link
- * #PORTFOLIO_INVARIANT_VIOLATION}·{@link #SOURCE_ID_CONFLICT}·{@link #UNKNOWN_TRANSACTION_ENUM}). 나머지는 판정표에는
- * 있으나 감지 지점이 후속 스토리다.
+ * #PORTFOLIO_INVARIANT_VIOLATION}·{@link #SOURCE_ID_CONFLICT}·{@link #UNKNOWN_TRANSACTION_ENUM}). Story 3.7이 {@link
+ * #SECRET_EXPOSED}를 로그 계층에 연결했다 — 실제 구성 비밀값이 로그에 나타나면 루트 {@code LogSecretGuard}가 {@code
+ * ruleId=CONFIGURED_SECRET_IN_LOG}로 올린다. 나머지는 판정표에는 있으나 감지 지점이 후속 스토리다.
  */
 public enum SignalType {
     /** 1. 쓰기 가능 Bybit key가 저장 단계에 도달했다. */

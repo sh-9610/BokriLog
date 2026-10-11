@@ -214,12 +214,38 @@ class StatusApiTest {
         assertThat(response.body()).doesNotContain(BOOM_PATH);
         assertNoLeak(response.body());
 
-        // 로그에는 correlation ID만 남는다. 예외 메시지도 스택 프레임도 남기지 않는다.
-        assertThat(output.getAll()).contains("boomTrace123");
+        // 로그에는 correlation ID와 예외 클래스의 단순 이름(Story 3.7)만 남는다. 예외 메시지도 스택 프레임도 남기지 않는다.
+        // 응답의 correlation ID로 그 요청의 줄을 찾을 수 있다.
+        assertThat(LogLines.records(output.getAll())).anySatisfy(record -> assertThat(record)
+                .containsEntry("event", "처리하지 못한 요청").containsEntry("correlationId", "boomTrace123")
+                .containsEntry("exception", "IllegalStateException"));
         assertThat(output.getAll()).doesNotContain(UNCLASSIFIED_EXCEPTION_MESSAGE);
-        assertThat(output.getAll()).doesNotContain("IllegalStateException");
+        assertThat(output.getAll()).doesNotContain("java.lang.IllegalStateException");
         assertThat(output.getAll()).doesNotContain("at com.bokrilog.");
         assertThat(output.getAll()).doesNotContain("at org.springframework.");
+    }
+
+    @Test
+    void 서버가_만든_correlation_ID로도_500의_로그_줄을_찾는다(CapturedOutput output) throws Exception {
+        HttpResponse<String> response = send("GET", BOOM_PATH);
+        assertThat(response.statusCode()).isEqualTo(500);
+        String correlationId = correlationIdOf(response.body());
+        assertThat(correlationId).matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+        assertThat(LogLines.records(output.getAll())).anySatisfy(record -> assertThat(record)
+                .containsEntry("event", "처리하지 못한 요청").containsEntry("correlationId", correlationId));
+    }
+
+    @Test
+    void 숫자_6자리_이상이_든_클라이언트_값은_서버가_만든_값으로_바꾸고_진입점_값은_그대로_쓴다() {
+        String generated = ApiErrorHandler.correlationIdOf("acct-1234567");
+        assertThat(generated).isNotEqualTo("acct-1234567")
+                .matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+        // Nginx `$request_id`(소문자 hex 32자)는 서버가 만든 값이라 숫자가 이어져도 그대로 쓴다 — 진입점 로그와 잇는다.
+        String ingress = "0123456789abcdef0123456789abcdef";
+        assertThat(ApiErrorHandler.correlationIdOf(ingress)).isEqualTo(ingress);
+        assertThat(ApiErrorHandler.correlationIdOf("trace-12345")).isEqualTo("trace-12345");
+        assertThat(ApiErrorHandler.correlationIdOf("bad value")).isNotEqualTo("bad value");
+        assertThat(ApiErrorHandler.correlationIdOf("x".repeat(65))).hasSize(36);
     }
 
     @Test

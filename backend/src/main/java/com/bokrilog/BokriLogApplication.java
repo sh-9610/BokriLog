@@ -17,6 +17,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class BokriLogApplication {
 
     public static void main(String[] args) {
+        // 컨텍스트가 뜨기 전 스레드의 예외도 스택 대신 한 줄로 남긴다(Story 3.7, UncaughtExceptionLogging).
+        Thread.setDefaultUncaughtExceptionHandler(UncaughtExceptionLogging.HANDLER);
         SpringApplication.run(BokriLogApplication.class, args);
     }
 }

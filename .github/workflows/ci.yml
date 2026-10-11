@@ -20,7 +20,8 @@
 #   classify-changes.sh    -- 문서-only 여부 판정. `docs-only`·`reason`을 GITHUB_OUTPUT과
 #                             GITHUB_STEP_SUMMARY에 기록
 #   aggregate-results.sh   -- 선행 job 결과를 모아 병합 가능 여부 판정
-#   test-ci-scripts.sh     -- 위 세 스크립트와 이 파일의 계약 시험. changes job 안에서
+#   check-alert-rules.sh   -- 경보 규칙의 형식 계약·문법·promtool 단위시험(Story 3.7). 통합 job에서 실행한다
+#   test-ci-scripts.sh     -- 위 스크립트들과 이 파일의 계약 시험. changes job 안에서
 #                             조건 없이 실행한다
 #
 # 예외는 `변경 분류` 단계의 인라인 블록 하나다. "어느 분류기를 실행할지" 고르는 일은
@@ -349,6 +350,7 @@ jobs:
     # (CI-PLAN §10 "필수 계약을 줄여 시간을 맞추지는 않는다").
     #
     #   checkout·통합 입력 2건 내려받기                                    1분
+    #   경보 규칙 시험(promtool 내려받기·대조 + 단위시험, 수 초)          위 1분 안
     #   동일 출처 검증(docker build + `up --wait` 180s + I/O 표 단언)      5분
     #   Node 준비 + `npm ci`                                               2분
     #   Chromium headless shell 설치(`--with-deps` apt)                    2분
@@ -375,6 +377,15 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      - name: 경보 규칙 시험
+        # Story 3.7: `deploy/observability/alerts.yml`의 형식 계약(for·severity·group, 승인된 강한 신호만 strong_signal),
+        # promtool 문법 검사와 단위시험(`alerts.test.yml` — 임계값 경계·지속시간·복구·미측정). 판정은 스크립트가 소유한다.
+        # promtool은 CI·개발 전용 도구이고 스크립트가 고정 버전 배포본을 SHA-256 대조 뒤에 꺼내 쓴다. 산출물에 기대지 않으므로
+        # 내려받기보다 앞에 둔다 — 규칙이 깨졌으면 스택을 세우기 전에 끝난다. 배포본 내려받기(curl 60초·재시도 2회)가 멈춰도
+        # job 예산을 다 쓰지 않게 단계 상한을 둔다.
+        timeout-minutes: 5
+        run: bash .github/scripts/check-alert-rules.sh
+
       - name: 통합 입력 내려받기 (frontend dist)
         # 두 품질 job이 검증한 그 산출물이다. 여기서 다시 빌드하지 않는다(CI-PLAN §8).
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -392,6 +403,9 @@ jobs:
         # I/O 표 전 행, 백엔드 비가용 502/504, 로그 누출 검사를 한 번에 돈다. 로컬과 같은 명령이다.
         # `--keep-stack`은 성공 시 백엔드를 다시 띄워 건강한 스택을 남긴다. 아래 Story 1.1 회귀가
         # 그 스택을 그대로 쓰므로 compose를 두 번 세우지 않는다. 실패하면 스크립트가 스스로 정리한다.
+        env:
+          # 메트릭 공통 tag(Story 3.7). CI 스택의 수치가 개발·운영 실적과 섞이지 않게 한다.
+          BOKRILOG_ENV: ci
         run: bash deploy/compose/verify-same-origin.sh --keep-stack
 
       - name: Node 준비

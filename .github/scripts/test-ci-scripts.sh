@@ -19,6 +19,9 @@
 # 다만 지워진 단계 게이트 10회 루프는 그 단계들이 존재한다는 계약이기도 했다. 그 몫은
 # job별 단계 목록 단정이 대신한다. 없으면 `Vitest` 단계를 지워도 이 시험이 통과한다.
 #
+# Story 3.7이 네 번째 스크립트 `check-alert-rules.sh`(경보 규칙의 형식 계약·promtool 시험)를 더했다. 여기서는 가짜
+# promtool로 그 판정과 종료 코드 0/1/2를 단정한다 — 네트워크를 쓰지 않는다.
+#
 # 정본: _bmad-output/implementation-artifacts/spec-ci-foundation.md `## I/O & Edge-Case Matrix`
 #       _bmad-output/implementation-artifacts/spec-1-2-same-origin-shell.md `## Tasks & Acceptance`
 #
@@ -50,6 +53,7 @@ repo_root="$(cd "${script_dir}/../.." && pwd -P)"
 classify_script="${script_dir}/classify-changes.sh"
 verify_script="${script_dir}/verify-merge-commit.sh"
 aggregate_script="${script_dir}/aggregate-results.sh"
+alert_rules_script="${script_dir}/check-alert-rules.sh"
 workflow_file="${repo_root}/.github/workflows/ci.yml"
 
 # --------------------------------------------------------------------------
@@ -81,7 +85,8 @@ fail_setup() {
   exit 2
 }
 
-for required in "${classify_script}" "${verify_script}" "${aggregate_script}" "${workflow_file}"; do
+for required in "${classify_script}" "${verify_script}" "${aggregate_script}" "${alert_rules_script}" \
+  "${workflow_file}"; do
   if [ ! -f "${required}" ]; then
     fail_setup "${required} 가 없다."
   fi
@@ -811,6 +816,221 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# 경보 규칙 시험 스크립트(Story 3.7)
+# --------------------------------------------------------------------------
+printf '\n경보 규칙 시험 스크립트\n'
+
+# promtool 자리에 가짜를 둔다(`PROMTOOL`). 이 시험은 네트워크를 쓰지 않는다 — 실제 promtool 내려받기·대조·단위시험은
+# 통합 job의 `경보 규칙 시험` 단계가 돈다. 여기서 고정하는 것은 스크립트의 판정이다: 형식 계약, 종료 코드 0/1/2, 그리고
+# promtool을 어떤 인자로 부르는가.
+fake_promtool="${work_root}/fake-promtool"
+fake_promtool_log="${work_root}/fake-promtool.log"
+cat >"${fake_promtool}" <<'FAKE' || fail_setup '가짜 promtool을 쓰지 못했다.'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_PROMTOOL_LOG}"
+exit "${FAKE_PROMTOOL_EXIT:-0}"
+FAKE
+run_setup '가짜 promtool 실행 권한' chmod +x "${fake_promtool}"
+
+# write_rules <디렉터리> <규칙 본문>. 단위시험 파일은 내용과 무관하다(가짜 promtool이 판정한다).
+write_rules() {
+  run_setup "규칙 디렉터리 생성: $1" mkdir -p "$1"
+  printf 'groups:\n  - name: fixture\n    rules:\n%s\n' "$2" >"$1/alerts.yml" || fail_setup "규칙을 쓰지 못했다: $1"
+  printf 'rule_files:\n  - alerts.yml\ntests: []\n' >"$1/alerts.test.yml" || fail_setup "단위시험을 쓰지 못했다: $1"
+}
+
+valid_rule='      - alert: FixtureAlert
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+          group: availability
+        annotations:
+          summary: fixture'
+
+# check_alert_rules <라벨> <규칙 디렉터리> <promtool 경로> <가짜 종료 코드> <기대 종료 코드> <기대 메시지 조각>
+# promtool 경로가 비면 `PROMTOOL`을 주지 않는다 — 내려받기 경로를 탄다(아래 가짜 curl·uname이 PATH 앞에 있을 때만 쓴다).
+check_alert_rules() {
+  local label="$1" rules="$2" tool="$3" fake_exit="$4" want_status="$5" want_message="$6"
+  local log_file status
+  log_file="${work_root}/alert-rules-$((tests_run + 1)).txt"
+  : >"${fake_promtool_log}"
+  (
+    if [ -n "${tool}" ]; then
+      export PROMTOOL="${tool}"
+    else
+      unset PROMTOOL
+    fi
+    ALERT_RULES_DIR="${rules}" \
+    FAKE_PROMTOOL_EXIT="${fake_exit}" \
+    FAKE_PROMTOOL_LOG="${fake_promtool_log}" \
+    bash "${alert_rules_script}"
+  ) >"${log_file}" 2>&1
+  status=$?
+  if [ "${status}" -ne "${want_status}" ]; then
+    record_fail "${label}" "종료 코드 ${status} (기대 ${want_status}) — $(tr '\n' '|' <"${log_file}")"
+    return
+  fi
+  if [ -n "${want_message}" ] && ! grep -F -- "${want_message}" "${log_file}" >/dev/null; then
+    record_fail "${label}" "메시지에 '${want_message}'가 없다 — $(tr '\n' '|' <"${log_file}")"
+    return
+  fi
+  record_pass "${label}"
+}
+
+rules_ok="${work_root}/rules-ok"
+write_rules "${rules_ok}" "${valid_rule}"
+check_alert_rules '경보 규칙 · 형식 계약과 promtool이 통과하면 0' "${rules_ok}" "${fake_promtool}" 0 0 '경보 규칙 시험 통과'
+assert_equals '경보 규칙 · promtool을 문법 검사와 단위시험 두 번 부른다' \
+  "$(tr '\n' '|' <"${fake_promtool_log}")" 'check rules alerts.yml|test rules alerts.test.yml|'
+check_alert_rules '경보 규칙 · promtool 판정이 실패하면 1' "${rules_ok}" "${fake_promtool}" 1 1 '경보 규칙 시험 실패'
+check_alert_rules '경보 규칙 · promtool을 얻지 못하면 2' "${rules_ok}" "${work_root}/no-such-promtool" 0 2 \
+  '경보 규칙 시험 준비 실패'
+# promtool이 실행되지 못하면(126 실행 불가·127 명령 없음) 판정 실패(1)가 아니라 준비 실패(2)다.
+check_alert_rules '경보 규칙 · promtool 126은 2' "${rules_ok}" "${fake_promtool}" 126 2 '종료 코드 126'
+check_alert_rules '경보 규칙 · promtool 127은 2' "${rules_ok}" "${fake_promtool}" 127 2 '종료 코드 127'
+
+# 내려받기 경로: 가짜 `uname`·`curl`을 PATH 앞에 둔다. 네트워크를 쓰지 않는다.
+fake_bin="${work_root}/fake-bin"
+run_setup '가짜 명령 디렉터리' mkdir -p "${fake_bin}"
+cat >"${fake_bin}/uname" <<'FAKE' || fail_setup '가짜 uname을 쓰지 못했다.'
+#!/usr/bin/env bash
+case "$1" in
+  -s) printf '%s\n' "${FAKE_UNAME_S:-Linux}" ;;
+  -m) printf '%s\n' "${FAKE_UNAME_M:-x86_64}" ;;
+  *) printf '%s\n' "${FAKE_UNAME_S:-Linux}" ;;
+esac
+FAKE
+cat >"${fake_bin}/curl" <<'FAKE' || fail_setup '가짜 curl을 쓰지 못했다.'
+#!/usr/bin/env bash
+# --output <경로>에 가짜 내용을 쓰거나(FAKE_CURL=garbage) 내려받기 실패(22)로 끝난다.
+out=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '--output' ]; then out="$2"; shift; fi
+  shift
+done
+if [ "${FAKE_CURL:-fail}" = 'garbage' ] && [ -n "${out}" ]; then
+  printf 'not a prometheus archive\n' >"${out}"
+  exit 0
+fi
+printf 'curl: (22) fixture download failure\n' >&2
+exit 22
+FAKE
+run_setup '가짜 명령 실행 권한' chmod +x "${fake_bin}/uname" "${fake_bin}/curl"
+
+# check_download <라벨> <uname -s> <uname -m> <curl 동작> <기대 메시지 조각>. 기대 종료 코드는 언제나 2다.
+check_download() {
+  local label="$1" os="$2" arch="$3" curl_mode="$4" want_message="$5" cache
+  cache="${work_root}/promtool-cache-$((tests_run + 1))"
+  (
+    PATH="${fake_bin}:${PATH}" \
+    FAKE_UNAME_S="${os}" \
+    FAKE_UNAME_M="${arch}" \
+    FAKE_CURL="${curl_mode}" \
+    PROMTOOL_CACHE_DIR="${cache}" \
+    check_alert_rules "${label}" "${rules_ok}" '' 0 2 "${want_message}"
+  )
+}
+# 서브셸 안의 단정은 바깥 계수에 남지 않는다. 결과 줄을 세어 바깥에 옮긴다.
+download_log="${work_root}/download-checks.txt"
+: >"${download_log}"
+{
+  check_download '경보 규칙 · 내려받기 실패는 2' Linux x86_64 fail '내려받지 못했다'
+  check_download '경보 규칙 · checksum 불일치는 2' Linux x86_64 garbage 'checksum이 맞지 않는다'
+  check_download '경보 규칙 · 지원하지 않는 OS는 2' SunOS x86_64 fail '지원하지 않는 OS다'
+  check_download '경보 규칙 · 지원하지 않는 아키텍처는 2' Linux mips fail '지원하지 않는 아키텍처다'
+} >"${download_log}"
+while IFS= read -r download_line; do
+  case "${download_line}" in
+    '  통과  '*) record_pass "${download_line#  통과  }" ;;
+    '  실패  '*) record_fail "${download_line#  실패  }" '아래 줄 참조' ;;
+    *) [ -n "${download_line}" ] && printf '%s\n' "${download_line}" ;;
+  esac
+done <"${download_log}"
+assert_equals '경보 규칙 · 내려받기 경로 단정 넷이 모두 돌았다' "$(grep -c '^  \(통과\|실패\)  ' "${download_log}")" '4'
+
+rules_missing="${work_root}/rules-missing"
+write_rules "${rules_missing}" "${valid_rule}"
+run_setup '단위시험 파일 제거' rm -f "${rules_missing}/alerts.test.yml"
+check_alert_rules '경보 규칙 · 단위시험 파일이 없으면 2' "${rules_missing}" "${fake_promtool}" 0 2 '단위시험 파일이 없다'
+
+# 형식 계약 위반은 promtool을 부르기 전에 1이다.
+rules_no_group="${work_root}/rules-no-group"
+write_rules "${rules_no_group}" '      - alert: NoGroup
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning'
+check_alert_rules '경보 규칙 · group label이 없으면 1' "${rules_no_group}" "${fake_promtool}" 0 1 'NoGroup: group label이 없다'
+assert_equals '경보 규칙 · 형식 계약 위반은 promtool을 부르지 않는다' "$(grep -c '' "${fake_promtool_log}")" '0'
+
+rules_no_for="${work_root}/rules-no-for"
+write_rules "${rules_no_for}" '      - alert: NoFor
+        expr: up == 0
+        labels:
+          severity: critical
+          group: availability'
+check_alert_rules '경보 규칙 · for:가 없으면 1' "${rules_no_for}" "${fake_promtool}" 0 1 'NoFor: for: 지속시간이 없다'
+
+rules_strong="${work_root}/rules-strong"
+write_rules "${rules_strong}" "${valid_rule}
+      - alert: GeneralButStrong
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+          group: availability
+          strong_signal: \"true\""
+check_alert_rules '경보 규칙 · 승인되지 않은 경보의 strong_signal은 1' "${rules_strong}" "${fake_promtool}" 0 1 \
+  'GeneralButStrong: 승인되지 않은 강한 신호 경보다'
+
+rules_info="${work_root}/rules-info"
+write_rules "${rules_info}" '      - alert: InfoAlert
+        expr: absent(up)
+        for: 1h
+        labels:
+          severity: info
+          group: unmeasured'
+check_alert_rules '경보 규칙 · severity info는 받는다' "${rules_info}" "${fake_promtool}" 0 0 '경보 규칙 시험 통과'
+
+# label은 labels 구간만 본다. annotations에 적힌 severity·group은 label이 아니다.
+rules_annotation="${work_root}/rules-annotation"
+write_rules "${rules_annotation}" '      - alert: AnnotatedOnly
+        expr: up == 0
+        for: 5m
+        annotations:
+          severity: warning
+          group: availability'
+check_alert_rules '경보 규칙 · annotations의 severity·group은 label이 아니다(1)' "${rules_annotation}" \
+  "${fake_promtool}" 0 1 'AnnotatedOnly: severity label'
+
+rules_flow="${work_root}/rules-flow"
+write_rules "${rules_flow}" '      - alert: FlowLabels
+        expr: up == 0
+        for: 5m
+        labels: {severity: warning, group: availability}'
+check_alert_rules '경보 규칙 · flow 표기 labels는 1' "${rules_flow}" "${fake_promtool}" 0 1 '블록 표기만 쓴다'
+
+rules_indent="${work_root}/rules-indent"
+write_rules "${rules_indent}" "${valid_rule}
+    - alert: Misindented
+      expr: up == 0"
+check_alert_rules '경보 규칙 · 다른 들여쓰기의 - alert:는 1' "${rules_indent}" "${fake_promtool}" 0 1 \
+  '들여쓰기는 6칸이어야 한다'
+
+rules_empty="${work_root}/rules-empty"
+write_rules "${rules_empty}" '      - record: fixture:up'
+check_alert_rules '경보 규칙 · 경보가 하나도 없으면 1' "${rules_empty}" "${fake_promtool}" 0 1 '경보 규칙이 하나도 없다'
+
+# 저장소의 실제 규칙 파일이 형식 계약을 지킨다(promtool 판정은 통합 job이 실제로 돈다).
+check_alert_rules '경보 규칙 · 저장소의 alerts.yml이 형식 계약을 지킨다' "${repo_root}/deploy/observability" \
+  "${fake_promtool}" 0 0 '형식 계약 통과'
+
+# 스크립트도 이 파일과 같은 규약을 지킨다: pipefail 아래 조기 종료 grep -q 파이프가 없다.
+assert_equals 'check-alert-rules.sh · pipefail 아래 조기 종료 grep -q 파이프가 없다' \
+  "$(grep -cE '\|[[:space:]]*grep -[[:alpha:]]*q' "${alert_rules_script}" | tr -d '[:space:]')" '0'
+
+# --------------------------------------------------------------------------
 # workflow 계약
 # --------------------------------------------------------------------------
 printf '\nci.yml 계약\n'
@@ -940,6 +1160,7 @@ STEPS
 
 assert_job_steps same-origin-integration <<'STEPS'
 저장소 checkout
+경보 규칙 시험
 통합 입력 내려받기 (frontend dist)
 통합 입력 내려받기 (backend jar)
 동일 출처 검증
@@ -1140,6 +1361,14 @@ if workflow_job_block same-origin-integration | grep -F 'gradlew' >/dev/null; th
 else
   record_pass 'ci.yml · 통합 job은 백엔드를 다시 빌드하지 않는다'
 fi
+
+# 경보 규칙 시험의 판정은 스크립트가 소유한다(Story 3.7). 단계에 인라인 판정을 두지 않는다. 내려받기가 멈춰도 job 예산을
+# 다 쓰지 않게 단계 상한이 있다.
+assert_equals 'ci.yml · 경보 규칙 시험 단계의 timeout은 5분' \
+  "$(workflow_step_block same-origin-integration '경보 규칙 시험' | grep -cxF '        timeout-minutes: 5')" '1'
+assert_equals 'ci.yml · 경보 규칙 시험 단계는 check-alert-rules.sh 하나를 부른다' \
+  "$(workflow_step_block same-origin-integration '경보 규칙 시험' | grep -E '^        run: ' | sed 's/^        run: //')" \
+  'bash .github/scripts/check-alert-rules.sh'
 
 if workflow_step_block same-origin-integration '동일 출처 검증' \
   | grep -F 'bash deploy/compose/verify-same-origin.sh' >/dev/null; then

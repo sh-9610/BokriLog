@@ -26,9 +26,15 @@ import org.springframework.stereotype.Repository;
 @Repository
 class PlanSyncRepository {
     private final JdbcClient jdbc;
+    /**
+     * 계획 동기화의 유효 시도 계측(Story 3.7). 시도는 admission 세 갈래(동기화·완료 관측·정밀 검증)가 모두 지나는 이 INSERT가
+     * 센다 — 커밋 뒤에 센다({@link SyncMetrics}). 결말은 종료 줄과 함께 {@code PlanSyncService.logEnding}이 센다.
+     */
+    private final SyncMetrics metrics;
 
-    PlanSyncRepository(JdbcClient jdbc) {
+    PlanSyncRepository(JdbcClient jdbc, SyncMetrics metrics) {
         this.jdbc = jdbc;
+        this.metrics = metrics;
     }
 
     /**
@@ -92,7 +98,7 @@ class PlanSyncRepository {
 
     /** Inserts the attempt. Zero when the key or the one-in-progress index was taken first. */
     int insert(Admission a) {
-        return jdbc.sql("INSERT INTO sync_plan_sync_job(job_id,user_id,plan_id,portfolio_id,intent_id,membership_id,"
+        int inserted = jdbc.sql("INSERT INTO sync_plan_sync_job(job_id,user_id,plan_id,portfolio_id,intent_id,membership_id,"
                 + "connection_id,provider_account_id,purpose,reason_code,trigger,idempotency_key,base_calculation_id,"
                 + "base_pointer_version,base_candidate_id,base_verified_through,base_extended_verification_at,t0,end_at,"
                 + "status) VALUES (:j,:u,:plan,:p,:i,:m,:c,:a,:purpose,:reason,:trigger,:key,:calc,:version,:cand,"
@@ -105,6 +111,8 @@ class PlanSyncRepository {
             .param("cand", a.baseCandidateId()).param("verified", utc(a.baseVerifiedThrough()))
             .param("extended", utc(a.baseExtendedAt())).param("t0", utc(a.t0())).param("end", utc(a.endAt()))
             .update();
+        if (inserted == 1) metrics.attempt(com.bokrilog.sync.SyncTelemetry.Kind.PLAN_SYNC, a.trigger());
+        return inserted;
     }
 
     private static final String VIEW_COLUMNS = "job_id,purpose,reason_code,trigger,status,stage,failure_code,"

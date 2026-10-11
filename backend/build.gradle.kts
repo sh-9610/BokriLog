@@ -10,8 +10,8 @@ import org.springframework.boot.gradle.plugin.SpringBootPlugin
  * classpath는 JDBC·Flyway·PostgreSQL 드라이버(`identity` 저장소와 마이그레이션)와 Spring Security
  * OAuth2 Client·Spring Session JDBC(Google OIDC 로그인과 PostgreSQL 세션)까지이고, Spring
  * Modulith(경계 검증)와 Testcontainers(실제 PostgreSQL 통합 시험)는 시험 classpath에만 있다.
- * Actuator·JPA·`spring-security-test`는 아직 없으며, 각각을 필요로 하는 스토리의 SPEC이 목적과
- * 함께 승인할 때 들어온다.
+ * Actuator와 Prometheus registry는 `spec-3-7-observability-foundation.md`가 관리 포트의 메트릭 노출로 승인했다.
+ * JPA·`spring-security-test`는 아직 없으며, 각각을 필요로 하는 스토리의 SPEC이 목적과 함께 승인할 때 들어온다.
  *
  * JPA를 쓰지 않는 것은 누락이 아니라 선택이다. `identity`가 하는 일은 상태 행을 잠그고, 읽고,
  * 술어가 붙은 UPDATE를 던지는 것뿐이라 `JdbcClient`면 SQL이 그대로 보인다. Hibernate의 dirty
@@ -112,6 +112,19 @@ dependencies {
      * 쓰는 곳은 `calculation` 모듈 하나다. 전이 의존이 없다.
      */
     implementation("ch.obermuhlner:big-math:2.3.2")
+
+    /*
+     * 관측 계측(`spec-3-7-observability-foundation.md`가 승인).
+     *
+     * Actuator는 외부에 열리지 않는 관리 포트(`management.server.port`)에서 Prometheus 엔드포인트 하나만 연다. 공개 표면의
+     * liveness는 그대로 `GET /api/status`다(`StatusController`). 메트릭 이름·tag는 루트 `TelemetryAllowlist`의 닫힌 표가
+     * 정하고 그 밖의 meter는 `TelemetryConfig`의 `MeterFilter`가 거부한다. Actuator에 닿는 코드는 루트 설정 한 곳이고,
+     * 모듈은 Micrometer `MeterRegistry`만 쓴다(`ModuleBoundaryTest`가 `org.springframework.boot.actuate`를 막는다).
+     *
+     * Prometheus registry의 버전은 Boot BOM이 관리한다. promtool(경보 규칙 시험)은 CI·개발 전용 도구라 여기 없다.
+     */
+    implementation("org.springframework.boot:spring-boot-starter-actuator")
+    implementation("io.micrometer:micrometer-registry-prometheus")
 
     // 드라이버는 컴파일 시점에 참조하지 않는다. 코드가 JDBC 표준 밖으로 나가지 못하게 한다.
     runtimeOnly("org.postgresql:postgresql")

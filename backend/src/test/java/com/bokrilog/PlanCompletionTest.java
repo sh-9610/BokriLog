@@ -190,7 +190,7 @@ class PlanCompletionTest extends PlanSyncTestBase {
                 .isAfter(record.observedMeasuredAt());
         assertThat(nested(after, "completion")).isEqualTo(nested(fields, "completion"));
 
-        var lines = endingLines(output, job);
+        var lines = endingLines(output, "purpose=COMPLETION");
         assertThat(lines).hasSize(1);
         assertThat(lines.getFirst()).contains("purpose=COMPLETION").contains("status=SUCCEEDED")
                 .doesNotContain(user.toString()).doesNotContain(uidOf(user)).doesNotContain("equity")
@@ -494,8 +494,11 @@ class PlanCompletionTest extends PlanSyncTestBase {
         reachEnd(disconnected, ready(disconnected));
         UUID restriction = restrictGlobally(com.bokrilog.operations.RestrictionFeature.SYNC);
         try {
+            double restrictedBefore = syncOutcomes("plan_sync", "excluded", "RESTRICTED");
             assertThat(sync.admitPlanSync(restricted, SyncJobApi.SyncTrigger.ENTRY, key("restricted", 1)))
                     .isEqualTo(new SyncJobApi.SyncAdmission.Refused("SYNC_UNAVAILABLE"));
+            // 완료된 계획의 관측 요청도 제한이 막으면 제외로 센다(Story 3.7).
+            assertThat(syncOutcomes("plan_sync", "excluded", "RESTRICTED")).isEqualTo(restrictedBefore + 1);
             assertThat(planStatus(restricted)).isEqualTo("COMPLETED");
             assertThat(completionRow(restricted)).startsWith("PENDING|-|-|");
             assertThat(countOf("sync_plan_sync_job", restricted)).isZero();

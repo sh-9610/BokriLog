@@ -225,10 +225,12 @@ docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --b
 
 | 경로 | 역할 |
 |---|---|
-| `backend/build.gradle.kts` | Java 25 toolchain, Spring Boot 4.1.1 BOM, `web`·`jdbc`·Flyway·Spring Security OAuth2 Client·Spring Session JDBC 운영 의존과 Modulith 2.1.1 BOM·Modulith·Testcontainers 시험 의존. 컴파일 경고는 `-Werror`로 실패다 |
+| `backend/build.gradle.kts` | Java 25 toolchain, Spring Boot 4.1.1 BOM, `web`·`jdbc`·Flyway·Spring Security OAuth2 Client·Spring Session JDBC·Actuator·Prometheus registry(Story 3.7) 운영 의존과 Modulith 2.1.1 BOM·Modulith·Testcontainers 시험 의존. 컴파일 경고는 `-Werror`로 실패다 |
 | `backend/gradle.properties` | toolchain 자동 프로비저닝 끄기, 인코딩 고정 |
 | `backend/src/main/java/com/bokrilog/BokriLogApplication.java` | 진입점이자 Modulith 루트. 모듈은 이 클래스 패키지의 직속 하위 패키지다 |
-| `backend/src/main/java/com/bokrilog/StatusController.java` | `GET /api/status`. 고정된 최소 필드 `{"status":"UP"}` |
+| `backend/src/main/java/com/bokrilog/StatusController.java` | `GET /api/status`. 고정된 최소 필드 `{"status":"UP"}`. 외부 liveness 검사의 대상이다(Story 3.7) |
+| `backend/src/main/java/com/bokrilog/TelemetryConfig.java`·`TelemetryAllowlist.java` | 메트릭의 닫힌 표와 그것을 집행하는 `MeterFilter`(공통 tag `env`, `uri` 템플릿화, 표 밖 거부). Actuator에 닿는 설정은 여기 한 곳이다(Story 3.7) |
+| `backend/src/main/resources/logback-spring.xml`·`RedactingJsonEncoder.java`·`LogSecretGuard.java`·`ConfiguredSecrets.java` | 로그의 유일한 출력(JSON 한 줄, 허용 키, 가림)과 구성 비밀값 감지 → 강한 신호 3번(Story 3.7) |
 | `backend/src/main/java/com/bokrilog/ApiErrorHandler.java` | 공통 오류 계약과 프레임워크 오류 경로 대체 |
 | `backend/src/main/java/com/bokrilog/AuthSecurityConfig.java` | 인증 표면과 세션 정책. 제공자 등록 맵(Google·네이버·카카오), PKCE 강제, 세션 고정 방어, CSRF·`Origin` 검증, 401·403 응답 |
 | `backend/src/main/java/com/bokrilog/AuthSessionService.java` | 검증된 `(issuer, subject)`를 `identity` 공개 API로 계정·세션에 옮긴다. 경합 재시도와 롤백 경계. 재인증의 계정 쪽 판정(`confirmReauthentication`)도 여기 하나다 |
@@ -265,9 +267,9 @@ docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --b
 - 계정 상태는 `ACTIVE → DELETION_IN_PROGRESS → DELETED` 단조 전진뿐이다. 상태 행 `SELECT … FOR UPDATE` 잠금과 술어가 붙은 UPDATE가 강제하며, 반복 요청·실패·재시도로 이전 상태가 되지 않는다.
 - JPA를 쓰지 않는다. `JdbcClient`면 SQL이 그대로 보이고, Hibernate의 dirty checking·flush 시점은 "커밋 직전 재검사"를 오히려 흐린다.
 - 오류 응답은 `{"code":…,"message":…,"correlationId":…}` 한 가지뿐이다. `code`는 `BAD_REQUEST`·`NOT_FOUND`·`METHOD_NOT_ALLOWED`·`UNAUTHENTICATED`·`FORBIDDEN`·`UPSTREAM_UNAVAILABLE`·`INTERNAL_ERROR`이며 안정적인 machine code라 문자열을 바꾸지 않는다. Nginx가 만드는 오류(502, 정적 404)도 같은 모양을 돌려준다. `UNAUTHENTICATED`(401)·`FORBIDDEN`(403)은 Story 1.4의 인증 표면이 그 두 상태를 실제로 내면서 들어왔다. Nginx는 이 구성에서 그 두 상태를 스스로 만들 수 없어 진입점의 `error_page` 목록에 대응 항목이 없고, 두 계층이 그 code를 나눠 갖지도 않는다.
-- 내부 경로·스택·프레임워크 기본 오류 본문·환경 변수 이름은 응답과 로그 어디에도 남기지 않는다. 그래서 `spring.main.log-startup-info`가 꺼져 있고(기동 로그가 jar 경로와 실행 사용자를 남긴다), 처리하지 못한 예외의 스택은 기본 로그에 찍지 않는다. 스택이 필요한 조사에서는 `logging.level.com.bokrilog=debug`로 한 번만 열고 다시 닫는다.
+- 내부 경로·스택·프레임워크 기본 오류 본문·환경 변수 이름은 응답과 로그 어디에도 남기지 않는다. 그래서 `spring.main.log-startup-info`가 꺼져 있고(기동 로그가 jar 경로와 실행 사용자를 남긴다), 예외의 스택·메시지는 **어느 수준에서도** 로그에 찍지 않는다(Story 3.7 — 로그 encoder의 허용 키에 없다). 진단에 남는 것은 예외 클래스의 단순 이름(`exception`)과 `correlationId`뿐이고, 처리하지 못한 스레드 예외도 기본 `UncaughtExceptionHandler`가 같은 모양의 한 줄로 바꾼다(stderr 스택 없음). 스택이 필요한 조사는 같은 입력을 로컬·시험에서 재현해서 한다 — 운영 로그 수준을 올려도 스택은 나오지 않는다.
 - 상태 응답에 시각·버전·호스트명·빌드 정보를 넣지 않는다. 인증 없이 공개되는 엔드포인트라 담는 모든 값이 곧 공개 정보다.
-- Actuator·JPA·`spring-security-test` 의존은 아직 없다. 추가는 그것을 필요로 하는 스토리의 SPEC이 목적과 함께 승인한다. Spring Modulith·PostgreSQL·Flyway·Testcontainers는 `spec-1-3-identity-ownership.md`가, Spring Security OAuth2 Client·Spring Session JDBC는 `spec-1-4-google-sign-in.md`가 승인해 들어왔다.
+- JPA·`spring-security-test` 의존은 아직 없다. 추가는 그것을 필요로 하는 스토리의 SPEC이 목적과 함께 승인한다. Actuator·Micrometer Prometheus registry는 `spec-3-7-observability-foundation.md`가 관리 포트의 메트릭 노출로 승인했다(루트 설정 한 곳, 모듈은 `MeterRegistry`만). Spring Modulith·PostgreSQL·Flyway·Testcontainers는 `spec-1-3-identity-ownership.md`가, Spring Security OAuth2 Client·Spring Session JDBC는 `spec-1-4-google-sign-in.md`가 승인해 들어왔다.
 - 검증을 손으로 만들지 않는다. Authorization Code + PKCE(S256), 일회성 `state`·`nonce`, ID Token의 JWS 서명·허용 알고리즘(RS256)·JWKS와 `iss`·`aud`·`azp`·`exp`·`nonce` 검증, 세션 고정 방어는 Spring Security OAuth2 Client의 계약이다. `AuthSecurityConfig`가 하는 일은 그 계약을 이 저장소의 경계에 맞추는 배선뿐이다.
 - 백엔드는 보안 응답 헤더를 만들지 않는다. Spring Security의 기본 헤더 writer를 끈 이유가 이것이다. 켜 두면 진입점과 애플리케이션이 같은 헤더를 각각 실어 값이 두 번 나가고, 헤더를 전문 비교하는 `verify-same-origin.sh`가 먼저 깨진다. 캐시 지시가 필요한 응답은 그 응답이 직접 정한다 — 계정의 사실을 돌려주는 두 경로(`GET /api/auth/session`·`GET /api/auth/link`)가 자기 `no-store`를 붙인다. 진입점도 같은 지시를 내므로 그 응답에는 같은 이름의 헤더가 두 번 실리고, 값이 같으므로 의미는 하나다.
 - CSRF와 동일 출처 `Origin` 검증은 `/api/auth/` 아래의 상태 변경 요청에만 걸린다. 전역으로 두면 `CsrfFilter`가 서블릿보다 먼저 답해 `POST /api/status`의 405와 identity 탐침의 404가 전부 403으로 뒤집힌다. CSRF 토큰은 세션에 귀속하며 쿠키 저장소를 쓰지 않는다.
@@ -390,6 +392,77 @@ PLAYWRIGHT_BASE_URL=http://127.0.0.1:18080 npm --prefix frontend run test:e2e:ru
 - 서비스 공지(Story 3.5)의 지원 연락처 `BOKRILOG_SUPPORT_CONTACT`(이메일 한 주소)도 환경이 준다. **compose 기본값은 비어 있고**, 비면 운영자의 공지 발행(`publish-notice`)이 422 `SUPPORT_CONTACT_UNCONFIGURED`이며 사용자 공지에 문의 링크가 없다(허위 지원 경로를 만들지 않는다). 이메일 모양이 아니면 기동을 거부한다. 발행한 공지는 확정 시점의 연락처를 그 버전에 고정하므로 값을 바꿔 재배포해도 이미 발행한 공지의 연락처는 바뀌지 않는다. `verify-same-origin.sh`가 개발용 주소 `support@bokrilog.test`(예약 최상위 도메인이라 전달되지 않는다)를 넣고, `--keep-stack`으로 남긴 스택의 Playwright 회귀가 그 값으로 공지를 발행한다. 손으로 띄울 때는 위 명령에 `BOKRILOG_SUPPORT_CONTACT=support@bokrilog.test`를 함께 넣는다.
 - compose 로컬 오버라이드(`compose.override.yaml`)와 `.env`는 `.gitignore`가 제외한다. 저장소가 소유하는 구성은 `deploy/compose/compose.yaml` 하나뿐이다.
 
+## 관측·경보 (Story 3.7)
+
+운영 등급은 **`24×7 실행 목표, best-effort, SLA 없음`**이다. 계측은 운영 상태를 보이기 위한 것이고 목표 달성을 선언하지 않는다. 운영 서버에는 Grafana Alloy만 두고(Story 3.8) Prometheus·Grafana 자체 호스팅·promtool·k6·logcli 같은 개발용 관측 도구를 두지 않는다.
+
+### 메트릭
+
+Actuator는 **관리 포트에서 Prometheus 엔드포인트 하나만** 연다(`GET /actuator/prometheus`, health·info·목록 페이지도 닫혀 있다). 관리 포트는 기본으로 `127.0.0.1`에만 묶여 같은 네트워크 이름공간(같은 컨테이너·같은 호스트 프로세스)에서만 닿는다. compose는 그 포트를 게시하지도 `expose`하지도 않고 Nginx는 `/api`만 넘기므로 공개 origin의 `/actuator/**`는 404다. 외부 liveness는 공개 `GET /api/status`다(`{"status":"UP"}`만, 의존 상태 비노출). Actuator에 닿는 코드는 루트 `TelemetryConfig` 하나이고(`ModuleBoundaryTest`가 강제한다) 모듈은 Micrometer `MeterRegistry`만 쓴다.
+
+| 환경 변수 | 기본값 | 뜻 |
+|---|---|---|
+| `BOKRILOG_MANAGEMENT_PORT` | `18081` | 관리 포트 |
+| `BOKRILOG_MANAGEMENT_ADDRESS` | `127.0.0.1` | 관리 포트가 듣는 주소. 수집기가 다른 이름공간에 있으면 배포(Story 3.8)가 정한다 |
+| `BOKRILOG_ENV` | `development` | 모든 메트릭의 공통 tag `env`. `development`·`ci`·`production` 밖이면 기동 거부. CI 스택은 `ci` |
+
+등록할 수 있는 이름과 tag 값은 `TelemetryAllowlist`의 닫힌 표뿐이고 그 밖의 meter는 출력에 없다(기동 실패가 아니다). tag 값은 닫힌 enum 문자열뿐이다 — 사용자·계획·요청·계정·연결 ID, URL, 이메일, 금액, Bybit 원문은 tag에도 이름에도 없다. HTTP 서버 meter의 `uri`는 경로 템플릿이고 템플릿이 없으면 `UNKNOWN`이다(템플릿 집합은 웹 서버가 요청을 받기 전에 확정한다). 카운터의 기간은 프로세스 수명이라 재기동에 0으로 돌아간다 — 비율은 `increase`로 본다. 주요 종류·결말·사유 조합은 기동 때 0으로 미리 등록한다 — 처음 증가할 때 시계열이 생기면 `increase`가 그 증가를 놓친다.
+
+| 메트릭 | tag | 분모·정의 | 기간 |
+|---|---|---|---|
+| `bokrilog_sync_attempts_total` | `kind`·`trigger` | 유효 시도: admission을 통과해 작업 행이 커밋된 수. 재전송·합류·쿨다운·주기 미도래는 시도가 아니다 | 프로세스 수명 |
+| `bokrilog_sync_outcomes_total` | `kind`·`outcome`·`reason` | `success`·`failure`(실패·검토 필요, Bybit 오류 포함)·`excluded`. 제외는 두 가지다 — admission의 제한(`RESTRICTED`, 동기화·정밀 검증·완료 관측)·검증 보류(`REVIEW_HELD`·`LONG_GAP`)는 **요청 단위**(같은 요청의 재전송도 다시 거절되면 다시 센다)이고, 실행 중 제한·권한·계획 변경으로 막힌 작업(`BLOCKED`)과 연결 해제가 끝낸 작업(`NOT_PERMITTED`)은 작업 단위다. 실패율 = `failure / (success + failure)` | 프로세스 수명 |
+| `bokrilog_sync_queue_age_seconds` | `kind` | 종류별 가장 오래 기다린 `QUEUED` 작업의 나이. DB 시각, 15초 주기 측정(가상 스레드, `statement_timeout` 2초, `V23` 부분 색인이 받친다). 대기 없음 0, 미측정 NaN | 측정 시점 |
+| `bokrilog_support_first_answer_total` | `met` | 첫 답변 하나마다 1. `true`(목표 안)·`false`(목표 밖)·`pending`(목표 미정 — 답변 확정이 지금 달력으로 먼저 채워 보고도 정하지 못한 것). 달성률 = `true / (true + false)`, SLA 아님 | 프로세스 수명 |
+| `bokrilog_support_pending_target` | — | 첫 답변을 기다리는 문의 수(접수·처리 중). 60초 주기 측정(가상 스레드, `statement_timeout` 2초) | 측정 시점 |
+| `hikaricp_connections*` | `pool=bokrilog` | DB 연결 풀(활성·유휴·대기·최대·최소·timeout) | 측정 시점 |
+| `jvm_memory_{used,committed,max}_bytes` | `area`·`id` | JVM 메모리(풀 이름은 JVM이 정한다) | 측정 시점 |
+| `http_server_requests_seconds` | `method`·`uri`·`status`·`outcome` | HTTP 요청 시간. `uri`는 경로 템플릿 또는 `UNKNOWN` | 프로세스 수명 |
+
+`kind`는 `plan_sync`·`first_snapshot`·`initial_collection`·`classification`·`conversion`·`first_publication`이고, 시도·결말을 세는 것은 앞의 둘이다(나머지 넷은 대기 나이만). 모든 시계열에 `env`가 붙어 개발·CI 수치가 운영 실적과 섞이지 않는다.
+
+### 로그
+
+로그는 표준 출력의 **JSON 한 줄** 하나다(`logback-spring.xml` → `RedactingJsonEncoder`, 모든 환경 공통). 허용 키는 `ts·level·logger·event·code·outcome·reason·kind·correlationId·durationMs·count·exception`이고 `event`가 메시지 본문이다. 나머지 여덟은 SLF4J 구조 인자(`addKeyValue`)·MDC에서 같은 이름으로 오며, 그 밖의 MDC·구조 인자와 예외의 메시지·스택은 버린다.
+
+- **진단.** 예외는 클래스의 단순 이름 하나(`exception`, `[A-Za-z0-9_$]{1,80}`)만 남는다 — 예외를 함께 넘긴 줄은 encoder가 자동으로 채우고, 작업자 실패 줄·`ApiErrorHandler`의 500 줄은 직접 싣는다. 처리하지 못한 스레드 예외(작업자 가상 스레드 포함)는 JVM 기본 `UncaughtExceptionHandler`가 같은 모양의 한 줄로 바꾼다(stderr 스택 없음). 스택은 어느 로그 수준에서도 나오지 않는다 — 조사는 같은 입력을 재현해서 한다.
+- **`correlationId`.** 응답 오류 본문의 값과 같고 문자 집합은 하나(`ApiErrorHandler.CORRELATION_ID`, `[A-Za-z0-9._-]{1,64}`)다. 진입점(Nginx)의 `$request_id`(소문자 hex 32자 — Nginx가 클라이언트 헤더를 덮어쓰는 서버 값)는 그대로 쓰고, 그 밖의 값에 숫자 6자리 이상 연속이 있으면 서버가 만든 값으로 바꾼다. 사용자가 신고한 ID로 `event="처리하지 못한 요청"` 줄을 찾는다.
+- **가림.** 본문은 문의 민감값 규칙(Story 3.6)의 SECRET·EMAIL·WALLET 모양을 `[REDACTED:<규칙>]`로, UUID를 `[REDACTED:ID]`로, 숫자 6자리 이상을 `[REDACTED:DIGITS]`로 가린다. 작업·사용자 ID를 로그에 싣지 않는다 — 계정 삭제 뒤 원장과 잇는 근거가 된다. `code·outcome·reason·kind`에 UUID·숫자 6자리 이상 모양이 오면 그 키를 통째로 버린다.
+- **AC-6 스캔의 예외는 계약으로 둘이다.** `correlationId`(요청마다 새로 만드는 값, 사용자 귀속이 아니다)와 구조 수치 `durationMs`·`count`(정수 그대로 둔다). 시험(`SyncMetricsTest`)은 이 셋을 빼고 모든 필드에 UUID·이메일·숫자 6자리 이상이 0건임을 단정한다.
+- **구성 비밀값.** 프로세스가 실제로 가진 비밀값(OIDC client secret, 감사 digest 키, 자격정보 암호화 key ring의 키 부분, DB 비밀번호 — 8자 이상)이 메시지·인자·구조 인자·MDC·예외 문자열에 나타나면 그 줄의 본문 전체가 `[REDACTED:CONFIGURED_SECRET]`이 되고, 강한 신호 3번 `SECRET_EXPOSED`(`ruleId=CONFIGURED_SECRET_IN_LOG`)가 비동기로 한 번 올라간다(같은 규칙은 프로세스당 60초에 1번, 신호 기록 스레드의 로그는 다시 올리지 않는다, 기록이 실패하면 억제를 푼다). 판정·scope는 판정표 `OPS-SIGNAL-1.0`이 정한다. 8자보다 짧은 값은 감지에서 빠지고 기동 때 설정 이름만 WARN으로 남는다. 패턴 탐지는 가리기만 하고 신호로 올리지 않는다.
+- **한계.** 사용자마다 다른 Bybit API Secret·Key는 감지 집합에 없다 — 프로세스가 복호화 전에는 갖고 있지 않은 값이다. 그 값은 패턴 가림(토큰 모양)만 받고, 로그에 싣지 않는 것은 코드 규칙(자격정보를 로그 인자로 넘기지 않는다)과 `verify-same-origin.sh`의 실제 값 누출 검사가 지킨다. migrate 역할과 컨텍스트가 뜨기 전 기동 초기 줄도 패턴 가림만 받는다.
+- 시험은 로그 본문을 `LogLines`로 꺼내 단정한다(줄 전체가 아니라 `event`). 계획 동기화 시험은 시작 표지 뒤의 줄만 본다(`PlanSyncTestBase.TEST_START`).
+
+### 경보
+
+규칙은 `deploy/observability/alerts.yml`(Prometheus 규칙), 단위시험은 같은 디렉터리의 `alerts.test.yml`(promtool)이다. 규칙마다 `for:`·`severity`·`group`(중복 억제 단위)을 갖고, 강한 신호 후보만 `strong_signal="true"`를 갖는다 — 승인 목록(`check-alert-rules.sh`)은 지금 비어 있고 아래는 모두 일반 경보다(자동 정지로 잇지 않는다). **모든 selector가 `env="production"`이다** — 애플리케이션 메트릭은 공통 tag로, 수집기 계열(probe·node·alloy)은 운영 Alloy·synthetic이 붙이는 같은 이름의 외부 label로(Story 3.8).
+
+**미측정은 `severity: info`·`group: unmeasured`다.** synthetic·backup·비용 장부·Grafana 사용량이 연결되기 전(Story 3.8·3.9·분리된 후속)에는 `...Unmeasured`가 계속 울린다. 연결 전 침묵 정책: 알림 경로는 `group="unmeasured"`를 사람을 깨우는 채널이 아니라 일일 요약으로만 보낸다 — 조용히 통과하지는 않되 밤에 깨우지 않는다.
+
+| 경보 | 조건 | for | severity·group |
+|---|---|---|---|
+| `LivenessProbeFailed` | `probe_success{job="bokrilog-liveness"} == 0` | 5m | critical·availability |
+| `LivenessProbeUnmeasured` | synthetic 결과 없음(3.8 전) | 10m | info·unmeasured |
+| `AlloyHeartbeatMissing` | `up{job="alloy"} == 1`이 없음 | 10m | critical·observability |
+| `BackupAgeExceeded` | 마지막 성공 백업이 26시간 이상 | 0m | critical·backup |
+| `BackupAgeUnmeasured` | `bokrilog_backup_last_success_timestamp_seconds` 없음(3.9 전) | 1h | info·unmeasured |
+| `SyncFailureRateHigh` | 15분 창 실패율 20% 이상, 분모 10 이상 | 0m | warning·sync |
+| `SyncQueueAgeHigh` | 대기 나이 15분 이상 | 0m | warning·sync |
+| `SyncQueueAgeUnmeasured` | 대기 나이가 NaN(측정 실패·timeout) | 15m | info·unmeasured |
+| `DatabaseConnectionsSaturated` | Hikari 활성/최대 90% 이상 | 10m | warning·capacity |
+| `JvmHeapPressure` | heap 사용/최대 90% 이상 | 10m | warning·capacity |
+| `DiskUsageWarning`·`Critical` | 디스크 사용 70%·85% 이상(구간을 나눠 하나만) | 5m | warning·critical·capacity |
+| `GrafanaUsageWarning`·`Critical` | Grafana Cloud 사용량 70%·85% 이상 | 5m | warning·critical·capacity |
+| `GrafanaUsageUnmeasured` | Grafana Cloud 사용량 없음(3.8 전) | 1h | info·unmeasured |
+| `MonthlyCostExceeded` | `bokrilog_monthly_cost_krw` 30,000원 이상 | 0m | warning·cost |
+| `MonthlyCostUnmeasured` | 월 비용 없음(운영 장부 전) | 1h | info·unmeasured |
+
+값 자체가 나이·누적인 규칙(backup·queue age·비용)과 창을 품은 비율(실패율)은 `for: 0m`이다 — 기준값이 곧 경보 시점이다. 단위시험은 값 경계(직전 미발화·직후 발화 — 실패율 19.9%/20%·분모 9/10, 연결·heap 89.x%/90%, queue age 14/15분, backup 25h59m/26h, 비용 29,999/30,000)와 지속시간 경계를 따로 고정하고, 복구·미측정과 개발 시계열 무시도 본다.
+
+| 명령 | 역할 |
+|---|---|
+| `bash .github/scripts/check-alert-rules.sh` | 형식 계약(규칙 머리 들여쓰기, labels 구간의 `severity`·`group`, 블록 표기, 승인된 `strong_signal`) → `promtool check rules` → `promtool test rules`. promtool은 Prometheus 3.5.0 배포본을 받아(curl 60초·재시도 2회) SHA-256을 대조해 캐시(`~/.cache/bokrilog/promtool-3.5.0`)에 원자 저장하고, 쓸 때마다 다시 대조한 뒤 임시 디렉터리로 꺼낸다. `PROMTOOL`로 경로를 줄 수 있다. 종료 코드 0(통과)·1(판정 실패)·2(준비 실패 — 내려받기·checksum·미지원 플랫폼·promtool 실행 불가 126/127) |
+
 ## CI (`.github/`)
 
 `.github/workflows/ci.yml`이 이 저장소의 유일한 workflow다. `develop`·`main`의 PR과 push, 그리고 배포 권한이 없는 수동 진단(`workflow_dispatch`)에서 돈다. 정본은 `CI-PLAN.md`이고 구현 계약은 `_bmad-output/implementation-artifacts/spec-ci-foundation.md`와 `spec-1-2-same-origin-shell.md`가 소유한다.
@@ -407,7 +480,7 @@ changes ──> frontend-quality ──┐
 | `changes` | secret 검사, CI 계약 시험, 변경 분류 | 5분 |
 | `frontend-quality` | 타입 검사 → ESLint → stylelint → Prettier → 빌드 → Vitest → Chromium E2E | 8분 |
 | `backend-quality` | JDK 25 준비 → Gradle `build`(컴파일·Modulith 경계 검사·PostgreSQL Testcontainers 시험·jar) | 20분 |
-| `same-origin-integration` | 두 품질 job의 산출물로 동일 출처 검증(`--keep-stack`) → 같은 스택에서 Story 1.1 회귀 | 17분 |
+| `same-origin-integration` | 경보 규칙 시험 → 두 품질 job의 산출물로 동일 출처 검증(`--keep-stack`, `BOKRILOG_ENV=ci`) → 같은 스택에서 Story 1.1 회귀 | 17분 |
 | `ci-required` | 선행 job 결과 집계. 병합 가능 여부 판정 | 1분 |
 
 `backend-quality`의 15분은 Story 1.3이 10분에서 올린 값이다. 이 job은 이제 Testcontainers로 실제 PostgreSQL을 띄우고, 콜드 실행에는 `postgres:18.6-alpine` 내려받기가, 동시성 시험에는 실제 잠금 경합 대기가 더해진다. 러너에 docker 데몬이 이미 있으므로 서비스 컨테이너도 새 action도 더하지 않았고, 시험은 기존 `Gradle 빌드` 단계 안에서 돈다. `CI-PLAN.md` §4·§10의 backend 예산 8분은 이 상한과 별개로 계속 측정한다. Story 2.11이 15분을 20분으로 올렸다. PR #49에서 이 job이 11분 5초였고, 같은 시험의 로컬 실행보다 1분쯤 길었다. 2.11의 로컬 `clean build`가 12분 56초라 CI는 14분 안팎이 된다. PR #52의 이 job은 13분 0초였다. 그 시간의 대부분은 실제 파이프라인을 모는 `FirstSnapshotTest`·`IncrementalSyncTest`가 워커의 1초 dispatch tick과 고정 `Thread.sleep`을 기다린 몫이었다. `spec-backend-test-speed.md`가 시험의 dispatch 간격을 100ms로 줄이고(`bokrilog.sync.worker.dispatch-interval`, 운영 기본 1초, heartbeat 5초는 그대로) 관측 가능한 조건은 조건 대기로 바꿨다. 그 변경이 변경 전 커밋(`3824c3c`)을 다시 잰 로컬 `clean build`는 13분 2초였고(위 2.11의 12분 56초와 별개의 재측정이다), 변경 뒤에는 3분 13초다(시험 869건에 운영 주기를 고정하는 Docker 없는 시험 두 건을 더해 871건, 두 클래스 605초 → 115초, 124초 → 28초). Story 2.12가 그 위에 정밀 검증·호출 예산 시험을 더해 로컬 `clean build`가 4분 41초가 됐다(989건, 새 `PlanVerificationTest` 75초). timeout 20분은 CI-PLAN 새 버전이 보정할 때까지 그대로 둔다.
@@ -428,7 +501,8 @@ changes ──> frontend-quality ──┐
 | `.github/scripts/verify-merge-commit.sh` | PR merge commit의 부모가 이벤트의 base·head와 같은 순서인지 검증 |
 | `.github/scripts/classify-changes.sh` | 문서-only 여부 판정. `docs-only`·`reason`을 `GITHUB_OUTPUT`과 job summary에 기록 |
 | `.github/scripts/aggregate-results.sh` | 선행 job 결과를 모아 병합 가능 여부 판정 |
-| `.github/scripts/test-ci-scripts.sh` | 위 세 스크립트와 `ci.yml`의 계약 시험 |
+| `.github/scripts/check-alert-rules.sh` | 경보 규칙의 형식 계약·문법·promtool 단위시험(Story 3.7). 통합 job에서 돈다 |
+| `.github/scripts/test-ci-scripts.sh` | 위 스크립트들과 `ci.yml`의 계약 시험(경보 규칙 스크립트는 가짜 promtool로 종료 코드 0/1/2를 단정한다) |
 
 lint·stylelint·format 세 단계는 `spec-frontend-lint-policy.md`가 합의한 품질 정책이며 `ci-required`가 집계하는 job 안에 있으므로 별도 보호 규칙 변경 없이 필수 검사다. 문서-only 변경(`_bmad-output/**`와 최상위 `*.md`)은 `changes` job만 돌고 제품 job 셋은 건너뛴다. 분류는 fail-closed다. 규칙에 없는 경로가 하나라도 있으면 전체 검사를 실행하며, `backend/`·`deploy/`처럼 `<디렉터리>/<파일>` 모양인 경로는 자동으로 제품 변경이라 분류 규칙을 손댈 필요가 없다. PR에서는 체크아웃된 head가 아니라 target base의 승인된 분류기를 꺼내 실행한다. PR이 자기 분류 규칙을 고쳐 그 PR의 검사를 축소할 수 없게 한다.
 

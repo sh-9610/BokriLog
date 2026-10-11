@@ -1,0 +1,488 @@
+# alerts.yml의 promtool 단위시험(Story 3.7 AC-2). `.github/scripts/check-alert-rules.sh`가 돌린다.
+#
+# 가상 시계로 각 경보의 값 경계(직전 미발화·직후 발화), 지속시간(`for`) 경계, 복구(조건이 풀리면 해제), 미측정(`absent`·NaN)을
+# 고정한다. 값 경계와 지속시간 경계는 따로 본다. promtool의 `exp_alerts`는 firing만 본다 — 지속시간을 채우지 못한 pending은 빈
+# 목록이다. 모든 입력은 운영 시계열(`env="production"`)이고, 같은 값의 개발 시계열(`env="development"`)은 경보를 울리지 않는다.
+#
+# 표기: `a x n`은 a를 n+1번(첫 값과 n번 반복), `a+b x n`은 a부터 b씩 n번 더한 값이다. 간격은 1분이다.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ---------------------------------------------------------------- 외부 liveness
+  # 0~5분 성공, 6~16분 실패, 17분부터 성공. 실패가 5분 이어진 11분에 발화하고 회복하면 해제한다. 개발 시계열의 실패는 무시한다.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{job="bokrilog-liveness",env="production"}'
+        values: '1x5 0x10 1x5'
+      - series: 'probe_success{job="bokrilog-liveness",env="development"}'
+        values: '0x22'
+      - series: 'up{job="alloy",env="production"}'
+        values: '1x22'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LivenessProbeFailed
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: LivenessProbeFailed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              group: availability
+              job: bokrilog-liveness
+              env: production
+            exp_annotations:
+              summary: 외부 liveness 검사가 5분째 실패한다.
+      - eval_time: 17m
+        alertname: LivenessProbeFailed
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: LivenessProbeUnmeasured
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: AlloyHeartbeatMissing
+        exp_alerts: []
+
+  # ---------------------------------------------------------------- 미측정
+  # synthetic·backup·비용·Grafana 사용량 시계열이 아직 없다(개발 시계열만 있다). 조용히 통과하지 않고 미측정(info)으로 알린다.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="alloy",env="production"}'
+        values: '1x70'
+      - series: 'bokrilog_monthly_cost_krw{env="development"}'
+        values: '0x70'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: LivenessProbeUnmeasured
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: LivenessProbeUnmeasured
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              group: unmeasured
+              job: bokrilog-liveness
+              env: production
+            exp_annotations:
+              summary: 외부 liveness 검사 결과가 없다(synthetic 미연결 또는 중단).
+      - eval_time: 59m
+        alertname: BackupAgeUnmeasured
+        exp_alerts: []
+      - eval_time: 1h
+        alertname: BackupAgeUnmeasured
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              group: unmeasured
+              env: production
+            exp_annotations:
+              summary: 백업 성공 시각이 측정되지 않는다(백업 미연결).
+      - eval_time: 1h
+        alertname: BackupAgeExceeded
+        exp_alerts: []
+      - eval_time: 59m
+        alertname: MonthlyCostUnmeasured
+        exp_alerts: []
+      - eval_time: 1h
+        alertname: MonthlyCostUnmeasured
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              group: unmeasured
+              env: production
+            exp_annotations:
+              summary: 월 비용이 측정되지 않는다(운영 장부 미연결).
+      - eval_time: 1h
+        alertname: GrafanaUsageUnmeasured
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              group: unmeasured
+              env: production
+            exp_annotations:
+              summary: Grafana Cloud 사용량이 측정되지 않는다(미연결).
+
+  # ---------------------------------------------------------------- Alloy heartbeat
+  # 0~10분 정상, 11~26분 끊김, 27분부터 회복. 끊김이 10분 이어진 21분에 발화한다.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="alloy",env="production",instance="alloy"}'
+        values: '1x10 0x15 1x5'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AlloyHeartbeatMissing
+        exp_alerts: []
+      - eval_time: 21m
+        alertname: AlloyHeartbeatMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              group: observability
+            exp_annotations:
+              summary: Grafana Alloy heartbeat가 10분째 없다.
+      - eval_time: 27m
+        alertname: AlloyHeartbeatMissing
+        exp_alerts: []
+
+  # ---------------------------------------------------------------- backup age
+  # 마지막 성공 시각이 0초(시험 시계의 시작)다. 25시간 59분은 미발화, 26시간에 발화, 26시간 10분의 새 성공으로 해제한다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_backup_last_success_timestamp_seconds{env="production"}'
+        values: '0x1570 94200x30'
+    alert_rule_test:
+      - eval_time: 25h59m
+        alertname: BackupAgeExceeded
+        exp_alerts: []
+      - eval_time: 26h
+        alertname: BackupAgeExceeded
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              group: backup
+            exp_annotations:
+              summary: 마지막 성공 백업이 26시간 이상 지났다.
+      - eval_time: 26h12m
+        alertname: BackupAgeExceeded
+        exp_alerts: []
+      - eval_time: 26h
+        alertname: BackupAgeUnmeasured
+        exp_alerts: []
+
+  # ---------------------------------------------------------------- 동기화 실패율
+  # 정확히 20%(분당 실패 2·성공 8)는 발화한다. 제외(excluded)는 분모가 아니다 — 분당 100건이 더해져도 비율은 20%다.
+  # 실패가 멈춘 뒤 15분 창이 지나면 해제한다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_sync_outcomes_total{env="production",kind="plan_sync",outcome="failure",reason="PROVIDER_UNAVAILABLE"}'
+        values: '0+2x20 40x20'
+      - series: 'bokrilog_sync_outcomes_total{env="production",kind="plan_sync",outcome="success",reason="NONE"}'
+        values: '0+8x40'
+      - series: 'bokrilog_sync_outcomes_total{env="production",kind="plan_sync",outcome="excluded",reason="RESTRICTED"}'
+        values: '0+100x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SyncFailureRateHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: sync
+              env: production
+            exp_annotations:
+              summary: 최근 15분 동기화 실패율이 20% 이상이다.
+      - eval_time: 36m
+        alertname: SyncFailureRateHigh
+        exp_alerts: []
+
+  # 19.9%(분당 실패 1.99·성공 8.01)는 발화하지 않는다. 개발 시계열의 100% 실패도 운영 경보가 아니다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_sync_outcomes_total{env="production",kind="plan_sync",outcome="failure",reason="SYNC_FAILED"}'
+        values: '0+1.99x30'
+      - series: 'bokrilog_sync_outcomes_total{env="production",kind="plan_sync",outcome="success",reason="NONE"}'
+        values: '0+8.01x30'
+      - series: 'bokrilog_sync_outcomes_total{env="development",kind="plan_sync",outcome="failure",reason="SYNC_FAILED"}'
+        values: '0+50x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SyncFailureRateHigh
+        exp_alerts: []
+
+  # 분모 경계: 창 안의 실패 9건(분모 9)은 전부 실패여도 미발화, 10건(분모 10)은 발화한다. 21분에 한 번에 들어온다.
+  # (15분 창의 `increase`는 창 시작까지 외삽해 9건을 약 9.6으로, 10건을 약 10.7로 본다 — 9.6 < 10 ≤ 10.7.)
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_sync_outcomes_total{env="production",kind="plan_sync",outcome="failure",reason="SYNC_FAILED"}'
+        values: '0x20 9x20'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SyncFailureRateHigh
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_sync_outcomes_total{env="production",kind="plan_sync",outcome="failure",reason="SYNC_FAILED"}'
+        values: '0x20 10x20'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SyncFailureRateHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: sync
+              env: production
+            exp_annotations:
+              summary: 최근 15분 동기화 실패율이 20% 이상이다.
+
+  # ---------------------------------------------------------------- queue age
+  # 14분(840초)은 미발화, 15분(900초)에 발화, 대기가 비면 해제. 측정하지 못한 종류(NaN)는 발화하지 않고, 15분 이어지면
+  # 미측정(info)으로 알린다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_sync_queue_age_seconds{env="production",kind="plan_sync"}'
+        values: '840x5 900x5 0x10'
+      - series: 'bokrilog_sync_queue_age_seconds{env="production",kind="first_snapshot"}'
+        values: 'NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SyncQueueAgeHigh
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: SyncQueueAgeHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: sync
+              env: production
+              kind: plan_sync
+            exp_annotations:
+              summary: 가장 오래 기다린 동기화 작업이 15분 이상 대기 중이다.
+      - eval_time: 12m
+        alertname: SyncQueueAgeHigh
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: SyncQueueAgeUnmeasured
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: SyncQueueAgeUnmeasured
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              group: unmeasured
+              env: production
+              kind: first_snapshot
+            exp_annotations:
+              summary: 동기화 대기 나이를 15분째 측정하지 못한다.
+
+  # ---------------------------------------------------------------- DB 연결
+  # 지속시간 경계: 사용 9/최대 10(90%)이 10분 이어진 10분에 발화, 8/10으로 내려가면 해제.
+  - interval: 1m
+    input_series:
+      - series: 'hikaricp_connections_active{env="production",pool="bokrilog"}'
+        values: '9x20 8x5'
+      - series: 'hikaricp_connections_max{env="production",pool="bokrilog"}'
+        values: '10x25'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: DatabaseConnectionsSaturated
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: DatabaseConnectionsSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: capacity
+              env: production
+              pool: bokrilog
+            exp_annotations:
+              summary: DB 연결 풀 사용률이 10분째 90% 이상이다.
+      - eval_time: 21m
+        alertname: DatabaseConnectionsSaturated
+        exp_alerts: []
+
+  # 값 경계: 89/100(89%)은 20분 이어져도 미발화, 90/100(90%)은 발화.
+  - interval: 1m
+    input_series:
+      - series: 'hikaricp_connections_active{env="production",pool="bokrilog"}'
+        values: '89x20'
+      - series: 'hikaricp_connections_max{env="production",pool="bokrilog"}'
+        values: '100x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DatabaseConnectionsSaturated
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'hikaricp_connections_active{env="production",pool="bokrilog"}'
+        values: '90x20'
+      - series: 'hikaricp_connections_max{env="production",pool="bokrilog"}'
+        values: '100x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DatabaseConnectionsSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: capacity
+              env: production
+              pool: bokrilog
+            exp_annotations:
+              summary: DB 연결 풀 사용률이 10분째 90% 이상이다.
+
+  # ---------------------------------------------------------------- JVM heap
+  # 지속시간 경계: heap 사용 900/최대 1000(90%, 최대가 정의되지 않은 풀 -1은 뺀다)이 10분 이어진 10분에 발화, 800으로 내려가면 해제.
+  - interval: 1m
+    input_series:
+      - series: 'jvm_memory_used_bytes{env="production",area="heap",id="G1 Old Gen"}'
+        values: '600x25'
+      - series: 'jvm_memory_used_bytes{env="production",area="heap",id="G1 Eden Space"}'
+        values: '300x20 200x5'
+      - series: 'jvm_memory_max_bytes{env="production",area="heap",id="G1 Old Gen"}'
+        values: '1000x25'
+      - series: 'jvm_memory_max_bytes{env="production",area="heap",id="G1 Eden Space"}'
+        values: '-1x25'
+      - series: 'jvm_memory_used_bytes{env="production",area="nonheap",id="Metaspace"}'
+        values: '5000x25'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: JvmHeapPressure
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: JvmHeapPressure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: capacity
+              env: production
+            exp_annotations:
+              summary: JVM heap 사용률이 10분째 90% 이상이다.
+      - eval_time: 21m
+        alertname: JvmHeapPressure
+        exp_alerts: []
+
+  # 값 경계: 899/1000(89.9%)은 20분 이어져도 미발화, 900/1000(90%)은 발화.
+  - interval: 1m
+    input_series:
+      - series: 'jvm_memory_used_bytes{env="production",area="heap",id="G1 Old Gen"}'
+        values: '899x20'
+      - series: 'jvm_memory_max_bytes{env="production",area="heap",id="G1 Old Gen"}'
+        values: '1000x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: JvmHeapPressure
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'jvm_memory_used_bytes{env="production",area="heap",id="G1 Old Gen"}'
+        values: '900x20'
+      - series: 'jvm_memory_max_bytes{env="production",area="heap",id="G1 Old Gen"}'
+        values: '1000x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: JvmHeapPressure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: capacity
+              env: production
+            exp_annotations:
+              summary: JVM heap 사용률이 10분째 90% 이상이다.
+
+  # ---------------------------------------------------------------- 디스크
+  # 남은 31%(사용 69%) → 30%(70%, 7분부터) → 15%(85%, 18분부터) → 31%(29분부터). 5분 지속 뒤 발화하고 두 단계는 하나만 울린다.
+  - interval: 1m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{env="production",instance="host",mountpoint="/"}'
+        values: '31x6 30x10 15x10 31x5'
+      - series: 'node_filesystem_size_bytes{env="production",instance="host",mountpoint="/"}'
+        values: '100x35'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: DiskUsageWarning
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: DiskUsageWarning
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: DiskUsageWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: capacity
+              env: production
+              instance: host
+              mountpoint: /
+            exp_annotations:
+              summary: 디스크 사용량이 70% 이상이다.
+      - eval_time: 22m
+        alertname: DiskUsageCritical
+        exp_alerts: []
+      - eval_time: 23m
+        alertname: DiskUsageCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              group: capacity
+              env: production
+              instance: host
+              mountpoint: /
+            exp_annotations:
+              summary: 디스크 사용량이 85% 이상이다.
+      - eval_time: 23m
+        alertname: DiskUsageWarning
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: DiskUsageCritical
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: DiskUsageWarning
+        exp_alerts: []
+
+  # ---------------------------------------------------------------- Grafana 사용량
+  # 69% → 70%(6분부터) → 85%(17분부터) → 50%(28분부터). 5분 지속 뒤 발화하고 두 단계는 하나만 울린다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_grafana_usage_ratio{env="production",resource="logs"}'
+        values: '0.69x5 0.7x10 0.85x10 0.5x5'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GrafanaUsageWarning
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: GrafanaUsageWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: capacity
+              resource: logs
+            exp_annotations:
+              summary: Grafana Cloud 사용량이 한도의 70% 이상이다.
+      - eval_time: 21m
+        alertname: GrafanaUsageCritical
+        exp_alerts: []
+      - eval_time: 22m
+        alertname: GrafanaUsageCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              group: capacity
+              resource: logs
+            exp_annotations:
+              summary: Grafana Cloud 사용량이 한도의 85% 이상이다.
+      - eval_time: 22m
+        alertname: GrafanaUsageWarning
+        exp_alerts: []
+      - eval_time: 29m
+        alertname: GrafanaUsageCritical
+        exp_alerts: []
+      - eval_time: 29m
+        alertname: GrafanaUsageUnmeasured
+        exp_alerts: []
+
+  # ---------------------------------------------------------------- 월 비용
+  # 29,999원은 미발화, 30,000원에 발화, 다음 달 누적이 0으로 돌아가면 해제. 개발 시계열의 큰 값은 운영 경보가 아니다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_monthly_cost_krw{env="production"}'
+        values: '29999x5 30000x5 0x5'
+      - series: 'bokrilog_monthly_cost_krw{env="development"}'
+        values: '99999x15'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: MonthlyCostExceeded
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: MonthlyCostExceeded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: cost
+            exp_annotations:
+              summary: 이번 달 비용이 30,000원 이상이다.
+      - eval_time: 12m
+        alertname: MonthlyCostExceeded
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: MonthlyCostUnmeasured
+        exp_alerts: []

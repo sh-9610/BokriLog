@@ -112,12 +112,16 @@ class OperatorEnvelopeService implements OperatorCommandApi {
 
     private final ActorDigest digest;
 
+    /** 문의 첫 답변 목표의 계측(Story 3.7). */
+    private final SupportMetrics supportMetrics;
+
     private final TransactionTemplate transactions;
 
     OperatorEnvelopeService(OperatorAuditRepository repository, OperationalRestrictionRepository restrictions,
             ServiceNoticeRepository notices, SupportInquiryRepository inquiries, ActorDigest digest,
-            PlatformTransactionManager transactionManager) {
+            SupportMetrics supportMetrics, PlatformTransactionManager transactionManager) {
         this.repository = repository;
+        this.supportMetrics = supportMetrics;
         this.restrictions = restrictions;
         this.notices = notices;
         this.inquiries = inquiries;
@@ -926,11 +930,25 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         if (!locked.status().canMoveTo(inquiry.to())) {
             return new InquiryCompletion.Refused(INQUIRY_TRANSITION_INVALID);
         }
+        Instant targetAt = locked.targetAt();
+        if (inquiry.to() == SupportInquiryApi.Status.ANSWERED && targetAt == null) {
+            // 미정 목표(달력에 그 연도가 없었다)를 답변 판정 전에 지금 달력으로 먼저 채운다(Story 3.7). 채우지 않으면 달력이 이미
+            // 그 연도를 담게 된 뒤의 첫 답변이 목표 달성 여부 없이(`pending`) 기록·계측된다. 채울 수 없으면 미정 그대로다.
+            BusinessDayCalendar calendar = this.inquiries.calendar(SupportInquiryApi.CALENDAR_VERSION);
+            Instant filled = calendar.targetFor(locked.receivedAt()).orElse(null);
+            if (filled != null && this.inquiries.fillTargetOf(inquiry.reference(), filled, calendar.version()) == 1) {
+                targetAt = filled;
+            }
+        }
         Instant transitionedAt = this.inquiries.transition(inquiry.reference(), locked.status(), inquiry.to(),
                 inquiry.answer(), envelope.operationId()).orElse(null);
         if (transitionedAt == null) {
             // 행 잠금 아래 같은 술어라 구조상 오지 않는 가지다. 그래도 영향 행 수가 곧 판정이다 — 0행을 성공으로 접지 않는다.
             return new InquiryCompletion.Refused(INQUIRY_TRANSITION_INVALID);
+        }
+        if (inquiry.to() == SupportInquiryApi.Status.ANSWERED) {
+            // 상태는 단조 전진이라 ANSWERED 전이는 문의마다 한 번 — 곧 첫 답변이다. 이 트랜잭션이 커밋되면 센다.
+            this.supportMetrics.firstAnswered(transitionedAt, targetAt);
         }
         // 상태·reference digest·전이 시각뿐이다. 제목·본문·이메일·답변 원문은 넣지 않는다.
         Map<String, Object> details = new LinkedHashMap<>();

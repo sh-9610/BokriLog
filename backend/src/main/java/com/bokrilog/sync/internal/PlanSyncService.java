@@ -9,6 +9,7 @@ import com.bokrilog.sync.SyncJobApi.SyncAdmission;
 import com.bokrilog.sync.SyncJobApi.SyncJob;
 import com.bokrilog.sync.SyncJobApi.SyncState;
 import com.bokrilog.sync.SyncJobApi.SyncTrigger;
+import com.bokrilog.sync.SyncTelemetry;
 import com.bokrilog.sync.internal.PlanPublicationRepository.Flow;
 import com.bokrilog.sync.internal.PlanPublicationRepository.Pinned;
 import com.bokrilog.sync.internal.PlanPublicationRepository.PublicationBlocked;
@@ -54,10 +55,11 @@ import org.springframework.transaction.support.TransactionTemplate;
  * equity, and publishes once. A reclaimed verification still collecting goes on from its complete windows, twice at
  * most; everything later, and every reclaimed sync, ends as interrupted.
  *
- * <p><b>Observation</b>: every attempt that ends writes exactly one line — the job, purpose, reason, trigger, mode,
+ * <p><b>Observation</b>: every attempt that ends writes exactly one line — the purpose, reason, trigger, mode,
  * status, stage, code, the targets, windows, pages and page retries of its collection, its reconciliation outcomes
  * and late changes, the latency and the policy versions — and nothing else: no user, amount, credential, provider
- * text or Bybit id.
+ * text or Bybit id. 작업 ID도 싣지 않는다(Story 3.7 — telemetry에 식별자를 남기지 않는다). 같은 결말이 동기화 메트릭
+ * ({@link SyncMetrics})의 결말 카운터로도 세진다.
  */
 @Service
 class PlanSyncService {
@@ -83,6 +85,8 @@ class PlanSyncService {
     private final AccountAccessApi accounts;
     /** 강한 신호(Story 3.3): 수집 페이지의 의미 충돌·미인식 enum, 발행의 result hash 불일치·portfolio CAS 위반. */
     private final StrongSignals strongSignals;
+    /** 동기화 계측(Story 3.7): admission의 제한·검증 제외와 시도의 결말. 시도 수는 작업 행 INSERT가 센다. */
+    private final SyncMetrics metrics;
     /**
      * What each running holder's collection did, for its attempt's one ending line (windows, pages, page retries). Keyed
      * by the holder's lease — the job and its fencing generation — so an earlier holder in this process and the one
@@ -107,8 +111,9 @@ class PlanSyncService {
             InitialCollectionRepository collections, CashflowClassificationRepository classifications,
             CashflowConversionRepository conversions, SourceConnectionApi sources, CalculationConformance conformance,
             PlanSyncGuard guard, PlanSyncPublisher publisher, PlanPublicationPort plans, AccountAccessApi accounts,
-            StrongSignals strongSignals, PlatformTransactionManager manager) {
+            StrongSignals strongSignals, SyncMetrics metrics, PlatformTransactionManager manager) {
         this.strongSignals = strongSignals;
+        this.metrics = metrics;
         this.plans = plans;
         this.accounts = accounts;
         this.syncs = syncs;
@@ -160,13 +165,23 @@ class PlanSyncService {
         if (active != null) return new SyncAdmission.Joined(active);
         Instant now = publications.databaseNow();
         if (!now.isBefore(base.calculation().endAt())) return complete(user, trigger, key, base, now);
-        if (unavailableReason(user, base, now) != null) return new SyncAdmission.Refused("SYNC_UNAVAILABLE");
+        String unavailable = unavailableReason(user, base, now);
+        if (unavailable != null) {
+            excludedIfRestricted(unavailable);
+            return new SyncAdmission.Refused("SYNC_UNAVAILABLE");
+        }
         // A persistent verification review of this base holds every sync (R6): it could only end as that review, so
         // nothing is made — no attempt row, no provider call — and the dashboard says why (REVIEW_HELD).
-        if (syncs.persistentlyReviewed(user, planId, base.pointer().calculationId()))
+        if (syncs.persistentlyReviewed(user, planId, base.pointer().calculationId())) {
+            metrics.outcome(SyncTelemetry.Kind.PLAN_SYNC, SyncTelemetry.EXCLUDED, REVIEW_HELD);
             return new SyncAdmission.Refused("SYNC_UNAVAILABLE");
+        }
         SyncJob latest = syncs.latest(user, planId).orElse(null);
-        if (longGap(user, base, now)) return new SyncAdmission.Deferred("LONG_GAP", latest, null);
+        if (longGap(user, base, now)) {
+            // 30일 넘은 공백은 검증(이어 가기)이 먼저다 — 검증 보류로 제외한다.
+            metrics.outcome(SyncTelemetry.Kind.PLAN_SYNC, SyncTelemetry.EXCLUDED, "LONG_GAP");
+            return new SyncAdmission.Deferred("LONG_GAP", latest, null);
+        }
         Duration wait = SyncWindow.wait(SyncWindow.Trigger.valueOf(trigger.name()), now,
                 syncs.lastAdmission(user, planId).orElse(null), base.pointer().publishedAt());
         if (wait != null) return new SyncAdmission.Deferred(trigger == SyncTrigger.MANUAL ? "COOLDOWN" : "NOT_DUE",
@@ -189,6 +204,17 @@ class PlanSyncService {
                             syncs.latest(user, planId).orElse(null), 1L));
         }
         return new SyncAdmission.Accepted(syncs.byId(user, jobId).orElseThrow());
+    }
+
+    /**
+     * 제한이 막은 admission만 제외로 센다(Story 3.7). 연결 해제·교체·기간 종료는 정책 제외가 아니라 그 계획에서 더 할 일이 없는
+     * 것이라 세지 않는다. 트랜잭션이 커밋된 뒤에 센다. 정밀 검증 admission({@link PlanVerificationService})도 이것을 부른다.
+     * 제외는 <b>요청 단위</b>다 — 같은 요청의 재전송도 다시 거절되면 다시 센다.
+     */
+    void excludedIfRestricted(String reason) {
+        if (PlanSyncGuard.RESTRICTED.equals(reason)) {
+            metrics.outcome(SyncTelemetry.Kind.PLAN_SYNC, SyncTelemetry.EXCLUDED, PlanSyncGuard.RESTRICTED);
+        }
     }
 
     /**
@@ -239,7 +265,11 @@ class PlanSyncService {
         UUID planId = base.plan().planId();
         var active = syncs.active(user, planId).orElse(null);
         if (active != null) return new SyncAdmission.Joined(active);
-        if (completedUnavailableReason(user, base) != null) return new SyncAdmission.Refused("SYNC_UNAVAILABLE");
+        String completedUnavailable = completedUnavailableReason(user, base);
+        if (completedUnavailable != null) {
+            excludedIfRestricted(completedUnavailable);
+            return new SyncAdmission.Refused("SYNC_UNAVAILABLE");
+        }
         Instant now = publications.databaseNow();
         Duration wait = completedWait(SyncWindow.Trigger.valueOf(trigger.name()), now,
                 syncs.lastAdmission(user, planId).orElse(null), completed.completion().transitionedAt());
@@ -480,8 +510,8 @@ class PlanSyncService {
         } catch (RuntimeException failure) {
             // 발행이 강한 신호로 롤백됐으면(result hash 불일치·portfolio CAS 위반) 롤백 뒤 그 신호를 먼저 올린다(Story 3.3).
             if (!signalRaised(lease, failure)) return;
-            // The job id and the class name only: a message or cause can carry SQL, provider text or values.
-            LOG.warn("plan sync interrupted: job={} failure={}", lease.jobId(), failure.getClass().getName());
+            // The class name only: a message or cause can carry SQL, provider text or values.
+            LOG.atWarn().addKeyValue("exception", failure.getClass().getSimpleName()).log("plan sync interrupted");
             end(lease, "FAILED", "SYNC_FAILED");
         } finally {
             // The ending line took the counters if this holder ended the attempt; a holder that did not (its lease
@@ -857,7 +887,7 @@ class PlanSyncService {
         } catch (org.springframework.dao.DataIntegrityViolationException refused) {
             // A schema rule refused the completion (V14's checks): it all rolled back; the attempt ends retryable now
             // rather than with its lease. The class name only: a message can carry SQL or values.
-            LOG.warn("plan completion refused: job={} failure={}", lease.jobId(), refused.getClass().getName());
+            LOG.atWarn().addKeyValue("exception", refused.getClass().getSimpleName()).log("plan completion refused");
             end(lease, "FAILED", "SYNC_FAILED");
         }
     }
@@ -1434,9 +1464,10 @@ class PlanSyncService {
         } catch (RuntimeException unreadable) {
             facts = new int[] {0, 0, 0};
         }
-        LOG.info("plan sync finished: job={} purpose={} reason={} trigger={} mode={} status={} stage={} code={} "
+        metrics.ending(SyncTelemetry.Kind.PLAN_SYNC, e.status(), e.failureCode());
+        LOG.info("plan sync finished: purpose={} reason={} trigger={} mode={} status={} stage={} code={} "
                 + "targets={} windows={} pages={} retries={} reconciled={} lateChanges={} latencyMs={} policies={}",
-                e.jobId(), e.purpose(), e.reason() == null ? "-" : e.reason(), e.trigger(),
+                e.purpose(), e.reason() == null ? "-" : e.reason(), e.trigger(),
                 e.mode() == null ? "-" : e.mode(), e.status(), e.stage() == null ? "-" : e.stage(),
                 e.failureCode() == null ? "-" : e.failureCode(), facts[0], stats == null ? 0 : stats.windows.get(),
                 stats == null ? 0 : stats.pages.get(), stats == null ? 0 : stats.retries.get(), facts[1], facts[2],

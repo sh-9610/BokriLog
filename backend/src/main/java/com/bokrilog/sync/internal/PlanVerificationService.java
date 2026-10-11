@@ -97,8 +97,12 @@ class PlanVerificationService {
         var active = syncs.active(user, planId).orElse(null);
         if (active != null) return userJoin(active, purpose);
         Instant now = publications.databaseNow();
-        if (planSyncs.unavailableReason(user, base, now) != null)
+        String unavailable = planSyncs.unavailableReason(user, base, now);
+        if (unavailable != null) {
+            // 제한이 막은 검증 요청은 동기화 제외로 센다(Story 3.7). 커밋 뒤에 센다.
+            planSyncs.excludedIfRestricted(unavailable);
             return new VerificationAdmission.Refused("VERIFICATION_UNAVAILABLE");
+        }
         // Interpretations C2/C3: after a persistent review of this base, neither kind can change anything. It is judged
         // before the long gap, in the dashboard's order, so the answer and the screen never disagree.
         if (syncs.persistentlyReviewed(user, planId, base.pointer().calculationId()))
@@ -172,8 +176,12 @@ class PlanVerificationService {
         if (active != null) return sameSystemRequest(user, active, reason, explicit)
                 ? new VerificationAdmission.Joined(active) : new VerificationAdmission.Refused("JOB_IN_PROGRESS");
         Instant now = publications.databaseNow();
-        if (planSyncs.unavailableReason(user, base, now) != null)
+        String unavailable = planSyncs.unavailableReason(user, base, now);
+        if (unavailable != null) {
+            // 제한이 막은 검증 요청은 동기화 제외로 센다(Story 3.7). 커밋 뒤에 센다.
+            planSyncs.excludedIfRestricted(unavailable);
             return new VerificationAdmission.Refused("VERIFICATION_UNAVAILABLE");
+        }
         if (planSyncs.longGap(user, base, now)) return new VerificationAdmission.Refused("LONG_GAP");
         Instant t0 = base.calculation().t0();
         Instant verified = base.calculation().verifiedThrough();

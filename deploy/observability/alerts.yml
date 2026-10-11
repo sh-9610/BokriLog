@@ -1,0 +1,201 @@
+# BokriLog 경보 규칙(Story 3.7 AC-2·AC-5). Prometheus 규칙 형식이고 Grafana Cloud의 규칙으로 올린다(연결은 Story 3.8).
+#
+# 시험은 같은 디렉터리의 `alerts.test.yml`(promtool 단위시험)이 소유하고 `.github/scripts/check-alert-rules.sh`가 CI에서
+# 돌린다. promtool은 CI·개발 전용 도구다 — 운영 이미지·jar·서버에 넣지 않는다.
+#
+# 규칙마다 세 가지를 갖는다.
+#   for:              지속시간. 값 자체가 나이·누적(backup age·queue age·월 비용)이거나 창을 이미 품은 비율(동기화 실패율)은
+#                     `0m`이다 — 기준값이 곧 경보 시점이다. 순간값(연결·메모리·디스크)은 정한 시간만큼 이어져야 한다.
+#   labels.severity:  `info`·`warning`·`critical`. 미측정(`...Unmeasured`)은 `info`다.
+#   labels.group:     중복 억제 단위(availability·observability·backup·sync·capacity·cost·unmeasured). 같은 group의 경보는 한
+#                     묶음으로 알린다. 같은 대상의 warning·critical 두 단계는 구간을 나눠 동시에 울리지 않는다.
+#
+# **일반 경보와 강한 신호를 섞지 않는다(AC-5).** 강한 신호 후보만 `strong_signal: "true"` label을 갖는다. 승인된 목록은
+# `check-alert-rules.sh`의 `approved_strong_signal_alerts`이고 지금은 비어 있다 — 아래 경보는 모두 일반 경보이며 자동 정지로
+# 잇지 않는다. 강한 신호 3번(비밀의 telemetry 검출)은 애플리케이션이 감지 지점에서 직접 올린다(`LogSecretGuard`).
+#
+# **미측정을 경보한다.** synthetic(3.8)·backup(3.9)·비용 장부(분리)·Grafana 사용량(3.8)이 연결되기 전에는 시계열이 없다.
+# 그때 조용히 통과하지 않도록 `absent()` 규칙이 `...Unmeasured`로 알린다. 미측정은 `severity: info`·`group: unmeasured`라
+# 사람을 깨우지 않는다 — 연결 전 침묵 정책은 알림 경로가 `group="unmeasured"`를 일일 요약으로만 보내는 것이다(Story 3.8).
+#
+# 시계열 이름은 애플리케이션 메트릭(`TelemetryAllowlist`)과 수집기가 붙이는 것(`probe_success`·`up`·`node_filesystem_*`)이다.
+# **모든 selector가 `env="production"`이다.** 애플리케이션 메트릭은 공통 tag `env`로, 수집기 계열(probe·node·alloy)은 운영
+# Alloy·synthetic이 같은 이름의 외부 label을 붙인다(Story 3.8) — 개발·CI 수치가 운영 경보를 울리거나 덮지 않는다.
+groups:
+  - name: bokrilog-availability
+    interval: 1m
+    rules:
+      # 외부 liveness는 공개 `GET /api/status`다(synthetic 검사, job `bokrilog-liveness`).
+      - alert: LivenessProbeFailed
+        expr: probe_success{job="bokrilog-liveness",env="production"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          group: availability
+        annotations:
+          summary: 외부 liveness 검사가 5분째 실패한다.
+      - alert: LivenessProbeUnmeasured
+        expr: absent(probe_success{job="bokrilog-liveness",env="production"})
+        for: 10m
+        labels:
+          severity: info
+          group: unmeasured
+        annotations:
+          summary: 외부 liveness 검사 결과가 없다(synthetic 미연결 또는 중단).
+      # Alloy heartbeat. Alloy가 자기 자신을 scrape한 `up{job="alloy"}`가 1이 아니거나 없으면 수집이 끊긴 것이다.
+      - alert: AlloyHeartbeatMissing
+        expr: absent(up{job="alloy",env="production"} == 1)
+        for: 10m
+        labels:
+          severity: critical
+          group: observability
+        annotations:
+          summary: Grafana Alloy heartbeat가 10분째 없다.
+
+  - name: bokrilog-backup
+    interval: 1m
+    rules:
+      # 마지막 성공 백업(두 저장소 모두 성공한 generation)의 나이. 시계열은 Story 3.9가 만든다.
+      - alert: BackupAgeExceeded
+        expr: time() - max(bokrilog_backup_last_success_timestamp_seconds{env="production"}) >= 26 * 3600
+        for: 0m
+        labels:
+          severity: critical
+          group: backup
+        annotations:
+          summary: 마지막 성공 백업이 26시간 이상 지났다.
+      - alert: BackupAgeUnmeasured
+        expr: absent(bokrilog_backup_last_success_timestamp_seconds{env="production"})
+        for: 1h
+        labels:
+          severity: info
+          group: unmeasured
+        annotations:
+          summary: 백업 성공 시각이 측정되지 않는다(백업 미연결).
+
+  - name: bokrilog-sync
+    interval: 1m
+    rules:
+      # 동기화 실패율: 15분 창의 실패 / (성공 + 실패) ≥ 20%, 분모 10 이상. 제외(excluded)는 분모가 아니다(SyncTelemetry).
+      # 비율 대신 `실패 × 5 ≥ 분모`로 쓴다 — 같은 뜻이고, 나눗셈의 부동소수 반올림이 정확히 20%인 경계를 흔들지 않는다.
+      - alert: SyncFailureRateHigh
+        expr: |
+          (
+            sum by (env) (increase(bokrilog_sync_outcomes_total{env="production",outcome="failure"}[15m])) * 5
+              >= sum by (env) (increase(bokrilog_sync_outcomes_total{env="production",outcome=~"success|failure"}[15m]))
+          )
+          and
+          sum by (env) (increase(bokrilog_sync_outcomes_total{env="production",outcome=~"success|failure"}[15m])) >= 10
+        for: 0m
+        labels:
+          severity: warning
+          group: sync
+        annotations:
+          summary: 최근 15분 동기화 실패율이 20% 이상이다.
+      - alert: SyncQueueAgeHigh
+        expr: max by (env, kind) (bokrilog_sync_queue_age_seconds{env="production"}) >= 15 * 60
+        for: 0m
+        labels:
+          severity: warning
+          group: sync
+        annotations:
+          summary: 가장 오래 기다린 동기화 작업이 15분 이상 대기 중이다.
+      # 대기 나이를 측정하지 못했다(NaN — DB 읽기 실패·statement_timeout). NaN은 자기 자신과 같지 않다.
+      - alert: SyncQueueAgeUnmeasured
+        expr: |
+          bokrilog_sync_queue_age_seconds{env="production"} != bokrilog_sync_queue_age_seconds{env="production"}
+        for: 15m
+        labels:
+          severity: info
+          group: unmeasured
+        annotations:
+          summary: 동기화 대기 나이를 15분째 측정하지 못한다.
+
+  - name: bokrilog-capacity
+    interval: 1m
+    rules:
+      - alert: DatabaseConnectionsSaturated
+        expr: max by (env, pool) (hikaricp_connections_active{env="production"} / hikaricp_connections_max{env="production"}) >= 0.9
+        for: 10m
+        labels:
+          severity: warning
+          group: capacity
+        annotations:
+          summary: DB 연결 풀 사용률이 10분째 90% 이상이다.
+      # 최대값이 정의되지 않은 풀(-1)은 분모에서 뺀다.
+      - alert: JvmHeapPressure
+        expr: |
+          sum by (env) (jvm_memory_used_bytes{env="production",area="heap"})
+            / sum by (env) (jvm_memory_max_bytes{env="production",area="heap"} > 0) >= 0.9
+        for: 10m
+        labels:
+          severity: warning
+          group: capacity
+        annotations:
+          summary: JVM heap 사용률이 10분째 90% 이상이다.
+      # 디스크 사용량 70%(남은 비율 30% 이하)·85%(15% 이하). 두 단계는 구간을 나눠 하나만 울린다.
+      - alert: DiskUsageWarning
+        expr: |
+          node_filesystem_avail_bytes{env="production",mountpoint="/"} / node_filesystem_size_bytes{env="production",mountpoint="/"} <= 0.30
+          and
+          node_filesystem_avail_bytes{env="production",mountpoint="/"} / node_filesystem_size_bytes{env="production",mountpoint="/"} > 0.15
+        for: 5m
+        labels:
+          severity: warning
+          group: capacity
+        annotations:
+          summary: 디스크 사용량이 70% 이상이다.
+      - alert: DiskUsageCritical
+        expr: node_filesystem_avail_bytes{env="production",mountpoint="/"} / node_filesystem_size_bytes{env="production",mountpoint="/"} <= 0.15
+        for: 5m
+        labels:
+          severity: critical
+          group: capacity
+        annotations:
+          summary: 디스크 사용량이 85% 이상이다.
+      # Grafana Cloud 사용량(무료 한도 대비 비율, 자원별). 시계열은 Story 3.8이 연결한다.
+      - alert: GrafanaUsageWarning
+        expr: max by (resource) (bokrilog_grafana_usage_ratio{env="production"}) >= 0.70 < 0.85
+        for: 5m
+        labels:
+          severity: warning
+          group: capacity
+        annotations:
+          summary: Grafana Cloud 사용량이 한도의 70% 이상이다.
+      - alert: GrafanaUsageCritical
+        expr: max by (resource) (bokrilog_grafana_usage_ratio{env="production"}) >= 0.85
+        for: 5m
+        labels:
+          severity: critical
+          group: capacity
+        annotations:
+          summary: Grafana Cloud 사용량이 한도의 85% 이상이다.
+      - alert: GrafanaUsageUnmeasured
+        expr: absent(bokrilog_grafana_usage_ratio{env="production"})
+        for: 1h
+        labels:
+          severity: info
+          group: unmeasured
+        annotations:
+          summary: Grafana Cloud 사용량이 측정되지 않는다(미연결).
+
+  - name: bokrilog-cost
+    interval: 1m
+    rules:
+      # 이번 달 누적 비용(원). 운영 장부가 만들기 전에는 미측정이다(분리된 후속 작업).
+      - alert: MonthlyCostExceeded
+        expr: max(bokrilog_monthly_cost_krw{env="production"}) >= 30000
+        for: 0m
+        labels:
+          severity: warning
+          group: cost
+        annotations:
+          summary: 이번 달 비용이 30,000원 이상이다.
+      - alert: MonthlyCostUnmeasured
+        expr: absent(bokrilog_monthly_cost_krw{env="production"})
+        for: 1h
+        labels:
+          severity: info
+          group: unmeasured
+        annotations:
+          summary: 월 비용이 측정되지 않는다(운영 장부 미연결).

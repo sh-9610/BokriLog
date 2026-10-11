@@ -81,7 +81,7 @@ class PlanSyncServiceTest {
     private PlanSyncService service() {
         return new PlanSyncService(syncs, publications, collections, classifications, conversions, sources,
                 new CalculationConformance(() -> true), guard, publisher, mock(PlanPublicationPort.class),
-                mock(com.bokrilog.identity.AccountAccessApi.class), mock(StrongSignals.class),
+                mock(com.bokrilog.identity.AccountAccessApi.class), mock(StrongSignals.class), mock(SyncMetrics.class),
                 mock(PlatformTransactionManager.class));
     }
 
@@ -711,7 +711,8 @@ class PlanSyncServiceTest {
         StrongSignals signals = mock(StrongSignals.class);
         PlanSyncService service = new PlanSyncService(syncs, publications, collections, classifications, conversions,
                 sources, new CalculationConformance(() -> true), guard, publisher, mock(PlanPublicationPort.class),
-                mock(com.bokrilog.identity.AccountAccessApi.class), signals, mock(PlatformTransactionManager.class));
+                mock(com.bokrilog.identity.AccountAccessApi.class), signals, mock(SyncMetrics.class),
+                mock(PlatformTransactionManager.class));
         var violation = new com.bokrilog.portfolio.PortfolioPointerInvariantViolation(PORTFOLIO, USER);
 
         assertThat(service.signalRaised(lease, new IllegalStateException("not a signal"))).isTrue();

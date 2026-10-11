@@ -96,6 +96,9 @@ public class ApiErrorHandler extends ResponseEntityExceptionHandler {
      */
     static final String REQUEST_ID_HEADER = "X-Request-Id";
 
+    /** 처리하지 못한 요청의 기록. 상위 클래스의 commons-logging 로거는 구조 인자를 받지 않는다. */
+    private static final org.slf4j.Logger UNCLASSIFIED_LOG = org.slf4j.LoggerFactory.getLogger(ApiErrorHandler.class);
+
     /** 응답 본문. 필드 순서가 곧 직렬화 순서이며 Nginx의 정적 JSON도 같은 순서를 쓴다. */
     record ApiError(String code, String message, String correlationId) {}
 
@@ -126,16 +129,17 @@ public class ApiErrorHandler extends ResponseEntityExceptionHandler {
      *
      * <p>기본 로그에도 스택을 남기지 않는다. 스택 한 줄에 배포 경로·의존 라이브러리 구성·내부
      * 클래스 구조가 함께 실리고, 로그는 응답보다 오래 남으며 더 많은 곳으로 복제된다. 대신 응답과
-     * 같은 correlation ID를 남겨 사용자가 신고한 ID로 요청을 특정할 수 있게 한다. 스택이 필요한
-     * 조사에서는 {@code logging.level.com.bokrilog=debug}로 한 번만 열고 다시 닫는다.
+     * 같은 correlation ID를 남겨 사용자가 신고한 ID로 요청을 특정할 수 있게 한다.
+     *
+     * <p>correlation ID는 본문이 아니라 구조 인자 {@code correlationId}로 싣는다(Story 3.7). 로그 encoder
+     * ({@link RedactingJsonEncoder})는 본문의 UUID·토큰 모양을 가리므로 본문에 넣으면 그 ID가 가려진다. 예외는 클래스의
+     * 단순 이름 하나만 구조 인자 {@code exception}으로 싣는다 — 메시지·원인·스택은 어느 수준에서도 출력되지 않는다.
      */
     @ExceptionHandler(Exception.class)
     ResponseEntity<ApiError> handleUnclassified(Exception ex, WebRequest request) {
         String correlationId = correlationId(request);
-        logger.warn("처리하지 못한 요청 (correlationId=" + correlationId + ")");
-        if (logger.isDebugEnabled()) {
-            logger.debug("처리하지 못한 요청의 원인 (correlationId=" + correlationId + ")", ex);
-        }
+        UNCLASSIFIED_LOG.atWarn().addKeyValue("correlationId", correlationId)
+                .addKeyValue("exception", ex.getClass().getSimpleName()).log("처리하지 못한 요청");
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorFor(HttpStatus.INTERNAL_SERVER_ERROR, correlationId));
@@ -184,17 +188,33 @@ public class ApiErrorHandler extends ResponseEntityExceptionHandler {
      * <p>package-private이다. 자기 본문을 직접 만드는 컨트롤러가 하나 생겼고
      * ({@code BybitConnectionController}) 그 응답의 correlation ID도 이 규칙을 지나야 한다 — 두
      * 곳에서 만들면 진입점이 준 값을 한쪽만 존중하는 날이 온다.
+     *
+     * <p><b>받는 값은 둘이다(Story 3.7).</b> 진입점(Nginx)의 {@code $request_id}(소문자 hex 32자 — Nginx가 클라이언트 헤더를
+     * 덮어쓰므로 서버가 만든 값이다)와, 그 밖의 {@link #CORRELATION_ID} 문자 집합 값 중 숫자 6자리 이상 연속이 없는 것.
+     * 숫자 6자리 이상이 든 클라이언트 값은 계좌·전화번호 같은 식별자를 로그에 싣는 통로가 되므로 서버가 만든 값으로
+     * 대체한다. 같은 문자 집합을 로그 encoder가 {@code correlationId} 키에 쓴다 — 두 곳이 갈라지지 않게 이 상수 하나다.
      */
     static String correlationIdOf(@Nullable String headerValue) {
         if (headerValue == null) {
             return UUID.randomUUID().toString();
         }
         String trimmed = headerValue.trim();
-        if (trimmed.isEmpty() || trimmed.length() > 64 || !trimmed.matches("[A-Za-z0-9._-]+")) {
+        if (INGRESS_REQUEST_ID.matcher(trimmed).matches()) {
+            return trimmed;
+        }
+        if (!CORRELATION_ID.matcher(trimmed).matches() || LONG_DIGITS.matcher(trimmed).find()) {
             return UUID.randomUUID().toString();
         }
         return trimmed;
     }
+
+    /** correlation ID의 문자 집합과 길이. 로그 encoder도 이것으로 {@code correlationId} 값을 판정한다. */
+    static final java.util.regex.Pattern CORRELATION_ID = java.util.regex.Pattern.compile("[A-Za-z0-9._-]{1,64}");
+
+    /** Nginx {@code $request_id}의 모양. */
+    private static final java.util.regex.Pattern INGRESS_REQUEST_ID = java.util.regex.Pattern.compile("[0-9a-f]{32}");
+
+    private static final java.util.regex.Pattern LONG_DIGITS = java.util.regex.Pattern.compile("[0-9]{6,}");
 
     /**
      * 프레임워크의 오류 경로({@code /error}) 대체.

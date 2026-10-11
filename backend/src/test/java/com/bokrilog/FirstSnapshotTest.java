@@ -978,7 +978,9 @@ class FirstSnapshotTest extends AuthFlowTestBase {
             int calls=BybitStubConfiguration.requestCount();
             Thread.sleep(QUIET_WINDOW);
             assertThat(BybitStubConfiguration.requestCount()).as("no automatic retry").isEqualTo(calls);
-            assertThat(output.getAll()).contains("cash-flow conversion interrupted: job="+job)
+            assertThat(LogLines.records(output.getAll())).anySatisfy(record -> assertThat(record)
+                    .containsEntry("event", "cash-flow conversion interrupted").containsKey("exception"));
+            assertThat(output.getAll())
                     .doesNotContain("injected conversion failure detail");
         } finally {
             jdbc().sql("DROP TRIGGER fail_conversion_flow ON sync_cashflow_conversion_flow").update();
@@ -4421,7 +4423,7 @@ class FirstSnapshotTest extends AuthFlowTestBase {
 
     /** The history's operational lines captured so far, in order. */
     private static java.util.List<String> adjustmentLogLines(org.springframework.boot.test.system.CapturedOutput output) {
-        return output.getAll().lines().filter(line -> line.contains("adjustment history read:")).toList();
+        return LogLines.events(output.getAll(), "adjustment history read:");
     }
 
     /** The exact sum in canonical notation. */
@@ -4533,12 +4535,12 @@ class FirstSnapshotTest extends AuthFlowTestBase {
 
     /** The evidence's operational lines captured so far, in order. */
     private static java.util.List<String> evidenceLogLines(org.springframework.boot.test.system.CapturedOutput output) {
-        return output.getAll().lines().filter(line -> line.contains("calculation evidence read:")).toList();
+        return LogLines.events(output.getAll(), "calculation evidence read:");
     }
 
     /** The dashboard's operational lines captured so far, in order. */
     private static java.util.List<String> dashboardLogLines(org.springframework.boot.test.system.CapturedOutput output) {
-        return output.getAll().lines().filter(line -> line.contains("dashboard read:")).toList();
+        return LogLines.events(output.getAll(), "dashboard read:");
     }
 
     /** Holds an {@code ACCESS EXCLUSIVE} lock on {@code table} in a transaction of its own until closed. */

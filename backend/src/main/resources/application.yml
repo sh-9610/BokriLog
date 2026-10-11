@@ -123,6 +123,10 @@ spring:
   datasource:
     url: ${BOKRILOG_DB_URL:}
     username: ${BOKRILOG_DB_USERNAME:}
+    hikari:
+      # 연결 풀 meter의 `pool` tag 값이다(Story 3.7). 기본값 `HikariPool-1`은 번호가 붙어 닫힌 값이 아니다.
+      # `TelemetryAllowlist.POOL_NAME`과 같은 값이어야 DB 연결 메트릭이 출력에 남는다.
+      pool-name: bokrilog
   flyway:
     # 기본값과 같은 값이지만 적어 둔다. 마이그레이션 위치와 "지우지 않는다"는 두 가지는
     # 조용히 바뀌면 안 되는 값이다.
@@ -229,6 +233,8 @@ bokrilog:
     operators: ${BOKRILOG_OPERATORS:}
     audit-digest-key: ${BOKRILOG_AUDIT_DIGEST_KEY:}
     support-contact: ${BOKRILOG_SUPPORT_CONTACT:}
+  telemetry:
+    env: ${BOKRILOG_ENV:development}
   # 워커 dispatch 간격. `FirstSnapshotWorker`의 여섯 dispatch(첫 스냅샷·수집·판정·환산·발행·증분 동기화)가
   # 한 번 claim한 뒤 다음 claim까지 쉬는 시간이며, 이 값이 유일한 기본값이다(애너테이션에 기본값을 두지 않는다).
   # 운영은 1초다. 설정으로 연 이유는 시험 하나뿐이다 — 실제 파이프라인을 모는 시험이 단계마다 최대 한 tick을
@@ -257,6 +263,38 @@ bokrilog:
   # 환경이 조용히 늘릴 수 있게 두면 그 완화가 어디서 일어났는지 추적할 자리가 없기 때문이다.
   session:
     absolute-lifetime: 12h
+
+# 관측 계측(Story 3.7). 이름만 이 파일이 정하고 값은 환경이 준다.
+#
+#   BOKRILOG_MANAGEMENT_PORT    -- Actuator 관리 포트. 기본 18081.
+#   BOKRILOG_MANAGEMENT_ADDRESS -- 관리 포트가 듣는 주소. 기본 `127.0.0.1` — 같은 네트워크 이름공간(같은 컨테이너·같은
+#                                  호스트 프로세스)에서만 닿는다. compose는 포트를 게시하지 않고 Nginx는 `/api`만 넘긴다.
+#                                  수집기(Grafana Alloy, Story 3.8)가 다른 이름공간에 있으면 그 배포가 이 값을 정한다.
+#   BOKRILOG_ENV             -- 모든 메트릭의 공통 tag `env`. `development`(기본)·`ci`·`production` 중 하나이고, 밖이면
+#                               기동을 거부한다. 개발·CI 수치가 운영 실적과 섞이지 않게 한다.
+#
+# 노출 엔드포인트는 `prometheus` 하나다. `health`·`info`·`env`·`beans` 등은 모두 꺼져 있다(`access.default: none`).
+# 외부 liveness는 공개 표면의 `GET /api/status`가 계속 맡는다 — 의존 상태를 숨긴 `UP` 하나가 그 계약이다
+# (`StatusController`). 메트릭 이름·tag는 `TelemetryAllowlist`의 닫힌 표만 통과한다(`TelemetryConfig`).
+management:
+  server:
+    port: ${BOKRILOG_MANAGEMENT_PORT:18081}
+    address: ${BOKRILOG_MANAGEMENT_ADDRESS:127.0.0.1}
+  endpoints:
+    access:
+      default: none
+    web:
+      exposure:
+        include: prometheus
+      # `/actuator` 목록 페이지도 닫는다. 열어 두면 관리 포트가 엔드포인트 목록을 답한다.
+      discovery:
+        enabled: false
+    jmx:
+      exposure:
+        exclude: '*'
+  endpoint:
+    prometheus:
+      access: read-only
 
 logging:
   level:

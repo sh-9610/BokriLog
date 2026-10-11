@@ -231,7 +231,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
         assertThat(admissions).anySatisfy(line -> assertThat(line).contains("trigger=VISIBILITY result=IDEMPOTENCY_CONFLICT "
                 + "status=409"));
         assertThat(admissions).anySatisfy(line -> assertThat(line).contains("trigger=MANUAL result=COOLDOWN status=200"));
-        var endings = endingLines(output, job);
+        var endings = endingLines(output, "purpose=SYNC");
         // Story 2.12 widened the line: purpose and reason, the collection's targets, windows, pages and retries, the
         // reconciliation outcomes and late changes. A sync plans no target range and records no outcome.
         assertThat(endings).singleElement().satisfies(line -> assertThat(line).contains("purpose=SYNC reason=- "
@@ -313,11 +313,14 @@ class IncrementalSyncTest extends PlanSyncTestBase {
         var v1 = ready(user);
         moveVerification(user, v1.calculationId(), "31 days");
         BybitStubConfiguration.resetRequestCount();
+        double gapsBefore = syncOutcomes("plan_sync", "excluded", "LONG_GAP");
         var gap = sync.admitPlanSync(user, SyncJobApi.SyncTrigger.MANUAL, "incremental-gap-manual-01");
         assertThat(gap).isEqualTo(new SyncJobApi.SyncAdmission.Deferred("LONG_GAP", null, null));
         assertThat(sync.admitPlanSync(user, SyncJobApi.SyncTrigger.ENTRY, "incremental-gap-entry-02"))
                 .isEqualTo(new SyncJobApi.SyncAdmission.Deferred("LONG_GAP", null, null));
         assertThat(countOf("sync_plan_sync_job", user)).isZero();
+        // 검증 보류로 제외된 요청 둘(Story 3.7: 제외는 요청 단위다).
+        assertThat(syncOutcomes("plan_sync", "excluded", "LONG_GAP")).isEqualTo(gapsBefore + 2);
         assertThat(BybitStubConfiguration.requestCount()).as("no provider call, not even the time").isZero();
         var dashboard = (SyncJobApi.Dashboard.Ready) sync.dashboard(user).dashboard();
         assertThat(dashboard.result().pointerVersion()).as("the last official result stays readable").isEqualTo(1);
@@ -732,7 +735,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
                 .param("j", job).query(String.class).single()).isEqualTo("FAILED|SYNC_INTERRUPTED");
         assertUnchanged(user, v1);
         assertNoChildInProgress(job);
-        assertThat(endingLines(output, job)).singleElement()
+        assertThat(endingLines(output, "purpose=SYNC")).singleElement()
                 .satisfies(line -> assertThat(line).contains("status=FAILED").contains("code=SYNC_INTERRUPTED"));
     }
 
@@ -836,8 +839,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
         }
         // The erasure ended the attempt with its one line. The late worker, woken when the holder let go, then
         // ends its publishing transaction (the plan lock goes away) and writes nothing after it.
-        String ending = "plan sync finished: job=" + late + " ";
-        pollUntil(Duration.ofSeconds(10), () -> lines(output, ending), found -> !found.isEmpty());
+        endingLines(output, "status=ERASED");
         awaitPlanLockReleased();
         Thread.sleep(QUIET_WINDOW);
         for (String table : List.of("sync_plan_sync_job", "sync_initial_collection_job", "sync_cashflow_classification_job",
@@ -850,7 +852,7 @@ class IncrementalSyncTest extends PlanSyncTestBase {
         assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_event_provenance p JOIN sync_initial_collection_job j "
                 + "ON j.job_id=p.job_id WHERE j.user_id=:u").param("u", user).query(Integer.class).single()).isZero();
         assertThat(ready(kept).pointerVersion()).isEqualTo(2);
-        assertThat(endingLines(output, late)).singleElement()
+        assertThat(endingLines(output, "status=ERASED")).singleElement()
                 .satisfies(line -> assertThat(line).contains("status=ERASED"));
     }
 
