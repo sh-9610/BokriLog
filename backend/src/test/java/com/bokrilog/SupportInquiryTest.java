@@ -253,16 +253,29 @@ class SupportInquiryTest extends OperatorTestBase {
                 .isEqualTo(holidays.size());
     }
 
+    /**
+     * 로그·응답에서 원문을 찾을 표지. 영문 소문자만 쓴다 — UUID 앞자리는 숫자만으로 이어질 수 있어 민감값의 금융값
+     * 규칙(구분자 포함 숫자 6자리 이상)에 걸리고, 그러면 시험이 실행마다 다르게 끝난다.
+     */
+    private static String letterMarker() {
+        java.util.concurrent.ThreadLocalRandom random = java.util.concurrent.ThreadLocalRandom.current();
+        StringBuilder marker = new StringBuilder(8);
+        for (int i = 0; i < 8; i++) {
+            marker.append((char) ('a' + random.nextInt(26)));
+        }
+        return marker.toString();
+    }
+
     // ------------------------------------------------------------------ 운영 처리
 
     @Test
     void 운영자가_답변하면_첫_답변_시각과_달성_여부를_쓰고_사용자_목록에_답변이_보인다(CapturedOutput output)
             throws Exception {
         Signed user = signedIn("inquiry-answer-user");
-        String title = "결제 화면 질문 " + UUID.randomUUID().toString().substring(0, 8);
-        String description = "본문 표지 " + UUID.randomUUID().toString().substring(0, 8) + "\n둘째 줄";
+        String title = "결제 화면 질문 " + letterMarker();
+        String description = "본문 표지 " + letterMarker() + "\n둘째 줄";
         String email = "reply-" + UUID.randomUUID().toString().substring(0, 8) + "@example.test";
-        String answer = "답변 표지 " + UUID.randomUUID().toString().substring(0, 8) + " 확인 후 조치했습니다.";
+        String answer = "답변 표지 " + letterMarker() + " 확인 후 조치했습니다.";
         var created = submit(user, draft("ACCOUNT", title, description, "EMAIL", email), key("inquiry-answer"));
         assertThat(created.statusCode()).as(created.body()).isEqualTo(201);
         String reference = (String) topLevelFieldsOf(created.body()).get("reference");

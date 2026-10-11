@@ -155,6 +155,8 @@ context:
 
 ## Spec Change Log
 
+- 2026-10-11 CI 수정(PR #85 첫 실행): `SupportInquiryTest`의 답변 시험이 표지로 쓴 UUID 앞 8자가 숫자만으로 이어지면 금융값 규칙(숫자 6자리 이상)에 걸려 422가 났다(약 2% 확률, CI에서 재현). 제목·본문·답변 표지를 영문 소문자 8자(`letterMarker`)로 바꿨다 — 시험 입력만의 결함이고 규칙·제품 코드는 그대로다. SPEC 본문 변경 없음.
+
 - 2026-10-10 Matrix Test Audit(step-03): 13행 모두 `SupportInquiryTest`·`BusinessDayCalendarTest`·`InquiryRulesTest`·`SupportInquiryPanel.test.tsx`가 덮고 Testcontainers 빌드 1320건·새 스택 주입 origin e2e 68건 통과. 구현이 정한 곳 — 금융값 규칙을 3.5 공지 메시지와 `InquiryRules.financialLike` 한 벌로 합침, 원장 target은 reference의 keyed digest, 새 접수 201·같은 키 재전송 200, 접수는 사용자 advisory 잠금 아래에서 키·상한·목표·INSERT. SPEC 본문 변경 없음.
 
 - 2026-10-10 리뷰 patch 루프(blind·edge-case·verification-gap): 주요 patch — 민감값 규칙 오탐 축소(토큰은 영문자·숫자가 함께 있는 20자 이상 낱말, 정규 UUID·대문자 오류 code 허용, ISO 날짜·시각은 금융값에서 제외)와 우회 차단(NFKC·`\p{Cf}` 제거 뒤 판정, 유니코드 공백 구분자, 전각 통화, 제목의 서식 문자·줄 구분자 거절), 서버·화면 규칙을 공유 fixture 표(`frontend/src/content/inquiryRules.fixture.json`)로 함께 강제, 운영자 상세의 회신 이메일 원문(목록은 마스킹)과 사용자 회신 카피 정정, 사용자 목록의 본문 펼치기, 조회 트랜잭션의 `CALENDAR_PENDING` 채우기(정해진 목표는 소급하지 않음), 집계 영업시간을 행의 `calendar_version` 달력으로, seed·fixture 짝 시험을 지금 버전의 최신 마이그레이션으로, 집계 `purgeHorizon`, 운영자 목록 미해결 우선·상태 필터·접수 번호 직접 열기, 처리 폼은 가능한 다음 전이만, 확정 시 주인 계정 삭제 진행이면 `TARGET_INVALID`·`eraseInquiries`는 접수와 같은 사용자 잠금, 재생 상태를 공통 `status`로 읽음, 확인 문구 낱말을 사용자 표지와 같게(`접수됨`·`해결됨`), 보존 삭제·미정 채우기를 `SKIP LOCKED` 묶음으로, 본문 상한을 이스케이프 최대치로, 프런트 재전송 상태·연락처 모양·응답 없는 접수 뒤 입력 변경 시 목록 재확인, 운영자 훅 프로미스 거부를 실패로, 사용자 화면 버튼 토큰, 시험 보강(확정 시점 대상 소멸·주인 삭제, 같은 키·다른 키 동시 접수, 두 운영자 동시 확정, 미래 목표 미답변 분모 제외, 집계 숫자 노드, 삭제 계정 404 단정). defer 1건 — 답변 정정·사용자 후속 응답·재개. SPEC 본문 변경 없음.
