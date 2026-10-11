@@ -211,8 +211,10 @@ jobs:
       - name: 프로덕션 빌드
         run: npm --prefix frontend run build
 
+      # 2 → 4분(PR #87). 실측 1분 19초(PR #83)·1분 46초(PR #85)·2분 5초(PR #87, 1356건 전부 통과 뒤 시간 초과)로
+      # 시험 수와 러너 편차가 2분 예산에 붙었다. 시험 결함이 아니라 예산이 좁았던 것이며, job 상한 8분 안이다.
       - name: Vitest
-        timeout-minutes: 2
+        timeout-minutes: 4
         run: npm --prefix frontend run test
 
       - name: Chromium headless shell 설치

@@ -135,6 +135,7 @@ context:
 
 - 2026-10-12 리뷰 patch 루프(blind·edge-case·verification-gap): 주요 patch — 로그 진단 키 `exception`(단순 클래스 이름만)과 JVM 기본 `UncaughtExceptionHandler`의 SLF4J 전환, `correlationId` 문자 집합 단일화(`ApiErrorHandler.CORRELATION_ID`)와 숫자 6자리+ 클라이언트 값 대체(Nginx `$request_id`는 유지), code류 UUID 값 키째 버림, 구성 비밀 최소 길이 16→8과 짧은 값 설정 이름 WARN, 연결 해제·정밀 검증 제한 거절의 제외 계수, `eligible` 거절 사유 반환, 주요 카운터 0 선등록, 주기 측정의 가상 스레드·`statement_timeout` 2초·`V23` 부분 색인·`SyncQueueAgeUnmeasured`, `uri` 템플릿의 기동 시 확정, 답변 확정 전 미정 목표 채움, 경보 selector `env="production"`·미측정 `info`/`unmeasured`·값 경계 시험 보강, `check-alert-rules.sh` 형식 검사(labels 구간·flow 표기·들여쓰기)·캐시 재대조와 원자 저장·curl 60초/재시도 2·126/127→2와 단계 timeout 5분, 내려받기 실패 경로의 계약 시험, 관리 포트 127.0.0.1 바인드, actuator 의존 ArchRule, 시험 시작 표지. reject 2건. SPEC 본문 변경 없음.
 - 2026-10-12 patch 판단(present 전): Nginx `$request_id`(소문자 hex 32자, Nginx가 클라이언트 헤더를 덮어씀)는 숫자 연속이 있어도 서버 값으로 보고 그대로 쓴다 — 바꾸면 `verify-same-origin.sh`의 "응답 헤더 = 본문 = access log 같은 ID" 계약이 깨진다. 연결 해제가 끝낸 작업의 `excluded{NOT_PERMITTED}` 계수는 매핑 단위 시험만 두고 통합 시험은 더하지 않는다. SPEC 본문 변경 없음.
+- 2026-10-12 CI 수정(PR #87 첫 실행): `frontend-quality`의 Vitest 단계가 1356건을 모두 통과한 뒤 2분 상한을 넘겨(2분 5초) 실패했다. 실측 추세(1분 19초 → 1분 46초 → 2분 5초)를 근거로 상한을 4분으로 올리고 `test-ci-scripts.sh`가 그 값을 단정한다. 시험·제품 코드 변경 없음. SPEC 본문 변경 없음.
 
 ## Design Notes
 

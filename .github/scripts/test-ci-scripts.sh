@@ -1362,6 +1362,10 @@ else
   record_pass 'ci.yml · 통합 job은 백엔드를 다시 빌드하지 않는다'
 fi
 
+# Vitest 단계의 상한은 실측(PR #87에서 2분 5초)보다 넉넉한 4분이다. 다시 2분으로 좁히면 통과한 실행도 시간 초과로 끝난다.
+assert_equals 'ci.yml · Vitest 단계의 timeout은 4분' \
+  "$(workflow_step_block frontend-quality 'Vitest' | grep -cxF '        timeout-minutes: 4')" '1'
+
 # 경보 규칙 시험의 판정은 스크립트가 소유한다(Story 3.7). 단계에 인라인 판정을 두지 않는다. 내려받기가 멈춰도 job 예산을
 # 다 쓰지 않게 단계 상한이 있다.
 assert_equals 'ci.yml · 경보 규칙 시험 단계의 timeout은 5분' \
