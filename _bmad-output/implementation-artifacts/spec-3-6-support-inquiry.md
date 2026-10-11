@@ -155,7 +155,7 @@ context:
 
 ## Spec Change Log
 
-- 2026-10-11 CI 수정(PR #85 첫 실행): `SupportInquiryTest`의 답변 시험이 표지로 쓴 UUID 앞 8자가 숫자만으로 이어지면 금융값 규칙(숫자 6자리 이상)에 걸려 422가 났다(약 2% 확률, CI에서 재현). 제목·본문·답변 표지를 영문 소문자 8자(`letterMarker`)로 바꿨다 — 시험 입력만의 결함이고 규칙·제품 코드는 그대로다. SPEC 본문 변경 없음.
+- 2026-10-11 CI 수정(PR #85 첫 실행): `SupportInquiryTest`의 답변 시험이 표지로 쓴 UUID 앞 8자 안에 숫자가 6자리 이상 이어지면 금융값 규칙에 걸려 422가 났다(실행마다 몇 퍼센트 확률, CI에서 재현). 제목·본문·답변 표지를 영문 소문자 8자(`letterMarker`)로 바꿨다 — 시험 입력만의 결함이고 규칙·제품 코드는 그대로다. SPEC 본문 변경 없음.
 
 - 2026-10-10 Matrix Test Audit(step-03): 13행 모두 `SupportInquiryTest`·`BusinessDayCalendarTest`·`InquiryRulesTest`·`SupportInquiryPanel.test.tsx`가 덮고 Testcontainers 빌드 1320건·새 스택 주입 origin e2e 68건 통과. 구현이 정한 곳 — 금융값 규칙을 3.5 공지 메시지와 `InquiryRules.financialLike` 한 벌로 합침, 원장 target은 reference의 keyed digest, 새 접수 201·같은 키 재전송 200, 접수는 사용자 advisory 잠금 아래에서 키·상한·목표·INSERT. SPEC 본문 변경 없음.
 
