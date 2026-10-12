@@ -13,6 +13,8 @@ import org.jspecify.annotations.Nullable;
  *
  * <p><b>증거는 내부 참조뿐이다(AC-6).</b> 값은 정규 UUID(작업·계산·관측 행 ID)이거나 음 아닌 정수(집계 수)만 받는다 —
  * 금융값·이메일·hash 원문·자유 문장이 들어올 모양이 없다. 키도 짧은 camelCase 이름뿐이다. 모양이 아니면 생성이 실패한다.
+ * 예외는 키 {@code ruleId} 하나다(신호 3, Story 3.7) — 그 값은 대문자·숫자·밑줄의 규칙 code(예:
+ * {@code CONFIGURED_SECRET_IN_LOG})도 받는다. 규칙 이름이지 검출된 값이 아니다.
  *
  * @param type 판정표가 승인한 종류
  * @param subject 감지 지점이 가진 대상 차원. scope 규칙이 이것으로 대안을 고른다(모르는 차원은 넘기지 않는다)
@@ -30,6 +32,12 @@ public record Signal(SignalType type, RestrictionSubject subject, @Nullable UUID
 
     private static final Pattern COUNT = Pattern.compile("0|[1-9][0-9]{0,8}");
 
+    /** {@code ruleId} 증거가 받는 규칙 code 모양. 소문자가 없어 hash 원문(hex)이 이 모양으로 들어오지 못한다. */
+    private static final Pattern RULE_CODE = Pattern.compile("[A-Z][A-Z0-9_]{2,63}");
+
+    /** 규칙 code를 값으로 받는 유일한 증거 키. */
+    private static final String RULE_KEY = "ruleId";
+
     /** 증거 항목 수의 상한. 신호는 참조 몇 개면 충분하다. */
     private static final int MAX_EVIDENCE = 8;
 
@@ -46,7 +54,8 @@ public record Signal(SignalType type, RestrictionSubject subject, @Nullable UUID
             if (key == null || !KEY.matcher(key).matches()) {
                 throw new IllegalArgumentException("증거 키의 모양이 아니다.");
             }
-            if (value == null || !(UUID_TEXT.matcher(value).matches() || COUNT.matcher(value).matches())) {
+            if (value == null || !(UUID_TEXT.matcher(value).matches() || COUNT.matcher(value).matches()
+                    || (RULE_KEY.equals(key) && RULE_CODE.matcher(value).matches()))) {
                 // 값 자체는 메시지에 담지 않는다.
                 throw new IllegalArgumentException("증거 값은 내부 참조(UUID)나 집계 수만 받는다.");
             }

@@ -258,8 +258,8 @@ class PlanPublicationService {
             return Optional.empty();
         } catch (RuntimeException failure) {
             // The class name only: a message or cause can carry SQL or values.
-            LOG.warn("plan publication verification failed: job={} failure={}", lease.jobId(),
-                    failure.getClass().getName());
+            LOG.atWarn().addKeyValue("exception", failure.getClass().getSimpleName())
+                    .log("plan publication verification failed");
             finishBlocked(lease, "INPUTS_CHANGED");
             return Optional.empty();
         }
@@ -308,8 +308,8 @@ class PlanPublicationService {
                 StrongSignals.logUnrecordedEnding("plan-publication");
             }
         } catch (RuntimeException failure) {
-            // The job id and the class name only: a message or cause can carry SQL or values.
-            LOG.warn("plan publication interrupted: job={} failure={}", lease.jobId(), failure.getClass().getName());
+            // The class name only: a message or cause can carry SQL or values.
+            LOG.atWarn().addKeyValue("exception", failure.getClass().getSimpleName()).log("plan publication interrupted");
             finishFailed(lease, "PUBLICATION_INTERRUPTED");
         }
     }

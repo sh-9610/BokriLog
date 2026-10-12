@@ -16,8 +16,12 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>금융값 모양({@link #financialLike})은 서비스 공지 메시지 규칙(Story 3.5)과 <b>같은 한 벌</b>이다 — 공지
  * ({@code OperatorEnvelopeService.isAcceptableMessage})도 이것을 부른다.
+ *
+ * <p>로그 가림({@link #redact}, Story 3.7)도 같은 한 벌을 쓴다. 클래스가 {@code public}인 것은 모듈 공개 API
+ * {@code com.bokrilog.operations.SensitiveText}가 이것을 부르기 위해서다 — 모듈 밖은 {@code internal}에 닿지 못한다
+ * ({@code ModuleBoundaryTest}).
  */
-final class InquiryRules {
+public final class InquiryRules {
 
     /**
      * PEM 머리말과 {@code Bearer } 토큰. 둘 다 대소문자를 가리지 않고 낱말 경계를 보지 않는다 — 경계의 의미는 두 정규식
@@ -137,6 +141,52 @@ final class InquiryRules {
             return Optional.of(SensitiveRule.FINANCIAL);
         }
         return Optional.empty();
+    }
+
+    /** PEM 덩어리: 머리말부터 꼬리말(또는 문장 끝)까지. 가림({@link #redact})의 단위다. */
+    private static final Pattern PEM_BLOCK = Pattern.compile("(?is)-----begin.*?(?:-----end[^-]*-----|$)");
+
+    /** {@code Bearer } 뒤의 토큰. 가림({@link #redact})의 단위다. */
+    private static final Pattern BEARER_TOKEN =
+            Pattern.compile("(?i)bearer\\s+\\S*", Pattern.UNICODE_CHARACTER_CLASS);
+
+    /**
+     * 로그 본문의 가림(Story 3.7 AC-5): 민감값 규칙 중 {@link SensitiveRule#SECRET}·{@link SensitiveRule#EMAIL}·{@link
+     * SensitiveRule#WALLET}에 맞는 조각을 {@code [REDACTED:<규칙>]}로 바꾼다. 판정({@link #sensitive})과 같은 패턴을 같은
+     * 정규화 값에 쓴다 — 표지(PEM·Bearer) → 이메일 → 지갑 → 토큰 모양 낱말 순서다. 금융값 규칙은 쓰지 않는다 — 로그의
+     * 지연 시간·건수까지 가려 관측을 잃는다(UUID와 숫자 6자리 이상은 로그 encoder가 따로 가린다).
+     *
+     * <p>돌려주는 값은 정규화한 값이다(NFKC·서식 문자 제거). 로그는 원문을 보존할 이유가 없다.
+     */
+    public static String redact(String raw) {
+        String text = normalized(raw);
+        text = PEM_BLOCK.matcher(text).replaceAll(Matcher.quoteReplacement(mark(SensitiveRule.SECRET)));
+        text = BEARER_TOKEN.matcher(text).replaceAll(Matcher.quoteReplacement(mark(SensitiveRule.SECRET)));
+        text = EMAIL_LIKE.matcher(text).replaceAll(Matcher.quoteReplacement(mark(SensitiveRule.EMAIL)));
+        text = HEX_WALLET.matcher(text).replaceAll(Matcher.quoteReplacement(mark(SensitiveRule.WALLET)));
+        text = replaceTokens(ALNUM_TOKEN, text, token -> token.length() >= WALLET_MIN_CHARS
+                && token.length() <= WALLET_MAX_CHARS
+                && (BASE58.matcher(token).matches() || BECH32.matcher(token).matches()), SensitiveRule.WALLET);
+        return replaceTokens(WORD_RUN, text, word -> word.length() >= SECRET_MIN_CHARS
+                && !UUID_TEXT.matcher(word).matches() && !ERROR_CODE.matcher(word).matches()
+                && HAS_LETTER.matcher(word).find() && HAS_DIGIT.matcher(word).find(), SensitiveRule.SECRET);
+    }
+
+    /** 가림 표지 {@code [REDACTED:<규칙>]}. */
+    static String mark(SensitiveRule rule) {
+        return "[REDACTED:" + rule.name() + "]";
+    }
+
+    private static String replaceTokens(Pattern unit, String text, java.util.function.Predicate<String> sensitive,
+            SensitiveRule rule) {
+        Matcher tokens = unit.matcher(text);
+        StringBuilder out = new StringBuilder(text.length());
+        while (tokens.find()) {
+            String token = tokens.group();
+            tokens.appendReplacement(out, Matcher.quoteReplacement(sensitive.test(token) ? mark(rule) : token));
+        }
+        tokens.appendTail(out);
+        return out.toString();
     }
 
     /**

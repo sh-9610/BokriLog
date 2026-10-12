@@ -12,7 +12,12 @@ import org.springframework.stereotype.Repository;
 @Repository
 class SyncJobRepository {
     private final JdbcClient jdbc;
-    SyncJobRepository(JdbcClient jdbc) { this.jdbc=jdbc; }
+    /**
+     * 첫 스냅샷의 시도·결말 계측(Story 3.7). 작업 행의 INSERT가 곧 유효 시도이고 종단 UPDATE가 곧 결말이라 그 문장 곁에서
+     * 센다 — 부르는 자리가 여럿이어도 빠지는 길이 없다. 세는 시점은 커밋 뒤다({@link SyncMetrics}).
+     */
+    private final SyncMetrics metrics;
+    SyncJobRepository(JdbcClient jdbc, SyncMetrics metrics) { this.jdbc=jdbc; this.metrics=metrics; }
 
     record Lease(UUID jobId, UUID userId, UUID connectionId, UUID providerAccountId, long generation) {}
 
@@ -46,10 +51,12 @@ class SyncJobRepository {
         return new Job(rs.getObject(1,UUID.class),rs.getString(2),rs.getString(3));
     }
     int insert(UUID jobId, UUID userId, UUID connectionId, UUID accountId, String key) {
-        return jdbc.sql("INSERT INTO sync_job (job_id,user_id,connection_id,provider_account_id,idempotency_key,status) "
+        int inserted=jdbc.sql("INSERT INTO sync_job (job_id,user_id,connection_id,provider_account_id,idempotency_key,status) "
                 + "VALUES (:j,:u,:c,:a,:k,'QUEUED') ON CONFLICT (connection_id,idempotency_key) DO NOTHING")
             .param("j",jobId).param("u",userId).param("c",connectionId).param("a",accountId)
             .param("k",key).update();
+        if (inserted==1) metrics.attempt(com.bokrilog.sync.SyncTelemetry.Kind.FIRST_SNAPSHOT,"USER");
+        return inserted;
     }
     Optional<Lease> claim() {
         return jdbc.sql("UPDATE sync_job SET status='RUNNING',fencing_generation=fencing_generation+1,"
@@ -83,10 +90,12 @@ class SyncJobRepository {
             .param("j",lease.jobId()).param("g",lease.generation()).update();
     }
     int finish(Lease lease,String status,String reason) {
-        return jdbc.sql("UPDATE sync_job SET status=:s,failure_reason=:r,lease_until=NULL,finished_at=now() "
+        int finished=jdbc.sql("UPDATE sync_job SET status=:s,failure_reason=:r,lease_until=NULL,finished_at=now() "
                 + "WHERE job_id=:j AND fencing_generation=:g AND status='RUNNING' AND lease_until>now()")
             .param("s",status).param("r",reason).param("j",lease.jobId())
             .param("g",lease.generation()).update();
+        if (finished==1) metrics.ending(com.bokrilog.sync.SyncTelemetry.Kind.FIRST_SNAPSHOT,status,reason);
+        return finished;
     }
     int insertSource(UUID sourceId, Lease lease, String decimal, Instant measured, Instant received,
             String policy) {

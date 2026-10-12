@@ -149,6 +149,9 @@ forbidden_fragments=(
   'BOKRILOG_AUDIT_DIGEST_KEY'
   # Story 3.5의 지원 연락처 설정 이름.
   'BOKRILOG_SUPPORT_CONTACT'
+  # Story 3.7의 관리 포트·관측 환경 설정 이름.
+  'BOKRILOG_MANAGEMENT_PORT'
+  'BOKRILOG_ENV'
   'SPRING_PROFILES_ACTIVE'
   'NGINX_ENTRYPOINT_QUIET_LOGS'
   # 재인증이 제공자에게 보내는 최근 인증 요청·증거. 인가 요청의 `claims`와 ID Token의 claim
@@ -2814,6 +2817,55 @@ assert_security_headers '`GET /nope`'
 fetch GET /actuator/health
 assert_equals '`GET /actuator/health` 상태 404(프록시 대상이 아니다)' "${last_status}" '404'
 assert_body_lacks '`GET /actuator/health`가 백엔드에 닿지 않는다' '"status":"UP"'
+
+printf '\n관측 표면\n'
+
+# Story 3.7. Actuator는 컨테이너 안의 관리 포트(18081)에서 Prometheus 엔드포인트 하나만 연다. 공개 origin에서는 어느 쪽으로도
+# 닿지 않는다 — Nginx는 `/api`만 넘기고(정적 404), 백엔드의 공개 포트에는 Actuator가 없다(`/api/actuator/**`도 404).
+for actuator_path in /actuator /actuator/prometheus /actuator/metrics /api/actuator/prometheus; do
+  fetch GET "${actuator_path}"
+  assert_equals "\`GET ${actuator_path}\` 상태 404" "${last_status}" '404'
+  assert_body_contains "\`GET ${actuator_path}\` 안정 code" '"code":"NOT_FOUND"'
+  assert_body_lacks "\`GET ${actuator_path}\`에 메트릭이 없다" '# TYPE'
+done
+
+# 관리 포트는 게시되지 않는다. 바깥에 열리는 포트는 Nginx 하나다.
+assert_equals '관리 포트(18081)는 호스트에 게시되지 않는다' \
+  "$(compose port backend 18081 </dev/null 2>/dev/null || true)" ''
+
+# 같은 컨테이너 안에서는 수집기처럼 읽을 수 있다. 출력은 allowlist 메트릭뿐이고 모든 시계열이 공통 tag `env`를 갖는다.
+# 식별자 모양(UUID·이메일)은 이름·label 어디에도 없다. 나머지 엔드포인트(health 등)는 관리 포트에도 없다.
+metrics_file="${work_dir}/management-prometheus.txt"
+if compose exec -T backend wget -q -O - http://127.0.0.1:18081/actuator/prometheus \
+  </dev/null >"${metrics_file}" 2>"${work_dir}/management-err.txt" && [ -s "${metrics_file}" ]; then
+  record_pass '관리 포트가 컨테이너 안에서 Prometheus 출력을 낸다'
+  if grep -F 'bokrilog_sync_queue_age_seconds{' "${metrics_file}" >/dev/null; then
+    record_pass '관리 포트 출력에 동기화 대기 나이가 있다'
+  else
+    record_fail '관리 포트 출력에 동기화 대기 나이가 있다' "$(head -c 400 "${metrics_file}")"
+  fi
+  # compose가 넘기는 값과 같은 기본값이다(`BOKRILOG_ENV`, CI는 `ci`).
+  expected_env="${BOKRILOG_ENV:-development}"
+  unlabeled_series="$(grep -v '^#' "${metrics_file}" | grep -v '^[[:space:]]*$' \
+    | grep -cvF "env=\"${expected_env}\"" || true)"
+  assert_equals "관리 포트 출력의 모든 시계열에 env=\"${expected_env}\" tag가 있다" "${unlabeled_series}" '0'
+  assert_equals '관리 포트 출력에 UUID가 없다' \
+    "$(grep -cE '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' "${metrics_file}" || true)" '0'
+  assert_equals '관리 포트 출력에 이메일 모양이 없다' \
+    "$(grep -cE '[^[:space:]@"]+@[^[:space:]@"]+[.][^[:space:]@"]+' "${metrics_file}" || true)" '0'
+  # 이름·label(과 설명 줄)에 숫자 6자리 이상 연속이 없다. 시계열 줄의 끝 표본 값(과 선택 timestamp)은 떼고 본다 — 메모리 바이트
+  # 수 같은 값은 당연히 여러 자리 숫자이고 사용자 귀속 값이 아니다.
+  assert_equals '관리 포트 출력의 이름·label에 숫자 6자리 이상이 없다' \
+    "$(sed -E 's/[[:space:]]+[^[:space:]]+([[:space:]]+[0-9]+)?$//' "${metrics_file}" | grep -cE '[0-9]{6,}' || true)" '0'
+else
+  record_fail '관리 포트가 컨테이너 안에서 Prometheus 출력을 낸다' \
+    "$(tail -5 "${work_dir}/management-err.txt" 2>/dev/null)"
+fi
+if compose exec -T backend wget -q -O /dev/null http://127.0.0.1:18081/actuator/health </dev/null >/dev/null 2>&1; then
+  record_fail '관리 포트에도 health 엔드포인트가 없다' '`/actuator/health`가 응답했다.'
+else
+  record_pass '관리 포트에도 health 엔드포인트가 없다'
+fi
 
 printf '\n백엔드 응답 지연\n'
 

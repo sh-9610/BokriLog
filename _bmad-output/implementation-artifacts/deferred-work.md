@@ -371,3 +371,15 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-6-support-inquiry.md`
   summary: 운영자가 잘못 쓴 답변을 정정·보충할 길(`ANSWERED → ANSWERED`)이 없고, 사용자가 답변에 후속 응답하거나 해결 여부를 표시·재개할 길도 없다 — 추가 질문은 새 문의(24시간 5건 상한 적용)로만 가능하다.
   evidence: `update-inquiry` 전이가 `RECEIVED → IN_PROGRESS → ANSWERED → RESOLVED` 단조이고 사용자 API는 접수·조회뿐이다(리뷰 blind-hunter, 2026-10-10). 대화형 스레드는 SUPPORT-1.0 범위 밖의 새 기능이라 실제 운영 데이터가 쌓인 뒤 판단한다.
+- source_spec: none
+  summary: Story 3.7 중 운영 관측 연결(운영 서버 Grafana Alloy 상주·relabel allowlist 설정, Grafana Cloud 전송, 외부 synthetic 5분 검사, Grafana 장애 시 로컬 회전 로그·OCI 보조 신호, Alloy heartbeat 실측)을 3.8 배포와 함께 다룬다.
+  evidence: 운영 호스트·Grafana Cloud 계정·OCI 자원이 아직 없어 이 저장소에서 연결을 검증할 수 없다. 3.7은 저장소 쪽 계측·redaction·경보 규칙 정의와 promtool 시험까지 하고, 실제 연결은 ARM64 배포(3.8)가 소유한다(2026-10-12).
+- source_spec: none
+  summary: Story 3.7 AC-3의 Web Vitals(LCP·INP·CLS p75) 수집을 3.7에서 떼어 후속으로 미룬다.
+  evidence: 브라우저 계측은 동일 출처 beacon 경로·집계 표·화면 코드가 함께 필요한 독립 배포 단위이고, 측정 라이브러리를 쓰면 런타임 의존 승인이 따로 필요하다. 3.7은 서버 계측 기반에 집중한다(2026-10-12).
+- source_spec: none
+  summary: Story 3.7 AC-3의 운영 작업시간·월 비용 장부(운영자 입력, 주 2시간·월 30,000원 관찰)를 후속으로 미룬다.
+  evidence: 운영자 입력 장부와 4주 관찰 상태 표시는 서버 계측과 독립적으로 배포 가능한 운영자 기능이고, 실제 비용 자료는 운영 호스트(3.8) 뒤에야 생긴다(2026-10-12).
+- source_spec: none
+  summary: Story 3.7 AC-4의 Bybit API·사건 유형 versioned 계약 정기 재검증(실계정·stub 결과 구분, schema 변화 시 발행 거부·경보)을 후속으로 미룬다.
+  evidence: 미인식 사건 유형은 3.3 신호 7이 이미 발행을 막는다. 정기 재검증은 실제 검증 계정과 regional reserved IP가 필요한 Epic 2 실연동 게이트와 묶여 있어 지금 실계정 결과를 만들 수 없다(2026-10-12).

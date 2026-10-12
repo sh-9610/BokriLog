@@ -212,8 +212,8 @@ class OperationalSignalService implements OperationalSignalApi {
                     .orElse(null));
         } catch (DataAccessException unreadable) {
             // 메시지·원인은 남기지 않는다 — SQL이 실린다. 종류만.
-            LOG.warn("signal policy unreadable: signal={} failure={}", signal.type().name(),
-                    unreadable.getClass().getName());
+            LOG.atWarn().addKeyValue("exception", unreadable.getClass().getSimpleName())
+                    .log("signal policy unreadable: signal={}", signal.type().name());
             return null;
         }
     }

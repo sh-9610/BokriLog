@@ -587,8 +587,8 @@ class OperatorCommandService {
                  * 실행은 이미 커밋됐다. 행을 다시 읽지 못한 사실만 남기고 실패로 답한다 — 클라이언트는 응답을 불확실로
                  * 다루고 같은 키로 다시 확정하면 원장이 같은 묶음을 재생한다. 실패 행을 쓰지 않는다(실패가 아니다).
                  */
-                LOG.warn("operator command completed but its rows were not read back: command={} failure={}", command,
-                        unreadable.getClass().getName());
+                LOG.atWarn().addKeyValue("exception", unreadable.getClass().getSimpleName())
+                        .log("operator command completed but its rows were not read back: command={}", command);
                 throw unreadable;
             }
             return new Outcome.Completed(result, rows, true, null);

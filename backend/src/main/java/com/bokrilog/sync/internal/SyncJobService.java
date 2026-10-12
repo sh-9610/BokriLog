@@ -50,6 +50,8 @@ class SyncJobService implements SyncJobApi {
     private final ConnectionRevocationRepository revocations;
     /** 강한 신호(Story 3.3): 초기 수집의 의미 충돌·미인식 enum, 첫 스냅샷 준비의 portfolio CAS 위반. */
     private final StrongSignals strongSignals;
+    /** 동기화 계측(Story 3.7): 첫 스냅샷 admission의 제한 제외. 시도·결말은 작업 행 문장이 센다({@link SyncJobRepository}). */
+    private final SyncMetrics metrics;
 
     SyncJobService(SyncJobRepository jobs, InitialCollectionRepository initialJobs,
             CashflowClassificationRepository classifications, CashflowConversionRepository conversions,
@@ -57,8 +59,9 @@ class SyncJobService implements SyncJobApi {
             OperationalRestrictionApi restrictions, InitialInputsPlanPort plans, PlatformTransactionManager manager,
             PlanPublicationService publications, AdjustmentHistoryService adjustments, PlanSyncService planSyncs,
             PlanSyncRepository planSyncAttempts, PlanVerificationService planVerifications, PlanPublicationPort publicationPlans,
-            ConnectionRevocationRepository revocations, StrongSignals strongSignals) {
+            ConnectionRevocationRepository revocations, StrongSignals strongSignals, SyncMetrics metrics) {
         this.strongSignals=strongSignals;
+        this.metrics=metrics;
         this.publicationPlans=publicationPlans;
         this.revocations=revocations;
         this.planSyncs=planSyncs;
@@ -74,8 +77,12 @@ class SyncJobService implements SyncJobApi {
         this.adjustments=adjustments;
     }
     boolean eligible(UUID userId) {
-        return accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)==AccessDecision.ALLOWED
-            && !syncRestricted(userId);
+        return ineligibility(userId)==null;
+    }
+    /** 첫 스냅샷을 열 수 없는 이유: 계정 접근 거절({@code DENIED}) 또는 동기화 제한({@code RESTRICTED}). 열 수 있으면 null. */
+    private @Nullable String ineligibility(UUID userId) {
+        if (accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)!=AccessDecision.ALLOWED) return "DENIED";
+        return syncRestricted(userId) ? PlanSyncGuard.RESTRICTED : null;
     }
     /**
      * 동기화 제한이 이 사용자의 첫 스냅샷·초기 입력을 막는가(Story 3.2) — {@code SYNC}가 사용자의 지금 portfolio·연결,
@@ -97,7 +104,14 @@ class SyncJobService implements SyncJobApi {
         if (userId==null || key==null || key.isBlank() || key.length()>128) return Optional.empty();
         try {
             return transactions.execute(status -> {
-                if (!eligible(userId)) return Optional.empty();
+                String refused=ineligibility(userId);
+                if (refused!=null) {
+                    // 제한이 막은 요청만 제외로 센다(Story 3.7, 요청 단위). 계정 접근 거절은 정책 제외가 아니다.
+                    if (PlanSyncGuard.RESTRICTED.equals(refused))
+                        metrics.outcome(com.bokrilog.sync.SyncTelemetry.Kind.FIRST_SNAPSHOT,
+                                com.bokrilog.sync.SyncTelemetry.EXCLUDED,PlanSyncGuard.RESTRICTED);
+                    return Optional.empty();
+                }
                 var source=sources.snapshotConnection(userId);
                 if (source.isEmpty()) return Optional.empty();
                 var connection=source.get();
@@ -521,10 +535,11 @@ class SyncJobService implements SyncJobApi {
                     reference instanceof PriceConversionPolicy.Reference.Fixed fixed ? fixed.at() : null);
         } catch (RuntimeException failure) {
             /*
-             * The class name only. A message or cause can carry SQL, provider text or values, and none
-             * of that belongs in a log; the job id is enough to find the attempt.
+             * 예외 클래스의 단순 이름 하나만 남긴다(구조 인자 exception, Story 3.7). 메시지·원인에는 SQL·제공자 문구·값이
+             * 실릴 수 있다. 작업 ID도 남기지 않는다 — 로그에 식별자를 두지 않으며, 그 작업은 행의 상태
+             * (CONVERSION_REQUIRED·CONVERSION_INTERRUPTED)와 대시보드로 찾는다.
              */
-            LOG.warn("cash-flow conversion interrupted: job={} failure={}",lease.jobId(),failure.getClass().getName());
+            LOG.atWarn().addKeyValue("exception",failure.getClass().getSimpleName()).log("cash-flow conversion interrupted");
             transactions.executeWithoutResult(status->{
                 if(conversions.lockOwned(lease))
                     conversions.finish(lease,"CONVERSION_REQUIRED","CONVERSION_INTERRUPTED",true);

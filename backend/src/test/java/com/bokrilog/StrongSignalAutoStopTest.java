@@ -883,9 +883,12 @@ class StrongSignalAutoStopTest extends OperatorTestBase {
 
     private static List<String> alertsIn(CapturedOutput output) {
         List<String> alerts = new ArrayList<>();
-        Matcher matcher = Pattern.compile("strong signal auto-stop:[^\\r\\n]*").matcher(output.getAll());
-        while (matcher.find()) {
-            alerts.add(matcher.group().strip());
+        // 로그는 JSON 한 줄이다(Story 3.7). 경보 문장은 본문(event)에 있다.
+        for (String event : LogLines.events(output.getAll(), "strong signal auto-stop:")) {
+            Matcher matcher = Pattern.compile("strong signal auto-stop:.*").matcher(event);
+            while (matcher.find()) {
+                alerts.add(matcher.group().strip());
+            }
         }
         return alerts;
     }

@@ -30,9 +30,15 @@ class ConnectionRevocationRepository {
             + "(SELECT job_id FROM sync_plan_sync_job WHERE user_id=:u AND connection_id=:c))";
 
     private final JdbcClient jdbc;
+    /**
+     * 연결 해제가 끝낸 작업의 결말 계측(Story 3.7). 이 문장이 끝낸 작업은 다른 결말 자리(종료 줄·작업 행 종단)를 지나지 않으므로
+     * 여기서 {@code excluded{reason=NOT_PERMITTED}}로 센다 — 시도와 결말의 합이 맞게. 커밋 뒤에 센다.
+     */
+    private final SyncMetrics metrics;
 
-    ConnectionRevocationRepository(JdbcClient jdbc) {
+    ConnectionRevocationRepository(JdbcClient jdbc, SyncMetrics metrics) {
         this.jdbc = jdbc;
+        this.metrics = metrics;
     }
 
     EndedConnectionWork endWork(UUID user, UUID connection, Instant revokedAt) {
@@ -56,6 +62,10 @@ class ConnectionRevocationRepository {
         int firstSnapshots = update("UPDATE sync_job SET status='BLOCKED',failure_reason='NOT_PERMITTED',"
                 + "lease_until=NULL,finished_at=GREATEST(:at,created_at)" + IN_PROGRESS + OF_CONNECTION, user,
                 connection, revokedAt);
+        metrics.outcomes(com.bokrilog.sync.SyncTelemetry.Kind.PLAN_SYNC, com.bokrilog.sync.SyncTelemetry.EXCLUDED,
+                "NOT_PERMITTED", planSyncs);
+        metrics.outcomes(com.bokrilog.sync.SyncTelemetry.Kind.FIRST_SNAPSHOT, com.bokrilog.sync.SyncTelemetry.EXCLUDED,
+                "NOT_PERMITTED", firstSnapshots);
         return new EndedConnectionWork(firstSnapshots, planSyncs, collections, classifications, conversions,
                 publications);
     }

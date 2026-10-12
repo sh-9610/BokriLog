@@ -37,6 +37,7 @@ abstract class PlanSyncTestBase extends AuthFlowTestBase {
     @Autowired SourceConnectionApi source;
     @Autowired PortfolioMembershipApi portfolio;
     @Autowired SyncJobApi sync;
+    @Autowired io.micrometer.core.instrument.MeterRegistry meters;
     @Autowired PlanConditionApi plans;
     @Autowired PlatformTransactionManager manager;
 
@@ -144,16 +145,42 @@ abstract class PlanSyncTestBase extends AuthFlowTestBase {
      * 작업 하나의 종료 줄 묶음. 종료 줄은 상태가 커밋되고 종료 사실을 한 번 더 읽은 뒤에야 찍히므로 {@link #awaitSync}가
      * 돌아온 직후에는 아직 없을 수 있다 — 느린 러너에서 그 틈이 실제로 드러났다(PR #71 첫 실행). 줄이 하나라도 보일
      * 때까지 잠시 기다린 뒤 그때의 묶음을 돌려준다. 몇 줄이어야 하는지의 단정은 호출자가 한다.
+     *
+     * <p>종료 줄은 작업 ID를 싣지 않는다(Story 3.7 — 로그에 식별자를 남기지 않는다). 그래서 {@code part}(목적·상태 같은 내용)를
+     * 담은 줄만 고른다 — 한 시험에 작업이 여럿이면 그것으로 가른다.
      */
-    static List<String> endingLines(CapturedOutput output, UUID job) throws InterruptedException {
-        String marker = "plan sync finished: job=" + job + " ";
-        return pollUntil(Duration.ofSeconds(10), () -> lines(output, marker), found -> !found.isEmpty());
+    static List<String> endingLines(CapturedOutput output, String part) throws InterruptedException {
+        return pollUntil(Duration.ofSeconds(10), () -> lines(output, "plan sync finished: ").stream()
+                .filter(line -> line.contains(part)).toList(), found -> !found.isEmpty());
     }
 
+    /**
+     * 본문에 {@code marker}를 담은 로그 줄들의 본문({@code event}). 로그는 JSON 한 줄이다({@link LogLines}). 이 시험의 시작
+     * 표지({@link #TEST_START}) 뒤의 줄만 본다 — 앞 시험의 늦은 작업자가 남긴 줄과 섞이지 않게.
+     */
     static List<String> lines(CapturedOutput output, String marker) {
+        List<String> events = LogLines.events(output.getAll());
+        int start = events.lastIndexOf(TEST_START);
         List<String> found = new ArrayList<>();
-        for (String line : output.getAll().split("\\R")) if (line.contains(marker)) found.add(line);
+        for (String event : events.subList(start + 1, events.size())) {
+            if (event.contains(marker)) found.add(event);
+        }
         return found;
+    }
+
+    /** 동기화 결말·제외 카운터({@code bokrilog_sync_outcomes_total})의 지금 값(Story 3.7). 없으면 0. */
+    double syncOutcomes(String kind, String outcome, String reason) {
+        var counter = meters.find(com.bokrilog.sync.SyncTelemetry.OUTCOMES)
+                .tags("kind", kind, "outcome", outcome, "reason", reason).counter();
+        return counter == null ? 0.0 : counter.count();
+    }
+
+    /** 시험마다 처음에 남기는 로그 표지. 숫자·식별자가 없다. */
+    static final String TEST_START = "plan sync test start";
+
+    @org.junit.jupiter.api.BeforeEach
+    void markTestStart() {
+        org.slf4j.LoggerFactory.getLogger(PlanSyncTestBase.class).info(TEST_START);
     }
 
     static String sha256(String value) {

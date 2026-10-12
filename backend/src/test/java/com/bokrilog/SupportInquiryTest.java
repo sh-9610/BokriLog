@@ -58,6 +58,9 @@ class SupportInquiryTest extends OperatorTestBase {
     @Autowired
     private OperationsDeletionApi deletion;
 
+    @Autowired
+    private org.springframework.context.ApplicationContext context;
+
     // ------------------------------------------------------------------ 접수
 
     @Test
@@ -254,6 +257,62 @@ class SupportInquiryTest extends OperatorTestBase {
     }
 
     /**
+     * 첫 답변 목표 계측(Story 3.7): 접수 때 목표가 미정이었어도 답변 전에 달력이 그 연도를 담게 됐으면 답변 확정이 목표를 먼저
+     * 채운다 — 첫 답변이 {@code pending}이 아니라 목표 달성 여부로 세진다. 대기 gauge는 첫 답변을 기다리는 문의 수다.
+     */
+    @Test
+    void 미정_목표는_답변_전에_채워져_달성_여부로_세지고_대기_gauge는_대기_문의_수다() throws Exception {
+        Signed user = signedIn("inquiry-metric");
+        var years = jdbc().sql("SELECT year FROM support_calendar_year WHERE calendar_version = :v")
+                .param("v", SupportInquiryApi.CALENDAR_VERSION).query(Integer.class).list();
+        var holidays = jdbc().sql("SELECT year || '|' || holiday_date || '|' || name FROM support_business_calendar "
+                + "WHERE calendar_version = :v").param("v", SupportInquiryApi.CALENDAR_VERSION).query(String.class).list();
+        String pendingReference;
+        try {
+            jdbc().sql("DELETE FROM support_business_calendar WHERE calendar_version = :v")
+                    .param("v", SupportInquiryApi.CALENDAR_VERSION).update();
+            jdbc().sql("DELETE FROM support_calendar_year WHERE calendar_version = :v")
+                    .param("v", SupportInquiryApi.CALENDAR_VERSION).update();
+            pendingReference = reference(submit(user, draft("OTHER", "목표 미정 문의", "계측 확인", "IN_APP", null),
+                    key("inquiry-metric-pending")));
+        } finally {
+            for (Integer year : years) {
+                jdbc().sql("INSERT INTO support_calendar_year (calendar_version, year) VALUES (:v, :y)")
+                        .param("v", SupportInquiryApi.CALENDAR_VERSION).param("y", year).update();
+            }
+            for (String row : holidays) {
+                String[] parts = row.split("\\|", 3);
+                jdbc().sql("INSERT INTO support_business_calendar (calendar_version, year, holiday_date, name) "
+                                + "VALUES (:v, :y, CAST(:d AS date), :n)")
+                        .param("v", SupportInquiryApi.CALENDAR_VERSION).param("y", Integer.parseInt(parts[0]))
+                        .param("d", parts[1]).param("n", parts[2]).update();
+            }
+        }
+        reference(submit(user, draft("OTHER", "두 번째 문의", "대기 확인", "IN_APP", null), key("inquiry-metric-second")));
+        // 대기 gauge: 첫 답변을 기다리는 문의 둘.
+        TelemetryProbe.run(this.context, "supportMetrics", "measurePendingNow");
+        assertThat(pendingGauge()).isEqualTo(2.0);
+
+        Map<String, Double> before = Map.of("true", firstAnswers("true"), "false", firstAnswers("false"),
+                "pending", firstAnswers("pending"));
+        Signed operator = operator("inquiry-metric-operator", "command");
+        update(operator, pendingReference, "ANSWERED", "확인했습니다.");
+        Map<String, Object> row = jdbc().sql("SELECT target_state, target_met FROM support_inquiry WHERE reference = :r")
+                .param("r", pendingReference).query().singleRow();
+        assertThat(row).containsEntry("target_state", "SET").containsEntry("target_met", true);
+        assertThat(firstAnswers("true")).isEqualTo(before.get("true") + 1);
+        assertThat(firstAnswers("pending")).as("미정으로 세지 않는다").isEqualTo(before.get("pending"));
+        assertThat(firstAnswers("false")).isEqualTo(before.get("false"));
+        TelemetryProbe.run(this.context, "supportMetrics", "measurePendingNow");
+        assertThat(pendingGauge()).isEqualTo(1.0);
+    }
+
+    private double pendingGauge() {
+        var gauge = this.meters.find("bokrilog.support.pending.target").gauge();
+        return gauge == null ? Double.NaN : gauge.value();
+    }
+
+    /**
      * 로그·응답에서 원문을 찾을 표지. 영문 소문자만 쓴다 — UUID 앞자리는 숫자만으로 이어질 수 있어 민감값의 금융값
      * 규칙(구분자 포함 숫자 6자리 이상)에 걸리고, 그러면 시험이 실행마다 다르게 끝난다.
      */
@@ -335,6 +394,8 @@ class SupportInquiryTest extends OperatorTestBase {
         assertThat(answering.body()).doesNotContain("답변 표지");
         assertThat(phraseIn(answering.body())).isEqualTo("문의 답변 완료 " + reference);
         String answerOperation = operationIdIn(answering.body());
+        Map<String, Double> metBefore = Map.of("true", firstAnswers("true"), "false", firstAnswers("false"),
+                "pending", firstAnswers("pending"));
         var answered = confirmRestriction(again, UPDATE, answerOperation, phraseIn(answering.body()), answerKey);
         assertThat(answered.statusCode()).as(answered.body()).isEqualTo(200);
         assertThat(topLevelFieldsOf(answered.body())).containsEntry("status", "ANSWERED");
@@ -349,6 +410,12 @@ class SupportInquiryTest extends OperatorTestBase {
         Instant firstAnswered = ((java.sql.Timestamp) row.get("first_answered_at")).toInstant();
         assertThat(firstAnswered).isEqualTo(transitionedAt);
         Object target = row.get("target_at");
+        // 첫 답변 목표 계측(Story 3.7): 첫 답변 하나가 목표 달성 여부(미정이면 pending)로 한 번 세진다.
+        String met = target == null ? "pending"
+                : Boolean.toString(!firstAnswered.isAfter(((java.sql.Timestamp) target).toInstant()));
+        for (String each : metBefore.keySet()) {
+            assertThat(firstAnswers(each)).as(each).isEqualTo(metBefore.get(each) + (each.equals(met) ? 1 : 0));
+        }
         if (target == null) {
             assertThat(row.get("target_met")).isNull();
         } else {
@@ -957,5 +1024,11 @@ class SupportInquiryTest extends OperatorTestBase {
     private static Map<String, Object> mapOf(@Nullable Object value) {
         assertThat(value).isInstanceOf(Map.class);
         return (Map<String, Object>) value;
+    }
+
+    /** 첫 답변 카운터({@code bokrilog.support.first.answer{met}})의 지금 값. */
+    private double firstAnswers(String met) {
+        var counter = this.meters.find("bokrilog.support.first.answer").tag("met", met).counter();
+        return counter == null ? 0.0 : counter.count();
     }
 }

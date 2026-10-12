@@ -170,6 +170,17 @@ class SupportInquiryRepository {
                 .list();
     }
 
+    /** {@link #fillTarget}의 reference판. 운영자 확정이 행 잠금 아래에서 답변 직전에 부른다(Story 3.7). */
+    int fillTargetOf(String reference, Instant targetAt, String calendarVersion) {
+        return this.jdbc.sql("UPDATE support_inquiry SET target_at = :t, calendar_version = :v, target_state = 'SET', "
+                        + "target_met = CASE WHEN first_answered_at IS NULL THEN NULL ELSE first_answered_at <= :t END "
+                        + "WHERE reference = :r AND target_state = 'CALENDAR_PENDING'")
+                .param("t", utc(targetAt))
+                .param("v", calendarVersion)
+                .param("r", reference)
+                .update();
+    }
+
     /**
      * 미정 목표를 채운다 — 지금 달력이 그 연도들을 담게 됐다. 이미 정해진 목표는 고르지 않는다(소급 재계산 없음). 이미 답한
      * 문의는 목표 달성 여부를 같은 식으로 함께 쓴다.
@@ -241,10 +252,10 @@ class SupportInquiryRepository {
      *
      * @param ownerUserId 문의를 접수한 사용자. 확정이 그 계정의 상태를 본다
      */
-    record Current(UUID ownerUserId, Status status, @Nullable Instant targetAt) {}
+    record Current(UUID ownerUserId, Status status, @Nullable Instant targetAt, Instant receivedAt) {}
 
     Optional<Current> current(String reference) {
-        return this.jdbc.sql("SELECT user_id, status, target_at FROM support_inquiry WHERE reference = :r")
+        return this.jdbc.sql("SELECT user_id, status, target_at, received_at FROM support_inquiry WHERE reference = :r")
                 .param("r", reference)
                 .query(SupportInquiryRepository::current)
                 .optional();
@@ -252,7 +263,7 @@ class SupportInquiryRepository {
 
     /** 확정 트랜잭션의 행 잠금. 그 사이 다른 전이·보존 삭제·계정 삭제가 끼어들지 못한다. */
     Optional<Current> lockForTransition(String reference) {
-        return this.jdbc.sql("SELECT user_id, status, target_at FROM support_inquiry WHERE reference = :r FOR UPDATE")
+        return this.jdbc.sql("SELECT user_id, status, target_at, received_at FROM support_inquiry WHERE reference = :r FOR UPDATE")
                 .param("r", reference)
                 .query(SupportInquiryRepository::current)
                 .optional();
@@ -260,7 +271,7 @@ class SupportInquiryRepository {
 
     private static Current current(ResultSet rs, int row) throws SQLException {
         return new Current(rs.getObject("user_id", UUID.class), Status.valueOf(rs.getString("status")),
-                nullableInstant(rs, "target_at"));
+                nullableInstant(rs, "target_at"), instant(rs, "received_at"));
     }
 
     /**
@@ -290,6 +301,21 @@ class SupportInquiryRepository {
     }
 
     // ------------------------------------------------------------------ 집계
+
+    /** 이 트랜잭션의 문장 시간 상한({@code SET LOCAL statement_timeout}). 관측 측정이 DB를 오래 붙들지 않게 한다. */
+    void limitStatementTime(String timeout) {
+        if (!timeout.matches("[0-9]{1,5}(ms|s)")) {
+            throw new IllegalArgumentException("statement_timeout 모양이 아니다.");
+        }
+        this.jdbc.sql("SET LOCAL statement_timeout = '" + timeout + "'").update();
+    }
+
+    /** 첫 답변을 기다리는 문의 수(접수·처리 중). 관측 gauge(Story 3.7)의 값이다 — 사용자·문의 식별자 없이 수만 읽는다. */
+    long awaitingFirstAnswer() {
+        return this.jdbc.sql("SELECT count(*) FROM support_inquiry WHERE status IN ('RECEIVED', 'IN_PROGRESS')")
+                .query(Long.class)
+                .single();
+    }
 
     /** 집계의 행: 목표가 정해진 문의의 접수·목표·첫 답변 시각과 그 목표를 정한 달력 버전. */
     record DueRow(Instant receivedAt, Instant targetAt, @Nullable Instant firstAnsweredAt, String calendarVersion) {}

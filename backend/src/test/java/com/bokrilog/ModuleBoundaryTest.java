@@ -101,8 +101,8 @@ class ModuleBoundaryTest {
         //
         // Actuator와 Boot의 웹 인프라도 함께 막는다. `package-info.java`와 `DEVELOPMENT.md`는
         // "컨트롤러도 엔드포인트도 Actuator도 없다"를 계약으로 적는데, `@Endpoint` 하나면 MVC
-        // 애노테이션 없이도 identity 상태가 HTTP로 나간다. 두 starter가 아직 classpath에 없어
-        // 이 두 줄은 지금 통과하지만, 계약을 문장이 아니라 검사로 두는 것이 이 시험의 이유다.
+        // 애노테이션 없이도 identity 상태가 HTTP로 나간다. Story 3.7부터 Actuator가 운영 classpath에 있으므로
+        // (관리 포트의 Prometheus 하나, 루트 `TelemetryConfig`만 닿는다) 이 줄은 이제 실제로 막는 검사다.
         ArchRule rule =
                 noClasses()
                         .that()
@@ -119,6 +119,25 @@ class ModuleBoundaryTest {
                         .because(
                                 "계정 생성·상태 변경·삭제에 HTTP로 닿는 경로를 만들지 않는다. "
                                         + "identity 기능은 모듈 공개 API로만 호출한다.");
+
+        rule.check(PRODUCTION_CLASSES);
+    }
+
+    /**
+     * Actuator에 닿는 코드는 루트 관측 설정 한 곳이다(Story 3.7). 모듈과 다른 루트 클래스는 Micrometer {@code MeterRegistry}만
+     * 쓴다 — Actuator 엔드포인트·자동 구성 타입에 닿는 순간 노출 범위가 설정 한 곳({@code TelemetryConfig}·{@code
+     * application.yml})이 아니라 코드 여러 곳에서 정해진다.
+     */
+    @Test
+    void actuator_의존은_루트_관측_설정에만_있다() {
+        ArchRule rule =
+                noClasses()
+                        .that()
+                        .haveNameNotMatching("com\\.bokrilog\\.TelemetryConfig(\\$.*)?")
+                        .should()
+                        .dependOnClassesThat()
+                        .resideInAnyPackage("org.springframework.boot.actuate..")
+                        .because("Actuator 노출은 루트 TelemetryConfig와 application.yml 한 곳이 정한다.");
 
         rule.check(PRODUCTION_CLASSES);
     }

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  BokriLog 로그 출력(Story 3.7 AC-1·AC-5).
+
+  출력은 하나다: 표준 출력으로 나가는 JSON 한 줄(`com.bokrilog.RedactingJsonEncoder`). 허용 키는
+  ts·level·logger·event·code·outcome·reason·kind·correlationId·durationMs·count·exception(예외 클래스의 단순 이름)이고
+  그 밖의 MDC·구조 인자·예외 메시지·스택은
+  내보내지 않는다. 메시지 본문은 민감값 규칙(SECRET·EMAIL·WALLET)과 UUID·숫자 6자리 이상 가림을 거치고, 실제 구성
+  비밀값이 나타난 줄은 본문 전체를 가린 뒤 강한 신호 3번으로 올린다(`LogSecretGuard`).
+
+  운영·개발·CI·시험이 모두 같은 형식이다. 프로필로 가르지 않는 이유는 가림이 형식이 아니라 안전장치이기 때문이다 —
+  개발 출력에서 꺼 두면 그 사이에 생긴 누출을 아무도 보지 못한다. 수준은 `application.yml`의 `logging.level.*`이 정한다.
+  파일 appender는 두지 않는다. 운영 수집은 컨테이너 표준 출력을 Grafana Alloy가 읽는다(Story 3.8).
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="com.bokrilog.RedactingJsonEncoder"/>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

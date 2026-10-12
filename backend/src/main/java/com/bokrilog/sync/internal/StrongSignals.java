@@ -149,8 +149,8 @@ class StrongSignals {
             throw refused;
         } catch (RuntimeException failure) {
             // 메시지·원인은 남기지 않는다 — SQL이 실린다. 종류만.
-            LOG.warn("strong signal not recorded: signal={} failure={}", signal.type().name(),
-                    failure.getClass().getName());
+            LOG.atWarn().addKeyValue("exception", failure.getClass().getSimpleName())
+                    .log("strong signal not recorded: signal={}", signal.type().name());
             throw new Unraised();
         }
     }
