@@ -383,3 +383,6 @@
 - source_spec: none
   summary: Story 3.7 AC-4의 Bybit API·사건 유형 versioned 계약 정기 재검증(실계정·stub 결과 구분, schema 변화 시 발행 거부·경보)을 후속으로 미룬다.
   evidence: 미인식 사건 유형은 3.3 신호 7이 이미 발행을 막는다. 정기 재검증은 실제 검증 계정과 regional reserved IP가 필요한 Epic 2 실연동 게이트와 묶여 있어 지금 실계정 결과를 만들 수 없다(2026-10-12).
+- source_spec: `_bmad-output/implementation-artifacts/spec-verify-windows-utf8-body.md`
+  summary: `verify-same-origin.sh`의 `fetch` argv 본문 가드를 `.github/scripts/test-ci-scripts.sh`에서 행동 시험으로 고정한다(curl을 기록 함수로 가리고 거부 형태는 실패·미호출, `@<파일>` 형태는 통과를 단정).
+  evidence: 가드는 Linux CI에서 보이지 않는 Windows 결함의 유일한 회귀 그물인데, 정상 실행에서는 어떤 호출도 거부 분기를 지나지 않아 패턴이 깨지거나 지워져도 아무 시험도 실패하지 않는다. CI 스크립트를 건드리는 일이라 이 fix의 Ask First 경계 밖이다(2026-10-12).

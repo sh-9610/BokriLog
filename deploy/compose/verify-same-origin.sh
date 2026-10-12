@@ -342,14 +342,83 @@ last_body=''
 # 쓰는지 확인하는 데 쓴다.
 tracked_request_id=''
 
+# request_body <JSON 텍스트>. 요청 본문을 `work_dir`의 새 파일에 바이트 그대로 쓰고 그 경로를
+# 전역 `request_body_file`에 남긴다. 호출은 `fetch … --data-binary "@${request_body_file}"`다.
+#
+# 본문을 curl의 argv로 넘기지 않는 이유: Git Bash의 curl은 mingw 네이티브 빌드라 argv를 ANSI
+# 코드 페이지(예: CP949)로 해석한다. 한글이 든 JSON을 인자로 넘기면 그 기기에서 CP949 바이트로
+# 나가고, 백엔드는 잘못된 UTF-8을 읽지 못해 400으로 답한다. 파일을 거치면 셸이 가진 UTF-8 바이트가
+# 어떤 플랫폼에서도 그대로 나간다.
+#
+# 본문에 Secret이 실리므로 파일은 그것을 소비하는 `fetch` 한 번까지만 산다. `fetch`가 요청을
+# 보낸 뒤(거부한 경우에도) 파일을 지우고 `request_body_file`을 비운다. 그래야 `request_body`를
+# 빠뜨린 다음 호출이 앞선 본문을 다시 보내지 않는다. `cleanup`이 `work_dir`을 지우는 것은 중간에
+# 죽은 경우를 위한 마지막 안전망이다.
+#
+# 쓰지 못하면 준비 실패로 끝낸다. 빈 파일을 보내면 뒤 단정이 원인과 상관없는 400으로 무너진다.
+#
+# `fetch`와 같은 이유로 명령 치환으로 부르지 않는다. 서브셸에서는 순번과 경로 대입이 사라진다.
+request_body_seq=0
+request_body_file=''
+
+request_body() {
+  request_body_seq=$((request_body_seq + 1))
+  request_body_file="${work_dir}/request-body-${request_body_seq}.json"
+  printf '%s' "$1" >"${request_body_file}" \
+    || fail_setup "요청 본문 파일을 쓰지 못했다: ${request_body_file}"
+}
+
+# 소비한 본문 파일을 지우고 전역 경로를 비운다. `fetch`만 부른다.
+discard_request_body() {
+  if [ -n "${request_body_file}" ]; then
+    rm -f "${request_body_file}"
+    request_body_file=''
+  fi
+}
+
 fetch() {
-  local method="$1" path="$2"
+  local method="$1" path="$2" arg pending='' rejected=''
   shift 2
   request_seq=$((request_seq + 1))
   last_headers="${work_dir}/headers-${request_seq}.txt"
   last_body="${work_dir}/body-${request_seq}.txt"
   : >"${last_headers}"
   : >"${last_body}"
+  # 규칙: 요청 본문은 `@<파일>`로만 싣는다. 위 `request_body`의 이유로 argv에 실린 비ASCII 본문은
+  # Windows에서만 깨지는데, CI는 Linux만 돌아 그 회귀를 보지 못한다. 그래서 플래그 이름이 아니라
+  # 값을 본다.
+  #   - `--data`·`--data-ascii`·`--data-binary`·`--json`·`-d`는 다음 인자가 `@…`여야 한다. 값 없이
+  #     마지막에 오는 경우도 거부한다. 붙여 쓴 `-d@…`는 허용하고 그 밖의 `-d…`는 거부한다.
+  #   - `--data-raw`(`@`를 파일로 읽지 않는다)·`--data-urlencode`·`--form`·`--form-string`·`-F`는
+  #     언제나 거부한다.
+  # 거부하면 요청은 보내지 않고 상태를 '000'으로 남겨 뒤따르는 단정도 성공으로 읽히지 않게 한다.
+  # 실패 메시지에는 플래그 이름만 적는다. 값은 API Secret일 수 있고 그 출력은 CI 로그에 남는다.
+  for arg in "$@"; do
+    if [ -n "${pending}" ]; then
+      case "${arg}" in
+        @?*) pending='' ;;
+        *) rejected="${pending}"; break ;;
+      esac
+      continue
+    fi
+    case "${arg}" in
+      --data | --data-ascii | --data-binary | --json | -d) pending="${arg}" ;;
+      -d@?*) ;;
+      -d?*) rejected='-d'; break ;;
+      -F?*) rejected='-F'; break ;;
+      --data-raw | --data-urlencode | --form | --form-string | -F) rejected="${arg}"; break ;;
+    esac
+  done
+  if [ -z "${rejected}" ] && [ -n "${pending}" ]; then
+    rejected="${pending}"
+  fi
+  if [ -n "${rejected}" ]; then
+    record_fail "fetch ${method} ${path}가 본문을 @<파일> 밖으로 싣는다" \
+      "'${rejected}' 대신 request_body로 파일을 만들고 --data-binary \"@\${request_body_file}\"로 보낸다."
+    last_status='000'
+    discard_request_body
+    return
+  fi
   last_status="$(curl --silent --show-error --max-time 15 \
     --request "${method}" \
     --dump-header "${last_headers}" \
@@ -357,6 +426,7 @@ fetch() {
     --write-out '%{http_code}' \
     "$@" \
     "${base_url}${path}" 2>"${work_dir}/curl-err-${request_seq}.txt")" || last_status='000'
+  discard_request_body
 }
 
 # header_value <이름>. 헤더 값을 소문자 이름으로 찾아 stdout으로 낸다.
@@ -2307,12 +2377,13 @@ assert_rows '새 준비가 앞선 허가를 무효화한다' \
   "SELECT count(*) FROM action_grant WHERE command = 'bybit-connection-create'" '1'
 
 # 5) 쓰기 권한이 붙은 키. 저장 없이 거절하고 사용자가 할 일을 말한다.
+request_body "{\"apiKey\":\"write.${connection_uid}\",\"apiSecret\":\"${connection_secret}\",\"confirmation\":\"${connection_confirmation}\"}"
 fetch POST /api/connections/bybit/connect \
   -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}" \
   -H "Origin: ${base_url}" \
   -H "X-CSRF-TOKEN: ${connection_csrf_token}" \
   -H 'Content-Type: application/json' \
-  --data "{\"apiKey\":\"write.${connection_uid}\",\"apiSecret\":\"${connection_secret}\",\"confirmation\":\"${connection_confirmation}\"}"
+  --data-binary "@${request_body_file}"
 assert_equals '쓰기 권한 키의 연결 422' "${last_status}" '422'
 assert_body_contains '쓰기 권한 전용 code' '"code":"CONNECTION_WRITE_PERMISSION"'
 assert_correlation_id '쓰기 권한 거절 correlation ID'
@@ -2326,23 +2397,25 @@ assert_rows '거절이 허가를 소비하지 않는다' \
   '0'
 
 # 6) IP가 묶이지 않은 키. 같은 무장으로 다시 시도할 수 있다는 사실이 여기서 관측된다.
+request_body "{\"apiKey\":\"noip.${connection_uid}\",\"apiSecret\":\"${connection_secret}\",\"confirmation\":\"${connection_confirmation}\"}"
 fetch POST /api/connections/bybit/connect \
   -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}" \
   -H "Origin: ${base_url}" \
   -H "X-CSRF-TOKEN: ${connection_csrf_token}" \
   -H 'Content-Type: application/json' \
-  --data "{\"apiKey\":\"noip.${connection_uid}\",\"apiSecret\":\"${connection_secret}\",\"confirmation\":\"${connection_confirmation}\"}"
+  --data-binary "@${request_body_file}"
 assert_equals 'IP 미바인딩 키의 연결 422' "${last_status}" '422'
 assert_body_contains 'IP 미바인딩 전용 code' '"code":"CONNECTION_IP_NOT_BOUND"'
 assert_rows 'IP 거절도 아무것도 저장하지 않는다' 'SELECT count(*) FROM source_connection' '0'
 
 # 7) 지원되는 읽기 전용 메인 UID 키. 여섯이 한 트랜잭션으로 커밋된다.
+request_body "{\"apiKey\":\"uta2.${connection_uid}\",\"apiSecret\":\"${connection_secret}\",\"confirmation\":\"${connection_confirmation}\"}"
 fetch POST /api/connections/bybit/connect \
   -H "Cookie: BOKRILOG_SESSION=${connection_session_cookie}" \
   -H "Origin: ${base_url}" \
   -H "X-CSRF-TOKEN: ${connection_csrf_token}" \
   -H 'Content-Type: application/json' \
-  --data "{\"apiKey\":\"uta2.${connection_uid}\",\"apiSecret\":\"${connection_secret}\",\"confirmation\":\"${connection_confirmation}\"}"
+  --data-binary "@${request_body_file}"
 assert_equals '정상 연결 200' "${last_status}" '200'
 assert_body_contains '정상 연결이 연결 사실을 답한다' '"connected":true'
 assert_body_contains '정상 연결이 적용 정책 버전을 답한다' '"policyVersion":"'
@@ -2701,10 +2774,11 @@ op_csrf="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' "${last_body}")"
 # 준비. 대상 기간은 데이터베이스의 오늘(KST) 앞뒤 하루다 — 셸의 `date`는 플랫폼마다 플래그가 다르다.
 operator_target="$(psql_value "SELECT to_char((now() AT TIME ZONE 'Asia/Seoul')::date - 1, 'YYYY-MM-DD') || '~' || to_char((now() AT TIME ZONE 'Asia/Seoul')::date + 1, 'YYYY-MM-DD')")"
 operator_key="verify-operator-$$-$(head -c 12 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
+request_body "{\"scope\":\"AUDIT_LEDGER\",\"target\":\"${operator_target}\",\"reason\":\"동일 출처 검증\"}"
 fetch POST /api/operator/commands/audit-export \
   -H "Cookie: BOKRILOG_SESSION=${op_cookie}" -H "Origin: ${base_url}" -H "X-CSRF-TOKEN: ${op_csrf}" \
   -H "Idempotency-Key: ${operator_key}" -H 'Content-Type: application/json' \
-  --data "{\"scope\":\"AUDIT_LEDGER\",\"target\":\"${operator_target}\",\"reason\":\"동일 출처 검증\"}"
+  --data-binary "@${request_body_file}"
 assert_equals '감사 내보내기 준비 200' "${last_status}" '200'
 operator_operation="$(sed -n 's/.*"operationId":"\([^"]*\)".*/\1/p' "${last_body}")"
 operator_phrase="$(sed -n 's/.*"confirmationPhrase":"\([^"]*\)".*/\1/p' "${last_body}")"
@@ -2712,10 +2786,11 @@ assert_equals '확인 문구는 서버가 정한 범위와 기간이다' "${oper
 assert_body_lacks '준비 응답에 허가 참조가 없다' 'grant'
 
 # 확정. 사용자가 다시 입력한 문구를 같은 키로 보낸다.
+request_body "{\"operationId\":\"${operator_operation}\",\"confirmation\":\"${operator_phrase}\"}"
 fetch POST /api/operator/commands/audit-export/confirm \
   -H "Cookie: BOKRILOG_SESSION=${op_cookie}" -H "Origin: ${base_url}" -H "X-CSRF-TOKEN: ${op_csrf}" \
   -H "Idempotency-Key: ${operator_key}" -H 'Content-Type: application/json' \
-  --data "{\"operationId\":\"${operator_operation}\",\"confirmation\":\"${operator_phrase}\"}"
+  --data-binary "@${request_body_file}"
 assert_equals '감사 내보내기 확정 200' "${last_status}" '200'
 assert_body_contains '확정이 완료를 답한다' '"outcome":"COMPLETED"'
 assert_body_contains '확정이 행 묶음을 싣는다' '"rows":['
