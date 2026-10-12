@@ -25,7 +25,7 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
  * ({@code application.yml}). compose는 그 포트를 게시하지 않고 Nginx는 {@code /api}만 넘기므로 공개 origin의
  * {@code /actuator/**}는 404다. 외부 liveness는 여전히 {@code GET /api/status}다({@link StatusController}).
  *
- * <p><b>거부.</b> {@link #telemetryMeterFilter}가 모든 meter에 공통 tag {@code env}를 붙이고, HTTP 서버 meter의 {@code uri}를
+ * <p><b>거부.</b> {@link #telemetryMeterFilter}가 모든 meter에 공통 tag {@code env}·{@code role}(Story 3.8)을 붙이고, HTTP 서버 meter의 {@code uri}를
  * 경로 템플릿으로만 남기며(템플릿이 없으면 {@code UNKNOWN}), {@link TelemetryAllowlist}의 표 밖 meter를 등록 시점에 거부한다.
  */
 @Configuration(proxyBeanMethods = false)
@@ -36,11 +36,13 @@ class TelemetryConfig {
      * 개발 수치가 운영 실적에 섞이는 것을 조용히 두지 않는다.
      */
     @Bean
-    TelemetryMeterFilter telemetryMeterFilter(@Value("${bokrilog.telemetry.env:development}") String env) {
+    TelemetryMeterFilter telemetryMeterFilter(@Value("${bokrilog.telemetry.env:development}") String env,
+            @Value("${" + BokrilogRole.PROPERTY + ":" + BokrilogRole.DEFAULT + "}") String role) {
         if (!TelemetryAllowlist.ENVIRONMENTS.contains(env)) {
             throw new IllegalStateException("bokrilog.telemetry.env는 development·ci·production 중 하나여야 한다.");
         }
-        return new TelemetryMeterFilter(env);
+        // 공통 tag `role`(Story 3.8). 셋 밖의 값은 BokrilogRole.parse가 기동을 거부한다. 빈 값은 기본 역할이다.
+        return new TelemetryMeterFilter(env, BokrilogRole.parse(role).value());
     }
 
     /**
@@ -63,10 +65,12 @@ class TelemetryConfig {
     static final class TelemetryMeterFilter implements MeterFilter {
 
         private final String env;
+        private final String role;
         private volatile Set<String> uriTemplates = Set.of();
 
-        TelemetryMeterFilter(String env) {
+        TelemetryMeterFilter(String env, String role) {
             this.env = env;
+            this.role = role;
         }
 
         /** 템플릿을 더한다. 관리 포트의 자식 컨텍스트도 같은 이벤트를 부모에 올리므로 덮어쓰지 않고 합친다. */
@@ -85,7 +89,7 @@ class TelemetryConfig {
             List<Tag> tags = new ArrayList<>();
             boolean http = TelemetryAllowlist.HTTP_SERVER_REQUESTS.equals(id.getName());
             for (Tag tag : id.getTagsAsIterable()) {
-                if (TelemetryAllowlist.ENV_TAG.equals(tag.getKey())) {
+                if (TelemetryAllowlist.ENV_TAG.equals(tag.getKey()) || TelemetryAllowlist.ROLE_TAG.equals(tag.getKey())) {
                     continue;
                 }
                 if (http && TelemetryAllowlist.HTTP_DROPPED_TAGS.contains(tag.getKey())) {
@@ -99,6 +103,7 @@ class TelemetryConfig {
                 tags.add(tag);
             }
             tags.add(Tag.of(TelemetryAllowlist.ENV_TAG, this.env));
+            tags.add(Tag.of(TelemetryAllowlist.ROLE_TAG, this.role));
             return id.replaceTags(tags);
         }
 

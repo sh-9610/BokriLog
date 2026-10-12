@@ -23,6 +23,8 @@ import org.jspecify.annotations.Nullable;
  * 이 애플리케이션이 등록한 경로 템플릿(그 밖은 {@code UNKNOWN}으로 접는다), JVM 메모리 {@code id}는 이 JVM의 메모리 풀 이름이다.
  *
  * <p>모든 행은 공통 tag {@link #ENV_TAG}를 가진다. 값은 {@link #ENVIRONMENTS} 셋 중 하나라 개발·CI 수치가 운영 실적과 섞이지 않는다.
+ * 공통 tag {@link #ROLE_TAG}(Story 3.8)도 모든 행에 붙는다. 값은 {@link #ROLES} 셋 중 하나라 API·Worker 프로세스의 수치가 갈린다
+ * — 예를 들어 동기화 대기 나이는 Worker만 측정한다.
  */
 public final class TelemetryAllowlist {
 
@@ -31,6 +33,12 @@ public final class TelemetryAllowlist {
 
     /** {@code BOKRILOG_ENV}가 받을 수 있는 값. */
     public static final Set<String> ENVIRONMENTS = Set.of("development", "ci", "production");
+
+    /** 공통 tag 이름(Story 3.8). 값은 프로세스 역할({@code bokrilog.role})이다. */
+    public static final String ROLE_TAG = "role";
+
+    /** {@code BOKRILOG_ROLE}이 받을 수 있는 값({@link BokrilogRole}). */
+    public static final Set<String> ROLES = Set.of("api", "worker", "all");
 
     /** 경로 템플릿이 없는 요청의 {@code uri}. */
     public static final String UNKNOWN_URI = "UNKNOWN";
@@ -121,14 +129,15 @@ public final class TelemetryAllowlist {
         return METERS.keySet();
     }
 
-    /** 그 이름의 허용 tag 키(공통 {@code env} 제외). 표 밖 이름이면 {@code null}. */
+    /** 그 이름의 허용 tag 키(공통 {@code env}·{@code role} 제외). 표 밖 이름이면 {@code null}. */
     public static @Nullable Set<String> tagKeys(String name) {
         Map<String, Values> tags = METERS.get(name);
         return tags == null ? null : tags.keySet();
     }
 
     /**
-     * 그 meter를 등록해도 되는가: 이름이 표에 있고, 모든 tag 키가 그 행(또는 {@code env})에 있고, 값이 그 키의 집합에 있다.
+     * 그 meter를 등록해도 되는가: 이름이 표에 있고, 모든 tag 키가 그 행(또는 공통 {@code env}·{@code role})에 있고, 값이 그 키의
+     * 집합에 있다.
      *
      * @param tags tag 키 → 값
      * @param uriTemplates 이 애플리케이션의 경로 템플릿
@@ -141,6 +150,12 @@ public final class TelemetryAllowlist {
         for (var tag : tags.entrySet()) {
             if (ENV_TAG.equals(tag.getKey())) {
                 if (!ENVIRONMENTS.contains(tag.getValue())) {
+                    return false;
+                }
+                continue;
+            }
+            if (ROLE_TAG.equals(tag.getKey())) {
+                if (!ROLES.contains(tag.getValue())) {
                     return false;
                 }
                 continue;

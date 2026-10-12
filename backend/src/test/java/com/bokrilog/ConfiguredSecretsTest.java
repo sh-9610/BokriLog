@@ -79,6 +79,30 @@ class ConfiguredSecretsTest {
         }
     }
 
+    /**
+     * Story 3.8: 운영 DB 비밀번호의 이름은 {@code BOKRILOG_DB_PASSWORD}이고 {@code application.yml}이 그것을
+     * {@code spring.datasource.password}로 잇는다. 실제 설정 파일을 읽은 환경에서 그 값이 감지 집합에 들어간다.
+     */
+    @Test
+    void 운영_DB_비밀번호_이름이_실제_설정을_지나_감지_집합에_들어간다() {
+        String password = "db" + randomKey().substring(0, 20);
+        new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+                .withInitializer(new org.springframework.boot.test.context.ConfigDataApplicationContextInitializer())
+                .withSystemProperties("BOKRILOG_DB_PASSWORD=" + password)
+                .run(context -> {
+                    ConfiguredSecrets secrets = new ConfiguredSecrets(context.getEnvironment(),
+                            new StaticListableBeanFactory().getBeanProvider(ClientRegistrationRepository.class),
+                            mock(OperationalSignalApi.class));
+                    try {
+                        assertThat(context.getEnvironment().getProperty("spring.datasource.password"))
+                                .isEqualTo(password);
+                        assertThat(secrets.secrets()).contains(password);
+                    } finally {
+                        secrets.destroy();
+                    }
+                });
+    }
+
     /** 운영 encoder로 줄을 만들어 모으는 시험 appender. */
     static final class RenderingAppender extends ch.qos.logback.core.AppenderBase<ch.qos.logback.classic.spi.ILoggingEvent> {
 

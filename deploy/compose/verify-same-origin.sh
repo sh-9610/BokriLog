@@ -152,6 +152,9 @@ forbidden_fragments=(
   # Story 3.7의 관리 포트·관측 환경 설정 이름.
   'BOKRILOG_MANAGEMENT_PORT'
   'BOKRILOG_ENV'
+  # Story 3.8의 역할·운영 DB 비밀번호 이름.
+  'BOKRILOG_ROLE'
+  'BOKRILOG_DB_PASSWORD'
   'SPRING_PROFILES_ACTIVE'
   'NGINX_ENTRYPOINT_QUIET_LOGS'
   # 재인증이 제공자에게 보내는 최근 인증 요청·증거. 인가 요청의 `claims`와 ID Token의 claim
@@ -2924,6 +2927,10 @@ if compose exec -T backend wget -q -O - http://127.0.0.1:18081/actuator/promethe
   unlabeled_series="$(grep -v '^#' "${metrics_file}" | grep -v '^[[:space:]]*$' \
     | grep -cvF "env=\"${expected_env}\"" || true)"
   assert_equals "관리 포트 출력의 모든 시계열에 env=\"${expected_env}\" tag가 있다" "${unlabeled_series}" '0'
+  # 공통 tag role(Story 3.8). 이 스택의 백엔드는 역할 all 하나다 — 역할을 나눈 모양은 운영 구성의 리허설이 본다.
+  unroled_series="$(grep -v '^#' "${metrics_file}" | grep -v '^[[:space:]]*$' \
+    | grep -cvF 'role="all"' || true)"
+  assert_equals '관리 포트 출력의 모든 시계열에 role="all" tag가 있다' "${unroled_series}" '0'
   assert_equals '관리 포트 출력에 UUID가 없다' \
     "$(grep -cE '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' "${metrics_file}" || true)" '0'
   assert_equals '관리 포트 출력에 이메일 모양이 없다' \

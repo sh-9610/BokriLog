@@ -79,6 +79,15 @@ final class ActorDigest {
         return digest("system:" + name);
     }
 
+    /**
+     * 배포 수행자의 digest(Story 3.8). 소문자 16진 64자. 배포 감사 행은 SYSTEM 행이지만 누가 배포를 돌렸는지는 묶여야 하므로
+     * {@code BOKRILOG_DEPLOY_ACTOR}의 이름을 이 접두사로 묶는다 — 다른 digest와 접두사가 달라 겹치지 않고, 이름 원문은 남지
+     * 않는다.
+     */
+    String ofDeployer(String name) {
+        return digest("deployer:" + name);
+    }
+
     private String digest(String value) {
         try {
             Mac mac = Mac.getInstance(ALGORITHM);
