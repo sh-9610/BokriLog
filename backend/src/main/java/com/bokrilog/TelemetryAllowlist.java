@@ -1,5 +1,6 @@
 package com.bokrilog;
 
+import com.bokrilog.operations.BackupRecordApi;
 import com.bokrilog.sync.SyncTelemetry;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryPoolMXBean;
@@ -85,6 +86,10 @@ public final class TelemetryAllowlist {
             .map(SyncTelemetry.Kind::tag)
             .collect(Collectors.toUnmodifiableSet());
 
+    private static final Set<String> BACKUP_STORES = Arrays.stream(BackupRecordApi.Store.values())
+            .map(BackupRecordApi.Store::tag)
+            .collect(Collectors.toUnmodifiableSet());
+
     private static final Map<String, Map<String, Values>> METERS = build();
 
     private TelemetryAllowlist() {}
@@ -103,6 +108,11 @@ public final class TelemetryAllowlist {
         // 문의 첫 답변 목표(operations.internal.SupportMetrics).
         meters.put("bokrilog.support.first.answer", Map.of("met", Values.of(Set.of("true", "false", "pending"))));
         meters.put("bokrilog.support.pending.target", Map.of());
+        // 백업(Story 3.9, operations.internal.BackupMetrics). 저장소는 OCI와 OCI 밖 둘이다. 기록이 없으면 등록되지 않는다(NaN 없음).
+        meters.put("bokrilog.backup.last.success.timestamp", Map.of());
+        meters.put("bokrilog.backup.store.usage.ratio", Map.of("store", Values.of(BACKUP_STORES)));
+        meters.put("bokrilog.backup.purge.overdue", Map.of("store", Values.of(BACKUP_STORES)));
+        meters.put("bokrilog.backup.store.measured.timestamp", Map.of("store", Values.of(BACKUP_STORES)));
         // DB 연결(Hikari). 풀은 하나다.
         for (String name : new String[] {"hikaricp.connections", "hikaricp.connections.active",
                 "hikaricp.connections.idle", "hikaricp.connections.pending", "hikaricp.connections.max",

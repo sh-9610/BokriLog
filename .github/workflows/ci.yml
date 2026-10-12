@@ -462,15 +462,20 @@ jobs:
     # 미완료(3b)·전환 전 실패·전환 뒤 실패 rollback·contract 거부·창 닫기). 리허설은 단계마다 일회성 감사 역할(JVM 하나)을 띄우므로
     # 배포 한 번이 몇 분이다. 실패하면 리허설 기록(배포 출력·단계 로그·컨테이너 로그, 비밀 파일 제외)을 진단 artifact로 올린다.
     #
-    #   checkout·통합 입력 2건 내려받기                               1분
-    #   gate 시험(fixture, Docker 없음)                               1분
-    #   이미지 2개 빌드 + 시나리오                                   20분 (단계 timeout)
-    #   여유·진단 업로드                                              3분
-    #                                                               ---------
-    #                                                                25분
+    # Story 3.9가 같은 job에 백업 리허설을 더했다. 운영 compose 위에 MinIO 두 개를 겹쳐 `backup.sh`를 열두 시나리오로 돈다(실행마다
+    # 일회성 기록 역할 JVM 둘). 배포 리허설과 같은 산출물(jar)을 쓰므로 새 job을 두지 않는다.
     #
-    # 이 job의 green은 **운영 배포의 증거가 아니다.** 실제 운영 대상 smoke 전까지 운영 배포는 미검증이다.
-    timeout-minutes: 25
+    #   checkout·통합 입력 2건 내려받기                               1분
+    #   gate·백업 스크립트 시험(fixture, Docker 없음)                 2분
+    #   이미지 2개 빌드 + 시나리오                                   20분 (단계 timeout)
+    #   백업: 도구 받기·이미지 빌드·시나리오                          40분 (단계 timeout — Windows 로컬 실측 28분 49초)
+    #   여유·진단 업로드                                              7분
+    #                                                               ---------
+    #                                                                70분
+    #
+    # 이 job의 green은 **운영 배포·실저장소의 증거가 아니다.** 실제 운영 대상 smoke 전까지 운영 배포는 미검증이고, 실제 OCI·OCI 밖
+    # 저장소의 파기 증거 전까지 백업은 실저장소 미검증이다.
+    timeout-minutes: 70
     permissions:
       contents: read
 
@@ -485,6 +490,12 @@ jobs:
         # 판정은 `preflight.sh`가, 고정 입력 단정은 `test-preflight.sh`가 소유한다. 산출물에 기대지 않으므로 내려받기보다 앞에 둔다.
         timeout-minutes: 3
         run: bash deploy/production/test-preflight.sh
+
+      - name: 백업 스크립트 시험
+        # Story 3.9. 도구 설치의 무결성(잘못된 배포본·버전·manifest)과 `backup.sh`의 준비 거부(운영 모드의 가상 시계·결함 주입, 설정·
+        # key·권한)를 고정 입력으로 본다. Docker·네트워크가 필요 없다 — gate 시험과 같은 자리다.
+        timeout-minutes: 3
+        run: bash deploy/production/test-backup-scripts.sh
 
       - name: 통합 입력 내려받기 (frontend dist)
         # 두 품질 job이 검증한 그 산출물이다. 여기서 다시 빌드하지 않는다(CI-PLAN §8).
@@ -507,6 +518,16 @@ jobs:
         env:
           BOKRILOG_REHEARSAL_DIAGNOSTICS: ${{ runner.temp }}/deploy-rehearsal-diagnostics
         run: bash deploy/production/rehearse-deploy.sh
+
+      - name: 백업 리허설
+        id: backup-rehearsal
+        # Story 3.9. 운영 compose + 리허설 override + MinIO 두 개(digest 고정)로 `backup.sh`를 실제로 돈다 — age·rclone은
+        # `install-backup-tools.sh`가 고정 버전·SHA-256 표로 받는다. 스크립트가 스택·이미지를 스스로 정리하고, 실패하면 정리 전에 실행
+        # 출력·도구 기록을 아래 디렉터리로 옮긴다(key·저장소 설정·비밀 파일 제외). 업로드는 아래 진단 단계가 같은 상위 디렉터리로 한다.
+        timeout-minutes: 40
+        env:
+          BOKRILOG_REHEARSAL_DIAGNOSTICS: ${{ runner.temp }}/deploy-rehearsal-diagnostics/backup
+        run: bash deploy/production/rehearse-backup.sh
 
       - name: 실패 진단 artifact 업로드
         # 실패·timeout·취소에서만 올린다. 리허설 비밀 파일은 스크립트가 옮기지 않는다(실행마다 만든 리허설 전용 값이기도 하다).

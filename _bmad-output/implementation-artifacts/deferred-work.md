@@ -398,3 +398,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-8-blue-green-deploy.md`
   summary: 배포 리허설에 실제 호환 창과 실제 JVM 종료 경로를 더한다 — migration 집합이 다른 두 release(old API+new schema 실제 기동, 이전 manifest로의 되돌림), 진행 중 작업을 둔 실제 Worker의 drain-timeout 종료 코드 75, 잠금 상실 76, 첫 배포의 실패 경로.
   evidence: 리허설의 두 이미지는 같은 jar라 schema 차이가 생기지 않고, drain 미완료는 결함 주입(`drain-incomplete`)으로만 덮으며, `WorkerDrainTest`는 빈의 종료 코드만 본다(진입점의 shutdown handler·`Runtime.halt` 경로는 시험 밖). 두 release를 만들려면 시험용 migration을 가진 별도 이미지가 필요하다(3.8 리뷰 verification-gap·blind-hunter, 2026-10-12).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-9-encrypted-backup.md`
+  summary: CI의 백업 리허설(로컬 실측 약 16분 30초)을 `deploy/production/**`·`backend/**`·`deploy/observability/**` 변경에만 돌리도록 경로별 job 분기를 더하고 `deploy-rehearsal` job timeout(25 → 50분)을 실측으로 보정한다.
+  evidence: `classify-changes.sh`는 문서-only와 그 밖 둘로만 가르므로 모든 제품 PR의 임계 경로가 백업 리허설만큼 길어진다. 경로 분기는 CI 판정 구조(`aggregate-results.sh`·필수 검사 집계)를 바꾸는 별도 결정이다(3.9 리뷰 blind-hunter, 2026-10-12).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-9-encrypted-backup.md`
+  summary: 백업 저장소 사용률의 분모·분자를 계정 단위 실제 사용량(OCI 계정 합산 무료 한도, 같은 계정의 다른 bucket)으로 보정한다.
+  evidence: 지금 `bokrilog.backup.store.usage.ratio`는 백업 object bytes만 분자로, 운영자가 적은 quota를 분모로 쓴다. 같은 계정에 다른 사용량이 생기면 70%·85% 경보가 늦다. 실제 사용량은 OCI·외부 업체의 계정 지표가 필요하고 운영 연결(Alloy·Grafana Cloud) 뒤에야 읽을 수 있다(3.9 리뷰 blind-hunter, 2026-10-12).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-9-encrypted-backup.md`
+  summary: 백업 기록 대기열(`pending/`)의 재전송에 행 단위 멱등 키를 더해, 기록은 됐지만 뒤의 행 수 확인이 실패한 묶음이 다시 쓰일 때 `SUCCEEDED` 밖의 행(`FAILED`·`PURGED`·`MEASURED`·감사)이 중복되지 않게 한다.
+  evidence: 지금은 `SUCCEEDED` 중복만 서비스가 거절한다. 그 밖의 행은 같은 묶음이 두 번 들어가면 두 번 남는다. 드문 경로(기록 성공 직후 psql 확인 실패)이고 성공 판정·gauge에는 영향이 없지만 감사·이력이 부풀 수 있다(3.9 patch 루프 보고, 2026-10-12).

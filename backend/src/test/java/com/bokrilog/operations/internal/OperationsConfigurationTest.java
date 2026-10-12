@@ -63,6 +63,24 @@ class OperationsConfigurationTest {
                 .run(context -> assertThat(context).hasFailed());
     }
 
+    /** Story 3.9: 백업 기록 역할(웹 아님)도 파기 실패·기한 초과를 감사 원장에 쓰므로 키가 있어야 뜬다. */
+    @Test
+    void backup_record_역할은_키가_있어야_뜬다() {
+        this.migrate.withPropertyValues("spring.profiles.active=backup-record",
+                "bokrilog.operations.audit-digest-key=" + KEY)
+                .run(context -> assertThat(context).hasNotFailed().hasSingleBean(ActorDigest.class));
+        this.migrate.withPropertyValues("spring.profiles.active=backup-record")
+                .run(context -> assertThat(context).hasFailed());
+    }
+
+    @Test
+    void 백업_수행자_digest는_다른_digest와_겹치지_않는다() {
+        ActorDigest digest = new ActorDigest(KEY);
+        assertThat(digest.ofBackup("backup-timer")).matches("[0-9a-f]{64}")
+                .isNotEqualTo(digest.ofDeployer("backup-timer")).isNotEqualTo(digest.ofSystem("backup-timer"))
+                .isEqualTo(new ActorDigest(KEY).ofBackup("backup-timer"));
+    }
+
     @Test
     void 배포_수행자_digest는_다른_digest와_겹치지_않는다() {
         ActorDigest digest = new ActorDigest(KEY);

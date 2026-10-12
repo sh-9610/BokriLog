@@ -1,0 +1,48 @@
+# 백업 리허설의 S3 호환 저장소 둘(Story 3.9). `deploy/production/rehearse-backup.sh`만 이 파일을 `compose.yaml`·`compose.rehearsal.yaml`
+# 위에 겹친다. 운영 구성에는 저장소가 없다 — 운영의 두 저장소(OCI Object Storage·OCI 밖)는 호스트의 rclone 설정이 가리킨다.
+#
+# 두 MinIO는 OCI 저장소와 OCI 밖 저장소의 대역이다. 서로 다른 프로세스·volume이라 한쪽만 멈춰 "한쪽 업로드 실패"를 실제로 만든다.
+# 호스트 도구(rclone)가 닿도록 루프백 포트에만 게시한다. 접속 값은 리허설이 실행마다 만들어 환경으로 준다(이 파일에 값이 없다).
+#
+# 이미지는 tag와 index digest로 고정한다. 공식 `minio/minio` 이미지는 Docker Hub 배포가 끝나 받을 수 없어, 같은 MinIO 소스의 공개
+# 빌드(`pgsty/minio`)를 digest로 고정해 리허설에만 쓴다 — 운영 서버·이미지에는 들어가지 않는다.
+
+services:
+  minio-oci:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
+    command: ['minio', 'server', '/data', '--address', ':9000', '--quiet']
+    environment:
+      MINIO_ROOT_USER: ${BOKRILOG_REHEARSAL_S3_USER:?BOKRILOG_REHEARSAL_S3_USER}
+      MINIO_ROOT_PASSWORD: ${BOKRILOG_REHEARSAL_S3_SECRET:?BOKRILOG_REHEARSAL_S3_SECRET}
+      MINIO_BROWSER: 'off'
+    ports:
+      - ${BOKRILOG_REHEARSAL_OCI_BIND:-127.0.0.1:19100}:9000
+    volumes:
+      - minio-oci-data:/data
+    networks:
+      - storage
+    mem_limit: 512m
+    restart: 'no'
+
+  minio-offsite:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
+    command: ['minio', 'server', '/data', '--address', ':9000', '--quiet']
+    environment:
+      MINIO_ROOT_USER: ${BOKRILOG_REHEARSAL_S3_USER:?BOKRILOG_REHEARSAL_S3_USER}
+      MINIO_ROOT_PASSWORD: ${BOKRILOG_REHEARSAL_S3_SECRET:?BOKRILOG_REHEARSAL_S3_SECRET}
+      MINIO_BROWSER: 'off'
+    ports:
+      - ${BOKRILOG_REHEARSAL_OFFSITE_BIND:-127.0.0.1:19101}:9000
+    volumes:
+      - minio-offsite-data:/data
+    networks:
+      - storage
+    mem_limit: 512m
+    restart: 'no'
+
+networks:
+  storage: {}
+
+volumes:
+  minio-oci-data:
+  minio-offsite-data:
