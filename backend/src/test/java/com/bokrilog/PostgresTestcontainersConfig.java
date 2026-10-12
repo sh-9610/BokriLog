@@ -43,6 +43,15 @@ public class PostgresTestcontainersConfig {
     }
 
     /**
+     * Spring 컨텍스트 없이 같은 컨테이너에 닿아야 하는 시험(Story 3.8: 단일 Worker 잠금, 배포 감사의 schema 준비)이 쓴다. 이미
+     * 시작됐으면 그대로 돌려준다 — JVM 하나에 컨테이너 하나라는 위 계약이 그대로다.
+     */
+    public static PostgreSQLContainer shared() {
+        CONTAINER.start();
+        return CONTAINER;
+    }
+
+    /**
      * 시험에서만 스키마를 실제로 적용한다.
      *
      * <p>기본 프로필의 기동 전략은 {@code Flyway::validate}다(AD-12). 갓 뜬 빈 컨테이너에는 적용된

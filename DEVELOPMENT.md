@@ -332,7 +332,7 @@ Story 2.12가 ERD-1.0.0 §2.5의 호출 예산을 `source` 모듈의 `BybitCallB
 
 ## 동일 출처 실행 (`deploy/`)
 
-Nginx가 `frontend/dist/`를 origin 루트에서 제공하고 `/api`만 백엔드로 프록시한다. 브라우저는 하나의 origin에서 화면과 서버 응답을 함께 받는다. 이 구성이 개발·CI 공용이며 production 프로필이 아니다. image digest 고정·자원 제한·로그 전송·blue/green 슬롯은 Story 3.8과 배포 작업이 소유한다.
+Nginx가 `frontend/dist/`를 origin 루트에서 제공하고 `/api`만 백엔드로 프록시한다. 브라우저는 하나의 origin에서 화면과 서버 응답을 함께 받는다. 이 구성이 개발·CI 공용이며 production 프로필이 아니다. 운영 구성(image digest 고정·자원 제한·blue/green 슬롯·역할 분리)은 아래 `## 운영 배포`가 소유하고, 로그 전송(Alloy)은 후속 작업이다. 이 스택의 백엔드는 역할 `all`(기본값) 하나이고, Nginx의 upstream 블록은 `deploy/nginx/upstream-backend.conf`(`backend:8080`)를 마운트한다.
 
 ### 준비
 
@@ -372,7 +372,8 @@ PLAYWRIGHT_BASE_URL=http://127.0.0.1:18080 npm --prefix frontend run test:e2e:ru
 
 | 경로 | 역할 |
 |---|---|
-| `deploy/nginx/bokrilog.conf` | 루트 정적 제공, `/api` 프록시, 알려진 내부 경로 허용 목록, 공통 오류 JSON, 보안 응답 헤더, 쿼리 없는 access log |
+| `deploy/nginx/bokrilog.conf` | 루트 정적 제공, `/api` 프록시, 알려진 내부 경로 허용 목록, 공통 오류 JSON, 보안 응답 헤더, 쿼리 없는 access log. 개발·CI·운영이 같은 본문이다 |
+| `deploy/nginx/upstream-backend.conf` | 본문이 include하는 `upstream bokrilog_backend` 블록 하나(개발·CI의 `backend:8080`). 운영은 배포 스크립트가 활성 슬롯으로 같은 자리에 쓴다 |
 | `deploy/compose/compose.yaml` | 네 서비스. `postgres:18.6-alpine` → 백엔드 → `nginx:1.30.4-alpine`이 healthcheck로 이어지고, `migrate`는 `profiles`에 가려 명시 실행만 된다. 산출물과 설정을 읽기 전용 마운트 |
 | `deploy/compose/verify-same-origin.sh` | 로컬·CI 공용 검증 명령 |
 
@@ -463,6 +464,91 @@ Actuator는 **관리 포트에서 Prometheus 엔드포인트 하나만** 연다(
 |---|---|
 | `bash .github/scripts/check-alert-rules.sh` | 형식 계약(규칙 머리 들여쓰기, labels 구간의 `severity`·`group`, 블록 표기, 승인된 `strong_signal`) → `promtool check rules` → `promtool test rules`. promtool은 Prometheus 3.5.0 배포본을 받아(curl 60초·재시도 2회) SHA-256을 대조해 캐시(`~/.cache/bokrilog/promtool-3.5.0`)에 원자 저장하고, 쓸 때마다 다시 대조한 뒤 임시 디렉터리로 꺼낸다. `PROMTOOL`로 경로를 줄 수 있다. 종료 코드 0(통과)·1(판정 실패)·2(준비 실패 — 내려받기·checksum·미지원 플랫폼·promtool 실행 불가 126/127) |
 
+## 운영 배포 (`deploy/production/`, Story 3.8)
+
+**상태: 운영 배포 미검증.** 이 절차는 CI 리허설(`deploy-rehearsal` job)만 통과했다. 실제 운영 대상(OCI A1 호스트·레지스트리 digest·서명)에서 smoke를 돌리기 전까지 운영 배포는 검증되지 않은 것으로 다룬다. 리허설의 green을 운영 배포의 증거로 쓰지 않는다.
+
+**이중화 한계.** blue/green은 **배포 실패만** 완화한다. 같은 VM 하나·같은 volume 하나·같은 PostgreSQL 하나·같은 Nginx 하나 위에서 슬롯 둘을 바꿔 끼울 뿐이라 VM·volume·DB·Nginx·리전 장애를 이중화하지 않는다. 무중단·고가용성·SLA를 약속하지 않는다 — 운영 등급은 위 `## 관측·경보`의 `24×7 실행 목표, best-effort, SLA 없음` 그대로다. 전환 순간의 진행 중 요청, Worker drain 동안의 작업 지연(최대 drain-timeout 120초), migration 동안의 동기화 정지는 정상 동작이다.
+
+**release 밖의 것.** Nginx가 내보내는 `frontend/dist`와 Nginx 설정(`deploy/nginx/bokrilog.conf`)은 운영 호스트의 checkout에서 마운트한다. 이 둘은 release manifest·digest 고정·rollback의 대상이 아니다 — 앱 이미지를 이전 digest로 되돌려도 화면 산출물과 Nginx 설정은 그 checkout의 것 그대로다. 정적 산출물을 release에 묶는 일은 후속 작업이다(`deferred-work.md`).
+
+### 역할
+
+같은 jar·이미지를 `BOKRILOG_ROLE`로 나눠 실행한다(`BokrilogRole`).
+
+| 역할 | 하는 일 | 하지 않는 일 |
+|---|---|---|
+| `api` | 공개 HTTP 표면 | 작업 dispatch·heartbeat·주기 측정(스케줄링 자체가 없다 — 대기 나이·대기 문의 gauge도 없다) |
+| `worker` | 작업 dispatch, 주기 측정, 종료 신호에 drain, PostgreSQL session advisory lock으로 단일 실행. 같은 servlet 앱이지만 공개 포트를 컨테이너 루프백(`127.0.0.1`)에만 묶는다 | Nginx upstream·포트 게시 대상이 아니다 |
+| `all` | 둘 다(지금까지의 동작). 개발·CI·시험의 기본값 | drain·단일 잠금이 없다. **`BOKRILOG_ENV=production`이면 기동 거부** |
+
+일회성 역할 둘은 웹 서버 없이 뜨고 역할 값을 보지 않는다 — `migrate`(schema를 바꾸는 유일한 프로세스, AD-12)와 `deploy-audit`(감사 원장에 배포 단계 SYSTEM 행 하나를 더하고 끝난다, Flyway 검사 없음 — 미적용 migration이 있는 DB에도 쓴다). 모든 메트릭에 공통 tag `role`이 붙는다(`TelemetryAllowlist`). 대기 나이·대기 문의 수 같은 주기 측정 gauge는 측정하는 역할(`worker`·`all`)에만 있다 — API 슬롯이 NaN을 영원히 내 미측정 경보를 울리지 않게.
+
+**Worker drain.** `docker compose stop`의 SIGTERM이 곧 drain 요청이다(별도 HTTP 경로를 두지 않는다). Worker는 새 lease claim을 멈추고, heartbeat를 계속 밀며, 진행 중 작업(여섯 종류 모두)이 비거나 `bokrilog.sync.worker.drain-timeout`(기본 120초)이 지날 때까지 기다린다(`WorkerDrain` — 컨텍스트 닫기의 첫 사건에서 돌아 shutdown phase 5초가 자르지 않는다). 종료 코드는 0(비었다)·75(`worker.drain.incomplete`, 남은 작업은 lease 만료 뒤 다음 Worker가 잡는다)·76(`worker.lock.lost`, 잠금 세션을 잃어 스스로 끝냈다)이다(`WorkerExit`). 시험이 고정하는 것은 빈의 `exitCode()`까지다 — 실제 JVM이 신호를 받아 컨텍스트를 닫은 뒤 그 코드로 끝나는 경로(`BokriLogApplication`의 halt)는 시험·리허설이 고정하지 않는다(리허설의 drain 미완료는 결함 주입으로 75를 넣어 절차의 반응만 본다). 운영 compose의 Worker `stop_grace_period`는 150초다.
+
+**단일 Worker.** 잠금은 연결 풀 밖의 전용 JDBC 연결이 쥔다(풀의 연결이면 풀 한 칸을 영원히 차지하고, 닫을 때 잠금을 쥔 세션이 풀로 돌아간다). 5초마다 그 세션이 `pg_locks`에서 실제로 잠금을 쥐고 있는지 보고, 아니면(연결 끊김·세션 종료) 새 claim을 멈추고 76으로 끝낸다. 컨텍스트가 닫히면 `pg_advisory_unlock` 뒤 연결을 닫는다. 두 번째 Worker는 잠금을 잡지 못해 기동 실패로 끝난다(`worker.lock.unavailable`).
+
+### 입력
+
+| 파일 | 위치 | 내용 |
+|---|---|---|
+| release manifest | 배포마다 하나(`--release`) | `image`(`<repo>@sha256:<64hex>`, 저장소 180자까지, tag·`latest` 금지)·`platform=linux/arm64`·`migration_version`·`migration_kind=expand\|contract`·SBOM·서명 파일과 각 SHA-256. 서명 신원은 **여기 없다**(있으면 거부). 견본 `release.env.example` |
+| host 사실 | `/etc/bokrilog/host-facts.env`(`BOKRILOG_HOST_FACTS`) | home region = region, `VM.Standard.A1.Flex` 2 OCPU/12GB, reserved IPv4, Always Free, 예상 월 비용 0, OS 예약 MiB, 서명 신원(`signer_identity`·`signer_issuer` — manifest를 고친 사람이 신원을 고르지 못하게 운영자가 소유한다). 운영자가 콘솔에서 확인해 적는다. 견본 `host-facts.env.example` |
+| 운영 비밀 | `/etc/bokrilog/production.env`(`BOKRILOG_SECRETS_FILE`, 권한 600) | DB URL·사용자·비밀번호(`BOKRILOG_DB_PASSWORD`, PostgreSQL 컨테이너의 `POSTGRES_PASSWORD`), 공개 base URL, 감사 digest 키, 자격정보 key ring, Bybit 주소·reserved IP, 지원 연락처, 로그인 제공자 하나 이상. 프로필·역할·환경·Worker 설정·배포 수행자를 덮는 이름(`SPRING_PROFILES_*`·`SPRING_APPLICATION_JSON`·`BOKRILOG_ROLE`·`BOKRILOG_ENV`·`BOKRILOG_SYNC_WORKER_*`·`BOKRILOG_DEPLOY_ACTOR`)은 담을 수 없다. compose의 `--env-file`로만 쓰이고 서비스는 이름으로 고른 값만 받는다(PostgreSQL은 자기 비밀번호, migrate는 DB 접속, 감사 역할은 DB 접속과 digest 키). **저장소 밖에만 있다.** 비밀 공급(누가·어떻게 이 파일을 만들고 돌리는가)은 후속 작업이다 |
+| 배포 수행자 | 배포를 돌리는 셸(`--actor` 또는 `BOKRILOG_DEPLOY_ACTOR`) | `[A-Za-z0-9._@-]{1,128}`. 원장에는 `deployer:` keyed digest로만 남는다. 비밀 파일에 두면 그 호스트의 모든 배포가 같은 수행자가 되므로 거기서는 받지 않는다 |
+| 상태 | `/var/lib/bokrilog/deploy`(`BOKRILOG_STATE_DIR`) | `deploy.state` 하나가 활성 슬롯·활성 이미지·Worker 이미지·이전 이미지·schema 버전·rollback 창을 기록한다. `nginx/upstream-backend.conf`는 Nginx가 읽기 전용으로 마운트하는 upstream include다(`zone`·Docker DNS `resolver 127.0.0.11 valid=10s`·`server api-<slot>:8080 resolve` — 슬롯이 재시작하거나 아직 없어도 nginx가 뜨고 주소를 다시 해석한다). `logs/`에 배포마다 기록 하나 |
+
+운영 compose는 망을 둘로 나눈다(`edge`: Nginx ↔ API 슬롯, `data`: API 슬롯·Worker·migrate·감사 역할 ↔ PostgreSQL — Nginx는 DB에 닿지 못한다). 모든 서비스가 json-file 로그 회전(10MB × 5)을 쓴다.
+
+### 명령
+
+| 명령 | 역할 |
+|---|---|
+| `deploy/production/deploy.sh deploy --release <release.env> --actor <이름>` | 아래 순서 전체. 종료 0(배포 완료)·1(gate 거부 또는 실패 — 정리·rollback을 마쳤다)·2(준비 실패) |
+| `deploy/production/deploy.sh close-window --actor <이름>` | rollback 창을 닫는다(유일한 닫는 경로). contract 배포 전에 한 번. 같은 `.lock`을 잡고, 감사 행 `WINDOW_CLOSED COMPLETED`(target=활성 이미지)를 먼저 쓴 뒤에만 창을 닫는다 |
+| `deploy/production/deploy.sh status` | 상태 파일을 보인다 |
+| `bash deploy/production/preflight.sh --release … --host-facts … --secrets … --compose … [--state …] [--actor …] [--project …] [--override …] [--rehearsal]` | gate 단독 실행(배포가 먼저 부른다). 종료 0·1(거부, 줄마다 `거부  <CODE>`)·2(값 없는 인자 포함 준비 실패) |
+| `bash deploy/production/test-preflight.sh` | gate 고정 입력 시험(가짜 docker·cosign, Docker 불필요). Windows의 Git Bash는 POSIX 권한을 표현하지 못해 권한 경로만 건너뛴다 |
+| `deploy/production/rehearse-deploy.sh` | 운영 compose + `compose.rehearsal.yaml`(trust DB, `BOKRILOG_ENV=ci`)로 실제 절차를 돈다: 1 정상(첫 배포), 2 정상(GLOBAL SYNC 제한 중), 3 두 번째 Worker(띄운 뒤 120초 상한), 3b drain 미완료(결함 주입 75), 4 전환 전 실패, 5 전환 뒤 실패 → rollback, 6 rollback 창이 열린 채 contract 거부, 7 창 닫기. 같은 jar로 만든 이미지 둘(로컬 image ID)을 쓰고 아키텍처·서명·SBOM attestation 검사만 건너뛴다(감사 행 `rehearsal:true`). 공개 포트 `127.0.0.1:18090`, 프로젝트 `bokrilog-rehearsal`. `BOKRILOG_REHEARSAL_DIAGNOSTICS`를 주면 실패 때 기록을 그곳에 옮긴다(CI가 진단 artifact로 올린다). 종료 0·1·2 |
+
+### 순서
+
+단계마다 일회성 `deploy-audit` 역할이 감사 원장 `operations_audit_event`에 SYSTEM 행 하나를 더한다 — `command=deploy`, `scope=DEPLOY`, target=image digest(형식 거부의 `GATE FAILED`만 `INVALID_REFERENCE`, 그 밖에 빈 target은 거절), reason=단계명, outcome은 기존 enum(`REQUESTED`·`COMPLETED`·`FAILED`), 수행자는 배포 수행자 이름의 `deployer:` keyed digest, 한 배포의 행은 같은 operation ID로 묶인다. details는 닫힌 키(실패 code·슬롯·이전 digest·리허설 표지·그 시점의 활성 제한 수)뿐이다.
+
+0. **상태 대조** — 상태 파일의 활성 슬롯과 실제로 도는 API 슬롯이 같아야 한다. 상태 파일이 없는데 슬롯이 돌거나(`STATE_MISSING`) 둘이 다르면(`STATE_MISMATCH`) 아무것도 바꾸지 않고 거부한다 — 도는 활성 슬롯을 대기 슬롯으로 착각해 다시 만들지 않게.
+1. **gate**(`preflight.sh`) — 모드(리허설은 `BOKRILOG_ENV` ∈ {ci, development} + override, 운영은 비었거나 `production` + override 없음)·프로젝트 이름·배포 수행자·형식·실제 이미지 아키텍처·SBOM·서명 SHA-256·`cosign verify`·SBOM attestation(`cosign verify-attestation --type spdxjson`, host 사실의 같은 신원, cosign이 없으면 준비 실패)·host 사실·`mem_limit`(API 768m·Worker 512m·PostgreSQL 3g·Nginx 128m, 일회성 ≤ 512m, Alloy 256MiB 예약)·blue/green peak(API×2 + 나머지 = 5,504MiB) + OS 예약 ≤ 12GB·compose 계약(인프라 이미지 digest 고정·`build`·`env_file` 없음·API·Worker에 migrate 프로필 없음)·비밀(권한 600·필수 이름·덮는 이름 없음)·migration 종류. 거부면 **아무 컨테이너도 바꾸지 않고** 지금 활성 이미지의 감사 역할로 `GATE FAILED <code>`를 남긴다(첫 배포면 기록할 곳이 없다).
+2. `GATE REQUESTED`(PostgreSQL은 이미 돌면 다시 만들지 않는다 — `up --no-recreate`).
+3. **Worker drain** — 종료 코드 0이면 `DRAINED`. 75면 `DRAINED FAILED DRAIN_INCOMPLETE`, 76이면 `LOCK_LOST`, 그 밖은 `WORKER_EXIT_UNEXPECTED`이고 이전 Worker를 재개한 뒤 중단한다.
+4. **단일 migrate 역할** — 읽은 schema 최대 버전을 그 자리에서 상태 파일에 남긴다(배포가 뒤에서 실패해도 다음 gate가 옛 값으로 판정하지 않게). 그 값이 `migration_version`(rollback 창 안의 이전 이미지면 지금 schema 그대로)이어야 `MIGRATED`.
+5. **기존 슬롯 smoke**(old API + new schema).
+6. **대기 슬롯 기동**(`api-blue`·`api-green` 중 쉬는 쪽, 새 digest).
+7. **readiness·smoke·telemetry** — healthy, 미인증 smoke 셋(`/api/status` 200 `{"status":"UP"}`, `/api/auth/session` 200 미인증 본문, `/api/connections/bybit` 401 공통 오류 `UNAUTHENTICATED`), 관리 포트 출력의 모든 시계열에 `env`·`role="api"`. `INACTIVE_VERIFIED`.
+8. **전환** — upstream include를 대기 슬롯으로 바꾸고(쓰지 못하면 `CUTOVER FAILED UPSTREAM_WRITE_FAILED`) `nginx -t` 뒤 reload.
+9. **전환 뒤 smoke**(Nginx 경유). `CUTOVER`.
+10. **새 Worker 하나**(새 digest) — healthy와 관리 포트의 `env`·`role="worker"`.
+11. **이전 슬롯 정지**, 상태 파일 갱신. `VERIFIED`.
+
+빈 데이터베이스에 대한 첫 배포에는 원장 표가 아직 없다. 그때는 2·3단계의 행을 줄 세워 두었다가 4단계의 migration이 표를 만든 직후(`MIGRATED`보다 앞) 같은 순서로 쓴다. 첫 배포에는 drain할 Worker도 기존 슬롯도 없어 5단계를 건너뛰고, 대기 슬롯이 healthy가 되면 upstream을 그 슬롯으로 두고 Nginx를 처음 띄운다. 첫 배포가 전환 뒤에 실패하면 되돌릴 슬롯이 없다.
+
+smoke 경로는 운영 제한이 막는 기능이 아니다 — 제한 중 배포도 smoke를 통과하고, 배포는 제한 행을 쓰거나 닫지 않는다. 시작(`GATE`)·끝(`VERIFIED`) 행의 활성 제한 수가 다르면 배포가 경고한다(운영자가 그 사이 제한을 바꾼 것이다).
+
+### 실패와 rollback
+
+- **전환 전 실패**(3~8단계): 그 단계 `FAILED <code>`, 대기 슬롯을 지우고 upstream은 그대로이며 이전 digest의 Worker를 재개한다.
+- **전환 뒤 실패**(9~10단계): `FAILED <code>` 뒤 upstream을 이전 슬롯으로 되돌리고 reload, 새 Worker를 멈추고 이전 digest의 Worker를 재개, 새 슬롯을 지운 뒤 smoke가 통과하면 `ROLLED_BACK COMPLETED`. upstream을 되돌려 쓰지 못하면 `ROLLED_BACK FAILED UPSTREAM_WRITE_FAILED`로 남기고 수동 확인을 요구한다.
+- **신호**(INT·HUP·TERM): 아직 아무것도 바꾸지 않았으면 그냥 끝나고, 전환 전이면 `INTERRUPTED SIGNAL`로 위 전환 전 정리, 전환 뒤면 위 되돌림을 돈다.
+- **이전 슬롯 정지 뒤의 되돌리기**는 이전 release manifest로 같은 절차를 다시 도는 것이다. rollback 창이 열린 동안에는 expand만 받으므로 이전 digest가 새 schema 위에서 뜬다(Flyway 검증은 미래 migration을 무시한다). gate는 창 안의 이전 이미지만 schema 역행을 받는다.
+- **contract**는 rollback 창이 열려 있으면 거부하고(`CONTRACT_WINDOW_OPEN`), 창이 닫혀 있어도 migration을 정확히 하나만 더해야 한다(`CONTRACT_NOT_ISOLATED` — contract와 expand를 한 배포에 섞지 않는다). 창은 `deploy.sh close-window`로만 닫힌다.
+
+### 규칙
+
+- 운영 서버에서 이미지를 빌드하지 않는다(운영 compose에 `build`가 없고 gate가 본다). 앱 이미지는 digest로 받기만 한다. 이미지 빌드·SBOM 생성·서명·SBOM attestation·레지스트리 게시는 아직 이 저장소에 없다(`deferred-work.md`, 공급망 파이프라인) — 그 파이프라인이 release manifest를 만들 때까지 운영 배포는 미검증이다.
+- startup migration을 하지 않는다. API·Worker 기동은 schema를 검증만 하고 `migrate` 역할만 바꾼다.
+- 결함 주입 변수 `BOKRILOG_DEPLOY_FAULT`(`drain-incomplete`·`inactive-readiness`·`post-cutover-smoke`)는 리허설 전용이다. 리허설 모드 자체가 `BOKRILOG_ENV` ∈ {ci, development}와 리허설 override를 함께 요구하므로, 운영 셸(대개 `BOKRILOG_ENV`가 빈 값)에서 `--rehearsal` 하나로 검사를 건너뛸 수 없다. compose 프로젝트 이름은 `bokrilog-<소문자>` 모양만 받는다.
+- 배포와 창 닫기는 한 번에 하나다(상태 디렉터리의 `.lock`). 비정상 종료로 남았으면 진행 중인 배포가 없음을 확인하고 지운다.
+- 값을 받는 인자(`--release`·`--actor` 등)를 값 없이 마지막에 두면 준비 실패(2)다.
+- TLS 종단(443·인증서), Grafana Alloy 수집·Grafana Cloud·외부 synthetic 연결, nginx 컨테이너 권한 강화, 감사 digest 키 회전, 3.4 훈련 증거 기록, 정적 산출물·Nginx 설정의 release 묶기, Worker 종료 코드의 실제 JVM 경로 시험은 후속 작업이다(`deferred-work.md`).
+
 ## CI (`.github/`)
 
 `.github/workflows/ci.yml`이 이 저장소의 유일한 workflow다. `develop`·`main`의 PR과 push, 그리고 배포 권한이 없는 수동 진단(`workflow_dispatch`)에서 돈다. 정본은 `CI-PLAN.md`이고 구현 계약은 `_bmad-output/implementation-artifacts/spec-ci-foundation.md`와 `spec-1-2-same-origin-shell.md`가 소유한다.
@@ -472,6 +558,7 @@ Story 1.2에서 backend와 deploy가 생기면서 단일 job이 `CI-PLAN.md` §1
 ```text
 changes ──> frontend-quality ──┐
         └─> backend-quality ───┼─> same-origin-integration ─┐
+                               ├─> deploy-rehearsal ────────┤
                                └────────────────────────────┴─> ci-required
 ```
 
@@ -481,6 +568,7 @@ changes ──> frontend-quality ──┐
 | `frontend-quality` | 타입 검사 → ESLint → stylelint → Prettier → 빌드 → Vitest → Chromium E2E | 8분 |
 | `backend-quality` | JDK 25 준비 → Gradle `build`(컴파일·Modulith 경계 검사·PostgreSQL Testcontainers 시험·jar) | 20분 |
 | `same-origin-integration` | 경보 규칙 시험 → 두 품질 job의 산출물로 동일 출처 검증(`--keep-stack`, `BOKRILOG_ENV=ci`) → 같은 스택에서 Story 1.1 회귀 | 17분 |
+| `deploy-rehearsal` | 배포 gate 고정 입력 시험 → 같은 두 산출물로 운영 배포 리허설(Story 3.8, 위 `## 운영 배포`). green은 운영 배포의 증거가 아니다 | 25분 |
 | `ci-required` | 선행 job 결과 집계. 병합 가능 여부 판정 | 1분 |
 
 `backend-quality`의 15분은 Story 1.3이 10분에서 올린 값이다. 이 job은 이제 Testcontainers로 실제 PostgreSQL을 띄우고, 콜드 실행에는 `postgres:18.6-alpine` 내려받기가, 동시성 시험에는 실제 잠금 경합 대기가 더해진다. 러너에 docker 데몬이 이미 있으므로 서비스 컨테이너도 새 action도 더하지 않았고, 시험은 기존 `Gradle 빌드` 단계 안에서 돈다. `CI-PLAN.md` §4·§10의 backend 예산 8분은 이 상한과 별개로 계속 측정한다. Story 2.11이 15분을 20분으로 올렸다. PR #49에서 이 job이 11분 5초였고, 같은 시험의 로컬 실행보다 1분쯤 길었다. 2.11의 로컬 `clean build`가 12분 56초라 CI는 14분 안팎이 된다. PR #52의 이 job은 13분 0초였다. 그 시간의 대부분은 실제 파이프라인을 모는 `FirstSnapshotTest`·`IncrementalSyncTest`가 워커의 1초 dispatch tick과 고정 `Thread.sleep`을 기다린 몫이었다. `spec-backend-test-speed.md`가 시험의 dispatch 간격을 100ms로 줄이고(`bokrilog.sync.worker.dispatch-interval`, 운영 기본 1초, heartbeat 5초는 그대로) 관측 가능한 조건은 조건 대기로 바꿨다. 그 변경이 변경 전 커밋(`3824c3c`)을 다시 잰 로컬 `clean build`는 13분 2초였고(위 2.11의 12분 56초와 별개의 재측정이다), 변경 뒤에는 3분 13초다(시험 869건에 운영 주기를 고정하는 Docker 없는 시험 두 건을 더해 871건, 두 클래스 605초 → 115초, 124초 → 28초). Story 2.12가 그 위에 정밀 검증·호출 예산 시험을 더해 로컬 `clean build`가 4분 41초가 됐다(989건, 새 `PlanVerificationTest` 75초). timeout 20분은 CI-PLAN 새 버전이 보정할 때까지 그대로 둔다.
@@ -503,6 +591,7 @@ changes ──> frontend-quality ──┐
 | `.github/scripts/aggregate-results.sh` | 선행 job 결과를 모아 병합 가능 여부 판정 |
 | `.github/scripts/check-alert-rules.sh` | 경보 규칙의 형식 계약·문법·promtool 단위시험(Story 3.7). 통합 job에서 돈다 |
 | `.github/scripts/test-ci-scripts.sh` | 위 스크립트들과 `ci.yml`의 계약 시험(경보 규칙 스크립트는 가짜 promtool로 종료 코드 0/1/2를 단정한다) |
+| `deploy/production/test-preflight.sh`·`rehearse-deploy.sh` | 배포 gate 고정 입력 시험과 운영 배포 리허설(Story 3.8). `deploy-rehearsal` job에서 돈다 |
 
 lint·stylelint·format 세 단계는 `spec-frontend-lint-policy.md`가 합의한 품질 정책이며 `ci-required`가 집계하는 job 안에 있으므로 별도 보호 규칙 변경 없이 필수 검사다. 문서-only 변경(`_bmad-output/**`와 최상위 `*.md`)은 `changes` job만 돌고 제품 job 셋은 건너뛴다. 분류는 fail-closed다. 규칙에 없는 경로가 하나라도 있으면 전체 검사를 실행하며, `backend/`·`deploy/`처럼 `<디렉터리>/<파일>` 모양인 경로는 자동으로 제품 변경이라 분류 규칙을 손댈 필요가 없다. PR에서는 체크아웃된 head가 아니라 target base의 승인된 분류기를 꺼내 실행한다. PR이 자기 분류 규칙을 고쳐 그 PR의 검사를 축소할 수 없게 한다.
 

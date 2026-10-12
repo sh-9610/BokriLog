@@ -136,7 +136,7 @@ class SyncMetricsTest extends PlanSyncTestBase {
         assertThat(jdbc().sql("UPDATE sync_cashflow_classification_job SET status='QUEUED',lease_until=NULL,"
                 + "finished_at=NULL,created_at=statement_timestamp()-interval '10 minutes' WHERE plan_sync_job_id=:j")
                 .param("j", job).update()).isEqualTo(1);
-        TelemetryProbe.run(this.context, "syncMetrics", "measureQueueAgeNow");
+        TelemetryProbe.run(this.context, "syncQueueAgeMetrics", "measureQueueAgeNow");
         assertThat(queueAge(SyncTelemetry.Kind.CLASSIFICATION)).isBetween(599.0, 3600.0);
         assertThat(queueAge(SyncTelemetry.Kind.PLAN_SYNC)).isGreaterThanOrEqualTo(0.0);
     }

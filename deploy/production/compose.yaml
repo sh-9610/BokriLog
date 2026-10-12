@@ -1,0 +1,233 @@
+# BokriLog 운영 구성 — ARM64 단일 서버 blue/green(Story 3.8).
+#
+# **이 파일은 `deploy/production/deploy.sh`만 다룬다.** 손으로 `up`하지 않는다 — 활성 슬롯·이미지·rollback 창은 상태 파일
+# 하나(`$BOKRILOG_STATE_DIR/deploy.state`)가 기록하고, 스크립트가 그 값을 환경으로 넘긴 뒤 서비스를 이름으로 하나씩 다룬다.
+# 개발·CI 스택(`deploy/compose/compose.yaml`)과 별개다. 리허설은 이 파일에 `compose.rehearsal.yaml`을 겹쳐 돈다.
+#
+# **이미지.** 앱 이미지는 release manifest(`release.env`)의 digest 하나뿐이고 API 두 슬롯·Worker·migrate·감사 역할이 모두 그
+# 이미지를 쓴다 — 역할은 `BOKRILOG_ROLE`과 프로필만 다르다. 슬롯마다 변수가 따로인 이유는 blue/green 동안 두 슬롯이 서로 다른
+# digest를 돌리기 때문이다. tag 참조를 쓰지 않는다: 인프라 이미지도 `tag@sha256:<index digest>`로 고정하고(tag는 읽기용이며
+# 해석에 쓰이지 않는다), 앱 이미지 변수의 형식은 gate(`preflight.sh`)가 검사한다. 이 파일에는 `build`가 없다 — 운영 서버에서
+# 이미지를 빌드하지 않는다.
+#
+# **역할.** `api-blue`·`api-green`은 `BOKRILOG_ROLE=api`(dispatch 없음), `worker`는 `BOKRILOG_ROLE=worker`(drain·단일 잠금,
+# 공개 포트는 컨테이너 루프백에만)다. 운영(`BOKRILOG_ENV=production`)의 백엔드는 `all`이면 뜨지 않는다. migrate 프로필은
+# `migrate` 서비스에만 있다(AD-12 — API·Worker 기동은 schema를 검증만 한다). `deploy-audit`은 단계마다 감사 행 하나를 쓰고 끝나는
+# 일회성 역할이다.
+#
+# **자원(AC-2).** `mem_limit`은 API 슬롯 768m·Worker 512m·PostgreSQL 3g·Nginx 128m이고, 일회성 역할(migrate·deploy-audit)은
+# Worker 예산 안의 512m다. 절차가 일회성 역할을 띄우는 순간에는 API 슬롯이 둘이면 Worker가 멈춰 있고, Worker가 돌면 API 슬롯은
+# 하나다 — `GATE REQUESTED`(drain 앞: 기존 슬롯 + Worker)·`DRAINED`·migration·`INACTIVE_VERIFIED`·`CUTOVER`(두 슬롯, Worker 정지)·
+# `VERIFIED`(이전 슬롯 정지 뒤). 그래서 순간 사용은 blue/green peak(API×2 + Worker 몫 + 나머지)을 넘지 않는다. Grafana Alloy 256m는
+# 아직 이 파일에 없지만(후속 작업) gate가 예약으로 계상한다. peak은 gate가 host 선언 메모리와 비교한다.
+#
+# **비밀.** 운영 값은 저장소 밖 env 파일(`$BOKRILOG_SECRETS_FILE`, 권한 600) 하나에 있고, 배포 스크립트가 그 파일을 compose의
+# `--env-file`(치환 원본)로 넘긴다. 서비스는 `env_file`로 파일 전체를 받지 않는다 — 아래 `environment`가 이름으로 고른 것만 받는다
+# (PostgreSQL은 자기 비밀번호 하나, migrate는 DB 접속 셋, 감사 역할은 DB 접속과 감사 digest 키). 이 파일에는 값이 없고, gate가 필수
+# 이름이 비었는지와 `env_file`이 없는지를 본다.
+#
+# **망.** 둘로 나눈다. `edge`는 Nginx ↔ API 슬롯, `data`는 API 슬롯·Worker·migrate·감사 역할 ↔ PostgreSQL이다. Nginx는
+# PostgreSQL에 닿지 못하고 Worker는 Nginx에 닿지 못한다. 포트는 Nginx 하나만 게시한다(TLS 종단은 후속 작업, `deferred-work.md`).
+#
+# **로그.** 모든 서비스가 json-file 회전(10MB × 5)을 쓴다 — 단일 서버의 디스크를 로그가 채우지 않게.
+#
+# **정적 산출물.** Nginx가 내보내는 `frontend/dist`와 Nginx 설정은 이 호스트의 checkout에서 마운트한다. release manifest·digest
+# 고정·rollback의 대상이 아니다(후속 작업, `DEVELOPMENT.md`).
+#
+# 이 blue/green은 **배포 실패만** 완화한다. VM·volume·PostgreSQL·Nginx·리전 장애를 이중화하지 않으며 무중단을 약속하지 않는다.
+
+name: bokrilog-production
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '5'
+
+services:
+  postgres:
+    image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    expose:
+      - '5432'
+    environment:
+      POSTGRES_DB: bokrilog
+      POSTGRES_USER: bokrilog
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      # PostgreSQL 18 이미지는 `/var/lib/postgresql` 아래에 major 버전별 디렉터리를 둔다.
+      - postgres-data:/var/lib/postgresql
+    networks:
+      - data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready --username=bokrilog --dbname=bokrilog --quiet && psql --username=bokrilog --dbname=bokrilog --no-password --quiet --command='SELECT 1' >/dev/null
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    mem_limit: 3g
+    logging: *logging
+    restart: unless-stopped
+
+  # 일회성 schema migration 역할(AD-12). 절차가 Worker drain 뒤에 한 번 `run`한다. 종료 코드가 곧 성공 여부다.
+  migrate:
+    profiles:
+      - migrate
+    image: ${BOKRILOG_IMAGE:?BOKRILOG_IMAGE}
+    environment:
+      SPRING_PROFILES_ACTIVE: migrate
+      BOKRILOG_DB_URL: ${BOKRILOG_DB_URL:-}
+      BOKRILOG_DB_USERNAME: ${BOKRILOG_DB_USERNAME:-}
+      BOKRILOG_DB_PASSWORD: ${BOKRILOG_DB_PASSWORD:-}
+    networks:
+      - data
+    mem_limit: 512m
+    logging: *logging
+    restart: 'no'
+
+  # 일회성 배포 감사 역할(Story 3.8 AC-5). 단계마다 `run -e BOKRILOG_DEPLOY_*`로 한 번 띄운다. Flyway를 검사하지 않는다. 배포
+  # 수행자(`BOKRILOG_DEPLOY_ACTOR`)는 비밀 파일이 아니라 배포를 돌리는 셸이 `-e`로 준다.
+  deploy-audit:
+    profiles:
+      - deploy-audit
+    image: ${BOKRILOG_AUDIT_IMAGE:?BOKRILOG_AUDIT_IMAGE}
+    environment:
+      SPRING_PROFILES_ACTIVE: deploy-audit
+      BOKRILOG_DB_URL: ${BOKRILOG_DB_URL:-}
+      BOKRILOG_DB_USERNAME: ${BOKRILOG_DB_USERNAME:-}
+      BOKRILOG_DB_PASSWORD: ${BOKRILOG_DB_PASSWORD:-}
+      BOKRILOG_AUDIT_DIGEST_KEY: ${BOKRILOG_AUDIT_DIGEST_KEY:-}
+    networks:
+      - data
+    mem_limit: 512m
+    logging: *logging
+    restart: 'no'
+
+  # 두 API 슬롯과 Worker에는 프로필이 없다 — 절차가 언제나 서비스 이름으로 하나씩 다루므로(`up --no-deps <서비스>`) 이름만으로
+  # 조회·정지·삭제가 되게 둔다. 이름 없는 `up`을 하지 않는다(두 슬롯이 함께 뜬다).
+  api-blue:
+    image: ${BOKRILOG_BLUE_IMAGE:?BOKRILOG_BLUE_IMAGE}
+    # 힙은 컨테이너 상한의 60%다. `JAVA_TOOL_OPTIONS`를 쓰지 않는다 — JVM이 그 이름을 로그에 찍는다.
+    entrypoint: ['java', '-XX:MaxRAMPercentage=60', '-jar', '/app/app.jar']
+    expose:
+      - '8080'
+    environment: &api-environment
+      SERVER_PORT: '8080'
+      BOKRILOG_ROLE: api
+      BOKRILOG_ENV: ${BOKRILOG_ENV:-production}
+      BOKRILOG_DB_URL: ${BOKRILOG_DB_URL:-}
+      BOKRILOG_DB_USERNAME: ${BOKRILOG_DB_USERNAME:-}
+      BOKRILOG_DB_PASSWORD: ${BOKRILOG_DB_PASSWORD:-}
+      BOKRILOG_PUBLIC_BASE_URL: ${BOKRILOG_PUBLIC_BASE_URL:-}
+      BOKRILOG_GOOGLE_CLIENT_ID: ${BOKRILOG_GOOGLE_CLIENT_ID:-}
+      BOKRILOG_GOOGLE_CLIENT_SECRET: ${BOKRILOG_GOOGLE_CLIENT_SECRET:-}
+      BOKRILOG_NAVER_CLIENT_ID: ${BOKRILOG_NAVER_CLIENT_ID:-}
+      BOKRILOG_NAVER_CLIENT_SECRET: ${BOKRILOG_NAVER_CLIENT_SECRET:-}
+      BOKRILOG_KAKAO_CLIENT_ID: ${BOKRILOG_KAKAO_CLIENT_ID:-}
+      BOKRILOG_KAKAO_CLIENT_SECRET: ${BOKRILOG_KAKAO_CLIENT_SECRET:-}
+      BOKRILOG_SOURCE_CREDENTIAL_KEYS: ${BOKRILOG_SOURCE_CREDENTIAL_KEYS:-}
+      BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION: ${BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION:-}
+      BOKRILOG_BYBIT_BASE_URL: ${BOKRILOG_BYBIT_BASE_URL:-}
+      BOKRILOG_BYBIT_RESERVED_IP: ${BOKRILOG_BYBIT_RESERVED_IP:-}
+      BOKRILOG_OPERATORS: ${BOKRILOG_OPERATORS:-}
+      BOKRILOG_AUDIT_DIGEST_KEY: ${BOKRILOG_AUDIT_DIGEST_KEY:-}
+      BOKRILOG_SUPPORT_CONTACT: ${BOKRILOG_SUPPORT_CONTACT:-}
+    networks:
+      - edge
+      - data
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1:8080/api/status']
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 10s
+    mem_limit: 768m
+    # `spring.lifecycle.timeout-per-shutdown-phase`(5초)보다 길다.
+    stop_grace_period: 10s
+    logging: *logging
+    restart: unless-stopped
+
+  api-green:
+    image: ${BOKRILOG_GREEN_IMAGE:?BOKRILOG_GREEN_IMAGE}
+    entrypoint: ['java', '-XX:MaxRAMPercentage=60', '-jar', '/app/app.jar']
+    expose:
+      - '8080'
+    environment: *api-environment
+    networks:
+      - edge
+      - data
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1:8080/api/status']
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 10s
+    mem_limit: 768m
+    stop_grace_period: 10s
+    logging: *logging
+    restart: unless-stopped
+
+  # 단일 Worker. 공개 포트를 게시하지도 `expose`하지도 않고, 앱이 그 포트를 컨테이너 루프백에만 묶는다(`BokrilogRoleConfig`).
+  # `edge` 망에 없어 Nginx가 닿지 못한다. 종료 신호가 곧 drain이다 — 진행 중 작업을 drain-timeout(120초)까지 기다리므로 유예가 그보다
+  # 길어야 한다. 종료 코드 0이 drain 완료, 75가 timeout, 76이 잠금 상실이다(`WorkerExit`). 두 번째 Worker는 advisory lock을 잡지
+  # 못해 기동 실패로 끝난다. 로그인 제공자·운영자·지원 연락처는 받지 않는다(공개 표면이 없다).
+  worker:
+    image: ${BOKRILOG_WORKER_IMAGE:?BOKRILOG_WORKER_IMAGE}
+    entrypoint: ['java', '-XX:MaxRAMPercentage=60', '-jar', '/app/app.jar']
+    environment:
+      SERVER_PORT: '8080'
+      BOKRILOG_ROLE: worker
+      BOKRILOG_ENV: ${BOKRILOG_ENV:-production}
+      BOKRILOG_DB_URL: ${BOKRILOG_DB_URL:-}
+      BOKRILOG_DB_USERNAME: ${BOKRILOG_DB_USERNAME:-}
+      BOKRILOG_DB_PASSWORD: ${BOKRILOG_DB_PASSWORD:-}
+      BOKRILOG_SOURCE_CREDENTIAL_KEYS: ${BOKRILOG_SOURCE_CREDENTIAL_KEYS:-}
+      BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION: ${BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION:-}
+      BOKRILOG_BYBIT_BASE_URL: ${BOKRILOG_BYBIT_BASE_URL:-}
+      BOKRILOG_BYBIT_RESERVED_IP: ${BOKRILOG_BYBIT_RESERVED_IP:-}
+      BOKRILOG_AUDIT_DIGEST_KEY: ${BOKRILOG_AUDIT_DIGEST_KEY:-}
+    networks:
+      - data
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1:8080/api/status']
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 10s
+    mem_limit: 512m
+    stop_grace_period: 150s
+    logging: *logging
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.30.4-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c
+    environment:
+      NGINX_ENTRYPOINT_QUIET_LOGS: '1'
+    ports:
+      # 바깥에 열리는 유일한 포트. 리허설은 루프백의 다른 포트로 덮는다.
+      - ${BOKRILOG_PUBLIC_BIND:-80}:80
+    volumes:
+      - ${BOKRILOG_FRONTEND_DIST:-../../frontend/dist}:/usr/share/nginx/html:ro
+      - ../nginx/bokrilog.conf:/etc/nginx/conf.d/default.conf:ro
+      # upstream 블록 하나를 담은 디렉터리. 절차가 활성 슬롯으로 새 파일을 쓰고(rename) `nginx -t` 뒤 reload한다. 디렉터리를
+      # 마운트하는 이유는 파일 하나를 마운트하면 rename한 새 파일이 컨테이너에 보이지 않기 때문이다.
+      - ${BOKRILOG_STATE_DIR:?BOKRILOG_STATE_DIR}/nginx:/etc/nginx/bokrilog:ro
+    networks:
+      - edge
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1/']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 2s
+    mem_limit: 128m
+    logging: *logging
+    restart: unless-stopped
+
+networks:
+  edge: {}
+  data: {}
+
+volumes:
+  postgres-data:

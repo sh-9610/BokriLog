@@ -1,9 +1,14 @@
 # BokriLog 동일 출처 셸 — 개발·CI 공용 구성.
 #
-# 이 파일은 production 프로필이 아니다. image digest 고정, 자원 제한, 로그 전송(Alloy),
-# blue/green 슬롯, 컨테이너 권한 강화(`user`·`read_only`·`cap_drop`)는 Story 3.8과 배포 작업이
-# 소유한다. 여기서 하는 일은 하나다.
+# 이 파일은 production 프로필이 아니다. 운영 구성은 `deploy/production/compose.yaml` 한 벌이 따로 소유한다(Story 3.8) —
+# image digest 고정, 자원 제한(`mem_limit`), blue/green 슬롯(`api-blue`·`api-green`), API·Worker 역할 분리
+# (`BOKRILOG_ROLE=api|worker`), 단일 Worker drain이 그쪽에 있다. 로그 전송(Alloy)과 컨테이너 권한 강화(`user`·`read_only`·
+# `cap_drop`)는 후속 작업이 소유한다(`deferred-work.md`). 여기서 하는 일은 하나다.
 # "빌드된 프런트엔드 산출물과 백엔드 jar를 하나의 origin 뒤에 세워 실제 배포 형태를 재현한다."
+#
+# 이 스택의 백엔드는 역할 `all`(기본값) 하나다 — API와 Worker가 한 프로세스이고 drain·단일 Worker 잠금이 없다. 역할을 나눈
+# 모양은 운영 구성과 그 리허설(`deploy/production/rehearse-deploy.sh`)이 검증한다. Nginx 본문(`bokrilog.conf`)은 운영과 같고
+# upstream 블록 하나만 이 스택의 `deploy/nginx/upstream-backend.conf`(`backend:8080`)를 마운트한다.
 #
 # 그래서 서비스마다 권한 모양이 다르다. 백엔드는 자기 이미지가 비-root 사용자를 만들어 쓰지만
 # nginx·postgres 서비스에는 `user`·`read_only`·`cap_drop`·자원 제한이 없다. 두 공식 이미지의
@@ -215,6 +220,8 @@ services:
       # 두 마운트 모두 읽기 전용이다. 컨테이너가 저장소 파일을 고칠 경로를 만들지 않는다.
       - ../../frontend/dist:/usr/share/nginx/html:ro
       - ../nginx/bokrilog.conf:/etc/nginx/conf.d/default.conf:ro
+      # upstream 블록 하나(Story 3.8). 본문이 include한다. 운영은 같은 자리에 활성 슬롯을 가리키는 파일을 둔다.
+      - ../nginx/upstream-backend.conf:/etc/nginx/bokrilog/upstream-backend.conf:ro
     healthcheck:
       test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1/']
       interval: 3s

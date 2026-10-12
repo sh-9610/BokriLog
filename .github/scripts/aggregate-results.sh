@@ -23,6 +23,7 @@
 #   FRONTEND_RESULT     -- `needs.frontend-quality.result`
 #   BACKEND_RESULT      -- `needs.backend-quality.result`
 #   INTEGRATION_RESULT  -- `needs.same-origin-integration.result`
+#   REHEARSAL_RESULT    -- `needs.deploy-rehearsal.result`(Story 3.8 — 운영 배포 절차의 리허설)
 #   GITHUB_STEP_SUMMARY -- 선택. 있으면 판정 표를 job summary에도 남긴다.
 #
 # 종료 코드
@@ -74,6 +75,7 @@ if [ "${changes_result}" != 'success' ]; then
   add_row 'frontend-quality' "${FRONTEND_RESULT:-}" '판정 불가'
   add_row 'backend-quality' "${BACKEND_RESULT:-}" '판정 불가'
   add_row 'same-origin-integration' "${INTEGRATION_RESULT:-}" '판정 불가'
+  add_row 'deploy-rehearsal' "${REHEARSAL_RESULT:-}" '판정 불가'
   write_summary
   printf '\n::error::필수 검사 집계가 실패했다. 병합 조건을 충족하지 않는다.\n'
   exit 1
@@ -126,6 +128,7 @@ printf '필수 검사 집계 (docs-only=%s, 기대 결과=%s)\n' "${docs_only:-<
 check_job 'frontend-quality' "${FRONTEND_RESULT:-}"
 check_job 'backend-quality' "${BACKEND_RESULT:-}"
 check_job 'same-origin-integration' "${INTEGRATION_RESULT:-}"
+check_job 'deploy-rehearsal' "${REHEARSAL_RESULT:-}"
 
 write_summary
 

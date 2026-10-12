@@ -290,7 +290,7 @@ class SupportInquiryTest extends OperatorTestBase {
         }
         reference(submit(user, draft("OTHER", "두 번째 문의", "대기 확인", "IN_APP", null), key("inquiry-metric-second")));
         // 대기 gauge: 첫 답변을 기다리는 문의 둘.
-        TelemetryProbe.run(this.context, "supportMetrics", "measurePendingNow");
+        TelemetryProbe.run(this.context, "supportPendingMetrics", "measurePendingNow");
         assertThat(pendingGauge()).isEqualTo(2.0);
 
         Map<String, Double> before = Map.of("true", firstAnswers("true"), "false", firstAnswers("false"),
@@ -303,7 +303,7 @@ class SupportInquiryTest extends OperatorTestBase {
         assertThat(firstAnswers("true")).isEqualTo(before.get("true") + 1);
         assertThat(firstAnswers("pending")).as("미정으로 세지 않는다").isEqualTo(before.get("pending"));
         assertThat(firstAnswers("false")).isEqualTo(before.get("false"));
-        TelemetryProbe.run(this.context, "supportMetrics", "measurePendingNow");
+        TelemetryProbe.run(this.context, "supportPendingMetrics", "measurePendingNow");
         assertThat(pendingGauge()).isEqualTo(1.0);
     }
 

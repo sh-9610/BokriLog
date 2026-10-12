@@ -1,0 +1,36 @@
+# 운영 구성의 리허설 override(Story 3.8). `deploy/production/rehearse-deploy.sh`만 이 파일을 `compose.yaml` 위에 겹친다.
+#
+# 운영 구성에서 바뀌는 것은 개발·CI에서 운영 자원을 흉내 낼 수 없는 것뿐이다.
+#   - DB는 비밀번호 없는 trust다(개발 compose와 같은 근거 — 포트를 게시하지 않는 네트워크 안이다). 리허설 비밀 파일의
+#     `POSTGRES_PASSWORD`는 그대로 있지만 쓰이지 않는다.
+#   - 백엔드의 `BOKRILOG_ENV`는 `ci`다. 리허설 수치가 운영 실적과 섞이지 않는다.
+#   - 앱 이미지는 레지스트리 digest가 아니라 CI가 같은 jar로 만든 로컬 image ID(`sha256:<64hex>`)다. 그 값은 이 파일이 아니라
+#     리허설 release manifest가 정하고, gate는 리허설 모드에서만 그 모양을 받는다(아키텍처·서명 검사도 리허설에서만 건너뛴다).
+#     로컬에만 있는 이미지라 받으러 가지 않는다(`pull_policy: never`).
+# 그 밖의 서비스·역할·자원 상한·순서는 운영 구성 그대로다.
+
+services:
+  postgres:
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+
+  migrate:
+    pull_policy: never
+
+  deploy-audit:
+    pull_policy: never
+
+  api-blue:
+    pull_policy: never
+    environment:
+      BOKRILOG_ENV: ${BOKRILOG_ENV:-ci}
+
+  api-green:
+    pull_policy: never
+    environment:
+      BOKRILOG_ENV: ${BOKRILOG_ENV:-ci}
+
+  worker:
+    pull_policy: never
+    environment:
+      BOKRILOG_ENV: ${BOKRILOG_ENV:-ci}
