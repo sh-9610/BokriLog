@@ -53,6 +53,24 @@ class OperationsConfigurationTest {
         this.migrate.run(context -> assertThat(context).hasNotFailed().doesNotHaveBean(ActorDigest.class));
     }
 
+    /** Story 3.8: 배포 감사 역할(웹 아님)은 감사 행을 쓰므로 API와 같이 키가 있어야 뜬다. */
+    @Test
+    void deploy_audit_역할은_키가_있어야_뜬다() {
+        this.migrate.withPropertyValues("spring.profiles.active=deploy-audit",
+                "bokrilog.operations.audit-digest-key=" + KEY)
+                .run(context -> assertThat(context).hasNotFailed().hasSingleBean(ActorDigest.class));
+        this.migrate.withPropertyValues("spring.profiles.active=deploy-audit")
+                .run(context -> assertThat(context).hasFailed());
+    }
+
+    @Test
+    void 배포_수행자_digest는_다른_digest와_겹치지_않는다() {
+        ActorDigest digest = new ActorDigest(KEY);
+        assertThat(digest.ofDeployer("deployer")).matches("[0-9a-f]{64}").isNotEqualTo(digest.ofSystem("deployer"))
+                .isEqualTo(new ActorDigest(KEY).ofDeployer("deployer"))
+                .isNotEqualTo(digest.ofDeployer("someone-else"));
+    }
+
     @Test
     void digest는_키에_매여_있고_사용자마다_다르다() {
         UUID user = UUID.randomUUID();

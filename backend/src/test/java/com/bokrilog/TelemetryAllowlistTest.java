@@ -70,6 +70,8 @@ class TelemetryAllowlistTest extends OperatorTestBase {
         for (Series each : series) {
             assertThat(allowedNames).as(each.name()).contains(each.name());
             assertThat(each.labels()).as(each.name()).containsEntry("env", "development");
+            // 공통 tag role(Story 3.8). 시험 컨텍스트는 기본 역할 all이다.
+            assertThat(each.labels()).as(each.name()).containsEntry("role", "all");
         }
         // 정체(이름·label)와 설명 줄에 UUID·이메일·숫자 6자리 이상이 없다.
         for (String identity : identities(body)) {
@@ -87,7 +89,7 @@ class TelemetryAllowlistTest extends OperatorTestBase {
                 .containsEntry("uri", AuthSecurityConfig.DASHBOARD_PATH + "/evidence").containsEntry("method", "GET"));
         assertThat(requests).anySatisfy(labels -> assertThat(labels).containsEntry("uri", "UNKNOWN"));
         assertThat(requests).allSatisfy(labels -> assertThat(labels)
-                .containsOnlyKeys("env", "method", "uri", "status", "outcome"));
+                .containsOnlyKeys("env", "role", "method", "uri", "status", "outcome"));
 
         // 동기화 대기 나이는 여섯 종류 모두 있다(주기 측정). JVM 메모리와 DB 연결도 있다.
         Set<String> kinds = new LinkedHashSet<>();
@@ -132,17 +134,42 @@ class TelemetryAllowlistTest extends OperatorTestBase {
     void env는_세_값_밖이면_기동을_거부한다() {
         TelemetryConfig config = new TelemetryConfig();
         for (String env : List.of("development", "ci", "production")) {
-            assertThat(config.telemetryMeterFilter(env)).isNotNull();
+            assertThat(config.telemetryMeterFilter(env, "api")).isNotNull();
         }
         for (String env : List.of("staging", "", "Production")) {
-            assertThatThrownBy(() -> config.telemetryMeterFilter(env)).as(env)
+            assertThatThrownBy(() -> config.telemetryMeterFilter(env, "api")).as(env)
                     .isInstanceOf(IllegalStateException.class);
         }
     }
 
     @Test
+    void role은_세_값_밖이면_기동을_거부하고_모든_meter에_붙는다() {
+        TelemetryConfig config = new TelemetryConfig();
+        for (String role : List.of("api", "worker", "all")) {
+            var filter = config.telemetryMeterFilter("ci", role);
+            Meter.Id mapped = filter.map(new Meter.Id(SyncTelemetry.QUEUE_AGE, Tags.of("kind", "plan_sync"), null, null,
+                    Meter.Type.GAUGE));
+            assertThat(mapped.getTag("role")).isEqualTo(role);
+            assertThat(filter.accept(mapped)).isEqualTo(MeterFilterReply.NEUTRAL);
+        }
+        // 빈 값은 기본 역할이다.
+        assertThat(config.telemetryMeterFilter("ci", "").map(new Meter.Id(SyncTelemetry.QUEUE_AGE,
+                Tags.of("kind", "plan_sync"), null, null, Meter.Type.GAUGE)).getTag("role")).isEqualTo("all");
+        for (String role : List.of("API", "both", "scheduler")) {
+            assertThatThrownBy(() -> config.telemetryMeterFilter("ci", role)).as(role)
+                    .isInstanceOf(IllegalStateException.class);
+        }
+        // 이미 붙은 role tag를 다른 값으로 덮어 들여오지 못한다 — map이 이 프로세스의 값으로 바꾼다.
+        var filter = config.telemetryMeterFilter("ci", "worker");
+        assertThat(filter.map(new Meter.Id(SyncTelemetry.QUEUE_AGE, Tags.of("kind", "plan_sync", "role", "api"), null,
+                null, Meter.Type.GAUGE)).getTag("role")).isEqualTo("worker");
+        assertThat(TelemetryAllowlist.allows(SyncTelemetry.QUEUE_AGE, Map.of("kind", "plan_sync", "role", "other"),
+                Set.of())).isFalse();
+    }
+
+    @Test
     void filter는_uri를_템플릿으로만_남기고_예외_tag를_걷으며_env를_붙인다() {
-        var filter = new TelemetryConfig().telemetryMeterFilter("ci");
+        var filter = new TelemetryConfig().telemetryMeterFilter("ci", "all");
         filter.useUriTemplates(Set.of("/api/dashboard/evidence"));
         Meter.Id raw = new Meter.Id(TelemetryAllowlist.HTTP_SERVER_REQUESTS, Tags.of("method", "GET", "uri",
                 "/api/plans/" + UUID.randomUUID(), "status", "200", "outcome", "SUCCESS", "exception", "none"),

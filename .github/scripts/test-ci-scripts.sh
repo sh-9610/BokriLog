@@ -676,11 +676,11 @@ printf '\n필수 검사 집계\n'
 # 만들어 낸 가짜 판정 표가 실제 PR 화면의 job summary에 그대로 실린다. 시험 전용 sink로 돌린다.
 aggregate_sink="${work_root}/aggregate-sink.md"
 
-# check_aggregate <라벨> <docs_only> <changes> <frontend> <backend> <integration>
+# check_aggregate <라벨> <docs_only> <changes> <frontend> <backend> <integration> <rehearsal>
 #                 <기대 종료 코드> [기대 메시지 조각] [없어야 하는 메시지 조각]
 check_aggregate() {
-  local label="$1" docs="$2" changes="$3" frontend="$4" backend="$5" integration="$6"
-  local want_status="$7" want_message="${8:-}" unwanted_message="${9:-}"
+  local label="$1" docs="$2" changes="$3" frontend="$4" backend="$5" integration="$6" rehearsal="$7"
+  local want_status="$8" want_message="${9:-}" unwanted_message="${10:-}"
   local log_file status
 
   log_file="${work_root}/aggregate-$((tests_run + 1)).txt"
@@ -691,6 +691,7 @@ check_aggregate() {
     FRONTEND_RESULT="${frontend}" \
     BACKEND_RESULT="${backend}" \
     INTEGRATION_RESULT="${integration}" \
+    REHEARSAL_RESULT="${rehearsal}" \
     GITHUB_STEP_SUMMARY="${aggregate_sink}" \
     bash "${aggregate_script}"
   ) >"${log_file}" 2>&1
@@ -714,55 +715,67 @@ check_aggregate() {
   record_pass "${label}"
 }
 
-check_aggregate '제품 변경 · 세 job 모두 success -> 종료 0' \
-  false success success success success 0 '모든 예상 결과가 일치한다.'
+check_aggregate '제품 변경 · 네 job 모두 success -> 종료 0' \
+  false success success success success success 0 '모든 예상 결과가 일치한다.'
 
-check_aggregate '문서-only · 세 job 모두 skipped -> 종료 0' \
-  true success skipped skipped skipped 0 '모든 예상 결과가 일치한다.'
+check_aggregate '문서-only · 네 job 모두 skipped -> 종료 0' \
+  true success skipped skipped skipped skipped 0 '모든 예상 결과가 일치한다.'
 
 # 실패는 어느 job에서 나든 병합을 막는다.
 check_aggregate '제품 변경 · frontend failure -> 종료 1' \
-  false success failure success success 1 '::error::frontend-quality job이 failure로 끝났다.'
+  false success failure success success success 1 '::error::frontend-quality job이 failure로 끝났다.'
 
 check_aggregate '제품 변경 · backend failure -> 종료 1' \
-  false success success failure success 1 '::error::backend-quality job이 failure로 끝났다.'
+  false success success failure success success 1 '::error::backend-quality job이 failure로 끝났다.'
 
 check_aggregate '제품 변경 · integration cancelled -> 종료 1' \
-  false success success success cancelled 1 '::error::same-origin-integration job이 cancelled로 끝났다.'
+  false success success success cancelled success 1 '::error::same-origin-integration job이 cancelled로 끝났다.'
+
+# Story 3.8: 배포 리허설도 필수다. 리허설이 깨진 채로 병합되면 배포 절차가 검증 없이 develop에 들어간다.
+check_aggregate '제품 변경 · deploy-rehearsal failure -> 종료 1' \
+  false success success success success failure 1 '::error::deploy-rehearsal job이 failure로 끝났다.'
 
 # 예상하지 않은 skip. `if` 조건을 잘못 고치면 검사가 조용히 사라진다.
 check_aggregate '제품 변경 · 예상 밖 skipped -> 종료 1' \
-  false success success skipped success 1 \
+  false success success skipped success success 1 \
   '::error::backend-quality job이 건너뛰어졌지만 이 변경은 제품 변경으로 분류됐다.'
+
+check_aggregate '제품 변경 · 리허설만 예상 밖 skipped -> 종료 1' \
+  false success success success success skipped 1 \
+  '::error::deploy-rehearsal job이 건너뛰어졌지만 이 변경은 제품 변경으로 분류됐다.'
 
 # 문서-only인데 제품 job이 돌았다. 분류와 게이트가 어긋난 상태다.
 check_aggregate '문서-only · 예상 밖 success -> 종료 1' \
-  true success success skipped skipped 1 \
+  true success success skipped skipped skipped 1 \
   '::error::frontend-quality job이 실행됐지만 이 변경은 문서-only로 분류됐다.'
 
 # 빈 값. `needs`에서 job을 빼면 결과가 빈 문자열로 온다. 통과로 읽으면 job 하나를
 # 지우는 것만으로 필수 검사가 사라진다.
 check_aggregate '제품 변경 · 빈 결과 -> 종료 1' \
-  false success success success '' 1 \
+  false success success success '' success 1 \
   '::error::same-origin-integration job의 결과가 비었다.'
 
+check_aggregate '제품 변경 · 리허설 결과 없음 -> 종료 1' \
+  false success success success success '' 1 \
+  '::error::deploy-rehearsal job의 결과가 비었다.'
+
 check_aggregate 'changes job 실패 -> 종료 1' \
-  false failure skipped skipped skipped 1 '::error::changes job이 success가 아니다'
+  false failure skipped skipped skipped skipped 1 '::error::changes job이 success가 아니다'
 
 check_aggregate 'changes job 결과 없음 -> 종료 1' \
-  false '' success success success 1 '::error::changes job이 success가 아니다'
+  false '' success success success success 1 '::error::changes job이 success가 아니다'
 
 # 실제 `changes` 실패의 모습은 `DOCS_ONLY`까지 빈 값이다. 그 job이 분류 결과를 만들지 못했기
-# 때문이다. 이때 판정을 계속 진행하면 기대치가 `success`로 굳어, 정상적으로 건너뛰어진 세 job이
+# 때문이다. 이때 판정을 계속 진행하면 기대치가 `success`로 굳어, 정상적으로 건너뛰어진 네 job이
 # 각각 "건너뛰어졌지만 제품 변경으로 분류됐다"는 오류를 받고 `DOCS_ONLY` 오류까지 붙는다.
-# 진짜 원인 하나에 없는 문제 네 개가 얹히는 셈이라 로그를 읽는 사람을 잘못된 곳으로 보낸다.
+# 진짜 원인 하나에 없는 문제 다섯 개가 얹히는 셈이라 로그를 읽는 사람을 잘못된 곳으로 보낸다.
 check_aggregate 'changes 실패 · 건너뛴 job을 분류·게이트 불일치로 오인하지 않는다' \
-  '' failure skipped skipped skipped 1 \
+  '' failure skipped skipped skipped skipped 1 \
   '::error::changes job이 success가 아니다' \
   '건너뛰어졌지만 이 변경은 제품 변경으로 분류됐다'
 
 check_aggregate 'changes 실패 · DOCS_ONLY 오류를 덧붙이지 않는다' \
-  '' failure skipped skipped skipped 1 \
+  '' failure skipped skipped skipped skipped 1 \
   '이 실행의 원인은 changes job 하나다' \
   '::error::DOCS_ONLY가 true·false가 아니다'
 
@@ -775,6 +788,7 @@ changes_fail_log="${work_root}/aggregate-changes-fail.txt"
   FRONTEND_RESULT=skipped \
   BACKEND_RESULT=skipped \
   INTEGRATION_RESULT=skipped \
+  REHEARSAL_RESULT=skipped \
   GITHUB_STEP_SUMMARY="${aggregate_sink}" \
   bash "${aggregate_script}"
 ) >"${changes_fail_log}" 2>&1
@@ -783,10 +797,10 @@ assert_equals 'changes 실패 · ::error::는 원인 1줄 + 종료 1줄뿐' \
 
 # 분류 결과 자체가 깨진 경우. fail-closed로 가장 엄격한 기대치를 적용한다.
 check_aggregate 'DOCS_ONLY가 빈 값 -> 종료 1' \
-  '' success success success success 1 '::error::DOCS_ONLY가 true·false가 아니다'
+  '' success success success success success 1 '::error::DOCS_ONLY가 true·false가 아니다'
 
 check_aggregate 'DOCS_ONLY가 알 수 없는 값 -> 종료 1' \
-  maybe success success success success 1 '::error::DOCS_ONLY가 true·false가 아니다'
+  maybe success success success success success 1 '::error::DOCS_ONLY가 true·false가 아니다'
 
 # 집계 결과가 PR 화면에 남는지 고정한다. 어떤 job이 왜 막았는지 단계 로그를 펼치기 전에 보인다.
 aggregate_summary="${work_root}/aggregate-summary.md"
@@ -798,6 +812,7 @@ aggregate_summary_status=0
   FRONTEND_RESULT=success \
   BACKEND_RESULT=success \
   INTEGRATION_RESULT=success \
+  REHEARSAL_RESULT=success \
   GITHUB_STEP_SUMMARY="${aggregate_summary}" \
   bash "${aggregate_script}"
 ) >"${work_root}/aggregate-summary-log.txt" 2>&1 || aggregate_summary_status=$?
@@ -808,7 +823,8 @@ if [ "${aggregate_summary_status}" -ne 0 ]; then
 elif grep -qF '### 필수 검사 집계' "${aggregate_summary}" \
   && grep -qF '| `frontend-quality` |' "${aggregate_summary}" \
   && grep -qF '| `backend-quality` |' "${aggregate_summary}" \
-  && grep -qF '| `same-origin-integration` |' "${aggregate_summary}"; then
+  && grep -qF '| `same-origin-integration` |' "${aggregate_summary}" \
+  && grep -qF '| `deploy-rehearsal` |' "${aggregate_summary}"; then
   record_pass '집계가 GITHUB_STEP_SUMMARY에 판정 표를 남긴다'
 else
   record_fail '집계가 GITHUB_STEP_SUMMARY에 판정 표를 남긴다' \
@@ -1040,22 +1056,22 @@ printf '\nci.yml 계약\n'
 # job 하나를 지우거나 `needs`를 한 줄 고치면 필수 검사가 조용히 사라지고, branch protection은
 # `ci-required`라는 이름 하나만 보므로 그 사실을 알지 못한다.
 
-# `changes → frontend-quality·backend-quality → same-origin-integration → ci-required`.
-# 순서까지 단정한다. 파일에서 읽는 순서가 곧 사람이 이해하는 실행 순서다.
+# `changes → frontend-quality·backend-quality → same-origin-integration·deploy-rehearsal → ci-required`.
+# 순서까지 단정한다. 파일에서 읽는 순서가 곧 사람이 이해하는 실행 순서다. `deploy-rehearsal`은 Story 3.8이 더했다.
 assert_equals 'ci.yml · job 목록과 순서' \
   "$(workflow_job_ids)" \
-  'changes frontend-quality backend-quality same-origin-integration ci-required'
+  'changes frontend-quality backend-quality same-origin-integration deploy-rehearsal ci-required'
 
 # branch protection이 참조하는 이름이다. 바뀌면 required check가 영원히 대기 상태로 남고
 # 병합은 아무 검사 없이 열린다.
 assert_equals 'ci.yml · job name은 ci-required' \
   "$(count_lines '^    name: ci-required$')" '1'
 
-# `ubuntu-latest`는 러너 갱신이 CI 판정을 바꾼다. 다섯 job 모두 고정한다.
+# `ubuntu-latest`는 러너 갱신이 CI 판정을 바꾼다. 여섯 job 모두 고정한다.
 assert_equals 'ci.yml · 모든 job이 runs-on: ubuntu-24.04 고정' \
-  "$(count_lines '^    runs-on: ubuntu-24\.04$')" '5'
+  "$(count_lines '^    runs-on: ubuntu-24\.04$')" '6'
 
-for job_id in changes frontend-quality backend-quality same-origin-integration ci-required; do
+for job_id in changes frontend-quality backend-quality same-origin-integration deploy-rehearsal ci-required; do
   assert_equals "ci.yml · '${job_id}' job이 ubuntu-24.04를 쓴다" \
     "$(count_job_lines "${job_id}" '^    runs-on: ubuntu-24\.04$')" '1'
 done
@@ -1068,9 +1084,11 @@ assert_equals 'ci.yml · backend-quality는 changes를 기다린다' \
   "$(count_job_lines backend-quality '^    needs: changes$')" '1'
 assert_equals 'ci.yml · same-origin-integration은 두 품질 job을 기다린다' \
   "$(count_job_lines same-origin-integration '^    needs: \[changes, frontend-quality, backend-quality\]$')" '1'
-# 집계가 기다리지 않는 job의 결과는 빈 값으로 온다. 네 job이 모두 있어야 한다.
+assert_equals 'ci.yml · deploy-rehearsal은 두 품질 job을 기다린다' \
+  "$(count_job_lines deploy-rehearsal '^    needs: \[changes, frontend-quality, backend-quality\]$')" '1'
+# 집계가 기다리지 않는 job의 결과는 빈 값으로 온다. 다섯 job이 모두 있어야 한다.
 assert_equals 'ci.yml · ci-required는 모든 선행 job을 기다린다' \
-  "$(count_job_lines ci-required '^    needs: \[changes, frontend-quality, backend-quality, same-origin-integration\]$')" '1'
+  "$(count_job_lines ci-required '^    needs: \[changes, frontend-quality, backend-quality, same-origin-integration, deploy-rehearsal\]$')" '1'
 
 # 선행 job이 실패·취소·skip 어느 쪽이든 집계는 실행되어 판정을 남겨야 한다.
 # 이 줄이 없으면 실패한 실행에서 required check가 영원히 대기 상태로 남는다.
@@ -1090,14 +1108,15 @@ else
     '집계 단계에 aggregate-results.sh 호출이 없다.'
 fi
 
-# 집계 스크립트가 읽는 다섯 입력이 실제로 전달되는지. 하나라도 빠지면 그 job은
+# 집계 스크립트가 읽는 여섯 입력이 실제로 전달되는지. 하나라도 빠지면 그 job은
 # 빈 값으로 평가되고, 스크립트는 이를 실패로 읽어야 하므로 여기서 먼저 잡는다.
 for aggregate_input in \
   'DOCS_ONLY: ${{ needs.changes.outputs.docs-only }}' \
   'CHANGES_RESULT: ${{ needs.changes.result }}' \
   'FRONTEND_RESULT: ${{ needs.frontend-quality.result }}' \
   'BACKEND_RESULT: ${{ needs.backend-quality.result }}' \
-  'INTEGRATION_RESULT: ${{ needs.same-origin-integration.result }}'; do
+  'INTEGRATION_RESULT: ${{ needs.same-origin-integration.result }}' \
+  'REHEARSAL_RESULT: ${{ needs.deploy-rehearsal.result }}'; do
   if workflow_step_block ci-required '필수 검사 집계' | grep -F -- "${aggregate_input}" >/dev/null; then
     record_pass "ci.yml · 집계 입력 '${aggregate_input%%:*}'을 전달한다"
   else
@@ -1172,6 +1191,15 @@ compose 정리
 실패 진단 artifact 업로드
 STEPS
 
+assert_job_steps deploy-rehearsal <<'STEPS'
+저장소 checkout
+배포 gate 시험
+통합 입력 내려받기 (frontend dist)
+통합 입력 내려받기 (backend jar)
+배포 리허설
+실패 진단 artifact 업로드
+STEPS
+
 assert_job_steps ci-required <<'STEPS'
 저장소 checkout
 필수 검사 집계
@@ -1182,10 +1210,10 @@ STEPS
 # 줄고, 하나 지우면 문서-only PR이 전체 검사를 돈다. 둘 다 여기서 걸린다.
 # `ci-required`에는 붙지 않는다. 집계는 어떤 분류에서도 실행되어야 한다.
 docs_gate="if: needs.changes.outputs.docs-only != 'true'"
-assert_equals 'ci.yml · docs-only 게이트를 단 job은 3개' \
-  "$(grep -cF "    ${docs_gate}" "${workflow_file}")" '3'
+assert_equals 'ci.yml · docs-only 게이트를 단 job은 4개' \
+  "$(grep -cF "    ${docs_gate}" "${workflow_file}")" '4'
 
-for gated_job in frontend-quality backend-quality same-origin-integration; do
+for gated_job in frontend-quality backend-quality same-origin-integration deploy-rehearsal; do
   if workflow_job_block "${gated_job}" | grep -F -- "${docs_gate}" >/dev/null; then
     record_pass "ci.yml · '${gated_job}' job에 docs-only 게이트가 있다"
   else
@@ -1253,7 +1281,7 @@ fi
 
 # 후속 job은 움직이는 ref가 아니라 이벤트가 고정한 commit을 checkout한다(CI-PLAN §5).
 assert_equals 'ci.yml · 모든 job이 github.sha를 checkout한다' \
-  "$(count_lines '^          ref: \$\{\{ github\.sha \}\}$')" '5'
+  "$(count_lines '^          ref: \$\{\{ github\.sha \}\}$')" '6'
 
 # --- frontend-quality ------------------------------------------------------
 # lint·stylelint·format 검사는 타입 검사 뒤, 프로덕션 빌드 앞이다(spec-frontend-lint-policy.md,
@@ -1325,13 +1353,13 @@ for producer in frontend-quality backend-quality; do
     "$(count_job_lines "${producer}" '^          retention-days: 1$')" '1'
 done
 
-# 진단 업로드는 세 job 모두 `warn`이다. `ignore`로 바꾸면 report·trace 경로가 어긋나도 이 단계가
+# 진단 업로드는 네 job 모두 `warn`이다. `ignore`로 바꾸면 report·trace 경로가 어긋나도 이 단계가
 # 조용히 성공해, 실패한 실행에 진단물이 없다는 사실을 아무도 모른 채 영원히 "업로드 성공"이 된다.
 # `error`도 답이 아니다. 진단 수집이 job 판정을 뒤집으면 원인이 진단 경로로 바뀐다.
 assert_equals 'ci.yml · 진단 artifact 업로드는 if-no-files-found: warn' \
-  "$(count_lines '^          if-no-files-found: warn$')" '3'
+  "$(count_lines '^          if-no-files-found: warn$')" '4'
 
-for diagnostics_job in frontend-quality backend-quality same-origin-integration; do
+for diagnostics_job in frontend-quality backend-quality same-origin-integration deploy-rehearsal; do
   assert_equals "ci.yml · '${diagnostics_job}'의 진단 업로드가 warn이다" \
     "$(count_job_lines "${diagnostics_job}" '^          if-no-files-found: warn$')" '1'
 done
@@ -1415,6 +1443,52 @@ if workflow_step_block same-origin-integration 'compose 정리' | grep -F 'if: a
 else
   record_fail 'ci.yml · compose 정리는 always()로 실행된다' 'if: always()가 없다.'
 fi
+
+# --- deploy-rehearsal(Story 3.8) ---------------------------------------------
+# 리허설도 두 품질 job의 산출물을 그대로 소비한다. 다시 빌드하면 리허설이 돈 바이트가 시험된 바이트와 달라진다.
+assert_equals 'ci.yml · 리허설 job이 같은 이름의 통합 입력을 소비한다' \
+  "$(count_job_lines deploy-rehearsal "${artifact_name_pattern}")" '2'
+if workflow_job_block deploy-rehearsal | grep -E 'gradlew|run: npm --prefix frontend run build$' >/dev/null; then
+  record_fail 'ci.yml · 리허설 job은 산출물을 다시 빌드하지 않는다' '리허설 job에 gradlew 또는 프런트엔드 build가 있다.'
+else
+  record_pass 'ci.yml · 리허설 job은 산출물을 다시 빌드하지 않는다'
+fi
+# 판정은 두 스크립트가 소유한다. 단계에는 그 호출 한 줄씩만 있다.
+assert_equals 'ci.yml · 배포 gate 시험 단계는 test-preflight.sh 하나를 부른다' \
+  "$(workflow_step_block deploy-rehearsal '배포 gate 시험' | grep -E '^        run: ' | sed 's/^        run: //')" \
+  'bash deploy/production/test-preflight.sh'
+assert_equals 'ci.yml · 배포 리허설 단계는 rehearse-deploy.sh 하나를 부른다' \
+  "$(workflow_step_block deploy-rehearsal '배포 리허설' | grep -E '^        run: ' | sed 's/^        run: //')" \
+  'bash deploy/production/rehearse-deploy.sh'
+# 리허설 스크립트가 스택을 소유한다. job이 compose를 직접 띄우지 않는다.
+if workflow_job_block deploy-rehearsal | grep -E 'docker compose .* up( |$)' >/dev/null; then
+  record_fail 'ci.yml · 리허설 job은 compose를 직접 띄우지 않는다' '리허설 job에 별도 compose up이 있다.'
+else
+  record_pass 'ci.yml · 리허설 job은 compose를 직접 띄우지 않는다'
+fi
+# 실패한 리허설의 기록을 남길 자리를 스크립트에 준다. 없으면 스크립트가 정리하며 기록을 지워 진단 업로드가 빈다.
+if workflow_step_block deploy-rehearsal '배포 리허설' \
+  | grep -F 'BOKRILOG_REHEARSAL_DIAGNOSTICS: ${{ runner.temp }}/deploy-rehearsal-diagnostics' >/dev/null \
+  && workflow_step_block deploy-rehearsal '실패 진단 artifact 업로드' \
+  | grep -F 'path: ${{ runner.temp }}/deploy-rehearsal-diagnostics' >/dev/null; then
+  record_pass 'ci.yml · 리허설 진단 기록 자리와 업로드 경로가 같다'
+else
+  record_fail 'ci.yml · 리허설 진단 기록 자리와 업로드 경로가 같다' '진단 디렉터리 env 또는 업로드 경로가 없다.'
+fi
+assert_equals 'ci.yml · 배포 리허설 단계의 timeout은 20분' \
+  "$(workflow_step_block deploy-rehearsal '배포 리허설' | grep -cxF '        timeout-minutes: 20')" '1'
+assert_equals 'ci.yml · deploy-rehearsal job timeout은 25분' \
+  "$(count_job_lines deploy-rehearsal '^    timeout-minutes: 25$')" '1'
+# 리허설 스크립트도 이 저장소의 셸 규약을 따른다(gate 시험이 그 파일들을 훑는다). 여기서도 한 번 더 막는다.
+for deploy_script in deploy.sh preflight.sh rehearse-deploy.sh lib.sh test-preflight.sh; do
+  deploy_path="${repo_root}/deploy/production/${deploy_script}"
+  if [ ! -f "${deploy_path}" ]; then
+    record_fail "deploy/production/${deploy_script}가 있다" '파일이 없다.'
+    continue
+  fi
+  assert_equals "deploy/production/${deploy_script} · pipefail 아래 조기 종료 grep -q 파이프가 없다" \
+    "$(grep -vE '^[[:space:]]*#' "${deploy_path}" | grep -cE '\|[[:space:]]*grep -[[:alpha:]]*q' | tr -d '[:space:]')" '0'
+done
 
 # --------------------------------------------------------------------------
 printf '\n%s개 중 %s개 통과, %s개 실패\n' \

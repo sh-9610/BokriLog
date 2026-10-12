@@ -5,9 +5,11 @@
 # 그대로 소비해야 하기 때문이다(CI-PLAN §8). 이미지 안에서 다시 빌드하면 통합 시험이 검증하는
 # 바이트가 품질 job이 검증한 바이트와 같다는 보장이 사라진다.
 #
-# 베이스는 `ARCHITECTURE-SPINE.md` Stack 표의 런타임 이미지다. production 배포는 tag가 아니라
-# digest로 고정하지만 그 고정은 Story 3.8의 Release Gate가 소유한다. 여기서는 개발·CI용 tag를 쓴다.
-FROM eclipse-temurin:25-jre-alpine-3.24
+# 베이스는 `ARCHITECTURE-SPINE.md` Stack 표의 런타임 이미지다. tag(`25-jre-alpine-3.24`)는 읽기용이고 실제 해석은 뒤의
+# 다중 아키텍처 index digest가 한다(Story 3.8 — tag 이동으로 같은 Dockerfile이 다른 베이스를 받지 않는다). 같은 index가
+# `linux/arm64`(운영)와 `linux/amd64`(개발·CI)를 함께 담는다. 갱신은 digest를 바꾸는 별도 변경으로 한다.
+# 운영 이미지의 빌드·서명·게시는 아직 이 저장소에 없다(`deferred-work.md`, 공급망 파이프라인).
+FROM eclipse-temurin:25-jre-alpine-3.24@sha256:3c0a9084927a221ccd1d007fcaf614465672c0af37aaa834c5184483afe56d61
 
 # root로 실행하지 않는다. 이 이미지에는 패키지 설치도 쓰기도 없다.
 RUN addgroup -S bokrilog && adduser -S -G bokrilog -H -s /sbin/nologin bokrilog

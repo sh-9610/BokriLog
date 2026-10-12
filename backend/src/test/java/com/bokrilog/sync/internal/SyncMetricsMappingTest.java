@@ -18,8 +18,7 @@ class SyncMetricsMappingTest {
 
     private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
 
-    private final SyncMetrics metrics = new SyncMetrics(this.registry, mock(JdbcClient.class),
-            mock(org.springframework.transaction.PlatformTransactionManager.class));
+    private final SyncMetrics metrics = new SyncMetrics(this.registry);
 
     @Test
     void 성공_실패_검토_막힘_삭제는_각자의_결말이다() {
@@ -58,6 +57,10 @@ class SyncMetricsMappingTest {
                 .count()).isEqualTo(1.0);
         assertThat(this.registry.find(SyncTelemetry.ATTEMPTS).tags("trigger", "OTHER").counter().count())
                 .isEqualTo(1.0);
+        // 대기 나이 gauge는 카운터 계측이 아니라 주기 측정 컴포넌트가 등록한다(Story 3.8 — 스케줄링 역할에만).
+        assertThat(this.registry.find(SyncTelemetry.QUEUE_AGE).gauges()).isEmpty();
+        new SyncQueueAgeMetrics(this.registry, mock(JdbcClient.class),
+                mock(org.springframework.transaction.PlatformTransactionManager.class));
         for (Kind kind : Kind.values()) {
             assertThat(this.registry.find(SyncTelemetry.QUEUE_AGE).tags("kind", kind.tag()).gauge().value())
                     .as(kind.tag()).isNaN();

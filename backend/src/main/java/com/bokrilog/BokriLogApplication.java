@@ -1,7 +1,9 @@
 package com.bokrilog;
 
+import com.bokrilog.sync.WorkerExit;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.ConfigurableApplicationContext;
 
 /**
  * BokriLog 백엔드 진입점.
@@ -19,6 +21,10 @@ public class BokriLogApplication {
     public static void main(String[] args) {
         // 컨텍스트가 뜨기 전 스레드의 예외도 스택 대신 한 줄로 남긴다(Story 3.7, UncaughtExceptionLogging).
         Thread.setDefaultUncaughtExceptionHandler(UncaughtExceptionLogging.HANDLER);
-        SpringApplication.run(BokriLogApplication.class, args);
+        ConfigurableApplicationContext context = SpringApplication.run(BokriLogApplication.class, args);
+        // Worker 역할이면 종료 코드가 drain 결과다(Story 3.8, WorkerExit). 신호로 끝난 JVM은 143을 내므로 컨텍스트가 다 닫힌 뒤의
+        // 마지막 종료 처리에서 그 값으로 끝낸다. 시험은 이 진입점을 지나지 않으므로 시험 JVM의 종료에는 닿지 않는다.
+        context.getBeanProvider(WorkerExit.class).ifAvailable(exit ->
+                SpringApplication.getShutdownHandlers().add(() -> Runtime.getRuntime().halt(exit.exitCode())));
     }
 }

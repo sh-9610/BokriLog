@@ -255,6 +255,27 @@ tests:
             exp_annotations:
               summary: 동기화 대기 나이를 15분째 측정하지 못한다.
 
+  # 역할 분리(Story 3.8): 대기 나이는 Worker만 측정한다. API 슬롯(role="api")은 그 gauge를 내지 않으므로(시계열 없음 — API 슬롯의
+  # 다른 시계열만 있다) 미측정이 아니고, Worker(role="worker")의 측정값이 있으면 미측정 경보는 울리지 않는다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_sync_queue_age_seconds{env="production",role="worker",kind="plan_sync"}'
+        values: '0x30'
+      - series: 'bokrilog_sync_queue_age_seconds{env="production",role="worker",kind="first_snapshot"}'
+        values: '12x30'
+      - series: 'jvm_memory_used_bytes{env="production",role="api",area="heap",id="G1 Eden Space"}'
+        values: '1000x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SyncQueueAgeUnmeasured
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: SyncQueueAgeUnmeasured
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: SyncQueueAgeHigh
+        exp_alerts: []
+
   # ---------------------------------------------------------------- DB 연결
   # 지속시간 경계: 사용 9/최대 10(90%)이 10분 이어진 10분에 발화, 8/10으로 내려가면 해제.
   - interval: 1m
