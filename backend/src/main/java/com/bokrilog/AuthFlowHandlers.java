@@ -500,7 +500,7 @@ class AuthFlowHandlers {
                     SessionGuard.Verdict verdict =
                             guard.evaluate(
                                     session.getCreationTime(),
-                                    session.getAttribute(SessionGuard.REAUTH_REQUIRED_ATTRIBUTE));
+                                    UnreadableSessionValue.read(session, SessionGuard.REAUTH_REQUIRED_ATTRIBUTE));
                     switch (verdict) {
                         case EXPIRED -> destroySession(request);
                         case REAUTH_REQUIRED -> {

@@ -82,11 +82,18 @@ public interface ServiceNoticeApi {
      * 사건 하나와 그 버전 이력(오래된 순).
      *
      * @param versions 비어 있지 않다
+     * @param liveCovers 최신 버전이 덮는 제한의 되돌림 계보 가운데 지금 열린 제한(Epic 3 회고 AI-1, 2026-10-13 사용자 결정) —
+     *     덮는 제한 자신이 열려 있으면 그것이고, 해제 smoke 되돌림으로 이어진 후손은 닫힌 중간 행을 지나도 따라간다(먼저 시작한
+     *     순, 중복 없음). 계보가 모두 닫혔으면 비어 있다. 운영자 화면의 덮는 제한 기본값과 "아직 효력 중" 집계의 출처다
      */
-    record Incident(UUID incidentId, Instant startedAt, List<NoticeVersion> versions) {
+    record Incident(UUID incidentId, Instant startedAt, List<NoticeVersion> versions, List<UUID> liveCovers) {
 
         public Incident {
+            if (versions.isEmpty()) {
+                throw new IllegalArgumentException("버전이 없는 사건이다.");
+            }
             versions = List.copyOf(versions);
+            liveCovers = List.copyOf(liveCovers);
         }
 
         /** 최신 버전. */
@@ -149,7 +156,10 @@ public interface ServiceNoticeApi {
      */
     UserNotices forSubjects(List<RestrictionSubject> subjects);
 
-    /** 운영자 화면의 사건 목록. 최근에 시작한 사건이 먼저이고 {@value #MAX_LISTED_INCIDENTS}건까지다. */
+    /**
+     * 운영자 화면의 사건 목록. 최근에 시작한 사건이 먼저이고 {@value #MAX_LISTED_INCIDENTS}건까지다. 사건·버전과 최신 버전의
+     * 열린 계보({@link Incident#liveCovers})를 읽기 전용 트랜잭션 하나에서 함께 읽는다.
+     */
     List<Incident> incidents();
 
     /** 닫힌 기능 넷 가운데 {@code affected}에 없는 것, 기능 선언 순서다. */

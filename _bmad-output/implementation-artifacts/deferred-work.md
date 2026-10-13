@@ -431,3 +431,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-10-isolated-restore.md`
   summary: 복구 manifest를 실제 저장소 상태와 대조하는 검사(manifest의 backup key ID가 남은 generation의 key ID 전부를 덮는지, tombstone recipient의 짝 identity가 있는지)를 정기 점검으로 더한다.
   evidence: 3.10 검사기는 manifest 자체의 형식·평문 비밀만 본다. 저장소와의 대조는 실제 manifest가 저장소 밖에 있어 운영자 환경에서만 돌 수 있다(3.10 리뷰 blind-hunter, 2026-10-13).
+- source_spec: `_bmad-output/implementation-artifacts/spec-operator-command-commons.md`
+  summary: `operations_restriction.reinstated_from`에 색인을 더해, 공지 준비·확정·`GET /api/operator/notices`마다 도는 계보 재귀 CTE(`ASCENT`·`DESCENT`)가 단계마다 순차 탐색하지 않게 한다.
+  evidence: V20은 `reinstated_from`에 FK·CHECK만 두고 PostgreSQL은 참조 열을 자동 색인하지 않는다. 지금 제한 행 수가 작아 비용이 무시되지만 되돌림이 쌓이면 공지 경로가 행 수에 비례해 느려진다. 새 migration이 필요해 SPEC Ask First 대상이다(운영 command 공통화 리뷰 blind-hunter, 2026-10-13).
+- source_spec: `_bmad-output/implementation-artifacts/spec-operator-command-commons.md`
+  summary: 배포 전 무장 시험(`OperatorArmingVersionTest`)에 실제 이전 빌드(`serialVersionUID` 5L, 칸 넷)가 직렬화한 바이트를 고정 fixture로 더한다.
+  evidence: 지금 시험은 현재 빌드의 stream을 고쳐 옛 모양을 흉내 내고(필드 이름·버전 변경, 없는 클래스, 쓰레기 바이트) 실제 v5 stream을 쓰지 않는다. 옛 클래스(`OperatorCommandApi$Lift` 등)가 지금 빌드에 없어 이전 커밋에서 바이트를 떠 와야 한다(운영 command 공통화 리뷰 blind-hunter, 2026-10-13).

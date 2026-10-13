@@ -477,7 +477,7 @@ class ActionGrantService {
                 return new SessionFacts(
                         session.getId(),
                         session.getCreationTime(),
-                        session.getAttribute(SessionGuard.REAUTH_REQUIRED_ATTRIBUTE),
+                        UnreadableSessionValue.read(session, SessionGuard.REAUTH_REQUIRED_ATTRIBUTE),
                         ReauthenticationFlow.lastAuthenticatedAt(session),
                         principalNameOf(session));
             } catch (IllegalStateException invalidated) {

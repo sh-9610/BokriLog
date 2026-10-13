@@ -4,6 +4,7 @@ import type {
   ActiveRestriction,
   AuditEntry,
   NoticeIncident,
+  NoticeVersionEntry,
   OperatorInquiry,
 } from '../session/operatorApi'
 
@@ -376,6 +377,25 @@ function kstToday(offsetDays = 0): string {
   }).format(shifted)
 }
 
+/**
+ * 사건의 최신 버전이 덮는 제한 가운데 지금 열린 것(Epic 3 회고 AI-1). 공지는 제한 하나가 아니라 그 되돌림 계보를 덮으므로
+ * 서버가 계보에서 지금 열린 제한(`liveCovers`)을 계산해 준다 — 해제 smoke가 같은 범위를 새 제한으로 되돌렸으면(닫힌 중간
+ * 행을 지나도) 그 새 제한이다. 서버가 그 값을 싣지 않았으면 덮는 제한으로 접는다. 사건 목록은 활성 제한 목록보다 먼저 읽혔을
+ * 수 있으므로(복구는 활성 목록만 다시 읽는다) 지금 활성 목록에 있는 것만 센다 — 그 사이 복구된 제한을 아직 효력 중으로 말하지
+ * 않는다.
+ */
+function liveCoversOf(
+  version: NoticeVersionEntry | undefined,
+  items: readonly ActiveRestriction[],
+): readonly string[] {
+  if (version === undefined) {
+    return []
+  }
+  return (version.liveCovers ?? version.covers).filter((id) =>
+    items.some((item) => item.restrictionId === id),
+  )
+}
+
 /** `datetime-local` 입력을 서울 시각(KST)으로 읽어 ISO-8601로. 브라우저 시간대를 쓰지 않는다. 읽을 수 없으면 `null`이다. */
 function nextUpdateIso(value: string): string | null {
   return kstInputToIso(value)
@@ -475,28 +495,40 @@ export function OperatorScreen(): ReactElement {
   const [noticeIncident, setNoticeIncident] = useState(NEW_INCIDENT)
   const [noticeStatus, setNoticeStatus] = useState<FollowUpNoticeStatus>('SCOPE_CHANGED')
   const [chosenCovers, setNoticeCovers] = useState<readonly string[]>([])
+  /** 운영자가 덮는 제한을 직접 고쳤는가. 고치기 전에는 기존 사건의 기본값이 목록과 함께 따라간다. */
+  const [coversEdited, setCoversEdited] = useState(false)
   const [noticeMessage, setNoticeMessage] = useState('')
   const [noticeNext, setNoticeNext] = useState('')
-  const noticeCovers = chosenCovers.filter((id) =>
-    restricting.list.items.some((item) => item.restrictionId === id),
-  )
   const openIncidents = noticing.list.items.filter((incident) => !incident.closed)
   // 고른 사건이 목록에서 사라졌거나 닫혔으면 새 사건으로 접는다 — 닫힌 사건에 다음 버전을 준비하지 않는다.
   const incidentChoice = openIncidents.some((incident) => incident.incidentId === noticeIncident)
     ? noticeIncident
     : NEW_INCIDENT
+  /*
+   * 덮는 제한. 기존 사건을 골랐고 운영자가 아직 고치지 않았으면 그 최신 버전이 덮던 제한의 되돌림 계보 가운데 지금 활성인
+   * 것이 기본값이다 — 활성 목록이 사건을 고른 뒤에 다시 읽혀도 그 목록으로 다시 계산한다. 고친 뒤에는 고른 값이고, 목록에서
+   * 빠진(닫힌) 제한은 고른 값에서도 빠진다.
+   */
+  const noticeCovers =
+    incidentChoice !== NEW_INCIDENT && !coversEdited
+      ? liveCoversOf(
+          openIncidents.find((incident) => incident.incidentId === incidentChoice)?.versions.at(-1),
+          restricting.list.items,
+        )
+      : chosenCovers.filter((id) =>
+          restricting.list.items.some((item) => item.restrictionId === id),
+        )
   const effectiveNoticeStatus = incidentChoice === NEW_INCIDENT ? 'INVESTIGATING' : noticeStatus
   const noticeRecovering = effectiveNoticeStatus === 'RECOVERED'
   /*
-   * 복구 공지는 덮는 제한을 고르지 않는다 — 서버가 직전 버전의 것을 잇고, 그 제한이 모두 닫혀 있어야 받는다. 그 가운데 아직
-   * 활성 목록에 있는(효력 중인) 제한의 수를 미리 말한다.
+   * 복구 공지는 덮는 제한을 고르지 않는다 — 서버가 직전 버전의 것을 잇고, 그 제한의 되돌림 계보가 모두 닫혀 있어야 받는다.
+   * 그 계보 가운데 지금 열린(효력 중인) 제한의 수를 미리 말한다(서버의 `liveCovers`).
    */
   const recoveringStillOpen = noticeRecovering
-    ? (openIncidents
-        .find((incident) => incident.incidentId === incidentChoice)
-        ?.versions.at(-1)
-        ?.covers.filter((id) => restricting.list.items.some((item) => item.restrictionId === id))
-        .length ?? 0)
+    ? liveCoversOf(
+        openIncidents.find((incident) => incident.incidentId === incidentChoice)?.versions.at(-1),
+        restricting.list.items,
+      ).length
     : 0
   // 운영자 한 줄도 사용자 화면에 나간다. 화면 카피 금지 표현이 있으면 미리 막는다(서버도 같은 목록으로 거절한다).
   const noticeMessageForbidden = containsForbiddenCopy(noticeMessage)
@@ -1459,11 +1491,9 @@ export function OperatorScreen(): ReactElement {
                             onChange={(event) => {
                               const next = event.target.value
                               setNoticeIncident(next)
-                              // 기존 사건을 고르면 그 최신 버전이 덮던 제한 가운데 아직 활성인 것을 미리 고른다.
-                              const chosen = openIncidents.find(
-                                (incident) => incident.incidentId === next,
-                              )
-                              setNoticeCovers(chosen?.versions.at(-1)?.covers ?? [])
+                              // 사건을 바꾸면 고친 값을 버리고 그 사건의 기본값(`noticeCovers`)으로 돌아간다.
+                              setNoticeCovers([])
+                              setCoversEdited(false)
                             }}
                             value={incidentChoice}
                           >
@@ -1529,11 +1559,13 @@ export function OperatorScreen(): ReactElement {
                                     className={styles.checkbox}
                                     onChange={(event) => {
                                       const checked = event.target.checked
-                                      setNoticeCovers((current) =>
+                                      // 지금 보이는 값(기본값일 수 있다)에서 고친다.
+                                      setNoticeCovers(
                                         checked
-                                          ? [...current, item.restrictionId]
-                                          : current.filter((id) => id !== item.restrictionId),
+                                          ? [...noticeCovers, item.restrictionId]
+                                          : noticeCovers.filter((id) => id !== item.restrictionId),
                                       )
+                                      setCoversEdited(true)
                                     }}
                                     type="checkbox"
                                   />

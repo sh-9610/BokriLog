@@ -1,12 +1,8 @@
 import { CSRF_HEADER } from '../content/auth'
 import {
-  AUDIT_LEDGER_SCOPE,
   LIFT_RESTRICTION_COMMAND,
   OPERATOR_AUDIT_ENDPOINT,
   OPERATOR_COMMANDS_ENDPOINT,
-  OPERATOR_EXPORT_CANCEL_ENDPOINT,
-  OPERATOR_EXPORT_CONFIRM_ENDPOINT,
-  OPERATOR_EXPORT_ENDPOINT,
   OPERATOR_INQUIRIES_ENDPOINT,
   OPERATOR_INQUIRY_METRICS_ENDPOINT,
   OPERATOR_NOTICES_ENDPOINT,
@@ -26,9 +22,6 @@ import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
  * 응답 값은 메모리에만 둔다 — 브라우저 저장소·URL에 쓰지 않는다. 멱등 키는 헤더로만 나간다. 수행자를 본문에 싣지
  * 않는다(서버가 세션으로 정하고, 실으면 거절한다).
  */
-
-/** 확정의 시한. 추출은 최대 10,000행을 읽고 직렬화하므로 다른 요청보다 길다. */
-const CONFIRM_TIMEOUT_MS = 30_000
 
 /** 감사 행 하나의 allowlist 필드. */
 export interface AuditEntry {
@@ -85,16 +78,6 @@ export interface CompletedExport {
   readonly rows: readonly AuditEntry[]
 }
 
-export type PrepareOutcome =
-  | { readonly outcome: 'prepared'; readonly prepared: PreparedExport }
-  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
-
-export type ConfirmOutcome =
-  | { readonly outcome: 'completed'; readonly completed: CompletedExport }
-  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
-  /** 응답을 받지 못했거나 서버가 커밋 여부를 말하지 못했다. 자동으로 다시 실행하지 않는다. */
-  | { readonly outcome: 'unanswered' }
-
 /** 감사 조회 쿼리. 빈 값은 싣지 않는다. 식별자를 URL에 싣지 않는다 — 날짜·결과·불투명 cursor뿐이다. */
 export function auditQueryString(query: AuditQuery): string {
   const params = new URLSearchParams()
@@ -141,61 +124,106 @@ export async function fetchOperation(
   return items === null ? { status: 'failed', code: null } : { status: 'loaded', value: items }
 }
 
-/** 내보내기 준비. 아직 아무것도 실행하지 않는다 — 허가를 발급하고 무장할 뿐이다. */
-export async function prepareExport(
+// ------------------------------------------------------------------ 운영 command 공통(Epic 3 회고 AI-5)
+
+/** 준비의 결말. 준비는 아무것도 실행하지 않는다 — 서버가 허가를 발급하고 무장한 뒤 확인 문구를 준다. */
+export type CommandPrepareOutcome<P> =
+  | { readonly outcome: 'prepared'; readonly prepared: P }
+  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
+
+/** 확정의 결말. 같은 키의 재전송은 서버가 같은 결과를 재생한다. */
+export type CommandConfirmOutcome<C> =
+  | { readonly outcome: 'completed'; readonly completed: C }
+  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
+  /** 응답을 받지 못했거나 서버가 커밋 여부를 말하지 못했다. 자동으로 다시 실행하지 않는다. */
+  | { readonly outcome: 'unanswered' }
+
+/** 응답 본문 하나. 해석기가 받는 모양이다. */
+export type CommandBody = Readonly<Record<string, unknown>>
+
+/** 준비 응답의 공통 머리. 모든 command가 같은 필드를 준다. */
+export interface PreparedHead {
+  readonly operationId: string
+  readonly scope: string
+  readonly target: string
+  readonly reason: string
+  readonly confirmationPhrase: string
+}
+
+/** 준비 응답의 공통 머리. 하나라도 모양이 아니면 `null`이다(확인 문구가 비어 있어도). */
+export function preparedHeadOf(body: CommandBody): PreparedHead | null {
+  if (
+    typeof body.operationId !== 'string' ||
+    typeof body.scope !== 'string' ||
+    typeof body.target !== 'string' ||
+    typeof body.reason !== 'string' ||
+    typeof body.confirmationPhrase !== 'string' ||
+    body.confirmationPhrase === ''
+  ) {
+    return null
+  }
+  return {
+    operationId: body.operationId,
+    scope: body.scope,
+    target: body.target,
+    reason: body.reason,
+    confirmationPhrase: body.confirmationPhrase,
+  }
+}
+
+function commandEndpoint(command: string): string {
+  return `${OPERATOR_COMMANDS_ENDPOINT}/${command}`
+}
+
+/**
+ * 운영 command 준비 — 일곱 command가 이 한 벌이다. 해석기가 그 command의 응답 모양(미리보기·대상 대조)을 본다. 해석기가
+ * 받지 않은 성공 응답은 거절로 접는다(무장된 것을 화면이 단정하지 않는다).
+ */
+export async function prepareCommand<P>(
   csrfToken: string | null,
-  target: string,
-  reason: string,
+  command: string,
+  body: object,
   idempotencyKey: string,
-): Promise<PrepareOutcome> {
+  parse: (body: CommandBody) => P | null,
+): Promise<CommandPrepareOutcome<P>> {
   const result = await post(
-    OPERATOR_EXPORT_ENDPOINT,
+    commandEndpoint(command),
     csrfToken,
-    { scope: AUDIT_LEDGER_SCOPE, target, reason },
+    body,
     idempotencyKey,
     SESSION_REQUEST_TIMEOUT_MS,
   )
   if (result.ok) {
-    const body = objectOf(result.payload)
-    if (
-      body !== null &&
-      typeof body.operationId === 'string' &&
-      typeof body.scope === 'string' &&
-      typeof body.target === 'string' &&
-      typeof body.reason === 'string' &&
-      typeof body.confirmationPhrase === 'string' &&
-      body.confirmationPhrase !== '' &&
-      typeof body.policyVersion === 'string'
-    ) {
-      return {
-        outcome: 'prepared',
-        prepared: {
-          operationId: body.operationId,
-          scope: body.scope,
-          target: body.target,
-          reason: body.reason,
-          confirmationPhrase: body.confirmationPhrase,
-          policyVersion: body.policyVersion,
-        },
-      }
+    const payload = objectOf(result.payload)
+    const prepared = payload === null ? null : parse(payload)
+    if (prepared !== null) {
+      return { outcome: 'prepared', prepared }
     }
   }
   return { outcome: 'refused', status: result.status, code: result.code }
 }
 
-/** 내보내기 확정. 같은 키의 재전송은 서버가 같은 묶음을 재생한다. */
-export async function confirmExport(
+/**
+ * 운영 command 확정 — 일곱 command가 이 한 벌이다. 결과가 `COMPLETED`이고 operation이 같을 때만 해석기에 넘긴다. 해석기가
+ * 받지 않은 성공 응답은 커밋 여부를 단정하지 않는다(`unanswered`).
+ *
+ * @param timeoutMs 확정의 시한. 추출은 최대 10,000행을 읽고 직렬화하므로 다른 command보다 길다
+ */
+export async function confirmCommand<C>(
   csrfToken: string | null,
+  command: string,
   operationId: string,
   confirmation: string,
   idempotencyKey: string,
-): Promise<ConfirmOutcome> {
+  parse: (body: CommandBody, operationId: string) => C | null,
+  timeoutMs: number = SESSION_REQUEST_TIMEOUT_MS,
+): Promise<CommandConfirmOutcome<C>> {
   const result = await post(
-    OPERATOR_EXPORT_CONFIRM_ENDPOINT,
+    `${commandEndpoint(command)}/confirm`,
     csrfToken,
     { operationId, confirmation },
     idempotencyKey,
-    CONFIRM_TIMEOUT_MS,
+    timeoutMs,
   )
   if (!result.received) {
     return csrfToken === null
@@ -203,33 +231,16 @@ export async function confirmExport(
       : { outcome: 'unanswered' }
   }
   if (result.ok) {
-    const body = objectOf(result.payload)
-    const rows = body === null ? null : entriesIn(body.rows)
-    if (
-      body !== null &&
-      rows !== null &&
-      body.outcome === 'COMPLETED' &&
-      body.operationId === operationId &&
-      typeof body.target === 'string' &&
-      typeof body.rowCount === 'number' &&
-      typeof body.truncated === 'boolean'
-    ) {
-      return {
-        outcome: 'completed',
-        completed: {
-          operationId,
-          target: body.target,
-          rowCount: body.rowCount,
-          truncated: body.truncated,
-          rows,
-        },
-      }
-    }
-    return { outcome: 'unanswered' }
+    const payload = objectOf(result.payload)
+    const completed =
+      payload !== null && payload.outcome === 'COMPLETED' && payload.operationId === operationId
+        ? parse(payload, operationId)
+        : null
+    return completed === null ? { outcome: 'unanswered' } : { outcome: 'completed', completed }
   }
   /*
-   * 5xx는 모두 커밋 여부를 단정하지 않는다. 서버가 공통 본문으로 답한 500도 실행이 커밋된 **뒤**의 실패(행 재조회·
-   * 세션 회전)일 수 있다 — "바뀐 것은 없습니다"로 접으면 실행된 추출을 실패로 말하게 된다. 같은 키로 다시 확정하면
+   * 5xx는 모두 커밋 여부를 단정하지 않는다. 서버가 공통 본문으로 답한 500도 실행이 커밋된 **뒤**의 실패(행 재조회·smoke·
+   * 세션 회전)일 수 있다 — "바뀐 것은 없습니다"로 접으면 실행된 command를 실패로 말하게 된다. 같은 키로 다시 확정하면
    * 원장이 같은 결과를 재생한다.
    */
   if (result.status >= 500) {
@@ -239,8 +250,48 @@ export async function confirmExport(
 }
 
 /** 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다. */
-export async function cancelExport(csrfToken: string | null): Promise<void> {
-  await post(OPERATOR_EXPORT_CANCEL_ENDPOINT, csrfToken, null, null, SESSION_REQUEST_TIMEOUT_MS)
+export async function cancelCommand(csrfToken: string | null, command: string): Promise<void> {
+  await post(
+    `${commandEndpoint(command)}/cancel`,
+    csrfToken,
+    null,
+    null,
+    SESSION_REQUEST_TIMEOUT_MS,
+  )
+}
+
+// ------------------------------------------------------------------ 감사 내보내기(Story 3.1)
+
+/** 확정의 시한. 추출은 최대 10,000행을 읽고 직렬화하므로 다른 요청보다 길다. */
+export const EXPORT_CONFIRM_TIMEOUT_MS = 30_000
+
+/** 내보내기 준비의 응답. 정책 버전까지 있어야 한다. */
+export function preparedExportOf(body: CommandBody): PreparedExport | null {
+  const head = preparedHeadOf(body)
+  if (head === null || typeof body.policyVersion !== 'string') {
+    return null
+  }
+  return { ...head, policyVersion: body.policyVersion }
+}
+
+/** 내보내기 확정의 응답. 행 묶음이 하나라도 모양이 아니면 받지 않는다. */
+export function completedExportOf(body: CommandBody, operationId: string): CompletedExport | null {
+  const rows = entriesIn(body.rows)
+  if (
+    rows === null ||
+    typeof body.target !== 'string' ||
+    typeof body.rowCount !== 'number' ||
+    typeof body.truncated !== 'boolean'
+  ) {
+    return null
+  }
+  return {
+    operationId,
+    target: body.target,
+    rowCount: body.rowCount,
+    truncated: body.truncated,
+    rows,
+  }
 }
 
 // ------------------------------------------------------------------ 제한(Story 3.2)
@@ -297,16 +348,6 @@ export interface ActiveRestriction {
   readonly reinstated: boolean
 }
 
-export type RestrictionPrepareOutcome =
-  | { readonly outcome: 'prepared'; readonly prepared: PreparedRestriction }
-  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
-
-export type RestrictionConfirmOutcome =
-  | { readonly outcome: 'completed'; readonly completed: CompletedRestriction }
-  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
-  /** 응답을 받지 못했거나 서버가 커밋 여부를 말하지 못했다. 자동으로 다시 실행하지 않는다. */
-  | { readonly outcome: 'unanswered' }
-
 export async function fetchRestrictions(
   signal: AbortSignal,
 ): Promise<ReadResult<readonly ActiveRestriction[]>> {
@@ -329,116 +370,39 @@ export async function fetchRestrictions(
   return { status: 'loaded', value: restrictions }
 }
 
-/** 제한 준비. 아직 아무것도 막지 않는다 — 허가를 발급하고 무장한 뒤 영향 미리보기와 확인 문구를 준다. */
-export async function prepareRestriction(
-  csrfToken: string | null,
+/** 제한 준비의 응답. 영향 미리보기가 있고 command가 요청한 것과 같아야 한다. */
+export function preparedRestrictionOf(
+  body: CommandBody,
   command: RestrictionCommand,
-  scope: string,
-  target: string,
-  reason: string,
-  idempotencyKey: string,
-): Promise<RestrictionPrepareOutcome> {
-  const result = await post(
-    `${OPERATOR_COMMANDS_ENDPOINT}/${command}`,
-    csrfToken,
-    { scope, target, reason },
-    idempotencyKey,
-    SESSION_REQUEST_TIMEOUT_MS,
-  )
-  if (result.ok) {
-    const body = objectOf(result.payload)
-    const impact = body === null ? null : impactOf(body.impact)
-    if (
-      body !== null &&
-      impact !== null &&
-      body.command === command &&
-      typeof body.operationId === 'string' &&
-      typeof body.scope === 'string' &&
-      typeof body.target === 'string' &&
-      typeof body.reason === 'string' &&
-      typeof body.confirmationPhrase === 'string' &&
-      body.confirmationPhrase !== ''
-    ) {
-      return {
-        outcome: 'prepared',
-        prepared: {
-          operationId: body.operationId,
-          command,
-          scope: body.scope,
-          target: body.target,
-          reason: body.reason,
-          confirmationPhrase: body.confirmationPhrase,
-          impact,
-        },
-      }
-    }
+): PreparedRestriction | null {
+  const head = preparedHeadOf(body)
+  const impact = impactOf(body.impact)
+  if (head === null || impact === null || body.command !== command) {
+    return null
   }
-  return { outcome: 'refused', status: result.status, code: result.code }
+  return { ...head, command, impact }
 }
 
-/** 제한 확정. 같은 키의 재전송은 서버가 같은 결과를 재생한다. */
-export async function confirmRestriction(
-  csrfToken: string | null,
-  command: RestrictionCommand,
+/** 제한 확정의 응답. */
+export function completedRestrictionOf(
+  body: CommandBody,
   operationId: string,
-  confirmation: string,
-  idempotencyKey: string,
-): Promise<RestrictionConfirmOutcome> {
-  const result = await post(
-    `${OPERATOR_COMMANDS_ENDPOINT}/${command}/confirm`,
-    csrfToken,
-    { operationId, confirmation },
-    idempotencyKey,
-    SESSION_REQUEST_TIMEOUT_MS,
-  )
-  if (!result.received) {
-    return csrfToken === null
-      ? { outcome: 'refused', status: 0, code: null }
-      : { outcome: 'unanswered' }
+): CompletedRestriction | null {
+  if (
+    typeof body.restrictionId !== 'string' ||
+    typeof body.feature !== 'string' ||
+    typeof body.scope !== 'string' ||
+    !isInstant(body.effectiveFrom)
+  ) {
+    return null
   }
-  if (result.ok) {
-    const body = objectOf(result.payload)
-    if (
-      body !== null &&
-      body.outcome === 'COMPLETED' &&
-      body.operationId === operationId &&
-      typeof body.restrictionId === 'string' &&
-      typeof body.feature === 'string' &&
-      typeof body.scope === 'string' &&
-      isInstant(body.effectiveFrom)
-    ) {
-      return {
-        outcome: 'completed',
-        completed: {
-          operationId,
-          restrictionId: body.restrictionId,
-          feature: body.feature,
-          scope: body.scope,
-          effectiveFrom: body.effectiveFrom,
-        },
-      }
-    }
-    return { outcome: 'unanswered' }
+  return {
+    operationId,
+    restrictionId: body.restrictionId,
+    feature: body.feature,
+    scope: body.scope,
+    effectiveFrom: body.effectiveFrom,
   }
-  // 5xx는 커밋 여부를 단정하지 않는다(내보내기와 같은 근거).
-  if (result.status >= 500) {
-    return { outcome: 'unanswered' }
-  }
-  return { outcome: 'refused', status: result.status, code: result.code }
-}
-
-/** 제한 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다. */
-export async function cancelRestriction(
-  csrfToken: string | null,
-  command: RestrictionCommand,
-): Promise<void> {
-  await post(
-    `${OPERATOR_COMMANDS_ENDPOINT}/${command}/cancel`,
-    csrfToken,
-    null,
-    null,
-    SESSION_REQUEST_TIMEOUT_MS,
-  )
 }
 
 // ------------------------------------------------------------------ 복구(Story 3.4)
@@ -499,124 +463,59 @@ export interface RecoveryInput {
   readonly conditions: readonly RecoveryCondition[]
 }
 
-export type RecoveryPrepareOutcome =
-  | { readonly outcome: 'prepared'; readonly prepared: PreparedRecovery }
-  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
-
-export type RecoveryConfirmOutcome =
-  | { readonly outcome: 'completed'; readonly completed: CompletedRecovery }
-  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
-  /** 응답을 받지 못했거나 서버가 커밋 여부를 말하지 못했다. 자동으로 다시 실행하지 않는다. */
-  | { readonly outcome: 'unanswered' }
-
-const RECOVERY_ENDPOINT = `${OPERATOR_COMMANDS_ENDPOINT}/${LIFT_RESTRICTION_COMMAND}`
-
-/** 복구 준비. 아직 아무것도 열지 않는다 — 허가를 발급하고 무장한 뒤 미리보기와 확인 문구를 준다. */
-export async function prepareRecovery(
-  csrfToken: string | null,
-  input: RecoveryInput,
-  idempotencyKey: string,
-): Promise<RecoveryPrepareOutcome> {
-  const result = await post(
-    RECOVERY_ENDPOINT,
-    csrfToken,
-    {
-      target: input.restrictionId,
-      reason: input.reason,
-      verification: input.verification,
-      evidenceRef: input.evidenceRef,
-      deployVersion: input.deployVersion,
-      conditions: input.conditions,
-    },
-    idempotencyKey,
-    SESSION_REQUEST_TIMEOUT_MS,
-  )
-  if (result.ok) {
-    const body = objectOf(result.payload)
-    const impact = body === null ? null : recoveryImpactOf(body.impact)
-    if (
-      body !== null &&
-      impact !== null &&
-      body.command === LIFT_RESTRICTION_COMMAND &&
-      typeof body.operationId === 'string' &&
-      typeof body.scope === 'string' &&
-      body.target === input.restrictionId &&
-      typeof body.reason === 'string' &&
-      typeof body.confirmationPhrase === 'string' &&
-      body.confirmationPhrase !== ''
-    ) {
-      return {
-        outcome: 'prepared',
-        prepared: {
-          operationId: body.operationId,
-          scope: body.scope,
-          target: body.target,
-          reason: body.reason,
-          confirmationPhrase: body.confirmationPhrase,
-          impact,
-        },
-      }
-    }
+/** 복구 준비의 본문. 원인은 사유 자리다. */
+export function recoveryBodyOf(input: RecoveryInput): object {
+  return {
+    target: input.restrictionId,
+    reason: input.reason,
+    verification: input.verification,
+    evidenceRef: input.evidenceRef,
+    deployVersion: input.deployVersion,
+    conditions: input.conditions,
   }
-  return { outcome: 'refused', status: result.status, code: result.code }
 }
 
-/** 복구 확정. 같은 키의 재전송은 서버가 같은 결과와 smoke 결말을 재생한다. */
-export async function confirmRecovery(
-  csrfToken: string | null,
+/** 복구 준비의 응답. 미리보기가 있고 대상이 고른 제한이어야 한다. */
+export function preparedRecoveryOf(
+  body: CommandBody,
+  restrictionId: string,
+): PreparedRecovery | null {
+  const head = preparedHeadOf(body)
+  const impact = recoveryImpactOf(body.impact)
+  if (
+    head === null ||
+    impact === null ||
+    body.command !== LIFT_RESTRICTION_COMMAND ||
+    head.target !== restrictionId
+  ) {
+    return null
+  }
+  return { ...head, impact }
+}
+
+/** 복구 확정의 응답. 커밋 뒤 smoke 결말이 있어야 한다. */
+export function completedRecoveryOf(
+  body: CommandBody,
   operationId: string,
-  confirmation: string,
-  idempotencyKey: string,
-): Promise<RecoveryConfirmOutcome> {
-  const result = await post(
-    `${RECOVERY_ENDPOINT}/confirm`,
-    csrfToken,
-    { operationId, confirmation },
-    idempotencyKey,
-    SESSION_REQUEST_TIMEOUT_MS,
-  )
-  if (!result.received) {
-    return csrfToken === null
-      ? { outcome: 'refused', status: 0, code: null }
-      : { outcome: 'unanswered' }
+): CompletedRecovery | null {
+  const smoke = smokeOf(body.smoke)
+  if (
+    smoke === null ||
+    typeof body.restrictionId !== 'string' ||
+    typeof body.feature !== 'string' ||
+    typeof body.scope !== 'string' ||
+    !isInstant(body.liftedAt)
+  ) {
+    return null
   }
-  if (result.ok) {
-    const body = objectOf(result.payload)
-    const smoke = body === null ? null : smokeOf(body.smoke)
-    if (
-      body !== null &&
-      smoke !== null &&
-      body.outcome === 'COMPLETED' &&
-      body.operationId === operationId &&
-      typeof body.restrictionId === 'string' &&
-      typeof body.feature === 'string' &&
-      typeof body.scope === 'string' &&
-      isInstant(body.liftedAt)
-    ) {
-      return {
-        outcome: 'completed',
-        completed: {
-          operationId,
-          restrictionId: body.restrictionId,
-          feature: body.feature,
-          scope: body.scope,
-          liftedAt: body.liftedAt,
-          smoke,
-        },
-      }
-    }
-    return { outcome: 'unanswered' }
+  return {
+    operationId,
+    restrictionId: body.restrictionId,
+    feature: body.feature,
+    scope: body.scope,
+    liftedAt: body.liftedAt,
+    smoke,
   }
-  // 5xx는 커밋 여부를 단정하지 않는다(내보내기와 같은 근거).
-  if (result.status >= 500) {
-    return { outcome: 'unanswered' }
-  }
-  return { outcome: 'refused', status: result.status, code: result.code }
-}
-
-/** 복구 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다. */
-export async function cancelRecovery(csrfToken: string | null): Promise<void> {
-  await post(`${RECOVERY_ENDPOINT}/cancel`, csrfToken, null, null, SESSION_REQUEST_TIMEOUT_MS)
 }
 
 // ------------------------------------------------------------------ 서비스 공지(Story 3.5)
@@ -632,6 +531,11 @@ export interface NoticeVersionEntry {
   readonly nextUpdateAt: string | null
   readonly recoveredAt: string | null
   readonly covers: readonly string[]
+  /**
+   * 덮는 제한의 되돌림 계보 가운데 지금 열린 제한(Epic 3 회고 AI-1). 사건의 최신 버전에만 오고 그 밖은 `null`이다. 해제
+   * smoke가 같은 범위를 새 제한으로 되돌렸으면(닫힌 중간 행을 지나도) 그 새 제한이다.
+   */
+  readonly liveCovers: readonly string[] | null
   readonly operationId: string
   readonly createdAt: string
 }
@@ -688,18 +592,6 @@ export interface CompletedNotice {
   readonly publishedAt: string
 }
 
-export type NoticePrepareOutcome =
-  | { readonly outcome: 'prepared'; readonly prepared: PreparedNotice }
-  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
-
-export type NoticeConfirmOutcome =
-  | { readonly outcome: 'completed'; readonly completed: CompletedNotice }
-  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
-  /** 응답을 받지 못했거나 서버가 커밋 여부를 말하지 못했다. 자동으로 다시 실행하지 않는다. */
-  | { readonly outcome: 'unanswered' }
-
-const NOTICE_ENDPOINT = `${OPERATOR_COMMANDS_ENDPOINT}/${PUBLISH_NOTICE_COMMAND}`
-
 /** 공지 사건 목록. 하나라도 모양이 어긋나면 목록 전체를 믿지 않는다. */
 export async function fetchNoticeIncidents(
   signal: AbortSignal,
@@ -726,108 +618,49 @@ export async function fetchNoticeIncidents(
   }
 }
 
-/** 공지 발행 준비. 아직 아무것도 쓰지 않는다 — 허가를 발급하고 무장한 뒤 미리보기와 확인 문구를 준다. */
-export async function prepareNotice(
-  csrfToken: string | null,
-  input: NoticeInput,
-  idempotencyKey: string,
-): Promise<NoticePrepareOutcome> {
-  const result = await post(
-    NOTICE_ENDPOINT,
-    csrfToken,
-    {
-      incident: input.incident,
-      status: input.status,
-      covers: input.covers,
-      message: input.message,
-      ...(input.nextUpdateAt === null ? {} : { nextUpdateAt: input.nextUpdateAt }),
-    },
-    idempotencyKey,
-    SESSION_REQUEST_TIMEOUT_MS,
-  )
-  if (result.ok) {
-    const body = objectOf(result.payload)
-    const impact = body === null ? null : noticeImpactOf(body.impact)
-    if (
-      body !== null &&
-      impact !== null &&
-      body.command === PUBLISH_NOTICE_COMMAND &&
-      typeof body.operationId === 'string' &&
-      typeof body.scope === 'string' &&
-      body.target === input.incident &&
-      typeof body.reason === 'string' &&
-      typeof body.confirmationPhrase === 'string' &&
-      body.confirmationPhrase !== ''
-    ) {
-      return {
-        outcome: 'prepared',
-        prepared: {
-          operationId: body.operationId,
-          scope: body.scope,
-          target: body.target,
-          reason: body.reason,
-          confirmationPhrase: body.confirmationPhrase,
-          impact,
-        },
-      }
-    }
+/** 공지 발행 준비의 본문. 복구 공지는 다음 안내 시각을 싣지 않는다. */
+export function noticeBodyOf(input: NoticeInput): object {
+  return {
+    incident: input.incident,
+    status: input.status,
+    covers: input.covers,
+    message: input.message,
+    ...(input.nextUpdateAt === null ? {} : { nextUpdateAt: input.nextUpdateAt }),
   }
-  return { outcome: 'refused', status: result.status, code: result.code }
 }
 
-/** 공지 발행 확정. 같은 키의 재전송은 서버가 같은 결과를 재생한다. */
-export async function confirmNotice(
-  csrfToken: string | null,
-  operationId: string,
-  confirmation: string,
-  idempotencyKey: string,
-): Promise<NoticeConfirmOutcome> {
-  const result = await post(
-    `${NOTICE_ENDPOINT}/confirm`,
-    csrfToken,
-    { operationId, confirmation },
-    idempotencyKey,
-    SESSION_REQUEST_TIMEOUT_MS,
-  )
-  if (!result.received) {
-    return csrfToken === null
-      ? { outcome: 'refused', status: 0, code: null }
-      : { outcome: 'unanswered' }
+/** 공지 발행 준비의 응답. 미리보기가 있고 사건이 고른 것이어야 한다. */
+export function preparedNoticeOf(body: CommandBody, incident: string): PreparedNotice | null {
+  const head = preparedHeadOf(body)
+  const impact = noticeImpactOf(body.impact)
+  if (
+    head === null ||
+    impact === null ||
+    body.command !== PUBLISH_NOTICE_COMMAND ||
+    head.target !== incident
+  ) {
+    return null
   }
-  if (result.ok) {
-    const body = objectOf(result.payload)
-    if (
-      body !== null &&
-      body.outcome === 'COMPLETED' &&
-      body.operationId === operationId &&
-      typeof body.incidentId === 'string' &&
-      typeof body.version === 'number' &&
-      typeof body.status === 'string' &&
-      isInstant(body.publishedAt)
-    ) {
-      return {
-        outcome: 'completed',
-        completed: {
-          operationId,
-          incidentId: body.incidentId,
-          version: body.version,
-          status: body.status,
-          publishedAt: body.publishedAt,
-        },
-      }
-    }
-    return { outcome: 'unanswered' }
-  }
-  // 5xx는 커밋 여부를 단정하지 않는다(내보내기와 같은 근거).
-  if (result.status >= 500) {
-    return { outcome: 'unanswered' }
-  }
-  return { outcome: 'refused', status: result.status, code: result.code }
+  return { ...head, impact }
 }
 
-/** 공지 발행 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다. */
-export async function cancelNotice(csrfToken: string | null): Promise<void> {
-  await post(`${NOTICE_ENDPOINT}/cancel`, csrfToken, null, null, SESSION_REQUEST_TIMEOUT_MS)
+/** 공지 발행 확정의 응답. */
+export function completedNoticeOf(body: CommandBody, operationId: string): CompletedNotice | null {
+  if (
+    typeof body.incidentId !== 'string' ||
+    typeof body.version !== 'number' ||
+    typeof body.status !== 'string' ||
+    !isInstant(body.publishedAt)
+  ) {
+    return null
+  }
+  return {
+    operationId,
+    incidentId: body.incidentId,
+    version: body.version,
+    status: body.status,
+    publishedAt: body.publishedAt,
+  }
 }
 
 // ------------------------------------------------------------------ 문의 처리(Story 3.6)
@@ -907,18 +740,6 @@ export interface CompletedInquiryUpdate {
   readonly status: string
   readonly transitionedAt: string
 }
-
-export type InquiryPrepareOutcome =
-  | { readonly outcome: 'prepared'; readonly prepared: PreparedInquiryUpdate }
-  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
-
-export type InquiryConfirmOutcome =
-  | { readonly outcome: 'completed'; readonly completed: CompletedInquiryUpdate }
-  | { readonly outcome: 'refused'; readonly status: number; readonly code: string | null }
-  /** 응답을 받지 못했거나 서버가 커밋 여부를 말하지 못했다. 자동으로 다시 실행하지 않는다. */
-  | { readonly outcome: 'unanswered' }
-
-const INQUIRY_ENDPOINT = `${OPERATOR_COMMANDS_ENDPOINT}/${UPDATE_INQUIRY_COMMAND}`
 
 const INQUIRY_REFERENCE = /^Q-[A-Z2-7]{10}$/
 
@@ -1037,99 +858,43 @@ export async function fetchInquiryMetrics(
   }
 }
 
-/** 문의 처리 준비. 아직 아무것도 쓰지 않는다 — 허가를 발급하고 무장한 뒤 미리보기와 확인 문구를 준다. */
-export async function prepareInquiryUpdate(
-  csrfToken: string | null,
-  input: InquiryUpdateInput,
-  idempotencyKey: string,
-): Promise<InquiryPrepareOutcome> {
-  const result = await post(
-    INQUIRY_ENDPOINT,
-    csrfToken,
-    {
-      reference: input.reference,
-      status: input.status,
-      reason: input.reason,
-      ...(input.answer === null ? {} : { answer: input.answer }),
-    },
-    idempotencyKey,
-    SESSION_REQUEST_TIMEOUT_MS,
-  )
-  if (result.ok) {
-    const body = objectOf(result.payload)
-    const impact = body === null ? null : inquiryImpactOf(body.impact)
-    if (
-      body !== null &&
-      impact !== null &&
-      body.command === UPDATE_INQUIRY_COMMAND &&
-      typeof body.operationId === 'string' &&
-      typeof body.scope === 'string' &&
-      body.target === input.reference &&
-      typeof body.reason === 'string' &&
-      typeof body.confirmationPhrase === 'string' &&
-      body.confirmationPhrase !== ''
-    ) {
-      return {
-        outcome: 'prepared',
-        prepared: {
-          operationId: body.operationId,
-          scope: body.scope,
-          target: body.target,
-          reason: body.reason,
-          confirmationPhrase: body.confirmationPhrase,
-          impact,
-        },
-      }
-    }
+/** 문의 처리 준비의 본문. 답변은 답변 완료 전이에만 싣는다. */
+export function inquiryUpdateBodyOf(input: InquiryUpdateInput): object {
+  return {
+    reference: input.reference,
+    status: input.status,
+    reason: input.reason,
+    ...(input.answer === null ? {} : { answer: input.answer }),
   }
-  return { outcome: 'refused', status: result.status, code: result.code }
 }
 
-/** 문의 처리 확정. 같은 키의 재전송은 서버가 같은 결과를 재생한다. */
-export async function confirmInquiryUpdate(
-  csrfToken: string | null,
+/** 문의 처리 준비의 응답. 미리보기가 있고 대상이 고른 문의여야 한다. */
+export function preparedInquiryUpdateOf(
+  body: CommandBody,
+  reference: string,
+): PreparedInquiryUpdate | null {
+  const head = preparedHeadOf(body)
+  const impact = inquiryImpactOf(body.impact)
+  if (
+    head === null ||
+    impact === null ||
+    body.command !== UPDATE_INQUIRY_COMMAND ||
+    head.target !== reference
+  ) {
+    return null
+  }
+  return { ...head, impact }
+}
+
+/** 문의 처리 확정의 응답. reference·답변 원문은 오지 않는다. */
+export function completedInquiryUpdateOf(
+  body: CommandBody,
   operationId: string,
-  confirmation: string,
-  idempotencyKey: string,
-): Promise<InquiryConfirmOutcome> {
-  const result = await post(
-    `${INQUIRY_ENDPOINT}/confirm`,
-    csrfToken,
-    { operationId, confirmation },
-    idempotencyKey,
-    SESSION_REQUEST_TIMEOUT_MS,
-  )
-  if (!result.received) {
-    return csrfToken === null
-      ? { outcome: 'refused', status: 0, code: null }
-      : { outcome: 'unanswered' }
+): CompletedInquiryUpdate | null {
+  if (typeof body.status !== 'string' || !isInstant(body.transitionedAt)) {
+    return null
   }
-  if (result.ok) {
-    const body = objectOf(result.payload)
-    if (
-      body !== null &&
-      body.outcome === 'COMPLETED' &&
-      body.operationId === operationId &&
-      typeof body.status === 'string' &&
-      isInstant(body.transitionedAt)
-    ) {
-      return {
-        outcome: 'completed',
-        completed: { operationId, status: body.status, transitionedAt: body.transitionedAt },
-      }
-    }
-    return { outcome: 'unanswered' }
-  }
-  // 5xx는 커밋 여부를 단정하지 않는다(내보내기와 같은 근거).
-  if (result.status >= 500) {
-    return { outcome: 'unanswered' }
-  }
-  return { outcome: 'refused', status: result.status, code: result.code }
-}
-
-/** 문의 처리 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다. */
-export async function cancelInquiryUpdate(csrfToken: string | null): Promise<void> {
-  await post(`${INQUIRY_ENDPOINT}/cancel`, csrfToken, null, null, SESSION_REQUEST_TIMEOUT_MS)
+  return { operationId, status: body.status, transitionedAt: body.transitionedAt }
 }
 
 function nullableInstant(value: unknown): value is string | null | undefined {
@@ -1258,7 +1023,9 @@ function incidentOf(value: unknown): NoticeIncident | null {
     const previous = version.previousVersion
     const next = version.nextUpdateAt
     const recovered = version.recoveredAt
+    const live = version.liveCovers
     if (
+      (live !== undefined && live !== null && !stringArray(live)) ||
       (previous !== undefined && previous !== null && typeof previous !== 'number') ||
       (next !== undefined && next !== null && !isInstant(next)) ||
       (recovered !== undefined && recovered !== null && !isInstant(recovered))
@@ -1275,6 +1042,7 @@ function incidentOf(value: unknown): NoticeIncident | null {
       nextUpdateAt: typeof next === 'string' ? next : null,
       recoveredAt: typeof recovered === 'string' ? recovered : null,
       covers: version.covers,
+      liveCovers: stringArray(live) ? live : null,
       operationId: version.operationId,
       createdAt: version.createdAt,
     })
@@ -1396,7 +1164,7 @@ function stringArray(value: unknown): value is readonly string[] {
 
 // ------------------------------------------------------------------ 전송
 
-type Body = Readonly<Record<string, unknown>>
+type Body = CommandBody
 
 async function read(path: string, signal: AbortSignal): Promise<ReadResult<Body>> {
   const controller = new AbortController()

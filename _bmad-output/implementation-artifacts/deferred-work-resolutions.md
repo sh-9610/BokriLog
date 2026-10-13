@@ -2,7 +2,7 @@
 title: 'Deferred Work 해소 원장'
 status: living
 created: '2026-09-02'
-updated: '2026-10-07'
+updated: '2026-10-13'
 applies_to: '_bmad-output/implementation-artifacts/deferred-work.md'
 decision_baseline: 'ERD-1.0.0'
 ---
@@ -17,10 +17,12 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 16 |
+| 해소 | 18 |
 | 부분 해소 | 4 |
 | 미해소 | 31 |
-| 미판정 | 57 |
+| 미판정 | 87 |
+
+**2026-10-13 갱신(운영 command 공통화 chore, `spec-operator-command-commons.md`).** 표를 `deferred-work.md`의 **140건** 기준으로 맞췄다. 2026-10-07 뒤 Epic 3 스토리(3.1~3.10)가 append한 항목 109~140(32건)은 판정이 없어 미판정으로 센다. 이 chore가 그 가운데 **118**(운영 command 무장의 직렬화 버전이 스토리마다 오르는 패턴)과 **119**(운영자 화면 command 상태 기계 사본)을 해소했다 — 아래 두 절이 판정을 갖는다. 그래서 해소 16→18, 미판정 57+32−2=87이다. 나머지 판정 라운드는 Epic 3 회고 AI-11의 몫이다.
 
 **2026-10-07 갱신(프런트엔드 공통 부품 chore done 전환).** `spec-frontend-dialog-commons.md`(PR #73)가 `deferred-work.md`에 항목 **106**(계획 중도 종료 성공 문구의 재인증 안내 부재)·**107**(`UnlinkDialog`·`PlanEndDialog` 시험의 메커니즘 중복)·**108**(Bybit 연결 성공 → 해제 준비 403의 주입 origin e2e 부재)을 append했다. 판정은 아직 없다. 그래서 표를 **108건** 기준으로 맞추고 미판정을 54→57로 늘렸다. 같은 PR이 항목 104(D-4 프런트엔드 묶음)와 105(재인증 게이트 안내)를 실제로 구현했지만, 두 항목의 판정(해소)은 이 원장의 판정 라운드에서 검사와 함께 적는다 — 지금은 미판정으로 둔다.
 
@@ -426,3 +428,13 @@ Docker 없는 정적 리터럴 비교 시험은 이 저장소에 전례가 없�
 interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 풀리게 했다(`frontend/src/components/PlanPublicationSection.tsx:150`). 같은 파일군의 세 폴링도 같게 옮겼다(`frontend/src/components/InitialInputsCollection.tsx:364`·`:758`·`:768`). 시험의 대기와 기대값은 바꾸지 않았고 그 의존을 주석으로 적었다(`frontend/src/components/InitialInputsCollection.test.tsx:1081-1086`).
 
 확인은 항목 50과 같은 두 겹이다. 결정적 가드는 `frontend/src/components/InitialInputsCollection.test.tsx:1130`이다 — `계산·발행 중`이 처음 보이는 순간 interval이 이미 걸려 있는지를 가짜 `setInterval`의 수로 단정한다. 이 effect 하나를 `useEffect`로 되돌리면 그 파일 10회 중 10회 이 가드가 실패했고 복원하면 10회 중 10회 통과했으며, CI `frontend-quality`가 PR마다 돌린다. 로컬 부하 반복은 항목 50의 전체 Vitest 실행과 같고, 이 파일만 `stress-test.sh --runs 3`으로 돈 실행도 통과했다.
+
+### 118. 운영 command 무장(`OperatorCommandFlow.Armed`)의 직렬화 버전이 스토리마다 오른다
+
+**해소(2026-10-13, `spec-operator-command-commons.md`).** 원인은 command마다 `Armed`에 nullable 칸(`restriction`·`lift`·`notice`·`inquiry`)을 하나씩 더하던 패턴이었다. 이제 `Armed`는 그 command의 검증된 요청 하나(`Serializable payload`)만 들고, 모양은 `operations`의 command 전략만 안다 — 새 command가 `Armed`의 칸을 늘리거나 그 `serialVersionUID`를 올리지 않는다. 이 전환에서 한 번 5→6으로 올렸고, 배포 전에 무장한 세션은 지금처럼 재준비를 요구받는다(운영 서비스 전이라 호환 역직렬화를 두지 않는다 — SPEC Boundaries의 결정). 배포 전 무장은 `OperatorArmingVersionTest`가 실제 JDBC 세션 저장소로 재현한다(옛 모양·없는 클래스·깨진 바이트 → 무장 없는 확정과 같은 403, 그 속성만 지움). 확인(리뷰 patch 뒤 최종 실행, 2026-10-13): `backend/gradlew --project-dir backend build` 1465건 통과(`OperatorCommandTest`·`OperatorRecoveryTest`·`ServiceNoticeTest`·`SupportInquiryTest` 기존 기대값 무변경), `verify-same-origin.sh` 1051/1051, 주입 origin Playwright 68건 통과.
+
+**잔여:** blue/green rollback 창에서 옛·새 인스턴스가 서로의 무장을 읽지 못하는 것은 이 한 번의 전환에서 그대로다. 각 payload record(예: 공지 발행의 `Notice`)는 자기 `serialVersionUID`를 가지므로, 그 command의 요청 모양이 바뀌면 그 command의 무장만 재준비를 요구한다.
+
+### 119. 운영자 화면의 운영 command 상태 기계가 사본으로 불어났다
+
+**해소(2026-10-13, `spec-operator-command-commons.md`).** 상태 기계(단계 `idle·preparing·armed·confirming·completed·refused·cancelled`, 멱등 키 생성·재생성, 이중 제출 방지, 응답 없는 확정의 uncertain, 문구 불일치의 무장 유지, 목록 콜백, 취소)는 `frontend/src/session/useOperatorCommand.ts` 하나이고, 다섯 훅(`useOperator{Export,Restriction,Recovery,Notice,Inquiry}`)은 command 설정(이름·본문·멱등 입력·해석기·목록을 바꾸는 code)만 넘긴다. `operatorApi.ts`의 준비·확정·취소 다섯 벌은 command 이름을 받는 한 벌(`prepareCommand`·`confirmCommand`·`cancelCommand`)과 command별 응답 해석기가 됐고, 목록 sequence·중단은 `session/useSequencedRead.ts` 하나다. 백엔드의 같은 사본(확정 prologue 다섯·`instanceof` 분기·컨트롤러 switch)도 command 전략과 등록표로 묶었다(Epic 3 회고 D-1·AI-5). 확인(리뷰 patch 뒤 최종 실행, 2026-10-13): 프런트엔드 typecheck·lint·lint:css·format:check·build·Vitest 1378건(`useOperatorCommand.test.tsx` 12건·`useSequencedRead.test.tsx`·`useOperatorInquiry.test.tsx` 포함, 기존 `OperatorScreen`·`OperatorNotice`·`OperatorInquiry` 시험 기대값 무변경)·Playwright 40건, 주입 origin Playwright 68건(`e2e/operator.spec.ts` 포함)·`verify-same-origin.sh` 1051/1051·`test-ci-scripts.sh` 239/239 통과.

@@ -364,4 +364,141 @@ describe('OperatorScreen 서비스 공지', () => {
       expect(text).not.toMatch(/실시간|정확|보장|축하|손실/)
     }
   })
+
+  /*
+   * 공지는 되돌림 계보를 덮는다(Epic 3 회고 AI-1). 해제 smoke가 어긋나 같은 범위가 R1 → R2(닫힘) → R3로 되돌아가면 R1을
+   * 덮던 사건의 기본 덮는 제한은 서버가 계보에서 계산한 지금 열린 R3(`liveCovers`)이고, 복구 공지는 R3를 아직 효력 중인
+   * 제한으로 센다. 화면은 닫힌 중간 행을 모르므로 직접 따라가지 않는다.
+   */
+  it('범위 변경의 덮는 제한 기본값은 닫힌 중간 행을 지난 되돌림 계보의 지금 열린 제한이다', async () => {
+    stubOperatorNotices(() => list(true, [liveIncident()]))
+    const bodies: unknown[] = []
+    stubOperatorRestrictionCommand(PUBLISH_NOTICE_COMMAND, 'prepare', (init) => {
+      bodies.push(JSON.parse(init?.body as string))
+      return Promise.resolve(
+        json({ code: 'NOTICE_VERSION_CONFLICT', message: '충돌', correlationId: 'c' }, 409),
+      )
+    })
+    const section = await openWith([reinstatedRestriction()])
+    fireEvent.change(await within(section).findByLabelText(copy.incidentLabel), {
+      target: { value: INCIDENT },
+    })
+    expect(within(section).getByRole('checkbox', { name: /광고 · 전역/ })).toBeChecked()
+    fireEvent.change(within(section).getByLabelText(copy.messageLabel), {
+      target: { value: '표시 영향도 확인' },
+    })
+    fireEvent.change(within(section).getByLabelText(copy.nextUpdateLabel), {
+      target: { value: '2026-10-11T10:00' },
+    })
+    fireEvent.click(startButton())
+    await waitFor(() => {
+      expect(bodies).toHaveLength(1)
+    })
+    expect(bodies[0]).toMatchObject({ status: 'SCOPE_CHANGED', covers: [REINSTATED_RESTRICTION] })
+  })
+
+  it('복구 공지는 되돌림으로 다시 열린 제한을 아직 효력 중인 제한으로 세고 막는다', async () => {
+    stubOperatorNotices(() => list(true, [liveIncident()]))
+    const section = await openWith([reinstatedRestriction()])
+    fireEvent.change(await within(section).findByLabelText(copy.incidentLabel), {
+      target: { value: INCIDENT },
+    })
+    fireEvent.change(within(section).getByLabelText(copy.statusLabel), {
+      target: { value: 'RECOVERED' },
+    })
+    expect(within(section).getByText(copy.recoveredStillOpen(1))).toBeInTheDocument()
+    fireEvent.change(within(section).getByLabelText(copy.messageLabel), {
+      target: { value: '원인 수정 배포 완료' },
+    })
+    expect(startButton()).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('사건 목록 뒤에 복구된 제한은 liveCovers에 남아 있어도 아직 효력 중으로 세지 않는다', async () => {
+    // 사건 목록은 복구 전에 읽혔고(liveCovers = [R3]), 활성 목록은 복구 뒤에 다시 읽혀 R3가 없다.
+    stubOperatorNotices(() => list(true, [liveIncident()]))
+    const section = await open()
+    fireEvent.change(await within(section).findByLabelText(copy.incidentLabel), {
+      target: { value: INCIDENT },
+    })
+    fireEvent.change(within(section).getByLabelText(copy.statusLabel), {
+      target: { value: 'RECOVERED' },
+    })
+    expect(within(section).queryByText(copy.recoveredStillOpen(1))).not.toBeInTheDocument()
+  })
+
+  it('사건을 고른 뒤 활성 목록이 다시 읽히면 고치지 않은 덮는 제한 기본값을 다시 계산한다', async () => {
+    stubOperatorNotices(() => list(true, [liveIncident()]))
+    // 첫 목록에는 R3가 아직 없다. 다시 읽으면 생긴다.
+    const syncR3 = { ...reinstatedRestriction(), feature: 'SYNC' }
+    let reads = 0
+    stubSessionRequest(() =>
+      Promise.resolve(
+        json({ authenticated: true, destination: 'operator', csrfToken: CSRF_TOKEN }),
+      ),
+    )
+    stubOperatorAudit(() => Promise.resolve(json({ items: [], nextCursor: null })))
+    stubOperatorRestrictions(() => {
+      reads += 1
+      return Promise.resolve(
+        json({ items: reads === 1 ? [restriction()] : [restriction(), syncR3] }),
+      )
+    })
+    render(<OperatorScreen />)
+    await screen.findByRole('heading', { level: 2, name: copy.heading })
+    const section = screen.getByRole('region', { name: copy.heading })
+    fireEvent.change(await within(section).findByLabelText(copy.incidentLabel), {
+      target: { value: INCIDENT },
+    })
+    expect(within(section).getByRole('checkbox', { name: /광고 · 전역/ })).not.toBeChecked()
+
+    fireEvent.click(screen.getByRole('button', { name: operatorContent.restriction.active.reload }))
+    expect(await within(section).findByRole('checkbox', { name: /동기화 · 전역/ })).toBeChecked()
+    expect(within(section).getByRole('checkbox', { name: /광고 · 전역/ })).not.toBeChecked()
+
+    // 운영자가 고친 뒤에는 다시 읽어도 고친 값이 남는다.
+    fireEvent.click(within(section).getByRole('checkbox', { name: /광고 · 전역/ }))
+    fireEvent.click(screen.getByRole('button', { name: operatorContent.restriction.active.reload }))
+    await waitFor(() => {
+      expect(reads).toBe(3)
+    })
+    expect(within(section).getByRole('checkbox', { name: /광고 · 전역/ })).toBeChecked()
+    expect(within(section).getByRole('checkbox', { name: /동기화 · 전역/ })).toBeChecked()
+  })
 })
+
+/** 해제 smoke 되돌림이 두 번 만든 제한(R3). 닫힌 R2(`CLOSED_MIDDLE`)를 되돌렸고 R2는 `CLOSED_RESTRICTION`(R1)을 되돌렸다. */
+const REINSTATED_RESTRICTION = '7c6b5a49-3827-4615-9504-f3e2d1c0b9a8'
+
+/** 닫힌 중간 되돌림 행(R2). 활성 목록에 없다. */
+const CLOSED_MIDDLE = '3e2d1c0b-9a8f-4e7d-8c6b-5a4938271605'
+
+/** R1을 덮는 사건. 서버가 계보의 지금 열린 제한 R3를 `liveCovers`로 싣는다. */
+function liveIncident(): Record<string, unknown> {
+  const base = incident(false, [CLOSED_RESTRICTION])
+  const versions = base.versions as Record<string, unknown>[]
+  return {
+    ...base,
+    versions: versions.map((version) => ({ ...version, liveCovers: [REINSTATED_RESTRICTION] })),
+  }
+}
+
+function reinstatedRestriction(): Record<string, unknown> {
+  return {
+    ...restriction(),
+    restrictionId: REINSTATED_RESTRICTION,
+    reason: 'SMOKE_REVERTED',
+    reinstated: true,
+    reinstatedFrom: CLOSED_MIDDLE,
+  }
+}
+
+async function openWith(items: readonly Record<string, unknown>[]): Promise<HTMLElement> {
+  stubSessionRequest(() =>
+    Promise.resolve(json({ authenticated: true, destination: 'operator', csrfToken: CSRF_TOKEN })),
+  )
+  stubOperatorAudit(() => Promise.resolve(json({ items: [], nextCursor: null })))
+  stubOperatorRestrictions(() => Promise.resolve(json({ items })))
+  render(<OperatorScreen />)
+  await screen.findByRole('heading', { level: 2, name: copy.heading })
+  return screen.getByRole('region', { name: copy.heading })
+}

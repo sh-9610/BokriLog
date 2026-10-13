@@ -14,10 +14,10 @@ import org.jspecify.annotations.Nullable;
  * ({@link RestrictionSubject})만 넘긴다. 차단은 일치하는 행의 합집합이고, 돌려주는 effective 제한은 그중 가장 구체적인
  * 행이다({@link RestrictionScope#specificity()}) — 구체 우선은 차단을 줄이지 않고 어느 제한이 효력을 갖는지 보고할 뿐이다.
  *
- * <p><b>생성은 이 인터페이스에 없다.</b> 제한 행은 감사 행과 같은 트랜잭션에서만 생겨야 하므로 운영 command({@link
- * OperatorCommandApi#completeRestriction})와 강한 신호({@link OperationalSignalApi#raise}, Story 3.3)가 만든다. 해제도
- * 여기 없다 — 운영 command {@code lift-restriction} 하나({@link OperatorCommandApi#completeLift}, Story 3.4)가 감사 행과 같은
- * 트랜잭션에서 행 하나를 닫는다. 시간·신호·재시작으로 닫히는 경로는 없다.
+ * <p><b>생성은 이 인터페이스에 없다.</b> 제한 행은 감사 행과 같은 트랜잭션에서만 생겨야 하므로 운영 command(제한 생성
+ * command의 확정, {@link OperatorCommandApi#complete})와 강한 신호({@link OperationalSignalApi#raise}, Story 3.3)가 만든다.
+ * 해제도 여기 없다 — 운영 command {@code lift-restriction} 하나(같은 확정 템플릿, Story 3.4)가 감사 행과 같은 트랜잭션에서
+ * 행 하나를 닫는다. 시간·신호·재시작으로 닫히는 경로는 없다.
  *
  * <p>시각의 권위는 데이터베이스다. 유효 구간 판정을 애플리케이션 시계로 하지 않는 이유는 {@code V3__action_grant.sql}
  * 머리말과 같다 — 인스턴스마다 값이 다르고 뒤로 갈 수 있다. 판독 오류는 값이 아니라 예외로 올라가 접수·발행 전체를
@@ -93,6 +93,10 @@ public interface OperationalRestrictionApi {
     /** 지금 효력 중인 모든 제한. 구체 우선, 같은 구체성 안에서는 먼저 시작한 순이다({@link #evaluate}와 같은 규칙). */
     List<ActiveRestriction> active();
 
-    /** 같은 기능·scope·target의 효력 중인 제한이 이미 있는가. 생성 command의 중복 판정이다. */
+    /**
+     * 같은 기능·scope·target의 효력 중인 제한이 있는가. 운영 경로는 이것을 쓰지 않는다 — 제한 생성의 중복 판정은 operations 안의
+     * 제한 전략이 제한 표로 직접 한다. 마이그레이션 시험({@code RestrictionMigrationTest})이 되채운 옛 행의 활성 판정을 보는
+     * 자리로 남는다.
+     */
     boolean isActive(RestrictionFeature feature, RestrictionScope scope, String target);
 }

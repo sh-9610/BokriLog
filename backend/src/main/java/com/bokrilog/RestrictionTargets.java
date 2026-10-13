@@ -7,20 +7,21 @@ import com.bokrilog.operations.OperatorCommandApi.LiftExpectation;
 import com.bokrilog.operations.OperatorCommandApi.LiftTarget;
 import com.bokrilog.operations.OperatorCommandApi.Restriction;
 import com.bokrilog.operations.OperatorCommandApi.TargetCheck;
+import com.bokrilog.operations.OperatorCommandEnvironment.LiftImpact;
+import com.bokrilog.operations.OperatorCommandEnvironment.Remaining;
+import com.bokrilog.operations.OperatorCommandEnvironment.RestrictionImpact;
 import com.bokrilog.operations.RestrictionFeature;
 import com.bokrilog.operations.RestrictionScope;
 import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.plan.PlanConditionApi;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
-import org.jspecify.annotations.Nullable;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication.Type;
 import org.springframework.stereotype.Component;
@@ -80,31 +81,6 @@ class RestrictionTargets {
 
     static final String ADVERTISING = "ADVERTISING";
 
-    /**
-     * 영향 미리보기.
-     *
-     * @param blockedStages 막히는 단계 code
-     * @param affectedPlans 영향을 받는 계획 수
-     * @param affectedConnections 영향을 받는 연결 수
-     * @param remainingFeatures 이 제한 뒤에도 전역으로 막히지 않은 기능
-     */
-    record Impact(List<String> blockedStages, long affectedPlans, long affectedConnections,
-            List<String> remainingFeatures) {}
-
-    /**
-     * 해제의 영향 미리보기(Story 3.4). 식별자를 담지 않는다 — 남는 제한은 기능·scope·출처뿐이다.
-     *
-     * @param reopenedStages 해제로 다시 열리는 단계 code
-     * @param remainingRestrictions 해제 뒤에도 그 대상의 같은 단계를 막는 다른 활성 제한
-     * @param linkedSignals 그 제한을 만들었거나 그것에 연결된 강한 신호 수
-     * @param latestSignalAt 그 신호들의 최신 감지 시각(DB). 신호가 없으면 {@code null}
-     */
-    record LiftImpact(List<String> reopenedStages, List<Remaining> remainingRestrictions, int linkedSignals,
-            @Nullable Instant latestSignalAt) {}
-
-    /** 남는 제한 하나. */
-    record Remaining(String feature, String scope, String origin) {}
-
     private final PlanConditionApi plans;
 
     private final PortfolioMembershipApi portfolios;
@@ -142,13 +118,8 @@ class RestrictionTargets {
         };
     }
 
-    /** 같은 기능·scope·target의 효력 중인 제한이 이미 있는가. */
-    boolean alreadyRestricted(Restriction restriction) {
-        return this.restrictions.isActive(restriction.feature(), restriction.scope(), restriction.target());
-    }
-
     /** 영향 미리보기. 대상 확인을 지난 제한에만 부른다. */
-    Impact impact(Restriction restriction, TargetCheck.Valid valid) {
+    RestrictionImpact impact(Restriction restriction, TargetCheck.Valid valid) {
         RestrictionFeature feature = restriction.feature();
         RestrictionScope scope = restriction.scope();
         long affectedPlans;
@@ -193,7 +164,8 @@ class RestrictionTargets {
                 affectedConnections = 0;
             }
         }
-        return new Impact(stages(feature, scope), affectedPlans, affectedConnections, remaining(feature, scope));
+        return new RestrictionImpact(stages(feature, scope), affectedPlans, affectedConnections,
+                remaining(feature, scope));
     }
 
     /**

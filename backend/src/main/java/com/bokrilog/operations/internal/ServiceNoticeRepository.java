@@ -83,6 +83,8 @@ class ServiceNoticeRepository {
     /**
      * 사용자 조회의 후보: 사건마다 최신 버전 가운데 (1) 진행 중이고 그 제한들 중 하나라도 덮는 것과 (2) 복구 시각부터
      * {@code recoveredWindowSeconds} 안의 복구 버전.
+     *
+     * @param effectiveRestrictionIds 효력 제한과 그 되돌림 조상(Epic 3 회고 AI-1) — 공지가 원 제한을 덮었어도 후보가 된다
      */
     List<NoticeVersion> latestRelevant(Collection<UUID> effectiveRestrictionIds, long recoveredWindowSeconds) {
         return this.jdbc.sql("SELECT " + VERSION_COLUMNS + FROM + "WHERE " + IS_LATEST + " AND ("

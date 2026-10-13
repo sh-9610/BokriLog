@@ -452,6 +452,15 @@ export function stubOperatorRestrictionCommand(
   responders.set(requestKey('POST', step === 'prepare' ? base : `${base}/${step}`), responder)
 }
 
+/** 운영 command 하나의 준비·확정·취소(command 이름을 가리지 않는다 — 공통 상태 기계 시험이 쓴다). */
+export function stubOperatorCommand(
+  command: string,
+  step: 'cancel' | 'confirm' | 'prepare',
+  responder: RequestResponder,
+): void {
+  stubOperatorRestrictionCommand(command, step, responder)
+}
+
 /** 허용된 세션 확인 요청의 기록. 몇 번 불렸는지 단정하는 데 쓴다. */
 export function getObservedSessionRequests(): readonly string[] {
   return [...observedSessionRequests]

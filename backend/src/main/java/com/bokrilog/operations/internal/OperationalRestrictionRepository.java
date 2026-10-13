@@ -158,8 +158,30 @@ class OperationalRestrictionRepository {
     }
 
     /**
-     * 공지가 덮을 제한 하나의 사실(Story 3.5). {@code open}은 {@link #OPEN} 술어다 — 진행 중인 공지는 지금 효력 중이고
-     * 끝이 정해지지 않은 제한만 덮는다.
+     * 그 제한들에서 {@code reinstated_from}을 거꾸로 따라 내려가는 되돌림 후손(Story 3.4 되돌림 × 3.5 공지, Epic 3 회고 AI-1).
+     * {@link #LINEAGE}의 반대 방향이고 같은 관용이다. 행 {@code (cover, id)}는 덮은 제한과 그 자신 또는 후손 하나다. 되돌림
+     * 행은 언제나 더 오래된 행을 가리키므로 사슬은 끝난다({@code UNION}이 중복도 거른다).
+     */
+    private static final String DESCENT = "WITH RECURSIVE descent(cover, id) AS (SELECT r.restriction_id, "
+            + "r.restriction_id FROM operations_restriction r WHERE r.restriction_id = ANY(CAST(:ids AS uuid[])) "
+            + "UNION SELECT d.cover, c.restriction_id FROM operations_restriction c JOIN descent d "
+            + "ON c.reinstated_from = d.id) ";
+
+    /**
+     * 그 제한들에서 {@code reinstated_from}을 따라 원 제한까지 올라가는 되돌림 조상. 행 {@code (origin, id)}는 물은 제한과 그
+     * 자신 또는 조상 하나다. {@link #LINEAGE}와 같은 방향·같은 관용을 여러 제한에 한 문장으로 적용한다.
+     */
+    private static final String ASCENT = "WITH RECURSIVE ascent(origin, id) AS (SELECT r.restriction_id, "
+            + "r.restriction_id FROM operations_restriction r WHERE r.restriction_id = ANY(CAST(:ids AS uuid[])) "
+            + "UNION SELECT a.origin, p.reinstated_from FROM operations_restriction p JOIN ascent a "
+            + "ON p.restriction_id = a.id WHERE p.reinstated_from IS NOT NULL) ";
+
+    /**
+     * 공지가 덮을 제한 하나의 사실(Story 3.5). 공지는 제한 하나가 아니라 그 <b>되돌림 계보</b>를 덮는다(Epic 3 회고 AI-1) —
+     * 해제 smoke가 어긋나 같은 범위가 새 ID로 되돌아가도 같은 사건의 같은 제한이다.
+     *
+     * @param open 그 제한이나 그 되돌림 후손 가운데 {@link #OPEN} 술어(지금 효력 중이고 끝이 정해지지 않았다)인 행이 하나라도
+     *     있다. 진행 중인 공지는 이것이 참인 제한만, 복구 공지는 거짓인(계보 전체가 닫힌) 제한만 덮는다
      */
     record CoverFacts(UUID restrictionId, RestrictionFeature feature, boolean open) {}
 
@@ -168,13 +190,63 @@ class OperationalRestrictionRepository {
         if (restrictionIds.isEmpty()) {
             return List.of();
         }
-        return this.jdbc.sql("SELECT r.restriction_id, r.feature, (" + OPEN + ") AS open "
-                        + "FROM operations_restriction r WHERE r.restriction_id = ANY(CAST(:ids AS uuid[])) "
-                        + "ORDER BY r.restriction_id")
+        return this.jdbc.sql(DESCENT + "SELECT c.restriction_id, c.feature, bool_or(" + OPEN + ") AS open "
+                        + "FROM descent d JOIN operations_restriction c ON c.restriction_id = d.cover "
+                        + "JOIN operations_restriction r ON r.restriction_id = d.id "
+                        + "GROUP BY c.restriction_id, c.feature ORDER BY c.restriction_id")
                 .param("ids", uuidArray(Set.copyOf(restrictionIds)))
                 .query((rs, row) -> new CoverFacts(rs.getObject("restriction_id", UUID.class),
                         RestrictionFeature.valueOf(rs.getString("feature")), rs.getBoolean("open")))
                 .list();
+    }
+
+    /**
+     * 그 제한들 각각의 되돌림 계보({@link #DESCENT}) 가운데 지금 {@link #OPEN}인 제한 — 덮은 제한 자신이 열려 있으면 그것도
+     * 든다. 먼저 시작한 순이다. 없는 ID는 빠지고, 계보가 모두 닫힌 ID는 빈 목록이다. 문장 하나다.
+     */
+    java.util.Map<UUID, List<UUID>> openLineage(java.util.Collection<UUID> restrictionIds) {
+        if (restrictionIds.isEmpty()) {
+            return java.util.Map.of();
+        }
+        java.util.Map<UUID, List<UUID>> lineage = new java.util.LinkedHashMap<>();
+        this.jdbc.sql(DESCENT + "SELECT d.cover, r.restriction_id, (" + OPEN + ") AS open FROM descent d "
+                        + "JOIN operations_restriction r ON r.restriction_id = d.id "
+                        + "ORDER BY d.cover, r.effective_from, r.restriction_id")
+                .param("ids", uuidArray(Set.copyOf(restrictionIds)))
+                .query((rs, row) -> {
+                    List<UUID> open = lineage.computeIfAbsent(rs.getObject("cover", UUID.class),
+                            id -> new java.util.ArrayList<>());
+                    if (rs.getBoolean("open")) {
+                        open.add(rs.getObject("restriction_id", UUID.class));
+                    }
+                    return 1;
+                })
+                .list();
+        java.util.Map<UUID, List<UUID>> copied = new java.util.LinkedHashMap<>();
+        lineage.forEach((id, open) -> copied.put(id, List.copyOf(open)));
+        return java.util.Collections.unmodifiableMap(copied);
+    }
+
+    /**
+     * 그 제한들 각각의 되돌림 계보 — 자기 자신과 원 제한까지의 조상(Epic 3 회고 AI-1). 사용자 공지 조회가 효력 제한마다
+     * "이 제한이나 그 조상을 덮는 공지"를 찾는 데 쓴다. 없는 ID는 빠진다.
+     */
+    java.util.Map<UUID, Set<UUID>> ancestry(java.util.Collection<UUID> restrictionIds) {
+        if (restrictionIds.isEmpty()) {
+            return java.util.Map.of();
+        }
+        java.util.Map<UUID, Set<UUID>> lineage = new java.util.LinkedHashMap<>();
+        this.jdbc.sql(ASCENT + "SELECT origin, id FROM ascent ORDER BY origin, id")
+                .param("ids", uuidArray(Set.copyOf(restrictionIds)))
+                .query((rs, row) -> {
+                    lineage.computeIfAbsent(rs.getObject("origin", UUID.class), id -> new java.util.LinkedHashSet<>())
+                            .add(rs.getObject("id", UUID.class));
+                    return 1;
+                })
+                .list();
+        java.util.Map<UUID, Set<UUID>> copied = new java.util.LinkedHashMap<>();
+        lineage.forEach((id, ancestors) -> copied.put(id, Set.copyOf(ancestors)));
+        return java.util.Collections.unmodifiableMap(copied);
     }
 
     /** 그 제한이 지금 효력 중이면 그 행(Story 3.4 smoke — 남는 제한이 그사이 정상적으로 닫혔는지 본다). */

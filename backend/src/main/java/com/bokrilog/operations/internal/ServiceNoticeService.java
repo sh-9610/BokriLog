@@ -25,6 +25,10 @@ import org.springframework.transaction.support.TransactionTemplate;
  * 중인 공지를 고른다. 어느 공지도 덮지 않는 제한은 기본 항목 하나로 모은다 — 사건의 최신 버전이 복구여도 그 제한이 아직
  * 효력 중이면 덮이지 않은 것이다. 공지는 제한을 풀거나 숨기지 않는다.
  *
+ * <p><b>덮는 단위는 되돌림 계보다(Epic 3 회고 AI-1).</b> 효력 제한 X는 X 자신이나 X의 되돌림 조상({@code reinstated_from}을
+ * 따라 원 제한까지, {@link OperationalRestrictionRepository#ancestry})이 공지의 덮는 범위에 있으면 덮인 것이다. 해제 smoke가
+ * 어긋나 같은 범위가 새 ID로 되돌아가도(Story 3.4) 그 사건의 공지가 이어진다 — 되돌림마다 공지를 다시 발행하지 않는다.
+ *
  * <p>복구 공지는 복구 시각부터 72시간 동안, 그 공지가 덮는 제한의 대상이 사용자의 차원과 맞을 때만 싣는다(효력 구간은
  * 보지 않는다 — 이미 닫혔다).
  *
@@ -73,12 +77,17 @@ class ServiceNoticeService implements ServiceNoticeApi {
                 effective.putIfAbsent(row.restriction().restrictionId(), row.restriction().feature());
             }
         }
+        // 효력 제한마다 그 되돌림 계보(자기와 조상). 공지가 덮은 제한이 smoke 되돌림으로 새 ID가 됐어도 같은 공지가 덮는다.
+        Map<UUID, Set<UUID>> lineage = this.restrictions.ancestry(effective.keySet());
+        Set<UUID> lineageIds = new LinkedHashSet<>();
+        for (UUID id : effective.keySet()) {
+            lineageIds.addAll(lineageOf(lineage, id));
+        }
         List<Item> open = new ArrayList<>();
         List<Item> recovered = new ArrayList<>();
         Set<UUID> covered = new LinkedHashSet<>();
         Instant expiresAt = asOf.plus(RESPONSE_TRUST_LIMIT);
-        List<NoticeVersion> candidates = this.notices.latestRelevant(effective.keySet(),
-                RECOVERED_VISIBLE_FOR.toSeconds());
+        List<NoticeVersion> candidates = this.notices.latestRelevant(lineageIds, RECOVERED_VISIBLE_FOR.toSeconds());
         // 복구 공지의 대상 판정은 그 공지들이 덮는 제한 전체를 한 문장으로 묻는다(공지마다 묻지 않는다).
         Set<UUID> recoveredCovers = new LinkedHashSet<>();
         for (NoticeVersion version : candidates) {
@@ -95,9 +104,11 @@ class ServiceNoticeService implements ServiceNoticeApi {
                 continue;
             }
             boolean coversMine = false;
-            for (UUID cover : version.covers()) {
-                if (effective.containsKey(cover)) {
-                    covered.add(cover);
+            Set<UUID> covers = Set.copyOf(version.covers());
+            for (UUID id : effective.keySet()) {
+                // 효력 제한 X는 X 자신이나 X의 되돌림 조상이 덮는 범위에 있으면 덮인 것이다.
+                if (lineageOf(lineage, id).stream().anyMatch(covers::contains)) {
+                    covered.add(id);
                     coversMine = true;
                 }
             }
@@ -130,6 +141,11 @@ class ServiceNoticeService implements ServiceNoticeApi {
     }
 
 
+    /** 그 효력 제한의 계보. 판독과 계보 질의 사이에 행이 사라지지 않으므로(추가 전용·같은 스냅샷) 없으면 자기 하나다. */
+    private static Set<UUID> lineageOf(Map<UUID, Set<UUID>> lineage, UUID id) {
+        return lineage.getOrDefault(id, Set.of(id));
+    }
+
     private static Instant recoveredAt(Item item) {
         if (item instanceof Item.Notice notice && notice.version().recoveredAt() != null) {
             return notice.version().recoveredAt();
@@ -139,12 +155,31 @@ class ServiceNoticeService implements ServiceNoticeApi {
 
     @Override
     public List<Incident> incidents() {
+        List<Incident> read = this.snapshot.execute(status -> readIncidents());
+        if (read == null) {
+            throw new IllegalStateException("사건 목록을 읽지 못했다.");
+        }
+        return read;
+    }
+
+    /** 사건·버전과 최신 버전의 열린 계보. 한 스냅샷 안에서 부른다. */
+    private List<Incident> readIncidents() {
         Map<UUID, List<NoticeVersion>> grouped = new LinkedHashMap<>();
         for (NoticeVersion version : this.notices.recentIncidentVersions(MAX_LISTED_INCIDENTS)) {
             grouped.computeIfAbsent(version.incidentId(), id -> new ArrayList<>()).add(version);
         }
+        // 최신 버전들이 덮는 제한 전부의 열린 계보를 한 문장으로 묻는다(사건마다 묻지 않는다).
+        Set<UUID> latestCovers = new LinkedHashSet<>();
+        grouped.values().forEach(versions -> latestCovers.addAll(versions.getLast().covers()));
+        Map<UUID, List<UUID>> openLineage = this.restrictions.openLineage(latestCovers);
         List<Incident> incidents = new ArrayList<>();
-        grouped.forEach((id, versions) -> incidents.add(new Incident(id, versions.getFirst().startedAt(), versions)));
+        grouped.forEach((id, versions) -> {
+            Set<UUID> live = new LinkedHashSet<>();
+            for (UUID cover : versions.getLast().covers()) {
+                live.addAll(openLineage.getOrDefault(cover, List.of()));
+            }
+            incidents.add(new Incident(id, versions.getFirst().startedAt(), versions, List.copyOf(live)));
+        });
         return List.copyOf(incidents);
     }
 }

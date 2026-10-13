@@ -32,8 +32,8 @@ import tools.jackson.databind.json.JsonMapper;
  * {@link OperationalSignalApi} 구현(Story 3.3). {@code internal}의 package-private 클래스다.
  *
  * <p><b>한 커밋.</b> {@link #raise}는 호출자의 트랜잭션을 멈추고 자기 트랜잭션({@code REQUIRES_NEW}) 하나에서 원장 잠금 →
- * 판정표 읽기 → 중복 판정 → 제한 INSERT → 신호 행 → 감사 SYSTEM 행을 쓴다. 본보기는 3.2의 {@code
- * OperatorEnvelopeService.completeRestriction}(잠금 → 재검사 → INSERT → {@code COMPLETED})이다. 원장 잠금이 운영 command와
+ * 판정표 읽기 → 중복 판정 → 제한 INSERT → 신호 행 → 감사 SYSTEM 행을 쓴다. 본보기는 3.2의 제한 생성 확정({@code
+ * RestrictCommand.complete}, 엔진 템플릿의 잠금 뒤 재검사 → INSERT → {@code COMPLETED})이다. 원장 잠금이 운영 command와
  * 신호를 함께 직렬화하므로 같은 기능·scope·target의 동시 신호는 활성 제한 1행으로 모인다.
  *
  * <p><b>판정표 읽기 실패.</b> 판정표 읽기는 savepoint({@code NESTED}) 안에서 한다 — 그 문장이 실패해도 트랜잭션 전체가

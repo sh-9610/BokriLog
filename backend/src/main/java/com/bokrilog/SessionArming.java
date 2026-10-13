@@ -98,14 +98,25 @@ final class SessionArming<T extends Serializable> {
      * <p>두 종류의 경로가 쓴다 — 버릴 무장의 허가를 함께 무효화하는 경로(수명이 지난 무장의 허가도 아직 살아 있을 수
      * 있다)와, "무장이 없었다"와 "무장이 있었는데 늦었다"를 갈라 이유를 말해야 하는 콜백 경계다.
      *
-     * <p>타입이 어긋난 값은 없는 것과 같되 <b>버리지 않는다</b>(만료 무장을 버리는 {@link #peek}과 다른 비대칭). record의
-     * 직렬화 버전이 바뀐 뒤 옛 세션에 남은 값이 그 경우이고, 그것을 여기서 지우면 읽기 메서드가 세션을 바꾸는 셈이 된다 —
-     * 다음 {@link #arm}이 덮고 수명이 지나면 세션과 함께 사라진다.
+     * <p>타입이 어긋난 값은 없는 것과 같되 <b>버리지 않는다</b>(만료 무장을 버리는 {@link #peek}과 다른 비대칭). 그것을 여기서
+     * 지우면 읽기 메서드가 세션을 바꾸는 셈이 된다 — 다음 {@link #arm}이 덮고 수명이 지나면 세션과 함께 사라진다.
      *
-     * @return 저장된 무장, 없으면 {@code null}
+     * <p><b>읽을 수 없는 값은 없는 무장과 같고, 그 속성 하나만 버린다.</b> 배포 전 인스턴스가 쓴 무장(지금 빌드에 없는
+     * 클래스를 담았거나 record 생성자의 불변식을 어기는 옛 모양)이나 깨진 바이트는 세션 저장소가 표지
+     * {@link UnreadableSessionValue}로 읽는다({@link SessionAttributeConversion}). 무장이 없는 것과 같은 단일 거절(재준비
+     * 요구)로 접고 그 속성만 지운다 — 표지를 읽은 뒤라 지우기가 다시 실패하지 않는다. 세션의 다른 속성(로그인·재인증 시각·
+     * 다른 Flow의 무장)은 그대로다.
+     *
+     * @return 저장된 무장, 없거나 읽을 수 없으면 {@code null}
      */
     @Nullable T peekIncludingExpired(HttpSession session) {
         Object stored = session.getAttribute(this.attribute);
+        if (stored instanceof UnreadableSessionValue unreadable) {
+            // 남겨 두면 다음 요청도 같은 판정을 되풀이한다. 이 속성 하나만 지운다.
+            UnreadableSessionValue.report(session, this.attribute, unreadable);
+            discard(session);
+            return null;
+        }
         return this.type.isInstance(stored) ? this.type.cast(stored) : null;
     }
 

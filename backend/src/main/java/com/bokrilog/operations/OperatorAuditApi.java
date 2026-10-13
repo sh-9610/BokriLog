@@ -2,7 +2,9 @@ package com.bokrilog.operations;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
@@ -41,7 +43,36 @@ public interface OperatorAuditApi {
      */
     record Entry(long sequence, String operationId, String actorKind, String actorDigest, String command,
             String scope, String target, String reason, String outcome, @Nullable String code, String policyVersion,
-            Instant requestedAt, @Nullable Instant decidedAt, Instant recordedAt, String correlationId) {}
+            Instant requestedAt, @Nullable Instant decidedAt, Instant recordedAt, String correlationId) {
+
+        /**
+         * 응답의 행 하나 — 조회·operation 조회·추출 결과가 같은 모양이다. 필드 순서는 이 record의 순서이고 비어 있는
+         * {@code code}·{@code decidedAt}은 싣지 않는다.
+         */
+        public Map<String, Object> view() {
+            Map<String, Object> view = new LinkedHashMap<>();
+            view.put("sequence", this.sequence);
+            view.put("operationId", this.operationId);
+            view.put("actorKind", this.actorKind);
+            view.put("actorDigest", this.actorDigest);
+            view.put("command", this.command);
+            view.put("scope", this.scope);
+            view.put("target", this.target);
+            view.put("reason", this.reason);
+            view.put("outcome", this.outcome);
+            if (this.code != null) {
+                view.put("code", this.code);
+            }
+            view.put("policyVersion", this.policyVersion);
+            view.put("requestedAt", this.requestedAt.toString());
+            if (this.decidedAt != null) {
+                view.put("decidedAt", this.decidedAt.toString());
+            }
+            view.put("recordedAt", this.recordedAt.toString());
+            view.put("correlationId", this.correlationId);
+            return view;
+        }
+    }
 
     /**
      * 한 쪽.

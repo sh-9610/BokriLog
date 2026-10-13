@@ -589,6 +589,41 @@ class ServiceNoticeTest extends OperatorTestBase {
     // ------------------------------------------------------------------ 추가 전용 소스 스캔
 
     /**
+     * 확정의 판정 순서(운영 command 공통화, 2026-10-13 사용자 결정): 원장 잠금 → 최종 권한이 템플릿 prologue이고 지원 연락처는
+     * 그 뒤의 공지 본문이다. 그래서 확정 요청 전에 연락처가 비고, 확정이 원장 잠금을 기다리는 사이 권한이 회수되면 연락처
+     * 거절(422)이 아니라 권한 회수(없는 경로와 같은 404)다. 아무것도 쓰지 않고 거절 행 하나로 맺는다.
+     */
+    @Test
+    @SuppressWarnings("try")
+    void 확정_순간_권한_회수가_빈_연락처보다_먼저인_404다() throws Exception {
+        UUID ad = restrictGlobally(RestrictionFeature.ADVERTISING);
+        Signed operator = operator("notice-order-revoked", "command");
+        String key = key("notice-order-revoked");
+        var prepared = prepareNotice(operator, "NEW", "INVESTIGATING", List.of(ad), "광고 오류 조사",
+                Instant.now().plus(1, ChronoUnit.HOURS), key);
+        assertThat(prepared.statusCode()).as(prepared.body()).isEqualTo(200);
+        String operationId = operationIdIn(prepared.body());
+        // 게이트는 연락처를 보지 않는다. 확정 요청 전에 비운다.
+        this.supportContact.reinterpret(null);
+
+        java.util.concurrent.CompletableFuture<HttpResponse<String>> confirming;
+        HttpResponse<String> revoked;
+        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            try (AutoCloseable held = holdAuditLock()) {
+                confirming = java.util.concurrent.CompletableFuture.supplyAsync(() -> quietly(() -> confirmNotice(
+                        operator, operationId, phraseIn(prepared.body()), key)), executor);
+                awaitAdvisoryWaiters(1);
+                operatorAccess().reinterpret("");
+            }
+            revoked = confirming.get();
+        }
+        assertThat(revoked.statusCode()).as(revoked.body()).isEqualTo(404);
+        assertThat(noticeVersionCount()).isZero();
+        assertThat(outcomesOf(operationId)).containsExactly("REQUESTED", "DENIED");
+        assertThat(decisionsOf(operator.user())).last().isEqualTo("DENIED:ACCESS_REVOKED");
+    }
+
+    /**
      * 공지 두 표의 운영 SQL은 INSERT·SELECT뿐이다 — 고치거나 지우는 문장이 운영 소스 어디에도 없고, 두 표를 문자열로 아는
      * 운영 소스는 공지 repository 하나다. 원장 repository의 UPDATE는 비식별 {@code eraseActor} 하나다.
      */
