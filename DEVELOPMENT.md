@@ -42,6 +42,8 @@ git rm --cached -r . && git reset --hard
 
 시험은 경로 구분자를 가정하지 않는다. `path.relative`·`path.join`은 플랫폼 구분자를 돌려주므로 그 결과를 정본 경로 문자열과 직접 비교하면 한쪽 기기에서만 실패한다. 정본은 언제나 POSIX 형태로 적고 도구가 돌려준 경로를 `split(sep).join('/')`로 옮겨 비교한다(`frontend/lint-policy.test.ts`의 `toPosixRelative`가 그 형태다). CI는 `ubuntu-24.04`만 돌아 이 종류의 결함을 구조적으로 보지 못하므로, Windows에서만 빨간 시험을 그 기기의 문제로 넘기지 않는다.
 
+비ASCII 문자는 curl 인자로 넘기지 않는다. Git Bash의 `curl`은 mingw 네이티브 빌드라 본문·헤더·URL을 가리지 않고 argv 전체를 ANSI 코드 페이지(한국어 Windows는 CP949)로 해석한다. 그래서 인자로 넘긴 한글은 UTF-8이 아니라 CP949 바이트로 나가고, 백엔드는 그 본문을 읽지 못해 400으로 답한다. 본문은 파일에 바이트 그대로 써서 `@<파일>`로 넘기거나 `@-`로 stdin에서 읽힌다. `deploy/compose/verify-same-origin.sh`에서는 `request_body` 헬퍼가 그 파일을 만들고, `fetch`의 가드가 이 규칙을 어긴 호출을 요청 없이 단정 실패로 남긴다. 셸의 코드 페이지(`chcp`)나 로캘을 바꿔 피하지 않는다. 다른 기기와 CI는 그 셸 설정을 공유하지 않으므로 스크립트는 그들에게 여전히 깨진 채로 남는다. 이 결함도 Linux CI에서는 보이지 않는다.
+
 저장소를 두는 경로에는 비ASCII 문자를 피한다. Git 자체에는 영향이 없지만 Java·Gradle 도구가 일부 환경에서 경로 인코딩 문제를 일으킬 수 있다.
 
 ## 브랜치 전략
