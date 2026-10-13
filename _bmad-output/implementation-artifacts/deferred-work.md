@@ -398,3 +398,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-8-blue-green-deploy.md`
   summary: 배포 리허설에 실제 호환 창과 실제 JVM 종료 경로를 더한다 — migration 집합이 다른 두 release(old API+new schema 실제 기동, 이전 manifest로의 되돌림), 진행 중 작업을 둔 실제 Worker의 drain-timeout 종료 코드 75, 잠금 상실 76, 첫 배포의 실패 경로.
   evidence: 리허설의 두 이미지는 같은 jar라 schema 차이가 생기지 않고, drain 미완료는 결함 주입(`drain-incomplete`)으로만 덮으며, `WorkerDrainTest`는 빈의 종료 코드만 본다(진입점의 shutdown handler·`Runtime.halt` 경로는 시험 밖). 두 release를 만들려면 시험용 migration을 가진 별도 이미지가 필요하다(3.8 리뷰 verification-gap·blind-hunter, 2026-10-12).
+- source_spec: `_bmad-output/implementation-artifacts/spec-verify-windows-utf8-body.md`
+  summary: `verify-same-origin.sh`의 `fetch` argv 본문 가드를 `.github/scripts/test-ci-scripts.sh`에서 행동 시험으로 고정한다(curl을 기록 함수로 가리고 거부 형태는 실패·미호출, `@<파일>` 형태는 통과를 단정).
+  evidence: 가드는 Linux CI에서 보이지 않는 Windows 결함의 유일한 회귀 그물인데, 정상 실행에서는 어떤 호출도 거부 분기를 지나지 않아 패턴이 깨지거나 지워져도 아무 시험도 실패하지 않는다. CI 스크립트를 건드리는 일이라 이 fix의 Ask First 경계 밖이다(2026-10-12).
