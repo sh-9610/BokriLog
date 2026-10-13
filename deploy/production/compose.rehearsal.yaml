@@ -1,5 +1,5 @@
-# 운영 구성의 리허설 override(Story 3.8). `deploy/production/rehearse-deploy.sh`와 백업 리허설(`rehearse-backup.sh`, Story 3.9)만
-# 이 파일을 `compose.yaml` 위에 겹친다.
+# 운영 구성의 리허설 override(Story 3.8). `deploy/production/rehearse-deploy.sh`와 백업 리허설(`rehearse-backup.sh`, Story 3.9)·복원
+# 리허설(`rehearse-restore.sh`, Story 3.10)만 이 파일을 `compose.yaml` 위에 겹친다.
 #
 # 운영 구성에서 바뀌는 것은 개발·CI에서 운영 자원을 흉내 낼 수 없는 것뿐이다.
 #   - DB는 비밀번호 없는 trust다(개발 compose와 같은 근거 — 포트를 게시하지 않는 네트워크 안이다). 리허설 비밀 파일의
@@ -22,6 +22,15 @@ services:
     pull_policy: never
 
   backup-record:
+    pull_policy: never
+
+  deletion-sample:
+    pull_policy: never
+
+  tombstone-export:
+    pull_policy: never
+
+  restore-apply:
     pull_policy: never
 
   api-blue:

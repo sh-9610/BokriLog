@@ -317,4 +317,34 @@ public interface SourceConnectionApi {
 
     /** 지금 활성인 연결의 수. 운영 제한의 영향 미리보기가 쓴다. */
     long countActiveConnections();
+
+    // ------------------------------------------------------------------ Story 3.10 복원 검증
+
+    /**
+     * 자격정보 표본 복호의 결과. <b>수만 담는다</b> — 평문은 이 port 밖으로 나가지 않고 제공자 호출도 없다.
+     *
+     * @param sampled 읽은 자격정보 행 수
+     * @param opened 그 가운데 지금 key ring(과거 키 포함)으로 풀린 수
+     * @param activeKey 새 암호화에 쓸 active key가 key ring에 있는가 — 없으면 복원된 서비스가 새 연결을 봉할 수 없다
+     */
+    record CredentialProbe(int sampled, int opened, boolean activeKey) {
+
+        /** 통과: active key가 있고 표본이 모두 풀렸다. */
+        public boolean passed() {
+            return this.activeKey && this.opened == this.sampled;
+        }
+    }
+
+    /**
+     * 저장된 자격정보를 지금 key ring으로 풀어 본다(복원된 DB와 key ring이 짝인가). 표본은 key version마다 가장 최근 행 하나와 전체에서
+     * 가장 최근 {@code limit}행의 합이다 — 오래된 version의 키가 빠진 것도 잡는다. 풀린 평문은 곧바로 버린다. 연결 상태와 무관하게
+     * 자격정보 행이 있는 것을 본다.
+     */
+    CredentialProbe probeCredentials(int limit);
+
+    /**
+     * 그 사용자에게 아직 귀속된 이 모듈의 행 수. {@code source_*} 표의 {@code user_id} 열을 카탈로그로 찾아 센다(자격정보 행은 연결을
+     * 거쳐 센다). 삭제가 끝난 계정이면 0이어야 한다.
+     */
+    long remainingRowsOf(UUID userId);
 }

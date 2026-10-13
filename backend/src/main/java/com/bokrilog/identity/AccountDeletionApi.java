@@ -1,5 +1,6 @@
 package com.bokrilog.identity;
 
+import java.util.List;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 
@@ -44,4 +45,34 @@ public interface AccountDeletionApi {
      *     거치지 않았으면 {@link DeletionOutcome#NOT_APPLICABLE}
      */
     DeletionOutcome erasePayload(@Nullable UUID userId);
+
+    // ------------------------------------------------------------------ Story 3.10 복원 적용
+
+    /**
+     * 생명주기 행이 있는 모든 계정(상태 무관). 복원 적용이 외부 tombstone과 맞춰 볼 후보다. HTTP로 노출되지 않는다.
+     */
+    List<UUID> accounts();
+
+    /** 삭제가 끝난({@code DELETED}) 계정. 복원 검증이 그 계정의 잔여 행을 센다. */
+    List<UUID> deletedAccounts();
+
+    /**
+     * 삭제가 시작됐지만 끝나지 않은({@code DELETION_IN_PROGRESS}) 계정. 삭제는 한 트랜잭션이라 정상이면 없다 — 복원 검증은 외부 tombstone이
+     * 다시 지우지 않은 이 상태의 계정을 불변식 위반으로 센다.
+     */
+    List<UUID> deletionInProgressAccounts();
+
+    /**
+     * 인증 세션을 <b>모두</b> 지운다(속성 행은 cascade). <b>복원 적용 전용이다</b> — 복원된 DB에는 백업 시점의 세션이 남아 있고, 서비스를
+     * 열기 전에 그 전부를 폐기해야 한다(AC-3). 세션 저장소 빈이 없는 일회성 역할에서도 돌도록 SQL은 이 모듈의 저장소에 있다.
+     *
+     * @return 지운 세션 수
+     */
+    int revokeAllSessions();
+
+    /**
+     * 그 계정에 아직 남은 identity 행 수 — payload·인증 매핑·세션. 생명주기 guard 행은 세지 않는다(삭제 뒤에도 남는 것이 계약이다).
+     * 삭제가 끝난 계정이면 0이어야 한다.
+     */
+    long remainingRowsOf(UUID userId);
 }

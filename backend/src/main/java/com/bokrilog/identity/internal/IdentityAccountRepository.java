@@ -274,4 +274,39 @@ public class IdentityAccountRepository {
                 .param("userId", userId)
                 .update();
     }
+
+    /** 생명주기 행이 있는 모든 계정(Story 3.10 복원 적용). */
+    public List<UUID> findAllAccounts() {
+        return jdbc.sql("SELECT user_id FROM identity_account_lifecycle ORDER BY user_id").query(UUID.class).list();
+    }
+
+    /** 그 상태의 계정(Story 3.10 복원 검증). */
+    public List<UUID> findAccountsIn(AccountState state) {
+        return jdbc.sql("SELECT user_id FROM identity_account_lifecycle WHERE state = :state ORDER BY user_id")
+                .param("state", state.name())
+                .query(UUID.class)
+                .list();
+    }
+
+    /**
+     * 인증 세션을 모두 지운다(Story 3.10 복원 적용 전용). 속성 행은 {@code ON DELETE CASCADE}로 함께 사라진다. 세션 저장소 빈이 없는
+     * 일회성 역할에서 부르므로 SQL이 여기 있다({@link #deleteSessionsOf}와 같은 근거).
+     *
+     * @return 지운 세션 수
+     */
+    public int deleteAllSessions() {
+        return jdbc.sql("DELETE FROM spring_session").update();
+    }
+
+    /** 그 계정에 남은 payload·인증 매핑·세션 행 수(Story 3.10 복원 검증). 생명주기 guard 행은 세지 않는다. */
+    public long countRemainingRowsOf(UUID userId) {
+        Long count = jdbc.sql("SELECT (SELECT count(*) FROM identity_account WHERE user_id = :userId) "
+                        + "+ (SELECT count(*) FROM identity_social_link WHERE user_id = :userId) "
+                        + "+ (SELECT count(*) FROM spring_session WHERE principal_name = :principalName)")
+                .param("userId", userId)
+                .param("principalName", userId.toString())
+                .query(Long.class)
+                .single();
+        return count == null ? 0L : count;
+    }
 }

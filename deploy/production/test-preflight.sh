@@ -166,6 +166,7 @@ secrets_base="${work}/secrets.base"
   printf 'POSTGRES_PASSWORD=%s\n' "$(random_hex 12)"
   printf 'BOKRILOG_PUBLIC_BASE_URL=https://bokrilog.test\n'
   printf 'BOKRILOG_AUDIT_DIGEST_KEY=%s\n' "$(random_hex 32)"
+  printf 'BOKRILOG_TOMBSTONE_DIGEST_KEY=%s\n' "$(random_hex 32)"
   printf 'BOKRILOG_SOURCE_CREDENTIAL_KEYS=v1:%s\n' "$(random_hex 32)"
   printf 'BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION=v1\n'
   printf 'BOKRILOG_BYBIT_BASE_URL=https://bybit.test\n'
@@ -501,12 +502,35 @@ expect_only '운영 compose가 env_file로 비밀 파일 전체를 넘김 → EN
 write_compose "${c}" '/^  backup-record:$/,/^    mem_limit:/s/^    mem_limit: 512m$/    mem_limit: 1g/'
 run_gate --compose "${c}"
 expect_only '백업 기록 역할 mem_limit 1g → MEMORY_LIMIT_MISMATCH' MEMORY_LIMIT_MISMATCH
+# Story 3.10의 일회성 역할 셋도 같다.
+for role in deletion-sample tombstone-export restore-apply; do
+  write_compose "${c}" "/^  ${role}:\$/,/^    mem_limit:/s/^    mem_limit: 512m\$/    mem_limit: 1g/"
+  run_gate --compose "${c}"
+  expect_only "${role} 역할 mem_limit 1g → MEMORY_LIMIT_MISMATCH" MEMORY_LIMIT_MISMATCH
+done
 
 printf '\n운영 비밀\n'
 s="${work}/secrets.variant"
 write_secrets "${s}" 'BOKRILOG_DB_PASSWORD='
 run_gate --secrets "${s}"
 expect_only 'DB 비밀번호 비어 있음 → SECRET_MISSING' SECRET_MISSING
+# tombstone digest 키(Story 3.10)는 필수이고 감사 digest 키와 달라야 한다.
+write_secrets "${s}" 'BOKRILOG_TOMBSTONE_DIGEST_KEY='
+run_gate --secrets "${s}"
+expect_only 'tombstone digest 키 비어 있음 → SECRET_MISSING' SECRET_MISSING
+write_secrets "${s}" "BOKRILOG_TOMBSTONE_DIGEST_KEY=$(kv_get "${secrets_base}" BOKRILOG_AUDIT_DIGEST_KEY)"
+run_gate --secrets "${s}"
+expect_only 'tombstone digest 키 = 감사 digest 키 → TOMBSTONE_KEY_REUSED' TOMBSTONE_KEY_REUSED
+same_bytes="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+# 같은 바이트의 패딩 없는 표기(문자열은 다르다).
+write_secrets "${s}" "BOKRILOG_AUDIT_DIGEST_KEY=${same_bytes}" "BOKRILOG_TOMBSTONE_DIGEST_KEY=$(printf '%s' "${same_bytes}" | tr -d '=')"
+run_gate --secrets "${s}"
+expect_only '같은 바이트의 tombstone·감사 키 → TOMBSTONE_KEY_REUSED' TOMBSTONE_KEY_REUSED
+if printf '%s' "${last_output}" | grep -F "${same_bytes}" >/dev/null; then
+  record_fail 'gate 출력에 digest 키 값이 없다' 'key 값이 출력에 있다.'
+else
+  record_pass 'gate 출력에 digest 키 값이 없다'
+fi
 if printf '%s' "${last_output}" | grep -F "$(kv_get "${secrets_base}" POSTGRES_PASSWORD)" >/dev/null; then
   record_fail 'gate 출력에 비밀값이 없다' '비밀값이 출력에 있다.'
 else

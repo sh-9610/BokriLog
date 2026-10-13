@@ -320,4 +320,26 @@ class SourceConnectionService implements SourceConnectionApi {
     public long countActiveConnections() {
         return this.repository.countActive();
     }
+
+    @Override
+    public CredentialProbe probeCredentials(int limit) {
+        int sampled = 0;
+        int opened = 0;
+        for (var row : this.repository.credentialSample(Math.max(0, limit))) {
+            sampled++;
+            var pair = this.cipher.open(new CredentialCipher.Aad(row.userId(), row.connectionId(), row.credentialId(),
+                    row.keyVersion(), row.algorithmVersion()), row.nonce(), row.ciphertext());
+            if (pair.isPresent()) {
+                opened++;
+                // 평문은 세기만 하고 버린다. 문자열은 지울 수 없으므로 참조를 바로 놓는다.
+                java.util.Arrays.fill(pair.get(), null);
+            }
+        }
+        return new CredentialProbe(sampled, opened, this.cipher.isAvailable());
+    }
+
+    @Override
+    public long remainingRowsOf(UUID userId) {
+        return this.repository.remainingRowsOf(userId);
+    }
 }

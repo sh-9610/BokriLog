@@ -310,4 +310,53 @@ class ModuleBoundaryTest {
                 .because("CALC-1.0의 거듭제곱 구현은 calculation 모듈 하나가 소유한다.");
         rule.check(PRODUCTION_CLASSES);
     }
+
+    /**
+     * 계정 삭제는 루트 orchestrator 한 곳이다(Story 3.10 AC-4). 삭제 전환·payload 삭제와 tombstone 기록을 부르는 운영 클래스는 {@code
+     * AccountErasure} 하나다 — 다른 자리가 삭제 전환을 직접 부르면 tombstone 없는 탈퇴, 모듈 데이터가 남은 탈퇴가 생긴다. 세션 전체
+     * 폐기는 복원 적용({@code RestoreApplication}) 한 곳이다. 두 API를 구현하는 모듈 안쪽은 이 규칙 밖이다.
+     */
+    @Test
+    void 계정_삭제와_세션_전체_폐기는_루트의_정해진_한_곳만_부른다() {
+        ArchRule erasure = noClasses()
+                .that().resideOutsideOfPackages(IDENTITY + "..", "com.bokrilog.operations..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.AccountErasure")
+                .should().callMethod(com.bokrilog.identity.AccountDeletionApi.class, "beginDeletion", java.util.UUID.class)
+                .orShould().callMethod(com.bokrilog.identity.AccountDeletionApi.class, "erasePayload", java.util.UUID.class)
+                .orShould().callMethod(com.bokrilog.operations.DeletionTombstoneApi.class, "record", java.util.UUID.class,
+                        String.class)
+                .because("계정 삭제는 한 트랜잭션의 orchestrator(AccountErasure) 하나가 tombstone과 함께 한다.");
+        erasure.check(PRODUCTION_CLASSES);
+
+        // 외부 사본을 outbox로 옮기는 일은 복원 적용의 것이다(재삭제와 함께 옮기는 AccountErasure, 남은 사본을 옮기는 RestoreApplication).
+        ArchRule carry = noClasses()
+                .that().resideOutsideOfPackage("com.bokrilog.operations..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.AccountErasure")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.RestoreApplication")
+                .should().callMethod(com.bokrilog.operations.DeletionTombstoneApi.class, "carry",
+                        com.bokrilog.operations.DeletionTombstoneApi.Tombstone.class)
+                .because("외부 tombstone을 outbox로 옮기는 것은 복원 적용뿐이다.");
+        carry.check(PRODUCTION_CLASSES);
+
+        ArchRule sessions = noClasses()
+                .that().resideOutsideOfPackage(IDENTITY + "..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.RestoreApplication")
+                .should().callMethod(com.bokrilog.identity.AccountDeletionApi.class, "revokeAllSessions")
+                .because("세션 전체 폐기는 서비스를 열기 전의 복원 적용에서만 한다.");
+        sessions.check(PRODUCTION_CLASSES);
+
+        // orchestrator를 부르는 자리도 정해져 있다: 새 삭제는 검증용 표본 역할, 다시 지우기는 복원 적용. 사용자 삭제 경로(Epic 5)가 생기면
+        // 이 목록에 그 자리를 더한다.
+        ArchRule erase = noClasses()
+                .that().doNotHaveFullyQualifiedName("com.bokrilog.DeletionSampleRunner")
+                .should().callMethod(AccountErasure.class, "erase", java.util.UUID.class, String.class)
+                .because("지금 새 계정 삭제를 시작하는 곳은 검증용 삭제 표본 역할뿐이다.");
+        erase.check(PRODUCTION_CLASSES);
+        ArchRule reapply = noClasses()
+                .that().doNotHaveFullyQualifiedName("com.bokrilog.RestoreApplication")
+                .should().callMethod(AccountErasure.class, "reapply", java.util.UUID.class,
+                        com.bokrilog.operations.DeletionTombstoneApi.Tombstone.class)
+                .because("외부 tombstone으로 다시 지우는 곳은 복원 적용뿐이다.");
+        reapply.check(PRODUCTION_CLASSES);
+    }
 }

@@ -1,0 +1,15 @@
+# BokriLog 삭제 tombstone 내보내기 timer(Story 3.10). 15분마다 `bokrilog-tombstone-export.service`를 띄운다.
+#
+# 남는 틈이 이 주기다 — 그 사이의 삭제는 다음 실행이 싣는다. 배포·백업이 잠금을 쥐고 있으면 그 실행은 시작하지 않고 실패로 끝나며 다음
+# 주기가 다시 돈다. `Persistent=true` — 서버가 꺼져 놓친 실행은 다음 기동 때 한 번 돈다.
+[Unit]
+Description=BokriLog deletion tombstone export timer (Story 3.10)
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+RandomizedDelaySec=60
+Unit=bokrilog-tombstone-export.service
+
+[Install]
+WantedBy=timers.target

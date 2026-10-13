@@ -7,7 +7,8 @@
 #
 #   install-backup-tools.sh  잘못된 바이트를 주는 curl → 준비 실패 2, bin/은 비어 있다. `--check`: 맞는 stub → 0, 다른 버전 → 1,
 #                            설치 manifest와 다른 바이너리 → 1, manifest 없음 → 1.
-#   backup.sh                운영 모드의 `BOKRILOG_BACKUP_NOW`·`BOKRILOG_BACKUP_FAULT` → 2, `BOKRILOG_ENV=production`의 리허설 → 2,
+#   backup.sh                운영 모드의 `BOKRILOG_BACKUP_NOW`·`BOKRILOG_BACKUP_FAULT`·`BOKRILOG_BACKUP_LOCK_WAIT` → 2,
+#                            `BOKRILOG_ENV=production`의 리허설 → 2,
 #                            알 수 없는 설정 키·같은 remote 이름·끝의 `/`·`//`·max_bytes > quota·rclone.conf 권한·identity 없음 → 2,
 #                            `keys`: 정상 → 0, 저장소를 읽지 못함 → 1, identity와 recipient가 짝이 아님 → 1.
 #
@@ -233,7 +234,7 @@ backup() {
     shift
   done
   shift
-  last_output="$(env -u BOKRILOG_BACKUP_NOW -u BOKRILOG_BACKUP_FAULT -u BOKRILOG_ENV -u BOKRILOG_COMPOSE_OVERRIDE \
+  last_output="$(env -u BOKRILOG_BACKUP_NOW -u BOKRILOG_BACKUP_FAULT -u BOKRILOG_BACKUP_LOCK_WAIT -u BOKRILOG_ENV -u BOKRILOG_COMPOSE_OVERRIDE \
     BOKRILOG_BACKUP_KEYS_DIR="${keys}" BOKRILOG_BACKUP_TOOLS="${tools}" BOKRILOG_BACKUP_DIR="${work}/backup" \
     BOKRILOG_STATE_DIR="${work}/state" BOKRILOG_SECRETS_FILE="${work}/absent.env" \
     ${assignments[@]+"${assignments[@]}"} bash "${script_dir}/backup.sh" "$@" 2>&1)"
@@ -250,6 +251,8 @@ backup BOKRILOG_BACKUP_NOW=1767225600 -- run
 expect '운영 모드의 BOKRILOG_BACKUP_NOW → 2' 2 '가상 시계'
 backup BOKRILOG_BACKUP_FAULT=dump -- run
 expect '운영 모드의 BOKRILOG_BACKUP_FAULT → 2' 2 '결함 주입'
+backup BOKRILOG_BACKUP_LOCK_WAIT=5 -- run
+expect '운영 모드의 BOKRILOG_BACKUP_LOCK_WAIT → 2' 2 '잠금 대기'
 backup BOKRILOG_ENV=production "BOKRILOG_COMPOSE_OVERRIDE=${override}" -- run --rehearsal
 expect 'BOKRILOG_ENV=production의 리허설 → 2' 2 '리허설은'
 backup BOKRILOG_ENV=ci -- run --rehearsal

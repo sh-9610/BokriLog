@@ -44,4 +44,11 @@ public interface OperationsDeletionApi {
      * @return 이번에 지운 행 수. 이미 지웠으면 0
      */
     int eraseInquiries(@Nullable UUID userId);
+
+    /**
+     * 그 사용자에게 아직 귀속된 이 모듈의 행 수(Story 3.10 복원 검증). {@code operations_*}·{@code support_*} 표의 사용자 열
+     * ({@code user_id}·{@code actor_user_id}·{@code target_user_id})을 카탈로그로 찾아 센다 — 표가 늘어도 빠지지 않는다. 삭제가 끝난
+     * 계정이면 0이어야 한다(비식별은 귀속 열을 비우고, 문의는 지운다).
+     */
+    long remainingRowsOf(UUID userId);
 }

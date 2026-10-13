@@ -156,4 +156,19 @@ public interface PortfolioMembershipApi {
 
     /** 그 portfolio. 없으면 빈 값이다. */
     Optional<PortfolioTarget> portfolioTarget(UUID portfolioId);
+
+    // ------------------------------------------------------------------ Story 3.10 복원 검증
+
+    /**
+     * 현재 포인터 불변식을 어긴 portfolio 수. 포인터는 그 portfolio·소유자의 snapshot을 가리키고, 그 순번이 그 portfolio의 가장 큰
+     * 순번이어야 한다(snapshot과 포인터 전진은 한 트랜잭션이다). snapshot이 있는데 포인터가 없어도 위반이다. 복원된 DB에서 서비스를 열기
+     * 전에 0이어야 한다.
+     */
+    long currentPointerViolations();
+
+    /**
+     * 그 사용자에게 아직 귀속된 이 모듈의 행 수. {@code portfolio}·{@code portfolio_*} 표의 {@code user_id} 열을 카탈로그로 찾아 센다.
+     * 삭제가 끝난 계정이면 0이어야 한다.
+     */
+    long remainingRowsOf(UUID userId);
 }

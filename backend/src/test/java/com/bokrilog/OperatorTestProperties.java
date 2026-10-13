@@ -20,6 +20,9 @@ final class OperatorTestProperties {
     /** 이 JVM의 digest 키. 컨텍스트가 몇 개 뜨든 같은 값이라 컨텍스트 캐시 키가 갈리지 않는다. */
     static final String AUDIT_DIGEST_KEY = newKey();
 
+    /** 이 JVM의 tombstone digest 키(Story 3.10). 감사 digest 키와 다른 값이다(같으면 기동 거부). */
+    static final String TOMBSTONE_DIGEST_KEY = newKey();
+
     private OperatorTestProperties() {}
 
     static void registerProperties(DynamicPropertyRegistry registry) {
@@ -28,6 +31,8 @@ final class OperatorTestProperties {
         // 서비스 공지(Story 3.5)의 지원 연락처. 예약 최상위 도메인 `.test`의 개발용 주소다. 비어 있는 경우는
         // `SupportContact.reinterpret` 훅으로 시험한다.
         registry.add("bokrilog.operations.support-contact", () -> SUPPORT_CONTACT);
+        // 삭제 tombstone(Story 3.10)의 digest 키. servlet 시험 컨텍스트에서도 `AccountErasure`·복원 적용을 바로 부를 수 있게 준다.
+        registry.add("bokrilog.tombstone.digest-key", () -> TOMBSTONE_DIGEST_KEY);
     }
 
     private static String newKey() {

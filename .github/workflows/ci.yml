@@ -5,11 +5,13 @@
 #
 #   changes ──> frontend-quality ──┐
 #           └─> backend-quality ───┼─> same-origin-integration ─┐
-#                                  ├─> deploy-rehearsal ────────┤
-#                                  └────────────────────────────┴─> ci-required
+#                    │             ├─> deploy-rehearsal ────────┤
+#                    │             └────────────────────────────┤
+#                    └─> restore-rehearsal ─────────────────────┴─> ci-required
 #
 # `deploy-rehearsal`(Story 3.8)은 같은 두 산출물로 운영 배포 절차(`deploy/production/`)의 gate 시험과 blue/green 리허설을 돈다.
-# 통합 job과 서로 기다리지 않는다 — 둘은 다른 compose 프로젝트·포트를 쓴다.
+# 통합 job과 서로 기다리지 않는다 — 둘은 다른 compose 프로젝트·포트를 쓴다. `restore-rehearsal`(Story 3.10)은 backend jar 하나로
+# 격리 복원 리허설을 돌아 `deploy-rehearsal`과 병렬이다.
 #
 # branch protection이 참조하는 이름은 전환 전후 모두 `ci-required`다. 이제 이 job은 검사를
 # 직접 실행하지 않고 선행 job의 결과만 집계한다(CI-PLAN §5 CI-D5).
@@ -539,10 +541,73 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  restore-rehearsal:
+    name: restore-rehearsal
+    needs: [changes, backend-quality]
+    if: needs.changes.outputs.docs-only != 'true'
+    runs-on: ubuntu-24.04
+    # Story 3.10. 복원 스크립트의 고정 입력 시험(manifest 검사기·준비 거부)과 격리 복원 리허설. 리허설은 운영 compose 위에 MinIO 두 개를
+    # 겹친 운영 대역에서 실제 `backup.sh`로 generation을 만들고, 표본 계정을 지우고 tombstone을 내보낸 뒤, 그 삭제 이전 generation을 빈
+    # 격리 프로젝트에 `restore.sh`로 복원한다(tombstone 없음·잠금·과거 key·변조·RPO 경계·오래된 generation·적용 실패·digest 키
+    # 불일치·풀 수 없는·머리 없는·오래된 latest·줄어든 내보내기·운영 이름·누출). backend jar 하나만 쓰므로
+    # `deploy-rehearsal`과 병렬로 돈다 — 둘은 다른 compose 프로젝트·포트를 쓴다. 실패하면 리허설 기록(key·저장소 설정·비밀 파일·평문
+    # tombstone 제외)을 진단 artifact로 올린다.
+    #
+    #   checkout·통합 입력 내려받기                                    1분
+    #   복원 스크립트 시험(fixture, Docker 없음)                       1분
+    #   도구 받기·이미지 빌드·백업 두 번·삭제 표본·내보내기 셋·        30분 (단계 timeout — Windows 로컬 실측 8분 29초, JVM 기동 약 열다섯)
+    #   복원 시도 열넷(그 가운데 pg_restore까지 가는 것 다섯)
+    #   여유·진단 업로드                                               8분
+    #                                                                ---------
+    #                                                                 40분
+    #
+    # 이 job의 green은 **실제 복원의 증거가 아니다.** 실제 별도 환경에서 복원하기 전까지 복원은 실제 복원 미검증이다.
+    timeout-minutes: 40
+    permissions:
+      contents: read
+
+    steps:
+      - name: 저장소 checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: 복원 스크립트 시험
+        # manifest 검사기의 판정(평문 비밀·tag 이미지·필수 키)과 `restore.sh`·`tombstone-export.sh`의 준비 거부(운영 프로젝트 이름·모드·
+        # 설정)를 고정 입력으로 본다. Docker·네트워크가 필요 없어 내려받기보다 앞에 둔다.
+        timeout-minutes: 3
+        run: bash deploy/production/test-restore-scripts.sh
+
+      - name: 통합 입력 내려받기 (backend jar)
+        # 품질 job이 검증한 그 산출물이다. 여기서 다시 빌드하지 않는다(CI-PLAN §8).
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: backend-jar-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backend/build/libs
+
+      - name: 복원 리허설
+        id: restore-rehearsal
+        # 스크립트가 스택·이미지를 스스로 정리하고, 실패하면 정리 전에 기록을 아래 디렉터리로 옮긴다.
+        timeout-minutes: 30
+        env:
+          BOKRILOG_REHEARSAL_DIAGNOSTICS: ${{ runner.temp }}/restore-rehearsal-diagnostics
+        run: bash deploy/production/rehearse-restore.sh
+
+      - name: 실패 진단 artifact 업로드
+        # 실패·timeout·취소에서만 올린다. 리허설 비밀 파일·key는 스크립트가 옮기지 않는다.
+        if: ${{ (failure() || cancelled()) && steps.restore-rehearsal.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: restore-rehearsal-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/restore-rehearsal-diagnostics
+          retention-days: 7
+          if-no-files-found: warn
+
   ci-required:
     # 이 이름이 branch protection의 required status check 이름이다. 바꾸지 않는다.
     name: ci-required
-    needs: [changes, frontend-quality, backend-quality, same-origin-integration, deploy-rehearsal]
+    needs: [changes, frontend-quality, backend-quality, same-origin-integration, deploy-rehearsal, restore-rehearsal]
     # 선행 job이 실패·취소·skip 어느 쪽이든 이 job은 반드시 실행되어 판정을 남겨야 한다.
     # 실행되지 않으면 required check가 영원히 대기 상태로 남는다.
     if: ${{ always() }}
@@ -567,5 +632,6 @@ jobs:
           BACKEND_RESULT: ${{ needs.backend-quality.result }}
           INTEGRATION_RESULT: ${{ needs.same-origin-integration.result }}
           REHEARSAL_RESULT: ${{ needs.deploy-rehearsal.result }}
+          RESTORE_RESULT: ${{ needs.restore-rehearsal.result }}
         # 판정은 스크립트가 소유한다. YAML 표현식은 저장소의 시험으로 고정할 수 없다.
         run: bash .github/scripts/aggregate-results.sh

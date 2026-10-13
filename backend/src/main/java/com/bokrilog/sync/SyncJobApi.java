@@ -896,4 +896,19 @@ public interface SyncJobApi {
 
     /** portfolio 삭제 뒤, source 삭제 앞에 호출한다. 발행 결과·시도를 먼저 지운다. */
     void eraseSyncData(@Nullable UUID userId);
+
+    // ------------------------------------------------------------------ Story 3.10 복원 검증
+
+    /**
+     * 공식 포인터 불변식을 어긴 사용자 수. 그 사용자들 가운데 활성 계획이 있는 사용자마다, 대시보드 묶음과 같은 술어로 본다 — 계획의 공식
+     * 포인터가 있고, 그 포인터의 계산 버전이 그 계획·portfolio·조건에 속하며({@code PlanPublicationService.belongs}), portfolio 현재
+     * 포인터가 그 버전의 snapshot을 가리킨다(AD-23). 읽기 전용이다. 복원된 DB에서 서비스를 열기 전에 0이어야 한다.
+     */
+    long officialBundleViolations(java.util.Collection<UUID> userIds);
+
+    /**
+     * 그 사용자에게 아직 귀속된 이 모듈의 행 수. {@code sync_*} 표의 {@code user_id} 열을 카탈로그로 찾아 센다(공유 공개 증거
+     * {@code sync_market_*}에는 사용자 열이 없다). 삭제가 끝난 계정이면 0이어야 한다.
+     */
+    long remainingRowsOf(UUID userId);
 }

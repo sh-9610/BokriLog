@@ -10,7 +10,8 @@
 #
 # 순서(run)
 #   0. 같은 날 재실행 판정: 표에 그날 generation(`gen_<UTC YYYYMMDD>`)의 `SUCCEEDED`가 있으면 아무것도 하지 않는다(행·object 불변).
-#   1. 배포와 같은 잠금(`$BOKRILOG_STATE_DIR/.lock`, 안의 `owner`가 kind·pid·operation·시작 시각)을 쥔다. 배포 중이면
+#   1. 배포와 같은 잠금(`$BOKRILOG_STATE_DIR/.lock`, 안의 `owner`가 kind·pid·operation·시작 시각)을 쥔다. tombstone 내보내기(Story 3.10,
+#      길어야 1분)가 쥐었으면 5분까지 기다린다. 배포 중이면
 #      `DEPLOY_IN_PROGRESS`, 다른 백업 중이면 `BACKUP_IN_PROGRESS`, 소유자가 죽었으면 `LOCK_STALE`(지우지 않는다)로 끝난다 — 그
 #      `FAILED` 행은 JVM을 띄우지 않고 대기열에만 넣는다(배포의 blue/green peak 중에 기록 역할 512m를 더 띄우지 않는다).
 #   2. 대기열(`$BOKRILOG_BACKUP_DIR/pending/`)을 먼저 기록하고, 잠금을 쥔 뒤 0을 다시 본다(동시에 손으로 돌린 실행).
@@ -19,7 +20,7 @@
 #   5. `pg_dump --format=custom`(운영 postgres 컨테이너의 것, 로컬 소켓) → 권한 700 임시 디렉터리. 종료 코드 0과 비어 있지 않음을
 #      본 뒤에만
 #   6. `age -R active.pub`로 암호화하고 평문을 바로 지운다.
-#   7. 암호문 SHA-256.
+#   7. 암호문 SHA-256. checksum 파일 둘째 줄에 dump 시작 시각(`dump_started_at=<epoch>`, 실제 시계)을 싣는다 — 복원의 RPO 기준(Story 3.10).
 #   8. `age -d -i identities/<key_id>.key | pg_restore --list`: pg_restore가 성공하고 목록이 비어 있지 않으며, pg_restore가 TOC를 읽고
 #      끝난 뒤 남은 stream을 끝까지 읽어 age가 EOF까지 가서 전체를 인증하고 0으로 끝난다(두 종료 코드를 따로 본다).
 #   9. 두 저장소 각각 `incoming/`에 암호문·checksum을 올리고 원격 SHA-256(내려받아 계산)과 checksum 파일을 대조한다.
@@ -53,6 +54,7 @@
 #   BOKRILOG_STATE_DIR        배포 상태 디렉터리(기본 /var/lib/bokrilog/deploy) — `.lock`과 활성 이미지(`deploy.state`).
 #   BOKRILOG_SECRETS_FILE     운영 env 파일(기본 /etc/bokrilog/production.env). compose 치환 원본 — backup key는 여기 없다.
 #   BOKRILOG_COMPOSE_OVERRIDE·BOKRILOG_PROJECT   배포 스크립트와 같다(리허설만 override).
+#   BOKRILOG_BACKUP_LOCK_WAIT 리허설 전용: tombstone 내보내기가 쥔 잠금을 기다리는 상한(초, 기본 300). 운영에서는 거부한다.
 #   BOKRILOG_BACKUP_FAULT     리허설 전용 결함 주입(쉼표 목록): `dump`·`slow-dump`·`encrypt`·`catalog`·`tamper-oci`·`move-offsite`·
 #                             `purge-oci`·`purge-offsite`.
 #
@@ -69,6 +71,8 @@ set -uo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib.sh
 . "${script_dir}/lib.sh"
+# shellcheck source=backup-lib.sh
+. "${script_dir}/backup-lib.sh"
 
 compose_file="${script_dir}/compose.yaml"
 keys_dir="${BOKRILOG_BACKUP_KEYS_DIR:-/etc/bokrilog/backup}"
@@ -82,6 +86,10 @@ project="${BOKRILOG_PROJECT:-bokrilog-production}"
 actor="${BOKRILOG_BACKUP_ACTOR:-backup-timer}"
 virtual_now="${BOKRILOG_BACKUP_NOW:-}"
 fault="${BOKRILOG_BACKUP_FAULT:-}"
+# tombstone 내보내기(Story 3.10)가 잠금을 쥐고 있으면 이만큼(초)까지 기다린다 — 내보내기는 길어야 1분이라 그 때문에 하루를 놓치지 않게.
+# 배포·다른 백업·복원이 쥐었으면 기다리지 않는다. 리허설만 값을 바꾼다(운영에서 거부).
+lock_wait_override="${BOKRILOG_BACKUP_LOCK_WAIT:-}"
+lock_wait=300
 pending_dir="${backup_dir}/pending"
 
 # 30일 규칙(AC-4). 생성 후 이만큼을 넘으면 지우고, 이만큼을 넘긴 것이 남으면 기한 초과다. 설정으로 열지 않는다.
@@ -141,6 +149,7 @@ else
   [ -z "${override_file}" ] || prep_fail '운영 모드에 겹치는 compose 파일이 있다.'
   [ -z "${virtual_now}" ] || prep_fail 'BOKRILOG_BACKUP_NOW(가상 시계)는 리허설 전용이다. 운영에서 거부한다.'
   [ -z "${fault}" ] || prep_fail 'BOKRILOG_BACKUP_FAULT(결함 주입)는 리허설 전용이다. 운영에서 거부한다.'
+  [ -z "${lock_wait_override}" ] || prep_fail 'BOKRILOG_BACKUP_LOCK_WAIT(잠금 대기)는 리허설 전용이다. 운영에서 거부한다.'
 fi
 matches "${project}" 'bokrilog-[a-z][a-z0-9-]{0,39}' || prep_fail 'BOKRILOG_PROJECT는 bokrilog-<소문자·숫자·->여야 한다.'
 matches "${actor}" '[A-Za-z0-9._@-]{1,128}' || prep_fail 'BOKRILOG_BACKUP_ACTOR의 모양이 틀렸다.'
@@ -213,45 +222,7 @@ recipient_lines="$(grep -cE '^age1[0-9a-z]+$' "${active_pub}" || true)"
 active_recipient="$(grep -E '^age1[0-9a-z]+$' "${active_pub}" | tr -d '\r')"
 
 # 이 파일 시스템이 POSIX 권한을 표현하는가. Windows의 Git Bash는 아니다 — 리허설에 한해 권한 검사를 건너뛴다(운영은 언제나 판정).
-posix_modes=true
-if [ "${rehearsal}" = true ]; then
-  probe="$(mktemp "${TMPDIR:-/tmp}/bokrilog-mode.XXXXXX" 2>/dev/null)" || probe=''
-  if [ -n "${probe}" ]; then
-    chmod 600 "${probe}" 2>/dev/null
-    case "$(ls -ln "${probe}" | awk '{ print $1 }')" in
-      -rw-------*) ;;
-      *) posix_modes=false ;;
-    esac
-    rm -f "${probe}"
-  fi
-fi
-
-mode_of() {
-  ls -lnd "$1" 2>/dev/null | awk '{ print substr($1, 1, 10) }'
-}
-
-# private_file <경로>. 소유자만 읽고 쓸 수 있다(600·400).
-private_file() {
-  [ "${posix_modes}" = true ] || return 0
-  case "$(mode_of "$1")" in
-    -rw------- | -r--------) return 0 ;;
-  esac
-  return 1
-}
-
-# private_dir <경로>. 소유자만 들어갈 수 있다(700).
-private_dir() {
-  [ "${posix_modes}" = true ] || return 0
-  [ "$(mode_of "$1")" = drwx------ ]
-}
-
-# not_shared_writable <경로>. group·other가 쓸 수 없다.
-not_shared_writable() {
-  [ "${posix_modes}" = true ] || return 0
-  local mode
-  mode="$(mode_of "$1")"
-  [ -n "${mode}" ] && [ "$(printf '%s' "${mode}" | cut -c6)" != w ] && [ "$(printf '%s' "${mode}" | cut -c9)" != w ]
-}
+probe_posix_modes "${rehearsal}"
 
 # key_dir_problems. key 디렉터리·파일 권한의 문제를 줄마다 낸다(없으면 빈 출력).
 key_dir_problems() {
@@ -264,36 +235,6 @@ key_dir_problems() {
   [ -d "${keys_dir}/recipients" ] || printf 'recipients/가 없다\n'
   not_shared_writable "${active_pub}" || printf 'active.pub을 group·other가 쓸 수 있다\n'
   private_file "${rclone_conf}" || printf 'rclone.conf 권한이 600이 아니다\n'
-}
-
-# tool <이름>. 설치 디렉터리의 바이너리 경로(Windows는 .exe).
-tool() {
-  if [ -x "${tools_dir}/bin/$1" ]; then
-    printf '%s' "${tools_dir}/bin/$1"
-  elif [ -x "${tools_dir}/bin/$1.exe" ]; then
-    printf '%s' "${tools_dir}/bin/$1.exe"
-  fi
-}
-
-# key_problem <key ID>. 그 key의 문제 하나를 낸다(없으면 빈 출력): identity 존재·권한, recipient 존재·쓰기 권한, 두 파일이 짝인가
-# (`age-keygen -y identity` = recipient).
-key_problem() {
-  local identity="${keys_dir}/identities/$1.key" recipient="${keys_dir}/recipients/$1.pub" derived wanted
-  if [ ! -s "${identity}" ]; then
-    printf 'identities/%s.key가 없다' "$1"
-  elif ! private_file "${identity}"; then
-    printf 'identities/%s.key 권한이 600이 아니다' "$1"
-  elif [ ! -s "${recipient}" ]; then
-    printf 'recipients/%s.pub이 없다' "$1"
-  elif ! not_shared_writable "${recipient}"; then
-    printf 'recipients/%s.pub을 group·other가 쓸 수 있다' "$1"
-  else
-    derived="$("$(tool age-keygen)" -y "${identity}" 2>/dev/null | tr -d '\r')"
-    wanted="$(grep -E '^age1[0-9a-z]+$' "${recipient}" | head -1 | tr -d '\r')"
-    if [ -z "${derived}" ] || [ "${derived}" != "${wanted}" ]; then
-      printf 'identities/%s.key와 recipients/%s.pub이 짝이 아니다' "$1" "$1"
-    fi
-  fi
 }
 
 bash "${script_dir}/install-backup-tools.sh" --check --prefix "${tools_dir}" >/dev/null 2>&1 \
@@ -310,62 +251,6 @@ remote_of() {
 }
 
 # --------------------------------------------------------------------------
-# 배경 실행. 긴 단계는 배경에서 돌리고 기다린다 — 그래야 신호가 오면 bash가 그 단계가 끝나기를 기다리지 않고 바로 처리기를 돈다. 한
-# 단계에는 상한이 있다(넘으면 끝내고 124 대신 그 단계의 종료 코드).
-# --------------------------------------------------------------------------
-
-child=''
-
-# guarded <상한 초> <명령…>. stdin은 호출자의 것을 그대로 넘긴다(배경 명령의 stdin이 /dev/null로 바뀌지 않게).
-#
-# 감시자는 1초마다 명령이 살아 있는지 보고, 상한을 넘기면 TERM을, 5초 뒤에도 남았으면 KILL을 보낸다 — 신호 처리기 안에서 띄운 명령은
-# TERM을 무시한 채 물려받으므로 KILL까지 가야 끝난다. 명령이 끝나면 감시자를 KILL로 끝낸다(TERM은 같은 이유로 무시될 수 있고, 그러면
-# 감시자를 기다리는 동안 상한만큼 멈춘다). 남는 것은 길어야 1초짜리 `sleep` 하나다.
-guarded() {
-  local limit="$1" status watchdog
-  shift
-  "$@" 0<&0 &
-  child=$!
-  (
-    waited=0
-    while [ "${waited}" -lt "${limit}" ]; do
-      kill -0 "${child}" 2>/dev/null || exit 0
-      sleep 1
-      waited=$((waited + 1))
-    done
-    kill -TERM -- "-${child}" 2>/dev/null || kill -TERM "${child}" 2>/dev/null
-    sleep 5
-    kill -KILL -- "-${child}" 2>/dev/null || kill -KILL "${child}" 2>/dev/null
-  ) </dev/null >/dev/null 2>&1 &
-  watchdog=$!
-  wait "${child}"
-  status=$?
-  kill -KILL "${watchdog}" 2>/dev/null
-  wait "${watchdog}" 2>/dev/null
-  child=''
-  return "${status}"
-}
-
-# 실행마다 같은 rclone 옵션. 저장소가 멈췄을 때 오래 매달리지 않게 재시도·timeout을 줄인다. 설정은 경로로만 넘긴다(값을 읽지 않는다).
-rclone_run() {
-  guarded "${step_limit}" "${rclone_bin}" --config "${rclone_conf}" --retries 2 --low-level-retries 3 --contimeout 10s \
-    --timeout 2m --log-level ERROR "$@"
-}
-
-# list_files <store> <prefix>. `size|name` 줄들. 없는 경로(종료 3)는 빈 목록이다. 읽지 못하면 1.
-list_files() {
-  local out status
-  out="$(rclone_run lsf --files-only --format sp --separator '|' "$(remote_of "$1")/$2" 2>>"${log_file:-/dev/null}")"
-  status=$?
-  case "${status}" in
-    0) printf '%s' "${out}" ;;
-    3) ;;
-    *) return 1 ;;
-  esac
-  return 0
-}
-
-# --------------------------------------------------------------------------
 # 시각(UTC). epoch 초 ↔ 달력 날짜는 awk 산술로 한다(GNU·BSD date의 인자가 다르다).
 # --------------------------------------------------------------------------
 
@@ -375,28 +260,6 @@ if [ -n "${virtual_now}" ]; then
 else
   now="$(date -u +%s)"
 fi
-
-# date_of_epoch <epoch 초>. YYYYMMDD.
-date_of_epoch() {
-  awk -v z="$(($1 / 86400))" 'BEGIN {
-    z += 719468; era = int(z / 146097); doe = z - era * 146097
-    yoe = int((doe - int(doe / 1460) + int(doe / 36524) - int(doe / 146096)) / 365)
-    y = yoe + era * 400; doy = doe - (365 * yoe + int(yoe / 4) - int(yoe / 100))
-    mp = int((5 * doy + 2) / 153); d = doy - int((153 * mp + 2) / 5) + 1; m = mp + (mp < 10 ? 3 : -9)
-    printf "%04d%02d%02d", y + (m <= 2), m, d
-  }'
-}
-
-# epoch_of_generation <gen_YYYYMMDD>. 그날 00:00 UTC의 epoch 초.
-epoch_of_generation() {
-  awk -v g="${1#gen_}" 'BEGIN {
-    y = substr(g, 1, 4) + 0; m = substr(g, 5, 2) + 0; d = substr(g, 7, 2) + 0
-    y -= (m <= 2); era = int(y / 400); yoe = y - era * 400
-    doy = int((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1
-    doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
-    printf "%.0f", (era * 146097 + doe - 719468) * 86400
-  }'
-}
 
 generation="gen_$(date_of_epoch "${now}")"
 operation="backup_${generation#gen_}_$(random_hex 6)"
@@ -649,10 +512,23 @@ fi
 # --------------------------------------------------------------------------
 
 lock_dir="${state_dir}/.lock"
-if ! lock_acquire "${lock_dir}" backup "${operation}"; then
+if [ -n "${lock_wait_override}" ]; then
+  matches "${lock_wait_override}" '[0-9]{1,4}' || prep_fail 'BOKRILOG_BACKUP_LOCK_WAIT는 초(정수)여야 한다.'
+  lock_wait="${lock_wait_override}"
+fi
+lock_waited=0
+while ! lock_acquire "${lock_dir}" backup "${operation}"; do
+  # tombstone 내보내기는 짧다. 그것만 기다리고(상한 lock_wait), 나머지는 바로 실패 처리로 간다.
+  [ "${lock_state}" = TOMBSTONE_IN_PROGRESS ] && [ "${lock_waited}" -lt "${lock_wait}" ] || break
+  [ "${lock_waited}" -eq 0 ] && say "  tombstone 내보내기가 잠금을 쥐고 있다(${lock_owner}). 최대 ${lock_wait}초 기다린다."
+  sleep 5
+  lock_waited=$((lock_waited + 5))
+done
+if [ -n "${lock_state}" ]; then
   case "${lock_state}" in
     DEPLOY_IN_PROGRESS) say "  배포가 진행 중이다(${lock_owner}). 시작하지 않는다 — timer가 다시 돈다." ;;
     BACKUP_IN_PROGRESS) say "  다른 백업이 진행 중이다(${lock_owner}). 시작하지 않는다." ;;
+    RESTORE_IN_PROGRESS | TOMBSTONE_IN_PROGRESS) say "  복원·tombstone 내보내기가 진행 중이다(${lock_owner}). 시작하지 않는다 — timer가 다시 돈다." ;;
     *) say "  LOCK_STALE: 잠금(${lock_dir})의 소유자가 없다(${lock_owner}). 지우지 않는다 — 진행 중인 배포·백업이 정말 없는지 확인한 뒤 손으로 지운다(DEVELOPMENT.md)." ;;
   esac
   # 배포가 잠금을 쥔 동안(blue/green peak)에는 기록 역할 JVM을 띄우지 않는다. 실패 행은 대기열에 두고 잠금을 쥔 다음 실행이 기록한다.
@@ -802,6 +678,8 @@ produce() {
   local store remote remote_sha remote_sum moved=''
 
   step '5. pg_dump --format=custom'
+  # dump 시작 시각(실제 시계 — 리허설의 가상 시계는 이름·파기만 옮긴다). checksum 파일 둘째 줄에 실려 복원의 RPO 기준이 된다.
+  dump_started_at="$(date -u +%s)"
   if has_fault slow-dump; then
     # 리허설 결함 주입: dump가 오래 걸린다. 이 사이에 신호를 보내 처리기가 바로 도는지 본다.
     guarded "${step_limit}" sleep 600
@@ -837,7 +715,8 @@ produce() {
     fail_code=CHECKSUM
     return 1
   fi
-  printf '%s  %s\n' "${cipher_sha}" "${cipher_name}" >"${sum_file}"
+  # 첫 줄은 `sha256sum` 모양, 둘째 줄은 dump 시작 시각(Story 3.10 — 복원의 RPO 기준). 둘째 줄이 없는 옛 generation도 복원이 읽는다.
+  printf '%s  %s\ndump_started_at=%s\n' "${cipher_sha}" "${cipher_name}" "${dump_started_at}" >"${sum_file}"
   cipher_bytes="$(wc -c <"${cipher}" | tr -d ' ')"
 
   step '8. 복호화 stream의 pg_restore --list(age는 끝까지 인증)'
@@ -874,7 +753,7 @@ produce() {
     remote_sha="$(rclone_run hashsum sha256 --download "${remote}/incoming/${cipher_name}" 2>>"${log_file}" \
       | awk 'NR == 1 { print $1 }')"
     remote_sum="$(rclone_run cat "${remote}/incoming/${cipher_name}.sha256" 2>>"${log_file}" | tr -d '\r')"
-    if [ "${remote_sha}" != "${cipher_sha}" ] || [ "${remote_sum}" != "${cipher_sha}  ${cipher_name}" ]; then
+    if [ "${remote_sha}" != "${cipher_sha}" ] || [ "${remote_sum}" != "$(tr -d '\r' <"${sum_file}")" ]; then
       fail_code="$(store_code CHECKSUM "${store}")"
       fail_store="${store}"
       return 1

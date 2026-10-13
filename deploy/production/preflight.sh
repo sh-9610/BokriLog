@@ -28,10 +28,11 @@
 #   자원      compose의 `mem_limit`(API 768m·Worker 512m·PostgreSQL 3g·Nginx 128m, 일회성 역할 ≤ Worker), Alloy 256MiB 예약,
 #             blue/green peak(API×2 + 나머지) + OS 예약 ≤ 선언 메모리
 #   compose   앱 이미지는 변수, 인프라 이미지는 `@sha256:` 고정, `build`·`env_file` 없음, API·Worker에 migrate 프로필 없음, 역할 고정,
-#             일회성 역할(migrate·deploy-audit·backup-record) ≤ Worker 예산
+#             일회성 역할(migrate·deploy-audit·backup-record·deletion-sample·tombstone-export·restore-apply) ≤ Worker 예산
 #   비밀      파일 권한 600, 필수 이름이 비지 않음, 로그인 제공자 하나 이상, 프로필·역할·환경·Worker 설정·배포 수행자를 덮는
 #             이름(`SPRING_PROFILES_*`·`SPRING_APPLICATION_JSON`·`BOKRILOG_ROLE`·`BOKRILOG_ENV`·`BOKRILOG_SYNC_WORKER_*`·
-#             `BOKRILOG_DEPLOY_ACTOR`) 없음, backup key(age identity) 모양의 값 없음(Story 3.9)
+#             `BOKRILOG_DEPLOY_ACTOR`) 없음, backup key(age identity) 모양의 값 없음(Story 3.9), tombstone digest 키가 있고 감사
+#             digest 키와 바이트가 다름(Story 3.10 — `TOMBSTONE_KEY_REUSED`)
 #
 # 종료 코드
 #   0 -- 모든 검사 통과
@@ -385,6 +386,9 @@ check_limit nginx "${expected_nginx_mib}" eq
 check_limit migrate "${expected_worker_mib}" le
 check_limit deploy-audit "${expected_worker_mib}" le
 check_limit backup-record "${expected_worker_mib}" le
+check_limit deletion-sample "${expected_worker_mib}" le
+check_limit tombstone-export "${expected_worker_mib}" le
+check_limit restore-apply "${expected_worker_mib}" le
 if [ "${limit_ok}" = true ]; then
   pass 'mem_limit: API 768m·Worker 512m·PostgreSQL 3g·Nginx 128m·일회성 ≤ 512m'
 fi
@@ -488,7 +492,7 @@ esac
 
 required_secrets='BOKRILOG_DB_URL BOKRILOG_DB_USERNAME BOKRILOG_DB_PASSWORD POSTGRES_PASSWORD BOKRILOG_PUBLIC_BASE_URL
 BOKRILOG_AUDIT_DIGEST_KEY BOKRILOG_SOURCE_CREDENTIAL_KEYS BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION
-BOKRILOG_BYBIT_BASE_URL BOKRILOG_BYBIT_RESERVED_IP BOKRILOG_SUPPORT_CONTACT'
+BOKRILOG_BYBIT_BASE_URL BOKRILOG_BYBIT_RESERVED_IP BOKRILOG_SUPPORT_CONTACT BOKRILOG_TOMBSTONE_DIGEST_KEY'
 missing_secrets=''
 for name in ${required_secrets}; do
   [ -n "$(kv_get "${secrets_file}" "${name}")" ] || missing_secrets="${missing_secrets} ${name}"
@@ -510,6 +514,28 @@ if [ "${provider_ready}" = true ]; then
   pass '로그인 제공자 하나 이상'
 else
   refuse NO_SIGN_IN_PROVIDER '로그인 제공자 client id·secret 쌍이 하나도 없다.'
+fi
+# tombstone digest 키(Story 3.10)는 감사 digest 키와 달라야 한다 — 외부에 35일 남는 tombstone 사본 하나로 원장의 digest와 대조할 길이
+# 생긴다. 표기가 아니라 바이트로 비교한다(base64를 풀 수 없으면 문자열로). 값을 찍지 않는다.
+key_bytes() {
+  local value
+  # 패딩·공백을 걷고 다시 채운다 — 같은 바이트의 패딩 없는 표기도 같은 키로 잡는다.
+  value="$(printf '%s' "$1" | tr -d '= \r\n')"
+  while [ $((${#value} % 4)) -ne 0 ]; do
+    value="${value}="
+  done
+  printf '%s' "${value}" | base64 -d 2>/dev/null | od -An -tx1 | tr -d ' \n'
+}
+tombstone_key="$(kv_get "${secrets_file}" BOKRILOG_TOMBSTONE_DIGEST_KEY)"
+audit_key="$(kv_get "${secrets_file}" BOKRILOG_AUDIT_DIGEST_KEY)"
+if [ -n "${tombstone_key}" ] && [ -n "${audit_key}" ]; then
+  tombstone_bytes="$(key_bytes "${tombstone_key}")"
+  audit_bytes="$(key_bytes "${audit_key}")"
+  if [ "${tombstone_key}" = "${audit_key}" ] || { [ -n "${tombstone_bytes}" ] && [ "${tombstone_bytes}" = "${audit_bytes}" ]; }; then
+    refuse TOMBSTONE_KEY_REUSED 'BOKRILOG_TOMBSTONE_DIGEST_KEY가 BOKRILOG_AUDIT_DIGEST_KEY와 같다(두 키는 달라야 한다).'
+  else
+    pass 'tombstone digest 키가 감사 digest 키와 다르다'
+  fi
 fi
 # 비밀 파일이 정할 수 없는 이름. 프로필·역할·환경은 compose가, Worker 설정은 이미지가, 배포 수행자는 배포를 돌리는 셸이 정한다.
 # `SPRING_APPLICATION_JSON`은 어떤 설정이든 한 줄로 덮을 수 있어 막는다.

@@ -79,4 +79,18 @@ public interface PlanConditionApi {
      */
     long countPlans(boolean activeOnly, @Nullable UUID userId, @Nullable UUID portfolioId,
             @Nullable String calculationPolicy);
+
+    // ------------------------------------------------------------------ Story 3.10 복원 검증
+
+    /**
+     * 활성 계획 유일성을 어긴 수 — 활성 계획이 둘 이상인 portfolio 수와 사용자 수의 합. 부분 유일 색인이 portfolio마다 막지만 복원된
+     * DB에서 서비스를 열기 전에 다시 본다(0이어야 한다).
+     */
+    long activePlanViolations();
+
+    /**
+     * 그 사용자에게 아직 귀속된 이 모듈의 행 수. {@code plan_*} 표의 {@code user_id} 열을 카탈로그로 찾아 센다. 삭제가 끝난 계정이면
+     * 0이어야 한다.
+     */
+    long remainingRowsOf(UUID userId);
 }
