@@ -157,4 +157,17 @@ class SyncJobRepository {
         jdbc.sql("DELETE FROM sync_source_snapshot WHERE user_id=:u").param("u",userId).update();
         jdbc.sql("DELETE FROM sync_job WHERE user_id=:u").param("u",userId).update();
     }
+    /**
+     * 그 사용자에게 남은 이 모듈의 행 수(Story 3.10 복원 검증). {@code sync_*} 표의 {@code user_id} 열을 카탈로그로 찾아 센다 — 표를
+     * 이름으로 나열하지 않으므로 새 표가 생겨도 빠지지 않는다. 공유 공개 증거({@code sync_market_*})에는 사용자 열이 없다.
+     */
+    long remainingRowsOf(UUID userId) {
+        Long count=jdbc.sql("SELECT CAST(COALESCE(sum(CAST(CAST((xpath('/row/n/text()', query_to_xml(format("
+                + "'SELECT count(*) AS n FROM %I WHERE %I = %L', c.table_name, c.column_name, CAST(:user AS text)), "
+                + "false, true, '')))[1] AS text) AS bigint)), 0) AS bigint) FROM information_schema.columns c "
+                + "WHERE c.table_schema = current_schema() AND c.column_name = 'user_id' "
+                + "AND c.table_name LIKE 'sync\\_%'")
+            .param("user",userId).query(Long.class).single();
+        return count==null ? 0L : count;
+    }
 }

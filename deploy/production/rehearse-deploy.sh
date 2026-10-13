@@ -192,6 +192,7 @@ secrets_file="${work}/production.env"
   printf 'POSTGRES_PASSWORD=%s\n' "$(random_hex 16)"
   printf 'BOKRILOG_PUBLIC_BASE_URL=%s\n' "${public_url}"
   printf 'BOKRILOG_AUDIT_DIGEST_KEY=%s\n' "$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+  printf 'BOKRILOG_TOMBSTONE_DIGEST_KEY=%s\n' "$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
   printf 'BOKRILOG_SOURCE_CREDENTIAL_KEYS=rehearsal:%s\n' "$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
   printf 'BOKRILOG_SOURCE_CREDENTIAL_ACTIVE_KEY_VERSION=rehearsal\n'
   printf 'BOKRILOG_BYBIT_BASE_URL=https://bybit.rehearsal.test\n'

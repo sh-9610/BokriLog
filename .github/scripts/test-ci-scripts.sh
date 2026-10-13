@@ -678,6 +678,9 @@ aggregate_sink="${work_root}/aggregate-sink.md"
 
 # check_aggregate <라벨> <docs_only> <changes> <frontend> <backend> <integration> <rehearsal>
 #                 <기대 종료 코드> [기대 메시지 조각] [없어야 하는 메시지 조각]
+#
+# 복원 리허설(Story 3.10)의 결과는 기본으로 <rehearsal>과 같다 — 두 리허설은 같은 분류에서 같이 돌고 같이 건너뛴다. 복원 리허설만 다른
+# 경우는 호출 앞에 `restore_result_override=<값>`을 붙인다(빈 값도 그대로 쓴다).
 check_aggregate() {
   local label="$1" docs="$2" changes="$3" frontend="$4" backend="$5" integration="$6" rehearsal="$7"
   local want_status="$8" want_message="${9:-}" unwanted_message="${10:-}"
@@ -692,6 +695,7 @@ check_aggregate() {
     BACKEND_RESULT="${backend}" \
     INTEGRATION_RESULT="${integration}" \
     REHEARSAL_RESULT="${rehearsal}" \
+    RESTORE_RESULT="${restore_result_override-${rehearsal}}" \
     GITHUB_STEP_SUMMARY="${aggregate_sink}" \
     bash "${aggregate_script}"
   ) >"${log_file}" 2>&1
@@ -759,6 +763,22 @@ check_aggregate '제품 변경 · 리허설 결과 없음 -> 종료 1' \
   false success success success success '' 1 \
   '::error::deploy-rehearsal job의 결과가 비었다.'
 
+# Story 3.10: 복원 리허설도 필수다. 다른 job이 모두 통과해도 그 하나가 실패·건너뜀·빈 결과면 병합을 막는다.
+restore_result_override=failure check_aggregate '제품 변경 · restore-rehearsal failure -> 종료 1' \
+  false success success success success success 1 '::error::restore-rehearsal job이 failure로 끝났다.'
+
+restore_result_override=skipped check_aggregate '제품 변경 · 복원 리허설만 예상 밖 skipped -> 종료 1' \
+  false success success success success success 1 \
+  '::error::restore-rehearsal job이 건너뛰어졌지만 이 변경은 제품 변경으로 분류됐다.'
+
+restore_result_override='' check_aggregate '제품 변경 · 복원 리허설 결과 없음 -> 종료 1' \
+  false success success success success success 1 \
+  '::error::restore-rehearsal job의 결과가 비었다.'
+
+restore_result_override=success check_aggregate '문서-only · 복원 리허설만 예상 밖 success -> 종료 1' \
+  true success skipped skipped skipped skipped 1 \
+  '::error::restore-rehearsal job이 실행됐지만 이 변경은 문서-only로 분류됐다.'
+
 check_aggregate 'changes job 실패 -> 종료 1' \
   false failure skipped skipped skipped skipped 1 '::error::changes job이 success가 아니다'
 
@@ -789,6 +809,7 @@ changes_fail_log="${work_root}/aggregate-changes-fail.txt"
   BACKEND_RESULT=skipped \
   INTEGRATION_RESULT=skipped \
   REHEARSAL_RESULT=skipped \
+  RESTORE_RESULT=skipped \
   GITHUB_STEP_SUMMARY="${aggregate_sink}" \
   bash "${aggregate_script}"
 ) >"${changes_fail_log}" 2>&1
@@ -813,6 +834,7 @@ aggregate_summary_status=0
   BACKEND_RESULT=success \
   INTEGRATION_RESULT=success \
   REHEARSAL_RESULT=success \
+  RESTORE_RESULT=success \
   GITHUB_STEP_SUMMARY="${aggregate_summary}" \
   bash "${aggregate_script}"
 ) >"${work_root}/aggregate-summary-log.txt" 2>&1 || aggregate_summary_status=$?
@@ -824,7 +846,8 @@ elif grep -qF '### 필수 검사 집계' "${aggregate_summary}" \
   && grep -qF '| `frontend-quality` |' "${aggregate_summary}" \
   && grep -qF '| `backend-quality` |' "${aggregate_summary}" \
   && grep -qF '| `same-origin-integration` |' "${aggregate_summary}" \
-  && grep -qF '| `deploy-rehearsal` |' "${aggregate_summary}"; then
+  && grep -qF '| `deploy-rehearsal` |' "${aggregate_summary}" \
+  && grep -qF '| `restore-rehearsal` |' "${aggregate_summary}"; then
   record_pass '집계가 GITHUB_STEP_SUMMARY에 판정 표를 남긴다'
 else
   record_fail '집계가 GITHUB_STEP_SUMMARY에 판정 표를 남긴다' \
@@ -1060,18 +1083,18 @@ printf '\nci.yml 계약\n'
 # 순서까지 단정한다. 파일에서 읽는 순서가 곧 사람이 이해하는 실행 순서다. `deploy-rehearsal`은 Story 3.8이 더했다.
 assert_equals 'ci.yml · job 목록과 순서' \
   "$(workflow_job_ids)" \
-  'changes frontend-quality backend-quality same-origin-integration deploy-rehearsal ci-required'
+  'changes frontend-quality backend-quality same-origin-integration deploy-rehearsal restore-rehearsal ci-required'
 
 # branch protection이 참조하는 이름이다. 바뀌면 required check가 영원히 대기 상태로 남고
 # 병합은 아무 검사 없이 열린다.
 assert_equals 'ci.yml · job name은 ci-required' \
   "$(count_lines '^    name: ci-required$')" '1'
 
-# `ubuntu-latest`는 러너 갱신이 CI 판정을 바꾼다. 여섯 job 모두 고정한다.
+# `ubuntu-latest`는 러너 갱신이 CI 판정을 바꾼다. 일곱 job 모두 고정한다.
 assert_equals 'ci.yml · 모든 job이 runs-on: ubuntu-24.04 고정' \
-  "$(count_lines '^    runs-on: ubuntu-24\.04$')" '6'
+  "$(count_lines '^    runs-on: ubuntu-24\.04$')" '7'
 
-for job_id in changes frontend-quality backend-quality same-origin-integration deploy-rehearsal ci-required; do
+for job_id in changes frontend-quality backend-quality same-origin-integration deploy-rehearsal restore-rehearsal ci-required; do
   assert_equals "ci.yml · '${job_id}' job이 ubuntu-24.04를 쓴다" \
     "$(count_job_lines "${job_id}" '^    runs-on: ubuntu-24\.04$')" '1'
 done
@@ -1086,9 +1109,12 @@ assert_equals 'ci.yml · same-origin-integration은 두 품질 job을 기다린�
   "$(count_job_lines same-origin-integration '^    needs: \[changes, frontend-quality, backend-quality\]$')" '1'
 assert_equals 'ci.yml · deploy-rehearsal은 두 품질 job을 기다린다' \
   "$(count_job_lines deploy-rehearsal '^    needs: \[changes, frontend-quality, backend-quality\]$')" '1'
-# 집계가 기다리지 않는 job의 결과는 빈 값으로 온다. 다섯 job이 모두 있어야 한다.
+# 복원 리허설(Story 3.10)은 backend jar 하나만 쓴다 — 프런트엔드 산출물을 기다리지 않는다.
+assert_equals 'ci.yml · restore-rehearsal은 changes와 backend-quality를 기다린다' \
+  "$(count_job_lines restore-rehearsal '^    needs: \[changes, backend-quality\]$')" '1'
+# 집계가 기다리지 않는 job의 결과는 빈 값으로 온다. 여섯 job이 모두 있어야 한다.
 assert_equals 'ci.yml · ci-required는 모든 선행 job을 기다린다' \
-  "$(count_job_lines ci-required '^    needs: \[changes, frontend-quality, backend-quality, same-origin-integration, deploy-rehearsal\]$')" '1'
+  "$(count_job_lines ci-required '^    needs: \[changes, frontend-quality, backend-quality, same-origin-integration, deploy-rehearsal, restore-rehearsal\]$')" '1'
 
 # 선행 job이 실패·취소·skip 어느 쪽이든 집계는 실행되어 판정을 남겨야 한다.
 # 이 줄이 없으면 실패한 실행에서 required check가 영원히 대기 상태로 남는다.
@@ -1116,7 +1142,8 @@ for aggregate_input in \
   'FRONTEND_RESULT: ${{ needs.frontend-quality.result }}' \
   'BACKEND_RESULT: ${{ needs.backend-quality.result }}' \
   'INTEGRATION_RESULT: ${{ needs.same-origin-integration.result }}' \
-  'REHEARSAL_RESULT: ${{ needs.deploy-rehearsal.result }}'; do
+  'REHEARSAL_RESULT: ${{ needs.deploy-rehearsal.result }}' \
+  'RESTORE_RESULT: ${{ needs.restore-rehearsal.result }}'; do
   if workflow_step_block ci-required '필수 검사 집계' | grep -F -- "${aggregate_input}" >/dev/null; then
     record_pass "ci.yml · 집계 입력 '${aggregate_input%%:*}'을 전달한다"
   else
@@ -1202,6 +1229,14 @@ assert_job_steps deploy-rehearsal <<'STEPS'
 실패 진단 artifact 업로드
 STEPS
 
+assert_job_steps restore-rehearsal <<'STEPS'
+저장소 checkout
+복원 스크립트 시험
+통합 입력 내려받기 (backend jar)
+복원 리허설
+실패 진단 artifact 업로드
+STEPS
+
 assert_job_steps ci-required <<'STEPS'
 저장소 checkout
 필수 검사 집계
@@ -1212,10 +1247,10 @@ STEPS
 # 줄고, 하나 지우면 문서-only PR이 전체 검사를 돈다. 둘 다 여기서 걸린다.
 # `ci-required`에는 붙지 않는다. 집계는 어떤 분류에서도 실행되어야 한다.
 docs_gate="if: needs.changes.outputs.docs-only != 'true'"
-assert_equals 'ci.yml · docs-only 게이트를 단 job은 4개' \
-  "$(grep -cF "    ${docs_gate}" "${workflow_file}")" '4'
+assert_equals 'ci.yml · docs-only 게이트를 단 job은 5개' \
+  "$(grep -cF "    ${docs_gate}" "${workflow_file}")" '5'
 
-for gated_job in frontend-quality backend-quality same-origin-integration deploy-rehearsal; do
+for gated_job in frontend-quality backend-quality same-origin-integration deploy-rehearsal restore-rehearsal; do
   if workflow_job_block "${gated_job}" | grep -F -- "${docs_gate}" >/dev/null; then
     record_pass "ci.yml · '${gated_job}' job에 docs-only 게이트가 있다"
   else
@@ -1283,7 +1318,7 @@ fi
 
 # 후속 job은 움직이는 ref가 아니라 이벤트가 고정한 commit을 checkout한다(CI-PLAN §5).
 assert_equals 'ci.yml · 모든 job이 github.sha를 checkout한다' \
-  "$(count_lines '^          ref: \$\{\{ github\.sha \}\}$')" '6'
+  "$(count_lines '^          ref: \$\{\{ github\.sha \}\}$')" '7'
 
 # --- frontend-quality ------------------------------------------------------
 # lint·stylelint·format 검사는 타입 검사 뒤, 프로덕션 빌드 앞이다(spec-frontend-lint-policy.md,
@@ -1359,9 +1394,9 @@ done
 # 조용히 성공해, 실패한 실행에 진단물이 없다는 사실을 아무도 모른 채 영원히 "업로드 성공"이 된다.
 # `error`도 답이 아니다. 진단 수집이 job 판정을 뒤집으면 원인이 진단 경로로 바뀐다.
 assert_equals 'ci.yml · 진단 artifact 업로드는 if-no-files-found: warn' \
-  "$(count_lines '^          if-no-files-found: warn$')" '4'
+  "$(count_lines '^          if-no-files-found: warn$')" '5'
 
-for diagnostics_job in frontend-quality backend-quality same-origin-integration deploy-rehearsal; do
+for diagnostics_job in frontend-quality backend-quality same-origin-integration deploy-rehearsal restore-rehearsal; do
   assert_equals "ci.yml · '${diagnostics_job}'의 진단 업로드가 warn이다" \
     "$(count_job_lines "${diagnostics_job}" '^          if-no-files-found: warn$')" '1'
 done
@@ -1497,9 +1532,42 @@ if workflow_step_block deploy-rehearsal '백업 리허설' \
 else
   record_fail 'ci.yml · 백업 리허설 진단 기록은 업로드 경로 아래에 있다' '진단 디렉터리 env가 없거나 업로드 경로 밖이다.'
 fi
+# --- restore-rehearsal(Story 3.10) -------------------------------------------
+# 복원 리허설도 품질 job의 jar를 그대로 소비한다(프런트엔드 산출물은 쓰지 않는다). 판정은 두 스크립트가 소유한다.
+assert_equals 'ci.yml · 복원 리허설 job이 같은 이름의 backend jar를 소비한다' \
+  "$(count_job_lines restore-rehearsal "${artifact_name_pattern}")" '1'
+if workflow_job_block restore-rehearsal | grep -E 'gradlew|run: npm --prefix frontend run build$' >/dev/null; then
+  record_fail 'ci.yml · 복원 리허설 job은 산출물을 다시 빌드하지 않는다' '복원 리허설 job에 gradlew 또는 프런트엔드 build가 있다.'
+else
+  record_pass 'ci.yml · 복원 리허설 job은 산출물을 다시 빌드하지 않는다'
+fi
+if workflow_job_block restore-rehearsal | grep -E 'docker compose .* up( |$)' >/dev/null; then
+  record_fail 'ci.yml · 복원 리허설 job은 compose를 직접 띄우지 않는다' '복원 리허설 job에 별도 compose up이 있다.'
+else
+  record_pass 'ci.yml · 복원 리허설 job은 compose를 직접 띄우지 않는다'
+fi
+assert_equals 'ci.yml · 복원 스크립트 시험 단계는 test-restore-scripts.sh 하나를 부른다' \
+  "$(workflow_step_block restore-rehearsal '복원 스크립트 시험' | grep -E '^        run: ' | sed 's/^        run: //')" \
+  'bash deploy/production/test-restore-scripts.sh'
+assert_equals 'ci.yml · 복원 리허설 단계는 rehearse-restore.sh 하나를 부른다' \
+  "$(workflow_step_block restore-rehearsal '복원 리허설' | grep -E '^        run: ' | sed 's/^        run: //')" \
+  'bash deploy/production/rehearse-restore.sh'
+assert_equals 'ci.yml · 복원 리허설 단계의 timeout은 30분' \
+  "$(workflow_step_block restore-rehearsal '복원 리허설' | grep -cxF '        timeout-minutes: 30')" '1'
+assert_equals 'ci.yml · restore-rehearsal job timeout은 40분' \
+  "$(count_job_lines restore-rehearsal '^    timeout-minutes: 40$')" '1'
+if workflow_step_block restore-rehearsal '복원 리허설' \
+  | grep -F 'BOKRILOG_REHEARSAL_DIAGNOSTICS: ${{ runner.temp }}/restore-rehearsal-diagnostics' >/dev/null \
+  && workflow_step_block restore-rehearsal '실패 진단 artifact 업로드' \
+  | grep -F 'path: ${{ runner.temp }}/restore-rehearsal-diagnostics' >/dev/null; then
+  record_pass 'ci.yml · 복원 리허설 진단 기록 자리와 업로드 경로가 같다'
+else
+  record_fail 'ci.yml · 복원 리허설 진단 기록 자리와 업로드 경로가 같다' '진단 디렉터리 env 또는 업로드 경로가 없다.'
+fi
 # 리허설 스크립트도 이 저장소의 셸 규약을 따른다(gate 시험이 그 파일들을 훑는다). 여기서도 한 번 더 막는다.
 for deploy_script in deploy.sh preflight.sh rehearse-deploy.sh lib.sh test-preflight.sh backup.sh install-backup-tools.sh \
-  rehearse-backup.sh test-backup-scripts.sh; do
+  rehearse-backup.sh test-backup-scripts.sh backup-lib.sh restore.sh tombstone-export.sh check-recovery-manifest.sh \
+  rehearse-restore.sh test-restore-scripts.sh; do
   deploy_path="${repo_root}/deploy/production/${deploy_script}"
   if [ ! -f "${deploy_path}" ]; then
     record_fail "deploy/production/${deploy_script}가 있다" '파일이 없다.'

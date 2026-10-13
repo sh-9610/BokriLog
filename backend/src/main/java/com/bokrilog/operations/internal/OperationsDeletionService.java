@@ -33,10 +33,14 @@ class OperationsDeletionService implements OperationsDeletionApi {
 
     private final TransactionTemplate transactions;
 
+    /** 삭제된 계정의 잔여 행 세기(Story 3.10). */
+    private final DeletionResidueRepository residue;
+
     OperationsDeletionService(OperatorAuditRepository audit, OperationalRestrictionRepository restrictions,
             SignalRepository signals, ObjectProvider<ActorDigest> digest, SupportInquiryRepository inquiries,
-            PlatformTransactionManager transactionManager) {
+            DeletionResidueRepository residue, PlatformTransactionManager transactionManager) {
         this.audit = audit;
+        this.residue = residue;
         this.inquiries = inquiries;
         this.restrictions = restrictions;
         this.signals = signals;
@@ -86,5 +90,10 @@ class OperationsDeletionService implements OperationsDeletionApi {
             return this.inquiries.eraseUser(userId);
         });
         return erased == null ? 0 : erased;
+    }
+
+    @Override
+    public long remainingRowsOf(UUID userId) {
+        return this.residue.remainingRowsOf(userId);
     }
 }

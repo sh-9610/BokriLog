@@ -23,7 +23,8 @@ import org.jspecify.annotations.Nullable;
  * 들어갈 수 없다. 값 집합이 실행 중에 정해지는 것은 둘뿐이고 둘 다 사용자 입력이 아니라 코드·런타임이 정한다 — HTTP {@code uri}는
  * 이 애플리케이션이 등록한 경로 템플릿(그 밖은 {@code UNKNOWN}으로 접는다), JVM 메모리 {@code id}는 이 JVM의 메모리 풀 이름이다.
  *
- * <p>모든 행은 공통 tag {@link #ENV_TAG}를 가진다. 값은 {@link #ENVIRONMENTS} 셋 중 하나라 개발·CI 수치가 운영 실적과 섞이지 않는다.
+ * <p>모든 행은 공통 tag {@link #ENV_TAG}를 가진다. 값은 {@link #ENVIRONMENTS} 넷 중 하나라 개발·CI·격리 복원(Story 3.10, `restore`) 수치가 운영 실적과 섞이지 않는다 — 운영 경보의
+ * selector는 `env="production"`이다.
  * 공통 tag {@link #ROLE_TAG}(Story 3.8)도 모든 행에 붙는다. 값은 {@link #ROLES} 셋 중 하나라 API·Worker 프로세스의 수치가 갈린다
  * — 예를 들어 동기화 대기 나이는 Worker만 측정한다.
  */
@@ -33,7 +34,7 @@ public final class TelemetryAllowlist {
     public static final String ENV_TAG = "env";
 
     /** {@code BOKRILOG_ENV}가 받을 수 있는 값. */
-    public static final Set<String> ENVIRONMENTS = Set.of("development", "ci", "production");
+    public static final Set<String> ENVIRONMENTS = Set.of("development", "ci", "production", "restore");
 
     /** 공통 tag 이름(Story 3.8). 값은 프로세스 역할({@code bokrilog.role})이다. */
     public static final String ROLE_TAG = "role";

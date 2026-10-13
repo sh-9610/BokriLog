@@ -410,3 +410,24 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-9-encrypted-backup.md`
   summary: 백업 기록 대기열(`pending/`)의 재전송에 행 단위 멱등 키를 더해, 기록은 됐지만 뒤의 행 수 확인이 실패한 묶음이 다시 쓰일 때 `SUCCEEDED` 밖의 행(`FAILED`·`PURGED`·`MEASURED`·감사)이 중복되지 않게 한다.
   evidence: 지금은 `SUCCEEDED` 중복만 서비스가 거절한다. 그 밖의 행은 같은 묶음이 두 번 들어가면 두 번 남는다. 드문 경로(기록 성공 직후 psql 확인 실패)이고 성공 판정·gauge에는 영향이 없지만 감사·이력이 부풀 수 있다(3.9 patch 루프 보고, 2026-10-12).
+- source_spec: none
+  summary: Story 3.10 AC-5의 새 송신 IP 감지(`BYBIT_IP_REBIND_REQUIRED` 상태 표시·동기화 차단)를 3.10 핵심(manifest·격리 복원·tombstone·RPO)에서 떼어 별도 스토리 보완으로 미룬다.
+  evidence: 대시보드·설정 화면과 sync admission을 바꾸는 독립 배포 단위의 사용자 기능이고, 복원 절차와 따로 리뷰·머지할 수 있다(2026-10-13 사용자 결정).
+- source_spec: none
+  summary: 운영 훈련 증거 기록(3.10 AC-6의 베타 전·월 1회 실제 격리 복원 훈련의 시작·완료·실패·RPO·수동 작업시간·발견 결함 감사)을 3.4 AC-6 정지 훈련·3.8 운영 배포 smoke 증거와 함께 하나의 훈련 증거 원장으로 다룬다.
+  evidence: 세 스토리의 훈련 증거가 같은 모양(실제 훈련과 자동시험·리허설 구분, 실패한 훈련을 완료로 기록하지 않음)이고 운영 호스트가 있어야 실제 증거가 생긴다. 3.10은 리허설과 RPO 측정까지 한다(2026-10-13 사용자 결정).
+- source_spec: none
+  summary: Story 3.10 AC-5의 호스트 전환 절차(OCI A1 확보 8시간 실패 시 PAYG/유료 VPS 전환 runbook)를 3.10 핵심에서 떼어 운영 호스트 준비와 함께 다룬다.
+  evidence: 운영 계정·호스트가 없어 절차를 실행으로 검증할 수 없고 저장소 코드 변경이 아니다(2026-10-13 사용자 결정).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-10-isolated-restore.md`
+  summary: Story 3.10 AC-3 중 격리 복원 환경의 실제 OIDC 로그인 왕복과 승인된 시험 Bybit 계정의 read-only safe sync 검증을 실연동 게이트와 함께 다룬다.
+  evidence: 3.10 격리 복원은 외부 provider 호출을 끄고(빈 OIDC·Bybit 값의 fail-closed) 로그인 설정 존재·자격정보 복호화 가능 수·세션 폐기까지만 확인한다. 실제 왕복은 승인된 시험 계정·reserved IP가 필요한 Epic 1·2 실연동 게이트 소관이다(2026-10-13).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-10-isolated-restore.md`
+  summary: tombstone 내보내기의 관측(마지막 성공 시각 gauge·정체 경보·`OnFailure` 알림)을 더해 15분 timer가 멈춘 것을 복원 당일이 아니라 그때 알게 한다.
+  evidence: 3.10은 복원 시점에 `tombstones/latest`의 신선도를 검사해 오래된 사본으로는 서비스를 열지 않지만, 평시에는 내보내기 실패가 systemd 종료 코드로만 드러난다. 메트릭 경로는 운영 관측 연결(Alloy) 뒤에야 쓸모가 있다(3.10 리뷰 blind-hunter, 2026-10-13).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-10-isolated-restore.md`
+  summary: tombstone digest 키의 회전 절차(겹침 기간 두 키 계산, outbox·외부 사본의 key id 전환, 이전 키 폐기 시점)를 정한다.
+  evidence: 3.10은 파일 머리에 key id를 싣고 불일치를 거부할 뿐 회전을 지원하지 않는다. digest는 원문 ID 없이 다시 계산할 수 없어 회전에는 살아 있는 계정 전체를 두 키로 대조하는 별도 절차가 필요하다(3.10 리뷰 blind-hunter, 2026-10-13).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-10-isolated-restore.md`
+  summary: 복구 manifest를 실제 저장소 상태와 대조하는 검사(manifest의 backup key ID가 남은 generation의 key ID 전부를 덮는지, tombstone recipient의 짝 identity가 있는지)를 정기 점검으로 더한다.
+  evidence: 3.10 검사기는 manifest 자체의 형식·평문 비밀만 본다. 저장소와의 대조는 실제 manifest가 저장소 밖에 있어 운영자 환경에서만 돌 수 있다(3.10 리뷰 blind-hunter, 2026-10-13).

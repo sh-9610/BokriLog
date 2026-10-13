@@ -20,7 +20,8 @@
 #    5. 재시도          부분 object 정리(incoming/) 뒤 같은 generation 성공
 #    5b. 한쪽 이동 실패  OCI 밖 이동 실패 → FAILED MOVE_OFFSITE, 이미 옮긴 OCI는 incoming/으로 되돌림(generations/ 불변)
 #    5c. 신호           dump 중 SIGTERM → 바로 처리, 임시본 0, FAILED INTERRUPTED, 잠금 해제, 종료 1
-#    6. 잠금            배포 중·다른 백업 중·죽은 소유자(LOCK_STALE, 지우지 않음) → 기록 역할 없이 대기열
+#    6. 잠금            배포 중·다른 백업 중·복원 중·tombstone 내보내기 중(상한까지 기다림)·죽은 소유자(LOCK_STALE, 지우지 않음)
+#                       → 기록 역할 없이 대기열
 #    7. 수량 상한       잠금을 쥔 실행이 대기열을 먼저 기록한다. 오래된 것부터 COUNT 파기
 #    8. 용량 상한       오래된 것부터 BYTES 파기, 마지막 성공은 남긴다
 #    9. 29일 경계       정확히 29일은 남기고 1초 뒤 파기(마지막 성공도 예외 없음) — 그 실행은 PostgreSQL 정지 중(파기는 돌고 행은 대기열)
@@ -433,9 +434,13 @@ assert_equals '정상 · 기록' "$(events_of "${day0}")" 'STARTED,SUCCEEDED,MEA
 table_sha="$(psql_value "SELECT sha256 FROM operations_backup_event WHERE event = 'SUCCEEDED' AND generation_id = '${day0}'")"
 rclone_run copyto "oci:${oci_bucket}/generations/${day0}.k1.dump.age" "${work}/fetched.age" >/dev/null 2>&1
 assert_equals '정상 · 저장소의 암호문 SHA-256 = 기록' "$(sha256_of "${work}/fetched.age")" "${table_sha}"
-assert_equals '정상 · checksum 파일 = 기록' \
-  "$(rclone_run cat "offsite:${offsite_bucket}/generations/${day0}.k1.dump.age.sha256" 2>/dev/null | tr -d '\r')" \
-  "${table_sha}  ${day0}.k1.dump.age"
+sum_text="$(rclone_run cat "offsite:${offsite_bucket}/generations/${day0}.k1.dump.age.sha256" 2>/dev/null | tr -d '\r')"
+assert_equals '정상 · checksum 파일 첫 줄 = 기록' "$(printf '%s\n' "${sum_text}" | sed -n 1p)" "${table_sha}  ${day0}.k1.dump.age"
+if matches "$(printf '%s\n' "${sum_text}" | sed -n 2p)" 'dump_started_at=[0-9]{9,11}'; then
+  record_pass '정상 · checksum 파일 둘째 줄은 dump 시작 시각(복원의 RPO 기준)'
+else
+  record_fail '정상 · checksum 파일 둘째 줄은 dump 시작 시각(복원의 RPO 기준)' "실제 '${sum_text}'"
+fi
 assert_equals '정상 · age 형식' "$(head -c 21 "${work}/fetched.age")" 'age-encryption.org/v1'
 if grep -F "${marker_email}" "${work}/fetched.age" >/dev/null || grep -F "${marker_user}" "${work}/fetched.age" >/dev/null; then
   record_fail '정상 · 암호문에 원문 표지가 없다' '암호문에 표지가 그대로 있다.'
@@ -613,6 +618,25 @@ if grep -F '다른 백업이 진행 중' "${run_log}" >/dev/null; then
 else
   record_fail '다른 백업 중 · BACKUP_IN_PROGRESS로 보고한다' "$(tail -3 "${run_log}")"
 fi
+# 복원·tombstone 내보내기(Story 3.10)도 같은 잠금을 쓴다. 복원은 기다리지 않고, 내보내기는 짧으므로 상한까지 기다린 뒤 실패한다.
+hold_lock restore "$$"
+run_backup "6. 복원 중(${day2})" "$(at_day 2 70)"
+assert_equals '복원 중 · 종료 1' "${run_status}" '1'
+if grep -F 'FAILED RESTORE_IN_PROGRESS' "${run_log}" >/dev/null; then
+  record_pass '복원 중 · RESTORE_IN_PROGRESS로 보고한다(기다리지 않는다)'
+else
+  record_fail '복원 중 · RESTORE_IN_PROGRESS로 보고한다(기다리지 않는다)' "$(tail -3 "${run_log}")"
+fi
+hold_lock tombstone "$$"
+export BOKRILOG_BACKUP_LOCK_WAIT=6
+run_backup "6. tombstone 내보내기 중(${day2})" "$(at_day 2 80)"
+unset BOKRILOG_BACKUP_LOCK_WAIT
+assert_equals 'tombstone 내보내기 중 · 종료 1' "${run_status}" '1'
+if grep -F '최대 6초 기다린다' "${run_log}" >/dev/null && grep -F 'FAILED TOMBSTONE_IN_PROGRESS' "${run_log}" >/dev/null; then
+  record_pass 'tombstone 내보내기 중 · 상한까지 기다린 뒤 TOMBSTONE_IN_PROGRESS로 보고한다'
+else
+  record_fail 'tombstone 내보내기 중 · 상한까지 기다린 뒤 TOMBSTONE_IN_PROGRESS로 보고한다' "$(tail -3 "${run_log}")"
+fi
 sleep 0 &
 dead_pid=$!
 wait "${dead_pid}"
@@ -627,7 +651,7 @@ fi
 assert_equals '죽은 소유자 · 잠금을 스스로 지우지 않는다' "$([ -d "${state_dir}/.lock" ] && printf held || printf released)" 'held'
 release_lock
 assert_layout '잠금' "$(objects_of "${day0}" "${day1}")"
-assert_equals '잠금 · 대기열 셋' "$(pending_count)" "$((pending_before + 3))"
+assert_equals '잠금 · 대기열 다섯' "$(pending_count)" "$((pending_before + 5))"
 show_log_on_failure "${failed_before}"
 
 # ---------------------------------------------------------------- 7. 수량 상한(대기열 기록)
@@ -638,9 +662,9 @@ failed_before="${tests_failed}"
 run_backup "7. 수량 상한 3(${day2}) — 잠금을 쥐면 대기열을 먼저 기록한다" "$(at_day 2 600)"
 assert_equals '수량 · 셋째 generation · 종료 0' "${run_status}" '0'
 assert_equals '대기열 · 비었다' "$(pending_count)" '0'
-assert_equals '대기열 · 잠금 실패 행 셋이 기록됐다' \
+assert_equals '대기열 · 잠금 실패 행 다섯이 기록됐다' \
   "$(psql_value "SELECT string_agg(code, ',' ORDER BY code) FROM operations_backup_event WHERE generation_id = '${day2}' AND event = 'FAILED'")" \
-  'BACKUP_IN_PROGRESS,DEPLOY_IN_PROGRESS,LOCK_STALE'
+  'BACKUP_IN_PROGRESS,DEPLOY_IN_PROGRESS,LOCK_STALE,RESTORE_IN_PROGRESS,TOMBSTONE_IN_PROGRESS'
 assert_equals '대기열 · 그 행들이 이 실행의 시작보다 먼저다' \
   "$(psql_value "SELECT bool_and(f.sequence < s.sequence) FROM operations_backup_event f, operations_backup_event s WHERE f.generation_id = '${day2}' AND f.event = 'FAILED' AND s.generation_id = '${day2}' AND s.event = 'STARTED'")" \
   't'

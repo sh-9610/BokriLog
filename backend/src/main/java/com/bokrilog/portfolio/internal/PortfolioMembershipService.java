@@ -154,4 +154,14 @@ class PortfolioMembershipService implements PortfolioMembershipApi {
     public Optional<PortfolioTarget> portfolioTarget(UUID portfolioId) {
         return this.repository.portfolioTarget(portfolioId);
     }
+
+    @Override
+    public long currentPointerViolations() {
+        return this.repository.currentPointerViolations();
+    }
+
+    @Override
+    public long remainingRowsOf(UUID userId) {
+        return this.repository.remainingRowsOf(userId);
+    }
 }

@@ -131,12 +131,13 @@ class TelemetryAllowlistTest extends OperatorTestBase {
     }
 
     @Test
-    void env는_세_값_밖이면_기동을_거부한다() {
+    void env는_네_값_밖이면_기동을_거부한다() {
         TelemetryConfig config = new TelemetryConfig();
-        for (String env : List.of("development", "ci", "production")) {
+        // `restore`는 격리 복원(Story 3.10)의 API·Worker다 — 운영 경보(env="production")에 섞이지 않는다.
+        for (String env : List.of("development", "ci", "production", "restore")) {
             assertThat(config.telemetryMeterFilter(env, "api")).isNotNull();
         }
-        for (String env : List.of("staging", "", "Production")) {
+        for (String env : List.of("staging", "", "Production", "Restore")) {
             assertThatThrownBy(() -> config.telemetryMeterFilter(env, "api")).as(env)
                     .isInstanceOf(IllegalStateException.class);
         }

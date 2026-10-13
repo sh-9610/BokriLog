@@ -421,6 +421,14 @@ class SyncJobService implements SyncJobApi {
                 ending.latencyMs())));
     }
     @Override
+    public long officialBundleViolations(java.util.Collection<UUID> userIds) {
+        return publications.officialBundleViolations(userIds);
+    }
+    @Override
+    public long remainingRowsOf(UUID userId) {
+        return jobs.remainingRowsOf(userId);
+    }
+    @Override
     public void lockConnectionRevocation(UUID userId) {
         requireCallerTransaction();
         publicationPlans.lockPlanWrites(userId);

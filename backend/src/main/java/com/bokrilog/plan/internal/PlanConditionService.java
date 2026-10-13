@@ -270,6 +270,16 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
     }
 
     @Override
+    public long activePlanViolations() {
+        return repository.activePlanViolations();
+    }
+
+    @Override
+    public long remainingRowsOf(UUID userId) {
+        return repository.remainingRowsOf(userId);
+    }
+
+    @Override
     public void erasePlanData(@Nullable UUID userId) {
         if (userId!=null) transactions.executeWithoutResult(status -> repository.erase(userId));
     }

@@ -232,7 +232,8 @@ abstract class AuthFlowTestBase {
         // 문의(Story 3.6)도 계정 표를 외래키로 가리키지 않는다. 영업일 달력(`support_business_calendar`·
         // `support_calendar_year`)은 migration seed라 비우지 않는다. 백업 기록(Story 3.9)은 사용자 식별자가 없는 순수 운영 데이터다.
         this.jdbc.sql("TRUNCATE TABLE operations_signal, operations_restriction, operations_audit_event, "
-                + "operations_notice_version, operations_notice_incident, support_inquiry, operations_backup_event")
+                + "operations_notice_version, operations_notice_incident, support_inquiry, operations_backup_event, "
+                + "operations_deletion_tombstone")
                 .update();
     }
 

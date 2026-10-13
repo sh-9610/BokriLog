@@ -158,16 +158,25 @@ mkdir -p "${state_dir}/nginx" "${state_dir}/logs" || prep_fail "상태 디렉터
 operation="deploy_$(date -u +%Y%m%dT%H%M%SZ)_$(random_hex 6)"
 
 # 배포와 창 닫기는 한 번에 하나다. 일일 백업(`backup.sh`, Story 3.9)도 같은 잠금을 쥐고 돈다 — 백업 중에는 배포가 시작되지 않고, 배포
-# 중에는 백업이 시작되지 않는다. 잠금 안의 `owner`가 누가(deploy|backup·pid·operation·시작 시각) 쥐었는지 말한다(`lib.sh`).
+# 중에는 백업이 시작되지 않는다. 복원·tombstone 내보내기(Story 3.10)도 같다. 잠금 안의 `owner`가 누가(deploy|backup|restore|tombstone·
+# pid·operation·시작 시각) 쥐었는지 말한다(`lib.sh`).
 lock_dir="${state_dir}/.lock"
 if ! lock_acquire "${lock_dir}" deploy "${operation}"; then
   case "${lock_state}" in
     BACKUP_IN_PROGRESS) prep_fail "백업이 진행 중이다(${lock_owner}). 끝난 뒤 다시 돈다." ;;
     DEPLOY_IN_PROGRESS) prep_fail "다른 배포가 진행 중이다(${lock_owner})." ;;
+    RESTORE_IN_PROGRESS | TOMBSTONE_IN_PROGRESS) prep_fail "복원·tombstone 내보내기가 진행 중이다(${lock_owner}). 끝난 뒤 다시 돈다." ;;
     *) prep_fail "LOCK_STALE: 잠금(${lock_dir})의 소유자가 없다(${lock_owner}). 진행 중인 배포·백업이 정말 없는지 확인한 뒤 손으로 지운다(DEVELOPMENT.md)." ;;
   esac
 fi
 trap 'lock_release "${lock_dir}"' EXIT
+# 격리 복원(Story 3.10)의 스택이 남아 돌고 있으면 시작하지 않는다 — PostgreSQL 3g·API·Worker가 blue/green peak 위에 겹친다. 복원은 끝나도
+# 프로젝트를 남기므로(조사·전환용) 손으로 지운 뒤 다시 돈다.
+restore_stacks="$(docker ps --filter label=com.docker.compose.project --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
+  | grep -E '^bokrilog-restore-' | sort -u | tr '\n' ' ' | sed 's/ $//' || true)"
+if [ -n "${restore_stacks}" ]; then
+  prep_fail "RESTORE_STACK_RUNNING: 격리 복원 프로젝트가 돌고 있다(${restore_stacks}). 'docker compose --project-name <project> --file ${compose_file} down --volumes'로 지운 뒤 다시 돈다."
+fi
 log_file="${state_dir}/logs/${operation}.log"
 : >"${log_file}"
 say "operation: ${operation}"

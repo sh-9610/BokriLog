@@ -2,6 +2,7 @@ package com.bokrilog.identity.internal;
 
 import com.bokrilog.identity.AccountDeletionApi;
 import com.bokrilog.identity.DeletionOutcome;
+import java.util.List;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
@@ -81,5 +82,35 @@ class AccountDeletionService implements AccountDeletionApi {
                 yield DeletionOutcome.COMPLETED;
             }
         };
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<UUID> accounts() {
+        return repository.findAllAccounts();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<UUID> deletedAccounts() {
+        return repository.findAccountsIn(AccountState.DELETED);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<UUID> deletionInProgressAccounts() {
+        return repository.findAccountsIn(AccountState.DELETION_IN_PROGRESS);
+    }
+
+    @Override
+    @Transactional
+    public int revokeAllSessions() {
+        return repository.deleteAllSessions();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public long remainingRowsOf(UUID userId) {
+        return repository.countRemainingRowsOf(userId);
     }
 }

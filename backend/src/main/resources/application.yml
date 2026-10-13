@@ -236,6 +236,12 @@ bokrilog:
     operators: ${BOKRILOG_OPERATORS:}
     audit-digest-key: ${BOKRILOG_AUDIT_DIGEST_KEY:}
     support-contact: ${BOKRILOG_SUPPORT_CONTACT:}
+  # 계정 삭제 tombstone의 사용자 digest(HMAC-SHA256) 키(Story 3.10). base64 32바이트 이상이고 **감사 digest 키와 달라야 한다**(같으면
+  # 기동 거부). 삭제 표본·복원 적용 역할에서는 필수다 — 비면 그 역할이 뜨지 않는다. API·Worker는 지금 받지 않는다(사용자 삭제 경로가
+  # 없다, Epic 5). 키를 잃으면 외부 tombstone을 복원된 계정과 맞출 수 없으므로 운영 비밀 파일과 OCI 밖 복구 manifest(참조)에 둔다.
+  #   BOKRILOG_TOMBSTONE_DIGEST_KEY
+  tombstone:
+    digest-key: ${BOKRILOG_TOMBSTONE_DIGEST_KEY:}
   telemetry:
     env: ${BOKRILOG_ENV:development}
   # 워커 dispatch 간격. `FirstSnapshotWorker`의 여섯 dispatch(첫 스냅샷·수집·판정·환산·발행·증분 동기화)가
@@ -428,3 +434,63 @@ bokrilog:
       actor: ${BOKRILOG_BACKUP_ACTOR:}
       events: ${BOKRILOG_BACKUP_EVENTS:}
       rehearsal: ${BOKRILOG_BACKUP_REHEARSAL:false}
+
+---
+# 검증용 일회성 삭제 표본 역할(Story 3.10).
+#
+# 복원 리허설·훈련이 표본 계정 하나를 지운다(`DeletionSampleRunner` → `AccountErasure`) — 삭제 전환·tombstone outbox 행·모듈 삭제·payload
+# 삭제가 한 트랜잭션이다. **사용자 삭제 경로가 아니다**(Epic 5). 운영 환경(`BOKRILOG_ENV=production`)에서는 기동을 거부한다. 웹 서버를
+# 띄우지 않고 Flyway는 검증만 한다(여러 모듈의 표에 쓰므로 schema가 맞아야 한다). 감사 digest 키(제한 target 비식별)와 tombstone digest
+# 키가 필요하다.
+#   BOKRILOG_DELETION_SAMPLE_USER    -- 지울 표본 계정의 내부 user_id
+#   BOKRILOG_DELETION_SAMPLE_REQUEST -- 삭제 요청 ID(`[A-Za-z0-9_-]{1,64}`)
+#   BOKRILOG_DELETION_SAMPLE_REHEARSAL -- 리허설 표지(true). 없으면 기동을 거부한다(운영 환경 값만으로는 막지 않는다)
+spring:
+  config:
+    activate:
+      on-profile: deletion-sample
+  main:
+    web-application-type: none
+bokrilog:
+  deletion:
+    sample:
+      user: ${BOKRILOG_DELETION_SAMPLE_USER:}
+      request: ${BOKRILOG_DELETION_SAMPLE_REQUEST:}
+      rehearsal: ${BOKRILOG_DELETION_SAMPLE_REHEARSAL:false}
+
+---
+# 일회성 tombstone 내보내기 역할(Story 3.10).
+#
+# 운영 호스트의 timer(`deploy/production/tombstone-export.sh`, 15분 주기)가 띄운다. 기한(+35일) 지난 outbox 행을 지우고 살아 있는 행
+# 전체를 마운트된 파일 하나에 쓴다(`TombstoneExportRunner`). 호스트가 그 파일을 tombstone 전용 age key로 암호화해 OCI 밖 저장소에 올린다
+# — **그 age key는 이 역할에 오지 않는다.** 웹 서버를 띄우지 않고 Flyway는 검증만 한다. 파일 머리에 digest 키 ID를 싣기 위해
+# tombstone digest 키가 필요하다(감사 digest 키는 받지 않는다).
+spring:
+  config:
+    activate:
+      on-profile: tombstone-export
+  main:
+    web-application-type: none
+bokrilog:
+  tombstone:
+    export:
+      file: ${BOKRILOG_TOMBSTONE_EXPORT_FILE:/run/bokrilog/io/tombstones.txt}
+
+---
+# 일회성 복원 적용 역할(Story 3.10).
+#
+# 복원 절차(`deploy/production/restore.sh`)가 격리 compose 프로젝트에서 `pg_restore`·migration 뒤, API·Worker를 띄우기 **전에** 한 번
+# 띄운다(`RestoreApplyRunner` → `RestoreApplication`). 마운트된 파일 하나가 복호화된 외부 tombstone이다 — 맞은 계정을 다시 지우고, 모든
+# 세션을 폐기하고, 불변식과 자격정보 표본 복호를 센다. 통과해야 종료 0이다. 웹 서버를 띄우지 않고 **Flyway는 검증한다**(migration이 먼저
+# 돌았다). 감사 digest 키·tombstone digest 키·자격정보 key ring이 필요하고, 로그인 제공자·Bybit 값은 받지 않는다(외부 호출 0).
+spring:
+  config:
+    activate:
+      on-profile: restore-apply
+  main:
+    web-application-type: none
+bokrilog:
+  restore:
+    tombstones-file: ${BOKRILOG_RESTORE_TOMBSTONES_FILE:/run/bokrilog/io/tombstones.txt}
+    # 격리 표지. restore.sh가 격리 프로젝트 이름(`bokrilog-restore-*`)을 준다 — 없으면 적용하지 않는다.
+    isolated-project: ${BOKRILOG_RESTORE_ISOLATED_PROJECT:}

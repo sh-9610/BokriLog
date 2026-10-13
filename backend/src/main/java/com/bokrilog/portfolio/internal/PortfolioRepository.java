@@ -258,4 +258,35 @@ class PortfolioRepository {
             .query((rs,n)->new com.bokrilog.portfolio.PortfolioMembershipApi.PortfolioTarget(
                 rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),rs.getBoolean(3))).optional();
     }
+
+    /**
+     * 현재 포인터 불변식을 어긴 portfolio 수(Story 3.10 복원 검증). 포인터가 그 portfolio·소유자의 snapshot을 가리키지 않거나, 그 순번이
+     * portfolio의 가장 큰 snapshot 순번이 아니거나, snapshot이 있는데 포인터가 없다.
+     */
+    long currentPointerViolations() {
+        Long count = this.jdbc.sql("SELECT count(*) FROM portfolio p "
+                + "LEFT JOIN portfolio_current_snapshot c ON c.portfolio_id=p.portfolio_id "
+                + "LEFT JOIN portfolio_snapshot s ON s.portfolio_snapshot_id=c.portfolio_snapshot_id "
+                + "AND s.portfolio_id=p.portfolio_id AND s.user_id=p.user_id "
+                + "AND s.publication_sequence=c.publication_sequence "
+                + "WHERE (c.portfolio_id IS NULL AND EXISTS (SELECT 1 FROM portfolio_snapshot x WHERE x.portfolio_id=p.portfolio_id)) "
+                + "OR (c.portfolio_id IS NOT NULL AND (s.portfolio_snapshot_id IS NULL OR c.publication_sequence<>"
+                + "(SELECT max(x.publication_sequence) FROM portfolio_snapshot x WHERE x.portfolio_id=p.portfolio_id)))")
+            .query(Long.class).single();
+        return count==null ? 0L : count;
+    }
+
+    /**
+     * 그 사용자에게 남은 이 모듈의 행 수(Story 3.10 복원 검증). {@code portfolio}·{@code portfolio_*} 표의 {@code user_id} 열을
+     * 카탈로그로 찾아 센다 — 표를 이름으로 나열하지 않으므로 새 표가 생겨도 빠지지 않는다.
+     */
+    long remainingRowsOf(UUID userId) {
+        Long count = this.jdbc.sql("SELECT CAST(COALESCE(sum(CAST(CAST((xpath('/row/n/text()', query_to_xml(format("
+                + "'SELECT count(*) AS n FROM %I WHERE %I = %L', c.table_name, c.column_name, CAST(:user AS text)), "
+                + "false, true, '')))[1] AS text) AS bigint)), 0) AS bigint) FROM information_schema.columns c "
+                + "WHERE c.table_schema = current_schema() AND c.column_name = 'user_id' "
+                + "AND (c.table_name = 'portfolio' OR c.table_name LIKE 'portfolio\\_%')")
+            .param("user",userId).query(Long.class).single();
+        return count==null ? 0L : count;
+    }
 }

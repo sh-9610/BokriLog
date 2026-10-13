@@ -491,7 +491,7 @@ Actuator는 **관리 포트에서 Prometheus 엔드포인트 하나만** 연다(
 | `worker` | 작업 dispatch, 주기 측정, 종료 신호에 drain, PostgreSQL session advisory lock으로 단일 실행. 같은 servlet 앱이지만 공개 포트를 컨테이너 루프백(`127.0.0.1`)에만 묶는다 | Nginx upstream·포트 게시 대상이 아니다 |
 | `all` | 둘 다(지금까지의 동작). 개발·CI·시험의 기본값 | drain·단일 잠금이 없다. **`BOKRILOG_ENV=production`이면 기동 거부** |
 
-일회성 역할 셋은 웹 서버 없이 뜨고 역할 값을 보지 않는다 — `migrate`(schema를 바꾸는 유일한 프로세스, AD-12)와 `deploy-audit`(감사 원장에 배포 단계 SYSTEM 행 하나를 더하고 끝난다, Flyway 검사 없음 — 미적용 migration이 있는 DB에도 쓴다), `backup-record`(백업 실행 기록을 `operations_backup_event`에 더하고 끝난다, Flyway 검사 없음 — 아래 `## 백업`). 모든 메트릭에 공통 tag `role`이 붙는다(`TelemetryAllowlist`). 대기 나이·대기 문의 수 같은 주기 측정 gauge는 측정하는 역할(`worker`·`all`)에만 있다 — API 슬롯이 NaN을 영원히 내 미측정 경보를 울리지 않게.
+일회성 역할은 웹 서버 없이 뜨고 역할 값을 보지 않는다 — `migrate`(schema를 바꾸는 유일한 프로세스, AD-12)와 `deploy-audit`(감사 원장에 배포 단계 SYSTEM 행 하나를 더하고 끝난다, Flyway 검사 없음 — 미적용 migration이 있는 DB에도 쓴다), `backup-record`(백업 실행 기록을 `operations_backup_event`에 더하고 끝난다, Flyway 검사 없음 — 아래 `## 백업`), 그리고 Story 3.10의 셋 — `deletion-sample`(검증용 표본 계정 삭제, 운영 환경 거부)·`tombstone-export`(tombstone outbox 내보내기)·`restore-apply`(격리 복원의 tombstone 적용·검증)이고 셋 다 Flyway를 검증한다(아래 `## 복원`). 모든 메트릭에 공통 tag `role`이 붙는다(`TelemetryAllowlist`). 대기 나이·대기 문의 수 같은 주기 측정 gauge는 측정하는 역할(`worker`·`all`)에만 있다 — API 슬롯이 NaN을 영원히 내 미측정 경보를 울리지 않게.
 
 **Worker drain.** `docker compose stop`의 SIGTERM이 곧 drain 요청이다(별도 HTTP 경로를 두지 않는다). Worker는 새 lease claim을 멈추고, heartbeat를 계속 밀며, 진행 중 작업(여섯 종류 모두)이 비거나 `bokrilog.sync.worker.drain-timeout`(기본 120초)이 지날 때까지 기다린다(`WorkerDrain` — 컨텍스트 닫기의 첫 사건에서 돌아 shutdown phase 5초가 자르지 않는다). 종료 코드는 0(비었다)·75(`worker.drain.incomplete`, 남은 작업은 lease 만료 뒤 다음 Worker가 잡는다)·76(`worker.lock.lost`, 잠금 세션을 잃어 스스로 끝냈다)이다(`WorkerExit`). 시험이 고정하는 것은 빈의 `exitCode()`까지다 — 실제 JVM이 신호를 받아 컨텍스트를 닫은 뒤 그 코드로 끝나는 경로(`BokriLogApplication`의 halt)는 시험·리허설이 고정하지 않는다(리허설의 drain 미완료는 결함 주입으로 75를 넣어 절차의 반응만 본다). 운영 compose의 Worker `stop_grace_period`는 150초다.
 
@@ -560,20 +560,20 @@ smoke 경로는 운영 제한이 막는 기능이 아니다 — 제한 중 배�
 
 ## 백업 (`deploy/production/backup.sh`, Story 3.9)
 
-**상태: 실저장소 미검증.** 절차는 CI 리허설(`deploy-rehearsal` job의 `백업 리허설` 단계 — MinIO 두 개, 가상 시계)과 고정 입력 시험(`백업 스크립트 시험`)만 통과했다. 실제 OCI Object Storage와 OCI 밖 저장소에 올리고 30일 파기를 그 저장소에서 확인하기 전까지 백업은 검증되지 않은 것으로 다룬다. 가상 시계의 파기 결과를 실제 파기 완료로 선언하지 않는다. OCI 밖 저장소의 업체는 아직 정하지 않았다(정하는 것은 Ask First). 복원은 Story 3.10이 소유한다 — 이 절차에는 복원 실행이 없다.
+**상태: 실저장소 미검증.** 절차는 CI 리허설(`deploy-rehearsal` job의 `백업 리허설` 단계 — MinIO 두 개, 가상 시계)과 고정 입력 시험(`백업 스크립트 시험`)만 통과했다. 실제 OCI Object Storage와 OCI 밖 저장소에 올리고 30일 파기를 그 저장소에서 확인하기 전까지 백업은 검증되지 않은 것으로 다룬다. 가상 시계의 파기 결과를 실제 파기 완료로 선언하지 않는다. OCI 밖 저장소의 업체는 아직 정하지 않았다(정하는 것은 Ask First). 복원은 Story 3.10이 소유한다 — 이 절차에는 복원 실행이 없고, 복원은 아래 `## 복원`이다. 배포·백업·복원·tombstone 내보내기는 같은 `.lock`을 쓴다(kind `deploy|backup|restore|tombstone`).
 
 ### 순서
 
 운영 서버의 systemd timer(`bokrilog-backup.timer`, 매일 18:30 UTC = 03:30 KST, `Persistent=true`)가 `backup.sh run`을 돈다.
 
 0. **같은 날 재실행** — generation ID는 `gen_<UTC YYYYMMDD>`다. 표에 그 generation의 `SUCCEEDED`가 있으면 아무것도 하지 않는다(행·object 불변, 종료 0).
-1. **잠금** — 배포와 같은 `$BOKRILOG_STATE_DIR/.lock`을 쥔다. 잠금 안의 `owner` 파일이 쥔 쪽(`kind=deploy|backup`·`pid`·`operation`·`started`)을 말한다. 배포 중이면 `FAILED DEPLOY_IN_PROGRESS`, 다른 백업 중이면 `FAILED BACKUP_IN_PROGRESS`, 소유자 pid가 죽었거나 `owner`가 없으면 `FAILED LOCK_STALE`이고 셋 다 종료 1이다. **이 실패 행은 기록 역할 JVM을 띄우지 않고 대기열에만 넣는다** — 배포가 잠금을 쥔 동안(blue/green peak) 512m를 더 띄우지 않는다.
+1. **잠금** — 배포와 같은 `$BOKRILOG_STATE_DIR/.lock`을 쥔다. tombstone 내보내기(Story 3.10, 길어야 1분)가 쥐었으면 5분까지 기다린다(리허설만 `BOKRILOG_BACKUP_LOCK_WAIT`로 줄인다). 잠금 안의 `owner` 파일이 쥔 쪽(`kind=deploy|backup`·`pid`·`operation`·`started`)을 말한다. 배포 중이면 `FAILED DEPLOY_IN_PROGRESS`, 다른 백업 중이면 `FAILED BACKUP_IN_PROGRESS`, 소유자 pid가 죽었거나 `owner`가 없으면 `FAILED LOCK_STALE`이고 셋 다 종료 1이다. **이 실패 행은 기록 역할 JVM을 띄우지 않고 대기열에만 넣는다** — 배포가 잠금을 쥔 동안(blue/green peak) 512m를 더 띄우지 않는다.
 2. **대기열** — 잠금을 쥔 실행은 `$BOKRILOG_BACKUP_DIR/pending/`의 행을 먼저 기록하고, 0을 다시 본다(그사이 손으로 돌린 실행이 성공했을 수 있다).
 3. **로컬 임시본·시작** — 앞선 실행이 남긴 `tmp/` 아래 것을 지우고(`PURGED LOCAL_TEMP`) `STARTED`를 기록한다.
 4. **incoming 정리** — 두 저장소의 `incoming/`(앞선 실행의 부분 object)을 비운다(`PURGED INCOMING_CLEARED`).
 5. **dump** — 운영 postgres 컨테이너의 `pg_dump --format=custom`(로컬 소켓, `compose exec -T`)을 권한 700 임시 디렉터리에 쓴다. 종료 코드 0과 비어 있지 않음을 확인한 뒤에만
 6. **암호화** — `age -R active.pub`. 평문은 암호화 직후, 그리고 어느 실패·신호에서든 지운다(trap).
-7. **암호문 SHA-256**.
+7. **암호문 SHA-256.** checksum 파일은 `sha256sum` 모양의 첫 줄과 dump 시작 시각(`dump_started_at=<epoch>`, 실제 시계 — 복원의 RPO 기준) 둘째 줄이다.
 8. **catalog** — `age -d -i identities/<key_id>.key | pg_restore --list`. pg_restore는 TOC만 읽고 끝나므로 남은 stream을 끝까지 읽어 age가 EOF까지 가게 한다(그 전에 끊기면 큰 dump에서 EPIPE이고, 마지막 chunk까지 인증하지 못한다). age·pg_restore 두 종료 코드가 모두 0이고 목록이 비어 있지 않아야 한다.
 9. **업로드** — 두 저장소 각각 `incoming/`에 암호문·checksum을 올리고, 원격 object를 내려받아 계산한 SHA-256과 checksum 파일을 대조한다.
 10. **이동** — 둘 다 맞으면 두 저장소 모두 `generations/`로 옮긴다. 한쪽 이동이 실패하면 이미 옮긴 쪽을 `incoming/`으로 되돌리고(못 하면 지운다) `FAILED MOVE_<STORE>`다 — `generations/`에 기록되지 않은 generation이 남지 않는다. 같은 날 앞선 실패의 같은 generation을 먼저 지우는 단계의 실패도 이동 실패다. 여기까지 모두 성공해야 `SUCCEEDED`(암호문 bytes·SHA-256·key ID)다 — 한쪽 업로드만으로는 성공이 아니다.
@@ -611,7 +611,7 @@ Worker(와 `all`)가 그 표를 60초마다 읽어 `bokrilog_backup_last_success
 - **앱 key와 분리한다.** backup key는 자격정보 암호화 key ring·감사 digest 키와 섞지 않고, DB·Git·로그·compose 환경·앱 프로세스 어디에도 넣지 않는다 — 호스트 도구(age·rclone)만 읽는다. 운영 비밀 파일(`production.env`)에 age identity 모양의 값이 있으면 배포 gate가 거부한다(`BACKUP_KEY_IN_SECRETS`).
 - **generation 기록과 object 이름에 key ID가 실린다**(`gen_<YYYYMMDD>.<key_id>.dump.age`·`.sha256`). object 이름에는 그 밖의 것이 없다 — 사용자·금융 식별자가 없다.
 - **만들기.** `age-keygen -o identities/<id>.key`, `age-keygen -y identities/<id>.key > recipients/<id>.pub`, 그리고 `active.pub`을 `# key_id=<id>` + 그 recipient로 쓴다.
-- **오프라인 복구 사본(필수).** key를 만들 때 **그 age identity의 사본을 OCI 밖 오프라인 자리(예: 비밀번호 관리자)에 바로 둔다**(PORTFOLIO-SOLUTION-DESIGN의 "서버·DB·OCI 밖에 복구 사본"). Story 3.10의 versioned recovery manifest가 생기기 전에는 이 사본이 유일한 복구 경로다 — 사본 없이 서버를 잃으면 두 저장소의 백업은 **복호화할 수 없다**.
+- **오프라인 복구 사본(필수).** key를 만들 때 **그 age identity의 사본을 OCI 밖 오프라인 자리(예: 비밀번호 관리자)에 바로 둔다**(PORTFOLIO-SOLUTION-DESIGN의 "서버·DB·OCI 밖에 복구 사본"). Story 3.10의 versioned recovery manifest(`backup_age_keys`)는 이 사본의 자리를 가리킬 뿐 사본을 대신하지 않는다 — 이 사본이 유일한 복구 경로다 — 사본 없이 서버를 잃으면 두 저장소의 백업은 **복호화할 수 없다**.
 - **회전.** 새 key를 위와 같이 만들고 `active.pub`을 바꾼다. **보존이 끝나기 전에는(마지막으로 그 key를 쓴 generation이 30일 규칙으로 지워질 때까지) 과거 identity·recipient를 지우지 않는다.** `backup.sh keys`가 두 저장소에 남은 generation이 쓰는 key ID마다 identity가 있고 권한이 600이며 `age-keygen -y identity`가 `recipients/<id>.pub`과 같은지, 디렉터리 권한(key 디렉터리·`identities/` 700, `rclone.conf` 600, `active.pub` group·other 쓰기 금지)을 확인하고, 문제가 있거나 저장소를 읽지 못하면 그 key ID·이유를 보고하며 종료 1이다. 회전 뒤와 과거 identity를 지우기 전에 돌린다.
 
 ### 설치
@@ -638,6 +638,74 @@ Worker(와 `all`)가 그 표를 60초마다 읽어 `bokrilog_backup_last_success
 
 결함 주입 `BOKRILOG_BACKUP_FAULT`(`dump`·`slow-dump`·`encrypt`·`catalog`·`tamper-oci`·`move-offsite`·`purge-oci`·`purge-offsite`)와 가상 시계 `BOKRILOG_BACKUP_NOW`는 리허설 전용이고, 리허설 모드는 `BOKRILOG_ENV` ∈ {ci, development}와 리허설 override를 함께 요구한다(배포 gate와 같은 규칙). 공식 `minio/minio` 이미지는 Docker Hub에서 받을 수 없어(2026-10 확인) 같은 소스의 공개 빌드 `pgsty/minio`를 digest로 고정해 리허설에만 쓴다.
 
+## 복원 (`deploy/production/restore.sh`, Story 3.10)
+
+**상태: 실제 복원 미검증.** 절차는 CI 리허설(`restore-rehearsal` job — 같은 호스트의 MinIO 두 개, 가상 시계, 리허설 key)과 고정 입력 시험(`복원 스크립트 시험`)만 통과했다. 별도 환경에서 실제 manifest와 실제 generation으로 복원하기 전까지 복원은 검증되지 않은 것으로 다룬다. 자동시험·manifest 검사를 실제 복원 성공으로 표시하지 않는다. 훈련 증거 원장(시작·완료·실패·RPO·수동 작업시간·발견 결함의 감사), 새 송신 IP 재바인딩(`BYBIT_IP_REBIND_REQUIRED`), 호스트 전환 runbook, tombstone 키 회전 절차는 `deferred-work.md`에 있다.
+
+### manifest
+
+서버·OCI 계정을 잃은 뒤 다시 세우는 법은 **OCI 밖 저장소에 버전을 붙여 둔 복구 manifest** 하나가 담는다(예: `recovery-manifest-1.0.0.env`). 저장소에는 양식 `deploy/production/recovery-manifest.example`과 검사기 `check-recovery-manifest.sh`만 있다.
+
+- 형식은 `key=value` 한 줄씩이고 키는 정해진 열여섯 개다 — `manifest_version`(버전), `image`(`<repository>@sha256:<64hex>`, tag만은 거부), `terraform`(`manual` 또는 `ref:`), `dns`·`tls`·`oauth`·`grafana`·`backup_config`(설정 위치), `backup_key_ids`(저장소에 남은 generation이 쓰는 key ID 전부), `credential_active_key_version`, 암호화된 운영 비밀의 위치 다섯(`credential_keys`·`audit_digest_key`·`tombstone_digest_key`·`tombstone_age_key`·`backup_age_keys`), `bootstrap_order`.
+- 값은 `ref:<소문자 경로>`(위치 참조)·`age:<base64>`(age 암호문 — 본문이 `age-encryption.org/v1`로 시작해야 한다)·버전·digest·이름뿐이다. **평문 비밀을 넣지 않는다** — 검사기는 어느 줄에서든(주석·참조 경로·이름 칸 포함) `AGE-SECRET-KEY-`, PEM(`-----BEGIN`), Terraform state 본문, 16진 43자 이상(`HEX_SECRET`), 대소문자·숫자가 섞인 43자 이상의 base64·base64url(`LONG_BASE64`), 글자·숫자가 섞이고 구분자가 거의 없는 43자 이상의 토큰(`LONG_TOKEN`)을 거부한다. 걷어 내는 것은 비밀 키의 값 전체가 진짜 age 암호문인 경우와 `image=` 값 전체가 digest인 경우뿐이다. 알 수 없는 키·중복 키·필수 키 누락도 거부하고, 거부 출력에는 키 이름과 code만 있다.
+- 바꿀 때 덮어쓰지 않고 새 버전으로 발행하고, 발행 전에 `bash deploy/production/check-recovery-manifest.sh <파일>`이 0이어야 한다. 검사기 통과는 모양의 증거일 뿐 복원의 증거가 아니다.
+
+### tombstone
+
+계정 삭제는 루트 `AccountErasure` 한 트랜잭션이다 — 삭제 전환 → **tombstone outbox 행**(V25 `operations_deletion_tombstone`, origin `DELETION`) → 모듈 erase port(portfolio → sync → plan → source → operations) → payload 삭제. 그래서 기록 없는 탈퇴가 없다. 사용자 삭제 경로(HTTP·화면)는 아직 없다(Epic 5) — 지금 부르는 것은 검증용 일회성 역할 `deletion-sample`(리허설 표지 `BOKRILOG_DELETION_SAMPLE_REHEARSAL=true`가 없거나 운영 환경이면 기동 거부, 사유를 code 한 줄로 남긴다)과 복원 적용뿐이다.
+
+- 행은 `user_digest`(내부 user_id의 HMAC-SHA256, 입력 접두사 `tombstone:`)·`request_id`·`requested_at`(DB 시각, ms)·`destroy_after`(+35일 = 840시간)·`origin`(`DELETION` 또는 복원이 옮긴 `RESTORE`)뿐이다. 사용자 ID 원문·이메일·소셜 식별자·금융값·자격정보가 없다. 같은 요청 ID가 다른 계정·다른 digest를 가리키면 기록·옮기기 모두 실패한다(조용히 넘기면 tombstone 없는 계정이 생긴다).
+- **두 key가 있다.** digest 키 `BOKRILOG_TOMBSTONE_DIGEST_KEY`(base64 32바이트 이상, 운영 비밀 파일 필수 — 배포 gate가 본다)는 **감사 digest 키와 달라야 한다** — 앱과 gate가 바이트로 비교하고 같으면 거부한다(`TOMBSTONE_KEY_REUSED`). 사본 암호화 key는 tombstone 전용 age key(`/etc/bokrilog/tombstone/recipient.pub`·`identity.key`, 디렉터리 700·identity 600)이고 **backup key와 다르다** — 같으면 내보내기가 거부한다. 둘 다 잃으면 외부 사본을 읽거나 복원된 계정과 맞출 수 없으므로 manifest(`tombstone_digest_key`·`tombstone_age_key`)가 가리키는 OCI 밖 자리에 사본을 둔다.
+- **키 ID.** 내보내기 파일 머리는 `# bokrilog deletion tombstones DELETION-TOMBSTONE-1.0 key=<digest 키 ID> exported=<시각>`이다(키 ID는 키에서 나온 16진 16자 — 키를 되짚을 수 없다). 복원 적용은 사본의 키 ID가 자기 키와 다르면 아무것도 바꾸지 않고 실패한다(`TOMBSTONE_KEY_ID_MISMATCH`). **키 회전은 아직 지원하지 않는다** — 내보내기가 앞선 사본과 키 ID가 다르면 latest를 바꾸지 않는다(`TOMBSTONE_KEY_CHANGED`). 회전 절차는 `deferred-work.md`다.
+- **내보내기.** systemd timer(`bokrilog-tombstone-export.timer`, 15분)가 `tombstone-export.sh`를 돈다. 배포·백업과 같은 잠금(kind `tombstone`)을 쥐고, 일회성 `tombstone-export` 역할이 기한 지난 outbox 행을 지우고 **파기 기한이 지금 + 24시간보다 뒤인 행 전체**를 권한 700 임시 디렉터리의 파일 하나로 쓴다(매번 전체라 "보냈다" 표시가 없고 재시도해도 같다). 그다음 **줄어듦 검사** — `latest`가 가리키는 앞선 사본을 풀어 기한이 지금 + 25시간보다 뒤인 digest가 새 파일에 모두 있는지 보고, 하나라도 없으면 `TOMBSTONE_SHRANK`이고 latest를 바꾸지 않는다(복원 중·잘못 붙은 DB의 내보내기가 사본을 덮어 tombstone을 잃지 않게. 앞선 사본을 풀 수 없으면 `PREVIOUS_UNREADABLE`). 통과하면 바로 암호화하고 평문을 지운 뒤 OCI 밖 저장소의 `tombstones/<UTC YYYYMMDDTHHMMSSZ>.age`에 올려 원격 SHA-256을 대조하고, 그다음에만 `tombstones/latest`(그 object 이름 한 줄)를 갱신한다. 이름의 시각으로 24시간을 넘긴 사본 object는 지운다.
+- **외부 수명의 계산.** 사본은 24시간만 남고 각 사본은 기한이 24시간보다 더 남은 행만 싣는다 → 어느 tombstone도 외부에서 `requested_at + 35일`을 넘겨 남지 않는다. tombstone은 요청 뒤 34일까지 사본에 실린다. 복원은 30일을 넘긴 generation을 받지 않고(`GENERATION_TOO_OLD`), 지워진 계정이 든 generation은 요청보다 앞서므로 그 복원은 요청 뒤 30일 안에 일어난다 → 34일 안이라 언제나 그 tombstone이 실린 사본을 본다(백업 수명 30일 ≤ 외부 tombstone 34일 < 35일).
+- **잠금 경합.** 배포·백업·복원이 잠금을 쥐고 있으면 내보내기는 **조용히 건너뛴다**(종료 0과 한 줄, 다음 주기가 다시 돈다 — 그 틈은 주기 하나다). 소유자가 죽은 잠금은 종료 1이다. 반대로 백업은 내보내기가 쥔 잠금을 5분까지 기다린다(내보내기는 길어야 1분 — 그 때문에 하루 백업을 놓치지 않게).
+- **백업 안의 outbox는 권위가 아니다.** 백업은 그 뒤의 삭제를 모른다. 복원은 언제나 외부 사본(`latest`)을 적용하고, 백업 안의 outbox는 대조에만 쓴다.
+
+### 복원 순서
+
+`restore.sh --generation <gen_YYYYMMDD|latest> --failure-at <ISO-8601> [--project bokrilog-restore-<x>] [--image <repository@sha256:…>] [--tombstone-max-lag <초>] [--allow-stale-tombstones] [--keep-on-failure]`. 같은 호스트의 **빈 격리 compose 프로젝트**에 복원한다 — 이름은 `bokrilog-restore-` 접두사여야 하고, 운영 프로젝트(`BOKRILOG_PROJECT`)와 같거나 이미 컨테이너·volume·망이 있는 프로젝트면 거부한다(종료 2). 운영 프로젝트·volume 위에 복원하지 않는다(Ask First). 호스트를 잃어 배포 상태가 없으면 `--image`에 manifest의 `image`를 준다(digest만 받는다).
+
+0. 30일을 넘긴 generation은 거부한다(`GENERATION_TOO_OLD`). 외부 `tombstones/latest`가 없으면 `TOMBSTONES_UNAVAILABLE`, 그 사본이 장애 시각 − `--tombstone-max-lag`(기본 3600초)보다 앞서면 `TOMBSTONES_STALE`이다 — 둘 다 아무것도 띄우지 않는다. `--allow-stale-tombstones`는 경고를 남기고 계속하고 마지막 줄에 그 사실을 적는다(그 사이의 삭제는 그 복원에 없다). 그다음 배포·백업과 같은 잠금(kind `restore`)을 쥐고 앞선 실행의 임시본을 지운다.
+1. OCI 밖 저장소 `generations/`(OCI는 보지 않는다)에서 고른 generation의 암호문·checksum을 권한 700 임시 디렉터리에 받아 SHA-256(checksum 파일 첫 줄)을 대조한다 — 다르면 `CHECKSUM_MISMATCH`, 아무것도 띄우지 않는다.
+2. 이름의 key ID로 backup identity(`identities/<key_id>.key`)를 골라 복호화한다 — 없으면 `KEY_UNAVAILABLE`. 필요한 것은 identity 하나다(호스트를 잃고 오프라인 사본만 남은 경우) — `recipients/<id>.pub`이 있으면 짝을 대조하고 없으면 경고만 한다. **보존이 끝나기 전에는 과거 identity를 지우지 않는다**.
+3. 새 프로젝트의 빈 PostgreSQL(새 volume)에 `pg_restore --single-transaction --exit-on-error`로 복원하고 평문 dump를 바로 지운다.
+4. migrate 역할(AD-12).
+5. 0에서 본 사본을 받아 tombstone identity로 복호화한다 — 풀리지 않거나 머리(`… key=`)가 없으면 `TOMBSTONES_UNAVAILABLE`이고 **서비스를 열지 않는다**.
+6. 일회성 `restore-apply` 역할(web none, Flyway 검증). **격리 표지**(`BOKRILOG_RESTORE_ISOLATED_PROJECT`, `bokrilog-restore-*` — 절차가 준다)가 없으면 아무것도 하지 않고 실패한다(`RESTORE_NOT_ISOLATED`). 먼저 **대조**한다 — 사본의 키 ID가 자기 키와 같아야 하고(`TOMBSTONE_KEY_ID_MISMATCH`), 복원된 outbox의 `DELETION` 행 가운데 사본보다 먼저 요청됐고 사본에 실릴 만큼 기한이 남은 것은 사본에 있어야 하며, 그 행들은 지금 키로 계산한 어느 복원된 계정의 digest와 맞아야 한다(`TOMBSTONE_KEY_MISMATCH` — 키가 틀리면 아무 계정도 맞지 않아 "0건 일치"로 조용히 통과하기 때문이다). 어긋나면 아무것도 바꾸지 않는다. 맞으면 복원된 모든 user_id를 tombstone 키로 digest해 사본과 맞추고, 맞은 계정을 `AccountErasure`로 다시 지워 `DELETED`로 만든다(이미 `DELETED`면 그대로). 사본의 tombstone 전부를 복원된 outbox로 옮긴다(origin `RESTORE` — 다음 내보내기가 잃지 않게). `spring_session` 전체를 지운다. 불변식(활성 계획 유일, 공식 포인터 → 계산 버전 → portfolio snapshot 귀속 — 대시보드 묶음과 같은 술어, portfolio 현재 포인터, tombstone이 다시 지우지 않은 `DELETION_IN_PROGRESS` 계정 0, 삭제 계정의 잔여 행 0 — 모듈마다 자기 표의 사용자 열을 카탈로그로 센다)과 자격정보 표본 복호(key version마다의 최신 행과 최근 20행, active key 필수, 평문은 반환하지 않고 외부 호출 없음)를 센다. 결과는 수와 code만 담은 보고 한 줄(`restore.apply … result=PASSED|FAILED codes=…`)이고, 실패면 종료 0이 아니어서 `APPLY_FAILED`이다.
+7. 그다음에만 `api-blue`·`worker`를 띄운다. nginx는 띄우지 않고 공개 포트도 없다(있으면 API·Worker를 먼저 멈추고 `ISOLATION_BROKEN`). 로그인 제공자·Bybit·공개 base URL·운영자 값은 빈 값으로 덮어 띄우고(fail-closed — 외부 호출 0) 메트릭 공통 tag `env`는 `restore`다(운영 경보 selector는 `env="production"`). 늦게 뜬 Worker·새 세션은 기존 접근 판정(`DELETED` → `DENIED`)이 막는다.
+8. RPO를 판정한다.
+
+**실패하면 지운다.** 3단계(격리 PostgreSQL 기동) 뒤의 어느 실패든 격리 프로젝트를 volume까지 지운다 — 되살린 데이터를 남기지 않는다. 조사가 필요하면 `--keep-on-failure`로 남기고, 그때는 경고와 지우는 명령을 출력하므로 끝나면 반드시 지운다. 평문 dump·tombstone은 권한 700 임시 디렉터리(`/var/lib/bokrilog/restore/tmp`)에만 두고 쓰자마자, 그리고 어느 실패·신호에서든 지운다.
+
+**성공한 격리 스택은 남는다**(조사·전환용). 남아 도는 동안에는 `deploy.sh`가 시작하지 않는다(`RESTORE_STACK_RUNNING` — PostgreSQL 3g·API·Worker가 blue/green peak 위에 겹친다). 끝나면 `docker compose --project-name <project> --file deploy/production/compose.yaml down --volumes`로 지운다.
+
+**적용만 다시 돌리기.** 적용은 다시 돌려도 안전하다 — 이미 `DELETED`인 계정은 건너뛰고, 옮긴 행은 그대로 두고, 세션 폐기는 0행이어도 된다. 그래서 중간에 멈춘 적용(예: `--keep-on-failure`로 남긴 프로젝트에서 원인을 고친 뒤)은 같은 사본으로 다시 돌린다: 권한 700 디렉터리에 사본을 풀어 `tombstones.txt`로 두고, `BOKRILOG_ROLE_IO_DIR=<그 디렉터리> BOKRILOG_ENV=restore docker compose --project-name <project> --env-file <운영 비밀 파일> --file deploy/production/compose.yaml --profile restore-apply run --rm --no-deps -T --user "$(id -u):$(id -g)" -e BOKRILOG_RESTORE_ISOLATED_PROJECT=<project> restore-apply`(이미지 변수는 `restore.sh`의 `compose()`와 같다), 0이면 `up -d --no-deps --wait api-blue worker`. 다 쓰면 그 디렉터리를 지운다. 처음부터 다시 하려면 프로젝트를 지우고 `restore.sh`를 다시 돈다.
+
+### RPO
+
+RPO = `--failure-at` − generation 생성 시각. 생성 시각은 checksum 파일 둘째 줄의 dump 시작 시각(`dump_started_at=<epoch>`, `backup.sh`가 실제 시계로 적는다)이고, 그 줄이 없는 옛 generation은 generation 날짜의 00:00 UTC다(보수적). 저장소 object 시각은 쓰지 않는다 — dump보다 늦다. 24시간 이하면 통과, 넘으면 `RPO_EXCEEDED`이고 종료 1이다(복원은 끝났고 프로젝트는 남는다). `--rpo-only`는 저장소 목록과 checksum 파일만 보고 RPO만 잰다(내려받지 않는다). 장애 시각은 시간대가 붙은 실제 ISO-8601 시각이어야 한다(달의 길이·윤년·±14:00 안).
+
+### 설치
+
+1. `install -d -o bokrilog -g bokrilog -m 700 /etc/bokrilog/tombstone /var/lib/bokrilog/tombstone /var/lib/bokrilog/restore`.
+2. `bokrilog`로 `age-keygen -o /etc/bokrilog/tombstone/identity.key`(600)와 `age-keygen -y … > /etc/bokrilog/tombstone/recipient.pub`. identity의 사본을 바로 OCI 밖 오프라인 자리에 두고 manifest의 `tombstone_age_key`가 그 자리를 가리키게 한다. 내보내기도 identity를 읽는다(줄어듦 검사).
+3. 운영 비밀 파일에 `BOKRILOG_TOMBSTONE_DIGEST_KEY`(감사 digest 키와 다른 32바이트 이상 base64 — 배포 gate의 필수 이름이다)를 더하고 그 사본도 manifest가 가리키는 자리에 둔다. 비밀 파일에 age identity 모양의 값을 넣지 않는다(gate가 거부한다).
+4. `deploy/production/systemd/bokrilog-tombstone-export.{service,timer}`를 `/etc/systemd/system/`에 두고 `systemctl daemon-reload && systemctl enable --now bokrilog-tombstone-export.timer`.
+5. 복원 훈련은 손으로 돈다: `restore.sh --generation latest --failure-at <지금>`. 백업과 같은 `BOKRILOG_BACKUP_KEYS_DIR`(identity·`rclone.conf`·`backup.env`)·`BOKRILOG_BACKUP_TOOLS`를 쓴다. 같은 호스트의 격리 복원은 PostgreSQL 3g·API 768m·Worker 512m를 더 쓰므로 여유 메모리를 먼저 본다. 끝나면 격리 프로젝트를 지운다(지우기 전에는 배포가 시작되지 않는다).
+
+### 명령
+
+| 명령 | 역할 |
+|---|---|
+| `deploy/production/restore.sh --generation … --failure-at … [--project …] [--image …] [--tombstone-max-lag …] [--allow-stale-tombstones] [--keep-on-failure] [--rpo-only]` | 위 순서. 종료 0(복원·적용·검증·기동 성공, RPO ≤ 24h)·1(`GENERATION_TOO_OLD`·`TOMBSTONES_STALE`·`CHECKSUM_MISMATCH`·`KEY_UNAVAILABLE`·`TOMBSTONES_UNAVAILABLE`·`APPLY_FAILED`·`ISOLATION_BROKEN`·`RPO_EXCEEDED`·잠금·중단 …)·2(인자·프로젝트 이름·이미지·설정·도구·key·권한·모드) |
+| `deploy/production/tombstone-export.sh` | tombstone 외부 사본. 0(완료 또는 잠금 때문에 건너뜀)·1(역할·줄어듦·키 ID 변경·암호화·업로드·대조·파기 실패, 죽은 잠금)·2 |
+| `bash deploy/production/check-recovery-manifest.sh <파일>` | manifest 검사. 0·1(거부)·2(파일·인자) |
+| `bash deploy/production/test-restore-scripts.sh` | 고정 입력 시험(Docker·네트워크 불필요): manifest 견본·age 값 → 0, 평문 identity·PEM·base64·base64url key·16진 비밀·주석의 `age:` 비밀·가짜 `age:` 값·이름 칸·참조 경로의 긴 토큰·tfstate·tag 이미지·키 누락·알 수 없는 키·중복·대문자 참조 → 1, `restore.sh`·`tombstone-export.sh`의 준비 거부(운영 프로젝트 이름·이미지·lag·모드·설정·recipient·identity) → 2, `epoch_of_iso`(달의 길이·윤년·시간대 범위) |
+| `deploy/production/rehearse-restore.sh` | 운영 compose + 리허설 override + MinIO 두 개의 운영 대역에서 실제 `backup.sh`로 generation 둘(key 회전), 앱과 같은 형식으로 봉한 표본 자격정보, 표본 삭제(운영 환경·표지 없음이면 사유와 함께 거부), 내보내기(기한 지난 행·24시간 지난 object 제외, 줄어든 내보내기 거부, 잠금 중 건너뜀)를 만든 뒤 시나리오를 돈다: `latest` 선택·tombstone 없음·잠금 중 복원·삭제 이전 generation의 정상 복원(과거 key, 표본 `DELETED`·세션 0·유지 계정·자격정보 1/1, OIDC·Bybit 값 없음, env restore, nginx·공개 포트 없음)·RPO 경계(dump 시작·옛 generation의 날짜 기준)·30일 넘은 generation·과거 identity 없음·checksum 변조·다른 key ring(APPLY_FAILED, `--keep-on-failure`)·다른 digest 키(TOMBSTONE_KEY_ID_MISMATCH, 지워짐)·풀 수 없는·머리 없는·오래된 latest·운영 이름·비어 있지 않은 프로젝트·누출. 결과에 "실제 복원 미검증"을 출력한다. 종료 0·1·2 |
+
+공용 함수(배경 실행·권한·key 짝·rclone·시각)는 `backup-lib.sh`에 있고 `backup.sh`·`restore.sh`·`tombstone-export.sh`가 함께 읽는다(`backup.sh`는 최상위 `exit` 때문에 `.`로 읽을 수 없다).
+
 ## CI (`.github/`)
 
 `.github/workflows/ci.yml`이 이 저장소의 유일한 workflow다. `develop`·`main`의 PR과 push, 그리고 배포 권한이 없는 수동 진단(`workflow_dispatch`)에서 돈다. 정본은 `CI-PLAN.md`이고 구현 계약은 `_bmad-output/implementation-artifacts/spec-ci-foundation.md`와 `spec-1-2-same-origin-shell.md`가 소유한다.
@@ -647,8 +715,9 @@ Story 1.2에서 backend와 deploy가 생기면서 단일 job이 `CI-PLAN.md` §1
 ```text
 changes ──> frontend-quality ──┐
         └─> backend-quality ───┼─> same-origin-integration ─┐
-                               ├─> deploy-rehearsal ────────┤
-                               └────────────────────────────┴─> ci-required
+                 │             ├─> deploy-rehearsal ────────┤
+                 │             └────────────────────────────┤
+                 └─> restore-rehearsal ─────────────────────┴─> ci-required
 ```
 
 | job | 역할 | timeout |
@@ -658,6 +727,7 @@ changes ──> frontend-quality ──┐
 | `backend-quality` | JDK 25 준비 → Gradle `build`(컴파일·Modulith 경계 검사·PostgreSQL Testcontainers 시험·jar) | 20분 |
 | `same-origin-integration` | 경보 규칙 시험 → 두 품질 job의 산출물로 동일 출처 검증(`--keep-stack`, `BOKRILOG_ENV=ci`) → 같은 스택에서 Story 1.1 회귀 | 17분 |
 | `deploy-rehearsal` | 배포 gate 고정 입력 시험 → 같은 두 산출물로 운영 배포 리허설(Story 3.8, 위 `## 운영 배포`) → 백업 스크립트 고정 입력 시험 → 같은 jar로 백업 리허설(Story 3.9, 위 `## 백업` — MinIO 두 개). green은 운영 배포·실저장소의 증거가 아니다 | 70분 |
+| `restore-rehearsal` | 복원 스크립트 고정 입력 시험 → backend jar로 격리 복원 리허설(Story 3.10, 위 `## 복원` — `deploy-rehearsal`과 병렬). green은 실제 복원의 증거가 아니다 | 40분 |
 | `ci-required` | 선행 job 결과 집계. 병합 가능 여부 판정 | 1분 |
 
 `backend-quality`의 15분은 Story 1.3이 10분에서 올린 값이다. 이 job은 이제 Testcontainers로 실제 PostgreSQL을 띄우고, 콜드 실행에는 `postgres:18.6-alpine` 내려받기가, 동시성 시험에는 실제 잠금 경합 대기가 더해진다. 러너에 docker 데몬이 이미 있으므로 서비스 컨테이너도 새 action도 더하지 않았고, 시험은 기존 `Gradle 빌드` 단계 안에서 돈다. `CI-PLAN.md` §4·§10의 backend 예산 8분은 이 상한과 별개로 계속 측정한다. Story 2.11이 15분을 20분으로 올렸다. PR #49에서 이 job이 11분 5초였고, 같은 시험의 로컬 실행보다 1분쯤 길었다. 2.11의 로컬 `clean build`가 12분 56초라 CI는 14분 안팎이 된다. PR #52의 이 job은 13분 0초였다. 그 시간의 대부분은 실제 파이프라인을 모는 `FirstSnapshotTest`·`IncrementalSyncTest`가 워커의 1초 dispatch tick과 고정 `Thread.sleep`을 기다린 몫이었다. `spec-backend-test-speed.md`가 시험의 dispatch 간격을 100ms로 줄이고(`bokrilog.sync.worker.dispatch-interval`, 운영 기본 1초, heartbeat 5초는 그대로) 관측 가능한 조건은 조건 대기로 바꿨다. 그 변경이 변경 전 커밋(`3824c3c`)을 다시 잰 로컬 `clean build`는 13분 2초였고(위 2.11의 12분 56초와 별개의 재측정이다), 변경 뒤에는 3분 13초다(시험 869건에 운영 주기를 고정하는 Docker 없는 시험 두 건을 더해 871건, 두 클래스 605초 → 115초, 124초 → 28초). Story 2.12가 그 위에 정밀 검증·호출 예산 시험을 더해 로컬 `clean build`가 4분 41초가 됐다(989건, 새 `PlanVerificationTest` 75초). timeout 20분은 CI-PLAN 새 버전이 보정할 때까지 그대로 둔다.
@@ -681,8 +751,9 @@ changes ──> frontend-quality ──┐
 | `.github/scripts/check-alert-rules.sh` | 경보 규칙의 형식 계약·문법·promtool 단위시험(Story 3.7). 통합 job에서 돈다 |
 | `.github/scripts/test-ci-scripts.sh` | 위 스크립트들과 `ci.yml`의 계약 시험(경보 규칙 스크립트는 가짜 promtool로 종료 코드 0/1/2를 단정한다) |
 | `deploy/production/test-preflight.sh`·`rehearse-deploy.sh`·`rehearse-backup.sh` | 배포 gate 고정 입력 시험, 운영 배포 리허설(Story 3.8), 백업 리허설(Story 3.9). `deploy-rehearsal` job에서 돈다 |
+| `deploy/production/test-restore-scripts.sh`·`rehearse-restore.sh` | 복원 스크립트 고정 입력 시험, 격리 복원 리허설(Story 3.10). `restore-rehearsal` job에서 돈다 |
 
-lint·stylelint·format 세 단계는 `spec-frontend-lint-policy.md`가 합의한 품질 정책이며 `ci-required`가 집계하는 job 안에 있으므로 별도 보호 규칙 변경 없이 필수 검사다. 문서-only 변경(`_bmad-output/**`와 최상위 `*.md`)은 `changes` job만 돌고 제품 job 셋은 건너뛴다. 분류는 fail-closed다. 규칙에 없는 경로가 하나라도 있으면 전체 검사를 실행하며, `backend/`·`deploy/`처럼 `<디렉터리>/<파일>` 모양인 경로는 자동으로 제품 변경이라 분류 규칙을 손댈 필요가 없다. PR에서는 체크아웃된 head가 아니라 target base의 승인된 분류기를 꺼내 실행한다. PR이 자기 분류 규칙을 고쳐 그 PR의 검사를 축소할 수 없게 한다.
+lint·stylelint·format 세 단계는 `spec-frontend-lint-policy.md`가 합의한 품질 정책이며 `ci-required`가 집계하는 job 안에 있으므로 별도 보호 규칙 변경 없이 필수 검사다. 문서-only 변경(`_bmad-output/**`와 최상위 `*.md`)은 `changes` job만 돌고 제품 job 다섯(`frontend-quality`·`backend-quality`·`same-origin-integration`·`deploy-rehearsal`·`restore-rehearsal`)은 건너뛴다. 분류는 fail-closed다. 규칙에 없는 경로가 하나라도 있으면 전체 검사를 실행하며, `backend/`·`deploy/`처럼 `<디렉터리>/<파일>` 모양인 경로는 자동으로 제품 변경이라 분류 규칙을 손댈 필요가 없다. PR에서는 체크아웃된 head가 아니라 target base의 승인된 분류기를 꺼내 실행한다. PR이 자기 분류 규칙을 고쳐 그 PR의 검사를 축소할 수 없게 한다.
 
 secret 검사(gitleaks)의 예외는 저장소 루트 `.gitleaksignore`가 소유한다. 한 줄에 fingerprint 하나이며 각 항목에 근거 주석을 남긴다. 규칙 자체를 완화하는 `.gitleaks.toml`은 두지 않는다. 필수 경로는 PR 커밋 범위만 검사하므로 기존 이력 전체는 `workflow_dispatch`로 돌리는 기준선 스캔에서만 드러난다.
 

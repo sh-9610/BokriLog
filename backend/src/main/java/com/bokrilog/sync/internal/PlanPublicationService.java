@@ -1497,6 +1497,32 @@ class PlanPublicationService {
                 && sameDecimal(calculation.targetRate(), plan.targetRate());
     }
 
+    /**
+     * 복원 검증의 공식 포인터 불변식(Story 3.10). 활성 계획이 있는 사용자마다 대시보드 묶음({@link #bundle})과 같은 술어로 본다 — 공식
+     * 포인터가 있고, 그 계산 버전이 계획·portfolio·조건에 속하며({@link #belongs}), portfolio 현재 포인터가 그 버전의 snapshot·순번을
+     * 가리킨다(AD-23). 하나의 읽기 전용 일관 읽기다. 시계·지표·계보는 보지 않는다(표시의 판정이지 귀속의 판정이 아니다).
+     *
+     * @return 어긴 사용자 수
+     */
+    long officialBundleViolations(java.util.Collection<UUID> userIds) {
+        Long violations = dashboardReads.execute(status -> {
+            long count = 0;
+            for (UUID user : userIds) {
+                var plan = plans.activePlan(user).orElse(null);
+                if (plan == null) continue;
+                var pointer = repository.pointer(user, plan.planId()).orElse(null);
+                var calculation = pointer == null ? null : repository.calculation(user, pointer.calculationId()).orElse(null);
+                var portfolio = portfolios.officialValue(user).orElse(null);
+                if (pointer == null || calculation == null || !belongs(calculation, plan, pointer) || portfolio == null
+                        || !portfolio.snapshotId().equals(calculation.portfolioSnapshotId())
+                        || portfolio.publicationSequence() != calculation.portfolioSequence())
+                    count++;
+            }
+            return count;
+        });
+        return violations == null ? 0L : violations;
+    }
+
     /** The same number in any plain notation ({@code "1250"} and {@code "1250.00"}). */
     private static boolean sameDecimal(String left, String right) {
         try {

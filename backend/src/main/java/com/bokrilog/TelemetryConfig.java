@@ -32,14 +32,14 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
 class TelemetryConfig {
 
     /**
-     * 공통 tag {@code env}와 allowlist. 값이 셋({@code development·ci·production}) 밖이면 기동을 거부한다 — 잘못 쓴 환경 값으로
+     * 공통 tag {@code env}와 allowlist. 값이 넷({@code development·ci·production·restore}) 밖이면 기동을 거부한다 — 잘못 쓴 환경 값으로
      * 개발 수치가 운영 실적에 섞이는 것을 조용히 두지 않는다.
      */
     @Bean
     TelemetryMeterFilter telemetryMeterFilter(@Value("${bokrilog.telemetry.env:development}") String env,
             @Value("${" + BokrilogRole.PROPERTY + ":" + BokrilogRole.DEFAULT + "}") String role) {
         if (!TelemetryAllowlist.ENVIRONMENTS.contains(env)) {
-            throw new IllegalStateException("bokrilog.telemetry.env는 development·ci·production 중 하나여야 한다.");
+            throw new IllegalStateException("bokrilog.telemetry.env는 development·ci·production·restore 중 하나여야 한다.");
         }
         // 공통 tag `role`(Story 3.8). 셋 밖의 값은 BokrilogRole.parse가 기동을 거부한다. 빈 값은 기본 역할이다.
         return new TelemetryMeterFilter(env, BokrilogRole.parse(role).value());

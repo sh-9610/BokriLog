@@ -279,4 +279,27 @@ class PlanConditionRepository {
             .query(Long.class).single();
         return count==null ? 0L : count;
     }
+
+    /** 활성 계획이 둘 이상인 portfolio 수와 사용자 수의 합(Story 3.10 복원 검증). */
+    long activePlanViolations() {
+        Long count=jdbc.sql("SELECT (SELECT count(*) FROM (SELECT portfolio_id FROM plan_definition WHERE status='ACTIVE' "
+                + "GROUP BY portfolio_id HAVING count(*)>1) p) + (SELECT count(*) FROM (SELECT user_id FROM plan_definition "
+                + "WHERE status='ACTIVE' GROUP BY user_id HAVING count(*)>1) u)")
+            .query(Long.class).single();
+        return count==null ? 0L : count;
+    }
+
+    /**
+     * 그 사용자에게 남은 이 모듈의 행 수(Story 3.10 복원 검증). {@code plan_*} 표의 {@code user_id} 열을 카탈로그로 찾아 센다 — 표를
+     * 이름으로 나열하지 않으므로 새 표가 생겨도 빠지지 않는다.
+     */
+    long remainingRowsOf(UUID userId) {
+        Long count=jdbc.sql("SELECT CAST(COALESCE(sum(CAST(CAST((xpath('/row/n/text()', query_to_xml(format("
+                + "'SELECT count(*) AS n FROM %I WHERE %I = %L', c.table_name, c.column_name, CAST(:user AS text)), "
+                + "false, true, '')))[1] AS text) AS bigint)), 0) AS bigint) FROM information_schema.columns c "
+                + "WHERE c.table_schema = current_schema() AND c.column_name = 'user_id' "
+                + "AND c.table_name LIKE 'plan\\_%'")
+            .param("user",userId).query(Long.class).single();
+        return count==null ? 0L : count;
+    }
 }

@@ -265,4 +265,39 @@ class SourceConnectionRepository {
             .query(Long.class).single();
         return count == null ? 0L : count;
     }
+
+    /** 자격정보 한 행과 그 귀속(Story 3.10 복원 검증의 복호 표본). */
+    record CredentialRow(UUID userId, UUID connectionId, UUID credentialId, String keyVersion, String algorithmVersion,
+            byte[] nonce, byte[] ciphertext) {}
+
+    /** 복호 표본: key version마다 가장 최근 행 하나와 전체에서 가장 최근 {@code limit}행의 합(중복 없음). 연결 상태와 무관하다. */
+    java.util.List<CredentialRow> credentialSample(int limit) {
+        return this.jdbc.sql("SELECT c.user_id, k.connection_id, k.credential_id, k.key_version, k.algorithm_version, "
+                + "k.nonce, k.ciphertext FROM source_credential k JOIN source_connection c ON c.connection_id = k.connection_id "
+                + "WHERE k.credential_id IN (SELECT DISTINCT ON (key_version) credential_id FROM source_credential "
+                + "ORDER BY key_version, created_at DESC, credential_id) OR k.credential_id IN (SELECT credential_id "
+                + "FROM source_credential ORDER BY created_at DESC, credential_id LIMIT :limit) "
+                + "ORDER BY k.key_version, k.created_at DESC, k.credential_id")
+            .param("limit", limit)
+            .query((rs, n) -> new CredentialRow(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class),
+                rs.getObject(3, UUID.class), rs.getString(4), rs.getString(5), rs.getBytes(6), rs.getBytes(7)))
+            .list();
+    }
+
+    /**
+     * 그 사용자에게 남은 이 모듈의 행 수(Story 3.10 복원 검증). {@code source_*} 표의 {@code user_id} 열을 카탈로그로 찾아 세고,
+     * 사용자 열이 없는 자격정보 표는 연결을 거쳐 센다 — 표를 이름으로 나열하지 않으므로 새 표가 생겨도 빠지지 않는다.
+     */
+    long remainingRowsOf(UUID userId) {
+        Long count = this.jdbc.sql("SELECT CAST(COALESCE(sum(CAST(CAST((xpath('/row/n/text()', query_to_xml(format("
+                + "'SELECT count(*) AS n FROM %I WHERE %I = %L', c.table_name, c.column_name, CAST(:user AS text)), "
+                + "false, true, '')))[1] AS text) AS bigint)), 0) AS bigint) FROM information_schema.columns c "
+                + "WHERE c.table_schema = current_schema() AND c.column_name = 'user_id' "
+                + "AND c.table_name LIKE 'source\\_%'")
+            .param("user", userId).query(Long.class).single();
+        Long credentials = this.jdbc.sql("SELECT count(*) FROM source_credential k JOIN source_connection c "
+                + "ON c.connection_id = k.connection_id WHERE c.user_id = :user")
+            .param("user", userId).query(Long.class).single();
+        return (count == null ? 0L : count) + (credentials == null ? 0L : credentials);
+    }
 }

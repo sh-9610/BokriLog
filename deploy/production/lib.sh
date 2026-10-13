@@ -114,14 +114,16 @@ random_hex() {
 }
 
 # --------------------------------------------------------------------------
-# 배포·백업 공용 잠금(Story 3.9). 상태 디렉터리의 `.lock`을 배포(`deploy.sh`)와 백업(`backup.sh`)이 함께 쓴다.
+# 배포·백업 공용 잠금(Story 3.9). 상태 디렉터리의 `.lock`을 배포(`deploy.sh`)·백업(`backup.sh`)·복원(`restore.sh`)·tombstone 내보내기
+# (`tombstone-export.sh`, Story 3.10)가 함께 쓴다 — 넷 모두 일회성 역할 JVM을 띄우므로 blue/green peak 위에 겹치지 않게 한다.
 # --------------------------------------------------------------------------
 
-# lock_acquire <잠금 디렉터리> <kind: deploy|backup> <operation ID>
+# lock_acquire <잠금 디렉터리> <kind: deploy|backup|restore|tombstone> <operation ID>
 #
 # mkdir은 원자적이다. 쥐면 그 안에 소유자 파일(`owner` — kind·pid·operation·started)을 rename으로 쓰고 0. 못 쥐면 1이고 `lock_state`에
-# 이유를 둔다: `DEPLOY_IN_PROGRESS`·`BACKUP_IN_PROGRESS`(소유자가 살아 있다) 또는 `LOCK_STALE`(소유자 pid가 죽었거나 소유자 파일이
-# 없다). 죽은 잠금도 지우지 않는다 — 진행 중인 일이 정말 없는지는 사람이 확인한다. `lock_owner`에 소유자 파일 내용을 한 줄로 둔다.
+# 이유를 둔다: `DEPLOY_IN_PROGRESS`·`BACKUP_IN_PROGRESS`·`RESTORE_IN_PROGRESS`·`TOMBSTONE_IN_PROGRESS`(소유자가 살아 있다 — kind로
+# 가른다, 모르는 kind는 배포로 읽는다) 또는 `LOCK_STALE`(소유자 pid가 죽었거나 소유자 파일이 없다). 죽은 잠금도 지우지 않는다
+# — 진행 중인 일이 정말 없는지는 사람이 확인한다. `lock_owner`에 소유자 파일 내용을 한 줄로 둔다.
 lock_state=''
 lock_owner=''
 lock_acquire() {
@@ -146,10 +148,13 @@ lock_acquire() {
   lock_owner="$(awk 'NF' "${dir}/owner" | tr '\n' ' ' | sed 's/ $//')"
   if ! matches "${owner_pid}" '[0-9]+' || ! { kill -0 "${owner_pid}" 2>/dev/null || [ -d "/proc/${owner_pid}" ]; }; then
     lock_state=LOCK_STALE
-  elif [ "${owner_kind}" = backup ]; then
-    lock_state=BACKUP_IN_PROGRESS
   else
-    lock_state=DEPLOY_IN_PROGRESS
+    case "${owner_kind}" in
+      backup) lock_state=BACKUP_IN_PROGRESS ;;
+      restore) lock_state=RESTORE_IN_PROGRESS ;;
+      tombstone) lock_state=TOMBSTONE_IN_PROGRESS ;;
+      *) lock_state=DEPLOY_IN_PROGRESS ;;
+    esac
   fi
   return 1
 }

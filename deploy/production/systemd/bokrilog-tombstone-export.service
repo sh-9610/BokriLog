@@ -1,0 +1,31 @@
+# BokriLog 삭제 tombstone 외부 사본(Story 3.10). `bokrilog-tombstone-export.timer`가 15분마다 띄운다. 설치는 `DEVELOPMENT.md`의 `## 복원`.
+#
+# 경로는 운영 호스트의 checkout(`/srv/bokrilog`)을 가정한다. 다르면 설치할 때 `ExecStart`·`WorkingDirectory`를 그 경로로 바꾼다.
+# 실행 계정은 배포·백업을 돌리는 운영 계정(docker 그룹)이다. tombstone age recipient(`/etc/bokrilog/tombstone/recipient.pub`)와 저장소
+# 설정(`/etc/bokrilog/backup/rclone.conf`)은 그 계정만 읽는다. 환경에는 경로만 있다 — key·자격정보 값을 unit에 적지 않는다.
+[Unit]
+Description=BokriLog deletion tombstone export (Story 3.10)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bokrilog
+Group=bokrilog
+UMask=0077
+WorkingDirectory=/srv/bokrilog
+Environment=BOKRILOG_BACKUP_KEYS_DIR=/etc/bokrilog/backup
+Environment=BOKRILOG_BACKUP_TOOLS=/opt/bokrilog/backup-tools
+Environment=BOKRILOG_TOMBSTONE_KEYS_DIR=/etc/bokrilog/tombstone
+Environment=BOKRILOG_TOMBSTONE_DIR=/var/lib/bokrilog/tombstone
+Environment=BOKRILOG_STATE_DIR=/var/lib/bokrilog/deploy
+Environment=BOKRILOG_SECRETS_FILE=/etc/bokrilog/production.env
+ExecStart=/usr/bin/env bash /srv/bokrilog/deploy/production/tombstone-export.sh
+# 실패(배포·백업이 잠금을 쥠·저장소 장애)는 다음 timer가 다시 돈다 — 매번 살아 있는 전체를 쓰므로 놓친 실행이 쌓이지 않는다. 한 번은
+# 10분을 넘기지 않는다. SIGTERM이면 스크립트가 임시본(평문 tombstone)을 지우고 잠금을 놓는다.
+TimeoutStartSec=10min
+TimeoutStopSec=60
+KillMode=mixed
+NoNewPrivileges=true
+PrivateTmp=true
