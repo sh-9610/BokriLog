@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 10-13-2026 14:58
+last_updated: 10-13-2026 15:39
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -79,7 +79,7 @@ development_status:
   3-8-arm64-단일-서버를-blue-green으로-안전하게-배포하고-rollback하기: done
   3-9-일일-암호화-백업을-두-저장소에-검증-보관하고-30일-내-파기하기: done
   3-10-외부-복구-매니페스트로-격리-복원하고-삭제-계정-재활성화를-차단하기: done
-  epic-3-retrospective: optional
+  epic-3-retrospective: done
 
   epic-4: backlog
   4-1-문맥형-광고-동의를-선택하고-철회하기: backlog
@@ -207,13 +207,13 @@ action_items:
     action: "발행 지점별 운영 제한 command 집합을 한 정의로 모으고 PlanConditionService의 \"first-snapshot\"\
       ·\"bybit-connection-create\" 리터럴을 시험으로 고정한다(B-2)"
     owner: "Dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
   - id: "epic-2-retro-item-17-ad-17-scope-제한-대시보드-표시-단계-제한-연결-해제의-제한-우"
     epic: 2
     action: "AD-17 scope 제한·대시보드 표시 단계 제한·연결 해제의 제한 우회 근거를 Story 3.2 SPEC 입력으로 넘긴다(R-3)"
     owner: "Architect"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
   - id: "epic-2-retro-item-18-미룬-결정-원장-상태-표를-103건에-맞추고-epic-2-미판정-33건"
     epic: 2
@@ -260,7 +260,7 @@ action_items:
     epic: 2
     action: "사용자 소유 표 전체를 information_schema로 훑어 erase 경로를 대조하는 완전성 시험을 둔다(B-4)"
     owner: "Dev"
-    status: open
+    status: in-progress
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
   - id: "epic-2-retro-item-25-리뷰-patch-루프와-2차-리뷰의-기록-위치를-정한다-spec-chan"
     epic: 2
@@ -269,3 +269,103 @@ action_items:
     owner: "사용자"
     status: done
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
+  - id: "epic-3-retro-item-26-서비스-공지의-덮는-범위가-해제-smoke-실패-되돌림-계보-reinst"
+    epic: 3
+    action: "서비스 공지의 덮는 범위가 해제 smoke 실패 되돌림 계보(reinstated_from)를 따라가게 하거나 RECOVERED
+      판정이 계보 전체의 열림을 보게 하고, 되돌림과 공지를 함께 다루는 시험을 더한다(회고 B-1, AI-5 chore 범위)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
+  - id: "epic-3-retro-item-27-계정-삭제-accounterasure-eraserestrictiontar"
+    epic: 3
+    action: "계정 삭제(AccountErasure → eraseRestrictionTargets)를 감사 원장 잠금(lockAppends)과
+      직렬화한다. 사용자 삭제 경로를 여는 Epic 5 전이어야 한다(회고 B-2)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
+  - id: "epic-3-retro-item-28-실제-비밀값-기반-로그-가림-secret_exposed를-비밀을-받는-모"
+    epic: 3
+    action: "실제 비밀값 기반 로그 가림·SECRET_EXPOSED를 비밀을 받는 모든 일회성 역할로 넓히고 tombstone digest
+      키를 목록에 더한다(회고 B-3)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
+  - id: "epic-3-retro-item-29-복원본은-승격-전-기본-전역-정지-새-연결-동기화-로-시작하고-복원-보고"
+    epic: 3
+    action: "복원본은 승격 전 기본 전역 정지(새 연결·동기화)로 시작하고, 복원 보고에 백업 시점 활성 제한·공지 목록을 실어 운영자
+      대조 뒤에만 푼다(회고 B-4, 사용자 결정 2026-10-13)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
+  - id: "epic-3-retro-item-30-운영-command-상태-기계-백엔드-armed-nullable-칸-확정"
+    epic: 3
+    action: "운영 command 상태 기계(백엔드 Armed nullable 칸·확정 prologue·Completion 사본, 프런트엔드
+      훅 다섯·operatorApi 함수 다섯)를 공통화하는 chore를 Epic 4 Story 4.1 전에 한다(회고 D-1, 사용자 결정
+      2026-10-13)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
+  - id: "epic-3-retro-item-31-셸-규약-검사를-한-곳-전체-스크립트-대상으로-통일하고-3-10-스크립트"
+    epic: 3
+    action: "셸 규약 검사를 한 곳·전체 스크립트 대상으로 통일하고(3.10 스크립트·backup-lib.sh의 GNU 플래그 검사 누락),
+      시험·리허설 도우미와 pinned 다운로드를 공용 lib로 뽑는다(회고 D-3)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
+  - id: "epic-3-retro-item-32-일회성-역할-다섯의-공통-기반-runner-파싱-프로필-목록-한-곳-di"
+    epic: 3
+    action: "일회성 역할 다섯의 공통 기반(runner 파싱·프로필 목록 한 곳·digest 생성자)을 두고 낡은 일회성 역할 주석을 고친다(회고
+      D-2)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
+  - id: "epic-3-retro-item-33-deferred-work-md에-빠진-운영-증거-항목-3-9-실제-oci"
+    epic: 3
+    action: "deferred-work.md에 빠진 운영 증거 항목(3.9 실제 OCI·외부 저장소 연결과 파기 증거, 3.8 운영 배포
+      smoke, 3.8 AC-2 entitlement 실제 확인, 3.10 AC-2 인프라 재구축)을 더한다(회고 R-1)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
+  - id: "epic-3-retro-item-34-운영-출시-증거-게이트-운영-배포-smoke-실저장소-백업-파기-실제-격"
+    epic: 3
+    action: "운영·출시 증거 게이트(운영 배포 smoke·실저장소 백업·파기·실제 격리 복원·월별 훈련)를 epics.md externalLaunchGates
+      같은 기계 판독 자리에 이름으로 둔다(회고 R-4, Epic 1 item-10과 함께)"
+    owner: "PM(사용자)"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
+  - id: "epic-3-retro-item-35-동결-spec-문장-셋-3-8-smoke-3-10-rpo-기준-tombs"
+    epic: 3
+    action: "동결 SPEC 문장 셋(3.8 smoke, 3.10 RPO 기준·tombstone 보존)과 ARCHITECTURE-SPINE·PSD·CI-PLAN·ERD의
+      Epic 3 차이를 as-built 새 버전에 반영한다(회고 R-2·R-3, Epic 2 item-19 범위 확장)"
+    owner: "Architect"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
+  - id: "epic-3-retro-item-36-미룬-결정-원장을-140건에-맞추고-판정을-재개하며-done-전환-pr에"
+    epic: 3
+    action: "미룬 결정 원장을 140건에 맞추고 판정을 재개하며, done 전환 PR에서 그 스토리 defer의 판정을 갱신하는 정기 규칙을
+      둔다(회고 P-1, Epic 1 item-8·Epic 2 item-18과 묶음)"
+    owner: "사용자·Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
+  - id: "epic-3-retro-item-37-ci-임계-경로를-줄인다-백업-복원-리허설을-관련-경로-변경에만-돌리는"
+    epic: 3
+    action: "CI 임계 경로를 줄인다. 백업·복원 리허설을 관련 경로 변경에만 돌리는 분기를 두고(3.9 defer 승격), CLAUDE.md·DEVELOPMENT.md의
+      로컬 build 시간 서술을 실측에 맞춘다(회고 P-2)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
+  - id: "epic-3-retro-item-38-spec-k-선택을-frontmatter에-남기고-patch-루프마다-p"
+    epic: 3
+    action: "SPEC [K] 선택을 frontmatter에 남기고 patch 루프마다 patch·defer·reject 건수를 Change
+      Log에 적으며, 운영 스크립트 스토리용 구현 전 체크리스트(신호·잠금·실패 경로·fail-closed·운영 모드 거부)를 SPEC 템플릿에
+      둔다(회고 P-4)"
+    owner: "사용자"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
+  - id: "epic-3-retro-item-39-시험-값이-민감값-비밀-규칙에-걸리는-계열-85-89-을-막는다-시험-표"
+    epic: 3
+    action: "시험 값이 민감값·비밀 규칙에 걸리는 계열(#85·#89)을 막는다. 시험 표지 생성 도우미를 한 곳에 두고 gitleaks
+      규칙 모양 사전 검사를 제공한다(회고 P-3)"
+    owner: "Dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
