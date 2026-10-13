@@ -15,15 +15,18 @@
 # `migrate` 서비스에만 있다(AD-12 — API·Worker 기동은 schema를 검증만 한다). `deploy-audit`은 단계마다 감사 행 하나를 쓰고 끝나는
 # 일회성 역할이다.
 #
-# **자원(AC-2).** `mem_limit`은 API 슬롯 768m·Worker 512m·PostgreSQL 3g·Nginx 128m이고, 일회성 역할(migrate·deploy-audit)은
-# Worker 예산 안의 512m다. 절차가 일회성 역할을 띄우는 순간에는 API 슬롯이 둘이면 Worker가 멈춰 있고, Worker가 돌면 API 슬롯은
+# **자원(AC-2).** `mem_limit`은 API 슬롯 768m·Worker 512m·PostgreSQL 3g·Nginx 128m이고, 일회성 역할(migrate·deploy-audit·
+# backup-record)은 Worker 예산 안의 512m다. 백업(Story 3.9)은 배포와 같은 잠금(`$BOKRILOG_STATE_DIR/.lock`)을 쥐고 돌아 둘이 겹치지
+# 않는다 — 백업이 기록 역할을 띄우는 순간은 API 슬롯 하나와 Worker 하나가 도는 평시다. 배포가 잠금을 쥔 동안 시작된 백업은 기록 역할을
+# 띄우지 않고 실패 행을 대기열에만 넣는다(`backup.sh`) — blue/green peak 위에 512m를 더하지 않는다. 절차가 일회성 역할을 띄우는 순간에는 API 슬롯이 둘이면 Worker가 멈춰 있고, Worker가 돌면 API 슬롯은
 # 하나다 — `GATE REQUESTED`(drain 앞: 기존 슬롯 + Worker)·`DRAINED`·migration·`INACTIVE_VERIFIED`·`CUTOVER`(두 슬롯, Worker 정지)·
 # `VERIFIED`(이전 슬롯 정지 뒤). 그래서 순간 사용은 blue/green peak(API×2 + Worker 몫 + 나머지)을 넘지 않는다. Grafana Alloy 256m는
 # 아직 이 파일에 없지만(후속 작업) gate가 예약으로 계상한다. peak은 gate가 host 선언 메모리와 비교한다.
 #
 # **비밀.** 운영 값은 저장소 밖 env 파일(`$BOKRILOG_SECRETS_FILE`, 권한 600) 하나에 있고, 배포 스크립트가 그 파일을 compose의
 # `--env-file`(치환 원본)로 넘긴다. 서비스는 `env_file`로 파일 전체를 받지 않는다 — 아래 `environment`가 이름으로 고른 것만 받는다
-# (PostgreSQL은 자기 비밀번호 하나, migrate는 DB 접속 셋, 감사 역할은 DB 접속과 감사 digest 키). 이 파일에는 값이 없고, gate가 필수
+# (PostgreSQL은 자기 비밀번호 하나, migrate는 DB 접속 셋, 감사·백업 기록 역할은 DB 접속과 감사 digest 키). backup key는 이 비밀
+# 파일에도 없다(호스트의 `/etc/bokrilog/backup/`, gate가 그 모양의 값을 거부한다). 이 파일에는 값이 없고, gate가 필수
 # 이름이 비었는지와 `env_file`이 없는지를 본다.
 #
 # **망.** 둘로 나눈다. `edge`는 Nginx ↔ API 슬롯, `data`는 API 슬롯·Worker·migrate·감사 역할 ↔ PostgreSQL이다. Nginx는
@@ -94,6 +97,29 @@ services:
     image: ${BOKRILOG_AUDIT_IMAGE:?BOKRILOG_AUDIT_IMAGE}
     environment:
       SPRING_PROFILES_ACTIVE: deploy-audit
+      BOKRILOG_DB_URL: ${BOKRILOG_DB_URL:-}
+      BOKRILOG_DB_USERNAME: ${BOKRILOG_DB_USERNAME:-}
+      BOKRILOG_DB_PASSWORD: ${BOKRILOG_DB_PASSWORD:-}
+      BOKRILOG_AUDIT_DIGEST_KEY: ${BOKRILOG_AUDIT_DIGEST_KEY:-}
+    networks:
+      - data
+    mem_limit: 512m
+    logging: *logging
+    restart: 'no'
+
+  # 일회성 백업 기록 역할(Story 3.9). 운영 호스트의 백업 절차(`backup.sh`)가 실행마다 `run -e BOKRILOG_BACKUP_*`로 두 번 띄운다(시작·끝).
+  # Flyway를 검사하지 않는다(V24 표와 원장에 INSERT만 한다). 이미지는 활성 슬롯의 이미지이고 감사 역할과 같은 변수로 받는다. **backup
+  # key(age identity)와 저장소 설정(rclone)은 받지 않는다** — 그 둘은 호스트의 `/etc/bokrilog/backup/`(권한 600)에만 있고 호스트
+  # 도구(age·rclone)만 읽는다. dump는 이 역할이 아니라 `postgres` 컨테이너의 `pg_dump`가 로컬 소켓으로 만든다.
+  backup-record:
+    profiles:
+      - backup-record
+    image: ${BOKRILOG_AUDIT_IMAGE:?BOKRILOG_AUDIT_IMAGE}
+    environment:
+      SPRING_PROFILES_ACTIVE: backup-record
+      # rollback 뒤의 활성 이미지가 3.9 이전 것이면 이 프로필이 없다. 그 이미지는 웹 서버로 뜨는 대신 아무것도 쓰지 않고 끝나야
+      # 한다 — `backup.sh`가 기록한 행 수를 psql로 확인해 그 경우를 실패(대기열)로 다룬다.
+      SPRING_MAIN_WEB_APPLICATION_TYPE: none
       BOKRILOG_DB_URL: ${BOKRILOG_DB_URL:-}
       BOKRILOG_DB_USERNAME: ${BOKRILOG_DB_USERNAME:-}
       BOKRILOG_DB_PASSWORD: ${BOKRILOG_DB_PASSWORD:-}

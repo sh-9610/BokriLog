@@ -88,6 +88,15 @@ final class ActorDigest {
         return digest("deployer:" + name);
     }
 
+    /**
+     * 백업 수행자의 digest(Story 3.9). 소문자 16진 64자. 파기 실패·기한 초과의 감사 행은 SYSTEM 행이지만 어느 백업 실행 주체(운영
+     * 호스트의 timer)가 남겼는지는 묶여야 하므로 {@code BOKRILOG_BACKUP_ACTOR}의 이름을 이 접두사로 묶는다 — 다른 digest와 접두사가
+     * 달라 겹치지 않고, 이름 원문은 남지 않는다.
+     */
+    String ofBackup(String name) {
+        return digest("backup:" + name);
+    }
+
     private String digest(String value) {
         try {
             Mac mac = Mac.getInstance(ALGORITHM);

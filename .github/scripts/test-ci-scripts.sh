@@ -1194,9 +1194,11 @@ STEPS
 assert_job_steps deploy-rehearsal <<'STEPS'
 저장소 checkout
 배포 gate 시험
+백업 스크립트 시험
 통합 입력 내려받기 (frontend dist)
 통합 입력 내려받기 (backend jar)
 배포 리허설
+백업 리허설
 실패 진단 artifact 업로드
 STEPS
 
@@ -1477,10 +1479,27 @@ else
 fi
 assert_equals 'ci.yml · 배포 리허설 단계의 timeout은 20분' \
   "$(workflow_step_block deploy-rehearsal '배포 리허설' | grep -cxF '        timeout-minutes: 20')" '1'
-assert_equals 'ci.yml · deploy-rehearsal job timeout은 25분' \
-  "$(count_job_lines deploy-rehearsal '^    timeout-minutes: 25$')" '1'
+assert_equals 'ci.yml · deploy-rehearsal job timeout은 70분' \
+  "$(count_job_lines deploy-rehearsal '^    timeout-minutes: 70$')" '1'
+# 백업 리허설(Story 3.9)도 판정은 스크립트가 소유한다. 단계에는 호출 한 줄과 진단 자리, timeout만 있다. 진단 자리는 업로드 경로 아래다
+# — 업로드 단계 하나가 두 리허설의 기록을 함께 올린다.
+assert_equals 'ci.yml · 백업 스크립트 시험 단계는 test-backup-scripts.sh 하나를 부른다' \
+  "$(workflow_step_block deploy-rehearsal '백업 스크립트 시험' | grep -E '^        run: ' | sed 's/^        run: //')" \
+  'bash deploy/production/test-backup-scripts.sh'
+assert_equals 'ci.yml · 백업 리허설 단계는 rehearse-backup.sh 하나를 부른다' \
+  "$(workflow_step_block deploy-rehearsal '백업 리허설' | grep -E '^        run: ' | sed 's/^        run: //')" \
+  'bash deploy/production/rehearse-backup.sh'
+assert_equals 'ci.yml · 백업 리허설 단계의 timeout은 40분' \
+  "$(workflow_step_block deploy-rehearsal '백업 리허설' | grep -cxF '        timeout-minutes: 40')" '1'
+if workflow_step_block deploy-rehearsal '백업 리허설' \
+  | grep -F 'BOKRILOG_REHEARSAL_DIAGNOSTICS: ${{ runner.temp }}/deploy-rehearsal-diagnostics/backup' >/dev/null; then
+  record_pass 'ci.yml · 백업 리허설 진단 기록은 업로드 경로 아래에 있다'
+else
+  record_fail 'ci.yml · 백업 리허설 진단 기록은 업로드 경로 아래에 있다' '진단 디렉터리 env가 없거나 업로드 경로 밖이다.'
+fi
 # 리허설 스크립트도 이 저장소의 셸 규약을 따른다(gate 시험이 그 파일들을 훑는다). 여기서도 한 번 더 막는다.
-for deploy_script in deploy.sh preflight.sh rehearse-deploy.sh lib.sh test-preflight.sh; do
+for deploy_script in deploy.sh preflight.sh rehearse-deploy.sh lib.sh test-preflight.sh backup.sh install-backup-tools.sh \
+  rehearse-backup.sh test-backup-scripts.sh; do
   deploy_path="${repo_root}/deploy/production/${deploy_script}"
   if [ ! -f "${deploy_path}" ]; then
     record_fail "deploy/production/${deploy_script}가 있다" '파일이 없다.'

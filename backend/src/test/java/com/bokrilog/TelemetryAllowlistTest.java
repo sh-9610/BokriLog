@@ -167,6 +167,26 @@ class TelemetryAllowlistTest extends OperatorTestBase {
                 Set.of())).isFalse();
     }
 
+    /** Story 3.9: 백업 gauge 넷. 성공 시각은 tag가 없고, 사용률·기한 초과·측정 시각은 저장소 두 값(oci·offsite)만 받는다. */
+    @Test
+    void 백업_gauge는_닫힌_저장소_tag만_받는다() {
+        String lastSuccess = "bokrilog.backup.last.success.timestamp";
+        assertThat(TelemetryAllowlist.tagKeys(lastSuccess)).isEmpty();
+        assertThat(TelemetryAllowlist.allows(lastSuccess, Map.of("env", "ci", "role", "worker"), Set.of())).isTrue();
+        assertThat(TelemetryAllowlist.allows(lastSuccess, Map.of("store", "oci"), Set.of())).isFalse();
+        for (String name : new String[] {"bokrilog.backup.store.usage.ratio", "bokrilog.backup.purge.overdue",
+                "bokrilog.backup.store.measured.timestamp"}) {
+            assertThat(TelemetryAllowlist.tagKeys(name)).containsExactly("store");
+            for (String store : new String[] {"oci", "offsite"}) {
+                assertThat(TelemetryAllowlist.allows(name, Map.of("store", store, "role", "worker"), Set.of()))
+                        .as(name + "/" + store).isTrue();
+            }
+            assertThat(TelemetryAllowlist.allows(name, Map.of("store", "gen_20261012"), Set.of())).isFalse();
+            assertThat(TelemetryAllowlist.allows(name, Map.of("store", "oci", "generation", "gen_20261012"),
+                    Set.of())).isFalse();
+        }
+    }
+
     @Test
     void filter는_uri를_템플릿으로만_남기고_예외_tag를_걷으며_env를_붙인다() {
         var filter = new TelemetryConfig().telemetryMeterFilter("ci", "all");

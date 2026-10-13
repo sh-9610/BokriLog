@@ -497,6 +497,10 @@ write_compose "${c}" 's/^  migrate:$/  migrate:\
       - production.env/'
 run_gate --compose "${c}"
 expect_only '운영 compose가 env_file로 비밀 파일 전체를 넘김 → ENV_FILE_IN_COMPOSE' ENV_FILE_IN_COMPOSE
+# 백업 기록 역할(Story 3.9)도 일회성 역할이라 Worker 예산(512m) 안이어야 한다. 그 서비스 블록의 mem_limit만 바꾼다.
+write_compose "${c}" '/^  backup-record:$/,/^    mem_limit:/s/^    mem_limit: 512m$/    mem_limit: 1g/'
+run_gate --compose "${c}"
+expect_only '백업 기록 역할 mem_limit 1g → MEMORY_LIMIT_MISMATCH' MEMORY_LIMIT_MISMATCH
 
 printf '\n운영 비밀\n'
 s="${work}/secrets.variant"
@@ -515,6 +519,16 @@ for forbidden in 'SPRING_PROFILES_INCLUDE=migrate' 'SPRING_APPLICATION_JSON={}' 
   run_gate --secrets "${s}"
   expect_only "비밀 파일의 ${forbidden%%=*} → PROFILE_OVERRIDE" PROFILE_OVERRIDE
 done
+# backup key(age identity)는 비밀 파일에 두지 않는다(Story 3.9). 모양 값은 실행 시점에 만든다(자격정보 모양 리터럴을 커밋하지 않는다).
+write_secrets "${s}"
+printf 'BOKRILOG_BACKUP_IDENTITY=%s%s\n' 'AGE-SECRET-KEY-' "$(random_hex 8 | tr 'a-f' 'A-F')" >>"${s}"
+run_gate --secrets "${s}"
+expect_only '비밀 파일의 backup key → BACKUP_KEY_IN_SECRETS' BACKUP_KEY_IN_SECRETS
+if printf '%s' "${last_output}" | grep -F 'AGE-SECRET-KEY-' >/dev/null; then
+  record_fail 'gate 출력에 backup key 값이 없다' 'key 값이 출력에 있다.'
+else
+  record_pass 'gate 출력에 backup key 값이 없다'
+fi
 write_secrets "${s}" 'BOKRILOG_GOOGLE_CLIENT_SECRET='
 run_gate --secrets "${s}"
 expect_only '로그인 제공자 쌍 없음 → NO_SIGN_IN_PROVIDER' NO_SIGN_IN_PROVIDER
@@ -576,7 +590,8 @@ for bad_actor in '' 'deployer with space' "${too_long_actor}"; do
 done
 
 printf '\n스크립트 규약\n'
-for script in preflight.sh deploy.sh rehearse-deploy.sh lib.sh test-preflight.sh; do
+for script in preflight.sh deploy.sh rehearse-deploy.sh lib.sh test-preflight.sh backup.sh install-backup-tools.sh \
+  rehearse-backup.sh test-backup-scripts.sh; do
   if [ ! -f "${script_dir}/${script}" ]; then
     record_fail "${script}가 있다" '파일이 없다.'
     continue

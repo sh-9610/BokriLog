@@ -418,6 +418,10 @@ Actuator는 **관리 포트에서 Prometheus 엔드포인트 하나만** 연다(
 | `bokrilog_sync_queue_age_seconds` | `kind` | 종류별 가장 오래 기다린 `QUEUED` 작업의 나이. DB 시각, 15초 주기 측정(가상 스레드, `statement_timeout` 2초, `V23` 부분 색인이 받친다). 대기 없음 0, 미측정 NaN | 측정 시점 |
 | `bokrilog_support_first_answer_total` | `met` | 첫 답변 하나마다 1. `true`(목표 안)·`false`(목표 밖)·`pending`(목표 미정 — 답변 확정이 지금 달력으로 먼저 채워 보고도 정하지 못한 것). 달성률 = `true / (true + false)`, SLA 아님 | 프로세스 수명 |
 | `bokrilog_support_pending_target` | — | 첫 답변을 기다리는 문의 수(접수·처리 중). 60초 주기 측정(가상 스레드, `statement_timeout` 2초) | 측정 시점 |
+| `bokrilog_backup_last_success_timestamp_seconds` | — | 마지막 `SUCCEEDED` 백업 기록의 DB 시각(epoch 초, Story 3.9). 60초 주기 측정. **성공 기록이 없으면 등록하지 않는다**(NaN을 내지 않는다 — `absent()`와 나이 비교가 함께 침묵한다). 읽기가 실패하면 이미 낸 값을 유지한다 | 측정 시점 |
+| `bokrilog_backup_store_usage_ratio` | `store` | 저장소(`oci`·`offsite`)별 최신 `MEASURED`의 bytes / quota. 측정 기록이 없으면 없다 | 측정 시점 |
+| `bokrilog_backup_purge_overdue` | `store` | 그 최신 측정이 생성 후 30일을 넘긴 generation이 남았다고 적었으면 1, 아니면 0 | 측정 시점 |
+| `bokrilog_backup_store_measured_timestamp_seconds` | `store` | 그 최신 측정 기록의 DB 시각(epoch 초). 저장소를 읽지 못해 측정이 멈추면 늙는다 — 위 두 값이 옛 값 그대로 남는 것을 알린다 | 측정 시점 |
 | `hikaricp_connections*` | `pool=bokrilog` | DB 연결 풀(활성·유휴·대기·최대·최소·timeout) | 측정 시점 |
 | `jvm_memory_{used,committed,max}_bytes` | `area`·`id` | JVM 메모리(풀 이름은 JVM이 정한다) | 측정 시점 |
 | `http_server_requests_seconds` | `method`·`uri`·`status`·`outcome` | HTTP 요청 시간. `uri`는 경로 템플릿 또는 `UNKNOWN` | 프로세스 수명 |
@@ -448,7 +452,10 @@ Actuator는 **관리 포트에서 Prometheus 엔드포인트 하나만** 연다(
 | `LivenessProbeUnmeasured` | synthetic 결과 없음(3.8 전) | 10m | info·unmeasured |
 | `AlloyHeartbeatMissing` | `up{job="alloy"} == 1`이 없음 | 10m | critical·observability |
 | `BackupAgeExceeded` | 마지막 성공 백업이 26시간 이상 | 0m | critical·backup |
-| `BackupAgeUnmeasured` | `bokrilog_backup_last_success_timestamp_seconds` 없음(3.9 전) | 1h | info·unmeasured |
+| `BackupAgeUnmeasured` | `bokrilog_backup_last_success_timestamp_seconds` 없음(성공 기록 전 — 운영 첫 백업 전) | 1h | info·unmeasured |
+| `BackupStoreUsageWarning`·`Critical` | 백업 저장소 사용량이 quota의 70%·85% 이상(저장소별). warning은 위쪽 경계가 없다 — 85% 위에서는 둘 다 울려 warning이 풀리고 critical이 아직 울리지 않는 침묵 구간이 없다 | 5m | warning·critical·backup |
+| `BackupStoreMeasurementStale` | 저장소별 최신 측정이 26시간 넘게 없다(저장소를 읽지 못한다) | 0m | warning·backup |
+| `BackupPurgeOverdue` | 생성 후 30일을 넘긴 generation이 파기 뒤에도 남았다(저장소별) | 0m | critical·backup |
 | `SyncFailureRateHigh` | 15분 창 실패율 20% 이상, 분모 10 이상 | 0m | warning·sync |
 | `SyncQueueAgeHigh` | 대기 나이 15분 이상 | 0m | warning·sync |
 | `SyncQueueAgeUnmeasured` | 대기 나이가 NaN(측정 실패·timeout) | 15m | info·unmeasured |
@@ -484,7 +491,7 @@ Actuator는 **관리 포트에서 Prometheus 엔드포인트 하나만** 연다(
 | `worker` | 작업 dispatch, 주기 측정, 종료 신호에 drain, PostgreSQL session advisory lock으로 단일 실행. 같은 servlet 앱이지만 공개 포트를 컨테이너 루프백(`127.0.0.1`)에만 묶는다 | Nginx upstream·포트 게시 대상이 아니다 |
 | `all` | 둘 다(지금까지의 동작). 개발·CI·시험의 기본값 | drain·단일 잠금이 없다. **`BOKRILOG_ENV=production`이면 기동 거부** |
 
-일회성 역할 둘은 웹 서버 없이 뜨고 역할 값을 보지 않는다 — `migrate`(schema를 바꾸는 유일한 프로세스, AD-12)와 `deploy-audit`(감사 원장에 배포 단계 SYSTEM 행 하나를 더하고 끝난다, Flyway 검사 없음 — 미적용 migration이 있는 DB에도 쓴다). 모든 메트릭에 공통 tag `role`이 붙는다(`TelemetryAllowlist`). 대기 나이·대기 문의 수 같은 주기 측정 gauge는 측정하는 역할(`worker`·`all`)에만 있다 — API 슬롯이 NaN을 영원히 내 미측정 경보를 울리지 않게.
+일회성 역할 셋은 웹 서버 없이 뜨고 역할 값을 보지 않는다 — `migrate`(schema를 바꾸는 유일한 프로세스, AD-12)와 `deploy-audit`(감사 원장에 배포 단계 SYSTEM 행 하나를 더하고 끝난다, Flyway 검사 없음 — 미적용 migration이 있는 DB에도 쓴다), `backup-record`(백업 실행 기록을 `operations_backup_event`에 더하고 끝난다, Flyway 검사 없음 — 아래 `## 백업`). 모든 메트릭에 공통 tag `role`이 붙는다(`TelemetryAllowlist`). 대기 나이·대기 문의 수 같은 주기 측정 gauge는 측정하는 역할(`worker`·`all`)에만 있다 — API 슬롯이 NaN을 영원히 내 미측정 경보를 울리지 않게.
 
 **Worker drain.** `docker compose stop`의 SIGTERM이 곧 drain 요청이다(별도 HTTP 경로를 두지 않는다). Worker는 새 lease claim을 멈추고, heartbeat를 계속 밀며, 진행 중 작업(여섯 종류 모두)이 비거나 `bokrilog.sync.worker.drain-timeout`(기본 120초)이 지날 때까지 기다린다(`WorkerDrain` — 컨텍스트 닫기의 첫 사건에서 돌아 shutdown phase 5초가 자르지 않는다). 종료 코드는 0(비었다)·75(`worker.drain.incomplete`, 남은 작업은 lease 만료 뒤 다음 Worker가 잡는다)·76(`worker.lock.lost`, 잠금 세션을 잃어 스스로 끝냈다)이다(`WorkerExit`). 시험이 고정하는 것은 빈의 `exitCode()`까지다 — 실제 JVM이 신호를 받아 컨텍스트를 닫은 뒤 그 코드로 끝나는 경로(`BokriLogApplication`의 halt)는 시험·리허설이 고정하지 않는다(리허설의 drain 미완료는 결함 주입으로 75를 넣어 절차의 반응만 본다). 운영 compose의 Worker `stop_grace_period`는 150초다.
 
@@ -547,9 +554,89 @@ smoke 경로는 운영 제한이 막는 기능이 아니다 — 제한 중 배�
 - 운영 서버에서 이미지를 빌드하지 않는다(운영 compose에 `build`가 없고 gate가 본다). 앱 이미지는 digest로 받기만 한다. 이미지 빌드·SBOM 생성·서명·SBOM attestation·레지스트리 게시는 아직 이 저장소에 없다(`deferred-work.md`, 공급망 파이프라인) — 그 파이프라인이 release manifest를 만들 때까지 운영 배포는 미검증이다.
 - startup migration을 하지 않는다. API·Worker 기동은 schema를 검증만 하고 `migrate` 역할만 바꾼다.
 - 결함 주입 변수 `BOKRILOG_DEPLOY_FAULT`(`drain-incomplete`·`inactive-readiness`·`post-cutover-smoke`)는 리허설 전용이다. 리허설 모드 자체가 `BOKRILOG_ENV` ∈ {ci, development}와 리허설 override를 함께 요구하므로, 운영 셸(대개 `BOKRILOG_ENV`가 빈 값)에서 `--rehearsal` 하나로 검사를 건너뛸 수 없다. compose 프로젝트 이름은 `bokrilog-<소문자>` 모양만 받는다.
-- 배포와 창 닫기는 한 번에 하나다(상태 디렉터리의 `.lock`). 비정상 종료로 남았으면 진행 중인 배포가 없음을 확인하고 지운다.
+- 배포와 창 닫기는 한 번에 하나다(상태 디렉터리의 `.lock`, 일일 백업도 같은 잠금 — 안의 `owner`가 쥔 쪽·pid·operation·시작 시각을 말한다). 다른 배포·백업이 쥐고 있으면 준비 실패다. 소유자가 죽었으면 `LOCK_STALE`로 거부하고 스스로 지우지 않는다 — 복구는 아래 `## 백업`의 "잠금이 남았을 때".
 - 값을 받는 인자(`--release`·`--actor` 등)를 값 없이 마지막에 두면 준비 실패(2)다.
 - TLS 종단(443·인증서), Grafana Alloy 수집·Grafana Cloud·외부 synthetic 연결, nginx 컨테이너 권한 강화, 감사 digest 키 회전, 3.4 훈련 증거 기록, 정적 산출물·Nginx 설정의 release 묶기, Worker 종료 코드의 실제 JVM 경로 시험은 후속 작업이다(`deferred-work.md`).
+
+## 백업 (`deploy/production/backup.sh`, Story 3.9)
+
+**상태: 실저장소 미검증.** 절차는 CI 리허설(`deploy-rehearsal` job의 `백업 리허설` 단계 — MinIO 두 개, 가상 시계)과 고정 입력 시험(`백업 스크립트 시험`)만 통과했다. 실제 OCI Object Storage와 OCI 밖 저장소에 올리고 30일 파기를 그 저장소에서 확인하기 전까지 백업은 검증되지 않은 것으로 다룬다. 가상 시계의 파기 결과를 실제 파기 완료로 선언하지 않는다. OCI 밖 저장소의 업체는 아직 정하지 않았다(정하는 것은 Ask First). 복원은 Story 3.10이 소유한다 — 이 절차에는 복원 실행이 없다.
+
+### 순서
+
+운영 서버의 systemd timer(`bokrilog-backup.timer`, 매일 18:30 UTC = 03:30 KST, `Persistent=true`)가 `backup.sh run`을 돈다.
+
+0. **같은 날 재실행** — generation ID는 `gen_<UTC YYYYMMDD>`다. 표에 그 generation의 `SUCCEEDED`가 있으면 아무것도 하지 않는다(행·object 불변, 종료 0).
+1. **잠금** — 배포와 같은 `$BOKRILOG_STATE_DIR/.lock`을 쥔다. 잠금 안의 `owner` 파일이 쥔 쪽(`kind=deploy|backup`·`pid`·`operation`·`started`)을 말한다. 배포 중이면 `FAILED DEPLOY_IN_PROGRESS`, 다른 백업 중이면 `FAILED BACKUP_IN_PROGRESS`, 소유자 pid가 죽었거나 `owner`가 없으면 `FAILED LOCK_STALE`이고 셋 다 종료 1이다. **이 실패 행은 기록 역할 JVM을 띄우지 않고 대기열에만 넣는다** — 배포가 잠금을 쥔 동안(blue/green peak) 512m를 더 띄우지 않는다.
+2. **대기열** — 잠금을 쥔 실행은 `$BOKRILOG_BACKUP_DIR/pending/`의 행을 먼저 기록하고, 0을 다시 본다(그사이 손으로 돌린 실행이 성공했을 수 있다).
+3. **로컬 임시본·시작** — 앞선 실행이 남긴 `tmp/` 아래 것을 지우고(`PURGED LOCAL_TEMP`) `STARTED`를 기록한다.
+4. **incoming 정리** — 두 저장소의 `incoming/`(앞선 실행의 부분 object)을 비운다(`PURGED INCOMING_CLEARED`).
+5. **dump** — 운영 postgres 컨테이너의 `pg_dump --format=custom`(로컬 소켓, `compose exec -T`)을 권한 700 임시 디렉터리에 쓴다. 종료 코드 0과 비어 있지 않음을 확인한 뒤에만
+6. **암호화** — `age -R active.pub`. 평문은 암호화 직후, 그리고 어느 실패·신호에서든 지운다(trap).
+7. **암호문 SHA-256**.
+8. **catalog** — `age -d -i identities/<key_id>.key | pg_restore --list`. pg_restore는 TOC만 읽고 끝나므로 남은 stream을 끝까지 읽어 age가 EOF까지 가게 한다(그 전에 끊기면 큰 dump에서 EPIPE이고, 마지막 chunk까지 인증하지 못한다). age·pg_restore 두 종료 코드가 모두 0이고 목록이 비어 있지 않아야 한다.
+9. **업로드** — 두 저장소 각각 `incoming/`에 암호문·checksum을 올리고, 원격 object를 내려받아 계산한 SHA-256과 checksum 파일을 대조한다.
+10. **이동** — 둘 다 맞으면 두 저장소 모두 `generations/`로 옮긴다. 한쪽 이동이 실패하면 이미 옮긴 쪽을 `incoming/`으로 되돌리고(못 하면 지운다) `FAILED MOVE_<STORE>`다 — `generations/`에 기록되지 않은 generation이 남지 않는다. 같은 날 앞선 실패의 같은 generation을 먼저 지우는 단계의 실패도 이동 실패다. 여기까지 모두 성공해야 `SUCCEEDED`(암호문 bytes·SHA-256·key ID)다 — 한쪽 업로드만으로는 성공이 아니다.
+11. **결과 기록** — 결과 행 하나를 따로 기록한다(파기 행 묶음의 거절이 결과를, 결과의 거절이 파기 감사 행을 되돌리지 않게).
+12. **파기·측정** — 아래 `### 파기`. 실패한 실행에서도 돈다. 그 행을 200행 이하 묶음으로 따로 기록한다.
+
+**기록은 확인한다.** 기록 역할(`backup-record`, 활성 이미지)을 띄운 뒤 표에 정확히 그만큼의 행이 새로 생겼는지 psql로 본다 — rollback 뒤의 활성 이미지가 3.9 이전 것이면 그 프로필이 없어 아무것도 쓰지 않고 끝나기 때문이다(그 서비스는 `SPRING_MAIN_WEB_APPLICATION_TYPE=none`이라 웹 서버로 뜨지 않는다). 기록하지 못한 행은 대기열에 남고 종료 1이다 — 기록 없는 결과는 성공이 아니다. 대기열의 성공 행이 이미 표에 있으면(기록 뒤 확인만 실패했다) 다시 쓰지 않는다.
+
+**DB에 닿지 못해도 파기는 돈다.** PostgreSQL이 멈췄거나 V24 표를 읽지 못하거나 `STARTED`를 기록하지 못하면 dump하지 않고(`FAILED DB_UNAVAILABLE`·`RECORD_TABLE_MISSING`·`RECORD_UNAVAILABLE`) 저장소 목록만으로 파기·측정을 한 뒤 행을 대기열에 넣고 종료 1이다 — DB 장애가 29일 넘은 object를 살려 두지 않는다(AC-4).
+
+**신호.** 긴 단계(dump·암호화·catalog·rclone·기록 역할·psql)는 배경에서 돌리고 `wait`한다 — 그래서 systemd의 SIGTERM이 오면 bash가 그 단계가 끝나기를 기다리지 않고 바로 처리기를 돌아 그 단계의 process group을 끝내고, 임시본을 지우고, `FAILED INTERRUPTED`를 기록하고(90초 상한, 못 하면 대기열), 잠금을 놓는다. 단계마다 상한(1시간, 기록 5분, 조회 1분)이 있다.
+
+Worker(와 `all`)가 그 표를 60초마다 읽어 `bokrilog_backup_last_success_timestamp_seconds`·`bokrilog_backup_store_usage_ratio{store}`·`bokrilog_backup_purge_overdue{store}`·`bokrilog_backup_store_measured_timestamp_seconds{store}`를 낸다(위 `### 메트릭`). 성공 기록이 없으면 gauge를 등록하지 않으므로 `BackupAgeUnmeasured`가 울린다. 저장소를 읽지 못해 측정이 멈추면 사용률·기한 초과는 옛 값 그대로 남으므로 측정 시각이 26시간 늙으면 `BackupStoreMeasurementStale`이 울린다.
+
+### 파기
+
+매 실행 끝에 두 저장소의 `generations/`·`incoming/`에서 generation 날짜 기준 **생성 후 29일을 넘은** 것을 지운다(하루 한 번 실행이면 30일 안에 제거된다). 이 30일 규칙에는 예외가 없다 — 새 성공이 없어 마지막 성공마저 29일을 넘기면 지운다(그 전에 26시간 경보가 이미 울린다). 그다음 저장소마다 수량 상한(`max_generations`)과 bytes 상한(`max_bytes_<store>`)을 넘으면 오래된 것부터 지우되, 이 둘은 마지막 `SUCCEEDED` 하나를 지우지 않는다. **마지막 성공을 알 수 없으면**(조회 실패·DB 없음·기록되지 않은 대기열 — "아직 성공이 없음"과 다르다) 수량·bytes 상한 파기를 건너뛰고 `PURGE_FAILED LIST_FAILED`를 남긴다. 로컬 임시본은 3단계가 매 실행 지운다.
+
+지우지 못하면 `PURGE_FAILED`, 파기 뒤에도 30일을 넘긴 generation이 남으면 `PURGE_OVERDUE`이고, 둘 다 감사 원장에도 SYSTEM 행을 남긴다(`command=backup`, `scope=BACKUP`, target=generation ID, outcome `FAILED`, 수행자는 `BOKRILOG_BACKUP_ACTOR`의 `backup:` keyed digest). 저장소마다 `MEASURED`(bytes·generation 수·quota, 기한 초과가 남았으면 code `PURGE_OVERDUE`)를 남긴다. 사용률의 분자는 이 백업 object(`generations/`·`incoming/`)뿐이다 — 같은 계정의 다른 bucket은 세지 않으므로 계정 전체 사용률이 아니다(후속 작업). 파기 판단의 권위는 저장소 목록이고 표는 기록이다. 파기에 문제가 있으면 백업이 성공했어도 종료 1이다(systemd에서 실패로 보인다).
+
+저장소 문제를 고친 뒤 파기만 다시 돌리려면 `backup.sh purge`다 — 같은 날 `run`은 no-op이라 파기를 다시 돌지 않는다.
+
+시각은 실제 시계(UTC)다. 리허설만 `BOKRILOG_BACKUP_NOW`(epoch 초)로 덮고 운영에서는 거부한다.
+
+### 키
+
+| 파일 | 위치 | 내용 |
+|---|---|---|
+| recipient | `/etc/bokrilog/backup/active.pub`(644, group·other 쓰기 금지) | 첫 줄 `# key_id=<id>`(소문자·숫자·`_-`), 다음 줄 `age1…` 하나. `recipients/<id>.pub`과 같아야 한다 |
+| key별 recipient | `/etc/bokrilog/backup/recipients/<key_id>.pub` | 그 key의 `age1…`(공개 값). 과거 key의 것도 남긴다 |
+| identity | `/etc/bokrilog/backup/identities/<key_id>.key`(디렉터리 700·파일 600) | age identity(비밀). 현재 key의 것은 catalog 검사에 필요하다 |
+| 저장소 설정 | `/etc/bokrilog/backup/rclone.conf`(600) | remote 둘(OCI·OCI 밖 — 서로 다른 rclone remote)의 자격정보. 값은 `rclone config`로 운영자가 만든다 |
+| 백업 설정 | `/etc/bokrilog/backup/backup.env` | remote 이름·상한·quota(견본 `backup.env.example`, 비밀 아님, 끝의 `/`·`//` 금지) |
+
+- **앱 key와 분리한다.** backup key는 자격정보 암호화 key ring·감사 digest 키와 섞지 않고, DB·Git·로그·compose 환경·앱 프로세스 어디에도 넣지 않는다 — 호스트 도구(age·rclone)만 읽는다. 운영 비밀 파일(`production.env`)에 age identity 모양의 값이 있으면 배포 gate가 거부한다(`BACKUP_KEY_IN_SECRETS`).
+- **generation 기록과 object 이름에 key ID가 실린다**(`gen_<YYYYMMDD>.<key_id>.dump.age`·`.sha256`). object 이름에는 그 밖의 것이 없다 — 사용자·금융 식별자가 없다.
+- **만들기.** `age-keygen -o identities/<id>.key`, `age-keygen -y identities/<id>.key > recipients/<id>.pub`, 그리고 `active.pub`을 `# key_id=<id>` + 그 recipient로 쓴다.
+- **오프라인 복구 사본(필수).** key를 만들 때 **그 age identity의 사본을 OCI 밖 오프라인 자리(예: 비밀번호 관리자)에 바로 둔다**(PORTFOLIO-SOLUTION-DESIGN의 "서버·DB·OCI 밖에 복구 사본"). Story 3.10의 versioned recovery manifest가 생기기 전에는 이 사본이 유일한 복구 경로다 — 사본 없이 서버를 잃으면 두 저장소의 백업은 **복호화할 수 없다**.
+- **회전.** 새 key를 위와 같이 만들고 `active.pub`을 바꾼다. **보존이 끝나기 전에는(마지막으로 그 key를 쓴 generation이 30일 규칙으로 지워질 때까지) 과거 identity·recipient를 지우지 않는다.** `backup.sh keys`가 두 저장소에 남은 generation이 쓰는 key ID마다 identity가 있고 권한이 600이며 `age-keygen -y identity`가 `recipients/<id>.pub`과 같은지, 디렉터리 권한(key 디렉터리·`identities/` 700, `rclone.conf` 600, `active.pub` group·other 쓰기 금지)을 확인하고, 문제가 있거나 저장소를 읽지 못하면 그 key ID·이유를 보고하며 종료 1이다. 회전 뒤와 과거 identity를 지우기 전에 돌린다.
+
+### 설치
+
+1. **계정·디렉터리.** 백업은 배포를 돌리는 운영 계정 `bokrilog`(docker 그룹)으로 돈다. root로 한 번 만든다:
+   `install -d -o bokrilog -g bokrilog -m 700 /etc/bokrilog/backup /etc/bokrilog/backup/identities /var/lib/bokrilog/backup` 과 `install -d -o bokrilog -g bokrilog -m 755 /etc/bokrilog/backup/recipients`.
+2. **도구.** root로 `bash deploy/production/install-backup-tools.sh` — age v1.3.2·rclone v1.75.1을 고정 SHA-256 표로 받아 `/opt/bokrilog/backup-tools/bin`에 두고, 꺼낸 바이너리의 SHA-256을 설치 manifest(`/opt/bokrilog/backup-tools/MANIFEST`)에 남긴다(`.partial`에 받은 뒤 대조하고 원자 이동, 캐시는 쓸 때마다 다시 대조). **`/opt/bokrilog/backup-tools`는 root 소유이고 `bokrilog`가 쓸 수 없어야 한다** — `backup.sh`는 돌 때마다 `--check`로 버전과 manifest를 다시 대조한다. 운영 서버에서 이미지를 빌드하지 않으므로 두 도구는 호스트 바이너리다. `unzip`이 필요하다. `pg_dump`·`pg_restore`는 따로 설치하지 않는다 — 운영 postgres 컨테이너(18.6)의 것을 쓴다.
+3. **파일.** `bokrilog`로 위 `### 키` 표의 파일을 두고(오프라인 사본 포함) bucket 둘은 운영자가 미리 만든다.
+4. **systemd.** `deploy/production/systemd/bokrilog-backup.{service,timer}`를 `/etc/systemd/system/`에 두고(checkout 경로가 `/srv/bokrilog`가 아니면 `ExecStart`·`WorkingDirectory`를 고친다) `systemctl daemon-reload && systemctl enable --now bokrilog-backup.timer`. 실패한 날(단계 실패·배포 중·기록 실패)은 30분 뒤 다시 돈다(`Restart=on-failure`, 12시간에 6번까지 — 성공한 날의 재시작은 같은 날 no-op이라 멈추고, 파기 실패만 남은 날·LOCK_STALE도 이 상한에서 멈춘다). 정지 유예는 180초다(`TimeoutStopSec` — 신호 처리기의 기록 90초보다 길다).
+5. **첫 실행.** `systemctl start bokrilog-backup.service` 뒤 `journalctl -u bokrilog-backup`과 `backup.sh keys`로 확인한다. 이것이 실저장소 검증의 시작이고, 30일 파기의 실제 증거가 쌓이기 전까지 상태는 실저장소 미검증이다.
+
+**잠금이 남았을 때(LOCK_STALE).** 배포·백업이 SIGKILL·전원 차단으로 끝나면 `.lock`이 남는다. 스크립트는 그것을 스스로 지우지 않는다. `cat $BOKRILOG_STATE_DIR/.lock/owner`로 쥔 쪽·pid·operation을 보고, 그 pid가 없고 `docker ps`에 진행 중인 배포·백업 컨테이너가 없음을 확인한 뒤 `rm -rf $BOKRILOG_STATE_DIR/.lock`으로 지운다. 그 사이 쌓인 실패 행은 다음 백업이 대기열에서 기록한다.
+
+### 명령
+
+| 명령 | 역할 |
+|---|---|
+| `deploy/production/backup.sh run` | 위 순서 전체. 종료 0(성공·같은 날 no-op, 파기 완료, 모든 행 기록)·1(단계 실패·파기 실패·기한 초과·기록 실패(대기열)·잠금·중단)·2(준비 실패 — 설정·도구 버전·manifest·key 파일·권한·모드) |
+| `deploy/production/backup.sh purge` | 파기·측정만 다시(잠금·대기열 기록 포함). 같은 날 `run`이 no-op일 때 파기를 다시 돌리는 길이다 |
+| `deploy/production/backup.sh keys` | 남은 generation이 쓰는 key ID(와 active key)의 identity·recipient 짝·권한. 0·1(문제 key ID와 이유를 보고, 저장소를 읽지 못해도 1)·2 |
+| `bash deploy/production/install-backup-tools.sh [--check] [--prefix …]` | 도구 설치·확인(버전·설치 manifest). `backup.sh`는 `--check`가 통과해야 돈다 |
+| `bash deploy/production/test-backup-scripts.sh` | 고정 입력 시험(Docker·네트워크 불필요): 잘못된 배포본 → 2·빈 `bin/`, `--check`의 버전·manifest 불일치 → 1, `backup.sh`의 운영 모드 가상 시계·결함 주입·`production`의 리허설·설정 키·같은 remote·`/`·`//`·max_bytes > quota·권한·identity 없음·짝 불일치 → 2, `keys`의 저장소 읽기 실패·짝 불일치 → 1. Windows의 Git Bash는 권한 경로만 건너뛴다 |
+| `deploy/production/rehearse-backup.sh` | 운영 compose + `compose.rehearsal.yaml` + `compose.rehearsal-backup.yaml`(MinIO 두 개, digest 고정)로 실제 절차를 돈다: 정상(전에는 gauge 미등록)·같은 날 no-op·단계 실패(dump·암호화·변조된 checksum·catalog)·한쪽 업로드 실패(OCI 밖 MinIO 정지)·부분 object 정리 뒤 재시도·한쪽 이동 실패(되돌림)·dump 중 SIGTERM(바로 정리·`FAILED INTERRUPTED`·잠금 해제)·잠금(배포 중·다른 백업 중·LOCK_STALE — 대기열과 다음 실행의 기록)·수량 상한·용량 상한(마지막 성공은 남는다)·29일 경계(정확히 29일은 남고 1초 뒤 지운다, 마지막 성공도 — 그 실행은 PostgreSQL을 멈춘 채 돈다)·30일 기한 초과(감사·gauge·`backup.sh purge`로 해소)·키 회전과 `keys`(과거 identity 삭제·짝 불일치·저장소 정지)·큰 dump(수 MB, 리허설 전용 scratch 표)·누출(출력·도구 기록·Worker 컨테이너 로그·object 이름·메트릭). 결과에 "실저장소 미검증"을 출력한다. 종료 0·1·2. `BOKRILOG_REHEARSAL_DIAGNOSTICS`를 주면 실패 기록을 옮긴다(key·저장소 설정·비밀 파일 제외) |
+
+결함 주입 `BOKRILOG_BACKUP_FAULT`(`dump`·`slow-dump`·`encrypt`·`catalog`·`tamper-oci`·`move-offsite`·`purge-oci`·`purge-offsite`)와 가상 시계 `BOKRILOG_BACKUP_NOW`는 리허설 전용이고, 리허설 모드는 `BOKRILOG_ENV` ∈ {ci, development}와 리허설 override를 함께 요구한다(배포 gate와 같은 규칙). 공식 `minio/minio` 이미지는 Docker Hub에서 받을 수 없어(2026-10 확인) 같은 소스의 공개 빌드 `pgsty/minio`를 digest로 고정해 리허설에만 쓴다.
 
 ## CI (`.github/`)
 
@@ -570,7 +657,7 @@ changes ──> frontend-quality ──┐
 | `frontend-quality` | 타입 검사 → ESLint → stylelint → Prettier → 빌드 → Vitest → Chromium E2E | 8분 |
 | `backend-quality` | JDK 25 준비 → Gradle `build`(컴파일·Modulith 경계 검사·PostgreSQL Testcontainers 시험·jar) | 20분 |
 | `same-origin-integration` | 경보 규칙 시험 → 두 품질 job의 산출물로 동일 출처 검증(`--keep-stack`, `BOKRILOG_ENV=ci`) → 같은 스택에서 Story 1.1 회귀 | 17분 |
-| `deploy-rehearsal` | 배포 gate 고정 입력 시험 → 같은 두 산출물로 운영 배포 리허설(Story 3.8, 위 `## 운영 배포`). green은 운영 배포의 증거가 아니다 | 25분 |
+| `deploy-rehearsal` | 배포 gate 고정 입력 시험 → 같은 두 산출물로 운영 배포 리허설(Story 3.8, 위 `## 운영 배포`) → 백업 스크립트 고정 입력 시험 → 같은 jar로 백업 리허설(Story 3.9, 위 `## 백업` — MinIO 두 개). green은 운영 배포·실저장소의 증거가 아니다 | 70분 |
 | `ci-required` | 선행 job 결과 집계. 병합 가능 여부 판정 | 1분 |
 
 `backend-quality`의 15분은 Story 1.3이 10분에서 올린 값이다. 이 job은 이제 Testcontainers로 실제 PostgreSQL을 띄우고, 콜드 실행에는 `postgres:18.6-alpine` 내려받기가, 동시성 시험에는 실제 잠금 경합 대기가 더해진다. 러너에 docker 데몬이 이미 있으므로 서비스 컨테이너도 새 action도 더하지 않았고, 시험은 기존 `Gradle 빌드` 단계 안에서 돈다. `CI-PLAN.md` §4·§10의 backend 예산 8분은 이 상한과 별개로 계속 측정한다. Story 2.11이 15분을 20분으로 올렸다. PR #49에서 이 job이 11분 5초였고, 같은 시험의 로컬 실행보다 1분쯤 길었다. 2.11의 로컬 `clean build`가 12분 56초라 CI는 14분 안팎이 된다. PR #52의 이 job은 13분 0초였다. 그 시간의 대부분은 실제 파이프라인을 모는 `FirstSnapshotTest`·`IncrementalSyncTest`가 워커의 1초 dispatch tick과 고정 `Thread.sleep`을 기다린 몫이었다. `spec-backend-test-speed.md`가 시험의 dispatch 간격을 100ms로 줄이고(`bokrilog.sync.worker.dispatch-interval`, 운영 기본 1초, heartbeat 5초는 그대로) 관측 가능한 조건은 조건 대기로 바꿨다. 그 변경이 변경 전 커밋(`3824c3c`)을 다시 잰 로컬 `clean build`는 13분 2초였고(위 2.11의 12분 56초와 별개의 재측정이다), 변경 뒤에는 3분 13초다(시험 869건에 운영 주기를 고정하는 Docker 없는 시험 두 건을 더해 871건, 두 클래스 605초 → 115초, 124초 → 28초). Story 2.12가 그 위에 정밀 검증·호출 예산 시험을 더해 로컬 `clean build`가 4분 41초가 됐다(989건, 새 `PlanVerificationTest` 75초). timeout 20분은 CI-PLAN 새 버전이 보정할 때까지 그대로 둔다.
@@ -593,7 +680,7 @@ changes ──> frontend-quality ──┐
 | `.github/scripts/aggregate-results.sh` | 선행 job 결과를 모아 병합 가능 여부 판정 |
 | `.github/scripts/check-alert-rules.sh` | 경보 규칙의 형식 계약·문법·promtool 단위시험(Story 3.7). 통합 job에서 돈다 |
 | `.github/scripts/test-ci-scripts.sh` | 위 스크립트들과 `ci.yml`의 계약 시험(경보 규칙 스크립트는 가짜 promtool로 종료 코드 0/1/2를 단정한다) |
-| `deploy/production/test-preflight.sh`·`rehearse-deploy.sh` | 배포 gate 고정 입력 시험과 운영 배포 리허설(Story 3.8). `deploy-rehearsal` job에서 돈다 |
+| `deploy/production/test-preflight.sh`·`rehearse-deploy.sh`·`rehearse-backup.sh` | 배포 gate 고정 입력 시험, 운영 배포 리허설(Story 3.8), 백업 리허설(Story 3.9). `deploy-rehearsal` job에서 돈다 |
 
 lint·stylelint·format 세 단계는 `spec-frontend-lint-policy.md`가 합의한 품질 정책이며 `ci-required`가 집계하는 job 안에 있으므로 별도 보호 규칙 변경 없이 필수 검사다. 문서-only 변경(`_bmad-output/**`와 최상위 `*.md`)은 `changes` job만 돌고 제품 job 셋은 건너뛴다. 분류는 fail-closed다. 규칙에 없는 경로가 하나라도 있으면 전체 검사를 실행하며, `backend/`·`deploy/`처럼 `<디렉터리>/<파일>` 모양인 경로는 자동으로 제품 변경이라 분류 규칙을 손댈 필요가 없다. PR에서는 체크아웃된 head가 아니라 target base의 승인된 분류기를 꺼내 실행한다. PR이 자기 분류 규칙을 고쳐 그 PR의 검사를 축소할 수 없게 한다.
 

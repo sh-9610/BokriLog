@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 10-12-2026 16:25
+last_updated: 10-12-2026 21:08
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -77,7 +77,7 @@ development_status:
   3-6-사용자-문의를-접수하고-영업일-3일-답변-목표-추적하기: done
   3-7-개인정보를-배제한-관측-경보와-운영-목표-계측하기: done
   3-8-arm64-단일-서버를-blue-green으로-안전하게-배포하고-rollback하기: done
-  3-9-일일-암호화-백업을-두-저장소에-검증-보관하고-30일-내-파기하기: backlog
+  3-9-일일-암호화-백업을-두-저장소에-검증-보관하고-30일-내-파기하기: review
   3-10-외부-복구-매니페스트로-격리-복원하고-삭제-계정-재활성화를-차단하기: backlog
   epic-3-retrospective: optional
 

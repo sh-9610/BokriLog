@@ -72,6 +72,45 @@ groups:
           group: unmeasured
         annotations:
           summary: 백업 성공 시각이 측정되지 않는다(백업 미연결).
+      # 저장소 사용률: 최신 측정(`MEASURED`)의 bytes / quota, 저장소(oci·offsite)별. 시계열은 Worker가 낸다(Story 3.9 — 측정 기록이
+      # 없으면 시계열도 없다). 70%(warning)·85%(critical). warning에는 위쪽 경계가 없다 — 85%를 넘는 순간 warning이 풀리고 critical이
+      # 5분 뒤에야 울리는 침묵 구간을 만들지 않는다(85% 이상에서는 둘 다 울린다).
+      - alert: BackupStoreUsageWarning
+        expr: max by (store) (bokrilog_backup_store_usage_ratio{env="production"}) >= 0.70
+        for: 5m
+        labels:
+          severity: warning
+          group: backup
+        annotations:
+          summary: 백업 저장소 사용량이 quota의 70% 이상이다.
+      - alert: BackupStoreUsageCritical
+        expr: max by (store) (bokrilog_backup_store_usage_ratio{env="production"}) >= 0.85
+        for: 5m
+        labels:
+          severity: critical
+          group: backup
+        annotations:
+          summary: 백업 저장소 사용량이 quota의 85% 이상이다.
+      # 파기 기한 초과: 생성 후 30일을 넘긴 generation이 파기 뒤에도 저장소에 남았다(최신 측정이 적은 표지, 저장소별). 감사 원장에는
+      # 같은 사실의 SYSTEM 행(`PURGE_OVERDUE`)이 있다. 값 자체가 기한 판정이라 `for: 0m`이다.
+      - alert: BackupPurgeOverdue
+        expr: max by (store) (bokrilog_backup_purge_overdue{env="production"}) >= 1
+        for: 0m
+        labels:
+          severity: critical
+          group: backup
+        annotations:
+          summary: 생성 후 30일을 넘긴 백업 generation이 저장소에 남아 있다.
+      # 측정이 멈췄다: 저장소별 최신 측정 기록이 26시간 넘게 없다(저장소를 읽지 못하면 측정 행이 생기지 않고 사용률·기한 초과 gauge는 옛
+      # 값 그대로 남는다). 값 자체가 나이라 `for: 0m`이다.
+      - alert: BackupStoreMeasurementStale
+        expr: time() - max by (store) (bokrilog_backup_store_measured_timestamp_seconds{env="production"}) >= 26 * 3600
+        for: 0m
+        labels:
+          severity: warning
+          group: backup
+        annotations:
+          summary: 백업 저장소 측정이 26시간 넘게 갱신되지 않았다(저장소를 읽지 못한다).
 
   - name: bokrilog-sync
     interval: 1m

@@ -151,6 +151,134 @@ tests:
         alertname: BackupAgeUnmeasured
         exp_alerts: []
 
+  # ---------------------------------------------------------------- 백업 저장소 사용률(Story 3.9)
+  # 69% → 70%(6분부터) → 85%(17분부터) → 50%(28분부터). 5분 지속 뒤 발화한다. warning은 85% 위에서도 이어진다 — 85%를 넘어 critical이
+  # 아직 지속시간을 채우지 못한 17~21분에도 warning이 울리고 있다(침묵 구간 없음). 다른 저장소의 낮은 값과 개발 시계열의 높은 값은
+  # 울리지 않는다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_backup_store_usage_ratio{env="production",role="worker",store="oci"}'
+        values: '0.69x5 0.7x10 0.85x10 0.5x5'
+      - series: 'bokrilog_backup_store_usage_ratio{env="production",role="worker",store="offsite"}'
+        values: '0.1x30'
+      - series: 'bokrilog_backup_store_usage_ratio{env="development",role="all",store="offsite"}'
+        values: '0.99x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: BackupStoreUsageWarning
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: BackupStoreUsageWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: backup
+              store: oci
+            exp_annotations:
+              summary: 백업 저장소 사용량이 quota의 70% 이상이다.
+      - eval_time: 21m
+        alertname: BackupStoreUsageCritical
+        exp_alerts: []
+      - eval_time: 22m
+        alertname: BackupStoreUsageCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              group: backup
+              store: oci
+            exp_annotations:
+              summary: 백업 저장소 사용량이 quota의 85% 이상이다.
+      - eval_time: 19m
+        alertname: BackupStoreUsageWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: backup
+              store: oci
+            exp_annotations:
+              summary: 백업 저장소 사용량이 quota의 70% 이상이다.
+      - eval_time: 19m
+        alertname: BackupStoreUsageCritical
+        exp_alerts: []
+      - eval_time: 22m
+        alertname: BackupStoreUsageWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: backup
+              store: oci
+            exp_annotations:
+              summary: 백업 저장소 사용량이 quota의 70% 이상이다.
+      - eval_time: 29m
+        alertname: BackupStoreUsageCritical
+        exp_alerts: []
+      - eval_time: 29m
+        alertname: BackupStoreUsageWarning
+        exp_alerts: []
+
+  # ---------------------------------------------------------------- 백업 파기 기한 초과(Story 3.9)
+  # 0(0~5분) → 1(6~11분, 기한 초과 generation이 남았다) → 0(12분부터, 다음 파기가 지웠다). 기한 판정 자체라 즉시 발화한다. 개발
+  # 시계열의 1은 울리지 않는다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_backup_purge_overdue{env="production",role="worker",store="offsite"}'
+        values: '0x5 1x5 0x5'
+      - series: 'bokrilog_backup_purge_overdue{env="production",role="worker",store="oci"}'
+        values: '0x15'
+      - series: 'bokrilog_backup_purge_overdue{env="development",role="all",store="oci"}'
+        values: '1x15'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: BackupPurgeOverdue
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: BackupPurgeOverdue
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              group: backup
+              store: offsite
+            exp_annotations:
+              summary: 생성 후 30일을 넘긴 백업 generation이 저장소에 남아 있다.
+      - eval_time: 11m
+        alertname: BackupPurgeOverdue
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              group: backup
+              store: offsite
+            exp_annotations:
+              summary: 생성 후 30일을 넘긴 백업 generation이 저장소에 남아 있다.
+      - eval_time: 12m
+        alertname: BackupPurgeOverdue
+        exp_alerts: []
+
+  # ---------------------------------------------------------------- 백업 저장소 측정 정지(Story 3.9)
+  # 측정 시각이 0초(시험 시계의 시작)다. 25시간 59분은 미발화, 26시간에 발화, 26시간 10분의 새 측정으로 해제한다. 측정이 계속되는 다른
+  # 저장소는 울리지 않는다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_backup_store_measured_timestamp_seconds{env="production",role="worker",store="offsite"}'
+        values: '0x1570 94200x30'
+      - series: 'bokrilog_backup_store_measured_timestamp_seconds{env="production",role="worker",store="oci"}'
+        values: '0+60x1600'
+    alert_rule_test:
+      - eval_time: 25h59m
+        alertname: BackupStoreMeasurementStale
+        exp_alerts: []
+      - eval_time: 26h
+        alertname: BackupStoreMeasurementStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: backup
+              store: offsite
+            exp_annotations:
+              summary: 백업 저장소 측정이 26시간 넘게 갱신되지 않았다(저장소를 읽지 못한다).
+      - eval_time: 26h12m
+        alertname: BackupStoreMeasurementStale
+        exp_alerts: []
+
   # ---------------------------------------------------------------- 동기화 실패율
   # 정확히 20%(분당 실패 2·성공 8)는 발화한다. 제외(excluded)는 분모가 아니다 — 분당 100건이 더해져도 비율은 20%다.
   # 실패가 멈춘 뒤 15분 창이 지나면 해제한다.

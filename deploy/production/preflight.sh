@@ -27,10 +27,11 @@
 #   host      home region = region, A1.Flex 2 OCPU/12GB, reserved IPv4, Always Free, 예상 월 비용 0, 서명 신원(운영)
 #   자원      compose의 `mem_limit`(API 768m·Worker 512m·PostgreSQL 3g·Nginx 128m, 일회성 역할 ≤ Worker), Alloy 256MiB 예약,
 #             blue/green peak(API×2 + 나머지) + OS 예약 ≤ 선언 메모리
-#   compose   앱 이미지는 변수, 인프라 이미지는 `@sha256:` 고정, `build`·`env_file` 없음, API·Worker에 migrate 프로필 없음, 역할 고정
+#   compose   앱 이미지는 변수, 인프라 이미지는 `@sha256:` 고정, `build`·`env_file` 없음, API·Worker에 migrate 프로필 없음, 역할 고정,
+#             일회성 역할(migrate·deploy-audit·backup-record) ≤ Worker 예산
 #   비밀      파일 권한 600, 필수 이름이 비지 않음, 로그인 제공자 하나 이상, 프로필·역할·환경·Worker 설정·배포 수행자를 덮는
 #             이름(`SPRING_PROFILES_*`·`SPRING_APPLICATION_JSON`·`BOKRILOG_ROLE`·`BOKRILOG_ENV`·`BOKRILOG_SYNC_WORKER_*`·
-#             `BOKRILOG_DEPLOY_ACTOR`) 없음
+#             `BOKRILOG_DEPLOY_ACTOR`) 없음, backup key(age identity) 모양의 값 없음(Story 3.9)
 #
 # 종료 코드
 #   0 -- 모든 검사 통과
@@ -383,6 +384,7 @@ check_limit postgres "${expected_postgres_mib}" eq
 check_limit nginx "${expected_nginx_mib}" eq
 check_limit migrate "${expected_worker_mib}" le
 check_limit deploy-audit "${expected_worker_mib}" le
+check_limit backup-record "${expected_worker_mib}" le
 if [ "${limit_ok}" = true ]; then
   pass 'mem_limit: API 768m·Worker 512m·PostgreSQL 3g·Nginx 128m·일회성 ≤ 512m'
 fi
@@ -517,6 +519,23 @@ if [ -n "${overriding}" ]; then
   refuse PROFILE_OVERRIDE "비밀 파일이 정할 수 없는 이름을 담았다: ${overriding}"
 else
   pass '비밀 파일이 프로필·역할·환경·Worker 설정·배포 수행자를 덮지 않는다'
+fi
+
+# backup key(age identity)는 앱 key ring·감사 digest 키와 분리한다(Story 3.9 AC-5). 그 key는 호스트의 `/etc/bokrilog/backup/`(권한
+# 600)에만 있고 호스트 도구만 읽는다 — compose의 치환 원본인 이 파일에 있으면 앱 프로세스·컨테이너 환경으로 새어 나갈 길이 생긴다.
+# 값을 찍지 않고 이름만 남긴다.
+backup_key_names="$(awk '
+  /^[[:space:]]*#/ { next }
+  {
+    pos = index($0, "=")
+    if (pos == 0) next
+    if (index(toupper(substr($0, pos + 1)), "AGE-SECRET-KEY-") > 0) print substr($0, 1, pos - 1)
+  }
+' "${secrets_file}" | tr '\n' ' ' | sed 's/ $//')"
+if [ -n "${backup_key_names}" ]; then
+  refuse BACKUP_KEY_IN_SECRETS "운영 비밀 파일에 backup key 모양의 값이 있다(백업 key는 /etc/bokrilog/backup/에만 둔다): ${backup_key_names}"
+else
+  pass '운영 비밀 파일에 backup key가 없다'
 fi
 
 # ---------------------------------------------------------------- 판정

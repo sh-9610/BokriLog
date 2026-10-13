@@ -155,12 +155,19 @@ command -v docker >/dev/null 2>&1 || prep_fail 'docker가 없다.'
 docker compose version >/dev/null 2>&1 || prep_fail 'docker compose v2를 쓸 수 없다.'
 mkdir -p "${state_dir}/nginx" "${state_dir}/logs" || prep_fail "상태 디렉터리를 만들지 못했다: ${state_dir}"
 
-# 배포와 창 닫기는 한 번에 하나다. mkdir은 원자적이다.
-lock_dir="${state_dir}/.lock"
-mkdir "${lock_dir}" 2>/dev/null || prep_fail "다른 배포가 진행 중이다(${lock_dir}). 끝났는데 남았으면 지운다."
-trap 'rmdir "${lock_dir}" 2>/dev/null' EXIT
-
 operation="deploy_$(date -u +%Y%m%dT%H%M%SZ)_$(random_hex 6)"
+
+# 배포와 창 닫기는 한 번에 하나다. 일일 백업(`backup.sh`, Story 3.9)도 같은 잠금을 쥐고 돈다 — 백업 중에는 배포가 시작되지 않고, 배포
+# 중에는 백업이 시작되지 않는다. 잠금 안의 `owner`가 누가(deploy|backup·pid·operation·시작 시각) 쥐었는지 말한다(`lib.sh`).
+lock_dir="${state_dir}/.lock"
+if ! lock_acquire "${lock_dir}" deploy "${operation}"; then
+  case "${lock_state}" in
+    BACKUP_IN_PROGRESS) prep_fail "백업이 진행 중이다(${lock_owner}). 끝난 뒤 다시 돈다." ;;
+    DEPLOY_IN_PROGRESS) prep_fail "다른 배포가 진행 중이다(${lock_owner})." ;;
+    *) prep_fail "LOCK_STALE: 잠금(${lock_dir})의 소유자가 없다(${lock_owner}). 진행 중인 배포·백업이 정말 없는지 확인한 뒤 손으로 지운다(DEVELOPMENT.md)." ;;
+  esac
+fi
+trap 'lock_release "${lock_dir}"' EXIT
 log_file="${state_dir}/logs/${operation}.log"
 : >"${log_file}"
 say "operation: ${operation}"
