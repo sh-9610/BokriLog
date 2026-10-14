@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 10-13-2026 15:39
+last_updated: 10-14-2026 09:27
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -274,7 +274,7 @@ action_items:
     action: "서비스 공지의 덮는 범위가 해제 smoke 실패 되돌림 계보(reinstated_from)를 따라가게 하거나 RECOVERED
       판정이 계보 전체의 열림을 보게 하고, 되돌림과 공지를 함께 다루는 시험을 더한다(회고 B-1, AI-5 chore 범위)"
     owner: "Dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
   - id: "epic-3-retro-item-27-계정-삭제-accounterasure-eraserestrictiontar"
     epic: 3
@@ -303,7 +303,7 @@ action_items:
       훅 다섯·operatorApi 함수 다섯)를 공통화하는 chore를 Epic 4 Story 4.1 전에 한다(회고 D-1, 사용자 결정
       2026-10-13)"
     owner: "Dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
   - id: "epic-3-retro-item-31-셸-규약-검사를-한-곳-전체-스크립트-대상으로-통일하고-3-10-스크립트"
     epic: 3
@@ -345,7 +345,7 @@ action_items:
     action: "미룬 결정 원장을 140건에 맞추고 판정을 재개하며, done 전환 PR에서 그 스토리 defer의 판정을 갱신하는 정기 규칙을
       둔다(회고 P-1, Epic 1 item-8·Epic 2 item-18과 묶음)"
     owner: "사용자·Dev"
-    status: open
+    status: in-progress
     ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
   - id: "epic-3-retro-item-37-ci-임계-경로를-줄인다-백업-복원-리허설을-관련-경로-변경에만-돌리는"
     epic: 3
