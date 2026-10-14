@@ -51,7 +51,8 @@ function connectionNoticeText(notice: ConnectionNotice | null, formOpen: boolean
     return null
   }
   if (notice.kind === 'succeeded') {
-    return connectionContent.succeeded
+    // 같은 Bybit 계정으로 다시 연결해 기존 계획을 이어 간다(Story 2.17). 서버가 그 사실을 알려 줄 때만 이 문장이다.
+    return notice.planResumed ? connectionContent.resumed : connectionContent.succeeded
   }
   if (notice.kind === 'cancelled') {
     return connectionContent.cancelled
@@ -258,6 +259,13 @@ export function SettingsScreen(): ReactElement {
     // 해제에 성공하면 해제 버튼이 사라진다(Story 2.16). 같은 이유로 결과 문장이 초점을 받는다.
     if (connectionNotice?.kind === 'succeeded' || connectionNotice?.kind === 'revoked') {
       unlinkNoticeRef.current?.focus()
+    }
+    /*
+     * 폼을 취소하면 폼을 연 버튼(첫 연결·재연결 시작)이 다시 그려진다 — 초점을 그 버튼으로 돌려준다(Story 2.17 리뷰). 취소
+     * 버튼은 폼과 함께 사라지므로 돌려주지 않으면 `<body>`로 떨어진다. 결과 문장은 live region이 한 번 말한다.
+     */
+    if (connectionNotice?.kind === 'cancelled') {
+      document.getElementById(connectionContent.startId)?.focus()
     }
   }, [connectionNotice])
 
@@ -644,10 +652,11 @@ export function SettingsScreen(): ReactElement {
                       </button>
                     )}
                   </>
-                ) : connection.view.revoked ? (
+                ) : connection.view.revoked && connection.confirmation === null ? (
                   /*
                     해제된 연결. 상태를 글자로 말하고(색만으로 전하지 않는다) 남는 것과 멈추는 것을
-                    구분한다. 재연결 정책이 아직 없으므로 동작하지 않는 연결 조작을 내지 않는다.
+                    구분한다. 그 아래가 재연결이다(Story 2.17) — Story 2.1과 같은 준비·입력·검증 흐름을
+                    열고, 확인 전에 같은 계정·다른 계정의 결과를 말한다.
                   */
                   <>
                     <p className={styles.linkedState}>{revocationContent.revoked}</p>
@@ -665,7 +674,23 @@ export function SettingsScreen(): ReactElement {
                     </dl>
                     <p className={styles.boundary}>{revocationContent.revokedBoundary}</p>
                     <p className={styles.boundary}>{revocationContent.remoteKey}</p>
-                    <p className={styles.boundary}>{revocationContent.reconnectUnavailable}</p>
+                    <p className={styles.boundary}>{revocationContent.reconnectSameAccount}</p>
+                    <p className={styles.boundary}>{revocationContent.reconnectOtherAccount}</p>
+                    <button
+                      // 처음 연결의 시작 버튼과 같은 관용이다(`aria-disabled`, 훅의 ref 가드).
+                      aria-disabled={busy}
+                      className={styles.retryButton}
+                      id={connectionContent.startId}
+                      onClick={() => {
+                        if (busy) {
+                          return
+                        }
+                        runConnection(connection.start)
+                      }}
+                      type="button"
+                    >
+                      {revocationContent.reconnectStart}
+                    </button>
                   </>
                 ) : connection.confirmation === null ? (
                   <>
@@ -678,6 +703,7 @@ export function SettingsScreen(): ReactElement {
                        */
                       aria-disabled={busy}
                       className={styles.retryButton}
+                      id={connectionContent.startId}
                       onClick={() => {
                         if (busy) {
                           return
@@ -690,27 +716,39 @@ export function SettingsScreen(): ReactElement {
                     </button>
                   </>
                 ) : (
-                  <BybitConnectionForm
-                    confirmation={connection.confirmation}
-                    onCancel={() => {
-                      runConnection(connection.cancel)
-                    }}
-                    onSubmit={async (apiKey, apiSecret) => {
-                      setLastFlow('connection')
-                      return connection.submit(apiKey, apiSecret)
-                    }}
-                    /*
-                     * 형제 조작과 같은 게이트다. `connection.pending`만 보면 다른 요청이 도는
-                     * 동안에도 비밀을 실은 제출이 나갈 수 있고, 그것은 이 화면의 다른 어떤
-                     * 조작에도 없는 예외가 된다.
-                     */
-                    pending={busy}
-                    rejection={
-                      connection.notice?.kind === 'rejected'
-                        ? rejectionMessage(connection.notice.code)
-                        : null
-                    }
-                  />
+                  <>
+                    {/*
+                      재연결 폼이면(Story 2.17) 제출 전에 같은 계정·다른 계정의 결과를 한 번 더 둔다 — 확인
+                      단계의 안내가 AC-7이다. 정적 문장이며 live region을 늘리지 않는다.
+                    */}
+                    {connection.view.revoked ? (
+                      <>
+                        <p className={styles.boundary}>{revocationContent.reconnectSameAccount}</p>
+                        <p className={styles.boundary}>{revocationContent.reconnectOtherAccount}</p>
+                      </>
+                    ) : null}
+                    <BybitConnectionForm
+                      confirmation={connection.confirmation}
+                      onCancel={() => {
+                        runConnection(connection.cancel)
+                      }}
+                      onSubmit={async (apiKey, apiSecret) => {
+                        setLastFlow('connection')
+                        return connection.submit(apiKey, apiSecret)
+                      }}
+                      /*
+                       * 형제 조작과 같은 게이트다. `connection.pending`만 보면 다른 요청이 도는
+                       * 동안에도 비밀을 실은 제출이 나갈 수 있고, 그것은 이 화면의 다른 어떤
+                       * 조작에도 없는 예외가 된다.
+                       */
+                      pending={busy}
+                      rejection={
+                        connection.notice?.kind === 'rejected'
+                          ? rejectionMessage(connection.notice.code)
+                          : null
+                      }
+                    />
+                  </>
                 )}
               </section>
 

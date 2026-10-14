@@ -72,6 +72,8 @@ class BybitConnectionController {
             Map.ofEntries(
                     Map.entry(SourceRejectionReason.NOT_PERMITTED, ApiErrorHandler.CODE_FORBIDDEN),
                     Map.entry(SourceRejectionReason.PROVIDER_ACCOUNT_TAKEN, "CONNECTION_ACCOUNT_TAKEN"),
+                    // 활성 계획의 Bybit 계정과 다른 main UID(Story 2.17). 기존 계획을 먼저 종료해야 한다.
+                    Map.entry(SourceRejectionReason.ACCOUNT_MISMATCH, "CONNECTION_ACCOUNT_MISMATCH"),
                     Map.entry(SourceRejectionReason.INVALID_FORMAT, "CONNECTION_INVALID_FORMAT"),
                     Map.entry(
                             SourceRejectionReason.AUTHENTICATION_REJECTED,
@@ -154,11 +156,12 @@ class BybitConnectionController {
             @Nullable String policyVersion,
             @Nullable UUID connectionId,
             @Nullable Boolean revoked,
-            @Nullable String revokedAt) {
+            @Nullable String revokedAt,
+            @Nullable Boolean planResumed) {
 
         /** 연결한 적이 없다. Story 2.1이 고정한 최소 본문 {@code {"connected":false}} 그대로다. */
         static ConnectionState none() {
-            return new ConnectionState(false, null, null, null, null, null);
+            return new ConnectionState(false, null, null, null, null, null, null);
         }
     }
 
@@ -220,7 +223,8 @@ class BybitConnectionController {
                 status.policyVersion(),
                 status.connectionId(),
                 status.revoked(),
-                revokedAt == null ? null : TIMESTAMP.format(revokedAt));
+                revokedAt == null ? null : TIMESTAMP.format(revokedAt),
+                null);
     }
 
     /**
@@ -315,7 +319,10 @@ class BybitConnectionController {
                                 // again does not know it; the state read answers it then.
                                 connected.connectionId(),
                                 connected.connectionId() == null ? null : Boolean.FALSE,
-                                null));
+                                null,
+                                // 같은 Bybit 계정으로 다시 연결해 활성 계획의 동기화를 이어 간다(Story 2.17). 그때만
+                                // 싣는다 — 첫 연결·새 계정의 응답 모양은 그대로다. 계정 식별자도 계획 값도 없다.
+                                connected.planResumed() ? Boolean.TRUE : null));
     }
 
     /**

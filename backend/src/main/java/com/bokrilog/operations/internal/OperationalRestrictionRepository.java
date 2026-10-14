@@ -77,8 +77,26 @@ class OperationalRestrictionRepository {
 
     private final JdbcClient jdbc;
 
-    OperationalRestrictionRepository(JdbcClient jdbc) {
+    /** 연결 단위 제한이 미치는 연결 집합(Story 2.17). 루트가 구현한다 — 없는 배선(시험 조각)에서는 그 연결 하나다. */
+    private final org.springframework.beans.factory.ObjectProvider<com.bokrilog.operations.RestrictionConnectionScope> scope;
+
+    OperationalRestrictionRepository(JdbcClient jdbc,
+            org.springframework.beans.factory.ObjectProvider<com.bokrilog.operations.RestrictionConnectionScope> scope) {
         this.jdbc = jdbc;
+        this.scope = scope;
+    }
+
+    /**
+     * 대상의 연결 차원을 같은 provider account의 연결 전부로 넓힌 배열(Story 2.17). 이전 연결 ID에 건 열린 연결 단위 제한이 같은
+     * 계정으로 다시 연결한 뒤의 연결에도 적용된다 — 해제 → 재연결로 운영자 해제 없이 풀 수 없다. 다른 계정의 연결은 들지
+     * 않는다. 판독({@link #matching}·{@link #effective})과 공지의 복구 대상 판정({@link #matchingAmong})이 모두 이것을 지난다.
+     * 연결 차원이 없으면 빈 배열이라 연결 단위 제한은 일치하지 않는다(이전과 같다).
+     */
+    private String connections(RestrictionSubject subject) {
+        UUID connection = subject.connectionId();
+        if (connection == null) return "{}";
+        var resolver = this.scope.getIfAvailable();
+        return uuidArray(resolver == null ? Set.of(connection) : resolver.sameAccountConnections(connection));
     }
 
     /**
@@ -107,7 +125,7 @@ class OperationalRestrictionRepository {
                 .param("features", features.stream().map(Enum::name).toList())
                 .param("plan", text(subject.planId()))
                 .param("portfolio", text(subject.portfolioId()))
-                .param("connection", text(subject.connectionId()))
+                .param("connection", connections(subject))
                 .param("policy", subject.calculationPolicy())
                 .param("excluded", uuidArray(excluding))
                 .query(OperationalRestrictionRepository::row);
@@ -125,7 +143,7 @@ class OperationalRestrictionRepository {
         return "(r.scope = 'GLOBAL' OR (r.target_erased_at IS NULL AND ("
                 + "(r.scope = 'PLAN' AND r.target = CAST(:plan" + suffix + " AS text)) "
                 + "OR (r.scope = 'PORTFOLIO' AND r.target = CAST(:portfolio" + suffix + " AS text)) "
-                + "OR (r.scope = 'PROVIDER_CONNECTION' AND r.target = CAST(:connection" + suffix + " AS text)) "
+                + "OR (r.scope = 'PROVIDER_CONNECTION' AND r.target = ANY(CAST(:connection" + suffix + " AS text[]))) "
                 + "OR (r.scope = 'CALCULATION_POLICY_VERSION' AND r.target = CAST(:policy" + suffix + " AS text)))))";
     }
 
@@ -146,7 +164,7 @@ class OperationalRestrictionRepository {
             predicates.add(subject(suffix));
             params.put("plan" + suffix, text(subject.planId()));
             params.put("portfolio" + suffix, text(subject.portfolioId()));
-            params.put("connection" + suffix, text(subject.connectionId()));
+            params.put("connection" + suffix, connections(subject));
             params.put("policy" + suffix, subject.calculationPolicy());
         }
         return Set.copyOf(this.jdbc.sql("SELECT r.restriction_id FROM operations_restriction r "

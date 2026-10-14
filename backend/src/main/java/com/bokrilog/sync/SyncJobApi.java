@@ -12,9 +12,13 @@ import org.jspecify.annotations.Nullable;
 /** 첫 공식 snapshot 작업과 화면 조회의 소유 경계. */
 public interface SyncJobApi {
     record Job(UUID jobId, String status, @Nullable String failureReason) {}
-    /** @param revoked the user revoked the connection (Story 2.16): no new connection is offered, only a notice */
+    /**
+     * @param revoked the user revoked the connection (Story 2.16): no new connection is offered, only a notice
+     * @param accountChanged 계획 없이 다른 Bybit 계정으로 다시 연결했다(Story 2.17): 공식값은 이전 계정의 것이라 싣지 않고
+     *     이 계정의 새 첫 확인을 받는다
+     */
     record State(@Nullable Job job, @Nullable OfficialValue officialValue,
-            boolean connected, boolean restricted, boolean revoked) {}
+            boolean connected, boolean restricted, boolean revoked, boolean accountChanged) {}
     record SourceSnapshot(UUID sourceSnapshotId, UUID userId, UUID connectionId,
             UUID providerAccountId, String inputStatus, String policyVersion) {}
     record CollectionJob(UUID jobId, String status, @Nullable String failureCode,
@@ -873,6 +877,24 @@ public interface SyncJobApi {
      * revoked.
      */
     void lockConnectionRevocation(UUID userId);
+
+    /**
+     * 재연결 확정의 첫 잠금(Story 2.17): 발행자·중도 종료·해제가 가장 먼저 잡는 그 사용자의 계획 쓰기 잠금
+     * ({@link PlanPublicationPort#lockPlanWrites})이다. <b>호출자 트랜잭션 전용.</b> 호출자는 그 뒤 계정 생명주기를 잠그고
+     * 활성 계획의 Bybit 계정을 새 연결의 것과 대조한다 — 같은 순서라 계획의 발행·종료와 직렬화된다.
+     */
+    void lockConnectionReconnection(UUID userId);
+
+    /**
+     * 재연결 확정이 계정 대조 앞에서 하는 자연 완료 전환(Story 2.17). <b>호출자 트랜잭션 전용</b>이며 호출자가
+     * {@link #lockConnectionReconnection}과 계정 생명주기 잠금을 먼저 잡는다. 데이터베이스 시각이 활성 계획의 종료 시각
+     * {@code T} 이상이면 2.14의 같은 전환({@code PlanPublicationPort#completePlan}, 장기 미동기화면 계산 불가)으로
+     * {@code COMPLETED}가 된다. 완료 계산·첫 종료 후 관측은 여기서 하지 않는다 — 그 계정의 연결이 있을 때의 다음 동기화
+     * 요청이 한다(2.14의 규칙 그대로).
+     *
+     * @return 이번에 전환했는가
+     */
+    boolean completeEndedPlanForReconnection(UUID userId);
 
     /** How many attempts of each table a revocation ended. */
     record EndedConnectionWork(int firstSnapshots, int planSyncs, int collections, int classifications,

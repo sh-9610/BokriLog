@@ -38,7 +38,9 @@ class FirstSnapshotController {
             @Nullable String measuredAt,@Nullable String composedAt,@Nullable String publishedAt,
             @Nullable UUID snapshotId,
             // Story 2.16: present (true) only after a revocation; the screen then offers no connection.
-            @Nullable Boolean revoked) {}
+            @Nullable Boolean revoked,
+            // Story 2.17: 계획 없이 다른 Bybit 계정으로 다시 연결했을 때만(true) 싣는다 — 이전 계정의 값은 싣지 않고 새 첫 확인을 받는다.
+            @Nullable Boolean accountChanged) {}
     record CollectionRequest(UUID intentId) {}
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record CollectionJobState(UUID jobId,String status,@Nullable String failureCode,
@@ -94,7 +96,8 @@ class FirstSnapshotController {
                         value==null ? null : value.composedAt().toString(),
                         value==null ? null : value.publishedAt().toString(),
                         value==null ? null : value.snapshotId(),
-                        state.get().revoked() ? Boolean.TRUE : null));
+                        state.get().revoked() ? Boolean.TRUE : null,
+                        state.get().accountChanged() ? Boolean.TRUE : null));
     }
     @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/inputs",
             consumes=MediaType.APPLICATION_JSON_VALUE,produces=MediaType.APPLICATION_JSON_VALUE)

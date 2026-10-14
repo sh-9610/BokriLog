@@ -20,6 +20,11 @@ export interface SnapshotState {
   readonly snapshotId?: string
   /** The user revoked the connection (Story 2.16). Present only then. */
   readonly revoked?: boolean
+  /**
+   * 계획 없이 다른 Bybit 계정으로 다시 연결했다(Story 2.17). 그때만 있다 — 이전 계정의 값은 실리지 않고 이 계정의 새 첫
+   * 확인을 받는다.
+   */
+  readonly accountChanged?: boolean
 }
 export type SnapshotView =
   | { readonly kind: 'checking' | 'unconnected' | 'unavailable' | 'revoked' }
@@ -43,7 +48,8 @@ const isState = (value: unknown): value is SnapshotState => {
     (row.job === undefined || isJob(row.job)) &&
     (row.decimal === undefined || typeof row.decimal === 'string') &&
     (row.measuredAt === undefined || typeof row.measuredAt === 'string') &&
-    (row.revoked === undefined || typeof row.revoked === 'boolean')
+    (row.revoked === undefined || typeof row.revoked === 'boolean') &&
+    (row.accountChanged === undefined || typeof row.accountChanged === 'boolean')
   )
 }
 

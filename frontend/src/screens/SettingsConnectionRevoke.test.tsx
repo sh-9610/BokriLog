@@ -7,6 +7,7 @@ import {
   BYBIT_REVOCATION_CONFIRM_PATH,
   BYBIT_REVOCATION_PATH,
   connectionContent,
+  reconnectCopyStrings,
   REVOCATION_REJECTION_CODES,
   revocationContent,
   revocationDialogCopyStrings,
@@ -35,7 +36,8 @@ import { SettingsScreen } from './SettingsScreen'
  *
  * 연결된 계정에만 보조 조작 `Bybit 연결 해제`가 있고, 누르면 준비 요청이 허가를 무장한 뒤 확인 대화상자가 열린다.
  * 대화상자는 즉시 삭제·작업 취소·새 동기화 불가·보존 범위·Bybit 원격 폐기 한계를 따로 말하고 취소가 기본 초점이다.
- * 확정이 끝나면 상태를 글자로 `해제됨`으로 그리고, 재연결 조작 대신 중립 안내만 둔다.
+ * 확정이 끝나면 상태를 글자로 `해제됨`으로 그리고, 재연결 안내와 그 시작 조작을 둔다(Story 2.17 — 재연결 흐름 자체는
+ * `SettingsReconnect.test.tsx`가 본다).
  */
 
 vi.mock('../session/navigation', () => ({ navigateTo: vi.fn(), replaceLocation: vi.fn() }))
@@ -189,9 +191,16 @@ describe('SettingsScreen의 Bybit 연결 해제', () => {
     const section = connectionSection()
     expect(within(section).getByText(revocationContent.revoked)).toBeInTheDocument()
     expect(within(section).getByText(revocationContent.revokedBoundary)).toBeInTheDocument()
-    expect(within(section).getByText(revocationContent.reconnectUnavailable)).toBeInTheDocument()
     expect(within(section).getByText(revocationContent.remoteKey)).toBeInTheDocument()
-    expect(within(section).queryByRole('button')).not.toBeInTheDocument()
+    // 의도 변경(Story 2.17): "아직 제공하지 않음" 대신 재연결 안내와 그 시작 조작 하나가 있다.
+    for (const text of reconnectCopyStrings) {
+      expect(within(section).getByText(text)).toBeInTheDocument()
+    }
+    expect(
+      within(section)
+        .getAllByRole('button')
+        .map((button) => button.textContent),
+    ).toEqual([revocationContent.reconnectStart])
     // 결과는 화면의 live region 하나가 한 번 말하고 초점이 그 문장으로 간다(해제 버튼이 사라졌다).
     const notice = within(status()).getByText(revocationContent.revokedNotice)
     await waitFor(() => {
@@ -350,14 +359,19 @@ describe('SettingsScreen의 Bybit 연결 해제', () => {
     expect(within(connectionSection()).queryByText(revocationContent.revoked)).toBeNull()
   })
 
-  it('이미 해제된 연결은 상태를 글자로 그리고 연결·해제 조작을 내지 않는다', async () => {
+  it('이미 해제된 연결은 상태를 글자로 그리고 해제 조작 대신 재연결 안내와 시작 조작을 둔다', async () => {
     stubConnectionStatusRequest(revokedState)
     render(<SettingsScreen />)
 
     const section = await screen.findByRole('region', { name: connectionContent.heading })
     expect(await within(section).findByText(revocationContent.revoked)).toBeInTheDocument()
-    expect(within(section).getByText(revocationContent.reconnectUnavailable)).toBeInTheDocument()
-    expect(within(section).queryByRole('button', { name: connectionContent.start })).toBeNull()
+    // 의도 변경(Story 2.17): 재연결은 Story 2.1의 같은 흐름이다. 여는 조작은 아무것도 바꾸지 않는다.
+    for (const text of reconnectCopyStrings) {
+      expect(within(section).getByText(text)).toBeInTheDocument()
+    }
+    expect(
+      within(section).getByRole('button', { name: revocationContent.reconnectStart }),
+    ).toBeInTheDocument()
     expect(within(section).queryByRole('button', { name: revocationContent.start })).toBeNull()
     expect(getObservedAllowedRequests()).not.toContain(`POST ${BYBIT_REVOCATION_PATH}`)
   })

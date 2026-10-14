@@ -1435,6 +1435,13 @@ assert_equals 'ci.yml · Vitest 단계의 timeout은 4분' \
 # 다 쓰지 않게 단계 상한이 있다.
 assert_equals 'ci.yml · 경보 규칙 시험 단계의 timeout은 5분' \
   "$(workflow_step_block same-origin-integration '경보 규칙 시험' | grep -cxF '        timeout-minutes: 5')" '1'
+# 주입된 origin 회귀 단계는 Playwright `globalTimeout` 7분(`frontend/playwright.config.ts`, 그 시험이 단계보다 짧음을 고정)을
+# 감싸는 8분이다(Story 2.17 — 4.6분 실측이 5분 상한에 붙었다). 단계가 그보다 짧아지면 진단 artifact 업로드 전에 끊긴다.
+assert_equals 'ci.yml · 주입 origin 회귀 단계의 timeout은 8분' \
+  "$(workflow_step_block same-origin-integration 'Story 1.1 회귀 (Nginx origin)' | grep -cxF '        timeout-minutes: 8')" '1'
+# 통합 job 상한은 ci.yml 주석의 단계 상한 합 19분이다(Story 2.17). 회귀 단계만 올리고 job을 그대로 두면 정상 실행이 끊긴다.
+assert_equals 'ci.yml · same-origin-integration job의 timeout은 19분' \
+  "$(count_job_lines same-origin-integration '^    timeout-minutes: 19$')" '1'
 assert_equals 'ci.yml · 경보 규칙 시험 단계는 check-alert-rules.sh 하나를 부른다' \
   "$(workflow_step_block same-origin-integration '경보 규칙 시험' | grep -E '^        run: ' | sed 's/^        run: //')" \
   'bash .github/scripts/check-alert-rules.sh'

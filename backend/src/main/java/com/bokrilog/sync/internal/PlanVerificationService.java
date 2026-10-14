@@ -219,12 +219,16 @@ class PlanVerificationService {
      */
     private VerificationAdmission insert(UUID user, PlanSyncGuard.Base base, String purpose, VerificationReason reason,
             String trigger, String key, VerificationPlanner.Plan plan, List<VerificationPlanner.Interval> explicit) {
+        // 계획의 지금 연결(Story 2.17): 재연결 뒤에는 기준 버전이 기록한 연결이 아니라 새 연결·membership으로 검증한다.
+        // 가용성 판정(unavailableReason)이 같은 해석으로 이미 통과시켰다 — 여기서 비면 그 사이에 연결이 바뀐 것이다.
+        var source = planSyncs.planSource(user, base).orElse(null);
+        if (source == null) return new VerificationAdmission.Refused("VERIFICATION_UNAVAILABLE");
         UUID jobId = UUID.randomUUID();
         var calculation = base.calculation();
         var lineage = base.lineage();
         UUID planId = base.plan().planId();
         int inserted = syncs.insert(new PlanSyncRepository.Admission(jobId, user, planId, calculation.portfolioId(),
-                base.plan().intentId(), lineage.membershipId(), lineage.connectionId(), lineage.providerAccountId(),
+                base.plan().intentId(), source.membershipId(), source.connectionId(), source.providerAccountId(),
                 purpose, reason.name(), trigger, key, base.pointer().calculationId(), base.pointer().version(),
                 lineage.candidateId(), calculation.verifiedThrough(), lineage.lastExtendedAt(), calculation.t0(),
                 calculation.endAt()));

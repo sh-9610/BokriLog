@@ -74,9 +74,13 @@ class RestrictionMigrationTest extends PlanSyncTestBase {
     /** 운영 판독기를 그 데이터베이스 위에 세운다. 구현이 {@code internal}의 package-private이라 리플렉션으로 만든다. */
     private static OperationalRestrictionApi evaluatorOn(JdbcClient jdbc) throws ReflectiveOperationException {
         Class<?> repositoryType = Class.forName("com.bokrilog.operations.internal.OperationalRestrictionRepository");
-        var repositoryConstructor = repositoryType.getDeclaredConstructor(JdbcClient.class);
+        var repositoryConstructor = repositoryType.getDeclaredConstructor(JdbcClient.class,
+                org.springframework.beans.factory.ObjectProvider.class);
         repositoryConstructor.setAccessible(true);
-        Object repository = repositoryConstructor.newInstance(jdbc);
+        // 연결 범위 해석기는 없다 — 판독기는 연결 제한을 그 연결 자신에만 맞춘다(이 시험은 전역 행만 본다).
+        Object repository = repositoryConstructor.newInstance(jdbc,
+                new org.springframework.beans.factory.support.StaticListableBeanFactory()
+                        .getBeanProvider(com.bokrilog.operations.RestrictionConnectionScope.class));
         Class<?> auditType = Class.forName("com.bokrilog.operations.internal.OperatorAuditRepository");
         var auditConstructor = auditType.getDeclaredConstructor(JdbcClient.class);
         auditConstructor.setAccessible(true);

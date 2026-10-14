@@ -86,8 +86,17 @@ public interface PortfolioMembershipApi {
 
     Optional<OfficialValue> officialValue(@Nullable UUID userId);
 
-    /** First published USD snapshot, independent of the current official pointer. */
-    Optional<FirstOfficialSnapshot> firstOfficialSnapshot(@Nullable UUID userId);
+    /**
+     * 그 Bybit 계정의 기준 공식 snapshot(Story 2.17) — 그 계정의 snapshot이 이어진 마지막 구간의 첫 snapshot이다. 지금 포인터와
+     * 독립이다.
+     *
+     * <p>한 계정만 써 온 portfolio에서는 첫 공식 snapshot과 같다. 다른 계정으로 다시 연결해 새 첫 확인을 발행하면(포인터가 그
+     * 계정의 snapshot으로 움직인다) 그 snapshot이 이 계정의 기준이 되고, 이전 계정의 snapshot은 남되 기준이 되지 않는다. 그
+     * 뒤 이 계정의 계획 발행이 다음 snapshot을 쌓아도 기준은 구간의 첫 snapshot 그대로다.
+     *
+     * @return 그 계정의 snapshot이 아직 없으면 빈 값
+     */
+    Optional<FirstOfficialSnapshot> accountBaselineSnapshot(@Nullable UUID userId, UUID providerAccountId);
 
     /** 특정 소유 snapshot의 불변 구성 provenance. 현재 포인터와 독립이다. */
     Optional<FirstOfficialSnapshot> ownedSnapshot(UUID userId, UUID snapshotId);

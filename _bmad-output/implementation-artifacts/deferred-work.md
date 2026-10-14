@@ -437,3 +437,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-operator-command-commons.md`
   summary: 배포 전 무장 시험(`OperatorArmingVersionTest`)에 실제 이전 빌드(`serialVersionUID` 5L, 칸 넷)가 직렬화한 바이트를 고정 fixture로 더한다.
   evidence: 지금 시험은 현재 빌드의 stream을 고쳐 옛 모양을 흉내 내고(필드 이름·버전 변경, 없는 클래스, 쓰레기 바이트) 실제 v5 stream을 쓰지 않는다. 옛 클래스(`OperatorCommandApi$Lift` 등)가 지금 빌드에 없어 이전 커밋에서 바이트를 떠 와야 한다(운영 command 공통화 리뷰 blind-hunter, 2026-10-13).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-17-bybit-reconnect.md`
+  summary: Bybit source 정책 버전이 첫 연결과 재연결 사이에 바뀐 경우를 정한다 — 계획 없는 같은 계정 재연결은 기준 snapshot의 정책 버전이 새 연결과 달라 계획 조건이 `NOT_ELIGIBLE`인데 그 계정의 기준이 있어 새 첫 확인도 열리지 않으며, 활성 계획의 재연결 뒤 근거는 새 연결 ID와 기준 snapshot의 정책 버전을 한 쌍으로 보인다.
+  evidence: 지금 source 정책 버전은 하나뿐이라 재현 경로가 없다(latent). 정책 버전을 올리는 스토리가 재기준(rebase) 허용 조건과 근거 표시를 함께 정해야 한다(2.17 리뷰 edge-case-hunter, 2026-10-14).
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-17-bybit-reconnect.md`
+  summary: 완료 계획의 첫 종료 후 관측이 고정되기 전에 해제하고 다른 계정으로 연결한 경우, 그 계획의 완료 비교를 끝내 보류로 둘지(이전 계정만 관측할 수 있다) 아니면 관측 불가로 닫을지 정한다. 같은 판단에서 종단 계획의 계획 대상(`planTarget`)이 지금 연결로 대체되는 범위(ACTIVE에만 둘지)도 정한다.
+  evidence: 2.17은 다른 계정 연결을 종단 계획만 있을 때 허용하고, 가용성 원인만 `CONNECTION_REVOKED` 대신 연결 불가로 바로잡는다. 관측 보류 자체는 계정 단위 귀속(AR-12)의 결과다(2.17 리뷰 blind-hunter·edge-case-hunter, 2026-10-14).

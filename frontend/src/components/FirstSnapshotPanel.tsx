@@ -47,6 +47,13 @@ export function FirstSnapshotPanel({
   return (
     <section aria-labelledby="first-snapshot-heading" className={styles.panel}>
       <h2 id="first-snapshot-heading">{copy.heading}</h2>
+      {/*
+        Story 2.17: 다른 Bybit 계정으로 다시 연결했고 계획이 없다 — 이 계정의 첫 확인이 새 계획의 기준이다. 작업 상태(실패·차단
+        포함)와 따로 늘 보이는 정적 문장이며 live region을 늘리지 않는다.
+      */}
+      {view.kind === 'loaded' && view.state.accountChanged === true ? (
+        <p>{copy.accountChanged}</p>
+      ) : null}
       <div aria-live="polite" aria-busy={active}>
         <p>{message}</p>
         {job?.status === 'FAILED' ? (

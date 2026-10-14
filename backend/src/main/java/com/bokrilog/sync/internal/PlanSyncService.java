@@ -186,11 +186,14 @@ class PlanSyncService {
                 syncs.lastAdmission(user, planId).orElse(null), base.pointer().publishedAt());
         if (wait != null) return new SyncAdmission.Deferred(trigger == SyncTrigger.MANUAL ? "COOLDOWN" : "NOT_DUE",
                 latest, SyncWindow.seconds(wait));
+        // 계획의 지금 연결(Story 2.17): 재연결 뒤에는 기준 버전이 기록한 연결이 아니라 새 연결·membership으로 수집한다.
+        var source = planSource(user, base).orElse(null);
+        if (source == null) return new SyncAdmission.Refused("SYNC_UNAVAILABLE");
         UUID jobId = UUID.randomUUID();
         var calculation = base.calculation();
         var lineage = base.lineage();
         int inserted = syncs.insert(new PlanSyncRepository.Admission(jobId, user, planId, calculation.portfolioId(),
-                base.plan().intentId(), lineage.membershipId(), lineage.connectionId(), lineage.providerAccountId(),
+                base.plan().intentId(), source.membershipId(), source.connectionId(), source.providerAccountId(),
                 "SYNC", null, trigger.name(), key, base.pointer().calculationId(), base.pointer().version(),
                 lineage.candidateId(), calculation.verifiedThrough(), lineage.lastExtendedAt(), calculation.t0(),
                 calculation.endAt()));
@@ -228,6 +231,21 @@ class PlanSyncService {
     /** The purposes a sync request admits. */
     private static final Set<String> SYNC_REQUEST_PURPOSES = Set.of("SYNC", PlanSyncRepository.COMPLETION,
             PlanSyncRepository.POST_END_VALUE);
+
+    /**
+     * 재연결 확정의 자연 완료 전환(Story 2.17). 호출자 트랜잭션 안에서 호출자가 계획 쓰기 잠금과 계정 생명주기 잠금을 이미
+     * 잡았다. {@link #complete}와 같은 판정(데이터베이스 시각이 {@code T} 이상)과 같은 전환({@code completePlan}, 장기
+     * 미동기화 판정 포함)이며, 완료 계획의 attempt는 접수하지 않는다 — 그것은 그 계정의 연결로 하는 다음 동기화 요청의 일이다.
+     *
+     * @return 이번에 전환했는가
+     */
+    boolean completeIfEnded(UUID user) {
+        var base = guard.base(user).orElse(null);
+        if (base == null) return false;
+        Instant now = publications.databaseNow();
+        if (now.isBefore(base.calculation().endAt())) return false;
+        return plans.completePlan(user, base.plan().planId(), longGap(user, base, now)).isPresent();
+    }
 
     /**
      * The natural completion (Story 2.14, AC-1): the database clock reached the active plan's end {@code T} and nothing
@@ -277,11 +295,14 @@ class PlanSyncService {
                 syncs.latest(user, planId).orElse(null), SyncWindow.seconds(wait));
         String purpose = completionRetryable(user, completed) ? PlanSyncRepository.COMPLETION
                 : PlanSyncRepository.POST_END_VALUE;
+        // 완료 계획도 지금 연결로 수집한다(Story 2.17) — 같은 계정의 재연결 뒤에는 새 연결·membership이다.
+        var source = planSource(user, base).orElse(null);
+        if (source == null) return new SyncAdmission.Refused("SYNC_UNAVAILABLE");
         UUID jobId = UUID.randomUUID();
         var calculation = base.calculation();
         var lineage = base.lineage();
         int inserted = syncs.insert(new PlanSyncRepository.Admission(jobId, user, planId, calculation.portfolioId(),
-                base.plan().intentId(), lineage.membershipId(), lineage.connectionId(), lineage.providerAccountId(),
+                base.plan().intentId(), source.membershipId(), source.connectionId(), source.providerAccountId(),
                 purpose, null, trigger.name(), key, base.pointer().calculationId(), base.pointer().version(),
                 lineage.candidateId(), calculation.verifiedThrough(), lineage.lastExtendedAt(), calculation.t0(),
                 calculation.endAt()));
@@ -330,9 +351,25 @@ class PlanSyncService {
 
     @Nullable String completedUnavailableReason(UUID user, PlanSyncGuard.Base base) {
         var lineage = base.lineage();
-        return guard.completionUnavailableReason(user, base.plan().planId(), lineage.membershipId(),
-                base.calculation().portfolioId(),
+        return guard.completionUnavailableReason(user, base.plan().planId(), base.calculation().portfolioId(),
                 lineage.connectionId(), lineage.providerAccountId());
+    }
+
+    /**
+     * 그 기준 버전의 계획이 지금 수집할 연결과 membership(Story 2.17, {@link PlanSyncGuard#planSource}). 계획이 고정한 Bybit
+     * 계정·portfolio로 찾는다 — 기준 버전이 기록한 연결은 해제됐을 수 있다. 새 attempt는 이 ID로 접수한다.
+     */
+    Optional<PlanSyncGuard.PlanSource> planSource(UUID user, PlanSyncGuard.Base base) {
+        return guard.planSource(user, base.calculation().portfolioId(), base.lineage().providerAccountId());
+    }
+
+    /**
+     * 계획의 지금 연결 ID(Story 2.17). 대시보드의 계획 종료 제한 판정이 plan 모듈과 같은 차원을 보도록 쓴다 — 지금 연결이
+     * 없으면 기준 버전이 기록한 연결이다.
+     */
+    UUID planConnection(UUID user, PlanSyncGuard.Base base) {
+        return planSource(user, base).map(PlanSyncGuard.PlanSource::connectionId)
+                .orElse(base.lineage().connectionId());
     }
 
     /**
@@ -357,8 +394,7 @@ class PlanSyncService {
 
     @Nullable String unavailableReason(UUID user, PlanSyncGuard.Base base, Instant now) {
         var lineage = base.lineage();
-        return guard.unavailableReason(user, base.plan().planId(), lineage.membershipId(),
-                base.calculation().portfolioId(),
+        return guard.unavailableReason(user, base.plan().planId(), base.calculation().portfolioId(),
                 lineage.connectionId(), lineage.providerAccountId(), base.calculation().endAt(), now);
     }
 
@@ -1010,7 +1046,10 @@ class PlanSyncService {
         finishWith(lease, () -> {
             if (!collections.lockOwned(child)) throw new PlanSyncPublisher.LeaseLost();
             var connection = sources.snapshotConnection(lease.userId()).orElse(null);
-            if (connection == null || !connection.policyVersion().equals(value.policyVersion())
+            // 연결 ID도 본다(Story 2.17): 해제 뒤 같은 계정으로 재연결하면 활성 연결은 있되 이 attempt의 연결이 아니다 —
+            // 해제 이전 연결에 귀속된 늦은 Worker는 재연결 뒤에도 후보를 남기지 못한다.
+            if (connection == null || !connection.connectionId().equals(lease.connectionId())
+                    || !connection.policyVersion().equals(value.policyVersion())
                     || !tc.equals(value.tc()))
                 return new String[] {"BLOCKED", "NOT_PERMITTED"};
             // Every page that asked for review is on the collection (whichever holder or phase stored it), and so is
@@ -1150,7 +1189,8 @@ class PlanSyncService {
             case AUTHENTICATION_REJECTED, WRITE_PERMISSION, INSUFFICIENT_PERMISSION, SUB_ACCOUNT, IP_NOT_BOUND,
                     UNSUPPORTED_ACCOUNT_MODE, INVALID_FORMAT, PROVIDER_ACCOUNT_TAKEN ->
                     new String[] {"FAILED", "SOURCE_REJECTED"};
-            case NOT_PERMITTED -> new String[] {"BLOCKED", "NOT_PERMITTED"};
+            // 계정 불일치(Story 2.17)는 연결 저장에서만 나온다. 수집이 받는다면 계정이 바뀐 것이라 막는다.
+            case NOT_PERMITTED, ACCOUNT_MISMATCH -> new String[] {"BLOCKED", "NOT_PERMITTED"};
             case TIMEOUT, RATE_LIMITED, PROVIDER_UNAVAILABLE, WALLET_UNAVAILABLE, UNAVAILABLE ->
                     new String[] {"FAILED", "PROVIDER_UNAVAILABLE"};
         };

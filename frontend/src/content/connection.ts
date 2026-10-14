@@ -59,6 +59,14 @@ const REJECTIONS: Readonly<Record<string, string>> = {
    */
   CONNECTION_ACCOUNT_TAKEN:
     '이 Bybit 계정은 이미 다른 BokriLog 계정에 연결돼 있습니다. 다른 Bybit 계정의 키로 다시 시도해 주세요.',
+  /**
+   * 진행 중인 계획의 Bybit 계정과 다른 계정의 키다(Story 2.17, `RECONNECT-1.0`).
+   *
+   * 거절 이유와 두 갈래의 다음 행동을 중립적으로 말한다 — 같은 계정의 키로 다시 시도하거나, 다른 계정을 쓰려면
+   * 대시보드에서 기존 계획을 먼저 종료한다. 어느 계정인지는 말하지 않는다.
+   */
+  CONNECTION_ACCOUNT_MISMATCH:
+    '이 API Key의 Bybit 계정은 진행 중인 계획의 계정과 달라 연결하지 않았습니다. 같은 계정의 읽기 전용 키로 다시 시도하거나, 다른 계정을 연결하려면 대시보드에서 기존 계획을 먼저 종료해 주세요.',
   CONNECTION_INVALID_FORMAT:
     'API Key 또는 Secret의 형식이 올바르지 않습니다. 값을 다시 확인해 주세요.',
   CONNECTION_AUTHENTICATION_REJECTED:
@@ -108,6 +116,7 @@ const REJECTIONS: Readonly<Record<string, string>> = {
  * 화면은 그것을 문장이 아니라 **이동**으로 답한다(`useBybitConnection`).
  */
 export const CONNECTION_REJECTION_CODES: readonly string[] = [
+  'CONNECTION_ACCOUNT_MISMATCH',
   'CONNECTION_ACCOUNT_TAKEN',
   'CONNECTION_AUTHENTICATION_REJECTED',
   'CONNECTION_INSUFFICIENT_PERMISSION',
@@ -205,6 +214,11 @@ export const connectionContent = {
     '연결은 조회 권한만 확인한 것입니다. 자산 현재가치와 복리 계획 비교는 이후 단계에서 제공합니다.',
   /** 폼을 여는 조작. 이 요청은 아무것도 바꾸지 않는다. */
   start: 'Bybit 연결 시작',
+  /**
+   * 폼을 여는 버튼(첫 연결·재연결 시작 공통)의 id. 폼을 취소하면 초점이 이 버튼으로 돌아온다 — 해제 버튼의
+   * `revocationContent.buttonId`와 같은 관용이다.
+   */
+  startId: 'connection-bybit-start',
   /** 폼이 열려 있는 동안 화면당 하나뿐인 live region이 말할 문장. */
   pending: 'Bybit 연결을 처리하고 있습니다.',
   form: {
@@ -252,6 +266,14 @@ export const connectionContent = {
    */
   succeeded:
     'Bybit 연결을 마쳤습니다. 아래에서 검증 시각과 적용 정책 버전을 확인할 수 있습니다. 다음 민감한 조작 전에는 아래에서 본인 확인을 다시 해야 합니다.',
+  /**
+   * 같은 Bybit 계정으로 다시 연결했고 진행 중인 계획이 있다(Story 2.17).
+   *
+   * 기존 계획을 이어서 동기화한다는 사실과, 공백이 30일을 넘었을 때의 선택을 함께 말한다 — 실제로 넘었는지는 대시보드의
+   * 장기 미동기화 표시가 말한다. 본인 확인 문장은 `succeeded`와 같은 근거다.
+   */
+  resumed:
+    'Bybit 계정을 다시 연결했습니다. 기존 계획을 이어서 동기화합니다. 마지막 확인 뒤 30일이 넘었다면 대시보드에서 기존 계획 계속을 먼저 선택해야 합니다. 다음 민감한 조작 전에는 아래에서 본인 확인을 다시 해야 합니다.',
 } as const
 
 /**
@@ -259,7 +281,8 @@ export const connectionContent = {
  *
  * 규칙: 해제를 성공·실패·완료의 감정으로 말하지 않고 사실만 쓴다. 무엇이 즉시 지워지는지, 무엇이 멈추는지,
  * 무엇이 남는지를 구분해 쓰고, BokriLog가 Bybit의 API Key를 폐기하지 못한다는 한계를 중립적으로 말한다.
- * 재연결 정책이 아직 없으므로 동작하지 않는 재연결 조작을 내지 않고 안내 문장 하나만 둔다.
+ * 해제한 뒤에는 Story 2.1과 같은 입력·검증 흐름으로 다시 연결한다(Story 2.17, `RECONNECT-1.0`) — 같은 계정이면 기존
+ * 계획을 이어 동기화하고, 다른 계정이면 진행 중인 계획을 먼저 종료해야 한다는 것을 조작 앞에서 말한다.
  */
 export const revocationContent = {
   /** 연결된 상태의 보조 조작. 대화상자가 호출점을 잃으면 이 id로 초점을 돌려준다. */
@@ -271,8 +294,16 @@ export const revocationContent = {
   /** 해제 뒤에 남는 것과 멈추는 것. */
   revokedBoundary:
     '저장된 자격정보는 삭제됐고 새 데이터는 갱신되지 않습니다. 기존 계획·조정 이력·계산 근거·완료 결과는 읽기 전용으로 남아 있습니다.',
-  /** 재연결 정책이 승인되기 전의 중립 안내. 조작을 내지 않는다. */
-  reconnectUnavailable: '해제한 뒤 다시 연결하는 기능은 아직 제공하지 않습니다.',
+  /**
+   * 다시 연결할 때 일어나는 일(Story 2.17). 해제 상태와 재연결 입력 폼 양쪽에 둔다 — 확인 전에 같은 계정·다른 계정의
+   * 결과를 말해야 한다(AC-7). 30일이 넘었는지는 대시보드의 장기 미동기화 표시가 말한다.
+   */
+  reconnectSameAccount:
+    '같은 Bybit 계정의 새 읽기 전용 키로 다시 연결하면 기존 계획을 이어서 동기화합니다. 마지막 확인 뒤 30일이 넘었다면 대시보드에서 기존 계획 계속을 먼저 선택해야 합니다.',
+  reconnectOtherAccount:
+    '다른 Bybit 계정은 진행 중인 계획이 있으면 연결하지 않습니다. 다른 계정을 쓰려면 대시보드에서 기존 계획을 먼저 종료해 주세요.',
+  /** 해제된 상태에서 재연결 폼을 여는 조작. 여는 요청은 아무것도 바꾸지 않는다(Story 2.1의 준비와 같다). */
+  reconnectStart: 'Bybit 다시 연결 시작',
   /** Bybit 쪽 키는 BokriLog가 지우지 못한다. */
   remoteKey:
     'BokriLog는 Bybit에 등록된 API Key를 폐기하지 못합니다. 필요하면 Bybit에서 직접 폐기할 수 있습니다.',
@@ -294,9 +325,12 @@ export const revocationContent = {
     credentials:
       'BokriLog에 저장된 Bybit 자격정보를 즉시 삭제합니다. 이 조작은 되돌릴 수 없습니다.',
     jobs: '대기 중이거나 진행 중인 수집·환산·동기화·정밀 검증 작업을 취소합니다.',
-    future: '해제한 뒤에는 새 동기화를 할 수 없고 현재가치와 지표가 더 이상 갱신되지 않습니다.',
+    future:
+      '해제한 뒤에는 다시 연결하기 전까지 새 동기화를 할 수 없고 현재가치와 지표가 더 이상 갱신되지 않습니다.',
     kept: '기존 계획, 조정 이력, 계산 근거, 완료 결과는 삭제하지 않고 읽기 전용으로 남겨 둡니다.',
-    reconnect: '해제한 뒤 다시 연결하는 기능은 아직 제공하지 않습니다.',
+    /** Story 2.17: 해제는 되돌릴 수 없지만 같은 계정은 새 키로 다시 연결해 이어 갈 수 있다. */
+    reconnect:
+      '나중에 같은 Bybit 계정의 새 읽기 전용 키로 다시 연결하면 기존 계획의 동기화를 이어 갈 수 있습니다.',
     cancel: '취소',
     confirm: '연결 해제',
     confirming: '연결 해제를 처리하고 있습니다.',
@@ -375,4 +409,13 @@ export const connectionFormCopyStrings: readonly string[] = [
   connectionContent.form.apiSecretHelp,
   connectionContent.form.submit,
   connectionContent.form.cancel,
+]
+
+/**
+ * 해제된 연결의 재연결 안내(Story 2.17). 해제 상태와 재연결 입력 폼 양쪽에서 렌더된다 — 같은 계정이면 기존 계획을 이어
+ * 동기화하고(30일 초과면 선택 필요), 다른 계정이면 진행 중인 계획을 먼저 종료해야 한다.
+ */
+export const reconnectCopyStrings: readonly string[] = [
+  revocationContent.reconnectSameAccount,
+  revocationContent.reconnectOtherAccount,
 ]

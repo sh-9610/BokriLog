@@ -30,8 +30,8 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
  * connection {@code REVOKED} with its time, the membership closed at that time, every attempt ended, no provider call,
  * the official result, evidence and history still 200 with {@code CONNECTION_REVOKED} where a sync would be, the one
  * refusal for another user's, an unknown and a revoked connection, idempotent replays and a conflict, the grant's
- * misuse, the atomic rollback, a late worker that writes nothing, a reconnection refused, the account erasure and the
- * logs.
+ * misuse, the atomic rollback, a late worker that writes nothing, the account erasure and the logs.
+ * 해제 뒤 새 재인증 위에서는 재연결 준비가 다시 성립한다(Story 2.17 — 재연결 자체는 {@code BybitReconnectionTest}).
  */
 // The plan lock is held by a resource the body never names: holding it is the point.
 @SuppressWarnings("try")
@@ -533,18 +533,29 @@ class BybitConnectionRevocationTest extends PlanSyncTestBase {
 
     // ------------------------------------------------------------------------------------------ reconnection
 
-    /** RECONNECT-1.0 is not implemented: after a revocation a new connection's preparation is the one refusal. */
+    /**
+     * 의도 변경(Story 2.17, {@code RECONNECT-1.0}): 해제한 사용자의 새 연결 준비는 더 이상 단일 거부가 아니다. 해제가
+     * 재인증 시각을 지웠으므로 같은 세션의 준비는 재인증 부재로 거절되고(허가 0건), 새 재인증 위에서는 Story 2.1의 같은
+     * 준비가 성립한다. 준비는 아무것도 저장하지 않는다 — 연결은 여전히 해제된 하나다. 재연결 자체는
+     * {@code BybitReconnectionTest}가 본다.
+     */
     @Test
-    void aRevokedUserCannotPrepareANewConnection() throws Exception {
+    void aRevokedUserCanPrepareAReconnectionOnAFreshReauthentication() throws Exception {
         Signed signed = signedInWithPlan("revoke-reconnect");
         UUID connection = connectionOf(signed.user());
         String rotated = sessionCookieOf(revoke(signed, connection, key("revoke-reconnect"))).orElseThrow();
         String csrf = csrfTokenOf(rotated);
         long grants = actionGrantCountOf(signed.user());
-        var refused = prepareBybitConnection(rotated, csrf);
-        assertThat(refused.statusCode()).isEqualTo(403);
+        var stale = prepareBybitConnection(rotated, csrf);
+        assertThat(stale.statusCode()).isEqualTo(403);
         assertThat(actionGrantCountOf(signed.user())).isEqualTo(grants);
+
+        Signed fresh = reauthenticate(new Signed(signed.user(), signed.subject(), rotated, csrf));
+        var prepared = prepareBybitConnection(fresh.cookie(), fresh.csrf());
+        assertThat(prepared.statusCode()).as(prepared.body()).isEqualTo(200);
+        assertThat(confirmationIn(prepared.body())).isNotBlank();
         assertThat(sourceConnectionCountOf(signed.user())).isEqualTo(1);
+        assertThat(connectionStatus(connection)).isEqualTo("REVOKED");
     }
 
     // ------------------------------------------------------------------------------------------ deletion

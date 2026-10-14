@@ -260,7 +260,29 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
 
     @Override
     public Optional<PlanConditionApi.PlanTarget> planTarget(UUID planId) {
-        return repository.planTarget(planId);
+        return repository.planTarget(planId).map(this::withCurrentConnection);
+    }
+
+    @Override
+    public Optional<UUID> activePlanProviderAccount(UUID userId) {
+        return repository.activePlanProviderAccount(userId);
+    }
+
+    /**
+     * 계획의 지금 연결(Story 2.17): 계획과 같은 Bybit 계정·portfolio의 지금 활성 연결과 그 membership이 있으면 그 연결이고,
+     * 없으면 계획이 기록한 연결 그대로다. 동기화 가드({@code PlanSyncGuard.planSource})와 같은 판정이다 — 재연결 뒤
+     * 운영 제한의 {@code PROVIDER_CONNECTION} 차원이 새 연결을 보고, 이전 연결에 건 제한은 그 연결에만 남는다.
+     */
+    private PlanConditionApi.PlanTarget withCurrentConnection(PlanConditionApi.PlanTarget recorded) {
+        var connection=sources.snapshotConnection(recorded.userId()).orElse(null);
+        var membership=portfolios.activeSource(recorded.userId()).orElse(null);
+        if (connection==null || membership==null || !connection.providerAccountId().equals(recorded.providerAccountId())
+                || !membership.portfolioId().equals(recorded.portfolioId())
+                || !membership.connectionId().equals(connection.connectionId())
+                || !membership.providerAccountId().equals(recorded.providerAccountId()))
+            return recorded;
+        return new PlanConditionApi.PlanTarget(recorded.planId(),recorded.userId(),recorded.portfolioId(),
+                connection.connectionId(),recorded.providerAccountId(),recorded.status(),recorded.calculationPolicy());
     }
 
     @Override
@@ -449,9 +471,21 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
                 .withCalculationPolicy(CALCULATION_POLICY);
     }
 
+    /**
+     * 계획 조건의 기준 snapshot. 계획이 하나도 없으면 지금 활성 연결의 Bybit 계정의 기준 snapshot이고(Story 2.17 — 한 계정만
+     * 쓴 portfolio에서는 첫 공식 snapshot), 종단 계획이 있으면 후속 기준(Story 2.15)이다.
+     *
+     * <p>기준 snapshot은 연결 ID가 아니라 provider account·portfolio로 받아들인다(Story 2.17). 같은 main UID로 다시 연결하면
+     * 이전 연결로 받은 snapshot이 그대로 기준이고, 돌려주는 값의 membership·연결은 <b>지금 활성</b> membership·연결로 바꾼다
+     * — 그 값이 확인·intent·{@code plan_definition}에 실려 새 계획은 발행 시점의 활성 연결로 수집하고 기록한다. 다른 계정의
+     * snapshot은 기준이 되지 않는다(그 계정의 snapshot이 아직 없으면 빈 값). source snapshot의 provenance 대조는 snapshot 자신의
+     * 연결로 한다.
+     */
     private Optional<FirstOfficialSnapshot> eligibleSnapshot(UUID userId) {
         var latest=ends.latestPlan(userId).orElse(null);
-        var first=latest==null ? portfolios.firstOfficialSnapshot(userId)
+        var connection=sources.snapshotConnection(userId);
+        if (connection.isEmpty()) return Optional.empty();
+        var first=latest==null ? portfolios.accountBaselineSnapshot(userId,connection.get().providerAccountId())
                 : sync.currentNextBaseline(userId).filter(b -> latest.plan().planId().equals(b.predecessorPlanId())
                         && latest.plan().portfolioId().equals(b.portfolioId())
                         && (("ENDED_EARLY".equals(latest.status()) && latest.end()!=null && latest.end().endedAt().equals(b.terminalAt()))
@@ -460,13 +494,13 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
                     .flatMap(b -> portfolios.ownedSnapshot(userId,b.snapshotId())
                             .filter(s -> s.sourceSnapshotId().equals(b.sourceSnapshotId())));
         var active=portfolios.activeSource(userId);
-        var connection=sources.snapshotConnection(userId);
-        if (first.isEmpty() || active.isEmpty() || connection.isEmpty()) return Optional.empty();
+        if (first.isEmpty() || active.isEmpty()) return Optional.empty();
         var s=first.get(); var m=active.get(); var c=connection.get();
         var source=sync.sourceSnapshot(userId,s.sourceSnapshotId());
-        if (!m.portfolioId().equals(s.portfolioId()) || !m.membershipId().equals(s.membershipId())
-                || !m.connectionId().equals(s.connectionId()) || !m.providerAccountId().equals(s.providerAccountId())
-                || !c.connectionId().equals(s.connectionId()) || !c.providerAccountId().equals(s.providerAccountId())
+        // 같은 계정·portfolio의 지금 활성 membership·연결이어야 한다 — 연결 ID는 같지 않아도 된다(Story 2.17).
+        if (!m.portfolioId().equals(s.portfolioId()) || !m.connectionId().equals(c.connectionId())
+                || !m.providerAccountId().equals(s.providerAccountId())
+                || !c.providerAccountId().equals(s.providerAccountId())
                 || !c.policyVersion().equals(s.sourcePolicyVersion())
                 || !s.sourcePolicyVersion().equals(s.portfolioPolicyVersion()) || source.isEmpty()
                 || !source.get().userId().equals(userId) || !source.get().connectionId().equals(s.connectionId())
@@ -477,7 +511,11 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
             BigDecimal amount=new BigDecimal(s.decimal());
             if (amount.signum()<=0 || amount.precision()>38 || Math.max(amount.scale(),0)>18) return Optional.empty();
         } catch (NumberFormatException invalid) { return Optional.empty(); }
-        return first;
+        if (s.membershipId().equals(m.membershipId()) && s.connectionId().equals(c.connectionId())) return first;
+        // 재연결 뒤(Story 2.17): snapshot·source·값·시각은 그대로, 수집·기록할 membership·연결만 지금 활성의 것이다.
+        return Optional.of(new FirstOfficialSnapshot(s.portfolioId(),s.snapshotId(),s.decimal(),s.measuredAt(),
+                s.composedAt(),s.publishedAt(),m.membershipId(),c.connectionId(),s.providerAccountId(),
+                s.sourceSnapshotId(),s.sourcePolicyVersion(),s.portfolioPolicyVersion()));
     }
 
     private boolean sameSnapshot(UUID userId, FirstOfficialSnapshot expected) {

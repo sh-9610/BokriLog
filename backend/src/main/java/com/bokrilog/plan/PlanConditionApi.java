@@ -63,14 +63,22 @@ public interface PlanConditionApi {
      * 운영 제한의 대상 확인에 쓰는 계획 하나(Story 3.2). 사용자 없이 id로 찾는다 — 운영자 표면이 부른다.
      *
      * @param userId 소유자. 제한 행의 귀속이다
-     * @param connectionId 계획이 기록한 제공자 연결
+     * @param connectionId 계획의 <b>지금</b> 연결(Story 2.17) — 계획과 같은 Bybit 계정·portfolio의 지금 활성 연결이고,
+     *     그런 연결이 없을 때만 계획이 처음 기록한 연결이다. 재연결 뒤에는 이전 연결에 건 제한이 이 계획을 막지 않는다
+     * @param providerAccountId 계획이 고정한 Bybit 계정(불변)
      * @param status 계획 상태 — {@code ACTIVE}·{@code ENDED_EARLY}·{@code COMPLETED}
      */
-    record PlanTarget(UUID planId, UUID userId, UUID portfolioId, UUID connectionId, String status,
-            String calculationPolicy) {}
+    record PlanTarget(UUID planId, UUID userId, UUID portfolioId, UUID connectionId, UUID providerAccountId,
+            String status, String calculationPolicy) {}
 
     /** 그 계획. 없으면 빈 값이다. */
     Optional<PlanTarget> planTarget(UUID planId);
+
+    /**
+     * 그 사용자의 활성 계획이 고정한 Bybit 계정(Story 2.17). 활성 계획이 없으면 빈 값이다. 재연결 확정이 계획 쓰기 잠금 아래에서
+     * 새 연결의 계정과 대조하는 데 쓴다 — 계정 열 하나만 읽고, 호출자 트랜잭션에서 읽는다.
+     */
+    Optional<UUID> activePlanProviderAccount(UUID userId);
 
     /**
      * 조건에 맞는 계획의 수. 운영 제한의 영향 미리보기가 쓴다. {@code null}인 조건은 거르지 않는다.

@@ -202,11 +202,14 @@ class SourceConnectionService implements SourceConnectionApi {
             return rejected(SourceRejectionReason.NOT_PERMITTED);
         }
         /*
-         * 해제한 사용자는 다시 연결하지 않는다(Story 2.16). 지금의 저장은 새 membership을 만들 뿐 활성 계획과
-         * UID를 대조하지 않으므로, 열어 두면 다른 UID가 그 계획의 portfolio에 붙는다(RECONNECT-1.0 위반).
-         * 준비 게이트가 먼저 거르고 이 검사는 같은 사실을 저장 트랜잭션 안에서 다시 본다.
+         * 판정 순서(Story 2.17, RECONNECT-1.0): 활성 연결 → 다른 사용자의 main UID → 그 사용자의 기존 제공자 계정 재사용 →
+         * 새 제공자 계정. 해제한 연결이 있다는 사실은 더 이상 거부 사유가 아니다 — 활성 계획과 main UID의 대조는 계획
+         * 잠금을 쥔 호출자가 저장 뒤 같은 트랜잭션에서 하고, 어긋나면 그 트랜잭션을 통째로 되돌린다.
+         *
+         * 활성 연결 검사는 사전 확인이다. 권위는 부분 유일 색인(`source_connection_active_user_key`)이며, 두 탭이 함께
+         * 여기를 지나면 진 쪽의 INSERT가 그 색인에서 예외로 끝나 호출자 트랜잭션 전체가 롤백된다.
          */
-        if (this.repository.hasRevoked(userId)) {
+        if (this.repository.findActiveConnection(userId, provider.name()).isPresent()) {
             return rejected(SourceRejectionReason.NOT_PERMITTED);
         }
 
@@ -234,6 +237,9 @@ class SourceConnectionService implements SourceConnectionApi {
                     providerAccountId, userId, providerName, verified.providerAccountRef());
         }
 
+        // 직전 해제 연결과 같은 계정인가 — 새 연결 행을 넣기 전에 읽는다(A→B→A의 마지막은 B와 다른 계정이다).
+        boolean sameAccountAsRevoked = this.repository.latestRevokedProviderAccount(userId)
+                .map(providerAccountId::equals).orElse(false);
         UUID connectionId = UUID.randomUUID();
         UUID credentialId = UUID.randomUUID();
         Optional<CredentialCipher.Sealed> sealed =
@@ -252,7 +258,7 @@ class SourceConnectionService implements SourceConnectionApi {
                 verified.verifiedAt(),
                 verified.policyVersion());
         this.repository.insertCredential(credentialId, connectionId, sealed.get());
-        return new StoreOutcome.Stored(connectionId, providerAccountId);
+        return new StoreOutcome.Stored(connectionId, providerAccountId, sameAccountAsRevoked);
     }
 
     @Override
@@ -268,6 +274,11 @@ class SourceConnectionService implements SourceConnectionApi {
     @Override
     public boolean isRevoked(@Nullable UUID userId, @Nullable UUID connectionId) {
         return userId != null && connectionId != null && this.repository.isRevoked(userId, connectionId);
+    }
+
+    @Override
+    public java.util.Set<UUID> sameAccountConnections(UUID connectionId) {
+        return this.repository.sameAccountConnections(connectionId);
     }
 
     @Override

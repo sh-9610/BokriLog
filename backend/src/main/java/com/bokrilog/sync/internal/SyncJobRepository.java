@@ -39,6 +39,12 @@ class SyncJobRepository {
                 + "ORDER BY created_at DESC,job_id DESC LIMIT 1")
             .param("u",userId).query((rs,n)->job(rs)).optional();
     }
+    /** 그 연결의 가장 최근 첫 확인 작업(Story 2.17: 다른 계정으로 다시 연결한 뒤 이전 연결의 작업을 보이지 않는다). */
+    Optional<Job> latestOf(UUID userId, UUID connectionId) {
+        return jdbc.sql("SELECT job_id,status,failure_reason FROM sync_job WHERE user_id=:u AND connection_id=:c "
+                + "ORDER BY created_at DESC,job_id DESC LIMIT 1")
+            .param("u",userId).param("c",connectionId).query((rs,n)->job(rs)).optional();
+    }
     Optional<com.bokrilog.sync.SyncJobApi.SourceSnapshot> sourceSnapshot(UUID userId, UUID id) {
         return jdbc.sql("SELECT source_snapshot_id,user_id,connection_id,provider_account_id,input_status,policy_version "
                 + "FROM sync_source_snapshot WHERE user_id=:u AND source_snapshot_id=:id")

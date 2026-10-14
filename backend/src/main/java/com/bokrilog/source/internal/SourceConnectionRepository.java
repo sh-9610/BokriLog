@@ -158,6 +158,21 @@ class SourceConnectionRepository {
 
     // ---------------------------------------------------------------- Story 2.16
 
+    /** 그 연결과 같은 사용자·같은 제공자 계정의 연결 전부(Story 2.17). 모르는 연결이면 비어 있다. */
+    java.util.Set<UUID> sameAccountConnections(UUID connectionId) {
+        return java.util.Set.copyOf(this.jdbc.sql("SELECT s.connection_id FROM source_connection c "
+                + "JOIN source_connection s ON s.user_id = c.user_id AND s.provider_account_id = c.provider_account_id "
+                + "WHERE c.connection_id = :connectionId")
+            .param("connectionId", connectionId).query(UUID.class).list());
+    }
+
+    /** 그 사용자가 가장 최근에 해제한 연결의 제공자 계정(Story 2.17). 해제한 적이 없으면 빈 값이다. */
+    Optional<UUID> latestRevokedProviderAccount(UUID userId) {
+        return this.jdbc.sql("SELECT provider_account_id FROM source_connection WHERE user_id = :userId "
+                + "AND status = 'REVOKED' ORDER BY revoked_at DESC, created_at DESC, connection_id LIMIT 1")
+            .param("userId", userId).query(UUID.class).optional();
+    }
+
     /** The active connection, or else the most recently revoked one: the state the settings screen shows. */
     Optional<com.bokrilog.source.SourceConnectionApi.ConnectionStatus> currentConnection(UUID userId) {
         return this.jdbc.sql("SELECT connection_id, status, verified_at, policy_version, revoked_at "
