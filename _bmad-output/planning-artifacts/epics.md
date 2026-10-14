@@ -11,7 +11,7 @@ finalValidationStatus: passed
 implementationReadinessStatus: ready-for-sprint-planning
 implementationDecisionVersion: ERD-1.0.0
 externalLaunchGates: ['G-4-provider-account-and-live-approval', 'G-5-legal-and-privacy-approval', 'production-secrets-and-accounts']
-approvedStories: ['1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '2.1', '2.2', '2.3', '2.4', '2.5', '2.6', '2.7', '2.8', '2.9', '2.10', '2.11', '2.12', '2.13', '2.14', '2.15', '2.16', '3.1', '3.2', '3.3', '3.4', '3.5', '3.6', '3.7', '3.8', '3.9', '3.10', '4.1', '4.2', '4.3', '4.4', '5.1', '5.2', '5.3', '5.4']
+approvedStories: ['1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '2.1', '2.2', '2.3', '2.4', '2.5', '2.6', '2.7', '2.8', '2.9', '2.10', '2.11', '2.12', '2.13', '2.14', '2.15', '2.16', '2.17', '3.1', '3.2', '3.3', '3.4', '3.5', '3.6', '3.7', '3.8', '3.9', '3.10', '4.1', '4.2', '4.3', '4.4', '5.1', '5.2', '5.3', '5.4']
 inputDocuments:
   - _bmad-output/planning-artifacts/prds/prd-BokriLog-2026-08-23/prd.md
   - _bmad-output/planning-artifacts/architecture/architecture-BokriLog-2026-08-24/ARCHITECTURE-SPINE.md
@@ -154,7 +154,7 @@ inputDocuments:
 
 ## Epic List
 
-요구사항 원장과 아래 5개 에픽·45개 스토리는 사용자 승인과 최종 검증을 완료했다. 삭제 경로 조기 구현, 중간 검증 지점, Epic 1의 삭제 상태·접근 차단 계약, 개발·출시·운영 증거의 분리를 반영했다. 구현 세부 결정은 `ERD-1.0.0`으로 고정했으며 frontmatter의 `approvedStories`는 설계 승인 상태를 뜻한다. 실제 구현·테스트 완료 상태를 뜻하지 않는다.
+요구사항 원장과 아래 5개 에픽·45개 스토리는 사용자 승인과 최종 검증을 완료했다. Story 2.17(재연결, `RECONNECT-1.0`)은 2026-10-14 Epic 2 보완 스토리로 추가 승인했다(Epic 2 회고 AI-1). 삭제 경로 조기 구현, 중간 검증 지점, Epic 1의 삭제 상태·접근 차단 계약, 개발·출시·운영 증거의 분리를 반영했다. 구현 세부 결정은 `ERD-1.0.0`으로 고정했으며 frontmatter의 `approvedStories`는 설계 승인 상태를 뜻한다. 실제 구현·테스트 완료 상태를 뜻하지 않는다.
 
 ### 설계 원칙
 
@@ -2764,6 +2764,91 @@ Google·네이버·카카오 중 하나로 가입·로그인하고, 최근 재�
 - 경합·삭제 시험: 반복 해제, 동기화·발행·계정 삭제 경쟁, 계정 삭제 후 보존 데이터 제거와 다른 사용자 보존 — AC-8
 - 비밀 누출 검사: URL·화면·브라우저 저장소·로그·오류 추적·지표·분석·광고 payload — AC-9
 - Story 2.13~Story 2.16 통합 시험이 통과하면 M2-4 `중도 종료·자연 완료·후속 계획·연결 해제` 검증 지점을 충족한 것으로 기록한다.
+
+### Story 2.17: 해제한 Bybit 연결을 같은 계정으로 다시 연결하고 활성 계획 동기화를 이어 가기
+
+**As a** Bybit 연결을 해제했던 사용자,
+**I want** 같은 Bybit 계정을 새 읽기 전용 API Key로 다시 연결하고 싶다.
+**So that** 보존된 계획을 버리지 않고 해제 이후의 기록을 이어서 동기화할 수 있다.
+
+**범위:** 해제된 연결만 있는 사용자의 재연결 검증·저장, 검증한 main UID와 기존 provider account의 대조, 같은 UID의 provider account 재사용·새 connection·credential·source membership, 활성 계획의 기존 watermark부터 증분 동기화 재개와 30일 초과 공백의 장기 미동기화 선택, 다른 UID의 활성 계획 연결 거절, 재연결 화면.
+
+**제외:** 활성 연결의 자격정보 교체, 다른 UID의 계획 종료→새 연결을 한 흐름으로 잇는 조작(Story 2.13 중도 종료·Story 2.15 후속 계획을 따로 쓴다), 여러 provider account의 동시 membership, Bybit 측 API Key 원격 폐기.
+
+**선행:** Story 2.1, Story 2.11, Story 2.13, Story 2.15, Story 2.16, Story 3.2(`NEW_CONNECTION` 제한).
+
+**결정 상태:** `RECONNECT-1.0`(`ERD-1.0.0` §5)을 구현한다. 같은 main UID는 기존 provider account와 활성 계획을 재사용해 기존 watermark부터 다시 동기화하고, 다른 main UID는 기존 활성 계획에 연결하지 않는다. 재연결은 `SECURITY-ACTION-1.0`의 민감 행동이다. 2026-10-14 사용자 결정으로 Epic 2 보완 스토리로 추가했다(Epic 2 회고 AI-1, R-1).
+
+**연결 요구사항:** FR-1·FR-2·FR-3·FR-5·FR-7·FR-12, NFR-7~NFR-10·NFR-13~NFR-17, AR-7·AR-9·AR-12·AR-13·AR-14·AR-22, UX Flow 6·연결·개인정보 설정.
+
+**Acceptance Criteria:**
+
+**AC-1 — 재연결 자격과 소유권**
+
+**Given** 로그인한 사용자에게 해제된 Bybit 연결이 있고 활성 연결이 없으면
+**When** 사용자가 재연결을 시작할 때
+**Then** Story 2.1의 연결 생성과 같은 읽기 전용·IP 바인딩·권한 검증을 통과한 자격정보만 받는다.
+**And** 활성 연결이 이미 있는 사용자, 다른 사용자가 이미 쓰는 main UID, 운영 `NEW_CONNECTION` 제한은 Story 2.1·Story 3.2와 같은 응답으로 거절하고 아무것도 저장하지 않는다.
+
+**AC-2 — 같은 main UID의 provider account 재사용**
+
+**Given** 검증한 main UID가 해제된 연결의 provider account와 같으면
+**When** 재연결을 확정할 때
+**Then** 같은 `provider_account_id`를 재사용하고 새 connection·암호화 credential(현재 active key version)·source membership을 만든다.
+**And** 해제된 이전 connection 행과 과거 membership 구간·계획·자금흐름·snapshot·계산·근거는 바꾸지 않고, 사용자·portfolio당 활성 연결·membership 하나를 유지한다.
+
+**AC-3 — 활성 계획 동기화 재개**
+
+**Given** 같은 UID로 재연결했고 그 portfolio에 활성 계획이 있으면
+**When** 재연결이 커밋된 뒤 동기화 가용성을 판정할 때
+**Then** `CONNECTION_REVOKED`를 해제하고 기존 `cashflow_verified_through`(watermark)부터 해제 기간을 포함한 증분 동기화를 다시 허용한다.
+**And** admission 서버 시각과 watermark의 공백이 30일을 넘으면 Bybit을 자동 호출하지 않고 Story 2.11의 장기 미동기화 선택 정책을 적용한다.
+
+**AC-4 — 다른 main UID**
+
+**Given** 검증한 main UID가 해제된 연결의 provider account와 다르면
+**When** 그 portfolio에 활성 계획이 있을 때
+**Then** 저장 없이 거절하고 기존 계획을 먼저 종료해야 한다는 중립 안내(Story 2.13 경로)를 준다.
+**And** 활성 계획이 없으면 새 provider account와 membership으로 연결하되 이전 provider account의 사건·snapshot을 새 계획 입력에 섞지 않으며 후속 계획은 Story 2.15 경로로만 만든다.
+
+**AC-5 — 민감 행동과 확정 원자성**
+
+**Given** 사용자가 재연결 영향을 확인하면
+**When** 재연결을 확정할 때
+**Then** CSRF·동일 출처와 사용자·세션·command·대상·canonical 확인 hash에 귀속된 최근 행동 허가를 검증하고 성공 트랜잭션에서 한 번만 소비하며 세션 ID를 회전한다.
+**And** 제공자 검증 호출은 트랜잭션 밖에서 끝내고, 허가 소비·connection·credential·membership은 한 트랜잭션으로 커밋하며 실패 시 아무것도 남기지 않는다.
+
+**AC-6 — 동시성·삭제·늦은 작업**
+
+**Given** 재연결이 반복되거나 두 탭·연결 해제·계획 발행·계정 삭제와 경합하면
+**When** 종단 상태를 결정할 때
+**Then** 같은 요청은 같은 결과를 멱등 반환하고 활성 연결은 하나만 생기며 계정 삭제가 우선한다.
+**And** 해제 이전 연결에 귀속된 늦은 Worker는 재연결 뒤에도 발행하지 못하고, 계정 삭제는 이전·새 connection과 credential을 모두 제거한다.
+
+**AC-7 — 재연결 화면**
+
+**Given** 설정에 해제된 연결이 있으면
+**When** 재연결 화면을 표시할 때
+**Then** "아직 제공하지 않는다" 안내 대신 Story 2.1과 같은 입력·검증 흐름을 보여 주고, 확인 단계에서 같은 계정이면 기존 계획을 이어서 동기화하고 공백이 30일을 넘으면 선택이 필요함을, 다른 계정이면 거절 이유와 계획 종료 경로를 설명한다.
+**And** 재연결 뒤 대시보드는 연결 해제 표시를 거두고 동기화 조작을 되돌리며 확인 대화상자·결과를 키보드·스크린리더·확대 환경에서 완료할 수 있고 상태를 색상만으로 전달하지 않는다.
+
+**AC-8 — 보안·관측**
+
+**Given** 재연결 흐름과 운영 관측을 수행하면
+**When** UI·로그·지표·분석을 처리할 때
+**Then** 자격정보·main UID·금융 상세·행동 허가를 URL·로그·오류 추적·분석·광고 payload에 포함하지 않는다.
+**And** 재연결 성공·같은 UID·다른 UID 거절·장기 미동기화 진입만 민감정보 없이 계측한다.
+
+**테스트 기준:**
+
+- 자격 시험: 해제만 있는 사용자·활성 연결 보유·다른 사용자의 UID·`NEW_CONNECTION` 제한·쓰기 권한·IP 미바인딩 — AC-1
+- 계정 재사용 시험: 같은 UID의 `provider_account_id` 재사용, 새 connection·credential·membership, 이전 행·과거 구간·계획 기록 불변, 활성 연결·membership 하나 — AC-2
+- 재개 시험: watermark부터 해제 기간 사건 수집·발행, `CONNECTION_REVOKED` 해제, 정확히 30일·30일 초과 경계와 장기 미동기화 선택 — AC-3
+- 다른 UID 시험: 활성 계획 있으면 거절·저장 없음, 종단 계획만 있으면 새 provider account, 이전 사건·snapshot 비혼합, 후속 계획 경로 — AC-4
+- 허가 시험: CSRF·동일 출처, 귀속·재사용·바꿔치기 거절, 세션 회전, 검증 호출 트랜잭션 밖, 단계 실패 시 저장 없음 — AC-5
+- 경합·삭제 시험: 반복·두 탭·해제·발행·계정 삭제 경쟁, 이전 연결의 늦은 Worker 차단, 삭제 후 두 연결 제거와 다른 사용자 보존 — AC-6
+- 화면·접근성 시험: 같은/다른 계정 확인 문구, 30일 초과 안내, 재연결 뒤 대시보드 표시, 키보드·확대·낭독 — AC-7
+- 비밀 누출 검사: URL·화면·브라우저 저장소·로그·오류 추적·지표·분석·광고 payload — AC-8
 
 ## Epic 3: 장애 중에도 기록을 보호하고 도움받는 서비스 만들기
 
