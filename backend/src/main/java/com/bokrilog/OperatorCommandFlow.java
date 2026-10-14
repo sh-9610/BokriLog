@@ -52,20 +52,32 @@ final class OperatorCommandFlow {
      * @param confirmation 서버가 만든 확인 문구 원문
      * @param sessionId 허가 발급 시각의 세션 id
      * @param armedAt 무장 시각
-     * @param restriction 제한 생성 command의 요청(Story 3.2). 그 밖은 {@code null}
-     * @param lift 해제 command의 요청과 준비 시각의 제한 사실(Story 3.4). 그 밖은 {@code null}
-     * @param notice 공지 발행 command의 요청(Story 3.5). 쓸 버전 번호와 서버가 계산한 영향 기능을 담는다. 그 밖은
-     *     {@code null}
-     * @param inquiry 문의 처리 command의 요청(Story 3.6). reference·옮길 상태·답변을 담는다. 그 밖은 {@code null}
+     * @param payload 그 command의 검증된 요청({@link OperatorCommandApi.Accepted#payload}) — 제한의 기능·범위·대상, 해제의
+     *     증거와 준비 시각의 제한 사실, 공지의 버전·덮는 제한, 문의의 전이·답변. 모양은 그 command의 전략만 알고 확정이 그
+     *     전략에 그대로 되돌려 준다. command마다 칸을 늘리지 않는다(Epic 3 회고 AI-5, 3.2 defer)
      */
     record Armed(UUID userId, String operationId, String command, String scope, String target, String ledgerTarget,
             String reason, String policyVersion, String confirmationHash, String requestDigest, Instant requestedAt,
             String keyDigest, String grantReference, String confirmation, String sessionId, Instant armedAt,
-            OperatorCommandApi.@Nullable Restriction restriction, OperatorCommandApi.@Nullable Lift lift,
-            OperatorCommandApi.@Nullable Notice notice, OperatorCommandApi.@Nullable Inquiry inquiry)
-            implements Serializable {
+            Serializable payload) implements Serializable {
 
-        @Serial private static final long serialVersionUID = 5L;
+        /**
+         * 6: command별 nullable 칸 넷을 payload 하나로 바꿨다. record의 역직렬화는 이 값을 대조하지 않고 칸 이름으로 맞춰
+         * 읽으므로, 이전 버전(5)의 무장은 아래 생성자 검사(payload 없음)나 지금 빌드에 없는 클래스로 읽기에 실패하고
+         * {@link SessionArming}이 없는 무장으로 접는다 — 배포 전에 준비한 운영 command는 단일 거절 뒤 다시 준비한다. 운영
+         * 서비스 전이라 호환 역직렬화를 두지 않는다.
+         */
+        @Serial private static final long serialVersionUID = 6L;
+
+        /**
+         * payload가 없는 무장은 없다. record의 역직렬화는 이 생성자를 지나므로, payload 칸이 없던 옛 모양(배포 전 버전의
+         * command별 칸 넷)으로 쓰인 무장은 읽는 순간 실패하고 {@link SessionArming}이 그것을 없는 무장으로 접는다 — record는
+         * {@code serialVersionUID}가 달라도 칸 이름으로 맞춰 읽으므로, 이 검사가 없으면 payload가 비어 있는 무장이 확정까지
+         * 간다.
+         */
+        Armed {
+            java.util.Objects.requireNonNull(payload, "무장에 command 요청이 없다.");
+        }
 
         boolean isLive(Instant now) {
             return now.isBefore(this.armedAt.plus(ARMED_LIFETIME));

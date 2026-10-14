@@ -24,7 +24,10 @@ export const OPERATOR_OPERATIONS_ENDPOINT = '/api/operator/operations'
 
 export const OPERATOR_COMMANDS_ENDPOINT = '/api/operator/commands'
 
-export const OPERATOR_EXPORT_ENDPOINT = `${OPERATOR_COMMANDS_ENDPOINT}/audit-export`
+/** 감사 원장 내보내기 command(Story 3.1). */
+export const AUDIT_EXPORT_COMMAND = 'audit-export'
+
+export const OPERATOR_EXPORT_ENDPOINT = `${OPERATOR_COMMANDS_ENDPOINT}/${AUDIT_EXPORT_COMMAND}`
 
 /** 효력 중인 제한의 목록(Story 3.2). command 권한이다. */
 export const OPERATOR_RESTRICTIONS_ENDPOINT = '/api/operator/restrictions'

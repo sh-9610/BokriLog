@@ -1,13 +1,16 @@
 package com.bokrilog.operations;
 
+import java.io.Serial;
+import java.io.Serializable;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
-import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
+import tools.jackson.databind.JsonNode;
 
 /**
  * 보호된 운영 command의 표준 envelope와 그 원장 기록(Story 3.1 AC-3·AC-4·AC-6).
@@ -18,9 +21,14 @@ import org.jspecify.annotations.Nullable;
  * ({@code restrict-<기능>}, {@link #restrictionFeatureOf}), 3.4의 제한 해제 {@value #LIFT_RESTRICTION}, 3.5의 서비스 공지
  * 발행 {@value #PUBLISH_NOTICE}, 3.6의 문의 처리 {@value #UPDATE_INQUIRY}.
  *
- * <p><b>감사 없는 상태 변경이 없다.</b> 실행({@link #completeExport})은 호출자의 트랜잭션 안에서 결과 행을 쓰고 그
- * 트랜잭션이 허가 소비와 같다 — 하나가 실패하면 모두 롤백된다. 거절·실패·취소 행({@link #recordDecision})은 그 롤백
- * <b>뒤</b> 자기 짧은 트랜잭션으로 쓴다.
+ * <p><b>command마다 전략 하나다(Epic 3 회고 AI-5).</b> 이 인터페이스의 메서드는 command 이름으로 등록표를 찾아 그 전략에
+ * 맡긴다 — 루트는 command를 가르지 않는다. 준비 본문 해석·검증·준비 뒤 거절·미리보기·확정 본문·커밋 뒤 처리·재전송·응답
+ * 모양은 전략의 몫이고, 확정의 prologue(트랜잭션 가드 → 원장 추가 잠금 → 최종 권한 → {@value #ACCESS_REVOKED})와
+ * {@code COMPLETED} 행은 템플릿 한 곳({@link #complete})이 갖는다. 새 command는 전략 구현 하나와 등록 한 줄이다.
+ *
+ * <p><b>감사 없는 상태 변경이 없다.</b> 실행({@link #complete})은 호출자의 트랜잭션 안에서 결과 행을 쓰고 그 트랜잭션이
+ * 허가 소비와 같다 — 하나가 실패하면 모두 롤백된다. 거절·실패·취소 행({@link #recordDecision})은 그 롤백 <b>뒤</b> 자기
+ * 짧은 트랜잭션으로 쓴다.
  *
  * <p>시각의 권위는 PostgreSQL이다. 요청·결정 시각은 원장 INSERT의 {@code statement_timestamp()}이고 애플리케이션 시계를
  * 쓰지 않는다.
@@ -80,6 +88,13 @@ public interface OperatorCommandApi {
 
     /** 문의 처리의 원장 scope 접두사. 뒤에 옮길 상태가 붙는다({@code INQUIRY:ANSWERED}). */
     String INQUIRY_SCOPE_PREFIX = "INQUIRY:";
+
+    /**
+     * 운영 command 이름 전부. 새 command는 이름 상수와 함께 여기 더하고 그 전략을 등록표에 한 줄 더한다 —
+     * {@code OperatorCommandRegistryTest}가 등록표가 이 목록과 정확히 같은지 본다.
+     */
+    List<String> COMMANDS = List.of(AUDIT_EXPORT, RESTRICT_NEW_CONNECTION, RESTRICT_SYNC, RESTRICT_CALCULATION_DISPLAY,
+            RESTRICT_ADVERTISING, LIFT_RESTRICTION, PUBLISH_NOTICE, UPDATE_INQUIRY);
 
     /** 배포 버전의 최대 길이(문자). 모양은 {@code [A-Za-z0-9._+-]}다. */
     int MAX_DEPLOY_VERSION_CHARS = 64;
@@ -200,93 +215,17 @@ public interface OperatorCommandApi {
     /**
      * 클라이언트가 보낸 command 제안. 검증 전 원문이다.
      *
-     * @param recovery 해제 command의 증거 입력(Story 3.4). 그 밖은 {@code null}
-     * @param notice 공지 발행 command의 입력(Story 3.5). 그 밖은 {@code null}. 상태는 {@code scope}, 사건은
-     *     {@code target}, 메시지는 {@code reason} 자리다
-     * @param inquiry 문의 처리 command의 입력(Story 3.6). 그 밖은 {@code null}. 옮길 상태는 {@code scope}, reference는
-     *     {@code target}, 운영 사유는 {@code reason} 자리다
+     * @param input command별 추가 입력(해제의 증거·공지의 덮는 제한·문의의 답변). 그 command의 전략만 그 모양을 안다. 없으면
+     *     {@code null}
      */
     record Proposal(String command, @Nullable String scope, @Nullable String target, @Nullable String reason,
-            boolean actorClaimed, @Nullable RecoveryInput recovery, @Nullable NoticeInput notice,
-            @Nullable InquiryInput inquiry) {
+            boolean actorClaimed, @Nullable Object input) {
 
         public Proposal(String command, @Nullable String scope, @Nullable String target, @Nullable String reason,
                 boolean actorClaimed) {
-            this(command, scope, target, reason, actorClaimed, null, null, null);
-        }
-
-        public Proposal(String command, @Nullable String scope, @Nullable String target, @Nullable String reason,
-                boolean actorClaimed, @Nullable RecoveryInput recovery) {
-            this(command, scope, target, reason, actorClaimed, recovery, null, null);
-        }
-
-        public Proposal(String command, @Nullable String scope, @Nullable String target, @Nullable String reason,
-                boolean actorClaimed, @Nullable RecoveryInput recovery, @Nullable NoticeInput notice) {
-            this(command, scope, target, reason, actorClaimed, recovery, notice, null);
+            this(command, scope, target, reason, actorClaimed, null);
         }
     }
-
-    /**
-     * 문의 처리의 입력 원문(Story 3.6). 옮길 상태·reference·사유는 {@link Proposal}의 scope·target·reason 자리다.
-     *
-     * @param answer {@code ANSWERED} 전이의 답변. 그 밖의 전이에는 없어야 한다
-     */
-    record InquiryInput(@Nullable String answer) {}
-
-    /**
-     * 검증을 지난 문의 처리(Story 3.6). 세션 무장에 실린다. 답변 원문은 무장(서버 세션)과 확정이 쓰는 문의 행에만 있다.
-     *
-     * @param from 준비 시각에 본 상태. 문의가 없으면 {@code null}
-     * @param targetAt 준비 시각에 본 답변 목표 시각. 미정이거나 문의가 없으면 {@code null}
-     * @param answer {@code ANSWERED} 전이의 답변. 그 밖은 {@code null}
-     * @param refusal 준비 시각에 본 상태 거절({@link #TARGET_INVALID}·{@link #INQUIRY_TRANSITION_INVALID}). 루트가 멱등 키·
-     *     재인증 판정 뒤에 적용한다. 무장되는 값은 언제나 {@code null}이다
-     */
-    record Inquiry(String reference, SupportInquiryApi.@Nullable Status from, SupportInquiryApi.Status to,
-            @Nullable Instant targetAt, @Nullable String answer, @Nullable String refusal)
-            implements java.io.Serializable {
-
-        @java.io.Serial private static final long serialVersionUID = 1L;
-    }
-
-    /**
-     * 공지 발행의 입력 원문(Story 3.5). 상태·사건·메시지는 {@link Proposal}의 scope·target·reason 자리다.
-     *
-     * @param covers 덮을 제한 ID. 본문이 배열이 아니면 {@code null}
-     * @param nextUpdateAt 다음 안내 시각(ISO-8601, 오프셋 포함). 없으면 {@code null}
-     */
-    record NoticeInput(@Nullable List<String> covers, @Nullable String nextUpdateAt) {}
-
-    /**
-     * 검증을 지난 공지 발행(Story 3.5). 세션 무장에 실린다. 영향·계속 가능 기능은 덮는 제한의 기능에서 서버가 계산했다.
-     *
-     * @param incidentId 기존 사건. 새 사건이면 {@code null}이고 사건 ID는 확정이 만든다
-     * @param version 쓸 버전 번호. 준비가 본 최신 버전의 다음 번호다
-     * @param covers 덮을 제한 ID(정렬, 중복 없음)
-     * @param nextUpdateAt 진행 중인 공지의 다음 안내 시각. 복구 공지는 {@code null}
-     * @param refusal 준비 시각에 본 상태 거절({@link #TARGET_INVALID}·{@link #INCIDENT_CLOSED}·
-     *     {@link #NEXT_UPDATE_INVALID}). 루트가 멱등 키·재인증 판정 뒤에 적용한다. 무장되는 값은 언제나 {@code null}이다
-     */
-    record Notice(@Nullable UUID incidentId, int version, ServiceNoticeApi.NoticeStatus status, String message,
-            List<UUID> covers, List<RestrictionFeature> affectedFeatures, List<RestrictionFeature> continuingFeatures,
-            @Nullable Instant nextUpdateAt, @Nullable String refusal) implements java.io.Serializable {
-
-        @java.io.Serial private static final long serialVersionUID = 1L;
-
-        public Notice {
-            covers = List.copyOf(covers);
-            affectedFeatures = List.copyOf(affectedFeatures);
-            continuingFeatures = List.copyOf(continuingFeatures);
-        }
-    }
-
-    /**
-     * 해제 command의 증거 입력 원문(Story 3.4). 사유({@link Proposal#reason})가 원인이다.
-     *
-     * @param conditions 확인한 복구 조건 code. 본문이 배열이 아니면 {@code null}
-     */
-    record RecoveryInput(@Nullable List<String> conditions, @Nullable String verification,
-            @Nullable String evidenceRef, @Nullable String deployVersion) {}
 
     /**
      * 해제 대상 제한의 준비 시각 사실(Story 3.4). 제한 행의 기능·scope·target은 바뀌지 않으므로(비식별만 있다) 확정이
@@ -297,39 +236,22 @@ public interface OperatorCommandApi {
      */
     record LiftTarget(RestrictionFeature feature, RestrictionScope scope, String target, boolean targetErased,
             RestrictionOrigin origin, boolean open, int linkedSignals, @Nullable Instant latestSignalAt)
-            implements java.io.Serializable {
+            implements Serializable {
 
-        @java.io.Serial private static final long serialVersionUID = 1L;
-    }
-
-    /**
-     * 검증을 지난 해제 요청(Story 3.4). 세션 무장에 실린다.
-     *
-     * @param current 준비 시각의 제한. 그 ID의 제한이 없으면 {@code null}
-     * @param conditions {@link #RECOVERY_CONDITIONS} 순서의 확인한 조건
-     */
-    record Lift(UUID restrictionId, @Nullable LiftTarget current, List<String> conditions, String verification,
-            String evidenceRef, String deployVersion) implements java.io.Serializable {
-
-        @java.io.Serial private static final long serialVersionUID = 1L;
-
-        public Lift {
-            conditions = List.copyOf(conditions);
-        }
+        @Serial private static final long serialVersionUID = 1L;
     }
 
     /**
      * 검증을 지난 제한 요청(Story 3.2). 대상의 존재·상태는 아직 보지 않았다 — 그것은 다른 모듈의 사실이라 루트가 각 모듈
-     * 공개 API로 본다.
+     * 공개 API로 본다({@link OperatorCommandEnvironment#restrictionTarget}).
      *
      * <p>세션 무장에 실리므로 직렬화할 수 있다.
      *
      * @param target 정규화한 원 target. 전역이면 {@link RestrictionScope#GLOBAL_TARGET}이다
      */
-    record Restriction(RestrictionFeature feature, RestrictionScope scope, String target)
-            implements java.io.Serializable {
+    record Restriction(RestrictionFeature feature, RestrictionScope scope, String target) implements Serializable {
 
-        @java.io.Serial private static final long serialVersionUID = 1L;
+        @Serial private static final long serialVersionUID = 1L;
     }
 
     /**
@@ -337,18 +259,16 @@ public interface OperatorCommandApi {
      *
      * @param scope 원장의 scope. 제한 command는 {@code <기능>:<scope>}다
      * @param target 정규화한 원 대상. 화면에 되돌려 주고 실행에 쓴다
-     * @param ledgerTarget 원장·허가의 target. 사용자에게 귀속된 제한 target은 keyed digest이고 그 밖은 {@code target}과 같다
+     * @param ledgerTarget 원장·허가의 target. 사용자에게 귀속된 target은 keyed digest이고 그 밖은 {@code target}과 같다
      * @param confirmationPhrase 서버가 정한 확인 문구. 사용자가 다시 입력해 확정에 실어 보낸다
-     * @param requestDigest {@code command|scope|ledgerTarget|reason}의 SHA-256. 같은 멱등 키의 다른 입력을 가른다
-     * @param restriction 제한 command의 요청. 그 밖은 {@code null}
-     * @param lift 해제 command의 요청(Story 3.4). 그 밖은 {@code null}
-     * @param notice 공지 발행 command의 요청(Story 3.5). 그 밖은 {@code null}
-     * @param inquiry 문의 처리 command의 요청(Story 3.6). 그 밖은 {@code null}
+     * @param requestDigest {@code command|scope|ledgerTarget|reason}(과 command별 입력)의 SHA-256. 같은 멱등 키의 다른 입력을
+     *     가른다
+     * @param payload 그 command의 검증된 요청. 세션 무장에 그대로 실리고 확정이 그 command의 전략에 되돌려 준다. 모양은 그
+     *     전략만 안다
      */
     record Accepted(String command, String scope, String target, String ledgerTarget, String reason,
             String confirmationPhrase, String policyVersion, Set<OperatorPermission> permissions, String requestDigest,
-            @Nullable Restriction restriction, @Nullable Lift lift, @Nullable Notice notice,
-            @Nullable Inquiry inquiry) {}
+            Serializable payload) {}
 
     sealed interface Validation {
         record Valid(Accepted accepted) implements Validation {}
@@ -376,8 +296,42 @@ public interface OperatorCommandApi {
     /** 이 command가 요구하는 권한. 모르는 command는 빈 집합이 아니라 예외다(호출자가 {@link #isSupported}를 먼저 본다). */
     Set<OperatorPermission> permissionsOf(String command);
 
+    /**
+     * 준비 본문(JSON 객체)을 그 command의 제안으로 읽는다. 공통 세 필드({@code scope}·{@code target}·{@code reason})와 그
+     * command의 필드 가운데 문자열이어야 할 것이 문자열이 아니면 {@code null}(본문 모양 오류, 400)이다. 필드가 없는 것은
+     * 검증이 거절한다(422). 모르는 command는 공통 세 필드의 제안이다 — 준비가 그것을 없는 경로로 답한다.
+     *
+     * @param actorClaimed 본문이 수행자를 주장했는가. 판정은 HTTP 표면의 것이고 검증이 거절한다
+     */
+    @Nullable Proposal parse(String command, JsonNode body, boolean actorClaimed);
+
     /** envelope 검증. 수행자 확인(권한)은 호출자가 먼저 한다. */
     Validation validate(Proposal proposal);
+
+    /**
+     * 준비의 상태 거절. 멱등 키·재인증 판정 <b>뒤</b>, 무장 앞에 적용한다(3.2의 준비 순서) — 대상이 없거나 상태가 맞지
+     * 않으면 그 거절이다.
+     *
+     * @param code 원장·응답의 거절 code
+     * @param detail 같은 code의 문장을 가르는 사실(공지 발행은 요청한 공지 상태). 없으면 {@code null}
+     */
+    record Refusal(String code, @Nullable String detail) {}
+
+    /** 준비 시각의 상태 판정: 거절이거나, 무장해도 되고 그 미리보기를 준다. */
+    sealed interface Inspection {
+        record Refused(Refusal refusal) implements Inspection {}
+
+        /**
+         * @param preview 준비 응답의 미리보기({@code impact}). JSON 객체 하나로 그대로 직렬화된다. 그 command에 미리보기가
+         *     없으면 {@code null}이다
+         */
+        record Ready(@Nullable Map<String, Object> preview) implements Inspection {}
+    }
+
+    /**
+     * 준비 시각의 상태 판정과 미리보기. 대상의 사실(다른 모듈·제한 표·공지 표)을 한 번 읽어 거절과 미리보기를 함께 정한다.
+     */
+    Inspection inspect(Accepted accepted);
 
     /** 새 불투명 operation ID. 난수뿐이라 수행자·대상·시각을 복원할 수 없다. */
     String newOperationId();
@@ -410,20 +364,13 @@ public interface OperatorCommandApi {
 
     /**
      * 키 판정과 {@code REQUESTED} 추가를 원장 추가 잠금 안의 <b>한 트랜잭션</b>으로 한다. 같은 새 키의 동시 준비 둘이
-     * operation 둘을 만들지 않는다 — 뒤의 것은 잠금 뒤에 앞의 것이 쓴 행을 보고 같은 operation을 받는다.
+     * operation 둘을 만들지 않는다 — 뒤의 것은 잠금 뒤에 앞의 것이 쓴 행을 보고 같은 operation을 받는다. 그 command가
+     * 요청 행에 남기는 증거(해제의 복구 조건·검증·증거 참조, Story 3.4)는 전략이 {@code payload}에서 만든다.
      *
      * @param candidate 새 operation일 때 쓸 envelope. 그 {@code operationId}가 후보다
+     * @param payload 그 command의 검증된 요청({@link Accepted#payload})
      */
-    default Claim claim(Envelope candidate, String correlationId) {
-        return claim(candidate, null, correlationId);
-    }
-
-    /**
-     * {@link #claim(Envelope, String)}에 해제의 증거를 더해 {@code REQUESTED} 행의 {@code details}에 남긴다(Story 3.4).
-     *
-     * @param lift 해제 command의 요청. 그 밖은 {@code null}
-     */
-    Claim claim(Envelope candidate, @Nullable Lift lift, String correlationId);
+    Claim claim(Envelope candidate, Serializable payload, String correlationId);
 
     /**
      * {@code REQUESTED} 행을 쓴다. 자기 트랜잭션에서(또는 호출자의 것에 참여해) 쓴다.
@@ -440,7 +387,7 @@ public interface OperatorCommandApi {
      *
      * <p>거절된 시도도 감사 사건이다(AC-4). 다만 검증을 지나지 않은 값을 그대로 남기지 않는다 — scope·target은 형식이
      * 맞을 때만, 사유는 사유 규칙을 지날 때만 원문이고 나머지는 {@code -}다. 이메일이 실린 사유가 거절 행을 타고 원장에
-     * 들어가는 길을 막는다.
+     * 들어가는 길을 막는다. 무엇을 남겨도 되는지는 command의 전략이 정한다.
      *
      * @return 그 행의 operation ID
      */
@@ -457,197 +404,77 @@ public interface OperatorCommandApi {
         COMPLETED
     }
 
-    /** 실행된 command의 결과. 원장의 {@code COMPLETED} 행이 같은 값을 재생한다. */
-    sealed interface CommandResult permits ExportResult, RestrictionResult, LiftResult, NoticeResult, InquiryResult {
-        String operationId();
-    }
-
     /**
-     * 추출 실행의 결과. 허가에 저장되는 것은 이 값뿐이다(허가 결과 상한 4KiB) — 행 묶음은 원장을
-     * {@code sequence <= upperSequence}로 다시 읽어 만든다. 원장이 추가 전용이라 결정적이다.
+     * 확정 트랜잭션을 되돌리는 거절. 템플릿과 전략이 던지고 호출자(허가 소비의 트랜잭션)가 잡아 거절 행을 밖에서 쓴다.
+     * 스택도 메시지도 담지 않는다.
      */
-    record ExportResult(String operationId, String target, long upperSequence, int rowCount, boolean truncated)
-            implements CommandResult {}
+    final class CommandRefusal extends RuntimeException {
 
-    /**
-     * 제한 생성의 결과(Story 3.2). target 원문을 담지 않는다 — 재생이 원장에서 오고 원장에는 원문이 없다.
-     *
-     * @param effectiveFrom 제한의 효력 시작(DB 시각)
-     */
-    record RestrictionResult(String operationId, UUID restrictionId, RestrictionFeature feature,
-            RestrictionScope scope, Instant effectiveFrom) implements CommandResult {}
+        @Serial private static final long serialVersionUID = 1L;
 
-    /**
-     * 제한 해제의 결과(Story 3.4). 원장의 {@code COMPLETED} 행이 같은 값을 재생한다. smoke의 결말은 여기 없다 — 커밋 뒤의 일이라
-     * 그 operation의 smoke 행({@value #SMOKE_PASSED}·{@value #SMOKE_FAILED})이 말한다({@link #liftSmoke}).
-     *
-     * @param liftedAt 제한이 닫힌 시각(DB)
-     * @param reopenedStages 해제로 다시 열리는 단계 code
-     * @param stillBlockedStages 해제한 제한의 단계 가운데 남는 제한이 여전히 막는 것
-     */
-    record LiftResult(String operationId, UUID restrictionId, RestrictionFeature feature, RestrictionScope scope,
-            Instant liftedAt, List<String> reopenedStages, List<String> stillBlockedStages) implements CommandResult {
+        private final String code;
 
-        public LiftResult {
-            reopenedStages = List.copyOf(reopenedStages);
-            stillBlockedStages = List.copyOf(stillBlockedStages);
+        public CommandRefusal(String code) {
+            super(null, null, false, false);
+            this.code = code;
+        }
+
+        /** 원장 거절 code — {@value #ACCESS_REVOKED}면 호출자가 404로 옮긴다. */
+        public String code() {
+            return this.code;
         }
     }
 
     /**
-     * 공지 발행의 결과(Story 3.5). 원장의 {@code COMPLETED} 행이 같은 값을 재생한다. 메시지 원문을 담지 않는다.
+     * 확정 본문이 실행됐다. 커밋 뒤의 일({@link #afterCommit})에 그대로 되돌려 준다.
      *
-     * @param publishedAt 버전을 쓴 DB 시각
+     * @param grantRecord 허가에 저장하는 결과 요약(상한 4KiB). 식별자 원문·사유를 담지 않는다
+     * @param result 그 command의 실행 결과. 모양은 그 전략만 안다
      */
-    record NoticeResult(String operationId, UUID incidentId, int version, ServiceNoticeApi.NoticeStatus status,
-            Instant publishedAt) implements CommandResult {}
+    record Executed(String command, String grantRecord, Object result) {}
 
     /**
-     * 문의 처리의 결과(Story 3.6). 원장의 {@code COMPLETED} 행이 같은 값을 재생한다. reference·답변 원문을 담지 않는다 — 원장에는
-     * reference의 digest만 있다.
-     *
-     * @param transitionedAt 상태를 옮긴 DB 시각
-     */
-    record InquiryResult(String operationId, SupportInquiryApi.Status status, Instant transitionedAt)
-            implements CommandResult {}
-
-    /**
-     * {@value #AUDIT_EXPORT}를 실행하고 {@code COMPLETED} 행을 쓴다. <b>호출자의 트랜잭션 안에서만</b> 부른다 — 그
+     * 그 command를 실행하고 {@code COMPLETED} 행을 쓴다 — <b>확정 템플릿</b>. <b>호출자의 트랜잭션 안에서만</b> 부른다 — 그
      * 트랜잭션이 허가 소비와 같아야 감사 없는 실행·실행 없는 감사가 생기지 않는다.
      *
-     * <p>원장 추가 잠금을 쥔 <b>뒤에</b> {@code finalAuthority}로 최종 권한을 다시 본다(AC-6). 잠금 뒤라 그 사이 다른 감사
-     * 행이 끼어들 수 없고, 거짓이면 아무것도 쓰지 않고 빈 값을 돌려준다 — 호출자가 트랜잭션을 되돌리고 거절 행을 밖에서
-     * 쓴다.
+     * <p>순서가 계약이다: 열린 트랜잭션 확인 → 원장 추가 잠금 → 최종 권한({@code finalAuthority}, 거짓이면
+     * {@value #ACCESS_REVOKED}) → 그 command의 확정 본문(대상 재검사·쓰기) → {@code COMPLETED}. 잠금 뒤라 그 사이 다른
+     * 감사 행·같은 대상의 동시 확정이 끼어들 수 없다. 거절은 {@link CommandRefusal}로 던진다 — 이 트랜잭션은 아무것도
+     * 커밋하지 않고 호출자가 거절 행을 밖에서 쓴다.
      *
+     * @param payload 준비가 무장한 그 command의 요청({@link Accepted#payload})
      * @param finalAuthority 지금 이 트랜잭션에서 본 수행자의 최종 권한
-     * @return 실행 결과. 최종 권한이 없으면 빈 값
+     * @throws CommandRefusal 최종 권한이 없거나 확정 순간의 상태가 맞지 않을 때
      * @throws IllegalStateException 열린 트랜잭션이 없을 때
      */
-    Optional<ExportResult> completeExport(Envelope envelope, String correlationId, BooleanSupplier finalAuthority);
-
-    /** 확정 순간 대상 재검사의 답(Story 3.2). */
-    sealed interface TargetCheck {
-        /**
-         * 대상이 여전히 그 제한의 대상이다.
-         *
-         * @param ownerUserId 대상이 귀속된 사용자. 전역·계산 정책 버전은 {@code null}
-         */
-        record Valid(@Nullable UUID ownerUserId) implements TargetCheck {}
-
-        /** 대상이 사라졌거나 상태가 맞지 않다. */
-        record Invalid() implements TargetCheck {}
-    }
-
-    /** 제한 생성의 결말. */
-    sealed interface RestrictionCompletion {
-        record Completed(RestrictionResult result) implements RestrictionCompletion {}
-
-        /**
-         * 아무것도 쓰지 않았다. 호출자가 트랜잭션을 되돌리고 거절 행을 밖에서 쓴다.
-         *
-         * @param code 거절 code — {@link #ACCESS_REVOKED}·{@link #TARGET_INVALID}·{@link #ALREADY_RESTRICTED}
-         */
-        record Refused(String code) implements RestrictionCompletion {}
-    }
+    Executed complete(Envelope envelope, Serializable payload, String correlationId, BooleanSupplier finalAuthority);
 
     /**
-     * 제한 생성 command를 실행하고 {@code COMPLETED} 행을 쓴다(Story 3.2 AC-3). <b>호출자의 트랜잭션 안에서만</b> 부른다 —
-     * 그 트랜잭션이 허가 소비와 같다.
-     *
-     * <p>순서가 계약이다: 원장 추가 잠금 → 최종 권한({@code finalAuthority}) → 대상 재검사({@code targetCheck}) → 활성 중복
-     * 판정 → 제한 INSERT → {@code COMPLETED}. 잠금 뒤라 같은 제한의 동시 확정 둘이 줄을 서고, 뒤의 것은 앞의 것이 커밋한
-     * 행을 보고 {@link #ALREADY_RESTRICTED}로 거절된다(최후 권위는 부분 유일 색인이다).
-     *
-     * @throws IllegalStateException 열린 트랜잭션이 없을 때
+     * 확정 트랜잭션이 거절로 끝났을 때 같은 code의 문장을 가르는 사실(공지 발행은 무장된 공지 상태). 없으면 {@code null}.
      */
-    RestrictionCompletion completeRestriction(Envelope envelope, Restriction restriction, String correlationId,
-            BooleanSupplier finalAuthority, Supplier<TargetCheck> targetCheck);
-
-    /** 공지 발행의 결말(Story 3.5). */
-    sealed interface NoticeCompletion {
-        record Completed(NoticeResult result) implements NoticeCompletion {}
-
-        /**
-         * 아무것도 쓰지 않았다. 호출자가 트랜잭션을 되돌리고 거절 행을 밖에서 쓴다.
-         *
-         * @param code {@link #ACCESS_REVOKED}·{@link #TARGET_INVALID}·{@link #NOTICE_VERSION_CONFLICT}·
-         *     {@link #INCIDENT_CLOSED}·{@link #NEXT_UPDATE_INVALID}
-         */
-        record Refused(String code) implements NoticeCompletion {}
-    }
+    @Nullable String refusalDetail(String command, Serializable payload);
 
     /**
-     * 공지 발행 command를 실행하고 {@code COMPLETED} 행을 쓴다(Story 3.5 AC-3·AC-6). <b>호출자의 트랜잭션 안에서만</b>
-     * 부른다 — 그 트랜잭션이 허가 소비와 같다.
-     *
-     * <p>순서가 계약이다: 원장 추가 잠금 → 최종 권한({@code finalAuthority}) → 사건의 최신 버전(없음·닫힘·번호 어긋남) →
-     * 덮는 제한(진행 중이면 모두 지금 열려 있어야 하고, 복구면 모두 닫혀 있어야 한다) → 다음 안내 시각(DB 시각) → (새
-     * 사건이면 사건 행) → 버전 행(확정 시점의 지원 연락처를 함께 고정한다) → {@code COMPLETED}. 모든 발행이 같은 잠금을
-     * 쥐므로 같은 사건의 동시 발행 둘이 줄을 서고, 뒤의 것은 앞의 것이 쓴 버전을 보고 {@link #NOTICE_VERSION_CONFLICT}로
-     * 거절된다. 최후 권위는 버전 기본키다 — 그 제약의 위반만 같은 code이고, 다른 무결성 위반은 실행 실패로 올라간다.
-     *
-     * @param supportContact 확정 시점의 지원 연락처. 버전 행에 그대로 남는다
-     * @throws IllegalStateException 열린 트랜잭션이 없을 때
+     * 확정 트랜잭션 밖으로 유일 색인 위반이 나왔을 때의 거절 code. 그 command가 색인을 권위로 쓰는 중복(제한의 활성 유일
+     * 색인, Story 3.2)이면 그 code이고, 아니면 {@code null}(실행 실패)이다.
      */
-    NoticeCompletion completeNotice(Envelope envelope, Notice notice, String supportContact, String correlationId,
-            BooleanSupplier finalAuthority);
-
-    /** 문의 처리의 결말(Story 3.6). */
-    sealed interface InquiryCompletion {
-        record Completed(InquiryResult result) implements InquiryCompletion {}
-
-        /**
-         * 아무것도 쓰지 않았다. 호출자가 트랜잭션을 되돌리고 거절 행을 밖에서 쓴다.
-         *
-         * @param code {@link #ACCESS_REVOKED}·{@link #TARGET_INVALID}·{@link #INQUIRY_TRANSITION_INVALID}
-         */
-        record Refused(String code) implements InquiryCompletion {}
-    }
+    @Nullable String duplicateKeyRefusal(String command);
 
     /**
-     * 문의 처리 command를 실행하고 {@code COMPLETED} 행을 쓴다(Story 3.6 AC-5). <b>호출자의 트랜잭션 안에서만</b> 부른다 — 그
-     * 트랜잭션이 허가 소비와 같다.
+     * 커밋 뒤의 처리와 그 응답.
      *
-     * <p>순서가 계약이다: 원장 추가 잠금 → 최종 권한({@code finalAuthority}) → 문의 행 잠금(없으면 {@link #TARGET_INVALID}) →
-     * 문의 주인 계정의 상태({@code ownerUsable}, 삭제가 시작됐으면 {@link #TARGET_INVALID}) → 지금 상태에서의 전이 재검사 →
-     * 조건부 UPDATE 한 문장(첫 {@code ANSWERED}가 첫 답변 시각·목표 달성 여부를 쓴다) → {@code COMPLETED}({@code details}는
-     * 상태·reference digest·전이 시각뿐이다).
-     *
-     * @param ownerUsable 문의 주인 계정이 지금 쓸 수 있는가. 계정 상태는 identity의 사실이라 루트가 공개 API로 본다
-     * @throws IllegalStateException 열린 트랜잭션이 없을 때
+     * @param view 확정 응답 본문(JSON 객체 하나). {@code operationId}·{@code outcome}·{@code command}로 시작한다
+     * @param logSummary 실행 로그 한 줄의 command 뒤 부분 — 상태·기능·scope·건수 같은 비식별 사실뿐이다
      */
-    InquiryCompletion completeInquiry(Envelope envelope, Inquiry inquiry, String correlationId,
-            BooleanSupplier finalAuthority, java.util.function.Predicate<UUID> ownerUsable);
-
-    /** 해제 뒤 기대하는 단계(Story 3.4). 남는 제한을 본 호출자가 원장 잠금 아래에서 만든다. */
-    record LiftExpectation(List<String> reopenedStages, List<String> stillBlockedStages) {}
-
-    /** 해제의 결말. */
-    sealed interface LiftCompletion {
-        record Completed(LiftResult result) implements LiftCompletion {}
-
-        /**
-         * 아무것도 바꾸지 않았다. 호출자가 트랜잭션을 되돌리고 거절 행을 밖에서 쓴다.
-         *
-         * @param code {@link #ACCESS_REVOKED}·{@link #TARGET_INVALID}·{@link #RESTRICTION_NOT_ACTIVE}·
-         *     {@link #NEW_SIGNAL_SINCE_PREPARE}
-         */
-        record Refused(String code) implements LiftCompletion {}
-    }
+    record Finished(Map<String, Object> view, String logSummary) {}
 
     /**
-     * 해제 command를 실행하고 {@code COMPLETED} 행을 쓴다(Story 3.4 AC-1·AC-3). <b>호출자의 트랜잭션 안에서만</b> 부른다 — 그
-     * 트랜잭션이 허가 소비와 같다.
+     * 커밋 뒤의 일(해제의 smoke, 추출의 행 묶음)을 하고 응답을 만든다. 무장을 버리고 세션을 회전한 <b>뒤</b>에 부른다.
+     * 실패는 예외로 올라간다 — 실행은 이미 커밋됐으므로 같은 키의 재전송이 원장에서 결말을 다시 읽는다.
      *
-     * <p>순서가 계약이다: 원장 추가 잠금 → 최종 권한({@code finalAuthority}) → 제한 행 잠금 → 열림·신호 계보 재검사 → 조건부
-     * UPDATE 한 문장 → {@code expectation} → {@code COMPLETED}. 신호({@code raise})도 원장 잠금을 먼저 쥐므로 잠금 뒤에는 새
-     * 신호가 그 제한에 연결될 수 없다. 갱신 행이 0이면 아무것도 쓰지 않는다. 신호 행·원장 행은 고치지 않는다.
-     *
-     * @param expectation 해제 뒤 기대하는 단계. 제한 행을 닫은 뒤 잠금 안에서 한 번 부른다
-     * @throws IllegalStateException 열린 트랜잭션이 없을 때
+     * @param requestedCommand 요청 경로의 command 이름. 응답의 {@code command}다
      */
-    LiftCompletion completeLift(Envelope envelope, Lift lift, String correlationId, BooleanSupplier finalAuthority,
-            Supplier<LiftExpectation> expectation);
+    Finished afterCommit(String requestedCommand, Envelope envelope, Executed executed, String correlationId);
 
     /**
      * 해제 커밋 뒤 smoke가 어긋났다(Story 3.4 AC-5). 해제를 되돌리지 않는다 — 같은 기능·scope·target의 새 제한(출처 운영자,
@@ -675,18 +502,54 @@ public interface OperatorCommandApi {
     /** 그 해제 operation의 smoke 결말. 재전송이 원장에서 읽는다. */
     LiftSmoke liftSmoke(String operationId);
 
+    /**
+     * 제한 해제의 결과(Story 3.4). 원장의 {@code COMPLETED} 행이 같은 값을 재생한다. smoke의 결말은 여기 없다 — 커밋 뒤의 일이라
+     * 그 operation의 smoke 행({@value #SMOKE_PASSED}·{@value #SMOKE_FAILED})이 말한다({@link #liftSmoke}).
+     *
+     * @param liftedAt 제한이 닫힌 시각(DB)
+     * @param reopenedStages 해제로 다시 열리는 단계 code
+     * @param stillBlockedStages 해제한 제한의 단계 가운데 남는 제한이 여전히 막는 것
+     */
+    record LiftResult(String operationId, UUID restrictionId, RestrictionFeature feature, RestrictionScope scope,
+            Instant liftedAt, List<String> reopenedStages, List<String> stillBlockedStages) {
+
+        public LiftResult {
+            reopenedStages = List.copyOf(reopenedStages);
+            stillBlockedStages = List.copyOf(stillBlockedStages);
+        }
+    }
+
+    /** 확정 순간 대상 재검사의 답(Story 3.2). */
+    sealed interface TargetCheck {
+        /**
+         * 대상이 여전히 그 제한의 대상이다.
+         *
+         * @param ownerUserId 대상이 귀속된 사용자. 전역·계산 정책 버전은 {@code null}
+         */
+        record Valid(@Nullable UUID ownerUserId) implements TargetCheck {}
+
+        /** 대상이 사라졌거나 상태가 맞지 않다. */
+        record Invalid() implements TargetCheck {}
+    }
+
+    /** 해제 뒤 기대하는 단계(Story 3.4). 남는 제한을 본 호출자가 원장 잠금 아래에서 만든다. */
+    record LiftExpectation(List<String> reopenedStages, List<String> stillBlockedStages) {}
+
     /** 같은 operation·키의 저장된 결과. */
     sealed interface Replay {
         record None() implements Replay {}
 
-        record Stored(CommandResult result) implements Replay {}
+        /** 원장의 {@code COMPLETED} 행에서 다시 만든 확정 응답 본문. */
+        record Stored(Map<String, Object> view) implements Replay {}
 
         /** 그 operation이 이 키가 아닌 키로 끝났다. */
         record Conflict() implements Replay {}
     }
 
-    Replay replay(UUID actorUserId, String operationId, String idempotencyKeyDigest);
-
-    /** 추출 결과의 행 묶음. 조회와 같은 allowlist 필드이며 오래된 순이다. */
-    List<OperatorAuditApi.Entry> exportRows(ExportResult result);
+    /**
+     * 같은 operation·키의 저장된 결과.
+     *
+     * @param requestedCommand 요청 경로의 command 이름. 응답의 {@code command}다
+     */
+    Replay replay(UUID actorUserId, String operationId, String idempotencyKeyDigest, String requestedCommand);
 }

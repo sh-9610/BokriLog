@@ -66,6 +66,25 @@ class SessionArmingTest {
         assertThat(arming.peek(session)).isNotNull();
     }
 
+    /**
+     * 세션 저장소가 풀 수 없던 값(배포 전 무장·깨진 바이트)은 표지 {@link UnreadableSessionValue}로 읽힌다
+     * ({@code SessionAttributeConversion}). 없는 무장과 같고, 그 속성 하나만 버린다 — 다른 속성은 건드리지 않는다.
+     */
+    @Test
+    void 읽을_수_없는_값은_없는_무장과_같고_그_속성만_버린다() {
+        MockHttpSession session = new MockHttpSession();
+        session.setAttribute(ATTRIBUTE, new UnreadableSessionValue("StreamCorruptedException"));
+        session.setAttribute("other", "값");
+
+        assertThat(arming.peekIncludingExpired(session)).isNull();
+        assertThat(session.getAttribute(ATTRIBUTE)).as("그 속성만 버렸다").isNull();
+        assertThat(session.getAttribute("other")).isEqualTo("값");
+
+        // 없는 무장은 그냥 없는 무장이다 — 아무것도 지우지 않는다.
+        assertThat(arming.peek(session)).isNull();
+        assertThat(session.getAttribute("other")).isEqualTo("값");
+    }
+
     @Test
     void 세션이_없는_요청_오버로드는_null이고_아무것도_하지_않는다() {
         MockHttpServletRequest request = new MockHttpServletRequest();

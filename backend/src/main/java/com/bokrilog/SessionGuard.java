@@ -143,7 +143,19 @@ class SessionGuard {
         if (!Instant.now().isBefore(deadline)) {
             return Verdict.EXPIRED;
         }
-        return Boolean.TRUE.equals(reauthMarker) ? Verdict.REAUTH_REQUIRED : Verdict.ACTIVE;
+        return isMarked(reauthMarker) ? Verdict.REAUTH_REQUIRED : Verdict.ACTIVE;
+    }
+
+    /**
+     * 재인증 표지의 판정 하나 — 표지를 읽는 모든 자리(세션 판정·허가·세션 응답)가 이것을 부른다. 표지는 있다는 사실이
+     * 판정이다: 값이 있고 읽을 수 있는 {@code Boolean.FALSE}가 아니면 표시된 것이다. 세션 저장소가 풀 수 없던 값
+     * ({@link UnreadableSessionValue})도 표시된 것으로 본다(fail-closed) — 없는 표지로 접으면 표시된 세션이 조용히 풀린다.
+     *
+     * @param reauthMarker 세션에 실린 {@link #REAUTH_REQUIRED_ATTRIBUTE} 값({@code UnreadableSessionValue.read}로 읽는다).
+     *     없으면 {@code null}
+     */
+    static boolean isMarked(@Nullable Object reauthMarker) {
+        return reauthMarker != null && !Boolean.FALSE.equals(reauthMarker);
     }
 
     /**

@@ -217,7 +217,7 @@ class AuthSessionController {
     private static boolean carriesReauthMarker(HttpServletRequest request) {
         HttpSession session = request.getSession(false);
         return session != null
-                && Boolean.TRUE.equals(session.getAttribute(SessionGuard.REAUTH_REQUIRED_ATTRIBUTE));
+                && SessionGuard.isMarked(UnreadableSessionValue.read(session, SessionGuard.REAUTH_REQUIRED_ATTRIBUTE));
     }
 
     /**
