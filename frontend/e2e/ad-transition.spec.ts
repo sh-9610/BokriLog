@@ -139,6 +139,9 @@ test.describe('중립 전환 화면 · 주입 origin', () => {
   }) => {
     await signIn(page)
     const origin = new URL(page.url()).origin
+    // 로그인 뒤 착지한 화면(세션 확인·대시보드·첫 스냅샷 조회)의 늦은 요청 이벤트는 다음 문서 요청보다 뒤에 기록될 수 있다.
+    // 기록 전에 그 문서를 빈 문서로 완전히 내려 두어야 아래 셈이 중립 화면의 요청만 본다(PR #111 CI 두 번의 실패 원인).
+    await page.goto('about:blank')
     const requests = recordRequests(page)
 
     // 참조 없음(새로고침·뒤로 가기 재진입): API 요청 없이(세션 확인도 없이) 결과 문서로 덮어쓴다. 결과 문서가 뜬 뒤의 요청은
