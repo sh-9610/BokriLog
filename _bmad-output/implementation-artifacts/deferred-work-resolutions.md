@@ -2,7 +2,7 @@
 title: 'Deferred Work 해소 원장'
 status: living
 created: '2026-09-02'
-updated: '2026-10-13'
+updated: '2026-10-15'
 applies_to: '_bmad-output/implementation-artifacts/deferred-work.md'
 decision_baseline: 'ERD-1.0.0'
 ---
@@ -20,7 +20,9 @@ decision_baseline: 'ERD-1.0.0'
 | 해소 | 18 |
 | 부분 해소 | 4 |
 | 미해소 | 31 |
-| 미판정 | 87 |
+| 미판정 | 89 |
+
+**2026-10-15 갱신(Story 2.17 done 전환).** `spec-2-17-bybit-reconnect.md`(PR #100)가 `deferred-work.md`에 항목 **141**(source 정책 버전이 첫 연결과 재연결 사이에 바뀐 경우의 재기준 조건 — 지금은 정책 버전이 하나라 재현 경로가 없다)·**142**(완료 계획의 첫 종료 후 관측이 고정되기 전에 해제하고 다른 계정으로 연결한 경우의 완료 비교 보류)를 append했다. 판정은 아직 없다. 그래서 표를 **142건** 기준으로 맞추고 미판정을 87→89로 늘렸다. 나머지 수치는 그대로다.
 
 **2026-10-13 갱신(운영 command 공통화 chore, `spec-operator-command-commons.md`).** 표를 `deferred-work.md`의 **140건** 기준으로 맞췄다. 2026-10-07 뒤 Epic 3 스토리(3.1~3.10)가 append한 항목 109~140(32건)은 판정이 없어 미판정으로 센다. 이 chore가 그 가운데 **118**(운영 command 무장의 직렬화 버전이 스토리마다 오르는 패턴)과 **119**(운영자 화면 command 상태 기계 사본)을 해소했다 — 아래 두 절이 판정을 갖는다. 그래서 해소 16→18, 미판정 57+32−2=87이다. 나머지 판정 라운드는 Epic 3 회고 AI-11의 몫이다.
 
