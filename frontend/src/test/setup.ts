@@ -17,12 +17,15 @@
  * 5. 서비스 공지 조회(`GET /api/notices`, Story 3.5)만 예외로 기본 응답(빈 공지)이 있다. 아래
  *    `defaultServiceNotices`의 근거를 참고한다. 설정 화면의 문의 목록(`GET /api/support/inquiries`, Story 3.6)도
  *    같은 근거로 기본 응답(빈 목록)이 있다(`defaultSupportInquiries`).
+ *    설정 화면의 광고 동의 조회(`GET /api/engagement/ad-consent`, Story 4.1)도 같은 근거로 기본 응답(미결정)이 있다
+ *    (`defaultAdConsent`).
  */
 
 import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach } from 'vitest'
 
+import { AD_CONSENT_PATH, AD_CONSENT_POLICY_VERSION } from '../content/adConsent'
 import { DASHBOARD_ADJUSTMENTS_PATH } from '../content/adjustmentHistory'
 import {
   LINK_BASE_PATH,
@@ -72,6 +75,8 @@ const observedAllowedRequests: string[] = []
 const observedNoticeRequests: string[] = []
 /** 기본 응답이 답한 문의 목록 조회(Story 3.6). 공지와 같은 근거로 허용 기록과 따로 센다. */
 const observedSupportRequests: string[] = []
+/** 기본 응답이 답한 광고 동의 조회(Story 4.1). 공지와 같은 근거로 허용 기록과 따로 센다. */
+const observedAdConsentRequests: string[] = []
 
 /**
  * 열린 요청과 그것에 답할 함수. 키는 `"<메서드> <URL>"`이다.
@@ -412,6 +417,20 @@ export function stubSupportSubmit(responder: RequestResponder): void {
   responders.set(requestKey('POST', SUPPORT_INQUIRIES_PATH), responder)
 }
 
+/**
+ * 광고 동의 조회 하나를 이 시험 동안만 연다(Story 4.1). 연 응답이 기본 응답(미결정)을 이기고 허용 기록에 남는다. 설정 화면은
+ * 세션이 준비되면 언제나 이 요청을 보내므로, 열지 않은 시험에는 기록에 남지 않는 기본 응답이 답한다 — 공지 조회와 같은
+ * 근거다.
+ */
+export function stubAdConsent(responder: RequestResponder): void {
+  responders.set(requestKey('GET', AD_CONSENT_PATH), responder)
+}
+
+/** 광고 동의 변경(Story 4.1). 기본 응답이 없다 — 열지 않은 변경은 전역 거부다. */
+export function stubAdConsentChange(responder: RequestResponder): void {
+  responders.set(requestKey('POST', AD_CONSENT_PATH), responder)
+}
+
 /** 문의 목록(Story 3.6, 운영자 화면). 상태 필터는 쿼리로 가므로 쿼리가 있는 요청도 같은 응답 함수가 받는다. */
 export function stubOperatorInquiries(responder: QueryResponder): void {
   queryResponders.set(requestKey('GET', OPERATOR_INQUIRIES_ENDPOINT), responder)
@@ -485,6 +504,11 @@ export function getObservedSupportRequests(): readonly string[] {
   return [...observedSupportRequests]
 }
 
+/** 기본 응답(미결정)이 답한 광고 동의 조회의 기록(Story 4.1). */
+export function getObservedAdConsentRequests(): readonly string[] {
+  return [...observedAdConsentRequests]
+}
+
 /** 지금까지 관측된 네트워크 요청. 비어 있어야 한다. */
 export function getObservedRequests(): readonly string[] {
   return [...observedRequests]
@@ -526,6 +550,18 @@ function defaultSupportInquiries(): Response {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
   })
+}
+
+/** 열지 않은 시험의 광고 동의 응답: 아직 선택하지 않았다. 기록은 `observedAdConsentRequests`에 남긴다. */
+function defaultAdConsent(): Response {
+  return new Response(
+    JSON.stringify({
+      state: 'UNDECIDED',
+      policyVersion: AD_CONSENT_POLICY_VERSION,
+      decidedAt: null,
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )
 }
 
 /**
@@ -593,6 +629,10 @@ globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Respo
     observedSupportRequests.push(requestKey(method, url))
     return Promise.resolve(defaultSupportInquiries())
   }
+  if (method === 'GET' && url === AD_CONSENT_PATH) {
+    observedAdConsentRequests.push(requestKey(method, url))
+    return Promise.resolve(defaultAdConsent())
+  }
   const queryAt = url.indexOf('?')
   const queryResponder =
     queryAt < 0 ? undefined : queryResponders.get(requestKey(method, url.slice(0, queryAt)))
@@ -643,6 +683,7 @@ beforeEach(() => {
   observedAllowedRequests.length = 0
   observedNoticeRequests.length = 0
   observedSupportRequests.length = 0
+  observedAdConsentRequests.length = 0
 })
 
 afterEach(() => {
@@ -656,6 +697,7 @@ afterEach(() => {
   observedAllowedRequests.length = 0
   observedNoticeRequests.length = 0
   observedSupportRequests.length = 0
+  observedAdConsentRequests.length = 0
   window.localStorage.clear()
   window.sessionStorage.clear()
   // 한 시험이 남긴 쿠키가 다음 시험의 저장소 단정을 엉뚱하게 실패시키지 않게 한다.

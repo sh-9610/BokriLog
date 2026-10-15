@@ -52,6 +52,9 @@ class RestoreApplyTest extends PlanSyncTestBase {
     OperationsDeletionApi operations;
 
     @Autowired
+    com.bokrilog.engagement.EngagementDeletionApi engagement;
+
+    @Autowired
     RestoreInvariants invariants;
 
     @Test
@@ -281,6 +284,7 @@ class RestoreApplyTest extends PlanSyncTestBase {
                 + "VALUES (:g, :u, 'residue-session', 'residue', 'residue', :h, now() + interval '5 minutes')")
                 .param("g", "g".repeat(40)).param("u", user).param("h", "0".repeat(64)).update();
         insertAuditRowOf(user);
+        insertConsentRowOf(user);
         jdbc().sql("UPDATE identity_account_lifecycle SET state = 'DELETED' WHERE user_id = :u").param("u", user).update();
 
         long identity = accountDeletion().remainingRowsOf(user);
@@ -289,17 +293,19 @@ class RestoreApplyTest extends PlanSyncTestBase {
         long planRows = plans.remainingRowsOf(user);
         long sourceRows = source.remainingRowsOf(user);
         long operationRows = operations.remainingRowsOf(user);
+        long engagementRows = engagement.remainingRowsOf(user);
         long grants = countOf("action_grant", user);
         // identity는 payload·매핑·세션 셋 모두.
         assertThat(identity).as("identity").isGreaterThanOrEqualTo(3);
         assertThat(sessionCountOf(user)).as("spring_session").isPositive();
-        for (var part : List.of(portfolioRows, syncRows, planRows, sourceRows, operationRows, grants)) {
+        for (var part : List.of(portfolioRows, syncRows, planRows, sourceRows, operationRows, engagementRows, grants)) {
             assertThat(part).isPositive();
         }
         assertThat(sourceRows).as("source_* + 자격정보").isGreaterThanOrEqualTo(countOf("source_connection", user)
                 + countOf("source_provider_account", user) + 1);
         assertThat(invariants.check().residualRows())
-                .isEqualTo(identity + portfolioRows + syncRows + planRows + sourceRows + operationRows + grants);
+                .isEqualTo(identity + portfolioRows + syncRows + planRows + sourceRows + operationRows + engagementRows
+                        + grants);
 
         // 하나씩 늘리면 그만큼 는다: 세션 하나, 허가 하나.
         long before = invariants.check().residualRows();
@@ -350,6 +356,7 @@ class RestoreApplyTest extends PlanSyncTestBase {
             if (table.startsWith("source_") && name.equals("user_id")) modules.add("source");
             if ((table.startsWith("operations_") || table.startsWith("support_"))
                     && Set.of("user_id", "actor_user_id", "target_user_id").contains(name)) modules.add("operations");
+            if (table.startsWith("engagement_") && name.equals("user_id")) modules.add("engagement");
             if (modules.isEmpty()) uncovered.add(table + "." + name);
             if (modules.size() > 1) doubled.add(table + "." + name);
         }
@@ -358,6 +365,13 @@ class RestoreApplyTest extends PlanSyncTestBase {
         // 자격정보 표는 사용자 열이 없어 source가 연결을 거쳐 센다 — 그 열이 생기면 위 규칙이 바로 센다.
         assertThat(jdbc().sql("SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema() "
                 + "AND table_name = 'source_credential'").query(Integer.class).single()).isEqualTo(1);
+    }
+
+    /** 광고 동의 결정 하나(Story 4.1). 카탈로그 세기가 engagement 표의 행을 잡는지 본다. */
+    private void insertConsentRowOf(UUID user) {
+        jdbc().sql("INSERT INTO engagement_ad_consent_decision (user_id, policy_version, choice, idempotency_key_digest, "
+                + "request_digest) VALUES (:u, 'AD-CONSENT-1.0', 'GRANTED', :k, :r)")
+                .param("u", user).param("k", "c".repeat(64)).param("r", "d".repeat(64)).update();
     }
 
     private void insertAuditRowOf(UUID user) {
