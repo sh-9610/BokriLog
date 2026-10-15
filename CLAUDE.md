@@ -32,7 +32,7 @@ Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개�
 4. **리뷰** — 리뷰 서브에이전트를 병렬로 돌리고 결과를 `patch`·`defer`·`reject`로 분류한다. `defer`는 `deferred-work.md`에 **추가만** 한다. patch 루프와 2차 리뷰의 결과는 SPEC `## Spec Change Log`에 한 줄씩 적고, `review_loop_iteration`은 리뷰 전체를 다시 돌린 2차 리뷰에만 올린다(Epic 2 회고 AI-13, 2026-10-06 결정).
 5. **present** — SPEC `status: done`, sprint-status `review`. 여기서 스킬은 끝난다.
 6. **PR** — 토픽 브랜치를 push하고 `develop`으로 PR을 연다. `ci-required`가 green이면 `Create a merge commit`으로 머지한다(`gh pr merge --merge`).
-7. **done 전환** — 머지 뒤 `chore/sprint-status-<n>-<m>-done` 브랜치에서 sprint-status 한 줄을 `done`으로 바꾸는 docs PR을 따로 올린다(PR #3, #10 패턴). 문서-only 경로라 `changes → ci-required`만 돌고 1분 안에 끝난다.
+7. **done 전환** — 머지 뒤 `chore/sprint-status-<n>-<m>-done` 브랜치에서 sprint-status 한 줄을 `done`으로 바꾸는 docs PR을 따로 올린다(PR #3, #10 패턴). 문서-only 경로라 `changes → ci-required`만 돌고 1분 안에 끝난다. 스토리·chore·fix의 done 전환 PR(done 전환 PR이 없는 작업이면 그 작업의 PR 자체)은 세 부류의 defer 판정을 `deferred-work-resolutions.md`에 함께 적는다 — 그 작업이 `deferred-work.md`에 append한 defer, 그 작업이 해소한 defer, 그 작업을 결정 지점으로 지목한 defer(결정하지 못하고 지나갔으면 미해소·주인 상실로라도 판정). 항목별 절과 상태 표·건수를 같은 PR에서 맞추고 판정을 다음 라운드로 넘기지 않는다(Epic 1 회고 액션 8(`epic-1-retro-item-8`)·Epic 2 회고 AI-6(`epic-2-retro-item-18`)·Epic 3 회고 AI-11(`epic-3-retro-item-36`)).
 
 토픽 브랜치 작업은 사용자 체크아웃을 옮기지 않고 별도 `git worktree`에서 하고, 머지 뒤 worktree와 브랜치를 모두 지운다.
 
@@ -263,7 +263,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 ## 미룬 결정
 
-`deferred-work.md`가 항목을 추가만 하는 로그(현재 142건)이고 판정은 `deferred-work-resolutions.md`의 상태 요약 표가 소유한다(해소 18·부분 해소 4·미해소 31·미판정 89). 판정이 멈춰 있는 것 자체가 Epic 1 회고 액션 8번이고 Epic 2 회고 AI-6이 같은 일을 다시 요구한다. 회고가 실연동 게이트 전에 닫으라고 남긴 둘 가운데 연쇄 승인(재인증 시각을 지우는 코드가 없던 것, AI-8 범위)은 `spec-sensitive-command-commons.md`가 `SessionRotation`으로 닫았고, `onFailure`가 무장을 무조건 버리는 것 하나만 아직 열려 있다.
+`deferred-work.md`가 항목을 추가만 하는 로그(현재 145건)이고 판정은 `deferred-work-resolutions.md`의 상태 요약 표가 소유한다(해소 25·부분 해소 20·미해소 97·미판정 3). 2026-10-15 판정 라운드(`spec-deferred-work-verdict-round.md`)가 CI 임계 경로 chore(Epic 3 회고 AI-12, `epic-3-retro-item-37`)와 겹치는 보류 셋(92·129·131)을 빼고 모두 판정했다. 판정 재개를 요구한 Epic 1 회고 액션 8(`epic-1-retro-item-8`)·Epic 2 회고 AI-6(`epic-2-retro-item-18`)·Epic 3 회고 AI-11(`epic-3-retro-item-36`) 세 액션의 상태 변경은 사용자 확인 대기다. 출시 전에 닫을 항목(보안·삭제·데이터 정확성) 목록은 원장 상태 요약의 "2026-10-15 갱신(판정 라운드)" 문단이 소유한다. 회고가 실연동 게이트 전에 닫으라고 남긴 둘 가운데 연쇄 승인(재인증 시각을 지우는 코드가 없던 것, AI-8 범위)은 `spec-sensitive-command-commons.md`가 `SessionRotation`으로 닫았고, `onFailure`가 무장을 무조건 버리는 것 하나만 아직 열려 있다.
 
 ## 브랜치·커밋
 
