@@ -22,8 +22,7 @@ import org.springframework.stereotype.Component;
  * every stage and inside the publishing transaction. It reads only the public APIs of the other modules and this
  * module's own pointer; it opens no transaction — it joins the caller's.
  *
- * <p>The base is the plan's current official version: its plan, pointer, calculation and lineage. A sync runs on
- * the plan's own connection and membership and nothing else.
+ * <p>기준은 계획의 현재 공식 버전(계획·포인터·계산·계보)이다. 동기화는 그 계획의 연결과 membership에서만 돈다.
  *
  * <p>Story 2.17부터 그 연결은 계획의 provider account·portfolio에 붙은 지금 활성 연결이다({@link #planSource}) — 같은
  * 계정으로 다시 연결한 뒤에는 기준 버전이 기록한 연결이 아니라 새 연결이다. 실행 중인 attempt는 접수한 연결에 묶인다
