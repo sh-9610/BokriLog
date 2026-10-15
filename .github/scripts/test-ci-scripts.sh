@@ -24,6 +24,7 @@
 #
 # 정본: _bmad-output/implementation-artifacts/spec-ci-foundation.md `## I/O & Edge-Case Matrix`
 #       _bmad-output/implementation-artifacts/spec-1-2-same-origin-shell.md `## Tasks & Acceptance`
+#       _bmad-output/implementation-artifacts/spec-ci-critical-path.md `## I/O & Edge-Case Matrix`(backup-restore 분류·백업 리허설 job)
 #
 # 실행: bash .github/scripts/test-ci-scripts.sh
 # 종료 코드
@@ -222,11 +223,11 @@ assert_equals() {
   fi
 }
 
-# check_classify <라벨> <repo> <event> <sha> <before> <기대 docs-only> <기대 reason>
+# check_classify <라벨> <repo> <event> <sha> <before> <기대 docs-only> <기대 reason> <기대 backup-restore>
 check_classify() {
   local label="$1" dir="$2" event="$3" sha="$4" before="$5"
-  local want_docs="$6" want_reason="$7"
-  local out_file log_file status got_docs got_reason line_count
+  local want_docs="$6" want_reason="$7" want_backup="$8"
+  local out_file log_file status got_docs got_reason got_backup line_count
 
   out_file="${work_root}/output-$((tests_run + 1)).txt"
   log_file="${work_root}/log-$((tests_run + 1)).txt"
@@ -251,19 +252,22 @@ check_classify() {
     return
   fi
 
-  # GITHUB_OUTPUT 계약: docs-only 한 줄, reason 한 줄. 그 외 줄이 있으면 실패다.
+  # GITHUB_OUTPUT 계약: docs-only·reason·backup-restore 한 줄씩. 그 외 줄이 있으면 실패다. 조기 종료 지점 하나가
+  # backup-restore를 빠뜨리면 그 출력은 빈 값이 되고 리허설 게이트는 "옛 분류기"로 읽어 조용히 돈다 — 줄 수가 그것을 잡는다.
   line_count="$(grep -c '' "${out_file}")"
-  if [ "${line_count}" -ne 2 ]; then
-    record_fail "${label}" "GITHUB_OUTPUT 줄 수 ${line_count} (기대 2) — $(tr '\n' '|' <"${out_file}")"
+  if [ "${line_count}" -ne 3 ]; then
+    record_fail "${label}" "GITHUB_OUTPUT 줄 수 ${line_count} (기대 3) — $(tr '\n' '|' <"${out_file}")"
     return
   fi
 
   got_docs="$(sed -n 's/^docs-only=//p' "${out_file}")"
   got_reason="$(sed -n 's/^reason=//p' "${out_file}")"
+  got_backup="$(sed -n 's/^backup-restore=//p' "${out_file}")"
 
-  if [ "${got_docs}" != "${want_docs}" ] || [ "${got_reason}" != "${want_reason}" ]; then
+  if [ "${got_docs}" != "${want_docs}" ] || [ "${got_reason}" != "${want_reason}" ] \
+    || [ "${got_backup}" != "${want_backup}" ]; then
     record_fail "${label}" \
-      "docs-only=${got_docs} reason=${got_reason} (기대 docs-only=${want_docs} reason=${want_reason})"
+      "docs-only=${got_docs} reason=${got_reason} backup-restore=${got_backup} (기대 docs-only=${want_docs} reason=${want_reason} backup-restore=${want_backup})"
     return
   fi
 
@@ -469,36 +473,107 @@ mutate_rename_frontend_to_docs() {
     '_bmad-output/planning-artifacts/App.tsx'
 }
 
+# --- backup-restore 분류(spec-ci-critical-path.md) ---------------------------
+# 건너뛰기 목록은 `frontend/**`, `_bmad-output/**`, 최상위 `*.md`다. 아래는 그 경계의 양쪽이다.
+
+# I/O 표 "프런트엔드 PR": 프런트엔드 + 최상위 문서. 제품 변경이지만 백업·복원은 비적용이다.
+mutate_frontend_and_top_doc() {
+  write_file "$1" 'frontend/src/a.tsx' 'export const A = () => null;'
+  write_file "$1" 'DEVELOPMENT.md' '개발 문서'
+}
+
+# I/O 표 "백엔드 PR": 프런트엔드 + 백엔드.
+mutate_frontend_and_backend() {
+  write_file "$1" 'frontend/x.ts' 'export {};'
+  write_file "$1" 'backend/y.java' 'class Y {}'
+}
+
+mutate_backend_only() {
+  write_file "$1" 'backend/src/main/java/App.java' 'class App {}'
+}
+
+# `backend/src/test/**`를 건너뛰기 목록에 넣는 것은 Ask First다 — 지금은 리허설을 돈다.
+mutate_backend_test_only() {
+  write_file "$1" 'backend/src/test/java/AppTest.java' 'class AppTest {}'
+}
+
+# 백엔드 빌드 wrapper·lockfile 경로. jar를 바꾸므로 리허설을 돈다.
+mutate_backend_wrapper() {
+  write_file "$1" 'backend/gradle/wrapper/gradle-wrapper.properties' 'distributionUrl=fixture'
+  write_file "$1" 'backend/gradle.lockfile' '# fixture'
+}
+
+mutate_deploy() {
+  write_file "$1" 'deploy/production/backup.sh' '#!/usr/bin/env bash'
+}
+
+# `frontend/*`는 슬래시까지 맞춰야 한다. 이름이 `frontend`로 시작하는 이웃 디렉터리는 건너뛰지 않는다.
+mutate_frontend_sibling() {
+  write_file "$1" 'frontend-tools/x.ts' 'export {};'
+}
+
+# 최상위가 아닌 `*.md`는 문서가 아니다. `backend/README.md` 같은 경로는 `*/*`로 떨어진다.
+mutate_nested_md() {
+  write_file "$1" 'backend/README.md' '백엔드 문서'
+}
+
+# 이름에 `frontend/`가 들어가도 최상위가 아니면 건너뛰지 않는다.
+mutate_nested_frontend() {
+  write_file "$1" 'deploy/frontend/x.conf' 'x'
+}
+
+# frontend -> backend rename. 변경 후 경로가 목록 밖이다.
+mutate_rename_frontend_to_backend() {
+  local dir="$1"
+  # `git mv`는 대상 디렉터리를 만들지 않는다.
+  run_setup 'backend 디렉터리 생성' mkdir -p "${dir}/backend"
+  run_setup 'frontend -> backend rename' git_fixture "${dir}" mv \
+    'frontend/src/App.tsx' \
+    'backend/App.tsx'
+}
+
 printf 'CI 계약 시험\n\n'
 printf '변경 분류 — pull_request\n'
 
 # --- pull_request 경로 -----------------------------------------------------
 pr_case() {
-  local name="$1" mutate="$2" want_docs="$3" want_reason="$4" label="$5"
+  local name="$1" mutate="$2" want_docs="$3" want_reason="$4" want_backup="$5" label="$6"
   local dir sha
   dir="$(make_repo "${name}")" || exit 2
   seed_repo "${dir}"
   merge_branch "${dir}" "topic-${name}" "${mutate}"
   sha="$(rev "${dir}" HEAD)" || exit 2
-  check_classify "${label}" "${dir}" pull_request "${sha}" '' "${want_docs}" "${want_reason}"
+  check_classify "${label}" "${dir}" pull_request "${sha}" '' "${want_docs}" "${want_reason}" "${want_backup}"
 }
 
-pr_case product        mutate_product        false product-change 'frontend/** 제품 변경 -> product-change'
-pr_case docs           mutate_docs_only      true  docs-only      '_bmad-output/** + 최상위 *.md -> docs-only'
-pr_case workflow       mutate_workflow       false product-change '.github/workflows/** 변경 -> product-change'
-pr_case ciscript       mutate_ci_script      false product-change '.github/scripts/** 변경 -> product-change'
-pr_case dotfile        mutate_dotfile        false product-change '최상위 dotfile(.gitattributes) -> product-change'
-pr_case reposcript     mutate_repo_script    false product-change 'scripts/** 경로 -> product-change'
-pr_case lockfile       mutate_lockfile       false product-change 'lockfile 변경 -> product-change'
-pr_case mixed          mutate_mixed          false product-change '문서 + 제품 혼합 -> product-change'
-pr_case rndocs         mutate_rename_docs_to_docs      true  docs-only      '문서 내부 rename -> docs-only'
-pr_case rnout          mutate_rename_docs_to_frontend  false product-change '문서 -> frontend rename -> product-change'
-pr_case rnin           mutate_rename_frontend_to_docs  false product-change 'frontend -> 문서 rename(변경 전 경로 평가) -> product-change'
+pr_case product        mutate_product        false product-change false 'frontend/** 제품 변경 -> product-change, backup-restore=false'
+pr_case docs           mutate_docs_only      true  docs-only      false '_bmad-output/** + 최상위 *.md -> docs-only, backup-restore=false'
+pr_case workflow       mutate_workflow       false product-change true  '.github/workflows/** 변경 -> product-change, backup-restore=true'
+pr_case ciscript       mutate_ci_script      false product-change true  '.github/scripts/** 변경 -> product-change, backup-restore=true'
+pr_case dotfile        mutate_dotfile        false product-change true  '최상위 dotfile(.gitattributes) -> product-change, backup-restore=true'
+pr_case reposcript     mutate_repo_script    false product-change true  'scripts/** 경로 -> product-change, backup-restore=true'
+pr_case lockfile       mutate_lockfile       false product-change false 'frontend lockfile 변경 -> product-change, backup-restore=false'
+pr_case mixed          mutate_mixed          false product-change false '문서 + 제품 혼합 -> product-change, backup-restore=false'
+pr_case rndocs         mutate_rename_docs_to_docs      true  docs-only      false '문서 내부 rename -> docs-only, backup-restore=false'
+pr_case rnout          mutate_rename_docs_to_frontend  false product-change false '문서 -> frontend rename -> product-change, backup-restore=false'
+pr_case rnin           mutate_rename_frontend_to_docs  false product-change false 'frontend -> 문서 rename(변경 전 경로 평가) -> product-change, backup-restore=false'
 
 # 경로 인코딩. 파일명에 개행을 넣는 사례는 Windows 파일 시스템이 허용하지 않아
 # fixture로 만들 수 없다. `-z` 읽기가 개행까지 감당한다는 점은 구분자 자체로 보장된다.
-pr_case hangul         mutate_docs_hangul       true  docs-only      '한글·공백 파일명 문서-only -> docs-only'
-pr_case spaceproduct   mutate_product_with_space false product-change '공백 포함 frontend 경로 -> product-change'
+pr_case hangul         mutate_docs_hangul       true  docs-only      false '한글·공백 파일명 문서-only -> docs-only, backup-restore=false'
+pr_case spaceproduct   mutate_product_with_space false product-change false '공백 포함 frontend 경로 -> product-change, backup-restore=false'
+
+printf '\n변경 분류 — backup-restore 경계\n'
+pr_case brfrontdoc     mutate_frontend_and_top_doc  false product-change false '프런트엔드 + 최상위 문서 -> backup-restore=false'
+pr_case brfrontback    mutate_frontend_and_backend  false product-change true  '프런트엔드 + 백엔드 -> backup-restore=true'
+pr_case brbackend      mutate_backend_only          false product-change true  '백엔드만 -> backup-restore=true'
+pr_case brbackendtest  mutate_backend_test_only     false product-change true  'backend/src/test/**만 -> backup-restore=true'
+pr_case brdeploy       mutate_deploy                false product-change true  'deploy/** -> backup-restore=true'
+pr_case brsibling      mutate_frontend_sibling      false product-change true  'frontend-tools/**(frontend 이웃 디렉터리) -> backup-restore=true'
+pr_case brnestedmd     mutate_nested_md             false product-change true  '최상위가 아닌 *.md(backend/README.md) -> backup-restore=true'
+pr_case brnestedfront  mutate_nested_frontend       false product-change true  '최상위가 아닌 frontend/(deploy/frontend/**) -> backup-restore=true'
+pr_case brrnback       mutate_rename_frontend_to_backend false product-change true 'frontend -> backend rename(변경 후 경로 평가) -> backup-restore=true'
+pr_case brwrapper      mutate_backend_wrapper       false product-change true  '백엔드 Gradle wrapper·lockfile -> backup-restore=true'
 
 # 빈 diff: 내용을 바꾸지 않는 커밋을 병합한다. merge commit과 parent1의 트리가 같다.
 empty_dir="$(make_repo empty)" || exit 2
@@ -509,7 +584,7 @@ run_setup 'main 복귀' git_fixture "${empty_dir}" checkout -q main
 run_setup '빈 diff 병합' \
   git_fixture "${empty_dir}" merge -q --no-ff --no-edit -m 'merge topic-empty' topic-empty
 empty_sha="$(rev "${empty_dir}" HEAD)" || exit 2
-check_classify '빈 diff -> empty-diff' "${empty_dir}" pull_request "${empty_sha}" '' false empty-diff
+check_classify '빈 diff -> empty-diff, backup-restore=true' "${empty_dir}" pull_request "${empty_sha}" '' false empty-diff true
 
 # --- 비-merge SHA와 해석 불가 SHA ------------------------------------------
 # 분류기의 종료 코드는 항상 0이라는 계약을 이 두 경로가 고정한다. `set -e` 아래에서
@@ -524,14 +599,14 @@ commit_all "${nonmerge_dir}" '비-merge 제품 변경'
 nonmerge_sha="$(rev "${nonmerge_dir}" HEAD)" || exit 2
 
 check_classify 'pull_request · 비-merge SHA -> 첫 부모 기준으로 분류하고 종료 0' \
-  "${nonmerge_dir}" pull_request "${nonmerge_sha}" '' false product-change
+  "${nonmerge_dir}" pull_request "${nonmerge_sha}" '' false product-change false
 
 check_classify 'pull_request · 부모 없는 root commit -> no-comparison-base(종료 0)' \
-  "${nonmerge_dir}" pull_request "${nonmerge_root}" '' false no-comparison-base
+  "${nonmerge_dir}" pull_request "${nonmerge_root}" '' false no-comparison-base true
 
 check_classify 'pull_request · 해석 불가 SHA -> no-comparison-base(종료 0)' \
   "${nonmerge_dir}" pull_request 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' '' \
-  false no-comparison-base
+  false no-comparison-base true
 
 # --- octopus merge ---------------------------------------------------------
 printf '\noctopus merge\n'
@@ -558,7 +633,7 @@ check_verify '부모 3개(octopus merge) -> 종료 1' \
   '부모 2개인 merge commit이 아니다 (부모 3개).'
 
 check_classify 'octopus merge도 분류는 종료 0' \
-  "${octopus_dir}" pull_request "${octopus_sha}" '' true docs-only
+  "${octopus_dir}" pull_request "${octopus_sha}" '' true docs-only false
 
 # --- push 경로 -------------------------------------------------------------
 printf '\n변경 분류 — push · workflow_dispatch\n'
@@ -571,22 +646,34 @@ commit_all "${push_dir}" 'push 문서 변경'
 push_after="$(rev "${push_dir}" HEAD)" || exit 2
 
 check_classify 'push · 정상 before -> docs-only' \
-  "${push_dir}" push "${push_after}" "${push_before}" true docs-only
+  "${push_dir}" push "${push_after}" "${push_before}" true docs-only true
 
 check_classify 'push · zero SHA before -> no-comparison-base' \
-  "${push_dir}" push "${push_after}" '0000000000000000000000000000000000000000' false no-comparison-base
+  "${push_dir}" push "${push_after}" '0000000000000000000000000000000000000000' false no-comparison-base true
 
 check_classify 'push · 존재하지 않는 before -> no-comparison-base' \
-  "${push_dir}" push "${push_after}" 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' false no-comparison-base
+  "${push_dir}" push "${push_after}" 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' false no-comparison-base true
 
 check_classify 'push · 빈 before -> no-comparison-base' \
-  "${push_dir}" push "${push_after}" '' false no-comparison-base
+  "${push_dir}" push "${push_after}" '' false no-comparison-base true
 
 check_classify 'push · before == after -> empty-diff' \
-  "${push_dir}" push "${push_after}" "${push_after}" false empty-diff
+  "${push_dir}" push "${push_after}" "${push_after}" false empty-diff true
 
 check_classify 'workflow_dispatch -> no-comparison-base' \
-  "${push_dir}" workflow_dispatch "${push_after}" '' false no-comparison-base
+  "${push_dir}" workflow_dispatch "${push_after}" '' false no-comparison-base true
+
+# I/O 표 "push·dispatch": `develop` push는 실제 merge commit의 통합 검증이라 프런트엔드만 바뀌어도 백업·복원 리허설을 돈다.
+write_file "${push_dir}" 'frontend/src/App.tsx' 'export const App = () => <main />;'
+commit_all "${push_dir}" 'push 프런트엔드 변경'
+push_front_after="$(rev "${push_dir}" HEAD)" || exit 2
+
+check_classify 'push · 프런트엔드만 -> product-change, backup-restore=true(push에는 승인된 비적용이 없다)' \
+  "${push_dir}" push "${push_front_after}" "${push_after}" false product-change true
+
+# dispatch는 변경 목록을 읽기 전에 비교 기준 없음으로 끝난다(경로 판정에 닿지 않는다). 그 조기 종료도 backup-restore=true를 낸다.
+check_classify 'workflow_dispatch · 비교 기준 없음 -> 경로와 무관하게 no-comparison-base, backup-restore=true' \
+  "${push_dir}" workflow_dispatch "${push_front_after}" '' false no-comparison-base true
 
 # --- job summary -----------------------------------------------------------
 # 분류 결과가 PR 화면에 남는지 고정한다. 이 줄이 없으면 frontend 검사가 왜 건너뛰어졌는지
@@ -610,10 +697,11 @@ if [ "${summary_status}" -ne 0 ]; then
   record_fail 'GITHUB_STEP_SUMMARY 기록' \
     "종료 코드 ${summary_status} (기대 0) — $(tr '\n' '|' <"${work_root}/summary-log.txt")"
 elif grep -qF '`docs-only`: `true`' "${summary_file}" \
-  && grep -qF '`reason`: `docs-only`' "${summary_file}"; then
-  record_pass 'GITHUB_STEP_SUMMARY에 docs-only와 reason을 남긴다'
+  && grep -qF '`reason`: `docs-only`' "${summary_file}" \
+  && grep -qF '`backup-restore`: `true`' "${summary_file}"; then
+  record_pass 'GITHUB_STEP_SUMMARY에 docs-only·reason·backup-restore를 남긴다'
 else
-  record_fail 'GITHUB_STEP_SUMMARY에 docs-only와 reason을 남긴다' \
+  record_fail 'GITHUB_STEP_SUMMARY에 docs-only·reason·backup-restore를 남긴다' \
     "$(tr '\n' '|' <"${summary_file}")"
 fi
 
@@ -664,7 +752,7 @@ check_verify '빈 SHA -> 종료 1 + ::error::' \
 
 # 검증이 통과한 merge commit에서 분류가 parent1을 기준으로 삼는지 함께 고정한다.
 check_classify '검증된 merge commit의 비교 기준은 parent1' \
-  "${verify_dir}" pull_request "${verify_merge}" '' false product-change
+  "${verify_dir}" pull_request "${verify_merge}" '' false product-change false
 
 # --------------------------------------------------------------------------
 # 집계 판정
@@ -679,8 +767,9 @@ aggregate_sink="${work_root}/aggregate-sink.md"
 # check_aggregate <라벨> <docs_only> <changes> <frontend> <backend> <integration> <rehearsal>
 #                 <기대 종료 코드> [기대 메시지 조각] [없어야 하는 메시지 조각]
 #
-# 복원 리허설(Story 3.10)의 결과는 기본으로 <rehearsal>과 같다 — 두 리허설은 같은 분류에서 같이 돌고 같이 건너뛴다. 복원 리허설만 다른
-# 경우는 호출 앞에 `restore_result_override=<값>`을 붙인다(빈 값도 그대로 쓴다).
+# 백업 리허설(Story 3.9)·복원 리허설(Story 3.10)의 결과는 기본으로 <rehearsal>과 같고, 백업·복원 분류(`BACKUP_RESTORE`)는 기본으로
+# `true`다 — 그 분류에서 세 리허설은 같이 돌고 문서-only면 같이 건너뛴다. 다른 경우는 호출 앞에 `backup_restore_override=<값>`,
+# `backup_result_override=<값>`, `restore_result_override=<값>`을 붙인다(빈 값도 그대로 쓴다).
 check_aggregate() {
   local label="$1" docs="$2" changes="$3" frontend="$4" backend="$5" integration="$6" rehearsal="$7"
   local want_status="$8" want_message="${9:-}" unwanted_message="${10:-}"
@@ -690,11 +779,13 @@ check_aggregate() {
 
   (
     DOCS_ONLY="${docs}" \
+    BACKUP_RESTORE="${backup_restore_override-true}" \
     CHANGES_RESULT="${changes}" \
     FRONTEND_RESULT="${frontend}" \
     BACKEND_RESULT="${backend}" \
     INTEGRATION_RESULT="${integration}" \
     REHEARSAL_RESULT="${rehearsal}" \
+    BACKUP_RESULT="${backup_result_override-${rehearsal}}" \
     RESTORE_RESULT="${restore_result_override-${rehearsal}}" \
     GITHUB_STEP_SUMMARY="${aggregate_sink}" \
     bash "${aggregate_script}"
@@ -769,7 +860,7 @@ restore_result_override=failure check_aggregate '제품 변경 · restore-rehear
 
 restore_result_override=skipped check_aggregate '제품 변경 · 복원 리허설만 예상 밖 skipped -> 종료 1' \
   false success success success success success 1 \
-  '::error::restore-rehearsal job이 건너뛰어졌지만 이 변경은 제품 변경으로 분류됐다.'
+  '::error::restore-rehearsal job이 건너뛰어졌지만 이 변경은 백업·복원 적용(backup-restore=true)으로 분류됐다.'
 
 restore_result_override='' check_aggregate '제품 변경 · 복원 리허설 결과 없음 -> 종료 1' \
   false success success success success success 1 \
@@ -778,6 +869,91 @@ restore_result_override='' check_aggregate '제품 변경 · 복원 리허설 �
 restore_result_override=success check_aggregate '문서-only · 복원 리허설만 예상 밖 success -> 종료 1' \
   true success skipped skipped skipped skipped 1 \
   '::error::restore-rehearsal job이 실행됐지만 이 변경은 문서-only로 분류됐다.'
+
+# --- 백업 리허설 job과 backup-restore 분류(spec-ci-critical-path.md) --------------
+# Story 3.9의 백업 리허설이 별도 job이 됐다. 필수 검사이고, 백업·복원 분류가 두 리허설의 기대치를 정한다.
+backup_result_override=failure check_aggregate '제품 변경 · backup-rehearsal failure -> 종료 1' \
+  false success success success success success 1 '::error::backup-rehearsal job이 failure로 끝났다.'
+
+backup_result_override=cancelled check_aggregate '제품 변경 · backup-rehearsal cancelled -> 종료 1' \
+  false success success success success success 1 '::error::backup-rehearsal job이 cancelled로 끝났다.'
+
+backup_result_override='' check_aggregate '제품 변경 · 백업 리허설 결과 없음 -> 종료 1' \
+  false success success success success success 1 \
+  '::error::backup-rehearsal job의 결과가 비었다.'
+
+backup_result_override=success check_aggregate '문서-only · 백업 리허설만 예상 밖 success -> 종료 1' \
+  true success skipped skipped skipped skipped 1 \
+  '::error::backup-rehearsal job이 실행됐지만 이 변경은 문서-only로 분류됐다.'
+
+# I/O 표 "프런트엔드 PR": backup-restore=false면 백업·복원 두 job이 건너뛴 것이 정상이고 나머지 제품 job은 그대로 필수다.
+backup_restore_override=false backup_result_override=skipped restore_result_override=skipped \
+  check_aggregate '프런트엔드 PR · 백업·복원 skipped, 나머지 success -> 종료 0' \
+  false success success success success success 0 '모든 예상 결과가 일치한다.'
+
+# I/O 표 "백엔드 PR": backup-restore=true면 세 리허설 모두 success를 기대한다(위 첫 사례가 기본값으로 이미 본다 — 명시한다).
+backup_restore_override=true check_aggregate '백엔드 PR · backup-restore=true, 세 리허설 success -> 종료 0' \
+  false success success success success success 0 '모든 예상 결과가 일치한다.'
+
+# I/O 표 "문서-only PR": 백업·복원 분류와 무관하게 모든 제품 job이 건너뛴다.
+backup_restore_override=false check_aggregate '문서-only · backup-restore=false, 모두 skipped -> 종료 0' \
+  true success skipped skipped skipped skipped 0 '모든 예상 결과가 일치한다.'
+# 문서-only에서는 옛 분류기 안내를 내지 않는다. 기대치를 정하지 않는 값에 대한 줄이 로그에 섞이지 않게 한다.
+backup_restore_override='' check_aggregate '문서-only · backup-restore 빈 값, 모두 skipped -> 종료 0(옛 분류기 안내 없음)' \
+  true success skipped skipped skipped skipped 0 '모든 예상 결과가 일치한다.' '옛 분류기로 판정했다'
+
+# I/O 표 "옛 분류기": 출력이 빈 값이면 두 job은 실제로 돌았고 집계는 success를 기대한다. 실패가 아니다 — 안내는 ::notice::다.
+backup_restore_override='' check_aggregate '옛 분류기 · backup-restore 빈 값, 세 리허설 success -> 종료 0' \
+  false success success success success success 0 '::notice::백업·복원 분류가 비었다' '::error::'
+backup_restore_override='' backup_result_override=skipped check_aggregate '옛 분류기 · 빈 값인데 백업 리허설 skipped -> 종료 1' \
+  false success success success success success 1 \
+  '::error::backup-rehearsal job이 건너뛰어졌지만 이 변경은 백업·복원 적용(backup-restore 빈 값 — 옛 분류기)으로 분류됐다.'
+
+# I/O 표 "분류·결과 불일치": false인데 실행됐거나 true인데 건너뛰었다. 게이트와 분류가 어긋난 상태다.
+backup_restore_override=false restore_result_override=skipped \
+  check_aggregate 'backup-restore=false인데 백업 리허설 success -> 종료 1' \
+  false success success success success success 1 \
+  '::error::backup-rehearsal job이 실행됐지만 이 변경은 백업·복원 비적용(backup-restore=false)으로 분류됐다.'
+backup_restore_override=false backup_result_override=skipped \
+  check_aggregate 'backup-restore=false인데 복원 리허설 success -> 종료 1' \
+  false success success success success success 1 \
+  '::error::restore-rehearsal job이 실행됐지만 이 변경은 백업·복원 비적용(backup-restore=false)으로 분류됐다.'
+backup_restore_override=true backup_result_override=skipped \
+  check_aggregate 'backup-restore=true인데 백업 리허설 skipped -> 종료 1' \
+  false success success success success success 1 \
+  '::error::backup-rehearsal job이 건너뛰어졌지만 이 변경은 백업·복원 적용(backup-restore=true)으로 분류됐다.'
+
+# 비적용은 skip만 허용한다. 실패·빈 결과는 어느 분류에서도 통과가 아니다.
+backup_restore_override=false backup_result_override=failure restore_result_override=skipped \
+  check_aggregate 'backup-restore=false인데 백업 리허설 failure -> 종료 1' \
+  false success success success success success 1 '::error::backup-rehearsal job이 failure로 끝났다.'
+backup_restore_override=false backup_result_override='' restore_result_override=skipped \
+  check_aggregate 'backup-restore=false인데 백업 리허설 결과 없음 -> 종료 1' \
+  false success success success success success 1 '::error::backup-rehearsal job의 결과가 비었다.'
+
+# 분기는 백업·복원 두 job뿐이다. backup-restore=false라도 배포 리허설·통합·품질 job은 그대로 필수다.
+backup_restore_override=false backup_result_override=skipped restore_result_override=skipped \
+  check_aggregate 'backup-restore=false라도 deploy-rehearsal skipped -> 종료 1' \
+  false success success success success skipped 1 \
+  '::error::deploy-rehearsal job이 건너뛰어졌지만 이 변경은 제품 변경으로 분류됐다.'
+backup_restore_override=false backup_result_override=skipped restore_result_override=skipped \
+  check_aggregate 'backup-restore=false라도 same-origin-integration skipped -> 종료 1' \
+  false success success success skipped success 1 \
+  '::error::same-origin-integration job이 건너뛰어졌지만 이 변경은 제품 변경으로 분류됐다.'
+
+# 분류 값이 깨졌다. fail-closed로 실패이고 두 job에는 가장 엄격한 success를 기대한다.
+backup_restore_override=maybe check_aggregate 'BACKUP_RESTORE가 알 수 없는 값 -> 종료 1' \
+  false success success success success success 1 '::error::BACKUP_RESTORE가 true·false·빈 값이 아니다 (실제 maybe).'
+backup_restore_override=maybe backup_result_override=skipped restore_result_override=skipped \
+  check_aggregate 'BACKUP_RESTORE가 알 수 없는 값 · 두 job은 success를 기대한다 -> 종료 1' \
+  false success success success success success 1 \
+  '::error::backup-rehearsal job이 건너뛰어졌지만 이 변경은 백업·복원 적용(판정 불가 — fail-closed)으로 분류됐다.'
+backup_restore_override=FALSE backup_result_override=skipped restore_result_override=skipped \
+  check_aggregate 'BACKUP_RESTORE 대문자 FALSE는 false가 아니다 -> 종료 1' \
+  false success success success success success 1 '::error::BACKUP_RESTORE가 true·false·빈 값이 아니다 (실제 FALSE).'
+# 문서-only라도 깨진 분류 값은 실패다. 기대치는 docs-only가 정하지만 값의 검증은 docs-only와 무관하다(fail-closed).
+backup_restore_override=maybe check_aggregate '문서-only · BACKUP_RESTORE가 알 수 없는 값 -> 종료 1' \
+  true success skipped skipped skipped skipped 1 '::error::BACKUP_RESTORE가 true·false·빈 값이 아니다 (실제 maybe).'
 
 check_aggregate 'changes job 실패 -> 종료 1' \
   false failure skipped skipped skipped skipped 1 '::error::changes job이 success가 아니다'
@@ -804,17 +980,43 @@ check_aggregate 'changes 실패 · DOCS_ONLY 오류를 덧붙이지 않는다' \
 changes_fail_log="${work_root}/aggregate-changes-fail.txt"
 (
   DOCS_ONLY='' \
+  BACKUP_RESTORE='' \
   CHANGES_RESULT=failure \
   FRONTEND_RESULT=skipped \
   BACKEND_RESULT=skipped \
   INTEGRATION_RESULT=skipped \
   REHEARSAL_RESULT=skipped \
+  BACKUP_RESULT=skipped \
   RESTORE_RESULT=skipped \
   GITHUB_STEP_SUMMARY="${aggregate_sink}" \
   bash "${aggregate_script}"
 ) >"${changes_fail_log}" 2>&1
 assert_equals 'changes 실패 · ::error::는 원인 1줄 + 종료 1줄뿐' \
   "$(grep -c -- '::error::' "${changes_fail_log}")" '2'
+
+# changes 실패의 판정 표에도 백업 리허설 행이 판정 불가로 실린다. 행이 빠지면 그 job이 표에서 사라진다.
+changes_fail_summary="${work_root}/aggregate-changes-fail-summary.md"
+: >"${changes_fail_summary}"
+(
+  DOCS_ONLY='' \
+  BACKUP_RESTORE='' \
+  CHANGES_RESULT=failure \
+  FRONTEND_RESULT=skipped \
+  BACKEND_RESULT=skipped \
+  INTEGRATION_RESULT=skipped \
+  REHEARSAL_RESULT=skipped \
+  BACKUP_RESULT=skipped \
+  RESTORE_RESULT=skipped \
+  GITHUB_STEP_SUMMARY="${changes_fail_summary}" \
+  bash "${aggregate_script}"
+) >/dev/null 2>&1
+assert_equals 'changes 실패 · 판정 표에 판정 불가 행 여섯(백업 리허설 포함)' \
+  "$(grep -cF '| `판정 불가` |' "${changes_fail_summary}")" '6'
+if grep -F '| `backup-rehearsal` | `skipped` | `판정 불가` |' "${changes_fail_summary}" >/dev/null; then
+  record_pass 'changes 실패 · backup-rehearsal 행이 판정 불가다'
+else
+  record_fail 'changes 실패 · backup-rehearsal 행이 판정 불가다' "$(tr '\n' '|' <"${changes_fail_summary}")"
+fi
 
 # 분류 결과 자체가 깨진 경우. fail-closed로 가장 엄격한 기대치를 적용한다.
 check_aggregate 'DOCS_ONLY가 빈 값 -> 종료 1' \
@@ -829,12 +1031,14 @@ aggregate_summary="${work_root}/aggregate-summary.md"
 aggregate_summary_status=0
 (
   DOCS_ONLY=false \
+  BACKUP_RESTORE=false \
   CHANGES_RESULT=success \
   FRONTEND_RESULT=success \
   BACKEND_RESULT=success \
   INTEGRATION_RESULT=success \
   REHEARSAL_RESULT=success \
-  RESTORE_RESULT=success \
+  BACKUP_RESULT=skipped \
+  RESTORE_RESULT=skipped \
   GITHUB_STEP_SUMMARY="${aggregate_summary}" \
   bash "${aggregate_script}"
 ) >"${work_root}/aggregate-summary-log.txt" 2>&1 || aggregate_summary_status=$?
@@ -843,11 +1047,13 @@ if [ "${aggregate_summary_status}" -ne 0 ]; then
   record_fail '집계가 GITHUB_STEP_SUMMARY에 판정 표를 남긴다' \
     "종료 코드 ${aggregate_summary_status} (기대 0) — $(tr '\n' '|' <"${work_root}/aggregate-summary-log.txt")"
 elif grep -qF '### 필수 검사 집계' "${aggregate_summary}" \
-  && grep -qF '| `frontend-quality` |' "${aggregate_summary}" \
+  && grep -qF -- '- `backup-restore`: `false`' "${aggregate_summary}" \
+  && grep -qF '| `frontend-quality` | `success` | `success` |' "${aggregate_summary}" \
   && grep -qF '| `backend-quality` |' "${aggregate_summary}" \
   && grep -qF '| `same-origin-integration` |' "${aggregate_summary}" \
-  && grep -qF '| `deploy-rehearsal` |' "${aggregate_summary}" \
-  && grep -qF '| `restore-rehearsal` |' "${aggregate_summary}"; then
+  && grep -qF '| `deploy-rehearsal` | `success` | `success` |' "${aggregate_summary}" \
+  && grep -qF '| `backup-rehearsal` | `skipped` | `skipped` |' "${aggregate_summary}" \
+  && grep -qF '| `restore-rehearsal` | `skipped` | `skipped` |' "${aggregate_summary}"; then
   record_pass '집계가 GITHUB_STEP_SUMMARY에 판정 표를 남긴다'
 else
   record_fail '집계가 GITHUB_STEP_SUMMARY에 판정 표를 남긴다' \
@@ -1079,22 +1285,23 @@ printf '\nci.yml 계약\n'
 # job 하나를 지우거나 `needs`를 한 줄 고치면 필수 검사가 조용히 사라지고, branch protection은
 # `ci-required`라는 이름 하나만 보므로 그 사실을 알지 못한다.
 
-# `changes → frontend-quality·backend-quality → same-origin-integration·deploy-rehearsal → ci-required`.
-# 순서까지 단정한다. 파일에서 읽는 순서가 곧 사람이 이해하는 실행 순서다. `deploy-rehearsal`은 Story 3.8이 더했다.
+# `changes → frontend-quality·backend-quality → same-origin-integration·deploy-rehearsal·backup-rehearsal·restore-rehearsal → ci-required`.
+# 순서까지 단정한다. 파일에서 읽는 순서가 곧 사람이 이해하는 실행 순서다. `deploy-rehearsal`은 Story 3.8이 더했고,
+# `backup-rehearsal`은 spec-ci-critical-path.md가 `deploy-rehearsal`에서 뗐다.
 assert_equals 'ci.yml · job 목록과 순서' \
   "$(workflow_job_ids)" \
-  'changes frontend-quality backend-quality same-origin-integration deploy-rehearsal restore-rehearsal ci-required'
+  'changes frontend-quality backend-quality same-origin-integration deploy-rehearsal backup-rehearsal restore-rehearsal ci-required'
 
 # branch protection이 참조하는 이름이다. 바뀌면 required check가 영원히 대기 상태로 남고
 # 병합은 아무 검사 없이 열린다.
 assert_equals 'ci.yml · job name은 ci-required' \
   "$(count_lines '^    name: ci-required$')" '1'
 
-# `ubuntu-latest`는 러너 갱신이 CI 판정을 바꾼다. 일곱 job 모두 고정한다.
+# `ubuntu-latest`는 러너 갱신이 CI 판정을 바꾼다. 여덟 job 모두 고정한다.
 assert_equals 'ci.yml · 모든 job이 runs-on: ubuntu-24.04 고정' \
-  "$(count_lines '^    runs-on: ubuntu-24\.04$')" '7'
+  "$(count_lines '^    runs-on: ubuntu-24\.04$')" '8'
 
-for job_id in changes frontend-quality backend-quality same-origin-integration deploy-rehearsal restore-rehearsal ci-required; do
+for job_id in changes frontend-quality backend-quality same-origin-integration deploy-rehearsal backup-rehearsal restore-rehearsal ci-required; do
   assert_equals "ci.yml · '${job_id}' job이 ubuntu-24.04를 쓴다" \
     "$(count_job_lines "${job_id}" '^    runs-on: ubuntu-24\.04$')" '1'
 done
@@ -1109,12 +1316,15 @@ assert_equals 'ci.yml · same-origin-integration은 두 품질 job을 기다린�
   "$(count_job_lines same-origin-integration '^    needs: \[changes, frontend-quality, backend-quality\]$')" '1'
 assert_equals 'ci.yml · deploy-rehearsal은 두 품질 job을 기다린다' \
   "$(count_job_lines deploy-rehearsal '^    needs: \[changes, frontend-quality, backend-quality\]$')" '1'
-# 복원 리허설(Story 3.10)은 backend jar 하나만 쓴다 — 프런트엔드 산출물을 기다리지 않는다.
+# 백업 리허설(Story 3.9)과 복원 리허설(Story 3.10)은 backend jar 하나만 쓴다 — 프런트엔드 산출물을 기다리지 않는다.
+# 백업 리허설이 frontend-quality까지 기다리면 임계 경로 단축(spec-ci-critical-path.md)이 조용히 사라진다.
+assert_equals 'ci.yml · backup-rehearsal은 changes와 backend-quality를 기다린다' \
+  "$(count_job_lines backup-rehearsal '^    needs: \[changes, backend-quality\]$')" '1'
 assert_equals 'ci.yml · restore-rehearsal은 changes와 backend-quality를 기다린다' \
   "$(count_job_lines restore-rehearsal '^    needs: \[changes, backend-quality\]$')" '1'
-# 집계가 기다리지 않는 job의 결과는 빈 값으로 온다. 여섯 job이 모두 있어야 한다.
+# 집계가 기다리지 않는 job의 결과는 빈 값으로 온다. 일곱 job이 모두 있어야 한다.
 assert_equals 'ci.yml · ci-required는 모든 선행 job을 기다린다' \
-  "$(count_job_lines ci-required '^    needs: \[changes, frontend-quality, backend-quality, same-origin-integration, deploy-rehearsal, restore-rehearsal\]$')" '1'
+  "$(count_job_lines ci-required '^    needs: \[changes, frontend-quality, backend-quality, same-origin-integration, deploy-rehearsal, backup-rehearsal, restore-rehearsal\]$')" '1'
 
 # 선행 job이 실패·취소·skip 어느 쪽이든 집계는 실행되어 판정을 남겨야 한다.
 # 이 줄이 없으면 실패한 실행에서 required check가 영원히 대기 상태로 남는다.
@@ -1134,15 +1344,18 @@ else
     '집계 단계에 aggregate-results.sh 호출이 없다.'
 fi
 
-# 집계 스크립트가 읽는 여섯 입력이 실제로 전달되는지. 하나라도 빠지면 그 job은
+# 집계 스크립트가 읽는 입력이 실제로 전달되는지. 하나라도 빠지면 그 job은
 # 빈 값으로 평가되고, 스크립트는 이를 실패로 읽어야 하므로 여기서 먼저 잡는다.
+# `BACKUP_RESTORE`가 빠지면 집계는 그것을 옛 분류기의 빈 값으로 읽어 프런트엔드 PR에서 건너뛴 두 리허설을 실패로 막는다.
 for aggregate_input in \
   'DOCS_ONLY: ${{ needs.changes.outputs.docs-only }}' \
+  'BACKUP_RESTORE: ${{ needs.changes.outputs.backup-restore }}' \
   'CHANGES_RESULT: ${{ needs.changes.result }}' \
   'FRONTEND_RESULT: ${{ needs.frontend-quality.result }}' \
   'BACKEND_RESULT: ${{ needs.backend-quality.result }}' \
   'INTEGRATION_RESULT: ${{ needs.same-origin-integration.result }}' \
   'REHEARSAL_RESULT: ${{ needs.deploy-rehearsal.result }}' \
+  'BACKUP_RESULT: ${{ needs.backup-rehearsal.result }}' \
   'RESTORE_RESULT: ${{ needs.restore-rehearsal.result }}'; do
   if workflow_step_block ci-required '필수 검사 집계' | grep -F -- "${aggregate_input}" >/dev/null; then
     record_pass "ci.yml · 집계 입력 '${aggregate_input%%:*}'을 전달한다"
@@ -1155,6 +1368,8 @@ done
 # `changes`가 분류 결과를 밖으로 내보내지 않으면 아래 게이트가 전부 빈 값과 비교하게 된다.
 assert_equals 'ci.yml · changes job이 docs-only를 output으로 낸다' \
   "$(count_job_lines changes '^      docs-only: \$\{\{ steps\.classify\.outputs\.docs-only \}\}$')" '1'
+assert_equals 'ci.yml · changes job이 backup-restore를 output으로 낸다' \
+  "$(count_job_lines changes '^      backup-restore: \$\{\{ steps\.classify\.outputs\.backup-restore \}\}$')" '1'
 
 # --- 각 job의 필수 단계 -----------------------------------------------------
 # 단일 job 시절에는 `docs-only` 게이트가 단계마다 붙어 있었고 그 개수(10회)를 세는 단정이
@@ -1221,10 +1436,16 @@ STEPS
 assert_job_steps deploy-rehearsal <<'STEPS'
 저장소 checkout
 배포 gate 시험
-백업 스크립트 시험
 통합 입력 내려받기 (frontend dist)
 통합 입력 내려받기 (backend jar)
 배포 리허설
+실패 진단 artifact 업로드
+STEPS
+
+assert_job_steps backup-rehearsal <<'STEPS'
+저장소 checkout
+백업 스크립트 시험
+통합 입력 내려받기 (backend jar)
 백업 리허설
 실패 진단 artifact 업로드
 STEPS
@@ -1246,18 +1467,42 @@ STEPS
 # 게이트는 이제 단계가 아니라 job에 붙는다. 개수까지 단정한다. 하나 더 달면 검사가 조용히
 # 줄고, 하나 지우면 문서-only PR이 전체 검사를 돈다. 둘 다 여기서 걸린다.
 # `ci-required`에는 붙지 않는다. 집계는 어떤 분류에서도 실행되어야 한다.
+#
+# 게이트는 두 모양이다. 품질·통합·배포 리허설 넷은 docs-only 게이트 하나를, 백업·복원 리허설 둘은 그 뒤에 backup-restore
+# 게이트를 더한 한 줄을 단다(spec-ci-critical-path.md). 줄 전체를 비교한다 — 부분 문자열로 세면 두 번째 모양도 첫 번째로
+# 세어져 어느 job이 분기에 들어갔는지 구분되지 않는다.
 docs_gate="if: needs.changes.outputs.docs-only != 'true'"
-assert_equals 'ci.yml · docs-only 게이트를 단 job은 5개' \
-  "$(grep -cF "    ${docs_gate}" "${workflow_file}")" '5'
+backup_gate="if: needs.changes.outputs.docs-only != 'true' && needs.changes.outputs.backup-restore != 'false'"
+assert_equals 'ci.yml · docs-only 게이트만 단 job은 4개' \
+  "$(grep -cxF "    ${docs_gate}" "${workflow_file}")" '4'
+assert_equals 'ci.yml · docs-only + backup-restore 게이트를 단 job은 2개' \
+  "$(grep -cxF "    ${backup_gate}" "${workflow_file}")" '2'
 
-for gated_job in frontend-quality backend-quality same-origin-integration deploy-rehearsal restore-rehearsal; do
-  if workflow_job_block "${gated_job}" | grep -F -- "${docs_gate}" >/dev/null; then
+for gated_job in frontend-quality backend-quality same-origin-integration deploy-rehearsal; do
+  if workflow_job_block "${gated_job}" | grep -xF -- "    ${docs_gate}" >/dev/null; then
     record_pass "ci.yml · '${gated_job}' job에 docs-only 게이트가 있다"
   else
     record_fail "ci.yml · '${gated_job}' job에 docs-only 게이트가 있다" \
-      'job을 찾지 못했거나 게이트가 없다.'
+      'job을 찾지 못했거나 게이트가 없다(backup-restore 분기는 백업·복원 리허설에만 단다 — Ask First).'
   fi
 done
+
+for gated_job in backup-rehearsal restore-rehearsal; do
+  if workflow_job_block "${gated_job}" | grep -xF -- "    ${backup_gate}" >/dev/null; then
+    record_pass "ci.yml · '${gated_job}' job에 docs-only + backup-restore 게이트가 있다"
+  else
+    record_fail "ci.yml · '${gated_job}' job에 docs-only + backup-restore 게이트가 있다" \
+      'job을 찾지 못했거나 게이트가 다르다.'
+  fi
+done
+
+# backup-restore 게이트는 `!= 'false'`만 쓴다. `== 'true'`로 쓰면 빈 값(옛 분류기·출력 누락)에서 리허설이 조용히 사라지는데,
+# 집계는 빈 값을 success로 기대하므로 결과적으로 막히기는 하지만 원인이 "건너뛰어졌다"로 잘못 보인다. 다른 비교도 막는다.
+# 허용되는 참조는 그 게이트와 집계 입력 한 줄뿐이다.
+assert_equals "ci.yml · backup-restore 출력은 != 'false' 게이트와 집계 입력에만 쓴다" \
+  "$(grep -F 'needs.changes.outputs.backup-restore' "${workflow_file}" \
+    | grep -vF "needs.changes.outputs.backup-restore != 'false'" \
+    | grep -cvF 'BACKUP_RESTORE: ${{ needs.changes.outputs.backup-restore }}' | tr -d '[:space:]')" '0'
 
 if workflow_job_block ci-required | grep -F -- "${docs_gate}" >/dev/null; then
   record_fail 'ci.yml · ci-required에는 docs-only 게이트가 없다' \
@@ -1318,7 +1563,7 @@ fi
 
 # 후속 job은 움직이는 ref가 아니라 이벤트가 고정한 commit을 checkout한다(CI-PLAN §5).
 assert_equals 'ci.yml · 모든 job이 github.sha를 checkout한다' \
-  "$(count_lines '^          ref: \$\{\{ github\.sha \}\}$')" '7'
+  "$(count_lines '^          ref: \$\{\{ github\.sha \}\}$')" '8'
 
 # --- frontend-quality ------------------------------------------------------
 # lint·stylelint·format 검사는 타입 검사 뒤, 프로덕션 빌드 앞이다(spec-frontend-lint-policy.md,
@@ -1390,13 +1635,13 @@ for producer in frontend-quality backend-quality; do
     "$(count_job_lines "${producer}" '^          retention-days: 1$')" '1'
 done
 
-# 진단 업로드는 네 job 모두 `warn`이다. `ignore`로 바꾸면 report·trace 경로가 어긋나도 이 단계가
+# 진단 업로드는 여섯 job 모두 `warn`이다. `ignore`로 바꾸면 report·trace 경로가 어긋나도 이 단계가
 # 조용히 성공해, 실패한 실행에 진단물이 없다는 사실을 아무도 모른 채 영원히 "업로드 성공"이 된다.
 # `error`도 답이 아니다. 진단 수집이 job 판정을 뒤집으면 원인이 진단 경로로 바뀐다.
 assert_equals 'ci.yml · 진단 artifact 업로드는 if-no-files-found: warn' \
-  "$(count_lines '^          if-no-files-found: warn$')" '5'
+  "$(count_lines '^          if-no-files-found: warn$')" '6'
 
-for diagnostics_job in frontend-quality backend-quality same-origin-integration deploy-rehearsal restore-rehearsal; do
+for diagnostics_job in frontend-quality backend-quality same-origin-integration deploy-rehearsal backup-rehearsal restore-rehearsal; do
   assert_equals "ci.yml · '${diagnostics_job}'의 진단 업로드가 warn이다" \
     "$(count_job_lines "${diagnostics_job}" '^          if-no-files-found: warn$')" '1'
 done
@@ -1521,23 +1766,49 @@ else
 fi
 assert_equals 'ci.yml · 배포 리허설 단계의 timeout은 20분' \
   "$(workflow_step_block deploy-rehearsal '배포 리허설' | grep -cxF '        timeout-minutes: 20')" '1'
-assert_equals 'ci.yml · deploy-rehearsal job timeout은 70분' \
-  "$(count_job_lines deploy-rehearsal '^    timeout-minutes: 70$')" '1'
-# 백업 리허설(Story 3.9)도 판정은 스크립트가 소유한다. 단계에는 호출 한 줄과 진단 자리, timeout만 있다. 진단 자리는 업로드 경로 아래다
-# — 업로드 단계 하나가 두 리허설의 기록을 함께 올린다.
+# 배포 리허설 몫(1 + 3 + 20 + 6분 — 스크립트 시험 단계 상한 3분)이다. 백업 리허설을 뗀 뒤 70분으로 두면 멈춘 배포 리허설이 40분을 더 쓴다.
+assert_equals 'ci.yml · deploy-rehearsal job timeout은 30분' \
+  "$(count_job_lines deploy-rehearsal '^    timeout-minutes: 30$')" '1'
+# 백업 리허설은 별도 job이다(spec-ci-critical-path.md). 배포 리허설 뒤에 다시 붙으면 임계 경로가 되돌아온다.
+if workflow_job_block deploy-rehearsal | grep -E 'rehearse-backup\.sh|test-backup-scripts\.sh' >/dev/null; then
+  record_fail 'ci.yml · deploy-rehearsal은 백업 리허설을 돌지 않는다' '배포 리허설 job에 백업 스크립트 호출이 있다.'
+else
+  record_pass 'ci.yml · deploy-rehearsal은 백업 리허설을 돌지 않는다'
+fi
+
+# --- backup-rehearsal(Story 3.9, spec-ci-critical-path.md가 분리) -----------------
+# 백업 리허설도 품질 job의 jar를 그대로 소비한다(프런트엔드 산출물은 쓰지 않는다). 판정은 두 스크립트가 소유한다.
+assert_equals 'ci.yml · 백업 리허설 job이 같은 이름의 backend jar를 소비한다' \
+  "$(count_job_lines backup-rehearsal "${artifact_name_pattern}")" '1'
+if workflow_job_block backup-rehearsal | grep -E 'gradlew|run: npm --prefix frontend run build$' >/dev/null; then
+  record_fail 'ci.yml · 백업 리허설 job은 산출물을 다시 빌드하지 않는다' '백업 리허설 job에 gradlew 또는 프런트엔드 build가 있다.'
+else
+  record_pass 'ci.yml · 백업 리허설 job은 산출물을 다시 빌드하지 않는다'
+fi
+if workflow_job_block backup-rehearsal | grep -E 'docker compose .* up( |$)' >/dev/null; then
+  record_fail 'ci.yml · 백업 리허설 job은 compose를 직접 띄우지 않는다' '백업 리허설 job에 별도 compose up이 있다.'
+else
+  record_pass 'ci.yml · 백업 리허설 job은 compose를 직접 띄우지 않는다'
+fi
 assert_equals 'ci.yml · 백업 스크립트 시험 단계는 test-backup-scripts.sh 하나를 부른다' \
-  "$(workflow_step_block deploy-rehearsal '백업 스크립트 시험' | grep -E '^        run: ' | sed 's/^        run: //')" \
+  "$(workflow_step_block backup-rehearsal '백업 스크립트 시험' | grep -E '^        run: ' | sed 's/^        run: //')" \
   'bash deploy/production/test-backup-scripts.sh'
 assert_equals 'ci.yml · 백업 리허설 단계는 rehearse-backup.sh 하나를 부른다' \
-  "$(workflow_step_block deploy-rehearsal '백업 리허설' | grep -E '^        run: ' | sed 's/^        run: //')" \
+  "$(workflow_step_block backup-rehearsal '백업 리허설' | grep -E '^        run: ' | sed 's/^        run: //')" \
   'bash deploy/production/rehearse-backup.sh'
 assert_equals 'ci.yml · 백업 리허설 단계의 timeout은 40분' \
-  "$(workflow_step_block deploy-rehearsal '백업 리허설' | grep -cxF '        timeout-minutes: 40')" '1'
-if workflow_step_block deploy-rehearsal '백업 리허설' \
-  | grep -F 'BOKRILOG_REHEARSAL_DIAGNOSTICS: ${{ runner.temp }}/deploy-rehearsal-diagnostics/backup' >/dev/null; then
-  record_pass 'ci.yml · 백업 리허설 진단 기록은 업로드 경로 아래에 있다'
+  "$(workflow_step_block backup-rehearsal '백업 리허설' | grep -cxF '        timeout-minutes: 40')" '1'
+# 단계 상한 합(1 + 3 + 40 + 6분 — 스크립트 시험 단계 상한 3분)이다. 백업 리허설 단계 40분보다 짧으면 단계 상한 전에 job이 끊겨 진단 업로드가 없다.
+assert_equals 'ci.yml · backup-rehearsal job timeout은 50분' \
+  "$(count_job_lines backup-rehearsal '^    timeout-minutes: 50$')" '1'
+# 실패한 리허설의 기록을 남길 자리와 업로드 경로가 같아야 한다. 진단 업로드 조건은 리허설 단계 id를 본다.
+if workflow_step_block backup-rehearsal '백업 리허설' \
+  | grep -F 'BOKRILOG_REHEARSAL_DIAGNOSTICS: ${{ runner.temp }}/backup-rehearsal-diagnostics' >/dev/null \
+  && workflow_step_block backup-rehearsal '실패 진단 artifact 업로드' \
+  | grep -F 'path: ${{ runner.temp }}/backup-rehearsal-diagnostics' >/dev/null; then
+  record_pass 'ci.yml · 백업 리허설 진단 기록 자리와 업로드 경로가 같다'
 else
-  record_fail 'ci.yml · 백업 리허설 진단 기록은 업로드 경로 아래에 있다' '진단 디렉터리 env가 없거나 업로드 경로 밖이다.'
+  record_fail 'ci.yml · 백업 리허설 진단 기록 자리와 업로드 경로가 같다' '진단 디렉터리 env 또는 업로드 경로가 없다.'
 fi
 # --- restore-rehearsal(Story 3.10) -------------------------------------------
 # 복원 리허설도 품질 job의 jar를 그대로 소비한다(프런트엔드 산출물은 쓰지 않는다). 판정은 두 스크립트가 소유한다.
@@ -1571,6 +1842,24 @@ if workflow_step_block restore-rehearsal '복원 리허설' \
 else
   record_fail 'ci.yml · 복원 리허설 진단 기록 자리와 업로드 경로가 같다' '진단 디렉터리 env 또는 업로드 경로가 없다.'
 fi
+
+# --- 세 리허설의 진단 업로드 조건 --------------------------------------------
+# 업로드는 실패·timeout·취소에서만, 그리고 리허설 단계가 실제로 시작됐을 때만 돈다. 조건을 줄 전체로 고정한다 — 부분 문자열로 보면
+# `(failure() || cancelled())`가 빠져도 통과해, 업로드가 성공한 실행마다 돌거나(진단 artifact가 쌓인다) id가 어긋나 조용히 사라진다.
+# 조건이 가리키는 id가 그 job의 리허설 단계에 있어야 한다. 없는 id의 outcome은 빈 값이라 `!= 'skipped'`가 늘 참이 된다.
+# assert_rehearsal_upload <job id> <리허설 단계 이름> <단계 id>
+assert_rehearsal_upload() {
+  local job_id="$1" step_name="$2" step_id="$3"
+  assert_equals "ci.yml · '${job_id}'의 '${step_name}' 단계 id는 ${step_id}" \
+    "$(workflow_step_block "${job_id}" "${step_name}" | grep -cxF "        id: ${step_id}")" '1'
+  assert_equals "ci.yml · '${job_id}'의 진단 업로드는 실패·취소이고 ${step_id}가 시작됐을 때만 돈다" \
+    "$(workflow_step_block "${job_id}" '실패 진단 artifact 업로드' \
+      | grep -cxF "        if: \${{ (failure() || cancelled()) && steps.${step_id}.outcome != 'skipped' }}")" '1'
+}
+assert_rehearsal_upload deploy-rehearsal '배포 리허설' rehearsal
+assert_rehearsal_upload backup-rehearsal '백업 리허설' backup-rehearsal
+assert_rehearsal_upload restore-rehearsal '복원 리허설' restore-rehearsal
+
 # 리허설 스크립트도 이 저장소의 셸 규약을 따른다(gate 시험이 그 파일들을 훑는다). 여기서도 한 번 더 막는다.
 for deploy_script in deploy.sh preflight.sh rehearse-deploy.sh lib.sh test-preflight.sh backup.sh install-backup-tools.sh \
   rehearse-backup.sh test-backup-scripts.sh backup-lib.sh restore.sh tombstone-export.sh check-recovery-manifest.sh \
