@@ -17,10 +17,28 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 18 |
-| 부분 해소 | 4 |
-| 미해소 | 31 |
-| 미판정 | 89 |
+| 해소 | 25 |
+| 부분 해소 | 20 |
+| 미해소 | 97 |
+| 미판정 | 3 |
+
+**2026-10-15 갱신(판정 라운드, `spec-deferred-work-verdict-round.md`).** 표를 `deferred-work.md`의 **145건** 기준으로 다시 셌다. 각 절의 **마지막** 판정 머리말을 센 값이다. 바로 아래 문단(Story 2.17 done 전환)의 수치는 틀렸다 — 운영 command 공통화 chore(`spec-operator-command-commons.md`, PR #97)가 항목 **141**(`operations_restriction.reinstated_from` 색인)·**142**(`OperatorArmingVersionTest`의 실제 v5 fixture)를 append했는데 그 chore의 갱신 문단(2026-10-13)이 그 둘을 세지 않았고, 그래서 PR #101이 2.17의 두 항목을 141·142로 적었다. 2.17 항목의 실제 번호는 **143**(정책 버전이 바뀐 재연결의 재기준)·**144**(다른 계정 연결 뒤 완료 비교 보류)다. 그 문단은 고치지 않고 이 문단이 정정한다. 정정 직전의 바른 표는 144건·미판정 91이었다.
+
+이 라운드가 미판정 91건 가운데 **88건**을 판정했다 — 해소 7(57·72·86·87·98·100·105), 부분 해소 15(64·66·67·73·75·78·79·82·97·99·104·108·111·115·116), 미해소 66. 해소 일곱은 모두 뒤 스토리·chore가 실제로 닫은 것이고(2.12가 72·86·87, PR #71이 98, PR #73이 100·105, 1.10·2.13이 57) 각 절이 지키는 시험과 그것이 도는 CI job을 적었다. 78(PR #91)·104(PR #73)는 구현은 들어왔지만 지키는 검사가 없어(Windows 결함을 CI가 보지 못하고 가드 행동 시험이 없다 / 새 사본 금지가 규칙 문장뿐이다) "시험이 없으면 부분 해소" 기준으로 부분 해소다. 기존 판정 절 가운데 **35**에 새 판정(부분 해소 — 이 라운드가 규칙을 `CLAUDE.md`에 넣었으나 기계 검사가 없다)을, **37**에 재확인 판정(미해소 그대로)을 덧붙였다. 이 라운드의 리뷰가 낸 defer 하나를 `deferred-work.md`에 **145**(원장 건수 대조 검사)로 append하고 같은 PR에서 판정했다(미해소). 그래서 표는 기존 53건(35는 미해소 → 부분 해소)이 해소 18·부분 해소 5·미해소 30, 이 라운드의 88건이 해소 7·부분 해소 15·미해소 66, 145가 미해소 1, 보류 3이다 — 합 145. 시험은 이 라운드에서 다시 돌리지 않았다. 새 판정 머리말마다 적은 기준 커밋 `189c16b`의 코드가 근거이고, 줄 번호 인용도 그 커밋 기준이며, 그 코드는 PR #100의 `ci-required` 전 job이 성공했다.
+
+**보류 셋(미판정).** 92(compose dispatch 간격·통합 job 예산)·129(배포 리허설의 실제 호환 창·JVM 종료 경로)·131(백업 리허설 CI 경로 분기·timeout)은 진행 중인 CI 임계 경로 chore(Epic 3 회고 AI-12, `epic-3-retro-item-37`)와 겹쳐 판정하지 않았다. 판정 주체는 그 chore의 done 전환 PR이다(`CLAUDE.md` 표준 흐름 7번).
+
+**출시 전 닫아야 할 항목(보안·삭제·데이터 정확성).** 개발 스프린트는 막지 않지만 공개 베타·실연동·운영 배포 전에 결정이 필요한 것들이다.
+
+- 보안 — 58(동시 발급이 살아 있는 허가 둘을 남긴다), 65(Epic 1 두 command의 확인 hash 판별력 0, Epic 1 회고 item-7), 110·139(감사·tombstone digest 키를 회전할 수 없다), 113(쓰기 가능 key 저장 신호 1번의 감지 지점 없음), 114(교차 사용자 접근 신호 2번의 감지 지점 없음), 115 잔여(일회성 역할의 비밀값 로그 감지, Epic 3 회고 AI-3), 126 중 production 비밀 공급·운영 nginx 권한 강화, 127(TLS 종단 — `Secure` 쿠키라 운영 로그인의 전제다).
+- 삭제·개인정보 — 56·59·71(허가 결과·확인 행의 보존 상한 없음), 67 잔여(삭제 참여자를 손으로 나열하고 모듈 술어가 표 전부를 덮는지 검사가 없다, Epic 4 새 모듈·Epic 5 사용자 삭제 전), 111 잔여(운영 command 사유 자유 텍스트의 개인정보, G-5), 138(tombstone 내보내기 정체를 평시에 모르고, `--allow-stale-tombstones` 복원이 그 기간의 삭제 계정을 되살릴 수 있다).
+- 데이터 정확성 — 66 잔여(Bybit permission·retCode 표가 비어 실제 읽기 전용 키가 거절된다, 실연동 전), 73 잔여(첫 계획 환산의 Bybit 시각에 상한이 없어 미종료 candle이 공유 증거로 저장될 수 있다), 94(현재가치 측정 시각과 `tc` 간격의 입출금이 그 버전 지표를 틀리게 한다), 95(3.8 역할 분리 뒤 API·Worker가 IP 403 회로를 공유하지 않는다, 실연동 전).
+- 출시 게이트 자체 — 117·135(실제 훈련 증거 0건, Epic 3 회고 AI-9), 125(이미지 공급망이 없어 fail-closed gate가 첫 운영 배포를 막는다).
+- 이 원장 밖의 차단 요인 — Epic 3 회고 AI-2(`epic-3-retro-item-27`, 계정 삭제와 원장 잠금 직렬화)·AI-4(`epic-3-retro-item-29`, 복원본의 운영 안전 상태)·AI-8(`epic-3-retro-item-33`, `deferred-work.md`에 아직 기입되지 않은 운영 증거 항목), 그리고 `CLAUDE.md`가 미검증으로 적은 운영 증거 셋(3.8 운영 배포 smoke·3.9 실저장소 백업·파기·3.10 실제 격리 복원).
+
+**제품 코드·시험을 고쳐야 해소되는 항목.** 이 라운드는 아무것도 고치지 않았다. 아래 분류는 이 라운드가 판정한 88건 가운데 미해소·부분 해소 81건(66 + 15)만 대상으로 한다 — 원장 전체의 미해소·부분 해소는 표의 두 칸 합(117)이고, 이전 판정 35건은 이 분류에 넣지 않았다. 81건 가운데 코드나 시험 변경 없이 닫히는 것은 결정·운영 절차만 남은 몇 건(120의 제품 결정, 137의 실연동 게이트 실행, 136의 runbook)뿐이고 나머지는 변경이 필요하다. 값싸고 범위가 좁아 먼저 닫을 수 있는 것은 55(두 훅의 ref 래치)·63(닫힌 맵의 값 대응 단정)·77(409 문구 보존 순서)·89(대기를 스텁 지연보다 길게)·106(계획 종료 성공 문구의 재인증 안내)·107(정본과 겹치는 대화상자 메커니즘 단정 삭제)·108(해제 e2e에 재인증 없는 403 단계)·130(`fetch` 가드 행동 시험)·141(부분 색인 마이그레이션)이다. 묶어서 하는 편이 싼 묶음은 CSS 소유 구조(34·52·62·64·84·88·93·99·102), 계층 간 계약 리터럴 동등성(33·38·48·51·61·80·101, 3.6의 공유 fixture가 선례 — 같은 뿌리의 63은 먼저 닫을 것), 보존 상한(56·59·71), 작업 lease·heartbeat(74·85·96), 운영 관측 연결(115·121·126·132·138), 키 회전(110·126·139), 훈련 증거(117·126·135)다.
+
+**주인 확인.** 이 라운드에서 `## 갱신 규칙`의 두 부류에 새로 드는 항목이 생겼다. (가) 소유를 조건으로 적은 것 — 85·96("이력 규모가 보이는 시점"), 120("운영 데이터가 쌓인 뒤"), 143("정책 버전을 올리는 스토리"). (나) 지목 스토리가 지나가 주인이 없어진 것 — 56(1.10), 95·110(3.8이 재차 미뤘다), 112(3.4·3.5). 117은 3.8이 재차 미뤘지만 소유가 출시 게이트(Epic 3 회고 AI-9, `epic-3-retro-item-34`)로 정해져 있어 (나)에 넣지 않는다. 나머지 미해소의 대부분도 "주인 없음"이며 각 절이 그 사실을 적는다. 판정을 다음 라운드로 넘기지 않도록 done 전환 PR이 판정을 함께 적는 규칙을 `CLAUDE.md` 표준 흐름 7번에 더했고 `## 갱신 규칙`에도 날짜를 붙여 적었다(Epic 1 회고 액션 8(`epic-1-retro-item-8`)·Epic 2 회고 AI-6(`epic-2-retro-item-18`)·Epic 3 회고 AI-11(`epic-3-retro-item-36`) — 세 액션의 상태 변경은 사용자 확인 대기다).
 
 **2026-10-15 갱신(Story 2.17 done 전환).** `spec-2-17-bybit-reconnect.md`(PR #100)가 `deferred-work.md`에 항목 **141**(source 정책 버전이 첫 연결과 재연결 사이에 바뀐 경우의 재기준 조건 — 지금은 정책 버전이 하나라 재현 경로가 없다)·**142**(완료 계획의 첫 종료 후 관측이 고정되기 전에 해제하고 다른 계정으로 연결한 경우의 완료 비교 보류)를 append했다. 판정은 아직 없다. 그래서 표를 **142건** 기준으로 맞추고 미판정을 87→89로 늘렸다. 나머지 수치는 그대로다.
 
@@ -304,6 +322,10 @@ Docker 없는 정적 리터럴 비교 시험은 이 저장소에 전례가 없�
 
 **미해소 잔여:** `CLAUDE.md`가 스킬 파일 손수정을 금지하고 동작 변경을 `_bmad/custom/`·`bmad-customize`에 맡겼으므로, 그 경로로 present 단계에 판정 확인을 배선할지 아니면 `CLAUDE.md`의 표준 흐름 5·7에 문장으로만 둘지를 정한다. 소유 스토리는 없다.
 
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** 위 잔여의 두 선택지 가운데 둘째를 택했다. `spec-deferred-work-verdict-round.md`가 `CLAUDE.md` 표준 흐름 7번(done 전환)에 판정 규칙을 넣었다 — 스토리·chore·fix의 done 전환 PR(done 전환 PR이 없는 작업이면 그 작업의 PR 자체)이 그 작업이 append한 defer, 해소한 defer, 그 작업을 결정 지점으로 지목한 defer의 판정을 원장(항목별 절·상태 표·건수)에 함께 적는다. 아래 `## 갱신 규칙`의 2026-10-15 줄이 그 PR을 판정 시점의 정본으로 정한다. `bmad-build` 스킬 단계 자체는 바꾸지 않았다(SPEC Ask First). Epic 1 회고 액션 8(`epic-1-retro-item-8`)·Epic 2 회고 AI-6(`epic-2-retro-item-18`)·Epic 3 회고 AI-11(`epic-3-retro-item-36`)이 이 규칙을 요구했고, 세 액션의 상태 변경은 사용자 확인 대기다.
+
+**미해소 잔여:** 규칙은 여전히 산문이라 강제 수단이 없다. 건수 어긋남(141·142를 세지 않은 2026-10-13 갱신이 그 실례다)을 기계가 잡는 검사는 항목 145가 소유하고, `_bmad/custom/`로 present 단계에 배선하는 길은 열린 채다. 주인 없음.
+
 ### 36. 원장 인용의 해석 가능성을 확인하는 Docker 없는 검사
 
 **미해소(2026-09-08).** 이 라운드가 append했다. 원장은 판정마다 검증 가능한 근거를 지목하는 것을 규율로 삼는데 그 근거를 보는 검사가 없다. 이번 라운드가 그 공백을 실측했다 — 첫 구현이 항목 15에서 Story 1.4가 건드리지 않은 줄을 "바뀌었다"고 적었고, SPEC이 정한 검증 명령 다섯 개를 모두 통과했다. 잡아낸 것은 리뷰 서브에이전트가 인용 32건을 훑은 결과이며 저장소 쪽 장치는 없다.
@@ -315,6 +337,10 @@ Docker 없는 정적 리터럴 비교 시험은 이 저장소에 전례가 없�
 **미해소(2026-09-08).** 이 라운드가 append했다. 판정이 두 스프린트 밀린 직접 원인은 주인 없는 항목이 보이지 않는 것이었는데, 이 라운드는 그 가시성을 `## 상태 요약`의 산문 한 문단으로만 고쳤다. 그 문단은 손으로 유지되는 열거라 다음 라운드에 다시 낡고, frontmatter에는 `updated:` 하나뿐이어서 항목별 `last_checked`도 다음 확인 시점도 없다.
 
 **미해소 잔여:** 번호·제목·판정·결정 지점·마지막 확인일 열을 가진 표를 둘지, 그 표와 절이 어긋날 새 드리프트 축을 감수할지의 교환. 항목 36의 검사가 그 정합을 기계로 잡아 줄 수 있으므로 함께 정한다. 소유 스토리는 없다.
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`) — 재확인.** 원장 frontmatter는 여전히 `updated:` 하나이고 항목별 `last_checked`·결정 지점 열을 가진 표는 없다. 2026-10-15 판정 라운드도 주인 없는 항목의 가시성을 맨 위 갱신 문단의 "주인 확인" 산문과 아래 `## 갱신 규칙`의 (가)·(나) 목록 갱신으로만 고쳤다 — 이 항목이 예고한 "손으로 유지되는 열거"가 한 번 더 늘었다. 각 절의 머리말에 판정 날짜와 기준 커밋을 적기 시작한 것이 항목별 마지막 확인 시점의 부분 대체이지만 표로 모이지 않는다.
+
+**미해소 잔여:** 2026-09-08 판정과 같다(표를 둘지, 그 정합 검사를 항목 36·145와 함께 설계할지). 주인 없음.
 
 ### 38. 계층·언어를 넘나드는 제공자 이름 목록의 복제와 그 동등성 검사
 
@@ -379,6 +405,10 @@ Docker 없는 정적 리터럴 비교 시험은 이 저장소에 전례가 없�
 - 스토리가 `done`으로 넘어갈 때, 그 스토리를 결정 지점으로 지목한 항목의 판정을 함께 확인한다. 판정이 없으면 그 스토리의 present 단계에서 추가하고, 결정하지 못한 채 지나갔으면 미해소로 적으면서 주인이 없어진 사실을 남긴다. 항목 23·27이 이 확인 없이 소유 스토리가 지나가 버린 사례이며, 두 스프린트가 지난 뒤 이 원장을 다시 맞출 때야 드러났다.
 - 위 확인은 소유가 스토리 이름으로 적힌 항목만 잡는다. 그래서 두 부류를 스프린트 경계에서 따로 재확인한다 — (가) 소유를 조건으로 적은 항목(항목 23의 "HTTP 요청 타임아웃이 생기는 스토리"처럼 이름이 없어 `done` 방아쇠가 걸리지 않는다), (나) 소유 스토리가 지나가 주인이 없어진 항목. 현재 (가)·(나)에 드는 것은 23·27이며, 주인 없는 항목 전체 목록은 `## 상태 요약`이 소유한다.
 - `defer` 판정으로 `deferred-work.md`에 새 항목을 append한 라운드는 **그 라운드 안에서** 새 항목의 판정도 함께 적는다. 다음 라운드로 넘기면 이 원장이 고치려는 드리프트를 스스로 시작하는 것이다. 항목 35·36·37이 그 규칙을 적용한 첫 사례다.
+- (2026-10-15 추가) 판정 시점의 정본은 `CLAUDE.md` 표준 흐름 7번이다 — 스토리·chore·fix의 done 전환 PR(done 전환 PR이 없는 작업이면 그 작업의 PR 자체)이 그 작업이 append한 defer, 해소한 defer, 그 작업을 결정 지점으로 지목한 defer의 판정을 함께 적는다(지나갔으면 미해소·주인 상실로라도). 위 줄의 "그 스토리의 present 단계에서"와 "그 라운드 안에서"는 그 PR 안에서 지키는 것으로 읽는다.
+- (2026-10-15 추가) 위 (가)·(나) 재확인 목록을 갱신한다. 지금 (가)(소유를 조건으로 적은 것)에 드는 것은 23·85·96·120·143, (나)(지목 스토리가 지나가 주인이 없어진 것)에 드는 것은 27·56·95·110·112다. 117은 3.8이 재차 미뤘지만 소유가 출시 게이트(Epic 3 회고 AI-9, `epic-3-retro-item-34`)로 정해져 있어 넣지 않는다. 근거는 각 절과 상태 요약의 2026-10-15 판정 라운드 갱신 문단이다.
+
+## 항목별 판정(계속)
 
 ### 45. 제공자별 왕복 시험이 제공자 비종속 축을 통째로 복제한다
 
@@ -423,6 +453,194 @@ Docker 없는 정적 리터럴 비교 시험은 이 저장소에 전례가 없�
 - **결정적 가드.** `frontend/src/screens/SignedInScreen.test.tsx:1849`의 첫 관측 가드가 "이동 중" 문장이 처음 보이는 순간 `replaceLocation`이 이미 불렸는지를 부하 없이 단정한다(`frontend/src/test/firstSight.ts`). 이 effect 하나를 `useEffect`로 되돌리면 그 파일 10회 중 10회 이 가드가 실패했고, 복원하면 10회 중 10회 통과했다. 이 가드는 CI `frontend-quality`가 PR마다 돌리는 Vitest에 들어 있으므로 effect가 passive로 돌아가면 부하와 무관하게 붉게 나온다.
 - **로컬 부하 반복.** `frontend/scripts/stress-test.sh`(`yes` 16개)로 리뷰를 반영한 최종 트리의 전체 Vitest(871건)를 36회 돌려 모두 통과했다. 리뷰 반영 전 구현 트리(866건)도 12회·24회 모두 통과했다. 같은 스크립트·같은 부하에서 수정 전 트리(`7245371`)는 12회 중 1회 실패했다(`SignedInScreen` AC-13의 초점 단정, 같은 원인의 다른 효과). `_bmad-output/implementation-artifacts/spec-frontend-effect-timing.md` `## 측정`의 기준선은 12회 중 2회 실패였다. 가드 파일만 3회 돈 부하 반복도 통과했다.
 
+### 51. `dev_subject` 파라미터 이름이 Java 상수·셸·e2e에 각각 리터럴로 있고 등가 검사가 없다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`) — 규모 확대.** Story 1.8이 append했다. 정의는 여전히 `backend/src/main/java/com/bokrilog/DevOidcStub.java:75`의 `SUBJECT_OVERRIDE_PARAMETER = "dev_subject"` 하나인데, 그 리터럴을 손으로 다시 적는 자리가 원문의 두 곳에서 늘었다 — `deploy/compose/verify-same-origin.sh`가 아홉 곳(`:1101`·`:1391`·`:1633`·`:1741`·`:1799`·`:1836`·`:2008`·`:2729`·`:2766`)에서 `&dev_subject=`를 조립하고, 주입 origin Playwright가 다섯 곳(`frontend/e2e/auth-entry.spec.ts:114`·`bybit-connection.spec.ts:70`·`operator.spec.ts:46`·`support/firstPlan.ts:28`·`support-inquiry.spec.ts:37`)에서 `searchParams.set('dev_subject', …)`를 쓴다. 세 계층을 대조하는 검사는 `.github/scripts/test-ci-scripts.sh`에도 백엔드·프런트엔드 시험에도 없다. 항목 33·38과 같은 뿌리이고 61·63·80·101과 한 묶음이다.
+
+**미해소 잔여:** 등가 검사의 형태(Docker 없는 정적 대조인지 생성 산출물인지)와 범위. 항목 33의 결정이 함께 닫는다. 주인 없음.
+
+### 52. `ReauthPanel.module.css`가 진입 화면의 제공자 버튼 규칙 셋을 복제한다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 1.8이 append했다. `.googleButton`·`.naverButton`·`.kakaoButton` 세 규칙이 같은 토큰으로 `frontend/src/components/ReauthPanel.module.css:76-135`와 `frontend/src/screens/EntryScreen.module.css:177-276`에 두 벌 그대로 있고, 항목 62의 세 번째 사본(`SettingsScreen.module.css:330-`)도 남아 있다. "세 버튼의 바깥 크기가 서로 같다"를 재는 e2e는 여전히 진입 화면 하나다(`frontend/e2e/auth-entry.spec.ts:146`). PR #73(`spec-frontend-dialog-commons.md`)은 대화상자 CSS만 `ConfirmationDialog.module.css` 하나로 모았고 제공자 버튼은 건드리지 않았다.
+
+**미해소 잔여:** 제공자 버튼을 소유할 공유 부품(또는 공유 CSS 모듈)을 정하는 CSS 소유 구조 결정. 항목 34·62·64·84·88·93·99·102와 같은 묶음이다. 주인 없음.
+
+### 53. 아는 이름이지만 구성되지 않은 제공자로 재인증을 무장하면 최상위 내비게이션이 원본 오류 JSON에 닿는다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 1.8이 append했다. 재인증 시작은 지금도 제공자 이름만 본다 — `AuthSessionController.java:316-324`의 `startReauthentication`은 `isSupportedProvider`만 확인하고 등록 구성 여부를 조회하지 않으며(javadoc이 그 결정을 적는다), 이어지는 인가 시작이 `:281-289`의 `authorizationUnavailable`에서 500을 낸다. 그 요청은 최상위 내비게이션이라 사용자가 공통 오류 JSON 본문을 그대로 본다. 반면 연결 시작은 `LinkService.java:162`의 `isConfiguredProvider`로 미구성 제공자를 시작 단계에서 닫으므로(`AuthLinkProviderTest`의 `구성되지_않은_제공자의_연결_시작은_거부된다`) 두 시작의 처리가 갈라져 있다.
+
+**미해소 잔여:** 화면 층에서 부분 구성 스택을 다루는 일은 항목 40(미해소)의 범위이고, 재인증 시작도 연결 시작처럼 구성 여부로 닫을지는 그 결정과 함께 본다. 실제 제공자 등록이 하나씩 들어오는 Epic 1 실연동 게이트 전에 정해야 한다. 주인 없음.
+
+### 54. 절대 수명 12시간의 끝에 성공한 재인증이 몇 분 뒤 만료로 끝난다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 1.8이 append했다. `SessionGuard.java:137-142`는 절대 수명 마감을 세션 `CREATION_TIME`에서만 계산하고 회전은 그 값을 바꾸지 않는다. 재인증 시작(`AuthSessionController.java:316-`)은 남은 절대 수명을 보지 않고 무장하며, 남은 수명이 무장 수명보다 짧으면 거절하는 판정도 없다. 1.8 뒤에 수명 계약을 다시 연 SPEC은 없다(`spec-sensitive-command-commons.md`도 재인증 시각 소비만 다뤘다). 보안 경계는 지켜지고 문제는 사용성이다.
+
+**미해소 잔여:** Story 1.5가 소유한 수명 계약을 다시 열어 재인증 시작의 남은 수명 판정을 둘지. 주인 없음.
+
+### 55. `useSignOut`·`useReauthentication`의 중복 제출 가드가 React 상태를 읽어 같은 tick의 두 번째 호출을 막지 못한다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 1.8이 append했다. `frontend/src/session/useSignOut.ts:33-38`과 `frontend/src/session/useReauthentication.ts:30-35`이 각각 `const [pending, setPending] = useState(false)` 뒤에 `if (pending) return`을 두고, `useRef` 래치는 어느 쪽에도 없다. 실제 브라우저에서는 discrete event마다 flush되어 창이 사실상 닫혀 있지만, 프로그래밍 방식 연속 dispatch에서는 두 번째 재인증 무장이 첫 번째를 덮을 수 있다.
+
+**미해소 잔여:** 두 훅에 같은 ref 래치를 함께 다는 변경(원문대로 한쪽만 고쳐 관용을 가르지 않는다). 주인 없음.
+
+### 56. 소비된 허가 행에 보존 상한이 없어 민감 작업마다 `result` 문자열이 무기한 쌓인다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 1.9가 append했다. 기회적 청소 `ActionGrantRepository.java:248-253`(`deleteExpiredUnconsumedOf`)은 여전히 미소비·만료 행만 지우고, 그 javadoc(`:240-244`)이 소비된 행의 정리를 계정 삭제의 `ON DELETE CASCADE`에 맡긴다. 상한을 정하라고 지목된 Story 1.10은 재시도 정책도 보존 상한도 정하지 않고 `done`이 됐고(`spec-1-10-link-sign-in-method.md`에 해당 언급 0건), 그 뒤 결과가 쌓이는 발급 자리가 넷 늘었다(`BybitConnectionService`·`BybitRevocationCommandService`·`PlanEndCommandService`·`OperatorCommandService`). Story 3.10이 `RestoreInvariants`에서 이 표를 삭제 잔여 검사에 넣었지만 그것은 삭제된 계정의 잔여를 보는 것이지 보존 상한이 아니다. 항목 59·71과 같은 뿌리다.
+
+**미해소 잔여:** 보존 기간 값(재전송이 도착할 수 있는 최대 시간)과 sweep 술어 확대. 지목된 1.10이 지나가 주인 없음(`## 갱신 규칙` (나) 부류). 개인정보 보존 정책(Epic 5)과 함께 볼 지점이다.
+
+### 57. 허가 포트가 `MockHttpSession`으로만 구동되고 실제 Spring Session JDBC 세션으로 발급→소비 왕복을 지나는 층이 없다
+
+**해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 1.9가 append했고, 지목된 Story 1.10과 그 뒤 민감 command들이 HTTP 표면을 만들면서 그 층이 생겼다. 근거는 **현재 요청의 세션 id로 소비하는** 실경로다 — 연결 흐름은 OIDC 콜백이 세션을 회전시키므로 발급 때 기록한 id를 그대로 제시해 소비하고(`ActionGrantService.java:543`, `LinkService.java:215`) 실제 id와의 어긋남을 볼 수 없어 근거로 쓰지 않는다. 계획 종료는 준비 요청에서 그 요청의 실제 Spring Session JDBC 세션 id(`SessionFacts.of`의 `session.getId()`)로 발급하고, 별도 HTTP 요청인 확정에서 무장의 세션 id가 지금 세션과 같은지 보고(`PlanEndCommandService.java:156`, `armed.sessionId().equals(session.getId())`) 제시값 없이 지금 요청의 세션 id로 소비한다 — 소비 술어가 `session_id = :sessionId`를 포함하므로(`ActionGrantRepository.java:165`) `HttpSession#getId()`가 요청 사이에서 귀속 값과 다르면 소비가 실패한다. `PlanEndTest.anEarlyEndPreparesConfirmsAndLeavesAReadOnlyRecord`(`:59`)가 준비 뒤 미소비(`:82`)와 확정 뒤 소비(`:113`)를 단정한다. Bybit 해제(`BybitRevocationCommandService.java:202`)와 운영 command(`OperatorCommandService.java:296`)도 같은 모양이다. 서로 다른 두 실제 세션 사이의 귀속은 `AuthUnlinkProviderTest.java:598`의 `오래된_탭의_취소는_다른_세션의_허가를_지우지_않는다`가 지난다. 모두 `backend-quality`에서 돈다. 발급 행의 `session_id`를 `spring_session.session_id`와 직접 비교하는 단정은 없지만, 위 소비가 그 동일성을 관측한다.
+
+### 58. 같은 `(user, command, target)`으로 동시에 들어온 두 발급이 살아 있는 허가를 둘 남길 수 있다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 1.9가 append했다. 발급은 지금도 `ActionGrantService.java:260-280`의 트랜잭션 하나에서 `invalidateLiveGrants`(DELETE) 뒤 `issueIfReauthenticationFresh`(INSERT)를 차례로 실행할 뿐 행 잠금도 advisory lock도 없고, 유일 색인은 `(user_id, operation_id)` 하나다(`V3__action_grant.sql:104-105`). 두 READ COMMITTED 트랜잭션이 동시에 지나면 각자 삽입한다. `spec-sensitive-command-commons.md`는 `issue()`의 `(u,c,t)` 무효화를 "같은 작업의 살아 있는 허가는 하나" 규칙으로 유지한다고 적었지만 그 동시성은 다루지 않았고, `ActionGrantConcurrencyTest`는 소비·멱등 경합만 본다. 소비는 허가 단위로 한 번뿐이라 민감 작업이 두 번 실행되지는 않는다.
+
+**미해소 잔여:** 발급 직렬화 — 생명주기 행 잠금 또는 새 마이그레이션의 `(user_id, command, target) WHERE consumed_at IS NULL` 부분 유일 색인(V3는 이미 적용돼 고칠 수 없다). 주인 없음.
+
+### 59. sweep이 발급 사용자 범위로 좁혀져 다시 발급하지 않는 사용자의 만료 미소비 행이 영구히 남는다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 1.9가 append했다. `ActionGrantService.java:418-424`의 sweep은 `deleteExpiredUnconsumedOf(userId)`(`ActionGrantRepository.java:248-253`)로 발급 사용자 범위만 지우고 다른 청소 경로는 없다 — Story 3.8의 Worker 스케줄링에도 이 표는 들어가지 않았다. 계정 삭제의 cascade가 여전히 유일한 퇴로이며 항목 56과 같은 뿌리다.
+
+**미해소 잔여:** 보존 정책 라운드가 56과 함께 정한다(전역 주기 청소를 Worker에 둘지 포함). 주인 없음.
+
+### 60. `/settings`에서 시작한 재인증이 그 화면이 아니라 세션의 확정 목적지로 돌아온다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 1.10이 append했다. 재인증 시작의 복귀 목적지는 여전히 세션 `DESTINATION_ATTRIBUTE` 하나다 — `AuthSessionController.java:331-338`이 `allowedDestination(sessionAttribute(request))`를 읽고, 그 뒤에는 Story 3.1이 더한 운영자 접기(`foldDestination`)만 있다. `CLAUDE.md`의 `## 스토리가 고정한 계약`이 지금도 "복귀 목적지의 출처는 세션 하나이며 클라이언트는 목적지를 보내지 않는다(1.8)"를 계약으로 적는다. 연결 흐름은 서버 상수 `SETTINGS_PATH`로 돌아오므로(`LinkService.java:210`) 이 항목은 설정 화면의 본인 확인 버튼에만 해당한다.
+
+**미해소 잔여:** Story 1.8의 frozen 경계를 다시 협상하는 판단(로그인 시작이 `?next=`를 닫힌 집합으로 받는 선례는 있다). 주인 없음.
+
+### 61. 내부 경로 집합이 다섯 곳에 복제됐고 서로 같은지 보는 검사가 없다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`) — 규모 확대.** Story 1.10이 append했다. 다섯 곳은 지금도 손으로 맞춘다 — `deploy/nginx/bokrilog.conf:238`의 정규식, `AuthFlowHandlers.java:120-121`의 `ALLOWED_DESTINATIONS`, `frontend/src/App.tsx:66-80`의 경로 분기, `frontend/src/session/useSessionState.ts:86`의 `DESTINATION_PATHS`, `frontend/src/content/auth.ts:174`의 `RETURN_DESTINATIONS`. 그사이 `/plan-conditions`(2.3)와 `/operator`(3.1)가 더해졌고 `/operator`에는 다섯 곳과 별개로 `OperatorAccess.foldDestination` 접기가 붙었다. `AuthFlowHandlers.java:95-100`의 javadoc이 "다섯의 등가를 보는 검사는 아직 없다"고 스스로 적는다. 항목 33·38과 같은 뿌리다.
+
+**미해소 잔여:** 계층 간 등가 검사(항목 33의 결정). 주인 없음.
+
+### 62. 제공자 버튼 CSS 규칙의 세 번째 사본이 생겼다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 1.10이 append했다. `frontend/src/screens/SettingsScreen.module.css:330-`의 `.googleButton`·`.naverButton`·`.kakaoButton`이 세 번째 사본으로 그대로 있다(최소 크기 쌍 `:335-336`). 설정 화면의 e2e(`frontend/e2e/auth-entry.spec.ts:850-866`)는 조작 대상마다 44×44 하한만 재고 세 버튼의 바깥 크기가 같은지는 재지 않는다. 항목 52와 같은 뿌리다.
+
+**미해소 잔여:** 항목 52와 같은 CSS 소유 구조 결정. 주인 없음.
+
+### 63. 제공자별 닫힌 맵이 화면 카피에 둘 더 생겼고 그 값이 맞는 제공자를 가리키는지 보는 검사가 없다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 1.11이 append했다. `frontend/src/content/auth.ts:763-767`(`unlinkLabels`)과 `:795-799`(`unlinkDialog.titles`)가 그대로 제공자 키의 닫힌 맵이다. 키 누락은 타입이 잡지만 값이 엉뚱한 제공자를 가리키는지 보는 단정은 없다 — 시험(`SettingsScreen.test.tsx:376`·`UnlinkDialog.test.tsx:82`)은 같은 맵의 값을 다시 읽어 비교하므로 그 축을 볼 수 없다. 항목 33·38·48과 같은 뿌리다.
+
+**미해소 잔여:** 같은 계층 안의 값 대응 단정(예: 각 값이 같은 파일 `:738`의 `providerNames[provider]`를 포함하는지). 항목 48처럼 값싸게 먼저 닫을 수 있다. 주인 없음.
+
+### 64. 최소 조작 영역 44×44px 규칙의 사본이 CSS 네 곳으로 늘었다
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 1.11이 append했다. 대화상자 축은 닫혔다 — PR #73(`spec-frontend-dialog-commons.md`)이 `UnlinkDialog.module.css`를 지웠고, 이제 확인 대화상자 여덟(`UnlinkDialog`·`PlanEndDialog`·`ConnectionRevokeDialog`·운영자 대화상자 다섯)이 `frontend/src/components/ConfirmationDialog.module.css` 하나를 쓴다. 원문이 센 "네 번째 사본"은 사라졌다(항목 99와 같은 수정).
+
+**미해소 잔여:** 제공자 버튼의 `--component-social-sign-in-min-target-size` 쌍은 세 화면에 그대로이고(`EntryScreen.module.css:183-184`·`ReauthPanel.module.css:82-83`·`SettingsScreen.module.css:335-336`), 일반 조작의 `--space-target-min` 하한은 CSS 모듈 열아홉에 각자 적혀 있다. 값이 토큰이라 표류해도 조용하고 기하를 재는 e2e는 화면마다 따로다. 항목 34·52·62·84와 같은 CSS 소유 구조 결정이다. 주인 없음.
+
+### 65. Epic 1의 `link-provider`·`unlink-provider`를 새 confirmation hash 계약으로 개조한다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.1의 다중 목표 점검이 갈라내 append했다(source_spec 없음). 두 command의 확인 문구는 여전히 상수다 — `LinkService.java:66`(`CONFIRMATION = "연결"`)·`UnlinkService.java:77`(`"해제"`)이고 둘 다 그 상수로 발급하므로(`LinkService.java:181`·`UnlinkService.java:172`), `ActionGrant.java:163-169`가 `(command, target, confirmation)`으로 만드는 해시는 이 두 command에서 `(command, target)`의 결정적 함수이고 판별력이 0이다. 다른 발급 자리(Bybit 연결·연결 해제·계획 종료·운영 command)는 요청마다 정해진 문구 값을 넘기고, 운영 command 쪽은 Story 3.1이 확인 문구 재입력으로 닫았다. `sprint-status.yaml`의 `epic-1-retro-item-7`은 `in-progress`이고 `CLAUDE.md`는 "Epic 1·2 command의 hash는 ERD 정정 몫으로 남는다"고 적는다.
+
+**미해소 잔여:** 두 command를 개조할지, `ERD-1.0.0` §5를 정정할지의 선택. 주인은 Epic 1 회고 item-7이다.
+
+### 66. Bybit permission·retCode 허용 목록이 비어 있어 실제 제공자에서 거절 사유가 오분류될 수 있고, 그 공백을 읽는 게이트가 없다
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.1이 append했다. 거절 사유 가운데 rate limit은 Story 2.12에서 실제 모양을 얻었다 — `backend/src/main/java/com/bokrilog/source/internal/BybitAdapter.java:211`이 `RATE_LIMIT_RET_CODE = 10006`을 두고 모든 서명 호출이 지나는 공통 교환(`:1035`)이 그것을 `RATE_LIMITED`로 읽으며, `BybitAdapterTest.java:353`의 `retcode10006,RATE_LIMITED`가 고정한다. HTTP 403은 IP 차단 회로(`BybitCallBudget`)가 받는다. 이 시험들은 `backend-quality`에서 돈다.
+
+**미해소 잔여:** `READ_ONLY_PERMISSION_GROUPS`(`:152`)·`REQUIRED_PERMISSION_GROUPS`(`:161`)·`RET_CODE_REASONS`(`:171`)는 여전히 비어 있고 `BybitAdapterTest.java:653`이 그 비어 있음을 고정한다. 그래서 permission 배열이 비어 있지 않은 실제 읽기 전용 키는 전부 쓰기 권한으로 거절되고, `10006` 밖의 retCode(IP 거부 포함)는 호출 자리의 기본값으로 접힌다. 목록이 빈 채로 실연동을 열지 못하게 하는 기계 판독 표시도 없다(운영 gate `deploy/production/preflight.sh`는 이 표를 보지 않는다). 주인은 Epic 2 Bybit 실연동 게이트(API 스파이크)다.
+
+### 67. 모듈별 삭제 경로를 열거하는 포트·레지스트리가 없고 `operations_restriction`에는 삭제 경로가 없다
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.1이 append했다. 세 가지가 바뀌었다. erase에 운영 호출자가 생겼다 — Story 3.10의 루트 `AccountErasure`가 한 트랜잭션에서 portfolio → sync → plan → source → operations 순서로 부른다. `operations_restriction`에 삭제 경로가 생겼다 — `OperationsDeletionApi.java:38`의 `eraseRestrictionTargets`가 사용자 귀속 target을 digest로 비식별한다. 사용자 열의 소유 규칙을 카탈로그와 대조하는 시험이 생겼다 — `RestoreApplyTest.java:334`의 `사용자를_가리키는_모든_열은_정확히_한_모듈이_센다`는 시험 안에 **다시 적은** 접두사·열 규칙(`portfolio_*`·`sync_*`·`plan_*`·`source_*`·`operations_*`·`support_*`, 루트의 `action_grant` 등)을 `information_schema`의 모든 사용자 열과 대조해 어느 규칙에도 안 맞거나 두 규칙에 맞는 열을 거부한다. 다만 모듈의 `remainingRowsOf`를 부르지는 않으므로 모듈 SQL이 그 규칙과 같은지는 보지 않는다. `삭제된_계정에_남은_행은_모듈마다_세어져_판정을_실패시킨다`(`:277`)도 모듈별 세기를 부르지만 양수·합만 본다. 둘 다 `backend-quality`에서 돈다. Epic 1 회고가 짚은 "`action_grant`를 언급하지 않는 삭제 시험"은 이 두 시험이 `action_grant`를 루트 몫으로 다루면서 닫혔다.
+
+**미해소 잔여:** 삭제 순서와 참여자 목록은 여전히 `AccountErasure`와 `RestoreInvariants`가 손으로 나열한다. 모듈 술어(`remainingRowsOf`)가 접두사 규칙의 표 전부를 덮는지 보는 검사가 없다 — 시험 모양은 모든 카탈로그 사용자 열에 한 행씩 심고 `residualRows`가 심은 수와 같은지 보는 것이다. Epic 4 `engagement` 같은 새 모듈의 표는 위 대조가 "어느 규칙에도 안 맞음"으로 잡지만, 규칙에 맞는 표를 모듈 SQL이나 erase가 빠뜨린 것은 그 검사가 있어야 드러난다. 사용자 삭제 경로도 아직 없다. 주인은 Epic 5다.
+
+### 68. 5분 무장 수명이 화면에 보이지 않고 만료가 구분되지 않는 거부로 끝난다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.1이 append했다. `BybitConnectionFlow.java:58`의 `ARMED_LIFETIME = Duration.ofMinutes(5)`가 그대로이고 화면 카피 `frontend/src/content/connection.ts:236`도 "이 문구는 이번 연결 요청에만 유효합니다"뿐이며 남은 시간을 말하지 않는다. 준비 응답에 무장 시각이나 만료를 싣는 결정은 어느 SPEC에도 없고, 만료는 여전히 구분되지 않는 `FORBIDDEN`이다.
+
+**미해소 잔여:** 무장 시각을 클라이언트에 줄지의 별도 판단(거부를 하나로 두는 계약은 유지한다). 주인 없음.
+
+### 69. Bybit 왕복 e2e 넷이 `PLAYWRIGHT_BASE_URL` 게이트 안에 있어 기본 실행에서 돌지 않는다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.1이 append했다. `frontend/e2e/bybit-connection.spec.ts:105-108`의 `test.skip(injectedOrigin === '', …)`가 그대로라 기본 실행(`frontend-quality`의 `test:e2e:run`)에서는 돌지 않고 `same-origin-integration`의 주입 origin 실행에서만 돈다. CI에서는 PR마다 돌지만, 로컬 기본 실행에서 브라우저 층의 자격정보 비노출을 볼 길이 없다는 사실은 남는다. 항목 108과 같은 뿌리(주입 origin 게이트 밖 e2e)다.
+
+**미해소 잔여:** e2e 게이트 구조를 정하는 결정. 주인 없음.
+
+### 70. `SettingsScreen.test.tsx`의 여러 시험이 연결 상태 요청을 stub하지 않아 Bybit 절이 `unavailable` 분기로 렌더된다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.1이 append했다. 원문이 지목한 시험들은 지금도 연결 상태 요청을 stub하지 않는다 — `SettingsScreen.test.tsx:541`(`해제: 확인하면 목록을 다시 읽고 결과를 말한다`)·`:672`(`해제 성공 뒤 포커스가 결과 문장으로 간다`)·`:854`(연결 상태 재확인)에 `stubConnectionStatusRequest`가 없고, 그 요청은 `frontend/src/test/setup.ts:548-551`의 전역 거부에 부딪혀 기록에만 남는다. 같은 파일의 다른 시험은 대부분 `stubConnectionStatusRequest(notConnected)`를 명시하게 됐지만 기록이 비었는지 단정하는 시험은 `:535` 하나뿐이고, `afterEach`(`setup.ts:648-663`)는 기록을 지울 뿐 단정하지 않는다.
+
+**미해소 잔여:** 화면 시험이 자기 전제를 명시하게 하는 방법(전역 사후 단정을 둘지, 연결 상태에도 3.5·3.6처럼 기본 응답을 둘지). 주인 없음.
+
+### 71. 10분 확인 참조가 만료된 뒤에도 계정 삭제 전까지 확인 행이 보존된다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.3이 append했다. 만료 행을 청소하는 작업은 여전히 없다 — `plan_condition_confirmation`을 지우는 문장은 `PlanConditionRepository.java:169`의 계정 단위 erase 하나이고 그 호출자는 Story 3.10의 `AccountErasure`뿐이다. `expires_at`은 확인을 거절하는 데에만 쓰인다. Story 3.6이 문의에 "해결 뒤 90일, 조회 트랜잭션이 먼저 지운다"는 보존 상한 선례를 만들었지만 이 표에는 적용되지 않았다. 항목 56·59와 같은 뿌리다.
+
+**미해소 잔여:** 확인 데이터의 보존 상한과 청소 시점(조회 시점 청소 선례를 따를지). 주인 없음.
+
+### 72. 공유 증거에 사건 분 candle이 있으면 kline을 다시 부르지 않아 제공자 쪽 종가 정정이 관측되지 않는다
+
+**해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.6이 append했고 지목한 Story 2.12가 닫았다. 정밀 검증(`VERIFY`·`CATCH_UP`)은 대상 안 흐름의 사건 분 candle을 캐시가 있어도 다시 조회한다 — `backend/src/main/java/com/bokrilog/sync/internal/CashflowConversionMarket.java:70-73`·`:109`의 `forcedMinutes`가 그 시도에서 캐시를 믿지 않을 분이고, 종가가 다르면 공유 증거에 새 revision을 쌓는다. `PlanVerificationTest.aCorrectedCloseBecomesANewRevisionAndAChangedValue`(`:439`)가 제공자 시나리오 `REVISED_PRICE`로 실제 경로를 지나 새 revision, 근거의 `VALUE_CHANGED`, 조정 이력 행을 단정한다 — 원문이 지적한 "SQL로 revision을 꽂는 시험"이 아니다. 이 시험은 `backend-quality`에서 돈다. 일상 동기화는 설계대로 캐시를 쓴다. 항목 86과 같은 시험이 함께 지킨다.
+
+### 73. 환산 기준시각인 Bybit 서버 시간을 DB 시계와 비교하는 상한 없이 쓴다
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.6이 append했다. 증분 동기화와 정밀 검증의 `tc`에는 상한이 생겼다 — Story 2.11이 `backend/src/main/java/com/bokrilog/sync/internal/SyncWindow.java:31`의 `TIME_SKEW = Duration.ofSeconds(60)`과 `:50`의 판정을 두었고, `PlanSyncService`가 Bybit 시각을 고정한 뒤 DB 시각과 60초 넘게 어긋나면 `FAILED`/`PROVIDER_TIME_UNTRUSTED`로 끝낸다(`PlanSyncServiceTest`·`SyncWindowTest`, `backend-quality`). 그 시도는 환산까지 가지 않으므로 틀린 시각이 공유 candle 증거로 들어가지 않는다.
+
+**미해소 잔여:** 원문이 지목한 첫 계획 환산 작업은 그대로다 — `SyncJobService.java:602-613`의 `fixReference`가 `sources.marketTime()`의 값을 형식 검사만 거쳐 고정하고, 그 값이 `CashflowConversionMarket`의 candle 종료 판정 기준이 된다. 미래로 틀어진 시각이 오면 진행 중인 분 candle이 종료로 저장되고 사용자 식별자 없는 공유 증거라 다른 사용자의 환산에도 재사용될 수 있다. 같은 60초 상한을 여기에도 걸지는 `BYBIT-PRICE-1.0`의 시간 경계라 SPEC Ask First 대상이었고 아직 어느 SPEC도 정하지 않았다. 주인 없음.
+
+### 74. 만료된 lease의 재claim에 횟수 상한이 없어 죽는 시도가 약 30초마다 영구히 다시 실행된다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.6이 append했다. 만료 lease를 다시 가져가는 술어가 작업 표마다 그대로이고 시도 횟수 열·상한은 없다 — `CashflowConversionRepository.java:282`·`CashflowClassificationRepository.java:120`·`InitialCollectionRepository.java:87`·`SyncJobRepository.java:71`·`PlanPublicationRepository.java:228`이 모두 `status='RUNNING' AND lease_until<now()` 행을 다시 claim한다. PR #71의 `SyncLease.java:22`는 30초 interval 리터럴만 한 곳에 모았고(javadoc "값은 바꾸지 않았다") 재claim 정책은 다루지 않았다. Story 2.12의 호출 예산이 재실행 하나하나의 Bybit 호출 속도는 묶지만 무한 재시도 자체를 끊지는 않는다. 항목 85·96과 같은 뿌리다.
+
+**미해소 잔여:** 시도 횟수 열·상한·상한에 닿았을 때의 종단 code를 작업 표 전체가 함께 정하는 결정(새 마이그레이션 필요). 주인 없음.
+
+### 75. ERD §2.5의 호출 예산·자동 재시도가 없어, 끝난 결과 뒤 새 key로 환산을 다시 접수하면 공개 호출이 요청 수만큼 반복된다
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.6이 append했다. 원문이 기다리던 "Bybit 호출 전체를 묶는 별도 라운드"가 Story 2.12로 왔다 — `backend/src/main/java/com/bokrilog/source/internal/BybitCallBudget.java:20-27`이 자격정보별 서명 호출 bucket, 서비스 전체 공개 호출 bucket, 동시 수집 2개, 잔여 헤더 대기, HTTP 403의 10분 회로를 소유하고 `BybitAdapter`가 그 예산을 모든 Bybit 호출에 건다. 수집 page에는 backoff 재시도가 생겼다(admission은 의도적으로 재시도하지 않는다). `BybitCallBudgetTest`가 bucket·회로·대기를 시계 주입으로 단정하고 `backend-quality`에서 돈다. 반복 접수가 공유 reserved IP의 공개 호출을 초당 상한 넘게 쓰는 경로는 닫혔다.
+
+**미해소 잔여:** settled 시도 뒤의 새 접수는 여전히 막히지 않는다 — `SyncJobService.java:347-361`의 `admitCashflowConversion`은 새 멱등 키마다 작업을 만들고 재실행마다 서버 시간·instrument를 다시 부르며, 공개 bucket이 서비스 전체에 하나라 한 사용자의 반복 접수가 다른 사용자의 몫을 먹을 수 있다. 예산이 프로세스마다 하나라는 점은 항목 95가 따로 다룬다. 사용자 단위 접수 제한을 둘지는 주인 없음.
+
+### 76. 수집·판정·환산 세 상태 섹션이 GET이 계속 실패해도 진행 중이면 2초마다 끝없이 폴링한다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.6이 append했다. 폴링은 지금도 연속 실패를 세지 않는다 — `frontend/src/components/InitialInputsCollection.tsx:365-373`(환산)·`:756-764`(수집)·`:766-774`(판정)과 같은 관용의 `PlanPublicationSection.tsx:153`이 그렇고, 실패하면 `refresh`가 오류 문구만 세우고 `job`을 그대로 두므로(`:694-698`) QUEUED·RUNNING이 유지되고 interval이 계속 돈다. `spec-frontend-effect-timing.md`가 이 넷을 layout effect로 옮겼지만(항목 83 해소) 그것은 interval이 걸리고 풀리는 시점만 바꿨다.
+
+**미해소 잔여:** 연속 실패 상한과 그 뒤의 문구를 네 폴링이 함께 정하는 변경. 주인 없음.
+
+### 77. 수집 섹션의 `start()`가 409를 받으면 거절 문구를 세운 직후 `refresh()`가 그 문구를 지운다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.6이 append했다. `frontend/src/components/InitialInputsCollection.tsx:801-805`가 409에서 `setError(copy.collection.ineligible)` 뒤에 `await refresh()`를 부르고, `refresh`(`:686-693`)는 성공하면 `setError(null)`을 한다 — 거절 문구가 곧바로 지워지는 순서가 그대로다. 같은 결함의 환산 섹션 사본은 Story 2.6이 고쳤고 수집 쪽만 남았다.
+
+**미해소 잔여:** 409 문구를 refresh 뒤까지 보존하는 변경(순서 교체 또는 refresh의 오류 지우기 조건화). 주인 없음.
+
+### 78. Windows Git Bash에서 `verify-same-origin.sh`가 한글 확인 문구를 CP949 바이트로 보내 연쇄 실패한다
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.6이 append했고 `spec-verify-windows-utf8-body.md`(PR #91, 머지 커밋 `98fe052`)가 원인을 고쳤다. 원인은 mingw `curl`이 argv를 ANSI 코드 페이지로 해석하는 것이어서, JSON 본문을 `work_dir` 안의 파일에 바이트 그대로 쓰고(`deploy/compose/verify-same-origin.sh:367-380`의 `request_body`) `--data-binary "@<파일>"`로만 보낸다(예: `:2389`). 같은 형태가 돌아오지 않도록 `fetch`(`:382-424`)에 값 기준 가드를 두어 argv 본문(인라인 `--data`·`--data-raw`·`--data-urlencode`·`-F` 등)을 요청 전에 거부하고 `record_fail`로 남긴다. 파일 본문 경로는 OS와 무관하므로 Linux CI의 `same-origin-integration`이 PR마다 돈다.
+
+**미해소 잔여:** 결함 자체는 Windows에서만 나므로 CI가 검증하지 않는다 — Windows 실행의 확인은 그 SPEC의 AC(로컬 Git Bash)뿐이고 CI에는 Windows leg가 없다(항목 32 미해소). 회귀를 막는 유일한 그물인 `fetch` 가드에도 행동 시험이 없어, 가드 패턴이 깨지거나 지워져도 실패하는 시험이 없다(항목 130 미해소). 그래서 "시험이 없으면 부분 해소" 기준으로 부분 해소다. 주인은 항목 130·32와 같다(주인 없음).
+
+### 79. 프런트엔드 조회 훅에 요청 시간 상한이 없어, 응답이 끝나지 않으면 다시 불러오기가 영구히 무시된다
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.8이 append했다. 원문이 짚은 대시보드 훅에는 시간 상한이 생겼다 — Story 2.11이 `frontend/src/session/useDashboard.ts:1331`에 `DASHBOARD_REQUEST_TIMEOUT_MS = 10_000`과 abort를 두어 끝나지 않는 읽기가 실패로 settle되고 `inFlight`가 풀린다. `useDashboard.test.tsx:359`의 `P9: a read that never answers is aborted after the time limit …`가 단정하고 `frontend-quality`에서 돈다. 계획 종료·후속 계획 기준·Bybit 연결도 각자 상한을 쓴다.
+
+**미해소 잔여:** 원문이 걱정한 "훅마다 동작이 갈린다"는 그대로다 — 참조 조회 엔진 `useReferencedRequest.ts`(근거·조정 이력)와 목록 엔진 `useSequencedRead.ts`는 중단만 있고 시간 상한이 없으며, `InitialInputsCollection.tsx`·`PlanConditionPanel.tsx`의 fetch에는 `signal`도 상한도 없다. 상수도 `DASHBOARD_REQUEST_TIMEOUT_MS`·`SESSION_REQUEST_TIMEOUT_MS`·`CONNECT_REQUEST_TIMEOUT_MS`로 갈라져 있다. 공통 상한과 실패 문구를 정하는 라운드는 주인 없음.
+
+### 80. 대시보드의 state·cause·nextAction 코드와 지표 순서가 계층마다 따로 적혀 있고 대조 검사가 없다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.8이 append했다. 지표 순서는 지금도 세 곳이 각자 가진다 — `DashboardTrust.java:90`의 `METRICS`, `PlanPublicationRepository.java:656`의 `ORDER BY CASE metric …`, `frontend/src/content/planResult.ts:29`의 `METRIC_ORDER`. state·cause·nextAction 코드도 백엔드 문자열과 화면의 닫힌 맵에 따로 있고, 서버가 cause를 바꿔도 화면은 안전한 대체 문구로 접힐 뿐 깨지는 시험이 없다. 두 계층이 같은 표를 읽는 선례는 Story 3.6의 `frontend/src/content/inquiryRules.fixture.json`(`InquiryRulesTest`와 Vitest가 함께 읽는다) 하나다. 항목 33·38·51·61·101과 같은 뿌리다.
+
+**미해소 잔여:** 그 공유 fixture 관용을 대시보드 코드·지표 순서로 넓힐지(항목 33의 결정). 백엔드 안의 두 사본(`METRICS`와 `ORDER BY CASE`)은 계층 안 문제라 더 싸게 먼저 묶을 수 있다. 주인 없음.
+
+### 81. 계획이 없는 랜딩 화면에서 화면 status와 `FirstSnapshotPanel`의 live region이 함께 있어 화면당 live region이 둘이다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.8이 append했다. `frontend/src/screens/SignedInScreen.tsx:174-176`의 화면 status(`role="status"`)와 `frontend/src/components/FirstSnapshotPanel.tsx:57`의 `aria-live="polite"` 영역이 함께 렌더된다 — `SignedInScreen.tsx:214`가 `selected === null && presence !== null`일 때 패널을 그리기 때문이다. `CLAUDE.md`의 계약 "화면당 live region은 하나"(2.9·2.11)에 대한 예외로 남아 있다.
+
+**미해소 잔여:** 첫 공식값 패널의 상태 문장을 화면 status 하나로 옮기는 변경. 주인 없음.
+
+### 82. 로그인 수단 해제의 취소가 다른 탭의 다음 준비와 겹치면, 늦게 끝난 취소가 새 무장과 새 허가를 지워 확인이 403이 된다
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.8이 append했다. 허가 쪽 절반은 닫혔다 — PR #71(`spec-sensitive-command-commons.md`)이 명시적 무효화를 참조 단위 하나(`ActionGrantService.java:245-253`의 `invalidateReference`)로 통일해, `UnlinkService.abandon`·`LinkService.abandon`은 그 무장이 낳은 허가 하나만 지운다. 늦게 끝난 취소가 다음 준비의 새 허가를 `(user, command, target)` 단위로 삼키는 경로는 없다. `AuthUnlinkProviderTest.java:598`의 `오래된_탭의_취소는_다른_세션의_허가를_지우지_않는다`(Bybit 쪽 `BybitConnectionTest.java:495`)가 두 실제 세션으로 단정하고 `backend-quality`에서 돈다. 같은 탭의 경합은 Story 2.8이 화면에서 막았다.
+
+**미해소 잔여:** 같은 세션 쿠키를 공유하는 두 탭 사이의 세션 속성 경합은 그대로다 — `abandon`은 요청 시작에 읽은 무장을 버리는데 `SessionArming.java:141-143`의 `discard`는 조건 없는 `removeAttribute`이고 Spring Session은 그 삭제를 요청 끝에 쓴다. 그래서 겹친 준비가 방금 저장한 새 무장이 늦게 끝난 취소에 지워질 수 있다(Spring Session JDBC의 저장 동작에서 추론한 것이며 재현 시험은 없다). 원문이 요구한 "무장 세대 비교"는 없다. 주인 없음.
+
 ### 83. `InitialInputsCollection.test.tsx`의 403 시험이 전체 실행 부하 아래 간헐적으로 실패한다
 
 **해소(2026-10-04, frontend-effect-timing).** Story 2.8이 append했다(시험은 Story 2.7이 더했다). 원인은 시험이 아니라 `PlanPublicationSection`의 폴링 interval이 passive effect에서 걸리고 풀리던 것이다. 시험은 `계산·발행 중`을 본 직후 시계를 2초 당기고, 거절 문장을 본 직후 읽기 수를 센다. 부하가 걸리면 interval이 그 당김보다 늦게 걸리거나 거절을 그린 뒤에도 남아 읽기를 계속했다. `spec-frontend-effect-timing.md` `## 측정`의 기준선 1회차가 이 시험의 `reads` 7 ≠ 2였다.
@@ -430,6 +648,200 @@ Docker 없는 정적 리터럴 비교 시험은 이 저장소에 전례가 없�
 interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 풀리게 했다(`frontend/src/components/PlanPublicationSection.tsx:150`). 같은 파일군의 세 폴링도 같게 옮겼다(`frontend/src/components/InitialInputsCollection.tsx:364`·`:758`·`:768`). 시험의 대기와 기대값은 바꾸지 않았고 그 의존을 주석으로 적었다(`frontend/src/components/InitialInputsCollection.test.tsx:1081-1086`).
 
 확인은 항목 50과 같은 두 겹이다. 결정적 가드는 `frontend/src/components/InitialInputsCollection.test.tsx:1130`이다 — `계산·발행 중`이 처음 보이는 순간 interval이 이미 걸려 있는지를 가짜 `setInterval`의 수로 단정한다. 이 effect 하나를 `useEffect`로 되돌리면 그 파일 10회 중 10회 이 가드가 실패했고 복원하면 10회 중 10회 통과했으며, CI `frontend-quality`가 PR마다 돌린다. 로컬 부하 반복은 항목 50의 전체 Vitest 실행과 같고, 이 파일만 `stress-test.sh --runs 3`으로 돈 실행도 통과했다.
+
+### 84. `AdjustmentHistory.module.css`가 44×44 최소 조작 영역 규칙의 다섯 번째 사본이 됐다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.10이 append했다. 구조는 그대로다 — `frontend/src/components/AdjustmentHistory.module.css`의 `.action`(`:217-224`, `min-block-size`·`min-inline-size: var(--space-target-min)`)·`.id`(`:95`)·`.facts`(`:64`)·`.notice`(`:206`)가 `CalculationEvidence.module.css`의 `.action`(`:145-151`)·`.id`(`:93`)·`.facts`(`:66`)·`.notice`(`:134`)와 같은 토큰 조합으로 남아 있다. 지금 `frontend/src` 아래에서 44×44 선언을 가진 CSS 모듈은 `tokens.css`를 빼고 19개다. PR #73(`spec-frontend-dialog-commons.md`)은 대화상자 CSS만 `ConfirmationDialog.module.css` 하나로 모았고(항목 99) 패널·조작 모듈은 범위 밖이었다. 항목 34·52·62·64·88·93·99·102와 같은 뿌리다.
+
+**미해소 잔여:** 공유 규칙의 형태(공유 CSS 모듈·`composes`·전역 유틸리티 클래스)와 그것을 강제할 검사(stylelint 규칙 등). 주인 없음.
+
+### 85. 증분 동기화가 매번 전체를 다시 처리하고 값이 같아도 새 공식 버전을 발행하며, 긴 단계는 lease를 잃을 수 있다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.11이 append했다. 발행은 시도마다 다음 공식 버전을 쓴다 — `backend/src/main/java/com/bokrilog/sync/internal/PlanSyncPublisher.java:23-36`의 쓰기 순서에 "변경이 없으면 발행하지 않음" 분기가 없고, `VersionChanges.java:21`의 `VERIFIED_NO_CHANGE`는 표지일 뿐 발행을 생략하지 않는다. heartbeat는 여전히 `FOR UPDATE SKIP LOCKED`라 다른 트랜잭션이 잡은 행을 건너뛴다(`PlanSyncRepository.java:316-334`). PR #71의 `SyncLease`(`sync/internal/SyncLease.java:22`)는 30초 리터럴을 상수 하나로 모았을 뿐 값·동작을 바꾸지 않았다(같은 파일 `:6-7` 주석). 버전·흐름의 보존 상한도 없다. heartbeat는 항목 96, lease 재claim은 항목 74와 같은 뿌리이고 보존 상한은 56·59·71 묶음이다.
+
+**미해소 잔여:** 무변경 발행 생략(2.9·2.10의 "계산 버전 하나가 한 계보를 인용한다" 불변식과의 정리), 보존 상한, 단계 트랜잭션 안의 lease 연장. 원문의 결정 지점("이력 규모가 보이는 시점")은 조건이라 주인 없음.
+
+### 86. 이어받은 사건의 USD 값·판정이 버전 사이에서 바뀌어도 조정 이력에 표지가 없다
+
+**해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.11이 append했고 지목된 Story 2.12가 SPEC Problem에 이 항목을 적고 닫았다(`spec-2-12-precision-reverification.md:25`). 버전 사이의 연결은 conversion 사슬이 아니라 모든 증분 발행이 같은 트랜잭션에 쓰는 직전 버전과의 흐름 차이(`sync_plan_calculation_change`, `ADDED`·`REMOVED`·`VALUE_CHANGED`)가 맡고(`PlanSyncPublisher.java:32-33`), 조정 이력은 그 차이 가운데 늦은 행에 표지와 이전 값을 붙인다(`AdjustmentHistoryService.java:207-215`, 판정은 `VersionChanges.java:31-33`). `PlanVerificationTest.aCorrectedCloseBecomesANewRevisionAndAChangedValue`(`:439`)가 가격 revision 뒤 조정 이력 행이 `VALUE_CHANGED`이고 이전 값이 `2`임을(`:469-472`), `aSharedPriceCorrectionUnderAnOrdinarySyncIsAChangedValueNotALateEvent`(`:1416`)가 일반 동기화 아래의 공유 candle 정정도 같은 표지를 받음을, `aChangeRowThatIsNotTheFlowDifferenceMakesTheEvidenceAndHistoryUnavailable`(`:1035`)이 차이 행이 실제 흐름 차이와 어긋나면 근거·이력이 닫힘을 단정한다. 셋 다 `backend-quality`에서 돈다.
+
+판정 정책 버전 교체 경로는 정책 버전이 하나뿐이라 재현할 길이 없지만 같은 흐름 차이 기제를 지나므로 따로 남기지 않는다 — 이 부분은 시험이 아니라 구조 추론이다(정책 버전이 오르는 경우는 항목 143과 같은 사정).
+
+### 87. `검토 필요`로 끝난 동기화의 다음 행동이 풀 수 없는 재동기화다
+
+**해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.11이 append했고 지목된 Story 2.12가 SPEC Problem에 이 항목을 적고 닫았다(`spec-2-12-precision-reverification.md:20`). 동기화 검토의 다음 행동은 재동기화가 아니라 정밀 검증이다(`backend/src/main/java/com/bokrilog/sync/internal/DashboardTrust.java:295-298`, 주석 "Syncing again cannot resolve a sync's review"). `PlanVerificationTest.aSyncThatNoLongerSeesAnOfficialEventInItsWindowNeedsReview`(`:275`)가 `nextAction`이 `VERIFY`임을(`:290`), `anUnseenStoredEventIsExcludedAndLaterSyncsTreatItAsExplained`(`:301`)가 원문이 짚은 "발행되지 않은 시도가 저장한 사건이 제공자에서 사라진" 경우를 정밀 검증이 `SUPERSEDED`로 제외하고 이후 동기화가 설명된 것으로 보고 발행함을, `aMissingOfficialEventHoldsTheVersionAndAskingAgainIsNotUseful`(`:339`)이 공식 사건 소실은 버전을 보류하고 재요청을 not useful로 거절함(운영 검증에 넘기는 의도된 fail-closed)을 단정한다. 모두 `backend-quality`에서 돈다.
+
+### 88. `SyncControl.module.css`가 44×44 규칙의 여섯 번째 사본이 됐다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.11이 append했다. `frontend/src/components/SyncControl.module.css:21-29`의 `.button`이 `min-block-size`·`min-inline-size: var(--space-target-min)`을 그대로 든다. 공유 규칙은 아직 없다. 항목 84와 같은 뿌리다.
+
+**미해소 잔여:** 항목 84와 같다. 주인 없음.
+
+### 89. `staleFenceCannotPublishAfterLeaseOwnershipChanges`의 2초 대기가 스텁 지연 2초를 덮지 못한다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** `spec-backend-test-speed.md`가 append했다. 대기는 지금 `backend/src/test/java/com/bokrilog/FirstSnapshotTest.java:1665`의 `Thread.sleep(2000)`이고(원문 뒤 줄이 밀렸다) `SLOW_WALLET` 스텁 지연은 여전히 2000ms다(`backend/src/main/java/com/bokrilog/DevBybitStub.java:477-481`). 이 파일의 이후 변경도 이 대기를 건드리지 않아, 늦은 워커가 스텁에서 돌아오기 전에 단정이 끝날 수 있는 창이 그대로다. 항목 90·91과 같은 시험 구조 묶음이다.
+
+**미해소 잔여:** 대기를 스텁 지연보다 여유 있게 늘릴지, 항목 90의 계수기로 "느린 응답을 보냈다"를 관측한 뒤 단정할지. 주인 없음.
+
+### 90. 느린 스텁 호출 중의 늦은 워커를 기다리는 고정 대기 묶음
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** `spec-backend-test-speed.md`가 append했다. 고정 대기는 `FirstSnapshotTest.java:582`(2500)·`:626`(3000)·`:1172`·`:1194`(2500)·`:1665`(2000ms)에 그대로 있다. 시험 표면 `BybitStubConfiguration`에는 경로별 요청 수 계수기(`:115-134`)만 있고 "느린 응답을 보냈다"를 세는 계수기는 없다. `spec-backend-test-speed.md:50`이 이 묶음을 "유지"로 분류한 상태가 바뀌지 않았다.
+
+**미해소 잔여:** 스텁 시험 표면에 느린 응답 완료 계수기를 더하고 `QUIET_WINDOW`로 바꾸는 일. 주인 없음.
+
+### 91. 세 fence 시험이 DB fence를 확률적으로만 지난다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** `spec-backend-test-speed.md`가 append했다. heartbeat는 여전히 5초 고정이고(`backend/src/main/java/com/bokrilog/sync/internal/FirstSnapshotWorker.java:81`, `@Scheduled(fixedDelay=5000)`) 메모리 guard를 건너뛰고 DB fence(`fencing_generation=:g`)만 결정적으로 보는 시험은 생기지 않았다. DB fence 회귀는 지금도 heartbeat가 창을 놓친 실행에서만 잡힌다.
+
+**미해소 잔여:** 메모리 guard를 우회하는 결정적 DB fence 시험. 주인 없음. 항목 89·90과 함께 보는 편이 싸다.
+
+### 92. 개발·CI compose가 워커 dispatch를 운영 기본 1초로 돌린다
+
+**미판정(2026-10-15, 판정 라운드, 기준 `189c16b`) — 보류: CI chore.** compose dispatch 간격과 통합 job 예산을 다루는 진행 중인 CI 임계 경로 chore(Epic 3 회고 AI-12, `epic-3-retro-item-37`)와 겹쳐, 판정은 그 chore의 done 전환 PR이 더한다(`CLAUDE.md` 표준 흐름 7번).
+
+### 93. 44×44 규칙의 일곱·여덟 번째 사본과 `.ranges`·`.facts`·`@keyframes` 사본
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.12가 append했다. 사본은 그대로이거나 늘었다 — 44×44는 `frontend/src/components/SyncControl.module.css:51-58`(`.secondary`)·`VerificationControl.module.css:27-34`(`.button`), `.ranges`는 여전히 세 모듈(`PlanResultPanel.module.css:50`·`VerificationControl.module.css:124`·`VersionChangeNote.module.css:55`), 진행 표지 `@keyframes`는 `SyncControl.module.css:108`·`VerificationControl.module.css:79`(2.13이 `PlanEndControl.module.css:75`를 더했다, 항목 99)이고 `.facts`는 이후 스토리를 거쳐 아홉 모듈로 늘었다. PR #73은 대화상자 모듈만 모았다. 항목 84와 같은 뿌리다.
+
+**미해소 잔여:** 항목 84와 같다. 주인 없음.
+
+### 94. 현재가치 측정 시각과 흐름 확인 상한(`tc`) 사이 간격에 상한이 없다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.12가 append했다. 수집은 여전히 `tc`를 먼저 고정하고 wallet을 끝에 읽으며 둘을 별개 값으로 돌려줄 뿐 간격을 판정하지 않는다(`backend/src/main/java/com/bokrilog/source/internal/BybitAdapter.java:564-566`). sync·portfolio·마이그레이션에서 `measured_at`과 `tc` 간격의 상한·CHECK는 0건이다. 그 사이의 입출금은 그 버전의 `E`에는 들어가고 흐름에는 빠진다 — 다음 동기화 창 `(tc, tc']`이 흐름을 잡으므로 한 버전 동안의 일시적 어긋남이지만 그 버전의 지표는 틀린 채 공식으로 보인다.
+
+**미해소 잔여:** 간격 상한 값과 넘었을 때의 행동(재측정·검토 표지·발행 거절). `ERD-1.0.0` §2.2를 정정하는 새 정책 값이다. 주인 없음 — Bybit 실연동 게이트 전에 정할 후보다.
+
+### 95. Bybit 호출 예산과 IP 403 회로가 프로세스 메모리에만 있다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`) — 전제 악화.** Story 2.12가 append했고 결정 지점으로 Story 3.8을 지목했는데, 3.8은 이 결정 없이 `done`이 됐다(`spec-3-8-blue-green-deploy.md`에서 예산·token bucket은 0건). 오히려 두 프로세스의 공존이 상시가 됐다 — 3.8이 API와 Worker를 다른 프로세스로 나눴고 운영에서 `all`은 기동 거부이며(`BokrilogRole.java:21`), API는 요청 스레드의 연결 검증으로(`BybitConnectionService.java:378`), Worker는 동기화로 Bybit를 부르는데 예산은 어댑터 인스턴스마다 하나다(`source/internal/BybitAdapter.java:226`, `BybitCallBudget.java:19` "The Bybit call budget of this process"). 그래서 Worker가 연 IP 차단 회로를 API는 모른다.
+
+**미해소 잔여:** 공유 방식(DB 기반 bucket·회로 또는 Bybit 호출 소유의 일원화)을 정할지, API 호출량이 작다는 근거로 비공유를 받아들일지. 지목 스토리가 지나가 주인 없음(`## 갱신 규칙` (나) 부류) — Bybit 실연동 게이트 전에 정해야 한다.
+
+### 96. heartbeat의 `SKIP LOCKED` 때문에 긴 page 저장 중 lease 갱신이 건너뛰어진다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.12가 append했다. `PlanSyncRepository.java:316-334`의 heartbeat는 시도 행과 세 자식 표 모두 `FOR UPDATE SKIP LOCKED`로 잡힌 행을 건너뛰고, 단계 트랜잭션 안에서 lease를 연장하는 코드는 없다. 재개 상한은 고정이다 — `PlanVerificationTest.theThirdInterruptionEndsTheAttemptAsInterrupted`(`:595`)가 세 번째 중단에서 시도가 끝남을 고정한다. 항목 85와 같은 원인이고 74와 묶인다.
+
+**미해소 잔여:** 항목 85와 같다. 주인 없음.
+
+### 97. V12 backfill이 마이그레이션 시점 버전만 덮고, 옛 바이너리가 계속 발행하면 503·CHECK 위반이 난다
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.12가 append했고 결정 지점으로 Story 3.8을 지목했다. V12 고유의 경우는 전제가 소멸했다 — 운영 배포가 한 번도 없었으므로 2.11 바이너리가 V12 뒤에 발행하는 일은 일어나지 않고, 첫 운영 배포는 빈 DB에 최신 바이너리와 전체 마이그레이션을 함께 올린다. 3.8은 일반 규칙도 정했다 — 운영의 발행 주체는 Worker뿐이고(`BokrilogRole.java:21`), `deploy/production/deploy.sh`는 Worker drain(`:612-640`)을 migrate(`:651`)보다 먼저 하며, rollback 창 안에서는 expand만 받는다(`:41-42`, gate `preflight.sh:232`·`:292-306`). 이 순서는 CI `deploy-rehearsal`(`rehearse-deploy.sh`)이 돈다.
+
+**미해소 잔여:** migration이 expand인지는 release manifest의 선언(`preflight.sh:232`)일 뿐 그 migration이 옛 Worker와 실제로 호환되는지 보는 검사가 없고, rollback 창 안에서 옛 이미지를 새 schema 위에 띄우는 리허설 시나리오도 없다 — 그 리허설은 보류 중인 항목 129의 범위다. 운영 배포는 미검증이다(3.8 출시 게이트, Epic 3 회고 AI-9).
+
+### 98. 계획 중도 종료가 재인증 시각을 지우지 않아 본인 확인 1회가 연쇄 승인한다
+
+**해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.13이 append했다. PR #71(`spec-sensitive-command-commons.md`, 머지 커밋 `1e43ebf`)이 민감 command 실행 성공에 재인증 시각 제거를 묶었다 — `backend/src/main/java/com/bokrilog/SessionRotation.java:50-55`가 `ReauthenticationFlow.clearAuthentication`과 `changeSessionId`를 함께 하고, 계획 종료 확정이 그것을 부른다(`PlanEndCommandService.java:194`). 연결·해제·Bybit 연결·해제도 같은 부품을 쓴다. `PlanEndTest`(`:102-103`)가 종료가 실행된 요청 뒤 회전된 세션에 `AUTHENTICATED_AT_ATTRIBUTE`가 없음을, `BybitConnectionRevocationTest`(`:770-779`)가 해제 직후 같은 세션의 종료 준비가 403 `REAUTHENTICATION_REQUIRED`이고 허가 수가 늘지 않음을 단정하며 `backend-quality`에서 돈다. Epic 1 회고 item-1도 `sprint-status.yaml`에서 닫혔다. 항목 105·106과 묶인다.
+
+### 99. 44×44 규칙 아홉·열 번째 사본과 `.marker`·`@keyframes`·확인 대화상자 규칙 사본
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.13이 append했다. 대화상자 축은 닫혔다 — PR #73(`spec-frontend-dialog-commons.md`)이 `PlanEndDialog.module.css`·`UnlinkDialog.module.css`(와 `ConnectionRevokeDialog.module.css`)를 지우고 `frontend/src/components/ConfirmationDialog.module.css` 하나로 모았다. 지금 `components/`의 `*Dialog*.module.css`는 그 하나뿐이고, 확인 대화상자 여덟(`UnlinkDialog`·`PlanEndDialog`·`ConnectionRevokeDialog`·운영자 대화상자 다섯)이 모두 그 모듈을 쓴다.
+
+**미해소 잔여:** 조작 쪽 사본은 그대로다 — `PlanEndControl.module.css:28-35`의 `.button`이 44×44를 들고, 진행 표지 `.marker`·`@keyframes`는 네 모듈에 있다(`ConfirmationDialog.module.css:134`·`:144`, `PlanEndControl.module.css:65`·`:75`, `SyncControl.module.css:98`·`:108`, `VerificationControl.module.css:69`·`:79`). 대화상자 단일 모듈을 지키는 자동 검사도 없다. 항목 84와 같은 뿌리이고 주인 없음.
+
+### 100. `UnlinkDialog`·`PlanEndDialog`에 모달 기본 동작이 손으로 두 벌 있다
+
+**해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.13이 append했다. PR #73(`spec-frontend-dialog-commons.md`, 머지 커밋 `b671bf3`)이 기본 포커스·capture `keydown`의 Tab 가둠·`Esc`·`body` 스크롤 잠금·passive 초점 복귀를 `frontend/src/components/useConfirmationDialog.ts` 하나로 옮겼다. `UnlinkDialog.tsx`·`PlanEndDialog.tsx`·`ConnectionRevokeDialog.tsx`와 운영자 대화상자 다섯이 같은 호출로 위임하고, 두 원래 파일에는 `keydown`·스크롤 코드가 남아 있지 않다. 정본 시험 `useConfirmationDialog.test.tsx`(14건, 가둠·`Esc`·스크롤·`StrictMode`·호출점 복귀)가 `frontend-quality` Vitest에서 돈다. 남은 시험 중복은 항목 107이 소유한다.
+
+### 101. 완료 비교 상태·이유 목록이 세 계층에 따로 적혀 있고 대조 검사가 없다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.14가 append했다. 세 목록이 그대로 따로 있다 — 카피 맵 `frontend/src/content/planCompletion.ts:27-32`(상태 넷)·`:54-65`(이유), 파싱 목록 `frontend/src/session/useDashboard.ts:796-805`(`COMPARISONS`·`UNAVAILABLE_REASONS`·`HELD_REASON`), 백엔드 상수 `PlanPublicationService.java:799-801` 등. 셋을 맞대는 시험은 없다. 계층 간 공유 fixture의 선례는 Story 3.6의 `frontend/src/content/inquiryRules.fixture.json`(Vitest와 `InquiryRulesTest`가 함께 읽는다) 하나이고 이 목록에는 적용되지 않았다. 항목 33·38·48·51·61·63·80과 같은 뿌리다.
+
+**미해소 잔여:** 계층 간 동등성 검사의 형태(3.6의 공유 fixture 방식이 선례다)와 범위. 주인 없음.
+
+### 102. `PlanCompletionResult`·`PostEndValue`의 `.region`이 테두리 토큰 하나만 다른 패널 프레이밍 사본이다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.14가 append했다. `frontend/src/components/PlanCompletionResult.module.css:7-15`와 `PostEndValue.module.css:6-14`의 `.region`은 선언이 같고 `border`의 색 토큰(`--color-border-strong` 대 `--color-border-default`) 하나만 다르다. 항목 84와 같은 뿌리다.
+
+**미해소 잔여:** 항목 84와 같다. 주인 없음.
+
+### 103. 민감 command 확정이 커밋·회전한 뒤 응답을 잃으면 재시도가 회전 전 쿠키로 나가 만료 화면으로 간다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.16이 append했다. 서버의 멱등 재전송은 세션을 지문에서 뺐지만(`spec-1-9-reauthentication-action-grant.md:148`), 응답과 함께 `Set-Cookie`를 잃은 브라우저는 회전 전 세션 id를 보내고 그 id는 `changeSessionId`(`SessionRotation.java:55`) 뒤 어떤 세션도 가리키지 않으므로 재전송이 미인증으로 떨어진다. 화면은 응답 없는 확정을 `uncertain`으로 두고 다음 누름에 같은 키를 보낼 뿐(`frontend/src/session/usePlanEnd.ts:457-462`) 쿠키를 잃은 경우를 따로 다루지 않는다. 운영 command 확정도 같은 회전을 쓴다(`OperatorCommandService.java:347`). PR #71·#73·#97 어느 SPEC도 이 경로를 다루지 않았다.
+
+**미해소 잔여:** 401을 받은 `uncertain` 확정을 만료 이동 대신 재로그인 뒤 결과 재조회로 접을지, 서버가 회전 전 id를 짧게 유예할지. 업무 변경은 이미 커밋됐으므로 데이터 정확성이 아니라 화면 결말의 문제다. 주인 없음.
+
+### 104. Epic 2 회고 AI-8의 프런트엔드 묶음(D-4): 대화상자 3벌·조회 훅 2벌·`isInstant` 2벌
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** 2026-10-06 점검(PR #71 라운드)이 append했고 PR #73(`spec-frontend-dialog-commons.md`, 머지 커밋 `b671bf3`)이 구현했다. 대화상자는 셋 모두 `useConfirmationDialog`에 위임하고 CSS는 `ConfirmationDialog.module.css` 하나다(항목 99·100). 조회 훅은 둘 모두 `frontend/src/session/useReferencedRequest.ts`에 위임하고 동시성 정책만 인자로 다르다(`useAdjustmentHistory.ts:400` `replace`, `useCalculationEvidence.ts:716` `ignore`). `isInstant`의 정의는 `frontend/src/session/instant.ts:9` 하나다. 정본 시험 `useConfirmationDialog.test.tsx`·`useReferencedRequest.test.tsx`·`instant.test.ts`가 `frontend-quality` Vitest에서 돈다.
+
+**미해소 잔여:** 기존 사본은 없어졌지만 새 사본을 막는 것은 `CLAUDE.md`의 규칙 문장("새 확인 대화상자·참조 조회·시각 판정은 이 넷을 쓰고 사본을 만들지 않는다")뿐이고 자동 검사가 없다 — 그래서 "시험이 없으면 부분 해소" 기준으로 부분 해소다. 남은 시험 중복(항목 107)과 CSS 축의 사본(항목 99 잔여)도 이 묶음에 걸친다. 검사(예: 대화상자 `keydown`·스크롤 잠금 코드와 `isInstant` 정의가 정해진 파일 밖에 없음을 보는 lint·grep 시험)를 둘지는 주인 없음.
+
+### 105. 연결·해제 성공 직후 다음 준비가 403 재인증 게이트에 떨어지는 화면 동작과 카피
+
+**해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** PR #71 라운드가 append했고 PR #73이 닫았다(`spec-frontend-dialog-commons.md`). 성공 문구 넷이 "다음 민감한 조작 전에는 아래에서 본인 확인을 다시 해야 합니다"를 말하고(`frontend/src/content/auth.ts:491`·`:552`, `connection.ts:268`·`:314`, 2.17 재연결 성공 문구 `connection.ts:276`도 같다), 본인 확인 구역 본문이 "본인 확인 1회는 민감한 조작 1건"을 말한다(`auth.ts:864`). 화면 단정은 `frontend/src/test/reauthGate.ts`의 `expectReauthGateRejection` 하나이고 `SettingsScreen.test.tsx:735`·`SettingsConnection.test.tsx:484`·`SettingsConnectionRevoke.test.tsx:512`·`:533`이 그것을 부르며 `frontend-quality`에서 돈다. 실제 서버를 지나는 단정은 `frontend/e2e/auth-entry.spec.ts:926-936`(연결 성공 → 해제 준비 거절)이고 `same-origin-integration`의 주입 origin Playwright에서 돈다. 계획 종료 성공 문구는 항목 106, Bybit 경로의 e2e는 항목 108이 소유한다.
+
+### 106. 계획 중도 종료의 성공 문구에 재인증 안내가 없다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** PR #73 라운드가 append했다. 종료 문장은 여전히 기록·종료 시각·동기화 중지만 말한다(`frontend/src/content/planEnd.ts:251-253`). 서버 쪽 게이트는 성립하고(항목 98) 설정 화면의 본인 확인 구역 본문이 계획 중도 종료를 포함해 규칙을 말하므로(`auth.ts:864`) 사용자가 이유 없이 거절을 만나는 경로는 좁지만, 원문의 "카피를 따로 정해야 한다"는 그대로다.
+
+**미해소 잔여:** 대시보드 패널에 맞는 문구를 정하는 일(설정 화면의 "아래에서 본인 확인"은 그대로 쓸 수 없다). 주인 없음.
+
+### 107. `UnlinkDialog.test.tsx`·`PlanEndDialog.test.tsx`가 정본과 겹치는 메커니즘 시험을 들고 있다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** PR #73 라운드가 append했다. 두 파일은 그 뒤 바뀌지 않았고 메커니즘 단정이 그대로다 — `UnlinkDialog.test.tsx`의 Tab 가둠(`:142-147`)·`Esc`(`:157`·`:203`)·스크롤 잠금(`:221-228`), `PlanEndDialog.test.tsx`의 가둠(`:129-136`)·`Esc`(`:142`·`:167`)·스크롤(`:316-321`)이 정본 `useConfirmationDialog.test.tsx`와 겹친다. 같은 chore는 `ConnectionRevokeDialog.test.tsx`만 마크업·카피·`restoreFocus` 의미로 좁혔다. 항목 100과 묶인다.
+
+**미해소 잔여:** 두 파일의 메커니즘 단정을 걷어 내는 정리(기대값을 바꾸지 않는 삭제). 주인 없음.
+
+### 108. "Bybit 연결 성공 → 재인증 없이 해제 준비 → 403 안내"의 주입 origin e2e가 없다
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** PR #73 라운드가 append했다. 원문이 무겁다고 본 "해제 왕복 자체가 없다"는 Story 2.17(PR #100)이 채웠다 — `frontend/e2e/bybit-reconnect.spec.ts:69-100`이 연결 → 본인 확인 → 해제 대화상자 확정 → 해제 문구를 실제 스택에서 돌며, 주입 origin에서만 돌아(`:66-67`) `same-origin-integration`의 몫이다.
+
+**미해소 잔여:** 그 시험은 해제 전에 본인 확인을 먼저 한다(`:89-90`). 원문이 요구한 "재인증 없이 해제 준비 → 403 안내" 단계는 여전히 Vitest(`SettingsConnectionRevoke.test.tsx:512`)만 고정하며, 이제는 한 단계를 더하는 일이 됐다. 항목 69와 같은 주입 origin 묶음이고 Epic 2 회고 AI-11과 겹친다. 주인 없음.
+
+### 109. 준비만 하고 방치되거나 허가가 만료된 운영 operation은 원장에 결말 행이 없다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.1이 append했다. 원장 결말 값은 그대로이고(`backend/src/main/resources/db/migration/V17__operations_audit.sql:67-68`), 결말이 남는 것은 명시적 취소와 새 준비의 대체뿐이다(`OperatorCommandService.java:85`·`:255`, `CANCELLED SUPERSEDED`). 단순 방치나 5분 만료를 관측해 행을 쓰는 주체(백그라운드나 다음 요청)는 없고(`OperatorController.java:676` 주석 "남은 허가는 5분 뒤 만료된다"), PR #97의 엔진 공통화도 이 경로를 더하지 않았다.
+
+**미해소 잔여:** 만료를 다음 요청·조회가 결말 행으로 쓸지, 조회·export가 "결말 없음 + 5분 경과"를 만료로 파생해 보일지. 주인 없음.
+
+### 110. 감사 actor digest에 키 버전·식별자가 없어 키 교체 전후 행을 묶을 수 없다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.1이 append했다. `operations/internal/ActorDigest.java:25-40`은 여전히 키 하나로 HMAC만 만들고 `operations_audit_event`에 키 버전 열이 없다(`V17__operations_audit.sql`). 지목된 Story 3.8은 키 회전을 범위 밖으로 다시 미뤘고(`spec-3-8-blue-green-deploy.md:17`, 항목 126), Story 3.10은 tombstone 사본 머리에만 digest 키 ID를 실었을 뿐 회전을 지원하지 않는다(항목 139). 키 회전 묶음 126·139와 같은 뿌리다.
+
+**미해소 잔여:** 감사 행의 키 ID 열(새 마이그레이션)과 회전 절차. 3.8이 재차 미뤄 주인 없음.
+
+### 111. 운영 command 사유가 자유 텍스트라 개인정보가 영구 원장에 들어갈 수 있고 비식별 범위가 좁다
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.1이 append했다. target 쪽은 뒤 스토리가 닫았다 — 사용자에게 귀속된 restriction target은 원장에 keyed digest로만 남고(`operations/internal/RestrictCommand.java:113`·`:138`, Story 3.2), 문의 command의 target도 reference digest이며(`UpdateInquiryCommand.java:186`, Story 3.6), 계정 삭제는 제한 행의 target도 digest로 바꾼다(`AccountErasure.java:100-101`). 이것은 이 항목을 겨냥한 수정이 아니라 각 스토리가 도입한 규칙이다.
+
+**미해소 잔여:** 사유는 그대로다 — 검증은 길이·제어 문자·이메일 모양만 보고(`OperatorEnvelopeService.java:61`·`:184-186`), 3.6의 민감값 규칙 `InquiryRules`는 공지 메시지에만 쓰이며(`:197`) 사유에는 쓰이지 않는다. `eraseActor`는 `actor_user_id`·`actor_erased_at`만 바꾼다(`OperatorAuditRepository.java:274-279`). 사유 필드의 보존·삭제 분류는 법정 분리 보존 결정(G-5)이 소유한다.
+
+### 112. 운영 제한을 만난 계획 조건 조회가 열린 intent를 되돌릴 수 없게 무효화한다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.2가 append했다. `backend/src/main/java/com/bokrilog/plan/internal/PlanConditionService.java:94-96`의 `state()`는 지금도 제한 판정(`eligibleRestrictions`)이 거짓이면 `repository.invalidateOpen(userId)`를 부른다. 결정 지점으로 지목한 3.4(해제)·3.5(공지)는 둘 다 이 동작을 바꾸지 않고 `done`이 됐다.
+
+**미해소 잔여:** 제한 중 intent를 보존할지, 보존한다면 해제 뒤 그 intent의 신선도를 어떻게 판정할지. 지목 스토리가 지나가 주인 없음(`## 갱신 규칙` (나) 부류).
+
+### 113. 강한 신호 1·8·9번의 감지 지점 연결
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** 3.3 분할 결정(2026-10-09)이 append했다. 판정표에는 세 신호가 있지만(`operations/SignalType.java`의 `WRITE_KEY_STORED`·`SCHEMA_VALIDATION_BURST`·`CREDENTIAL_DECRYPTION_BURST`) 운영 소스에서 이 셋을 올리는 자리는 없다 — 운영 소스가 `SignalType.*`로 올리는 것은 다섯 종(`RESULT_HASH_MISMATCH`·`PORTFOLIO_INVARIANT_VIOLATION`·`SOURCE_ID_CONFLICT`·`UNKNOWN_TRANSACTION_ENUM`·`SECRET_EXPOSED`)뿐이고 `SignalType.java:15-18` javadoc도 "나머지는 감지 지점이 후속 스토리"라 적는다. 원문이 짚은 선행 조건(readOnly 근거, cursor 반복과 섞인 `RESPONSE_FORMAT`, 키 부재와 태그 불일치 구분, 시간 창 집계 저장소)도 그대로다.
+
+**미해소 잔여:** 원인 분리와 시간 창 집계 저장소. 소유가 이름 없는 "3.3 후속"이라 주인 없음. 쓰기 가능 key 저장(1번)은 읽기 전용 원칙의 마지막 감지선이므로 Bybit 실연동 게이트 전에 볼 후보다.
+
+### 114. 강한 신호 2번(교차 사용자 접근·공식 pointer 혼합)은 안전한 감지 지점이 없다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** 3.3 분할 결정이 append했다. `CROSS_USER_ACCESS`(`SignalType.java:24`)를 올리는 운영 코드는 없고, 대시보드 계보 불일치는 여전히 무결성과 무관한 원인과 같은 결말(`Dashboard.Unavailable`)로 접힌다. 오탐 하나가 전역 정지가 되므로 원인을 구분한 단정이 먼저라는 원문의 전제가 그대로다.
+
+**미해소 잔여:** 교차 접근 "성공"을 관측하는 단정 설계와 계보 불일치의 원인 분리. 주인 없음.
+
+### 115. 강한 신호 3번(secret/token 노출)을 telemetry 경로와 함께 연결한다
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** 3.3 분할 결정이 append했고 지목된 Story 3.7이 절반을 닫았다. 실제 구성 비밀값(8자 이상)이 로그에 나오면 그 줄을 가리고 `SECRET_EXPOSED`(`ruleId=CONFIGURED_SECRET_IN_LOG`)를 비동기 1회·60초 억제로 올린다(`backend/src/main/java/com/bokrilog/ConfiguredSecrets.java:150-154`, 루트 `LogSecretGuard`). 실경로 근거는 `LogRedactionTest.java:101`의 `구성_비밀값이_나오면_그_줄을_가리고_신호_하나를_올리며_60초_안의_반복은_신호를_더하지_않는다`다 — 실제 로그 한 줄로 가림을 확인하고 `operations_signal`에 `SECRET_EXPOSED` 행(`CALCULATION_DISPLAY`·`NEW_CONNECTION`·`SYNC` 전역)과 열린 `SIGNAL` 제한 셋이 생기는 것까지 DB로 단정하며, `backend-quality`에서 돈다.
+
+**미해소 잔여:** 외부 telemetry·DLP canary 검출은 없다(Grafana Alloy 연결은 3.8이 다시 미뤘다, 항목 121·126). 패턴 탐지는 3.7 계약상 신호가 아니다. 일회성 역할의 가림·신호와 tombstone digest 키의 감지 목록 누락은 Epic 3 회고 AI-3(`sprint-status.yaml`, open)이 소유한다.
+
+### 116. 강한 신호로 제한되면 사용자 API가 자기 수집 상태를 빈 값으로 감춰 무엇이 왜 멈췄는지 알 수 없다
+
+**부분 해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.3 리뷰가 append했고 지목된 Story 3.5가 "무엇이 멈췄는지"를 말하게 했다. `GET /api/notices`는 공지 없는 제한도 `RESTRICTED_WITHOUT_NOTICE` 항목과 영향 기능으로 싣고(`ServiceNoticeController.java:59`·`:176`) 대시보드·설정 상단 영역이 그것을 보인다. 서버 쪽은 `ServiceNoticeTest.java:474` 부근이 공지 없는 제한의 응답 항목(`kind` `RESTRICTED_WITHOUT_NOTICE`, 영향·계속 가능 기능)을 단정하고 `backend-quality`에서, 화면 쪽은 `frontend/src/components/ServiceNotice.test.tsx:124`의 `공지 없는 제한은 운영 제한 표지와 기본 문장이고 연락처가 없으면 링크가 없다`가 그 렌더링을 단정하고 `frontend-quality`에서 돈다.
+
+**미해소 잔여:** 사용자 API는 그대로 빈 값을 낸다(`sync/internal/SyncJobService.java:299-302`의 `initialCollectionJob`, 판정 `:830-833`이 `syncRestricted`를 본다). 공지 영역이 없는 화면 — 첫 스냅샷 패널이 있는 `/onboarding`, 초기 수집이 있는 `/plan-conditions` — 에서 제한을 만나면 설명이 없다(`useServiceNotices` 사용처는 대시보드·설정 둘뿐). 주인 없음.
+
+### 117. Story 3.4 AC-6 훈련 증거(수동 전역 정지 5분·자동 정지 60초·선택 범위 복구)
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** 3.4 분할 결정(2026-10-10)이 append했고 운영 배포 증거(Story 3.8)와 함께 다루기로 했는데, 3.8은 훈련 증거를 다시 범위 밖으로 뺐다(`spec-3-8-blue-green-deploy.md:17`, 항목 126). 운영 소스·`deploy/`에 훈련 기록 경로는 없다. Epic 3 회고가 실제 훈련 증거 0건을 확인했고(`epic-3-retro-2026-10-13.md`) 이 게이트를 기계 판독 자리에 두는 일을 AI-9로 남겼다(`sprint-status.yaml`, open). 운영 훈련 묶음 126·135와 같은 뿌리다.
+
+**미해소 잔여:** 실제 훈련과 리허설을 가르는 기록 형식과 베타 전 첫 훈련. 소유는 출시 게이트(Epic 3 회고 AI-9)다.
 
 ### 118. 운영 command 무장(`OperatorCommandFlow.Armed`)의 직렬화 버전이 스토리마다 오른다
 
@@ -440,3 +852,161 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 ### 119. 운영자 화면의 운영 command 상태 기계가 사본으로 불어났다
 
 **해소(2026-10-13, `spec-operator-command-commons.md`).** 상태 기계(단계 `idle·preparing·armed·confirming·completed·refused·cancelled`, 멱등 키 생성·재생성, 이중 제출 방지, 응답 없는 확정의 uncertain, 문구 불일치의 무장 유지, 목록 콜백, 취소)는 `frontend/src/session/useOperatorCommand.ts` 하나이고, 다섯 훅(`useOperator{Export,Restriction,Recovery,Notice,Inquiry}`)은 command 설정(이름·본문·멱등 입력·해석기·목록을 바꾸는 code)만 넘긴다. `operatorApi.ts`의 준비·확정·취소 다섯 벌은 command 이름을 받는 한 벌(`prepareCommand`·`confirmCommand`·`cancelCommand`)과 command별 응답 해석기가 됐고, 목록 sequence·중단은 `session/useSequencedRead.ts` 하나다. 백엔드의 같은 사본(확정 prologue 다섯·`instanceof` 분기·컨트롤러 switch)도 command 전략과 등록표로 묶었다(Epic 3 회고 D-1·AI-5). 확인(리뷰 patch 뒤 최종 실행, 2026-10-13): 프런트엔드 typecheck·lint·lint:css·format:check·build·Vitest 1378건(`useOperatorCommand.test.tsx` 12건·`useSequencedRead.test.tsx`·`useOperatorInquiry.test.tsx` 포함, 기존 `OperatorScreen`·`OperatorNotice`·`OperatorInquiry` 시험 기대값 무변경)·Playwright 40건, 주입 origin Playwright 68건(`e2e/operator.spec.ts` 포함)·`verify-same-origin.sh` 1051/1051·`test-ci-scripts.sh` 239/239 통과.
+
+### 120. 운영자의 답변 정정과 사용자의 후속 응답·재개 경로가 없다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.6이 append했다. 전이는 지금도 단조다 — `backend/src/main/java/com/bokrilog/operations/SupportInquiryApi.java:96-100`의 `canMoveTo`가 같은 상태·역행을 거부하고 `UpdateInquiryCommand.java:160`(준비)·`:224`(확정 잠금 뒤)가 그 판정을 부르며, `SupportInquiryTest.java:431-435`가 `ANSWERED → ANSWERED`("다시 답변")를 409 `INQUIRY_TRANSITION_INVALID`로 계약 고정한다. 사용자 표면은 `SupportInquiryController.java:132`(`GET`)·`:150`(`POST` 접수) 둘뿐이라 후속 응답·해결 표시·재개 경로가 없다. `EPIC-IMPLEMENTATION-READINESS.md` §7 `SUPPORT-1.0`도 정정·대화형 스레드를 정하지 않는다.
+
+**미해소 잔여:** 정정(`ANSWERED → ANSWERED`) 허용 여부와 그때의 감사·첫 답변 시각 보존 규칙, 사용자 후속 응답을 새 문의로 둘지 스레드로 둘지. 원문은 "실제 운영 데이터가 쌓인 뒤 판단"이라는 조건만 적고 스토리를 지목하지 않았다 — 주인 없음(`## 갱신 규칙` (가) 부류).
+
+### 121. Story 3.7의 운영 관측 연결(Alloy·Grafana Cloud·synthetic·로컬 보조 신호)
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.7이 범위 분리로 append했다(source_spec 없음). 저장소에는 수집기가 아직 없다 — `deploy/production/preflight.sh:53-54`가 "Grafana Alloy는 아직 compose에 없지만(후속 작업)"이라 적고 256MiB를 예약으로만 계상하며, `deploy/production/compose.yaml:23-24`·`deploy/compose/compose.yaml:5-6`도 같은 사실을 적는다. 경보 규칙(`deploy/observability/alerts.yml:28-47`의 liveness probe·`AlloyHeartbeatMissing`)은 정의돼 있지만 시계열을 낼 수집기·synthetic이 없어 운영에서는 `...Unmeasured`만 울릴 수 있다. 운영 compose의 `x-logging`(`compose.yaml:44-48`, json-file 10m×5)이 로컬 회전 로그 구실을 하지만 그것을 Grafana 장애 시 보조 신호로 쓰는 절차·검사는 없다. 항목 126이 이 묶음을 "3.8 보완 작업"으로 다시 넘겼고 115·132·138과 같은 뿌리다.
+
+**미해소 잔여:** Alloy 서비스·relabel allowlist, Grafana Cloud 전송, 외부 synthetic 5분 검사, heartbeat 실측, 로컬·OCI 보조 신호 절차. 넘겨받은 "3.8 보완 작업"은 `epics.md`·`sprint-status.yaml` 어디에도 없어 주인 없음이고, 외부 계정은 `externalLaunchGates`의 `production-secrets-and-accounts`가 소유한다.
+
+### 122. Web Vitals(LCP·INP·CLS p75) 수집
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.7이 범위 분리로 append했다(source_spec 없음). 브라우저 계측은 없다 — `frontend/package.json:23-26`의 런타임 의존은 `react`·`react-dom` 둘이고 `frontend/src`에서 `PerformanceObserver`·`web-vitals`는 0건이며, `sendBeacon`은 시험이 그것을 막는 `frontend/src/test/setup.ts:610-614`에만 나온다. 동일 출처 beacon 경로·집계 표도 없다. 결정 지점이 이름으로 정해진 적은 없지만 `epics.md` Story 4.4 AC-3(광고가 Web Vitals 목표를 위협하면 성능 kill switch가 광고만 비활성화)이 이 측정을 전제하므로 늦어도 Story 4.4다.
+
+**미해소 잔여:** beacon 경로(`/api` 아래 동일 출처), 측정 방식(직접 구현 또는 런타임 의존 승인), 집계 분모·기간. 명시된 주인이 없으므로 Story 4.4 SPEC이 이 항목을 보거나 그 전에 소유를 붙여야 한다.
+
+### 123. 운영 작업시간·월 비용 장부
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.7이 범위 분리로 append했다(source_spec 없음). 장부는 없고 경보 규칙만 미측정으로 기다린다 — `deploy/observability/alerts.yml:224`가 "운영 장부가 만들기 전에는 미측정이다(분리된 후속 작업)"라 적고 `:233-240`의 `MonthlyCostUnmeasured`가 `absent(bokrilog_monthly_cost_krw{…})`를 info로 알린다. `backend/src/main`에서 `monthly_cost`는 0건이고 작업시간 입력 표·화면도 없다. 항목 8(주 2시간 목표의 측정 기준, 해소)이 정의만 닫았고 측정 수단이 이 항목에 남았다.
+
+**미해소 잔여:** 운영자 입력 장부(작업시간·월 비용)와 4주 관찰 표시, `bokrilog_monthly_cost_krw`로 내보낼 경로. 실제 비용 자료는 운영 호스트(3.8 운영 배포) 뒤에야 생긴다. 주인 없음.
+
+### 124. Bybit API·사건 유형 계약의 정기 재검증
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.7이 범위 분리로 append했다(source_spec 없음). 정기 실행이 없다 — `backend/src/main`의 `@Scheduled`는 동기화 dispatch·heartbeat와 측정 gauge(`FirstSnapshotWorker`·`SyncQueueAgeMetrics`·`BackupMetrics`·`SupportPendingMetrics`)뿐이고 계약 검사 작업은 0건이다. 원문대로 미인식 유형은 강한 신호 7이 막지만(`sync/internal/StrongSignals.java:24`) schema 변화 감지와 실계정·stub 결과의 구분은 없다.
+
+**미해소 잔여:** 재검증 작업의 주기·결과 저장·경보, 실계정과 stub 결과를 가르는 표지. 실계정 결과는 실제 검증 계정과 regional reserved IP가 있어야 생기므로 결정 지점은 Epic 2 실연동 게이트다(별도 출시 게이트 소유, 스토리 이름은 없다).
+
+### 125. 이미지 공급망 파이프라인(ARM64 빌드·SBOM·cosign 서명·GHCR 게시)
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.8이 사용자 결정(2026-10-12)으로 분리해 append했다(source_spec 없음). 소비 쪽은 3.8 핵심에 들어와 있다 — `deploy/production/preflight.sh:116`이 `cosign`을 요구하고 `:165`의 release 키가 `sbom`·`signature`와 그 SHA-256을 받으며 `:277-288`이 `cosign verify`·`verify-attestation --type spdxjson`을 돈다(리허설만 `:265`에서 건너뛴다). 생산 쪽은 없다 — `.github/workflows/ci.yml`에서 `cosign`·`sbom`·`ghcr`·`buildx`·`id-token`은 0건이고 `DEVELOPMENT.md:554`가 "그 파이프라인이 release manifest를 만들 때까지 운영 배포는 미검증"이라 적는다. gate가 fail-closed라 서명 없는 이미지는 올라가지 못하지만, 그 대신 첫 운영 배포 자체가 이 항목에 막힌다.
+
+**미해소 잔여:** release 브랜치·태그 한정 workflow(ARM64 빌드·SBOM·keyless 서명·attestation·GHCR 게시)와 그것이 만드는 release manifest. 별도 chore로 적혔지만 만들어지지 않았다 — 주인 없음.
+
+### 126. Story 3.8에서 넘어온 운영 연결·강화 묶음
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.8이 사용자 결정(2026-10-12)으로 분리해 append했다(source_spec 없음). 다섯이 모두 열려 있다.
+
+- Alloy·Grafana Cloud·synthetic — 항목 121과 같다(`preflight.sh:53`).
+- 3.4 AC-6 훈련 증거 — 항목 117·135와 같다(`restore.sh:56` "훈련 증거 원장에 기록되지 않는다").
+- production 비밀 공급 — `DEVELOPMENT.md:506`이 "비밀 공급(누가·어떻게 이 파일을 만들고 돌리는가)은 후속 작업"이라 적는다.
+- nginx 컨테이너 권한 강화 — 운영 `deploy/production/compose.yaml:313-339`의 nginx에 `mem_limit`만 있고 `user`·`read_only`·`cap_drop`·`security_opt`가 없다. 항목 22(미해소)가 개발 compose에서 본 상태가 운영 구성에도 그대로다.
+- 감사 digest 키 회전 — 항목 110과 같다.
+
+**미해소 잔여:** "후속 3.8 보완 작업"은 `epics.md`·`sprint-status.yaml` 어디에도 스토리로 없어 주인 없음이다. 비밀 공급은 `externalLaunchGates`의 `production-secrets-and-accounts`가, 훈련 증거의 게이트 이름 붙이기는 Epic 3 회고 AI-9(`sprint-status.yaml` `epic-3-retro-item-34`, open)가 결정 지점이다.
+
+### 127. production 진입의 TLS 종단(인증서·443·HTTP→HTTPS)
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.8이 append했다. Nginx는 평문만 받는다 — `deploy/nginx/bokrilog.conf:98`이 `listen 80` 하나이고 `ssl`·`443`·`Strict-Transport-Security`는 0건이며, 운영 `compose.yaml:33`이 "TLS 종단은 후속 작업"이라 적고 `:319`가 80만 게시한다. 세션 쿠키가 `application.yml:73`의 `secure: true`라 TLS 없이 운영 도메인에 올리면 로그인 쿠키가 성립하지 않는다 — 보안 쪽으로 열리지는 않지만 서비스가 동작하지 않는다. `DEVELOPMENT.md:559`도 후속 작업으로 적는다.
+
+**미해소 잔여:** 인증서 발급·갱신 방식, 443 listen과 HTTP→HTTPS 이동, HSTS를 `bokrilog.conf` 상위 `add_header` 한 곳에 두는 일(항목 14의 미채택 헤더 표가 이것을 Story 3.8에 넘겼다), 운영 compose의 게시 포트. 원문의 "production 진입 구성 보완"은 스토리가 아니어서 주인 없음.
+
+### 128. 프런트엔드 산출물·Nginx 설정이 release manifest·rollback 밖이다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.8이 append했다. 운영 nginx는 지금도 checkout에서 마운트한다 — `deploy/production/compose.yaml:321-322`가 `frontend/dist`와 `bokrilog.conf`를 마운트하고 `:37-38`이 "release manifest·digest 고정·rollback의 대상이 아니다(후속 작업)"라 적으며, `preflight.sh:165`의 release 키에도 화면 산출물·Nginx 설정이 없다. 원문대로 3.8은 이 한계를 `DEVELOPMENT.md:482`에 명시만 했다.
+
+**미해소 잔여:** 정적 산출물을 이미지나 digest 고정 artifact로 release에 묶고 rollback 대상에 넣는 결정. 항목 125의 공급망 파이프라인과 함께 하는 편이 싸다. 주인 없음.
+
+### 129. 배포 리허설의 실제 호환 창과 실제 JVM 종료 경로
+
+**미판정(2026-10-15, 판정 라운드, 기준 `189c16b`) — 보류: CI chore.** 리허설 구조(migration 집합이 다른 두 release 이미지·실제 Worker 종료 코드)를 바꾸는 일이 진행 중인 CI 임계 경로 chore(Epic 3 회고 AI-12, `epic-3-retro-item-37`) 범위와 겹쳐, 판정은 그 chore의 done 전환 PR이 더한다(`CLAUDE.md` 표준 흐름 7번).
+
+### 130. `verify-same-origin.sh`의 `fetch` argv 본문 가드를 행동 시험으로 고정한다
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** `spec-verify-windows-utf8-body.md`가 append했다. 가드는 그대로 있다 — `deploy/compose/verify-same-origin.sh:382-424`의 `fetch()`가 `--data-raw`·`-F`·`@` 밖의 `--data*` 값을 거부하고 상태를 `000`으로 남긴다. 그러나 `.github/scripts/test-ci-scripts.sh`가 이 스크립트에 대해 보는 것은 호출 존재(`:1450-1460`)뿐이고 그 파일에서 `data-raw`·`request_body`는 0건이라, 가드 패턴이 깨지거나 지워져도 실패하는 시험이 없다. 항목 78·32와 같은 뿌리다(Linux CI가 Windows 결함을 보지 못한다).
+
+**미해소 잔여:** curl을 기록 함수로 가린 행동 시험(거부 형태는 실패·미호출, `@<파일>` 형태는 통과)을 `test-ci-scripts.sh`에 더하는 일. 원문이 그 fix의 Ask First 경계 밖이라 미뤘고 주인 없음이다 — CI 스크립트를 만지는 chore가 함께 가져가기 좋은 크기다.
+
+### 131. 백업 리허설의 CI 경로 분기와 `deploy-rehearsal` timeout 보정
+
+**미판정(2026-10-15, 판정 라운드, 기준 `189c16b`) — 보류: CI chore.** 경로별 job 분기와 timeout 보정은 진행 중인 CI 임계 경로 chore(Epic 3 회고 AI-12, `epic-3-retro-item-37`)가 직접 다루므로, 판정은 그 chore의 done 전환 PR이 더한다(`CLAUDE.md` 표준 흐름 7번).
+
+### 132. 백업 저장소 사용률의 분모·분자를 계정 단위 실제 사용량으로
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.9가 append했다. 분자는 백업 object bytes, 분모는 운영자가 적은 quota 그대로다 — `backend/src/main/java/com/bokrilog/operations/internal/BackupMetrics.java:124-125`가 `measured.bytes() / measured.quotaBytes()`를 gauge로 내고, 그 값은 `deploy/production/backup.sh:888`·`:983`의 `MEASURED` 행이 `backup.env`의 `quota_bytes_<store>`(`backup.sh:204-207`)로 채운다. 경보는 `deploy/observability/alerts.yml:75-85`의 70%·85%다. 같은 계정의 다른 bucket 사용량은 어디에도 들어오지 않는다.
+
+**미해소 잔여:** OCI·외부 업체의 계정 지표를 읽는 경로. 운영 관측 연결(항목 121·126) 뒤에야 생기며 주인 없음.
+
+### 133. 백업 기록 대기열(`pending/`) 재전송의 행 단위 멱등
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.9가 append했다. 서비스는 `SUCCEEDED` 중복만 거절한다 — `backend/src/main/java/com/bokrilog/operations/internal/BackupRecordService.java:69-71`이 이미 성공한 generation의 `SUCCEEDED`만 예외로 막고 나머지 행은 `:72`가 그대로 append하며, `PURGE_FAILED`·`PURGE_OVERDUE`의 감사 행(`:74-90`)도 같다. `V24__operations_backup_event.sql:73`·`:75`의 색인은 비유일이라 DB도 막지 않는다.
+
+**미해소 잔여:** 행 단위 멱등 키(묶음 ID와 행 순번 등)와 유일 제약. 새 migration이 필요해 SPEC 승인 대상이다. 주인 없음.
+
+### 134. 새 송신 IP 감지(`BYBIT_IP_REBIND_REQUIRED`)
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.10이 사용자 결정(2026-10-13)으로 분리해 append했다(source_spec 없음). `backend/src`·`frontend/src`·`deploy`에서 `REBIND`는 0건이다. 호스트가 바뀌어 IP가 거부되면 지금은 `source/internal/BybitAdapter.java:983`·`:1013`의 HTTP 403 회로가 모든 Bybit 호출을 막고 제공자 장애로 답한다 — fail-closed이긴 하지만 사용자는 "키의 IP를 다시 묶어야 한다"는 원인을 보지 못한다. `DEVELOPMENT.md:643`이 후속으로 적는다.
+
+**미해소 잔여:** 송신 IP 변경의 판정 근거, 대시보드·설정 상태 표시, sync admission 차단. "별도 스토리 보완"은 `epics.md`에 자리가 없어 주인 없음. 항목 136(호스트 전환)이 일어나면 함께 성립한다.
+
+### 135. 운영 훈련 증거 원장(3.10 AC-6 복원 훈련, 3.4·3.8 훈련과 공통)
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.10이 사용자 결정(2026-10-13)으로 분리해 append했다(source_spec 없음). 원장이 없고 스크립트가 그 사실을 스스로 말한다 — `deploy/production/restore.sh:56`·`:545`가 "이 실행은 훈련 증거 원장에 기록되지 않는다(실제 복원 미검증)"를 출력한다. 항목 117(3.4 AC-6)·126과 같은 뿌리이고, Epic 3 회고가 운영 증거 셋이 모두 실제 증거 0건임을 확인했다.
+
+**미해소 잔여:** 실제 훈련과 리허설을 구분하는 증거 원장의 모양(시작·완료·실패·RPO·수동 작업시간·결함)과 기록 경로. 구현 주인은 없고, 게이트 이름 붙이기는 Epic 3 회고 AI-9(`epic-3-retro-item-34`, open)가 결정 지점이다. 같은 원장을 필요로 하는 첫 스토리는 Story 5.4 AC-5(실제 격리 환경 삭제·복원 통합시험 감사)다.
+
+### 136. 호스트 전환 runbook(OCI A1 확보 8시간 실패 시 PAYG·유료 VPS)
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.10이 사용자 결정(2026-10-13)으로 분리해 append했다(source_spec 없음). `DEVELOPMENT.md`와 `deploy/`에서 `PAYG`·`VPS`는 0건이다. runbook은 저장소 코드 변경이 아니고 운영 계정·호스트가 있어야 실행으로 검증된다. 전환이 일어나면 항목 134(새 송신 IP)가 함께 성립한다.
+
+**미해소 잔여:** 전환 판단 시각, 대상 호스트 준비, DNS·reserved IP·Bybit 키 재바인딩 순서를 담은 runbook. "운영 호스트 준비"는 스토리가 아니어서 주인 없음이고, 가장 가까운 게이트는 `production-secrets-and-accounts`다.
+
+### 137. 격리 복원 환경의 실제 OIDC 왕복과 승인 계정의 read-only safe sync
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.10이 append했다. 격리 복원은 외부 호출을 끈다 — `deploy/production/restore.sh:37`이 원칙을 적고 `:358-371`이 `BOKRILOG_PUBLIC_BASE_URL`·`BOKRILOG_OPERATORS`·`BOKRILOG_BYBIT_*`와 세 제공자의 `CLIENT_ID`·`CLIENT_SECRET`을 빈 값으로 덮는다. 확인은 로그인 설정 존재·자격정보 복호화 수·세션 폐기까지다.
+
+**미해소 잔여:** 실제 왕복. 승인된 시험 계정과 reserved IP가 필요하므로 주인은 Epic 1 실연동 게이트(세 제공자 왕복)와 Epic 2 실연동 게이트(Bybit)다. 복원 환경에서 같은 OIDC identity가 삭제 계정을 되살리지 못함은 Story 5.4 AC-2·AC-5가 실제 격리 환경 시험으로 요구한다.
+
+### 138. tombstone 내보내기의 평시 관측(마지막 성공 gauge·정체 경보·`OnFailure`)
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.10이 append했다. 평시 신호가 없다 — `deploy/production/systemd/bokrilog-tombstone-export.service`에 `OnFailure=`가 없고 `alerts.yml`·`TelemetryAllowlist`에서 tombstone은 0건이다. 정체는 복원 당일에야 `restore.sh`의 `TOMBSTONES_STALE`로 드러난다. 그런데 `restore.sh`의 `--allow-stale-tombstones`는 경고만 남기고 계속하며 스스로 "그 사이의 삭제는 이 복원에 없다"고 적는다 — 내보내기가 멈춘 채 이 플래그로 복원하면 그 기간에 삭제된 계정이 되살아날 수 있어 삭제 정확성에 닿는다.
+
+**미해소 잔여:** 마지막 성공 시각 gauge(또는 외부 object 시각 측정)·정체 경보·systemd `OnFailure` 알림. 메트릭은 운영 관측 연결(항목 121·126) 뒤에야 쓸모가 있다. 명시된 주인은 없고, 같은 위험을 다루는 첫 스토리는 Story 5.3(AC-4 기한 임박·초과를 완료로 표시하지 않고 alert·감사)이다.
+
+### 139. tombstone digest 키의 회전 절차
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.10이 append했다. 회전은 지원하지 않고 불일치를 거부만 한다 — `deploy/production/tombstone-export.sh:232-233`이 파일 머리의 키 ID를 읽고 `:254-256`이 앞선 사본과 다르면 `TOMBSTONE_KEY_CHANGED`로 latest를 바꾸지 않고 멈춘다. digest는 원문 ID 없이 다시 계산할 수 없어 회전에는 살아 있는 계정 전체를 두 키로 대조하는 겹침 절차가 필요하다는 원문 진단이 그대로다. 항목 110(감사 digest 키 회전)·126과 같은 뿌리다.
+
+**미해소 잔여:** 겹침 기간의 두 키 계산, outbox·외부 사본의 key id 전환, 이전 키 폐기 시점. 주인 없음 — 가장 가까운 결정 지점은 Story 5.3(tombstone 수명·권한)이다.
+
+### 140. 복구 manifest와 실제 저장소 상태의 정기 대조
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.10이 append했다. 검사기는 manifest 자체만 본다 — `deploy/production/check-recovery-manifest.sh:1-30`의 머리 주석이 범위를 필수 키·값 종류·평문 비밀 거부로 한정하고, `:16`이 `backup_key_ids`를 "저장소에 남은 generation이 쓰는 것 전부"라 정의하지만 저장소 목록과 대조하지 않는다. tombstone recipient와 짝 identity의 대조도 없다. 빠진 키는 복원 당일 `restore.sh`의 `KEY_UNAVAILABLE`에서야 드러난다.
+
+**미해소 잔여:** 운영자 환경에서 도는 정기 점검(저장소 generation의 key ID ⊆ manifest `backup_key_ids`, recipient↔identity 짝). 실제 manifest가 저장소 밖에 있어 CI 검사로는 닫히지 않는다. 주인 없음.
+
+### 141. `operations_restriction.reinstated_from` 색인
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** `spec-operator-command-commons.md`(PR #97)가 append했다. 색인은 아직 없다 — `V20__operations_restriction_lift.sql:30`·`:32-33`이 FK·CHECK만 두고 V21~V25에서 `reinstated_from`은 0건이다. 원문 진단을 조금 좁힌다 — 내려가는 `DESCENT`(`operations/internal/OperationalRestrictionRepository.java:183-186`, `ON c.reinstated_from = d.id`)만 이 열로 조인하고, 올라가는 `ASCENT`(`:192-195`)·`LINEAGE`(`:49-51`)는 PK로 조인하므로 색인이 없어도 순차 탐색하지 않는다(정적 판독이며 실행 계획은 확인하지 않았다). 색인만 더하는 migration의 선례는 `V23__sync_queue_age_index.sql`이다.
+
+**미해소 잔여:** 부분 색인을 더하는 새 migration. 원문대로 SPEC Ask First 대상이고, 지금은 행 수가 작아 출시를 막지 않는다. 주인 없음.
+
+### 142. `OperatorArmingVersionTest`에 실제 v5 직렬화 바이트 fixture
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** `spec-operator-command-commons.md`(PR #97)가 append했다. 시험은 지금도 현재 빌드의 stream을 고쳐 옛 모양을 흉내 낸다 — `backend/src/test/java/com/bokrilog/OperatorArmingVersionTest.java:21-38`(칸 이름 변경·없는 클래스)과 `:156`(`serialVersionUID` 8바이트 교체)이 그 방식이고, `backend/src/test/resources` 디렉터리 자체가 없다. 항목 118의 잔여(blue/green rollback 창의 무장 비호환)와 같은 축이다. 운영 서비스 전이라 배포된 v5 무장은 실재하지 않으므로 지금 이 fixture의 실익은 "흉내가 실제 stream과 같다"는 확인에 그친다.
+
+**미해소 잔여:** 이전 커밋(`OperatorCommandApi$Lift` 등이 있던 빌드)에서 뜬 바이트를 fixture로 더하는 일. 첫 운영 배포 뒤에는 그 시점의 무장 모양을 fixture로 남기는 규칙이 더 쓸모 있다. 주인 없음.
+
+### 143. Bybit source 정책 버전이 첫 연결과 재연결 사이에 바뀐 경우
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.17이 append했다. 원문대로 잠복 상태다 — 정책 버전은 `source/internal/BybitAdapter.java:72`의 `bybit-readonly-uta-1.0` 하나뿐이고, 버전이 오르면 `plan/internal/PlanConditionService.java:504`·`:509`(`eligibleSnapshot`)의 정책 버전 일치 조건이 같은 계정 재연결의 기준 snapshot을 비워 `:96`에서 `NOT_ELIGIBLE`이 된다. 2.17 머지 뒤 바뀐 코드는 없다(`git log 0c391cb..189c16b`는 문서-only `e7ff86f` 하나).
+
+**미해소 잔여:** 재기준(rebase) 허용 조건과, 근거에 새 연결 ID와 기준 snapshot 정책 버전을 한 쌍으로 보이는 표시 규칙. 주인을 "정책 버전을 올리는 스토리"라는 조건으로 적었으므로 `## 갱신 규칙`의 (가) 부류다 — 스프린트 경계 재확인 목록(23·27)에 함께 든다.
+
+### 144. 다른 계정 연결 뒤 완료 계획의 비교 보류와 종단 계획 대상의 범위
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.17이 append했다. 동작은 2.17 그대로다 — 완료 비교는 `sync/internal/PlanPublicationService.java:798`의 `COMPARISON_PENDING`으로 시작하고, `PlanSyncService.java:327`이 관측이 없거나 보류이면 완료 관측을 계속 기다리며, 다른 계정이 연결돼 있으면 `PlanSyncGuard.java:204-209`가 `CONNECTION_UNAVAILABLE`을 내므로 이전 계정을 다시 관측할 수 없어 보류가 끝나지 않는다. 계획 대상은 `plan/internal/PlanConditionService.java:262-263`·`:276-285`의 `withCurrentConnection`이 상태와 무관하게(ACTIVE 한정 없이) 같은 계정의 지금 연결로 바꾸고, 다른 계정이면 기록된 연결로 되돌아간다.
+
+**미해소 잔여:** 보류를 영구 보류로 둘지 "관측 불가"로 닫을지, 종단 계획의 `planTarget` 대체를 ACTIVE에만 둘지. 값이 틀리게 보이지는 않고(보류로 남을 뿐) 주인 없음.
+
+### 145. `deferred-work.md` 항목 수와 원장 절 수·상태 표 합계를 대조하는 Docker 없는 검사
+
+**미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** 이 판정 라운드(`spec-deferred-work-verdict-round.md`)의 리뷰가 append했고 같은 PR에서 판정한다(`CLAUDE.md` 표준 흐름 7번). 지금 건수 정합은 사람이 센다 — `.github/scripts/`에 `deferred-work.md`나 이 원장을 읽는 스크립트가 없고 `test-ci-scripts.sh`도 둘을 보지 않는다. 그 결과가 실제로 났다 — 2026-10-13 갱신이 141·142를 세지 않았고 그 다음 done 전환(PR #101)이 번호를 잘못 적었으며, 이 라운드의 갱신 문단이 그것을 손으로 정정했다. 이 chore는 SPEC 경계상 `ci.yml`·스크립트를 바꾸지 않는다. 항목 36(인용 해석 검사)의 세 축 가운데 "원장 절 집합과 `deferred-work.md` 항목의 개수·순서 동등"과 같은 것이고 37(소유자·확인일 표)의 정합 검사와도 이어진다.
+
+**미해소 잔여:** `- source_spec` 수 = `### N.` 절 수(1부터 연속) = 상태 표 네 칸 합을 단정하는 셸 검사와 그 계약 시험. 문서-only 경로도 `changes` job을 지나므로 붙일 자리는 있다. 주인 없음 — CI 쪽 후속(진행 중인 CI 임계 경로 chore 또는 그 뒤 chore)이 가져가기 좋은 크기다.

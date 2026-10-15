@@ -443,3 +443,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-17-bybit-reconnect.md`
   summary: 완료 계획의 첫 종료 후 관측이 고정되기 전에 해제하고 다른 계정으로 연결한 경우, 그 계획의 완료 비교를 끝내 보류로 둘지(이전 계정만 관측할 수 있다) 아니면 관측 불가로 닫을지 정한다. 같은 판단에서 종단 계획의 계획 대상(`planTarget`)이 지금 연결로 대체되는 범위(ACTIVE에만 둘지)도 정한다.
   evidence: 2.17은 다른 계정 연결을 종단 계획만 있을 때 허용하고, 가용성 원인만 `CONNECTION_REVOKED` 대신 연결 불가로 바로잡는다. 관측 보류 자체는 계정 단위 귀속(AR-12)의 결과다(2.17 리뷰 blind-hunter·edge-case-hunter, 2026-10-14).
+- source_spec: `_bmad-output/implementation-artifacts/spec-deferred-work-verdict-round.md`
+  summary: `deferred-work.md`의 `- source_spec` 수와 원장 `### N.` 절 수·상태 표 합계를 대조하는 Docker 없는 검사(`.github/scripts/` + `test-ci-scripts.sh`, 문서-only 경로에서도 도는 자리)를 둔다.
+  evidence: 판정 라운드 리뷰 — 2026-10-15 규칙(CLAUDE.md 7번)은 산문이고 141·142 누락처럼 건수 어긋남을 기계가 잡지 못한다. 이 chore는 ci.yml·스크립트를 바꾸지 않는다(항목 36과 이어진다).
