@@ -3,6 +3,7 @@ package com.bokrilog;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.bokrilog.engagement.AdTelemetry;
 import com.bokrilog.sync.SyncTelemetry;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -100,6 +101,40 @@ class TelemetryAllowlistTest extends OperatorTestBase {
         assertThat(series).anySatisfy(each -> assertThat(each.name()).isEqualTo("jvm_memory_used_bytes"));
         assertThat(series).anySatisfy(each -> assertThat(each.name()).isEqualTo("hikaricp_connections_active"));
         assertThat(series).anySatisfy(each -> assertThat(each.name()).isEqualTo("bokrilog_support_pending_target"));
+
+        // 광고 자격(Story 4.2)의 카운터 셋은 판정 전에도 0으로 있고, skip은 닫힌 사유 일곱만 label로 갖는다.
+        assertThat(series).anySatisfy(each -> assertThat(each.name()).isEqualTo("bokrilog_ad_trigger_total"));
+        assertThat(series).anySatisfy(each -> assertThat(each.name()).isEqualTo("bokrilog_ad_reservation_total"));
+        Set<String> reasons = new LinkedHashSet<>();
+        series.stream().filter(each -> each.name().equals("bokrilog_ad_skip_total"))
+                .forEach(each -> reasons.add(each.labels().get("reason")));
+        assertThat(reasons).containsExactlyInAnyOrderElementsOf(AdTelemetry.SKIP_REASONS);
+        assertThat(series.stream().filter(each -> each.name().startsWith("bokrilog_ad_")).map(Series::labels))
+                .allSatisfy(labels -> assertThat(labels.keySet()).isSubsetOf("env", "role", "reason"));
+    }
+
+    /** Story 4.2: 광고 카운터 셋. trigger·reservation은 tag가 없고 skip은 닫힌 사유 일곱만 받는다. */
+    @Test
+    void 광고_카운터는_닫힌_사유_tag만_받는다() {
+        assertThat(TelemetryAllowlist.tagKeys(AdTelemetry.TRIGGER)).isEmpty();
+        assertThat(TelemetryAllowlist.tagKeys(AdTelemetry.RESERVATION)).isEmpty();
+        assertThat(TelemetryAllowlist.tagKeys(AdTelemetry.SKIP)).containsExactly("reason");
+        assertThat(AdTelemetry.SKIP_REASONS).containsExactlyInAnyOrder("CONSENT_REQUIRED", "RESTRICTED",
+                "PROVIDER_DISABLED", "INTERVAL", "DAILY_CAP", "NOT_CANDIDATE", "REPLAYED");
+        // 건너뜀 사유 다섯은 API의 닫힌 사유와 같다.
+        for (var reason : com.bokrilog.engagement.AdEligibilityApi.SkipReason.values()) {
+            assertThat(AdTelemetry.SKIP_REASONS).contains(reason.name());
+        }
+        for (String reason : AdTelemetry.SKIP_REASONS) {
+            assertThat(TelemetryAllowlist.allows(AdTelemetry.SKIP, Map.of("reason", reason, "env", "ci"), Set.of()))
+                    .as(reason).isTrue();
+        }
+        String marker = UUID.randomUUID().toString();
+        assertThat(TelemetryAllowlist.allows(AdTelemetry.SKIP, Map.of("reason", marker), Set.of())).isFalse();
+        assertThat(TelemetryAllowlist.allows(AdTelemetry.SKIP, Map.of("reason", "INTERVAL", "jobId", marker),
+                Set.of())).isFalse();
+        assertThat(TelemetryAllowlist.allows(AdTelemetry.RESERVATION, Map.of("transition", marker), Set.of())).isFalse();
+        assertThat(TelemetryAllowlist.allows(AdTelemetry.TRIGGER, Map.of("userId", marker), Set.of())).isFalse();
     }
 
     @Test

@@ -4,10 +4,11 @@ import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 
 /**
- * engagement 모듈의 deletion port(Story 4.1).
+ * engagement 모듈의 deletion port(Story 4.1·4.2).
  *
- * <p><b>분류.</b> 광고 동의 결정 행은 전부 "사용자 귀속 데이터"이고 식별 없는 집계는 없다. 그래서 삭제의 답은 비식별이 아니라
- * 행 삭제다. 멱등 기록은 결정 행 자체이므로 함께 사라진다. 법정 분리 보존 후보 필드는 외부 승인(G-5) 전까지 없다.
+ * <p><b>분류.</b> 광고 동의 결정 행(Story 4.1)과 광고 자격 결정 행(Story 4.2 — 빈도 제한·reservation·transition 참조를 함께
+ * 담는다)은 전부 "사용자 귀속 데이터"다. 식별 없는 집계는 계측 카운터({@code bokrilog_ad_*})뿐이고 표에 없다. 그래서 삭제의 답은
+ * 비식별이 아니라 행 삭제다. 멱등 기록은 결정 행 자체이므로 함께 사라진다. 법정 분리 보존 후보 필드는 외부 승인(G-5) 전까지 없다.
  *
  * <p>계정 삭제 orchestrator(루트 {@code AccountErasure})가 삭제 전환과 같은 트랜잭션에서 부른다. 실제 계정 삭제 요청과의
  * 통합은 Epic 5가 한다.
@@ -20,6 +21,13 @@ public interface EngagementDeletionApi {
      * @return 이번에 지운 행 수. 이미 지웠으면 0
      */
     int eraseConsents(@Nullable UUID userId);
+
+    /**
+     * 그 사용자의 광고 자격 결정 행(자격·건너뜀·transition 참조)을 지운다. 다른 사용자의 행은 바뀌지 않는다. 멱등이다.
+     *
+     * @return 이번에 지운 행 수. 이미 지웠으면 0
+     */
+    int eraseAdAttempts(@Nullable UUID userId);
 
     /**
      * 그 사용자에게 아직 귀속된 이 모듈의 행 수(Story 3.10 복원 검증). {@code engagement_*} 표의 {@code user_id} 열을 카탈로그로

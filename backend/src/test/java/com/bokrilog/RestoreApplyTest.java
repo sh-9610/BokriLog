@@ -303,6 +303,7 @@ class RestoreApplyTest extends PlanSyncTestBase {
         }
         assertThat(sourceRows).as("source_* + 자격정보").isGreaterThanOrEqualTo(countOf("source_connection", user)
                 + countOf("source_provider_account", user) + 1);
+        assertThat(engagementRows).as("engagement_* 두 표(동의·자격)").isEqualTo(2);
         assertThat(invariants.check().residualRows())
                 .isEqualTo(identity + portfolioRows + syncRows + planRows + sourceRows + operationRows + engagementRows
                         + grants);
@@ -367,11 +368,16 @@ class RestoreApplyTest extends PlanSyncTestBase {
                 + "AND table_name = 'source_credential'").query(Integer.class).single()).isEqualTo(1);
     }
 
-    /** 광고 동의 결정 하나(Story 4.1). 카탈로그 세기가 engagement 표의 행을 잡는지 본다. */
+    /**
+     * 광고 동의 결정 하나(Story 4.1)와 광고 자격 결정 하나(Story 4.2). 카탈로그 세기가 engagement 두 표의 행을 모두 잡는지 본다.
+     */
     private void insertConsentRowOf(UUID user) {
         jdbc().sql("INSERT INTO engagement_ad_consent_decision (user_id, policy_version, choice, idempotency_key_digest, "
                 + "request_digest) VALUES (:u, 'AD-CONSENT-1.0', 'GRANTED', :k, :r)")
                 .param("u", user).param("k", "c".repeat(64)).param("r", "d".repeat(64)).update();
+        jdbc().sql("INSERT INTO engagement_ad_attempt (user_id, sync_job_id, outcome, skip_reason) "
+                + "VALUES (:u, :j, 'SKIPPED', 'CONSENT_REQUIRED')")
+                .param("u", user).param("j", UUID.randomUUID()).update();
     }
 
     private void insertAuditRowOf(UUID user) {

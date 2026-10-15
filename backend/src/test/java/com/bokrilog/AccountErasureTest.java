@@ -145,19 +145,39 @@ class AccountErasureTest extends PlanSyncTestBase {
         assertThat(ready(user).planId()).isNotNull();
     }
 
-    @Test
-    void engagement_삭제가_실패하면_앞선_모듈_삭제까지_모두_되돌아간다() throws Exception {
+    /**
+     * engagement 삭제 port의 어느 단계(동의 결정·광고 자격 결정)가 실패해도 그 단계가 지운 행과 앞선 모듈 삭제까지 모두 되돌아간다.
+     */
+    @org.junit.jupiter.params.ParameterizedTest(name = "{0}")
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"eraseConsents", "eraseAdAttempts"})
+    void engagement_삭제가_실패하면_앞선_모듈_삭제까지_모두_되돌아간다(String failingStep) throws Exception {
         UUID user = connect(DevBybitStub.Scenario.UTA2);
-        publishedPlan(user, "erasure-engagement-failing", null);
+        publishedPlan(user, "erasure-engagement-failing-" + failingStep, null);
         jdbc().sql("INSERT INTO engagement_ad_consent_decision (user_id, policy_version, choice, idempotency_key_digest, "
                         + "request_digest) VALUES (:u, 'AD-CONSENT-1.0', 'GRANTED', :k, :r)")
                 .param("u", user).param("k", "c".repeat(64)).param("r", "d".repeat(64)).update();
-        // engagement 삭제 port가 자기 행을 지운 뒤 실패한다 — payload 삭제 직전, 앞선 모듈 erase가 모두 끝난 자리다.
+        // 광고 자격 결정(Story 4.2) 한 행도 둔다.
+        jdbc().sql("INSERT INTO engagement_ad_attempt (user_id, sync_job_id, outcome, skip_reason) "
+                        + "VALUES (:u, :j, 'SKIPPED', 'CONSENT_REQUIRED')")
+                .param("u", user).param("j", UUID.randomUUID()).update();
+        // engagement 삭제 port의 한 단계가 자기 행을 지운 뒤 실패한다 — payload 삭제 직전, 앞선 모듈 erase가 모두 끝난 자리다.
         com.bokrilog.engagement.EngagementDeletionApi failing = new com.bokrilog.engagement.EngagementDeletionApi() {
             @Override
             public int eraseConsents(@Nullable UUID userId) {
-                engagement.eraseConsents(userId);
-                throw new IllegalStateException("injected");
+                int erased = engagement.eraseConsents(userId);
+                if (failingStep.equals("eraseConsents")) {
+                    throw new IllegalStateException("injected");
+                }
+                return erased;
+            }
+
+            @Override
+            public int eraseAdAttempts(@Nullable UUID userId) {
+                int erased = engagement.eraseAdAttempts(userId);
+                if (failingStep.equals("eraseAdAttempts")) {
+                    throw new IllegalStateException("injected");
+                }
+                return erased;
             }
 
             @Override
@@ -175,6 +195,7 @@ class AccountErasureTest extends PlanSyncTestBase {
         assertThat(countOf("source_connection", user)).isEqualTo(1);
         assertThat(countOf("identity_account", user)).isEqualTo(1);
         assertThat(countOf("engagement_ad_consent_decision", user)).isEqualTo(1);
+        assertThat(countOf("engagement_ad_attempt", user)).isEqualTo(1);
         assertThat(ready(user).planId()).isNotNull();
     }
 

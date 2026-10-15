@@ -1,34 +1,28 @@
 package com.bokrilog.engagement.internal;
 
 import com.bokrilog.engagement.AdConsentApi;
-import com.bokrilog.engagement.EngagementDeletionApi;
 import com.bokrilog.identity.AccountAccessApi;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.UUID;
-import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * {@link AdConsentApi}와 {@link EngagementDeletionApi}의 구현(Story 4.1). {@code internal}의 package-private 클래스다.
+ * {@link AdConsentApi}의 구현(Story 4.1). {@code internal}의 package-private 클래스다. 삭제 port는
+ * {@link EngagementDeletionService}가 맡는다(Story 4.2부터 표가 둘이다).
  *
  * <p><b>결정은 트랜잭션 하나다.</b> 사용자 advisory 잠금 → 계정 생명주기 잠금({@code lockWriteAccess}, 거짓이면 쓰지 않는다)
  * → 같은 키의 앞선 결정(같은 입력이면 재전송, 다른 입력이면 충돌) → 지금 상태와 같은 선택이면 쓰지 않음 → INSERT 한 문장.
  * 잠금 순서(사용자 잠금 → 생명주기)는 계획 조건 확정({@code PlanConditionService})과 같다.
  *
- * <p><b>삭제는 사용자 잠금을 쥐지 않는다.</b> 계정 삭제 orchestrator는 생명주기 행을 먼저 잠근 트랜잭션에서 부르므로, 여기서
- * 사용자 잠금을 다시 잡으면 "사용자 잠금 → 생명주기"를 기다리는 결정 트랜잭션과 서로를 기다린다. 잠그지 않아도 행이 다시 생기지
- * 않는다 — 결정 트랜잭션은 생명주기 잠금을 얻은 뒤에야 쓰고, 그때는 삭제 전환이 커밋돼 쓰기가 막혀 있다. 반대로 결정이 먼저
- * 생명주기를 쥐었으면 삭제가 그 커밋을 기다린 뒤 그 행까지 지운다.
- *
  * <p>로그를 남기지 않는다 — 사용자·선택·키가 로그로 갈 길을 만들지 않는다. 결과 code만 호출자가 남긴다.
  */
 @Service
-class AdConsentService implements AdConsentApi, EngagementDeletionApi {
+class AdConsentService implements AdConsentApi {
 
     private final AdConsentRepository decisions;
 
@@ -109,22 +103,6 @@ class AdConsentService implements AdConsentApi, EngagementDeletionApi {
             throw new IllegalStateException("동의 결정의 결과가 없다.");
         }
         return decided;
-    }
-
-    // ------------------------------------------------------------------ 삭제 port
-
-    @Override
-    public int eraseConsents(@Nullable UUID userId) {
-        if (userId == null) {
-            return 0;
-        }
-        Integer erased = this.transactions.execute(status -> this.decisions.eraseUser(userId));
-        return erased == null ? 0 : erased;
-    }
-
-    @Override
-    public long remainingRowsOf(UUID userId) {
-        return this.decisions.remainingRowsOf(userId);
     }
 
     private static String sha256(String value) {

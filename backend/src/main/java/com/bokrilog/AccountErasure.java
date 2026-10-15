@@ -22,7 +22,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  *   <li>{@code identity} 삭제 전환({@code DELETION_IN_PROGRESS}) — 그 순간부터 새 세션·쓰기가 막힌다.
  *   <li>tombstone outbox 행({@link DeletionTombstoneApi}) — 기록 없는 탈퇴가 없다.
  *   <li>모듈 erase port: portfolio → sync → plan → source(외래키가 {@code ON DELETE RESTRICT}라 이 순서다) → operations
- *       (감사 수행자·제한 target 비식별, 문의 삭제) → engagement(광고 동의 결정 삭제).
+ *       (감사 수행자·제한 target 비식별, 문의 삭제) → engagement(광고 동의 결정·광고 자격 결정 삭제).
  *   <li>{@code identity} payload·인증 매핑·세션 삭제와 {@code DELETED} 전환 — 마지막이다.
  * </ol>
  *
@@ -105,6 +105,7 @@ class AccountErasure {
             this.operations.eraseRestrictionTargets(userId);
             this.operations.eraseInquiries(userId);
             this.engagement.eraseConsents(userId);
+            this.engagement.eraseAdAttempts(userId);
             if (this.accounts.erasePayload(userId) != DeletionOutcome.COMPLETED) {
                 // 전환 뒤인데 payload 삭제가 적용되지 않았다. 부분 삭제를 완료로 보고하지 않는다 — 전부 되돌린다.
                 throw new IllegalStateException("계정 payload 삭제가 적용되지 않았다.");

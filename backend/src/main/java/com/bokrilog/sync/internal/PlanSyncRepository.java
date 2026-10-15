@@ -138,6 +138,18 @@ class PlanSyncRepository {
             .query((rs, n) -> view(rs, 0)).optional();
     }
 
+    /**
+     * Story 4.2's candidate predicate, in one statement: the user's own manual sync that succeeded with its official
+     * result. A verification, a continuation, a completion, an automatic or system trigger, an ending other than a
+     * success and an attempt in progress are not; neither is another user's attempt nor a missing one.
+     */
+    boolean publishedManualSync(UUID user, UUID jobId) {
+        return Boolean.TRUE.equals(jdbc.sql("SELECT EXISTS (SELECT 1 FROM sync_plan_sync_job WHERE user_id=:u "
+                + "AND job_id=:j AND purpose='SYNC' AND trigger='MANUAL' AND status='SUCCEEDED' "
+                + "AND calculation_id IS NOT NULL)")
+            .param("u", user).param("j", jobId).query(Boolean.class).single());
+    }
+
     Optional<SyncJob> active(UUID user, UUID planId) {
         return jdbc.sql(VIEW + " WHERE user_id=:u AND plan_id=:plan AND status IN ('QUEUED','RUNNING') "
                 + "ORDER BY admitted_at LIMIT 1")
