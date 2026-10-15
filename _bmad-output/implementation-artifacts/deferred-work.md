@@ -446,3 +446,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-deferred-work-verdict-round.md`
   summary: `deferred-work.md`의 `- source_spec` 수와 원장 `### N.` 절 수·상태 표 합계를 대조하는 Docker 없는 검사(`.github/scripts/` + `test-ci-scripts.sh`, 문서-only 경로에서도 도는 자리)를 둔다.
   evidence: 판정 라운드 리뷰 — 2026-10-15 규칙(CLAUDE.md 7번)은 산문이고 141·142 누락처럼 건수 어긋남을 기계가 잡지 못한다. 이 chore는 ci.yml·스크립트를 바꾸지 않는다(항목 36과 이어진다).
+- source_spec: `_bmad-output/implementation-artifacts/spec-ci-critical-path.md`
+  summary: CI-PLAN §1(job 구조)·§5(변경 분류)에 새 `backup-rehearsal` job과 `backup-restore` 분류(프런트엔드·문서-only PR의 백업·복원 리허설 승인된 비적용)를 as-built 새 버전으로 반영한다(Epic 3 회고 AI-10 범위).
+  evidence: 스크립트 머리 주석이 정본으로 인용하는 CI-PLAN §1에는 `backup-rehearsal`이 없고 §5 분류 표에도 백업·복원 분기가 없다. 결정 변경은 기존 문서를 덮지 않고 새 버전으로 발행해야 하므로 이 chore 범위 밖이다(spec-ci-critical-path 리뷰 blind-hunter, 2026-10-15).

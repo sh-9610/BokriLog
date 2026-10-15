@@ -7,11 +7,18 @@
 #           └─> backend-quality ───┼─> same-origin-integration ─┐
 #                    │             ├─> deploy-rehearsal ────────┤
 #                    │             └────────────────────────────┤
+#                    ├─> backup-rehearsal ──────────────────────┤
 #                    └─> restore-rehearsal ─────────────────────┴─> ci-required
 #
 # `deploy-rehearsal`(Story 3.8)은 같은 두 산출물로 운영 배포 절차(`deploy/production/`)의 gate 시험과 blue/green 리허설을 돈다.
-# 통합 job과 서로 기다리지 않는다 — 둘은 다른 compose 프로젝트·포트를 쓴다. `restore-rehearsal`(Story 3.10)은 backend jar 하나로
-# 격리 복원 리허설을 돌아 `deploy-rehearsal`과 병렬이다.
+# 통합 job과 서로 기다리지 않는다 — 둘은 다른 compose 프로젝트·포트를 쓴다. `backup-rehearsal`(Story 3.9)과
+# `restore-rehearsal`(Story 3.10)은 backend jar 하나로 백업·격리 복원 리허설을 돌아 `deploy-rehearsal`과 병렬이다.
+#
+# 백업 리허설은 원래 `deploy-rehearsal` 안에서 배포 리허설 뒤에 직렬로 돌아 PR의 임계 경로였다(PR #100: backend 15분 →
+# 배포 5.4분 + 백업 9.5분). spec-ci-critical-path.md가 그것을 `backend-quality`만 기다리는 job으로 뗐다. 또 PR의 변경이 전부
+# 프런트엔드·문서 경로(`frontend/**`, `_bmad-output/**`, 최상위 `*.md`)면 `changes`가 `backup-restore=false`를 내고 백업·복원
+# 두 리허설은 승인된 비적용으로 건너뛴다(CI-PLAN §5). 게이트는 `!= 'false'`다 — 출력이 빈 값(이 출력을 모르는 target base의
+# 분류기)이면 돈다. push·workflow_dispatch는 항상 `true`다.
 #
 # branch protection이 참조하는 이름은 전환 전후 모두 `ci-required`다. 이제 이 job은 검사를
 # 직접 실행하지 않고 선행 job의 결과만 집계한다(CI-PLAN §5 CI-D5).
@@ -23,8 +30,8 @@
 # 판정 논리는 `.github/scripts/`의 셸 스크립트가 소유한다. YAML 안의 인라인 스크립트는
 # 저장소의 시험으로 고정할 수 없기 때문이다(CI-PLAN §5).
 #   verify-merge-commit.sh -- PR merge commit의 부모가 이벤트의 base·head와 같은지 검증
-#   classify-changes.sh    -- 문서-only 여부 판정. `docs-only`·`reason`을 GITHUB_OUTPUT과
-#                             GITHUB_STEP_SUMMARY에 기록
+#   classify-changes.sh    -- 문서-only·백업·복원 리허설 필요 여부 판정. `docs-only`·`reason`·`backup-restore`를
+#                             GITHUB_OUTPUT과 GITHUB_STEP_SUMMARY에 기록
 #   aggregate-results.sh   -- 선행 job 결과를 모아 병합 가능 여부 판정
 #   check-alert-rules.sh   -- 경보 규칙의 형식 계약·문법·promtool 단위시험(Story 3.7). 통합 job에서 실행한다
 #   test-ci-scripts.sh     -- 위 스크립트들과 이 파일의 계약 시험. changes job 안에서
@@ -77,6 +84,7 @@ jobs:
     outputs:
       docs-only: ${{ steps.classify.outputs.docs-only }}
       reason: ${{ steps.classify.outputs.reason }}
+      backup-restore: ${{ steps.classify.outputs.backup-restore }}
 
     steps:
       - name: 저장소 checkout
@@ -140,9 +148,10 @@ jobs:
           EVENT_BEFORE: ${{ github.event.before }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         # 스크립트로 분리해 위 단계가 계약을 고정할 수 있게 한다.
-        # `GITHUB_OUTPUT`에 `docs-only`와 `reason`을 쓰고 `GITHUB_STEP_SUMMARY`에도 같은
-        # 값을 남긴다. 종료 코드는 항상 0이며 판정 불가는 `no-comparison-base`로 표현해
-        # 전체 검사를 켠다.
+        # `GITHUB_OUTPUT`에 `docs-only`·`reason`·`backup-restore`를 쓰고 `GITHUB_STEP_SUMMARY`에도 같은
+        # 값을 남긴다. 종료 코드는 항상 0이며 판정 불가는 `no-comparison-base`(`backup-restore=true`)로
+        # 표현해 전체 검사를 켠다. target base의 분류기가 `backup-restore`를 모르면 그 출력은 빈 값이고,
+        # 리허설 게이트(`!= 'false'`)와 집계는 빈 값을 실행으로 읽는다.
         #
         # PR 이벤트에서는 체크아웃된 head가 아니라 target base의 승인된 분류기를 실행한다
         # (CI-PLAN §5: "PR이 수정한 classifier가 자기 검사를 축소할 수 없다"). head의
@@ -466,20 +475,18 @@ jobs:
     # 미완료(3b)·전환 전 실패·전환 뒤 실패 rollback·contract 거부·창 닫기). 리허설은 단계마다 일회성 감사 역할(JVM 하나)을 띄우므로
     # 배포 한 번이 몇 분이다. 실패하면 리허설 기록(배포 출력·단계 로그·컨테이너 로그, 비밀 파일 제외)을 진단 artifact로 올린다.
     #
-    # Story 3.9가 같은 job에 백업 리허설을 더했다. 운영 compose 위에 MinIO 두 개를 겹쳐 `backup.sh`를 열두 시나리오로 돈다(실행마다
-    # 일회성 기록 역할 JVM 둘). 배포 리허설과 같은 산출물(jar)을 쓰므로 새 job을 두지 않는다.
+    # Story 3.9가 이 job에 더했던 백업 리허설은 spec-ci-critical-path.md가 아래 `backup-rehearsal`로 뗐다 — 직렬로 돌아 PR의 임계
+    # 경로였다(PR #100: 배포 5.4분 + 백업 9.5분). job 상한도 70분에서 배포 몫인 30분으로 내렸다.
     #
     #   checkout·통합 입력 2건 내려받기                               1분
-    #   gate·백업 스크립트 시험(fixture, Docker 없음)                 2분
+    #   gate 시험(fixture, Docker 없음)                               3분 (단계 timeout)
     #   이미지 2개 빌드 + 시나리오                                   20분 (단계 timeout)
-    #   백업: 도구 받기·이미지 빌드·시나리오                          40분 (단계 timeout — Windows 로컬 실측 28분 49초)
-    #   여유·진단 업로드                                              7분
+    #   여유·진단 업로드                                              6분
     #                                                               ---------
-    #                                                                70분
+    #                                                                30분
     #
-    # 이 job의 green은 **운영 배포·실저장소의 증거가 아니다.** 실제 운영 대상 smoke 전까지 운영 배포는 미검증이고, 실제 OCI·OCI 밖
-    # 저장소의 파기 증거 전까지 백업은 실저장소 미검증이다.
-    timeout-minutes: 70
+    # 이 job의 green은 **운영 배포의 증거가 아니다.** 실제 운영 대상 smoke 전까지 운영 배포는 미검증이다.
+    timeout-minutes: 30
     permissions:
       contents: read
 
@@ -494,12 +501,6 @@ jobs:
         # 판정은 `preflight.sh`가, 고정 입력 단정은 `test-preflight.sh`가 소유한다. 산출물에 기대지 않으므로 내려받기보다 앞에 둔다.
         timeout-minutes: 3
         run: bash deploy/production/test-preflight.sh
-
-      - name: 백업 스크립트 시험
-        # Story 3.9. 도구 설치의 무결성(잘못된 배포본·버전·manifest)과 `backup.sh`의 준비 거부(운영 모드의 가상 시계·결함 주입, 설정·
-        # key·권한)를 고정 입력으로 본다. Docker·네트워크가 필요 없다 — gate 시험과 같은 자리다.
-        timeout-minutes: 3
-        run: bash deploy/production/test-backup-scripts.sh
 
       - name: 통합 입력 내려받기 (frontend dist)
         # 두 품질 job이 검증한 그 산출물이다. 여기서 다시 빌드하지 않는다(CI-PLAN §8).
@@ -523,16 +524,6 @@ jobs:
           BOKRILOG_REHEARSAL_DIAGNOSTICS: ${{ runner.temp }}/deploy-rehearsal-diagnostics
         run: bash deploy/production/rehearse-deploy.sh
 
-      - name: 백업 리허설
-        id: backup-rehearsal
-        # Story 3.9. 운영 compose + 리허설 override + MinIO 두 개(digest 고정)로 `backup.sh`를 실제로 돈다 — age·rclone은
-        # `install-backup-tools.sh`가 고정 버전·SHA-256 표로 받는다. 스크립트가 스택·이미지를 스스로 정리하고, 실패하면 정리 전에 실행
-        # 출력·도구 기록을 아래 디렉터리로 옮긴다(key·저장소 설정·비밀 파일 제외). 업로드는 아래 진단 단계가 같은 상위 디렉터리로 한다.
-        timeout-minutes: 40
-        env:
-          BOKRILOG_REHEARSAL_DIAGNOSTICS: ${{ runner.temp }}/deploy-rehearsal-diagnostics/backup
-        run: bash deploy/production/rehearse-backup.sh
-
       - name: 실패 진단 artifact 업로드
         # 실패·timeout·취소에서만 올린다. 리허설 비밀 파일은 스크립트가 옮기지 않는다(실행마다 만든 리허설 전용 값이기도 하다).
         if: ${{ (failure() || cancelled()) && steps.rehearsal.outcome != 'skipped' }}
@@ -543,10 +534,75 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  backup-rehearsal:
+    name: backup-rehearsal
+    needs: [changes, backend-quality]
+    # 문서-only면 다른 제품 job처럼 건너뛰고, PR의 변경이 전부 프런트엔드·문서 경로(`backup-restore=false`)여도 건너뛴다.
+    # `!= 'false'`라서 빈 값(이 출력을 모르는 옛 분류기)은 돈다 — fail-closed다.
+    if: needs.changes.outputs.docs-only != 'true' && needs.changes.outputs.backup-restore != 'false'
+    runs-on: ubuntu-24.04
+    # Story 3.9. 운영 compose 위에 MinIO 두 개를 겹쳐 `backup.sh`를 열두 시나리오로 돈다(실행마다 일회성 기록 역할 JVM 둘). backend jar
+    # 하나만 쓰므로 `backend-quality`만 기다려 `deploy-rehearsal`·`restore-rehearsal`과 병렬로 돈다 — 셋은 다른 compose 프로젝트·포트를
+    # 쓴다. spec-ci-critical-path.md가 `deploy-rehearsal`의 두 백업 단계를 이 job으로 옮겼다(단계 timeout은 그대로). 실패하면 실행
+    # 출력·도구 기록(key·저장소 설정·비밀 파일 제외)을 진단 artifact로 올린다.
+    #
+    #   checkout·통합 입력 내려받기                                    1분
+    #   백업 스크립트 시험(fixture, Docker 없음)                       3분 (단계 timeout)
+    #   백업: 도구 받기·이미지 빌드·시나리오                          40분 (단계 timeout — Windows 로컬 실측 28분 49초, PR #100 러너 9.5분)
+    #   여유·진단 업로드                                               6분
+    #                                                                ---------
+    #                                                                 50분
+    #
+    # 이 job의 green은 **실저장소의 증거가 아니다.** 실제 OCI·OCI 밖 저장소의 파기 증거 전까지 백업은 실저장소 미검증이다.
+    timeout-minutes: 50
+    permissions:
+      contents: read
+
+    steps:
+      - name: 저장소 checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: 백업 스크립트 시험
+        # 도구 설치의 무결성(잘못된 배포본·버전·manifest)과 `backup.sh`의 준비 거부(운영 모드의 가상 시계·결함 주입, 설정·key·권한)를
+        # 고정 입력으로 본다. Docker·네트워크가 필요 없어 내려받기보다 앞에 둔다.
+        timeout-minutes: 3
+        run: bash deploy/production/test-backup-scripts.sh
+
+      - name: 통합 입력 내려받기 (backend jar)
+        # 품질 job이 검증한 그 산출물이다. 여기서 다시 빌드하지 않는다(CI-PLAN §8).
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: backend-jar-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backend/build/libs
+
+      - name: 백업 리허설
+        id: backup-rehearsal
+        # 운영 compose + 리허설 override + MinIO 두 개(digest 고정)로 `backup.sh`를 실제로 돈다 — age·rclone은 `install-backup-tools.sh`가
+        # 고정 버전·SHA-256 표로 받는다. 스크립트가 스택·이미지를 스스로 정리하고, 실패하면 정리 전에 실행 출력·도구 기록을 아래
+        # 디렉터리로 옮긴다(key·저장소 설정·비밀 파일 제외).
+        timeout-minutes: 40
+        env:
+          BOKRILOG_REHEARSAL_DIAGNOSTICS: ${{ runner.temp }}/backup-rehearsal-diagnostics
+        run: bash deploy/production/rehearse-backup.sh
+
+      - name: 실패 진단 artifact 업로드
+        # 실패·timeout·취소에서만 올린다. 리허설 비밀 파일·key는 스크립트가 옮기지 않는다.
+        if: ${{ (failure() || cancelled()) && steps.backup-rehearsal.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backup-rehearsal-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/backup-rehearsal-diagnostics
+          retention-days: 7
+          if-no-files-found: warn
+
   restore-rehearsal:
     name: restore-rehearsal
     needs: [changes, backend-quality]
-    if: needs.changes.outputs.docs-only != 'true'
+    # `backup-rehearsal`과 같은 게이트다 — 프런트엔드·문서만 바뀐 PR에서는 복원 리허설이 검증하는 jar·`deploy/` 경로가 그대로다.
+    if: needs.changes.outputs.docs-only != 'true' && needs.changes.outputs.backup-restore != 'false'
     runs-on: ubuntu-24.04
     # Story 3.10. 복원 스크립트의 고정 입력 시험(manifest 검사기·준비 거부)과 격리 복원 리허설. 리허설은 운영 compose 위에 MinIO 두 개를
     # 겹친 운영 대역에서 실제 `backup.sh`로 generation을 만들고, 표본 계정을 지우고 tombstone을 내보낸 뒤, 그 삭제 이전 generation을 빈
@@ -609,7 +665,7 @@ jobs:
   ci-required:
     # 이 이름이 branch protection의 required status check 이름이다. 바꾸지 않는다.
     name: ci-required
-    needs: [changes, frontend-quality, backend-quality, same-origin-integration, deploy-rehearsal, restore-rehearsal]
+    needs: [changes, frontend-quality, backend-quality, same-origin-integration, deploy-rehearsal, backup-rehearsal, restore-rehearsal]
     # 선행 job이 실패·취소·skip 어느 쪽이든 이 job은 반드시 실행되어 판정을 남겨야 한다.
     # 실행되지 않으면 required check가 영원히 대기 상태로 남는다.
     if: ${{ always() }}
@@ -629,11 +685,13 @@ jobs:
       - name: 필수 검사 집계
         env:
           DOCS_ONLY: ${{ needs.changes.outputs.docs-only }}
+          BACKUP_RESTORE: ${{ needs.changes.outputs.backup-restore }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           FRONTEND_RESULT: ${{ needs.frontend-quality.result }}
           BACKEND_RESULT: ${{ needs.backend-quality.result }}
           INTEGRATION_RESULT: ${{ needs.same-origin-integration.result }}
           REHEARSAL_RESULT: ${{ needs.deploy-rehearsal.result }}
+          BACKUP_RESULT: ${{ needs.backup-rehearsal.result }}
           RESTORE_RESULT: ${{ needs.restore-rehearsal.result }}
         # 판정은 스크립트가 소유한다. YAML 표현식은 저장소의 시험으로 고정할 수 없다.
         run: bash .github/scripts/aggregate-results.sh

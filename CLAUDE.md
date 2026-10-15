@@ -122,11 +122,12 @@ docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --b
 
 ## CI
 
-`.github/workflows/ci.yml`이 유일한 workflow다. 구조는 `changes → frontend-quality·backend-quality → same-origin-integration·deploy-rehearsal·restore-rehearsal → ci-required`이고(복원 리허설은 backend jar만 기다린다) 필수 검사 이름은 `ci-required`로 고정이다. GitHub ruleset `protect-integration-branches`가 `develop`·`main`에 PR 필수, merge commit만 허용, `ci-required` 필수(strict), 삭제·force push 금지를 건다.
+`.github/workflows/ci.yml`이 유일한 workflow다. 구조는 `changes → frontend-quality·backend-quality → same-origin-integration·deploy-rehearsal·backup-rehearsal·restore-rehearsal → ci-required`이고(백업·복원 리허설은 backend jar만 기다려 배포 리허설과 병렬이다 — `spec-ci-critical-path.md`) 필수 검사 이름은 `ci-required`로 고정이다. GitHub ruleset `protect-integration-branches`가 `develop`·`main`에 PR 필수, merge commit만 허용, `ci-required` 필수(strict), 삭제·force push 금지를 건다.
 
 - 첫 GitHub 실측(2026-09-06, PR #9): wall-clock 4분 3초. 문서-only 경로(`_bmad-output/**`, 최상위 `*.md`)는 `changes`와 `ci-required`만 돌아 1분 안에 끝난다.
+- 백업·복원 리허설은 두 번째 분류 `backup-restore`를 따른다. PR의 변경이 전부 `frontend/**`·`_bmad-output/**`·최상위 `*.md`일 때만 `false`로 두 job을 승인된 비적용으로 건너뛰고, 그 밖(목록 밖 경로·비교 기준 없음·빈 diff·push·dispatch)은 `true`다. 게이트는 `!= 'false'`이고 집계는 빈 값(옛 분류기)을 `success` 기대로 읽는다(`spec-ci-critical-path.md`).
 - artifact 이름에 `run_attempt`가 들어가 `Re-run failed jobs`는 쓸 수 없다. 재실행은 `Re-run all jobs`다.
-- 통합 job timeout 19분은 CI-PLAN §8의 시작값 5분과 다르다. `backend-quality`도 Story 1.3에서 10분 → 15분으로 올렸다(Testcontainers 콜드 실행). Story 2.11이 다시 `backend-quality`를 15 → 20분, 통합 job을 15 → 17분(회귀 단계 4 → 6분, 주입 origin Playwright `globalTimeout` 3 → 5분)으로 올렸다 — PR #49 실측이 백엔드 11분 5초·회귀 2분 30초였고 PR #52의 백엔드가 13분 0초였다. Story 2.17이 통합 job을 17 → 19분(회귀 단계 6 → 8분, `globalTimeout` 5 → 7분)으로 올렸다 — 로컬 CI 모드 회귀 실측이 4분 36초였다. 그 뒤 dispatch 간격 설정화(`spec-backend-test-speed.md`)로 로컬 백엔드 `clean build`가 13분 2초 → 3분 13초가 됐고 timeout 값은 그대로다(상세는 `DEVELOPMENT.md`). 두 값 모두 실측이 몇 회 더 쌓인 뒤 CI-PLAN 새 버전으로 보정하기로 했고 아직 발행 전이다.
+- 통합 job timeout 19분은 CI-PLAN §8의 시작값 5분과 다르다. `backend-quality`도 Story 1.3에서 10분 → 15분으로 올렸다(Testcontainers 콜드 실행). Story 2.11이 다시 `backend-quality`를 15 → 20분, 통합 job을 15 → 17분(회귀 단계 4 → 6분, 주입 origin Playwright `globalTimeout` 3 → 5분)으로 올렸다 — PR #49 실측이 백엔드 11분 5초·회귀 2분 30초였고 PR #52의 백엔드가 13분 0초였다. Story 2.17이 통합 job을 17 → 19분(회귀 단계 6 → 8분, `globalTimeout` 5 → 7분)으로 올렸다 — 로컬 CI 모드 회귀 실측이 4분 36초였다. 지금 로컬 백엔드 `clean build`는 18분 36초(2026-10-15, Windows 11, 시험 1,496건)이고 CI `backend-quality`는 13~15분이다(상세는 `DEVELOPMENT.md`). `deploy-rehearsal`은 백업 리허설을 떼며 70 → 30분, 새 `backup-rehearsal`은 50분이다. 두 값 모두 실측이 몇 회 더 쌓인 뒤 CI-PLAN 새 버전으로 보정하기로 했고 아직 발행 전이다.
 - Testcontainers는 러너의 docker 데몬을 그대로 쓴다. `backend-quality`에 서비스 컨테이너도, docker를 설치하는 action도 더하지 않았다. 시험은 기존 `Gradle 빌드` 단계 안에서 돈다.
 - 로컬에서 CI 계약을 미리 확인하는 명령은 `bash .github/scripts/test-ci-scripts.sh`다.
 

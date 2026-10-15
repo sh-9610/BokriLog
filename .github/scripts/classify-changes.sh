@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # 변경 분류.
 #
-# 이번 실행이 문서-only인지 판정해 `GITHUB_OUTPUT`에 기록한다. 분류는 fail-closed다.
-# 비교 기준이 없거나 규칙에 없는 경로가 하나라도 있으면 전체 frontend 검사를 실행한다.
+# 이번 실행이 문서-only인지, 그리고 백업·복원 리허설이 필요한지 판정해 `GITHUB_OUTPUT`에 기록한다.
+# 분류는 fail-closed다. 비교 기준이 없거나 규칙에 없는 경로가 하나라도 있으면 전체 검사를 실행한다.
 #
 # 정본: _bmad-output/implementation-artifacts/spec-ci-foundation.md `## I/O & Edge-Case Matrix`
-#       CI-PLAN.md §5 (분류 표와 rename 규칙)
+#       _bmad-output/implementation-artifacts/spec-ci-critical-path.md `## I/O & Edge-Case Matrix`(backup-restore)
+#       CI-PLAN.md §5 (분류 표와 rename 규칙, 승인된 비적용)
 #
 # 입력 (환경변수)
 #   GITHUB_EVENT_NAME    -- pull_request | push | workflow_dispatch
@@ -15,8 +16,13 @@
 #   GITHUB_STEP_SUMMARY  -- 선택. 있으면 판정 결과를 job summary에도 남긴다.
 #
 # 출력 (GITHUB_OUTPUT)
-#   docs-only -- `true` | `false`
-#   reason    -- `docs-only` | `product-change` | `no-comparison-base` | `empty-diff`
+#   docs-only      -- `true` | `false`
+#   reason         -- `docs-only` | `product-change` | `no-comparison-base` | `empty-diff`
+#   backup-restore -- `true` | `false`. `false`는 PR의 변경이 전부 건너뛰기 목록(`frontend/**`, `_bmad-output/**`,
+#                     최상위 `*.md`) 안일 때뿐이다. 그때 백업·복원 리허설은 승인된 비적용이다(CI-PLAN §5). 목록 밖 경로가
+#                     하나라도 있거나, 비교 기준이 없거나, 빈 diff거나, git이 실패하거나, PR이 아닌 이벤트(push·
+#                     workflow_dispatch — `develop` 통합 CI는 전체를 요구한다)면 `true`다. 관련 경로를 나열하는 허용 목록이
+#                     아니라 건너뛰기 목록인 이유는 새 경로(예: 새 최상위 디렉터리)가 조용히 리허설을 건너뛰지 않게 하기 위해서다.
 #
 # 종료 코드는 항상 0이다. 판정 불가는 실패가 아니라 `no-comparison-base`로 표현하며
 # 그 값이 전체 검사를 켠다. git 명령이 실패해도(해석 불가능한 SHA, 손상된 저장소)
@@ -35,11 +41,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# emit <docs-only> <reason> <backup-restore>. 모든 판정 지점(조기 종료 포함)이 세 값을 함께 낸다.
 emit() {
   echo "docs-only=$1" >>"${GITHUB_OUTPUT}"
   echo "reason=$2" >>"${GITHUB_OUTPUT}"
-  echo "분류 결과: docs-only=$1 (사유: $2)"
-  # PR 화면에서 frontend 검사가 왜 건너뛰어졌는지(또는 왜 전부 돌았는지) 보이게 한다.
+  echo "backup-restore=$3" >>"${GITHUB_OUTPUT}"
+  echo "분류 결과: docs-only=$1 (사유: $2), backup-restore=$3"
+  # PR 화면에서 제품 job·백업·복원 리허설이 왜 건너뛰어졌는지(또는 왜 전부 돌았는지) 보이게 한다.
   # 단계 로그를 펼치지 않고도 판정 근거가 남는다.
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     {
@@ -47,6 +55,7 @@ emit() {
       echo ""
       echo "- \`docs-only\`: \`$1\`"
       echo "- \`reason\`: \`$2\`"
+      echo "- \`backup-restore\`: \`$3\`"
     } >>"${GITHUB_STEP_SUMMARY}"
   fi
 }
@@ -71,16 +80,16 @@ case "${GITHUB_EVENT_NAME}" in
 esac
 
 # 분류는 fail-closed다. 비교 기준이 없으면(수동 진단, 브랜치 신규 생성,
-# force push로 사라진 이전 commit) 전체 frontend 검사를 실행한다.
+# force push로 사라진 이전 commit) 전체 검사를 실행한다.
 if [ -z "${base}" ]; then
-  emit false no-comparison-base
+  emit false no-comparison-base true
   exit 0
 fi
 
 if ! diff_file="$(mktemp)"; then
   diff_file=''
   echo "::warning::임시 파일을 만들지 못해 변경 목록을 읽을 수 없다."
-  emit false no-comparison-base
+  emit false no-comparison-base true
   exit 0
 fi
 
@@ -97,32 +106,49 @@ fi
 if ! git -c core.quotePath=false diff --no-renames -z --name-only \
   "${base}" "${GITHUB_SHA}" >"${diff_file}"; then
   echo "::warning::${base}..${GITHUB_SHA} 범위의 변경 목록을 얻지 못했다."
-  emit false no-comparison-base
+  emit false no-comparison-base true
   exit 0
 fi
 
 if [ ! -s "${diff_file}" ]; then
-  emit false empty-diff
+  emit false empty-diff true
   exit 0
 fi
 
-# 허용 목록 방식이다. 목록 밖 경로가 하나라도 있으면 전체 frontend 검사를 실행한다.
-# `.github/workflows/**`, `frontend/**`, lockfile, script는 `*/*`에 걸려 문서-only가 될 수 없다.
+# 두 판정을 한 루프에서 모은다.
+#   docs-only      -- 허용 목록 방식. 목록 밖 경로가 하나라도 있으면 제품 job 전체를 실행한다.
+#                     `.github/workflows/**`, `frontend/**`, lockfile, script는 `*/*`에 걸려 문서-only가 될 수 없다.
+#   backup-restore -- 건너뛰기 목록(`frontend/**`, `_bmad-output/**`, 최상위 `*.md`) 밖 경로가 하나라도 있으면 리허설을 돈다.
+#                     `frontend/*`는 슬래시까지 맞춰야 한다 — `frontend-tools/x` 같은 이웃 디렉터리는 `*/*`로 떨어진다.
 echo "변경 파일:"
 docs_only=true
+backup_skippable=true
 while IFS= read -r -d '' path; do
   [ -n "${path}" ] || continue
   printf '  %s\n' "${path}"
   case "${path}" in
     _bmad-output/*) ;;
-    */*) docs_only=false ;;
+    frontend/*) docs_only=false ;;
+    */*)
+      docs_only=false
+      backup_skippable=false
+      ;;
     *.md) ;;
-    *) docs_only=false ;;
+    *)
+      docs_only=false
+      backup_skippable=false
+      ;;
   esac
 done <"${diff_file}"
 
+# 승인된 비적용은 PR에만 있다. `develop`·`main` push는 실제 merge commit의 통합 검증이라 전체를 요구한다(CI-PLAN §5).
+backup_restore=true
+if [ "${GITHUB_EVENT_NAME}" = pull_request ] && [ "${backup_skippable}" = true ]; then
+  backup_restore=false
+fi
+
 if [ "${docs_only}" = true ]; then
-  emit true docs-only
+  emit true docs-only "${backup_restore}"
 else
-  emit false product-change
+  emit false product-change "${backup_restore}"
 fi
