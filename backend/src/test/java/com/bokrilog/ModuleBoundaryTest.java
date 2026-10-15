@@ -47,7 +47,7 @@ class ModuleBoundaryTest {
      * 없어 조용히 통과하고, 미노출 규칙을 빠뜨리면 그 모듈의 내부가 밖에서 보인다.
      */
     private static final List<String> MODULES =
-            List.of("identity", "source", "portfolio", "operations", "sync", "plan", "calculation");
+            List.of("identity", "source", "portfolio", "operations", "sync", "plan", "calculation", "engagement");
 
     private static final String CALCULATION = "com.bokrilog.calculation";
 
@@ -358,5 +358,63 @@ class ModuleBoundaryTest {
                         com.bokrilog.operations.DeletionTombstoneApi.Tombstone.class)
                 .because("외부 tombstone으로 다시 지우는 곳은 복원 적용뿐이다.");
         reapply.check(PRODUCTION_CLASSES);
+    }
+
+    /**
+     * 광고 동의는 결과 조회의 조건이 아니다(Story 4.1). 동의 API에 닿는 운영 클래스는 engagement 모듈 안과 설정 화면이 부르는 루트
+     * 컨트롤러 하나다 — 연결·동기화·계획·대시보드 경로가 동의 여부로 동작을 바꿀 길이 없다. 광고 자격 판정(Story 4.2)이 생기면 그
+     * 판정은 engagement 안에서 이 API를 읽는다.
+     */
+    @Test
+    void 광고_동의_API는_engagement와_동의_컨트롤러만_닿는다() {
+        ArchRule rule = noClasses()
+                .that().resideOutsideOfPackage("com.bokrilog.engagement..")
+                .and().haveNameNotMatching("com\\.bokrilog\\.AdConsentController(\\$.*)?")
+                .should().dependOnClassesThat().belongToAnyOf(com.bokrilog.engagement.AdConsentApi.class)
+                .because("동의 여부로 연결·동기화·대시보드 동작을 바꾸지 않는다.");
+        rule.check(PRODUCTION_CLASSES);
+    }
+
+    /**
+     * 광고 동의 행의 삭제는 계정 삭제 orchestrator 한 곳이다(Story 4.1). 다른 자리가 동의를 지우면 삭제 전환·tombstone 없이 사용자의
+     * 결정이 사라진다. 구현하는 모듈 안쪽은 이 규칙 밖이다.
+     */
+    @Test
+    void 광고_동의_삭제는_계정_삭제_orchestrator만_부른다() {
+        ArchRule rule = noClasses()
+                .that().resideOutsideOfPackage("com.bokrilog.engagement..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.AccountErasure")
+                .should().callMethod(com.bokrilog.engagement.EngagementDeletionApi.class, "eraseConsents",
+                        java.util.UUID.class)
+                .because("광고 동의 삭제는 한 트랜잭션의 계정 삭제(AccountErasure) 안에서만 한다.");
+        rule.check(PRODUCTION_CLASSES);
+    }
+
+    /**
+     * engagement 소유 표({@code engagement_*})의 이름은 운영 소스에서 {@code engagement/internal} 안에만 나온다(Story 4.1). 다른
+     * 모듈·루트가 표 이름으로 SQL을 쓰면 공개 API를 우회해 동의를 읽거나 바꾼다. 마이그레이션은 Java 소스가 아니라 대상이 아니다.
+     */
+    @Test
+    void engagement_표_이름은_engagement_internal_밖의_운영_소스에_없다() throws java.io.IOException {
+        java.util.regex.Pattern tableName = java.util.regex.Pattern.compile("engagement_[a-z]");
+        java.nio.file.Path root = java.nio.file.Path.of("src/main/java");
+        java.nio.file.Path owner = root.resolve("com/bokrilog/engagement/internal");
+        List<String> naming = new java.util.ArrayList<>();
+        try (var files = java.nio.file.Files.walk(root)) {
+            for (java.nio.file.Path file : files.filter(path -> path.toString().endsWith(".java")).toList()) {
+                if (file.startsWith(owner)) {
+                    continue;
+                }
+                String source = java.nio.file.Files.readString(file, java.nio.charset.StandardCharsets.UTF_8);
+                // 표 이름(`engagement_` 뒤 글자)만 본다. 문서의 접두사 표기 `engagement_*`는 표 이름이 아니다.
+                if (tableName.matcher(source).find()) {
+                    naming.add(root.relativize(file).toString());
+                }
+            }
+        }
+        assertThat(naming).as("engagement 표 이름을 아는 internal 밖 운영 소스").isEmpty();
+        // 검사가 빈 디렉터리를 훑어 조용히 통과하지 않는다: 소유 자리에는 그 이름이 있다.
+        assertThat(java.nio.file.Files.readString(owner.resolve("AdConsentRepository.java"),
+                java.nio.charset.StandardCharsets.UTF_8)).contains("engagement_ad_consent_decision");
     }
 }

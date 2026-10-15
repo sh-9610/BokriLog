@@ -274,6 +274,16 @@ class AuthSecurityConfig {
      */
     static final String SUPPORT_PATH = "/api/support";
 
+    /**
+     * 광고 참여(Story 4.1). 광고 동의의 조회와 변경({@code GET}·{@code POST /api/engagement/ad-consent})이 이 접두사 아래에
+     * 있다.
+     *
+     * <p>인가와 CSRF·{@code Origin}이 같은 판정 함수({@link #isEngagementPath})를 본다. 동의 변경은 상태 변경이라 세션 귀속
+     * CSRF 토큰과 동일 출처 {@code Origin}을 요구한다. 하위 경로도 같은 판정에 걸려 인증 없이는 401, 인증되면 없는 경로와 같은
+     * 404다.
+     */
+    static final String ENGAGEMENT_PATH = "/api/engagement";
+
     /** Bybit 연결 표면의 경로. 이 계층에서 그 경로를 정의하는 상수는 이것 하나다. */
     static final String BYBIT_CONNECTION_PATH = CONNECTIONS_BASE_URI + "/bybit";
 
@@ -1244,7 +1254,8 @@ class AuthSecurityConfig {
          * 갈린 상태 자체가 이 함수가 하나로 유지되는 이유와 부딪힌다.
          */
         return isConnectionsPath(uri) || isSnapshotPath(uri) || isPlanConditionsPath(uri)
-                || isDashboardPath(uri) || isOperatorPath(uri) || isNoticesPath(uri) || isSupportPath(uri);
+                || isDashboardPath(uri) || isOperatorPath(uri) || isNoticesPath(uri) || isSupportPath(uri)
+                || isEngagementPath(uri);
     }
 
     /**
@@ -1261,7 +1272,7 @@ class AuthSecurityConfig {
     static boolean requiresAuthentication(HttpServletRequest request) {
         String uri = applicationPath(request);
         return isConnectionsPath(uri) || isSnapshotPath(uri) || isPlanConditionsPath(uri) || isDashboardPath(uri)
-                || isOperatorPath(uri) || isNoticesPath(uri) || isSupportPath(uri);
+                || isOperatorPath(uri) || isNoticesPath(uri) || isSupportPath(uri) || isEngagementPath(uri);
     }
 
     /**
@@ -1315,6 +1326,11 @@ class AuthSecurityConfig {
     /** 사용자 문의와 그 모든 하위 경로(Story 3.6). 인가·CSRF·{@code Origin}이 이 함수 하나를 본다. */
     private static boolean isSupportPath(String uri) {
         return uri.equals(SUPPORT_PATH) || uri.startsWith(SUPPORT_PATH + "/");
+    }
+
+    /** 광고 참여와 그 모든 하위 경로(Story 4.1). 인가·CSRF·{@code Origin}이 이 함수 하나를 본다. */
+    private static boolean isEngagementPath(String uri) {
+        return uri.equals(ENGAGEMENT_PATH) || uri.startsWith(ENGAGEMENT_PATH + "/");
     }
 
     private static boolean isConnectionsPath(String uri) {

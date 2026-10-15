@@ -449,3 +449,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-ci-critical-path.md`
   summary: CI-PLAN §1(job 구조)·§5(변경 분류)에 새 `backup-rehearsal` job과 `backup-restore` 분류(프런트엔드·문서-only PR의 백업·복원 리허설 승인된 비적용)를 as-built 새 버전으로 반영한다(Epic 3 회고 AI-10 범위).
   evidence: 스크립트 머리 주석이 정본으로 인용하는 CI-PLAN §1에는 `backup-rehearsal`이 없고 §5 분류 표에도 백업·복원 분기가 없다. 결정 변경은 기존 문서를 덮지 않고 새 버전으로 발행해야 하므로 이 chore 범위 밖이다(spec-ci-critical-path 리뷰 blind-hunter, 2026-10-15).
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-1-ad-consent.md`
+  summary: 광고 동의 결정 행에 사용자당 빈도 제한(문의의 `INQUIRY_RATE_LIMITED` 같은 장치) 또는 행 수 상한을 둘지 정한다.
+  evidence: 결정 행은 추가 전용이고 선택이 바뀔 때마다 새 멱등 키로 한 행씩 쌓인다. 스크립트로 `GRANTED`·`DENIED`를 번갈아 보내면 사용자 하나가 표를 계속 키울 수 있다. 4.1 SPEC은 rate limit을 범위에 두지 않았다(4.1 리뷰 blind-hunter, 2026-10-15).
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-1-ad-consent.md`
+  summary: 광고 동의 결정 이력의 보존 기한(동의 증거로 남길 기간과 최소 보존 사이)을 정하고, 기한이 정해지면 조회 경로나 별도 정리로 지난 행을 지운다.
+  evidence: 지금 결정 행은 계정 삭제 전까지 영구히 남는다. 문의(3.6)는 해결 뒤 90일 삭제 규칙이 있지만 동의는 기획 문서에 기한이 없고, 개인정보 검토(외부 게이트 G-4)가 정할 몫이다(4.1 리뷰 blind-hunter, 2026-10-15).

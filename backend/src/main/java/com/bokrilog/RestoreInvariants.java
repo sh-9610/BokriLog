@@ -1,5 +1,6 @@
 package com.bokrilog;
 
+import com.bokrilog.engagement.EngagementDeletionApi;
 import com.bokrilog.identity.AccountDeletionApi;
 import com.bokrilog.operations.OperationsDeletionApi;
 import com.bokrilog.plan.PlanConditionApi;
@@ -56,17 +57,20 @@ class RestoreInvariants {
 
     private final OperationsDeletionApi operations;
 
+    private final EngagementDeletionApi engagement;
+
     private final JdbcClient jdbc;
 
     RestoreInvariants(AccountDeletionApi accounts, PlanConditionApi plans, SyncJobApi syncs,
             PortfolioMembershipApi portfolios, SourceConnectionApi sources, OperationsDeletionApi operations,
-            JdbcClient jdbc) {
+            EngagementDeletionApi engagement, JdbcClient jdbc) {
         this.accounts = accounts;
         this.plans = plans;
         this.syncs = syncs;
         this.portfolios = portfolios;
         this.sources = sources;
         this.operations = operations;
+        this.engagement = engagement;
         this.jdbc = jdbc;
     }
 
@@ -78,7 +82,7 @@ class RestoreInvariants {
             residual += this.accounts.remainingRowsOf(deleted) + this.portfolios.remainingRowsOf(deleted)
                     + this.syncs.remainingRowsOf(deleted) + this.plans.remainingRowsOf(deleted)
                     + this.sources.remainingRowsOf(deleted) + this.operations.remainingRowsOf(deleted)
-                    + actionGrantsOf(deleted);
+                    + this.engagement.remainingRowsOf(deleted) + actionGrantsOf(deleted);
         }
         return new Violations(this.plans.activePlanViolations(), this.syncs.officialBundleViolations(all),
                 this.portfolios.currentPointerViolations(), this.accounts.deletionInProgressAccounts().size(), residual);

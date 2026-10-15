@@ -37,6 +37,9 @@ class AccountErasureTest extends PlanSyncTestBase {
     OperationsDeletionApi operations;
 
     @Autowired
+    com.bokrilog.engagement.EngagementDeletionApi engagement;
+
+    @Autowired
     org.springframework.transaction.PlatformTransactionManager transactionManager;
 
     @Test
@@ -131,7 +134,7 @@ class AccountErasureTest extends PlanSyncTestBase {
             }
         };
         AccountErasure broken = new AccountErasure(accountDeletion(), tombstones, portfolio, sync, plans, source,
-                failing, transactionManager);
+                failing, engagement, transactionManager);
         assertThatThrownBy(() -> broken.erase(user, "erasure-failing-1")).hasMessage("injected");
 
         assertThat(lifecycleState(user)).isEqualTo("ACTIVE");
@@ -139,6 +142,39 @@ class AccountErasureTest extends PlanSyncTestBase {
         assertThat(countOf("plan_definition", user)).isEqualTo(1);
         assertThat(countOf("source_connection", user)).isEqualTo(1);
         assertThat(countOf("identity_account", user)).isEqualTo(1);
+        assertThat(ready(user).planId()).isNotNull();
+    }
+
+    @Test
+    void engagement_삭제가_실패하면_앞선_모듈_삭제까지_모두_되돌아간다() throws Exception {
+        UUID user = connect(DevBybitStub.Scenario.UTA2);
+        publishedPlan(user, "erasure-engagement-failing", null);
+        jdbc().sql("INSERT INTO engagement_ad_consent_decision (user_id, policy_version, choice, idempotency_key_digest, "
+                        + "request_digest) VALUES (:u, 'AD-CONSENT-1.0', 'GRANTED', :k, :r)")
+                .param("u", user).param("k", "c".repeat(64)).param("r", "d".repeat(64)).update();
+        // engagement 삭제 port가 자기 행을 지운 뒤 실패한다 — payload 삭제 직전, 앞선 모듈 erase가 모두 끝난 자리다.
+        com.bokrilog.engagement.EngagementDeletionApi failing = new com.bokrilog.engagement.EngagementDeletionApi() {
+            @Override
+            public int eraseConsents(@Nullable UUID userId) {
+                engagement.eraseConsents(userId);
+                throw new IllegalStateException("injected");
+            }
+
+            @Override
+            public long remainingRowsOf(UUID userId) {
+                return engagement.remainingRowsOf(userId);
+            }
+        };
+        AccountErasure broken = new AccountErasure(accountDeletion(), tombstones, portfolio, sync, plans, source,
+                operations, failing, transactionManager);
+        assertThatThrownBy(() -> broken.erase(user, "erasure-engagement-1")).hasMessage("injected");
+
+        assertThat(lifecycleState(user)).isEqualTo("ACTIVE");
+        assertThat(outbox()).isEmpty();
+        assertThat(countOf("plan_definition", user)).isEqualTo(1);
+        assertThat(countOf("source_connection", user)).isEqualTo(1);
+        assertThat(countOf("identity_account", user)).isEqualTo(1);
+        assertThat(countOf("engagement_ad_consent_decision", user)).isEqualTo(1);
         assertThat(ready(user).planId()).isNotNull();
     }
 
