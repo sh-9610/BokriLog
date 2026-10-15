@@ -64,7 +64,8 @@ public interface PlanConditionApi {
      *
      * @param userId 소유자. 제한 행의 귀속이다
      * @param connectionId 계획의 <b>지금</b> 연결(Story 2.17) — 계획과 같은 Bybit 계정·portfolio의 지금 활성 연결이고,
-     *     그런 연결이 없을 때만 계획이 처음 기록한 연결이다. 재연결 뒤에는 이전 연결에 건 제한이 이 계획을 막지 않는다
+     *     그런 연결이 없을 때만 계획이 기록한 연결이다. 이 값에 대조하는 {@code PROVIDER_CONNECTION} 제한의 범위는 연결 ID
+     *     하나가 아니라 그 Bybit 계정이다({@code com.bokrilog.operations.RestrictionConnectionScope})
      * @param providerAccountId 계획이 고정한 Bybit 계정(불변)
      * @param status 계획 상태 — {@code ACTIVE}·{@code ENDED_EARLY}·{@code COMPLETED}
      */

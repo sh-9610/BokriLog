@@ -271,7 +271,9 @@ class PlanConditionService implements PlanConditionApi, InitialInputsPlanPort, P
     /**
      * 계획의 지금 연결(Story 2.17): 계획과 같은 Bybit 계정·portfolio의 지금 활성 연결과 그 membership이 있으면 그 연결이고,
      * 없으면 계획이 기록한 연결 그대로다. 동기화 가드({@code PlanSyncGuard.planSource})와 같은 판정이다 — 재연결 뒤
-     * 운영 제한의 {@code PROVIDER_CONNECTION} 차원이 새 연결을 보고, 이전 연결에 건 제한은 그 연결에만 남는다.
+     * 운영 제한의 {@code PROVIDER_CONNECTION} 차원(운영자 대상 확인·영향 집계)이 새 연결을 본다. 그 차원의 판독은 연결 ID를
+     * 같은 계정의 연결 전부로 넓히므로, 이전 연결에 건 효력 중인 {@code PROVIDER_CONNECTION} 제한도 같은 계정으로 다시 연결한
+     * 계획의 그 기능을 막고 다른 계정의 연결에는 미치지 않는다({@code com.bokrilog.operations.RestrictionConnectionScope}).
      */
     private PlanConditionApi.PlanTarget withCurrentConnection(PlanConditionApi.PlanTarget recorded) {
         var connection=sources.snapshotConnection(recorded.userId()).orElse(null);
