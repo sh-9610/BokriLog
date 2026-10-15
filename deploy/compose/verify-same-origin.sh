@@ -619,6 +619,11 @@ normalized_error_body() {
 # 값을 바꿀 때는 `deploy/nginx/bokrilog.conf`와 이 상수를 함께 바꾼다.
 expected_csp="default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
+# 중립 전환 화면(`/ad-transition`, Story 4.3)만 받는 CSP 전문. 광고 공급자(GPT web interstitial)의 script·이미지·연결·frame
+# origin을 그 경로에만 연다. 다른 모든 응답은 위 `expected_csp` 그대로여야 한다 — 그 단정이 `assert_security_headers`의
+# 기본값이다. 값을 바꿀 때는 `deploy/nginx/bokrilog.conf`의 `$content_security_policy` map과 함께 바꾼다.
+expected_ad_transition_csp="default-src 'none'; script-src 'self' https://securepubads.g.doubleclick.net https://pagead2.googlesyndication.com https://tpc.googlesyndication.com; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: https://*.doubleclick.net https://*.googlesyndication.com https://*.gstatic.com; connect-src 'self' https://securepubads.g.doubleclick.net https://pagead2.googlesyndication.com; frame-src https://*.doubleclick.net https://tpc.googlesyndication.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
 # 해시가 박힌 정적 자산의 캐시 지시. 파일 이름이 곧 내용이므로 영구 캐시가 안전하다.
 expected_asset_cache_control='public, max-age=31536000, immutable'
 
@@ -649,11 +654,15 @@ assert_cache_control() {
 # 두 번째 인자는 기대하는 `Cache-Control` 값이다. 생략하면 문서·API 응답의 기본값(`no-store`)이며
 # 해시 자산을 확인하는 호출만 값을 넘긴다. 캐시 단정을 이 함수에 두어 모든 응답 그룹에 한 번에
 # 전파시킨다 — 그룹마다 따로 적으면 새 그룹이 조용히 빠진다.
+#
+# 세 번째 인자는 기대하는 CSP 전문이다. 생략하면 기본 정책(`expected_csp`)이며 중립 전환 화면(`/ad-transition`)을
+# 확인하는 호출만 값을 넘긴다(Story 4.3). 그래서 나머지 모든 호출이 "CSP가 4.2 시점과 같다"를 그대로 단정한다.
 assert_security_headers() {
   local context="$1" value
   local want_cache="${2:-${expected_document_cache_control}}"
+  local want_csp="${3:-${expected_csp}}"
 
-  assert_equals "${context} · CSP" "$(header_value 'Content-Security-Policy')" "${expected_csp}"
+  assert_equals "${context} · CSP" "$(header_value 'Content-Security-Policy')" "${want_csp}"
   assert_cache_control "${context} · Cache-Control" "${want_cache}"
   assert_equals "${context} · X-Content-Type-Options" "$(header_value 'X-Content-Type-Options')" 'nosniff'
   assert_equals "${context} · Referrer-Policy" "$(header_value 'Referrer-Policy')" 'no-referrer'
@@ -2819,7 +2828,8 @@ assert_rows '되돌린 뒤 계정 행이 0개다(운영자 왕복)' 'SELECT coun
 
 printf '\n알려진 내부 경로 허용 목록\n'
 
-# 폴백이 아니라 허용 목록이다. 이름을 적은 다섯 경로만 진입 문서를 받는다.
+# 폴백이 아니라 허용 목록이다. 이름을 적은 여섯 경로만 진입 문서를 받는다. 중립 전환 화면(`/ad-transition`, Story 4.3)은
+# CSP가 다르므로 이 루프 뒤에 따로 확인한다.
 while read -r allowed_path; do
   [ -n "${allowed_path}" ] || continue
   fetch GET "${allowed_path}"
@@ -2836,6 +2846,30 @@ done <<'ALLOWED_PATHS'
 /plan-conditions
 /operator
 ALLOWED_PATHS
+
+# 중립 전환 화면(Story 4.3). 같은 진입 문서를 받고, 이 경로만 광고 공급자 origin을 연 CSP를 받는다. 쿼리(transition 참조)가
+# 붙어도 같다 — map이 쿼리를 뗀 경로로 고른다. 나머지 보안 헤더(`Referrer-Policy: no-referrer` 포함)와 캐시 지시는 다른 문서와
+# 같다.
+# 참조 모양 값은 리터럴로 쓰지 않는다(gitleaks) — 실행마다 난수 32바이트를 base64url 43자로 만든다. 실행마다 다른 값이라
+# 뒤의 access log 단정이 다른 요청의 우연한 문자열과 섞이지 않는다.
+ad_transition_reference="$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n' | cut -c 1-43)"
+for ad_transition_target in /ad-transition "/ad-transition?t=${ad_transition_reference}"; do
+  fetch GET "${ad_transition_target}"
+  assert_equals "\`GET ${ad_transition_target}\` 상태 200" "${last_status}" '200'
+  assert_equals "\`GET ${ad_transition_target}\` Content-Type" "$(header_value 'Content-Type')" 'text/html'
+  assert_body_contains "\`GET ${ad_transition_target}\`가 진입 문서다" '<div id="root">'
+  assert_security_headers "\`GET ${ad_transition_target}\`" "${expected_document_cache_control}" \
+    "${expected_ad_transition_csp}"
+  assert_body_lacks "\`GET ${ad_transition_target}\` 문서에 계정 식별자가 없다" 'user_id'
+done
+fetch POST /ad-transition
+assert_equals '`POST /ad-transition` 상태 405' "${last_status}" '405'
+assert_equals '`POST /ad-transition` Content-Type' "$(header_value 'Content-Type')" 'application/json'
+# 접두사가 겹치는 경로는 허용 목록 밖의 404이고 기본 CSP다 — 광고 정책은 정확히 그 경로 하나에만 열린다.
+for ad_transition_neighbor in /ad-transition/x /ad-transition-x; do
+  fetch GET "${ad_transition_neighbor}"
+  assert_security_headers "\`GET ${ad_transition_neighbor}\`"
+done
 
 # 정적 경로의 잘못된 메서드. 허용 목록 location도 파일을 찾기 전에 되돌린다.
 fetch POST /onboarding
@@ -2861,6 +2895,8 @@ done <<'REJECTED_PATHS'
 /plan-conditions-x
 /operator/x
 /operator-x
+/ad-transition/x
+/ad-transition-x
 REJECTED_PATHS
 
 printf '\n한도를 넘는 요청\n'
@@ -3103,6 +3139,25 @@ if [ "${log_ready}" = true ]; then
       "$(grep -nF -- '"GET /index.html HTTP' "${log_file}" | head -2)"
   else
     record_pass 'access log이 내부 redirect 뒤의 경로로 바꿔 적지 않는다'
+  fi
+
+  # 중립 전환 화면(Story 4.3)의 transition 참조는 쿼리(`?t=`)로만 문서 경계를 넘는다. 위 `알려진 내부 경로 허용 목록` 절이
+  # 형식에 맞는 참조를 실은 `/ad-transition` 요청을 실제로 보냈으므로, access log이 그 경로는 남기되 쿼리와 값은 남기지 않는지
+  # 여기서 확인한다. `log_format`이 `$request`로 돌아가면 여기서 걸린다.
+  if [ "${#ad_transition_reference}" -ne 43 ]; then
+    record_fail 'access log에 중립 화면의 transition 참조가 없다' \
+      "생성한 참조가 43자가 아니라 검사가 아무것도 보지 않았다(${#ad_transition_reference}자)."
+  elif grep -F -- "${ad_transition_reference}" "${log_file}" >/dev/null; then
+    record_fail 'access log에 중립 화면의 transition 참조가 없다' \
+      "$(grep -nF -- "${ad_transition_reference}" "${log_file}" | head -2)"
+  elif grep -F -- '/ad-transition?' "${log_file}" >/dev/null; then
+    record_fail 'access log에 중립 화면의 transition 참조가 없다' \
+      "$(grep -nF -- '/ad-transition?' "${log_file}" | head -2)"
+  elif grep -F -- '"GET /ad-transition HTTP' "${log_file}" >/dev/null; then
+    record_pass 'access log에 중립 화면의 transition 참조가 없다'
+  else
+    record_fail 'access log에 중립 화면의 transition 참조가 없다' \
+      "access log에서 '\"GET /ad-transition HTTP'를 찾지 못했다. 검사가 그 요청을 보지 못했다."
   fi
 
   # 성공 왕복들이 흘린 값을 찾는다.

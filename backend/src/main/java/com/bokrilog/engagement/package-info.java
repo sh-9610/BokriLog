@@ -11,14 +11,18 @@
  * 활성)과 30분·{@code Asia/Seoul} 하루 3회 빈도 제한을 지나면 그 결정 행이 곧 reservation이다. 결과 하나에 결정 하나이고 재전송은
  * 새 시도가 아니다. 계측 어휘는 {@link com.bokrilog.engagement.AdTelemetry}다.
  *
+ * <p><b>Story 4.3은 transition 소비를 둔다</b>({@link com.bokrilog.engagement.AdTransitionApi}). 중립 전환 화면이 자격의
+ * transition 참조를 한 번 소비시키고, 처음 소비이고 결정 뒤 120초 안이며 관문(자격 판정과 같은 한 벌)을 다시 지날 때만 공급자
+ * 단위 경로를 돌려준다. 광고를 띄우는 것(GPT web interstitial adapter)은 브라우저의 중립 화면이고 이 모듈은 그 판정만 한다.
+ *
  * <p>계정 삭제는 deletion port({@link com.bokrilog.engagement.EngagementDeletionApi})가 두 표의 행을 지운다.
  *
- * <p><b>이 모듈은 광고를 띄우지 않는다.</b> 공급자 adapter와 중립 전환 화면(Story 4.3), fail-open과 광고 전용 정지(Story 4.4)는 뒤
- * 스토리가 이 모듈에 더한다. 동의·자격은 연결·동기화·대시보드 어디에서도 읽지 않는다 — 광고는 결과 조회의 성공 조건이 아니다.
- * 의존은 이 모듈에서 {@code sync}·{@code operations}·{@code identity} 쪽으로만 난다.
+ * <p>fail-open과 광고 전용 정지(Story 4.4)는 뒤 스토리가 이 모듈에 더한다. 동의·자격·소비는 연결·동기화·대시보드 어디에서도 읽지
+ * 않는다 — 광고는 결과 조회의 성공 조건이 아니다. 의존은 이 모듈에서 {@code sync}·{@code operations}·{@code identity} 쪽으로만
+ * 난다.
  *
  * <p>이 모듈은 HTTP·세션을 모른다. 인증·CSRF·계정 접근 판정·본문 모양은 루트({@code AdConsentController}·
- * {@code AdEligibilityController})가 본다. 다른 모듈은 이 패키지의 공개 API로만 협력하고 {@code internal}이나 소유
+ * {@code AdEligibilityController}·{@code AdTransitionController})가 본다. 다른 모듈은 이 패키지의 공개 API로만 협력하고 {@code internal}이나 소유
  * 표({@code engagement_*})에 닿지 않는다({@code ModuleBoundaryTest}가 강제한다).
  */
 package com.bokrilog.engagement;

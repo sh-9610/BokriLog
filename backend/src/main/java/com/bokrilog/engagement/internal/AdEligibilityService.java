@@ -1,18 +1,12 @@
 package com.bokrilog.engagement.internal;
 
-import com.bokrilog.engagement.AdConsentApi;
 import com.bokrilog.engagement.AdEligibilityApi;
 import com.bokrilog.engagement.AdTelemetry;
 import com.bokrilog.identity.AccountAccessApi;
-import com.bokrilog.operations.OperationalRestrictionApi;
-import com.bokrilog.operations.RestrictionFeature;
-import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.sync.SyncJobApi;
 import java.security.SecureRandom;
 import java.util.Base64;
-import java.util.EnumSet;
 import java.util.UUID;
-import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -22,9 +16,9 @@ import org.springframework.transaction.support.TransactionTemplate;
  *
  * <p><b>판정은 트랜잭션 하나다.</b> 사용자 advisory 잠금 → 계정 생명주기 잠금({@code lockWriteAccess}, 거짓이면 쓰지 않는다) →
  * 같은 결과의 앞선 결정(있으면 재전송) → 후보({@link SyncJobApi#publishedManualSync}) → 관문(동의 → 전역 {@code ADVERTISING}
- * 운영 제한 → 공급자 활성, 처음 걸린 것이 사유) → 빈도 제한({@link AdFrequencyPolicy}, 기준은 DB 시각) → 결정 행 INSERT. 잠금
- * 순서(사용자 잠금 → 생명주기)는 동의 결정과 같다. 같은 사용자의 판정이 잠금으로 줄 서므로 동시 탭 가운데 하나만 자격을 얻고,
- * 나중 탭은 잠금을 얻은 뒤의 문장에서 앞선 자격을 본다.
+ * 운영 제한 → 공급자 활성, 처음 걸린 것이 사유 — {@link AdGate}가 transition 소비와 공유한다) → 빈도 제한
+ * ({@link AdFrequencyPolicy}, 기준은 DB 시각) → 결정 행 INSERT. 잠금 순서(사용자 잠금 → 생명주기)는 동의 결정과 같다. 같은
+ * 사용자의 판정이 잠금으로 줄 서므로 동시 탭 가운데 하나만 자격을 얻고, 나중 탭은 잠금을 얻은 뒤의 문장에서 앞선 자격을 본다.
  *
  * <p><b>판독 실패는 예외다(fail-closed).</b> 동의·운영 제한 판독이 실패하면 트랜잭션 전체가 롤백되고 호출자가 오류로 답한다 — 읽지
  * 못한 것을 "제한 없음"·"동의함"으로 접지 않는다.
@@ -47,27 +41,20 @@ class AdEligibilityService implements AdEligibilityApi {
 
     private final AccountAccessApi accounts;
 
-    private final AdConsentApi consents;
-
-    private final OperationalRestrictionApi restrictions;
+    private final AdGate gate;
 
     private final SyncJobApi syncs;
-
-    private final AdProviderState provider;
 
     private final AdMetrics metrics;
 
     private final TransactionTemplate transactions;
 
-    AdEligibilityService(AdAttemptRepository attempts, AccountAccessApi accounts, AdConsentApi consents,
-            OperationalRestrictionApi restrictions, SyncJobApi syncs, AdProviderState provider, AdMetrics metrics,
-            PlatformTransactionManager transactionManager) {
+    AdEligibilityService(AdAttemptRepository attempts, AccountAccessApi accounts, AdGate gate, SyncJobApi syncs,
+            AdMetrics metrics, PlatformTransactionManager transactionManager) {
         this.attempts = attempts;
         this.accounts = accounts;
-        this.consents = consents;
-        this.restrictions = restrictions;
+        this.gate = gate;
         this.syncs = syncs;
-        this.provider = provider;
         this.metrics = metrics;
         this.transactions = new TransactionTemplate(transactionManager);
     }
@@ -90,7 +77,7 @@ class AdEligibilityService implements AdEligibilityApi {
                 this.metrics.skipped(AdTelemetry.NOT_CANDIDATE);
                 return new Decision.NotCandidate();
             }
-            SkipReason reason = gate(userId);
+            SkipReason reason = this.gate.firstClosed(userId);
             if (reason == null) {
                 reason = AdFrequencyPolicy.judge(this.attempts.now(),
                         this.attempts.recentEligible(userId, AdFrequencyPolicy.DAILY_CAP)).orElse(null);
@@ -123,22 +110,8 @@ class AdEligibilityService implements AdEligibilityApi {
         if (transition == null) {
             throw new IllegalStateException("자격 행에 transition 참조가 없다.");
         }
-        SkipReason gate = gate(userId);
-        return gate == null ? new Decision.Eligible(transition, true) : new Decision.Skipped(gate, true);
-    }
-
-    /** 처음 걸린 관문. 모두 지나면 {@code null}이다. 판독 실패는 예외로 올라간다. */
-    private @Nullable SkipReason gate(UUID userId) {
-        if (!this.consents.current(userId).granted()) {
-            return SkipReason.CONSENT_REQUIRED;
-        }
-        if (this.restrictions.blocks(EnumSet.of(RestrictionFeature.ADVERTISING), RestrictionSubject.none())) {
-            return SkipReason.RESTRICTED;
-        }
-        if (!this.provider.enabled()) {
-            return SkipReason.PROVIDER_DISABLED;
-        }
-        return null;
+        SkipReason closed = this.gate.firstClosed(userId);
+        return closed == null ? new Decision.Eligible(transition, true) : new Decision.Skipped(closed, true);
     }
 
     private static String newTransition() {

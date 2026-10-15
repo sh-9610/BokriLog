@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
+import { adTransitionHref } from '../content/adTransition'
 import { CSRF_HEADER } from '../content/auth'
 import { DASHBOARD_SYNC_PATH } from '../content/planSync'
 import { DASHBOARD_VERIFICATION_PATH, type VerificationKind } from '../content/planVerification'
+import { requestAdEligibility } from './adTransition'
+import { navigateTo } from './navigation'
 import {
   bundleOf,
   inProgress,
@@ -288,6 +291,12 @@ interface Followed {
   readonly manual: boolean
   /** Asked for from this tab (an admission answer), or found in progress in a read (another tab, a reload). */
   readonly origin: 'here' | 'elsewhere'
+  /**
+   * The job a `동기화` press of this screen was admitted as (`ACCEPTED`) — never one it only joined, never an automatic
+   * or a verification admission. Kept when the following moves on to another job, so the moved-to job is never taken
+   * for it. Only this job's success may lead to an ad (Story 4.3).
+   */
+  readonly manualSyncAdmission: string | null
   /** The view shown when following began. Only a later answer can end it. */
   readonly since: DashboardView
   readonly budget: object
@@ -327,6 +336,12 @@ interface Judgement {
   readonly cooldown?: number | null
   readonly verificationCooldown?: number | null
   readonly focus: SyncFocus['target'] | null
+  /**
+   * The job whose ad eligibility to ask for (Story 4.3): the job a `동기화` press of this screen was admitted as
+   * (`manualSyncAdmission`, the ended job's trigger `MANUAL`, purpose `SYNC`) that ended `succeeded`. Never an automatic
+   * job, one only joined, one another tab admitted, a verification, a failure or a review.
+   */
+  readonly adCandidate?: string
 }
 
 /** Where the summary of a job of this purpose is: the verification control's, or the sync control's. */
@@ -428,6 +443,7 @@ function judge(
             purpose: purposeOf(latest),
             manual: false,
             origin: 'elsewhere',
+            manualSyncAdmission: null,
             since: view,
             budget: {},
           },
@@ -458,6 +474,17 @@ function judge(
       // An ending this screen does not know is one that published nothing it can vouch for.
       const ending = ENDINGS[latest.status] ?? 'failed'
       const purpose = purposeOf(latest)
+      // Story 4.3: only the job a `동기화` press of this screen was admitted as (not one it joined, not one another tab
+      // admitted, not one the following moved on to), ended with a new official result, may lead to an ad. The ended job
+      // decides: its id, its trigger, its purpose.
+      const adCandidate =
+        followed.manual &&
+        followed.manualSyncAdmission === latest.jobId &&
+        ending === 'succeeded' &&
+        latest.trigger === 'MANUAL' &&
+        purpose === 'SYNC'
+          ? latest.jobId
+          : undefined
       return {
         followed: null,
         outcome: { phase: ending, purpose, survivesReload: false },
@@ -468,6 +495,7 @@ function judge(
             ? 'heading'
             : summaryTarget(purpose)
           : null,
+        ...(adCandidate === undefined ? {} : { adCandidate }),
       }
     }
   }
@@ -551,6 +579,8 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   const [focus, setFocus] = useState<SyncFocus | null>(null)
   const [gaveUp, setGaveUp] = useState<readonly string[]>([])
   const [visible, setVisible] = useState(() => document.visibilityState !== 'hidden')
+  // Story 4.3: the last succeeded manual sync whose ad eligibility is asked for.
+  const [adJob, setAdJob] = useState<string | null>(null)
   const [seen, setSeen] = useState(view)
   const [wasLoading, setWasLoading] = useState(loading)
 
@@ -564,6 +594,8 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   const entryOn = useRef<DashboardView['kind'] | null>(null)
   const observationEntryDecided = useRef(false)
   const manualInFlight = useRef(false)
+  // Jobs whose ad eligibility was asked for: once per job, whatever the answer.
+  const adAsked = useRef(new Set<string>())
   const posts = useRef(0)
   const hiddenAt = useRef<number | null>(null)
   // The view shown when a long-hidden tab came back; the first answer after it decides `VISIBILITY`.
@@ -590,6 +622,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
     if (next.cooldown !== undefined) setCooldown(next.cooldown)
     if (next.verificationCooldown !== undefined) setVerificationCooldown(next.verificationCooldown)
     if (next.focus !== null) setFocus(focusOn(next.focus))
+    if (next.adCandidate !== undefined) setAdJob(next.adCandidate)
   }
 
   /*
@@ -739,6 +772,9 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
             // stays one following (a manual press is never forgotten by an automatic answer for it). A sync
             // may join a verification in progress: the job decides the purpose, not the request.
             const since = viewRef.current
+            // Story 4.3: only a `동기화` press admitted as a new job is its own manual sync; a press that joined a job is not.
+            const ownSync =
+              manual && operation.kind === 'sync' && admitted === 'ACCEPTED' ? job.jobId : null
             setFollowed((current) =>
               current?.jobId === job.jobId
                 ? {
@@ -746,6 +782,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
                     purpose: purposeOf(job),
                     manual: current.manual || manual,
                     origin: 'here',
+                    manualSyncAdmission: current.manualSyncAdmission ?? ownSync,
                   }
                 : {
                     jobId: job.jobId,
@@ -753,6 +790,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
                     purpose: purposeOf(job),
                     manual,
                     origin: 'here',
+                    manualSyncAdmission: ownSync,
                     since,
                     budget: {},
                   },
@@ -779,6 +817,31 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
       }
     })()
   }, [])
+
+  /*
+   * Story 4.3: after a manual sync of this screen succeeded, ask once whether that result may lead to an ad. Only an
+   * eligible answer changes anything — a document move to the neutral transition screen with the server's opaque
+   * reference. Any other answer (skipped, 404, a failure, the time limit) changes nothing: the new result, its
+   * sentence and its focus stay as they are. Passive: it starts a request. It runs again when the session token
+   * arrives (a job judged before it is asked then); `adAsked` keeps it to once per job.
+   */
+  useEffect(() => {
+    if (adJob === null || csrfToken === null || adAsked.current.has(adJob)) return
+    adAsked.current.add(adJob)
+    void (async () => {
+      const transition = await requestAdEligibility(adJob, csrfToken)
+      if (transition === null || !live.current) return
+      /*
+       * The user moved on while the answer was on its way: a confirmation dialog is open (ending the plan, a
+       * revocation…), or a new admission — a sync, a verification — is in flight or followed. Leaving the document now
+       * would throw that away. An ad is never a condition of the result, so skipping it is the safe side (fail-open);
+       * the reference simply expires unused.
+       */
+      if (document.querySelector('[aria-modal="true"]') !== null) return
+      if (posts.current > 0 || followedRef.current !== null) return
+      navigateTo(adTransitionHref(transition))
+    })()
+  }, [adJob, csrfToken])
 
   // ENTRY: once per mount, on the first ready answer — never on the record of a plan ended early (Story 2.13), but on a
   // plan completed at its scheduled end (Story 2.14), whose first observation after the end only a sync fixes.
