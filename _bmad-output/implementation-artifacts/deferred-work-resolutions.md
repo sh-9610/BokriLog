@@ -17,10 +17,12 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 25 |
+| 해소 | 26 |
 | 부분 해소 | 20 |
-| 미해소 | 97 |
-| 미판정 | 3 |
+| 미해소 | 100 |
+| 미판정 | 0 |
+
+**2026-10-15 갱신(CI 임계 경로 chore done 전환).** `spec-ci-critical-path.md`(PR #104, 머지 커밋 `571bb3c`)가 `deferred-work.md`에 항목 **146**(CI-PLAN §1·§5 as-built 반영)을 append했다. 표를 **146건** 기준으로 각 절의 마지막 판정 머리말로 다시 셌다. 판정 라운드가 이 chore 몫으로 남긴 보류 셋을 판정했다 — **131** 해소(백업·복원 리허설의 fail-closed 경로 분기와 job 분리, 분류·집계·timeout을 `test-ci-scripts.sh`가 지킨다), **92**·**129** 미해소(이 chore가 compose dispatch와 배포 리허설 시나리오를 건드리지 않고 지나가 주인 상실). **146**은 미해소(Epic 3 회고 AI-10 몫), **145**는 재확인(미해소 그대로). 그래서 판정 라운드 표(145건: 해소 25·부분 해소 20·미해소 97·미판정 3)에서 해소 +1·미해소 +3(92·129·146)·미판정 −3이다 — 합 146.
 
 **2026-10-15 갱신(판정 라운드, `spec-deferred-work-verdict-round.md`).** 표를 `deferred-work.md`의 **145건** 기준으로 다시 셌다. 각 절의 **마지막** 판정 머리말을 센 값이다. 바로 아래 문단(Story 2.17 done 전환)의 수치는 틀렸다 — 운영 command 공통화 chore(`spec-operator-command-commons.md`, PR #97)가 항목 **141**(`operations_restriction.reinstated_from` 색인)·**142**(`OperatorArmingVersionTest`의 실제 v5 fixture)를 append했는데 그 chore의 갱신 문단(2026-10-13)이 그 둘을 세지 않았고, 그래서 PR #101이 2.17의 두 항목을 141·142로 적었다. 2.17 항목의 실제 번호는 **143**(정책 버전이 바뀐 재연결의 재기준)·**144**(다른 계정 연결 뒤 완료 비교 보류)다. 그 문단은 고치지 않고 이 문단이 정정한다. 정정 직전의 바른 표는 144건·미판정 91이었다.
 
@@ -699,6 +701,10 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미판정(2026-10-15, 판정 라운드, 기준 `189c16b`) — 보류: CI chore.** compose dispatch 간격과 통합 job 예산을 다루는 진행 중인 CI 임계 경로 chore(Epic 3 회고 AI-12, `epic-3-retro-item-37`)와 겹쳐, 판정은 그 chore의 done 전환 PR이 더한다(`CLAUDE.md` 표준 흐름 7번).
 
+**미해소(2026-10-15, CI 임계 경로 chore 판정, 기준 `571bb3c`).** 이 chore(`spec-ci-critical-path.md`, PR #104)는 리허설 job 경계와 백업·복원 분류만 바꾸고 개발·CI compose는 건드리지 않았다. dispatch 간격은 운영 기본 그대로다 — `backend/src/main/resources/application.yml:260`의 `dispatch-interval: 1s`를 `deploy/compose/compose.yaml`이 덮지 않는다. 그래서 `same-origin-integration`의 동기화 왕복은 지금도 실제 1초 tick을 기다리고, 회귀 단계 상한 8분(`.github/workflows/ci.yml:446`)도 그대로다(PR #104 두 실행의 통합 job 7분 1초·7분 41초).
+
+**미해소 잔여:** compose의 backend에 짧은 dispatch 간격을 주고 회귀 단계·Playwright `globalTimeout`을 실측으로 다시 맞추는 일. 주인 상실 — 결정 지점으로 지목된 이 chore가 범위(리허설 분기)상 결정하지 않고 지나갔다.
+
 ### 93. 44×44 규칙의 일곱·여덟 번째 사본과 `.ranges`·`.facts`·`@keyframes` 사본
 
 **미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.12가 append했다. 사본은 그대로이거나 늘었다 — 44×44는 `frontend/src/components/SyncControl.module.css:51-58`(`.secondary`)·`VerificationControl.module.css:27-34`(`.button`), `.ranges`는 여전히 세 모듈(`PlanResultPanel.module.css:50`·`VerificationControl.module.css:124`·`VersionChangeNote.module.css:55`), 진행 표지 `@keyframes`는 `SyncControl.module.css:108`·`VerificationControl.module.css:79`(2.13이 `PlanEndControl.module.css:75`를 더했다, 항목 99)이고 `.facts`는 이후 스토리를 거쳐 아홉 모듈로 늘었다. PR #73은 대화상자 모듈만 모았다. 항목 84와 같은 뿌리다.
@@ -917,6 +923,10 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미판정(2026-10-15, 판정 라운드, 기준 `189c16b`) — 보류: CI chore.** 리허설 구조(migration 집합이 다른 두 release 이미지·실제 Worker 종료 코드)를 바꾸는 일이 진행 중인 CI 임계 경로 chore(Epic 3 회고 AI-12, `epic-3-retro-item-37`) 범위와 겹쳐, 판정은 그 chore의 done 전환 PR이 더한다(`CLAUDE.md` 표준 흐름 7번).
 
+**미해소(2026-10-15, CI 임계 경로 chore 판정, 기준 `571bb3c`).** 이 chore는 배포 리허설 시나리오를 바꾸지 않았다 — SPEC Never가 `deploy/production/**` 변경을 막았고, 바뀐 것은 백업 리허설을 `deploy-rehearsal`에서 떼어 낸 job 경계와 그 job timeout(70 → 30분, `.github/scripts/test-ci-scripts.sh:1770`)뿐이다. 리허설의 두 이미지는 여전히 같은 jar이고 drain 미완료는 결함 주입(`drain-incomplete`)으로만 덮는다.
+
+**미해소 잔여:** migration 집합이 다른 두 release 이미지와 실제 Worker 종료 코드 75·76 경로를 리허설에 더하는 일. 주인 상실 — 운영 배포 smoke를 출시 게이트로 두는 Epic 3 회고 AI-9(`epic-3-retro-item-34`)와 가깝지만 그 액션은 게이트의 자리만 정한다.
+
 ### 130. `verify-same-origin.sh`의 `fetch` argv 본문 가드를 행동 시험으로 고정한다
 
 **미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** `spec-verify-windows-utf8-body.md`가 append했다. 가드는 그대로 있다 — `deploy/compose/verify-same-origin.sh:382-424`의 `fetch()`가 `--data-raw`·`-F`·`@` 밖의 `--data*` 값을 거부하고 상태를 `000`으로 남긴다. 그러나 `.github/scripts/test-ci-scripts.sh`가 이 스크립트에 대해 보는 것은 호출 존재(`:1450-1460`)뿐이고 그 파일에서 `data-raw`·`request_body`는 0건이라, 가드 패턴이 깨지거나 지워져도 실패하는 시험이 없다. 항목 78·32와 같은 뿌리다(Linux CI가 Windows 결함을 보지 못한다).
@@ -926,6 +936,8 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 ### 131. 백업 리허설의 CI 경로 분기와 `deploy-rehearsal` timeout 보정
 
 **미판정(2026-10-15, 판정 라운드, 기준 `189c16b`) — 보류: CI chore.** 경로별 job 분기와 timeout 보정은 진행 중인 CI 임계 경로 chore(Epic 3 회고 AI-12, `epic-3-retro-item-37`)가 직접 다루므로, 판정은 그 chore의 done 전환 PR이 더한다(`CLAUDE.md` 표준 흐름 7번).
+
+**해소(2026-10-15, CI 임계 경로 chore 판정, 기준 `571bb3c`).** `spec-ci-critical-path.md`(PR #104)가 닫았다. 경로 분기는 원문의 관련 경로 허용 목록 대신 fail-closed 건너뛰기 목록이다 — `.github/scripts/classify-changes.sh:125-148`이 PR의 변경이 전부 `frontend/**`·`_bmad-output/**`·최상위 `*.md`일 때만 `backup-restore=false`를 내고, 목록 밖 경로·비교 기준 없음·빈 diff·push·dispatch는 `true`다. 백업 리허설은 `deploy-rehearsal`에서 떨어진 `backup-rehearsal` job(`.github/workflows/ci.yml:537`)이 되어 `restore-rehearsal`과 같은 게이트(`:542`·`:605`)를 쓰고, `aggregate-results.sh`가 두 job의 기대치를 그 분류로 정한다. timeout은 원문의 "배포 job 25 → 50분" 대신 배포 job 30분·백업 job 50분이다(백업이 빠졌으므로). 지키는 시험은 `test-ci-scripts.sh`의 분류 경계 사례(`:549`·`:555`·`:567-576`, push `:671`), 집계 사례(`:891` 이하 — 프런트엔드 PR의 skipped 통과, 분류·결과 불일치 종료 1, 옛 분류기 빈 값), job timeout 단정(`:1770`·`:1802`)이고 모두 `changes` job에서 돈다(299건). PR #104의 두 CI 실행은 옛 base 분류기의 빈 값 → 실행 경로로 세 리허설을 모두 돌아 green이었고, 건너뛰기 경로는 머지 뒤 첫 프런트엔드-only PR에서 처음 실제로 쓰인다. `backend-quality` 뒤 꼬리(마지막 리허설 job 종료까지)는 13분 14초·10분 16초였다(PR #100은 15분 29초).
 
 ### 132. 백업 저장소 사용률의 분모·분자를 계정 단위 실제 사용량으로
 
@@ -1010,3 +1022,11 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 **미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** 이 판정 라운드(`spec-deferred-work-verdict-round.md`)의 리뷰가 append했고 같은 PR에서 판정한다(`CLAUDE.md` 표준 흐름 7번). 지금 건수 정합은 사람이 센다 — `.github/scripts/`에 `deferred-work.md`나 이 원장을 읽는 스크립트가 없고 `test-ci-scripts.sh`도 둘을 보지 않는다. 그 결과가 실제로 났다 — 2026-10-13 갱신이 141·142를 세지 않았고 그 다음 done 전환(PR #101)이 번호를 잘못 적었으며, 이 라운드의 갱신 문단이 그것을 손으로 정정했다. 이 chore는 SPEC 경계상 `ci.yml`·스크립트를 바꾸지 않는다. 항목 36(인용 해석 검사)의 세 축 가운데 "원장 절 집합과 `deferred-work.md` 항목의 개수·순서 동등"과 같은 것이고 37(소유자·확인일 표)의 정합 검사와도 이어진다.
 
 **미해소 잔여:** `- source_spec` 수 = `### N.` 절 수(1부터 연속) = 상태 표 네 칸 합을 단정하는 셸 검사와 그 계약 시험. 문서-only 경로도 `changes` job을 지나므로 붙일 자리는 있다. 주인 없음 — CI 쪽 후속(진행 중인 CI 임계 경로 chore 또는 그 뒤 chore)이 가져가기 좋은 크기다.
+
+**미해소(2026-10-15, CI 임계 경로 chore 판정, 기준 `571bb3c`) — 재확인.** 잔여가 "진행 중인 CI 임계 경로 chore"를 가져갈 후보로 짚었지만 그 chore는 범위(리허설 분기)상 가져가지 않았다 — `test-ci-scripts.sh`는 여전히 `deferred-work.md`·이 원장을 읽지 않고, 그 done 전환의 건수(146)도 손으로 셌다.
+
+### 146. CI-PLAN §1·§5에 `backup-rehearsal` job과 `backup-restore` 분류를 as-built로 반영한다
+
+**미해소(2026-10-15, CI 임계 경로 chore 판정, 기준 `571bb3c`).** 이 chore(`spec-ci-critical-path.md`, PR #104)의 리뷰가 append했고 그 done 전환 PR에서 판정한다(`CLAUDE.md` 표준 흐름 7번). CI-PLAN은 바뀌지 않았다 — §1 job 구조와 §5 분류 표(`CI-PLAN.md:186-191`)에 `backup-rehearsal`·`backup-restore`가 없는데, `classify-changes.sh`·`aggregate-results.sh` 머리 주석이 정본으로 인용하는 것은 여전히 그 §1·§5다. 결정 변경은 새 버전 발행이어야 하므로 이 chore 범위 밖이었다.
+
+**미해소 잔여:** CI-PLAN as-built 새 버전에 새 job·분류·집계 기대치와 실측 timeout을 반영하는 일. 주인 — Epic 3 회고 AI-10(`epic-3-retro-item-35`, Architect)이 CI-PLAN 차이를 as-built 새 버전에 반영하는 액션이다.
