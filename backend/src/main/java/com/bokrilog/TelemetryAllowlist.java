@@ -1,5 +1,6 @@
 package com.bokrilog;
 
+import com.bokrilog.engagement.AdTelemetry;
 import com.bokrilog.operations.BackupRecordApi;
 import com.bokrilog.sync.SyncTelemetry;
 import java.lang.management.ManagementFactory;
@@ -109,6 +110,10 @@ public final class TelemetryAllowlist {
         // 문의 첫 답변 목표(operations.internal.SupportMetrics).
         meters.put("bokrilog.support.first.answer", Map.of("met", Values.of(Set.of("true", "false", "pending"))));
         meters.put("bokrilog.support.pending.target", Map.of());
+        // 광고 자격(Story 4.2). 정의는 AdTelemetry에 있다. 사유는 닫힌 일곱 값이고 사용자·결과·transition 값은 없다.
+        meters.put(AdTelemetry.TRIGGER, Map.of());
+        meters.put(AdTelemetry.SKIP, Map.of("reason", Values.of(AdTelemetry.SKIP_REASONS)));
+        meters.put(AdTelemetry.RESERVATION, Map.of());
         // 백업(Story 3.9, operations.internal.BackupMetrics). 저장소는 OCI와 OCI 밖 둘이다. 기록이 없으면 등록되지 않는다(NaN 없음).
         meters.put("bokrilog.backup.last.success.timestamp", Map.of());
         meters.put("bokrilog.backup.store.usage.ratio", Map.of("store", Values.of(BACKUP_STORES)));

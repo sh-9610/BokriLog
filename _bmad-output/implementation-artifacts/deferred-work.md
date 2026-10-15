@@ -455,3 +455,15 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-4-1-ad-consent.md`
   summary: 광고 동의 결정 이력의 보존 기한(동의 증거로 남길 기간과 최소 보존 사이)을 정하고, 기한이 정해지면 조회 경로나 별도 정리로 지난 행을 지운다.
   evidence: 지금 결정 행은 계정 삭제 전까지 영구히 남는다. 문의(3.6)는 해결 뒤 90일 삭제 규칙이 있지만 동의는 기획 문서에 기한이 없고, 개인정보 검토(외부 게이트 G-4)가 정할 몫이다(4.1 리뷰 blind-hunter, 2026-10-15).
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-2-ad-eligibility.md`
+  summary: 광고 transition 참조를 한 번만 쓰이게(소비) 하거나 수명을 두어, 오래된 ELIGIBLE 결정의 재전송이 광고 노출을 다시 일으키지 못하게 한다.
+  evidence: 4.2의 재전송은 ELIGIBLE이면 관문만 다시 보고 같은 `transition`을 돌려준다(SPEC 계약). `transition_ref`에는 만료도 소비 상태도 없으므로, 4.3이 ELIGIBLE 응답마다 광고를 시도하면 같은 jobId의 재전송이 빈도 제한에 세지지 않는 노출이 된다. 노출 시점의 소비 규칙은 중립 화면·adapter를 만드는 4.3 SPEC이 정해야 한다(4.2 리뷰 blind-hunter, 2026-10-15).
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-2-ad-eligibility.md`
+  summary: 광고 자격 후보에 신선도 조건(예: 방금 끝난 수동 동기화, 또는 지금 활성 계획의 최신 수동 성공)을 더할지 정한다.
+  evidence: 후보 술어(`PlanSyncRepository.publishedManualSync`)는 purpose·trigger·status·`calculation_id`만 보므로, 종단 계획이나 해제된 연결의 오래된 수동 성공도 처음 판정이면 새 reservation을 얻는다. 빈도 제한이 횟수를 묶지만 "방금 동기화한 결과 뒤의 광고"라는 trigger 의미는 강제되지 않는다. 결과 보기 클릭 흐름을 만드는 4.3 SPEC이 정하기 좋다(4.2 리뷰 blind-hunter·edge-case-hunter, 2026-10-15).
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-2-ad-eligibility.md`
+  summary: `BOKRILOG_AD_PROVIDER_ENABLED`를 운영 compose 환경 전달과 `deploy/production/preflight.sh` 환경 이름 목록에 연결한다.
+  evidence: 지금 이 변수는 `application.yml`에만 있다(기본 `false`). `BOKRILOG_SUPPORT_CONTACT`처럼 개발·운영 compose와 preflight에 오르지 않아 컨테이너로 넘길 수도, 출시 게이트 전에 검사할 수도 없다. 기본값이 꺼짐이라 지금은 안전하고, 실제 광고 계정 승인과 함께 출시 게이트가 다룬다(4.2 리뷰 blind-hunter, 2026-10-15).
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-2-ad-eligibility.md`
+  summary: `engagement_ad_attempt` 결정 행(SKIPPED 포함)의 보존 기한과 정리 경로를 정한다.
+  evidence: 판정한 수동 동기화마다 행이 남고 계정 삭제 외에는 지우는 경로가 없다. 빈도 판정은 하루 남짓의 이력만, 재전송은 짧은 창만 필요하다. 문의의 90일 정리 같은 선례가 있고, 동의 이력 보존(항목 148)과 함께 개인정보 검토(G-4)가 정할 몫이다(4.2 리뷰 blind-hunter, 2026-10-15).

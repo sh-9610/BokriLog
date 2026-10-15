@@ -273,6 +273,17 @@ public interface SyncJobApi {
      */
     SyncAdmission admitPlanSync(@Nullable UUID userId, @Nullable SyncTrigger trigger, @Nullable String idempotencyKey);
 
+    // -------------------------------------------------------------------- Story 4.2
+
+    /**
+     * 그 사용자의 그 attempt가 공식 결과를 원자 저장한 수동 동기화인가 — 광고 자격(Story 4.2)의 후보 판정 하나다. 술어는 attempt 행
+     * 하나로 본다: 그 사용자의 것이고, {@code purpose = SYNC}, {@code trigger = MANUAL}, {@code status = SUCCEEDED},
+     * {@code calculation_id}가 있다(발행은 그 상태와 같은 트랜잭션에서 쓰인다). 정밀 검증·이어 가기·완료·ENTRY·VISIBILITY·SYSTEM·
+     * 실패·검토 필요·차단·진행 중, 남의 attempt와 없는 attempt는 모두 거짓이다. 읽기만 하고, 호출자 트랜잭션이 있으면 그 안에서
+     * 읽는다. 이 모듈은 광고를 모른다 — 판정의 소비자가 무엇인지는 이 술어에 들어가지 않는다.
+     */
+    boolean publishedManualSync(UUID userId, UUID jobId);
+
     /**
      * The dashboard read model (Story 2.8). One of seven outcomes; only {@link Dashboard.Ready},
      * {@link Dashboard.Ended} (Story 2.13) and {@link Dashboard.Completed} (Story 2.14) carry financial fields. The screen-level next action is a closed set per

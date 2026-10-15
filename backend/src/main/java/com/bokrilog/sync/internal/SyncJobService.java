@@ -410,6 +410,10 @@ class SyncJobService implements SyncJobApi {
         return planSyncs.admit(userId,trigger,idempotencyKey);
     }
     @Override
+    public boolean publishedManualSync(UUID userId, UUID jobId) {
+        return planSyncAttempts.publishedManualSync(userId,jobId);
+    }
+    @Override
     public VerificationAdmission admitPlanVerification(@Nullable UUID userId, @Nullable VerificationKind kind,
             @Nullable EvidenceReference reference, @Nullable String idempotencyKey) {
         return planVerifications.admit(userId,kind,reference,idempotencyKey);

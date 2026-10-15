@@ -275,11 +275,11 @@ class AuthSecurityConfig {
     static final String SUPPORT_PATH = "/api/support";
 
     /**
-     * 광고 참여(Story 4.1). 광고 동의의 조회와 변경({@code GET}·{@code POST /api/engagement/ad-consent})이 이 접두사 아래에
-     * 있다.
+     * 광고 참여(Story 4.1·4.2). 광고 동의의 조회와 변경({@code GET}·{@code POST /api/engagement/ad-consent})과 광고 자격
+     * 판정({@code POST /api/engagement/ad-eligibility})이 이 접두사 아래에 있다.
      *
-     * <p>인가와 CSRF·{@code Origin}이 같은 판정 함수({@link #isEngagementPath})를 본다. 동의 변경은 상태 변경이라 세션 귀속
-     * CSRF 토큰과 동일 출처 {@code Origin}을 요구한다. 하위 경로도 같은 판정에 걸려 인증 없이는 401, 인증되면 없는 경로와 같은
+     * <p>인가와 CSRF·{@code Origin}이 같은 판정 함수({@link #isEngagementPath})를 본다. 동의 변경과 자격 판정은 상태 변경이라
+     * 세션 귀속 CSRF 토큰과 동일 출처 {@code Origin}을 요구한다. 하위 경로도 같은 판정에 걸려 인증 없이는 401, 인증되면 없는 경로와 같은
      * 404다.
      */
     static final String ENGAGEMENT_PATH = "/api/engagement";

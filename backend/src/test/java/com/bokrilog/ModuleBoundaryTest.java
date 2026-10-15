@@ -416,5 +416,59 @@ class ModuleBoundaryTest {
         // 검사가 빈 디렉터리를 훑어 조용히 통과하지 않는다: 소유 자리에는 그 이름이 있다.
         assertThat(java.nio.file.Files.readString(owner.resolve("AdConsentRepository.java"),
                 java.nio.charset.StandardCharsets.UTF_8)).contains("engagement_ad_consent_decision");
+        assertThat(java.nio.file.Files.readString(owner.resolve("AdAttemptRepository.java"),
+                java.nio.charset.StandardCharsets.UTF_8)).contains("engagement_ad_attempt");
+    }
+
+    /**
+     * 광고 자격 판정(Story 4.2)에 닿는 운영 클래스는 engagement 모듈 안과 그 판정을 여는 루트 컨트롤러 하나다 — 대시보드·동기화
+     * 경로가 판정을 일으키거나(대시보드 진입·탭 재활성화가 광고를 만들지 않는다) 판정 결과로 결과 접근을 바꿀 길이 없다.
+     */
+    @Test
+    void 광고_자격_API는_engagement와_자격_컨트롤러만_닿는다() {
+        ArchRule rule = noClasses()
+                .that().resideOutsideOfPackage("com.bokrilog.engagement..")
+                .and().haveNameNotMatching("com\\.bokrilog\\.AdEligibilityController(\\$.*)?")
+                .should().dependOnClassesThat().belongToAnyOf(com.bokrilog.engagement.AdEligibilityApi.class)
+                .because("광고 자격은 결과 조회의 조건이 아니고, 판정은 사용자의 결과 보기 요청 하나로만 일어난다.");
+        rule.check(PRODUCTION_CLASSES);
+    }
+
+    /**
+     * 광고 자격 결정 행의 삭제도 계정 삭제 orchestrator 한 곳이다(Story 4.2). 다른 자리가 지우면 빈도 제한과 재전송 판정이 삭제
+     * 전환 없이 초기화된다.
+     */
+    @Test
+    void 광고_자격_삭제는_계정_삭제_orchestrator만_부른다() {
+        ArchRule rule = noClasses()
+                .that().resideOutsideOfPackage("com.bokrilog.engagement..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.AccountErasure")
+                .should().callMethod(com.bokrilog.engagement.EngagementDeletionApi.class, "eraseAdAttempts",
+                        java.util.UUID.class)
+                .because("광고 자격 결정 삭제는 한 트랜잭션의 계정 삭제(AccountErasure) 안에서만 한다.");
+        rule.check(PRODUCTION_CLASSES);
+    }
+
+    /**
+     * 의존은 engagement에서 다른 모듈 쪽으로만 난다(Story 4.2). 다른 모듈은 engagement를 모르고(sync는 후보 판정을 주기만 하고 그
+     * 소비자를 모른다), 루트에서 engagement에 닿는 곳은 두 컨트롤러·계정 삭제·복원 불변식·계측 허용 표뿐이다 — 대시보드·동기화
+     * 컨트롤러가 광고를 읽거나 일으킬 길이 없다.
+     */
+    @Test
+    void 다른_모듈과_대시보드_동기화_경로는_engagement에_의존하지_않는다() {
+        ArchRule modules = noClasses()
+                .that().resideInAnyPackage("com.bokrilog.identity..", "com.bokrilog.source..",
+                        "com.bokrilog.portfolio..", "com.bokrilog.operations..", "com.bokrilog.sync..",
+                        "com.bokrilog.plan..", "com.bokrilog.calculation..")
+                .should().dependOnClassesThat().resideInAPackage("com.bokrilog.engagement..")
+                .because("광고는 연결·동기화·계산·대시보드의 성공 조건이 아니다.");
+        modules.check(PRODUCTION_CLASSES);
+        ArchRule root = noClasses()
+                .that().resideInAPackage("com.bokrilog")
+                .and().haveNameNotMatching("com\\.bokrilog\\.(AdConsentController|AdEligibilityController|AccountErasure"
+                        + "|RestoreInvariants|TelemetryAllowlist)(\\$.*)?")
+                .should().dependOnClassesThat().resideInAPackage("com.bokrilog.engagement..")
+                .because("engagement에 닿는 루트 자리는 정해진 다섯 곳이다.");
+        root.check(PRODUCTION_CLASSES);
     }
 }
