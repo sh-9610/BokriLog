@@ -206,6 +206,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 회고 AI-5·AI-1 운영 command 공통화 chore | done | `spec-operator-command-commons.md`, PR #97 머지 커밋 `aa782e2` |
 | 회고 AI-12 CI 임계 경로 단축 chore | done | `spec-ci-critical-path.md`, PR #104 머지 커밋 `571bb3c` |
 | 4.1 광고 동의 선택·철회 | done | `spec-4-1-ad-consent.md`, PR #107 머지 커밋 `176190f` |
+| 4.2 광고 자격·빈도 제한 | done | `spec-4-2-ad-eligibility.md`, PR #109 머지 커밋 `090efb9` |
 
 ## 스토리가 고정한 계약
 
@@ -270,7 +271,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 ## 미룬 결정
 
-`deferred-work.md`가 항목을 추가만 하는 로그(현재 148건)이고 판정은 `deferred-work-resolutions.md`의 상태 요약 표가 소유한다(해소 26·부분 해소 20·미해소 102·미판정 0). 2026-10-15 판정 라운드(`spec-deferred-work-verdict-round.md`)가 보류 셋(92·129·131)을 빼고 모두 판정했고, 그 셋은 CI 임계 경로 chore(`spec-ci-critical-path.md`, PR #104)의 done 전환이 판정했다(131 해소, 92·129 미해소). Story 4.1이 더한 147(광고 동의 결정 빈도 제한)·148(동의 이력 보존 기한)은 그 done 전환이 미해소로 판정했다. 판정 재개를 요구한 세 액션 가운데 Epic 2 회고 AI-6(`epic-2-retro-item-18`)·Epic 3 회고 AI-11(`epic-3-retro-item-36`)은 done이고 Epic 1 회고 액션 8(`epic-1-retro-item-8`)은 in-progress다. 출시 전에 닫을 항목(보안·삭제·데이터 정확성) 목록은 원장 상태 요약의 "2026-10-15 갱신(판정 라운드)" 문단이 소유한다. 회고가 실연동 게이트 전에 닫으라고 남긴 둘 가운데 연쇄 승인(재인증 시각을 지우는 코드가 없던 것, AI-8 범위)은 `spec-sensitive-command-commons.md`가 `SessionRotation`으로 닫았고, `onFailure`가 무장을 무조건 버리는 것 하나만 아직 열려 있다.
+`deferred-work.md`가 항목을 추가만 하는 로그(현재 152건)이고 판정은 `deferred-work-resolutions.md`의 상태 요약 표가 소유한다(해소 26·부분 해소 20·미해소 106·미판정 0). 2026-10-15 판정 라운드(`spec-deferred-work-verdict-round.md`)가 보류 셋(92·129·131)을 빼고 모두 판정했고, 그 셋은 CI 임계 경로 chore(`spec-ci-critical-path.md`, PR #104)의 done 전환이 판정했다(131 해소, 92·129 미해소). Story 4.1이 더한 147(광고 동의 결정 빈도 제한)·148(동의 이력 보존 기한)은 그 done 전환이, Story 4.2가 더한 149·150(transition 소비·후보 신선도, 주인 4.3)·151(공급자 변수 배포 연결)·152(자격 결정 행 보존 기한)는 4.2 done 전환이 미해소로 판정했다. 판정 재개를 요구한 세 액션 가운데 Epic 2 회고 AI-6(`epic-2-retro-item-18`)·Epic 3 회고 AI-11(`epic-3-retro-item-36`)은 done이고 Epic 1 회고 액션 8(`epic-1-retro-item-8`)은 in-progress다. 출시 전에 닫을 항목(보안·삭제·데이터 정확성) 목록은 원장 상태 요약의 "2026-10-15 갱신(판정 라운드)" 문단이 소유한다. 회고가 실연동 게이트 전에 닫으라고 남긴 둘 가운데 연쇄 승인(재인증 시각을 지우는 코드가 없던 것, AI-8 범위)은 `spec-sensitive-command-commons.md`가 `SessionRotation`으로 닫았고, `onFailure`가 무장을 무조건 버리는 것 하나만 아직 열려 있다.
 
 ## 브랜치·커밋
 

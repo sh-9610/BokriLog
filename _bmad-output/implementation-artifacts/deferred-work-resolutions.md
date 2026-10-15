@@ -19,8 +19,16 @@ decision_baseline: 'ERD-1.0.0'
 |---|---|
 | 해소 | 26 |
 | 부분 해소 | 20 |
-| 미해소 | 102 |
+| 미해소 | 106 |
 | 미판정 | 0 |
+
+**2026-10-15 갱신(Story 4.2 done 전환).** `spec-4-2-ad-eligibility.md`(PR #109, 머지 커밋 `090efb9`)가 `deferred-work.md`에 항목 넷을 append했고 모두 미해소로 판정했다.
+- **149** transition 소비·수명 — 주인 Story 4.3
+- **150** 후보 신선도 — 주인 Story 4.3
+- **151** 공급자 변수 배포 연결 — 주인 광고 출시 게이트
+- **152** 결정 행 보존 기한 — 주인 G-4
+
+이 스토리를 결정 지점으로 지목한 항목은 없다. **67**은 engagement 삭제 참여자가 다시 늘어 재확인했다(부분 해소 그대로). 해소한 항목은 없다. 그래서 앞 표(148건)에서 미해소만 +4다 — 합 152.
 
 **2026-10-15 갱신(Story 4.1 done 전환).** `spec-4-1-ad-consent.md`(PR #107, 머지 커밋 `176190f`)가 `deferred-work.md`에 항목 **147**(광고 동의 결정 행의 빈도 제한·행 수 상한)·**148**(광고 동의 결정 이력의 보존 기한)을 append했다. 둘 다 미해소로 판정했다. 이 스토리를 결정 지점으로 이름 붙인 항목은 없다. 다만 **67** 잔여가 "Epic 4 `engagement` 같은 새 모듈"을 짚었으므로 재확인했다(부분 해소 그대로). 해소한 항목은 없다. 그래서 앞 표(146건: 해소 26·부분 해소 20·미해소 100·미판정 0)에서 미해소만 +2다 — 합 148.
 
@@ -564,6 +572,12 @@ Docker 없는 정적 리터럴 비교 시험은 이 저장소에 전례가 없�
 
 **미해소 잔여:** 위 잔여와 같다. 주인은 Epic 5다.
 
+**부분 해소(2026-10-15, Story 4.2 판정, 기준 `090efb9`) — 재확인.** Story 4.2(PR #109)가 engagement의 두 번째 표(`engagement_ad_attempt`)를 더했다.
+- **바뀐 것.** 잔여 행 세기가 모듈 수준 `EngagementResidueRepository`로 옮겨졌다. 이 세기는 `engagement_%` 표의 `user_id` 열을 카탈로그로 모두 센다. 그래서 engagement 안에서는 새 표가 저절로 세어진다.
+- **그대로인 것.** 삭제 참여자는 다시 손으로 더했다(`AccountErasure.java`의 `eraseAdAttempts`). 모듈 사이의 일반 검사도 여전히 없다.
+
+**미해소 잔여:** 위 잔여와 같다. 주인은 Epic 5다.
+
 ### 68. 5분 무장 수명이 화면에 보이지 않고 만료가 구분되지 않는 거부로 끝난다
 
 **미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.1이 append했다. `BybitConnectionFlow.java:58`의 `ARMED_LIFETIME = Duration.ofMinutes(5)`가 그대로이고 화면 카피 `frontend/src/content/connection.ts:236`도 "이 문구는 이번 연결 요청에만 유효합니다"뿐이며 남은 시간을 말하지 않는다. 준비 응답에 무장 시각이나 만료를 싣는 결정은 어느 SPEC에도 없고, 만료는 여전히 구분되지 않는 `FORBIDDEN`이다.
@@ -1056,3 +1070,36 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **기한 규칙이 없다.** 문의(3.6)의 "해결 뒤 90일 삭제" 같은 기한 규칙이 없다. 기획 문서(PRD·ERD·`epics.md`)도 동의 증거의 보존 기간을 정하지 않는다.
 
 **미해소 잔여:** 동의 증거로 남길 기간과 최소 보존 사이에서 기한을 정하고, 지난 행을 지우는 경로(조회 트랜잭션이 먼저 지우는 문의 방식 등)를 더하는 일. 주인은 외부 게이트 G-4(개인정보 검토, 광고 동의 문구 확정과 같은 게이트)다.
+
+### 149. 광고 transition 참조의 소비·수명
+
+**미해소(2026-10-15, Story 4.2 판정, 기준 `090efb9`).** Story 4.2(`spec-4-2-ad-eligibility.md`, PR #109)의 리뷰가 이 항목을 append했고, 같은 스토리의 done 전환에서 판정한다(`CLAUDE.md` 표준 흐름 7번).
+- **재전송이 같은 참조를 돌려준다.** ELIGIBLE 재전송은 관문만 다시 보고 저장된 `transition_ref`를 그대로 돌려준다(`AdEligibilityService.java:118`, 읽기는 `AdAttemptRepository.java:52`).
+- **수명·소비가 없다.** 참조에는 만료 열도 소비 상태도 없다. 4.2에는 광고를 시도하는 표면이 없으므로 아직 노출로 이어지지 않는다.
+
+**미해소 잔여:** 4.3이 광고를 시도할 때 transition을 한 번만 쓰게(소비) 하거나 수명을 두어, 같은 결정의 재전송이 세지지 않는 노출이 되지 않게 하는 일. 주인은 Story 4.3이다.
+
+### 150. 광고 자격 후보의 신선도
+
+**미해소(2026-10-15, Story 4.2 판정, 기준 `090efb9`).** Story 4.2(PR #109)의 리뷰가 이 항목을 append했다.
+- **신선도 조건이 없다.** 후보 술어(`PlanSyncRepository.java:146` `publishedManualSync`)는 purpose·trigger·status·`calculation_id`·소유만 본다. 시각 조건도, "지금 활성 계획의 최신 수동 성공" 같은 조건도 없다.
+- **횟수는 묶여 있다.** 빈도 제한(30분·하루 3회)이 횟수를 묶는다. 다만 오래된 수동 성공도 처음 판정이면 reservation을 얻는다.
+
+**미해소 잔여:** 결과 보기 클릭 흐름에 맞는 신선도 조건을 정하는 일. 주인은 Story 4.3이다.
+
+### 151. `BOKRILOG_AD_PROVIDER_ENABLED`의 배포 연결
+
+**미해소(2026-10-15, Story 4.2 판정, 기준 `090efb9`).** Story 4.2(PR #109)의 리뷰가 이 항목을 append했다.
+- **설정 파일에만 있다.** 변수는 `backend/src/main/resources/application.yml:244`에만 있고 기본값은 `false`다.
+- **배포 경로에 없다.** `BOKRILOG_SUPPORT_CONTACT`는 개발 compose(`deploy/compose/compose.yaml:184`), 운영 compose(`deploy/production/compose.yaml:245`), preflight 이름 목록(`deploy/production/preflight.sh:495`)에 오른다. 이 변수는 그 셋 어디에도 없다.
+- **지금은 안전하다.** 기본값이 꺼짐이라 운영 컨테이너는 광고 자격을 내지 않는다.
+
+**미해소 잔여:** 실제 광고 계정·ad unit 승인과 함께 이 변수를 운영 compose와 preflight에 연결하고, 승인 전 켜짐을 막을지 정하는 일. 주인은 광고 출시 게이트(`AD-GPT-1.0`의 실제 network·ad unit 승인)다.
+
+### 152. 광고 자격 결정 행의 보존 기한
+
+**미해소(2026-10-15, Story 4.2 판정, 기준 `090efb9`).** Story 4.2(PR #109)의 리뷰가 이 항목을 append했다.
+- **지우는 길이 하나뿐이다.** 결정 행(`engagement_ad_attempt`, V27, SKIPPED 포함)은 계정 삭제(`AdAttemptRepository.java:109` `eraseUser`)로만 지워진다.
+- **필요한 이력보다 오래 남는다.** 빈도 판정에는 하루 남짓, 재전송에는 짧은 창의 이력만 필요하다.
+
+**미해소 잔여:** 보존 기한과 정리 경로를 정하는 일. 동의 이력(항목 148)과 함께 정한다. 주인은 G-4(개인정보 검토)다.
