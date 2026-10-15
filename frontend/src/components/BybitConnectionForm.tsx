@@ -1,4 +1,11 @@
-import { useId, useRef, useState, type ReactElement, type SyntheticEvent } from 'react'
+import {
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactElement,
+  type SyntheticEvent,
+} from 'react'
 
 import { connectionContent } from '../content/connection'
 import { type SubmitOutcome } from '../session/useBybitConnection'
@@ -68,6 +75,15 @@ export function BybitConnectionForm({
 
   const secretRef = useRef<HTMLInputElement>(null)
   const summaryRef = useRef<HTMLDivElement>(null)
+  const headingRef = useRef<HTMLHeadingElement>(null)
+
+  /*
+   * 폼이 열리면 그 제목으로 초점을 옮긴다(Story 2.17 리뷰). 여는 버튼은 폼과 함께 사라지므로 옮기지 않으면 초점이
+   * `<body>`로 떨어진다. 사용자가 누른 조작의 결과이고 커밋과 함께 성립해야 하는 효과라 layout effect다.
+   */
+  useLayoutEffect(() => {
+    headingRef.current?.focus()
+  }, [])
 
   const apiKeyId = `${prefix}-api-key`
   const apiSecretId = `${prefix}-api-secret`
@@ -163,7 +179,7 @@ export function BybitConnectionForm({
       noValidate
       onSubmit={handleSubmit}
     >
-      <h3 className={styles.heading} id={`${prefix}-heading`}>
+      <h3 className={styles.heading} id={`${prefix}-heading`} ref={headingRef} tabIndex={-1}>
         {connectionContent.form.heading}
       </h3>
 

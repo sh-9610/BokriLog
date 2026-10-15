@@ -94,6 +94,8 @@ export type ConnectOutcome =
       readonly verifiedAt: string | null
       readonly policyVersion: string | null
       readonly connectionId: string | null
+      /** 같은 Bybit 계정의 재연결로 활성 계획이 동기화를 이어 가는가(Story 2.17). */
+      readonly planResumed: boolean
     }
   | { readonly outcome: 'failed'; readonly code: string | null }
 
@@ -177,6 +179,8 @@ export async function connectBybit(
         verifiedAt: typeof body.verifiedAt === 'string' ? body.verifiedAt : null,
         policyVersion: typeof body.policyVersion === 'string' ? body.policyVersion : null,
         connectionId: typeof body.connectionId === 'string' ? body.connectionId : null,
+        // 같은 Bybit 계정으로 다시 연결해 기존 계획을 이어 동기화한다(Story 2.17). 서버가 그때만 싣는다.
+        planResumed: body.planResumed === true,
       }
     }
   }

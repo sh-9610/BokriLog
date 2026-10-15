@@ -344,7 +344,7 @@ describe('SettingsScreen의 Bybit 연결', () => {
       (code) => rejectionMessage(code) === rejectionMessage(null),
     )
     expect(generic).toEqual([])
-    expect(CONNECTION_REJECTION_CODES.length).toBe(15)
+    expect(CONNECTION_REJECTION_CODES.length).toBe(16)
   })
 
   it('검증 시각을 Asia/Seoul로 표시한다', () => {

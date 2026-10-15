@@ -207,6 +207,15 @@ abstract class PlanSyncTestBase extends AuthFlowTestBase {
         pollUntil(Duration.ofSeconds(10), () -> sync.job(user, firstJob).orElseThrow().status(),
                 PlanSyncTestBase::finished);
         assertThat(sync.job(user, firstJob).orElseThrow().status()).isEqualTo("SUCCEEDED");
+        return publishedPlanFromBaseline(user, prefix, start, conversionStatus);
+    }
+
+    /**
+     * 첫 스냅샷을 빼고 계획 조건의 지금 기준부터 발행까지 하는 {@link #publishedPlan(UUID, String, Instant, String)}(Story 2.17 —
+     * 계획 없는 재연결은 기준을 그대로 쓰거나 먼저 바꾼다).
+     */
+    UUID publishedPlanFromBaseline(UUID user, String prefix, @Nullable Instant start, String conversionStatus)
+            throws Exception {
         var snapshot = plans.state(user).snapshot();
         String end = LocalDateTime.ofInstant(snapshot.measuredAt(), ZoneId.of("Asia/Seoul")).plusDays(30)
                 .withSecond(0).withNano(0).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
@@ -255,8 +264,16 @@ abstract class PlanSyncTestBase extends AuthFlowTestBase {
     }
 
     String store(UUID user, DevBybitStub.Scenario scenario) {
+        return store(user, scenario, "incremental-" + UUID.randomUUID());
+    }
+
+    /**
+     * main UID를 받는 {@link #store(UUID, DevBybitStub.Scenario)}(Story 2.17): 같은 UID면 provider account를 다시 쓰고 다른 UID면
+     * 새로 만든다. HTTP 흐름 없이 바로 저장한다 — 활성 계획의 계정 대조는 그 흐름 안에 있으므로 그것을 보는 시험은 HTTP로
+     * 다시 연결한다.
+     */
+    String store(UUID user, DevBybitStub.Scenario scenario, String uid) {
         Instant start = Instant.now().minusSeconds(2);
-        String uid = "incremental-" + UUID.randomUUID();
         var credentials = new SourceCredentials(BybitStubConfiguration.apiKey(scenario, uid),
                 BybitStubConfiguration.newSecret());
         new TransactionTemplate(manager).executeWithoutResult(status -> {

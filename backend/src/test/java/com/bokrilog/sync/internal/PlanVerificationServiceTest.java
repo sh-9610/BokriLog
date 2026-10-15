@@ -80,6 +80,9 @@ class PlanVerificationServiceTest {
         when(syncs.active(USER, PLAN)).thenReturn(Optional.empty());
         when(publications.databaseNow()).thenReturn(now);
         when(planSyncs.unavailableReason(eq(USER), any(), any())).thenReturn(null);
+        // 계획의 지금 연결(Story 2.17). 새 attempt는 이 ID로 접수한다.
+        when(planSyncs.planSource(eq(USER), any())).thenReturn(Optional.of(new PlanSyncGuard.PlanSource(
+                base.lineage().membershipId(), base.lineage().connectionId(), ACCOUNT)));
         when(planSyncs.longGap(eq(USER), any(), any())).thenReturn(false);
         when(syncs.persistentlyReviewed(USER, PLAN, CALCULATION)).thenReturn(false);
         when(syncs.lastAdmission(USER, PLAN)).thenReturn(Optional.empty());
@@ -88,6 +91,31 @@ class PlanVerificationServiceTest {
         when(collections.unexplainedEvents(USER, ACCOUNT, CANDIDATE, T0, VERIFIED)).thenReturn(List.of());
         when(syncs.insert(any())).thenReturn(1);
         when(syncs.byId(eq(USER), any())).thenReturn(Optional.of(queued));
+    }
+
+    /**
+     * 재연결 뒤(Story 2.17) 정밀 검증·기존 계획 계속은 기준 버전이 기록한 연결이 아니라 계획의 지금 연결로 접수된다 — stub이
+     * 기준 버전과 다른 membership·연결을 돌려준다.
+     */
+    @Test
+    void aVerificationAfterAReconnectionIsAdmittedOnTheNewConnectionAndMembership() {
+        eligible(PUBLISHED.plusSeconds(60));
+        UUID membership = UUID.fromString("00000000-0000-0000-0000-0000000000c1");
+        UUID connection = UUID.fromString("00000000-0000-0000-0000-0000000000c2");
+        when(planSyncs.planSource(eq(USER), any()))
+                .thenReturn(Optional.of(new PlanSyncGuard.PlanSource(membership, connection, ACCOUNT)));
+        assertThat(service().admit(USER, VerificationKind.PRECISION, shown, KEY))
+                .isEqualTo(new VerificationAdmission.Accepted(queued));
+        ArgumentCaptor<PlanSyncRepository.Admission> admission = ArgumentCaptor.forClass(PlanSyncRepository.Admission.class);
+        verify(syncs).insert(admission.capture());
+        assertThat(admission.getValue().membershipId()).isEqualTo(membership)
+                .isNotEqualTo(base.lineage().membershipId());
+        assertThat(admission.getValue().connectionId()).isEqualTo(connection)
+                .isNotEqualTo(base.lineage().connectionId());
+        // 지금 연결이 없으면(가용성 판정 뒤 바뀌었다) attempt를 만들지 않는다.
+        when(planSyncs.planSource(eq(USER), any())).thenReturn(Optional.empty());
+        assertThat(service().admit(USER, VerificationKind.PRECISION, shown, KEY))
+                .isEqualTo(new VerificationAdmission.Refused("VERIFICATION_UNAVAILABLE"));
     }
 
     @Test

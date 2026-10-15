@@ -23,7 +23,11 @@ import org.springframework.stereotype.Component;
  * module's own pointer; it opens no transaction — it joins the caller's.
  *
  * <p>The base is the plan's current official version: its plan, pointer, calculation and lineage. A sync runs on
- * the plan's own connection and membership — the ones its calculation recorded — and nothing else.
+ * the plan's own connection and membership and nothing else.
+ *
+ * <p>Story 2.17부터 그 연결은 계획의 provider account·portfolio에 붙은 지금 활성 연결이다({@link #planSource}) — 같은
+ * 계정으로 다시 연결한 뒤에는 기준 버전이 기록한 연결이 아니라 새 연결이다. 실행 중인 attempt는 접수한 연결에 묶인다
+ * ({@link #blocked}).
  */
 @Component
 class PlanSyncGuard {
@@ -102,15 +106,41 @@ class PlanSyncGuard {
     }
 
     /**
-     * Why no completion or post-end attempt can run now (Story 2.14), or {@code null}: the guard's own reasons without
-     * the plan's end — a restriction, or a connection or membership that is not the plan's own any more.
+     * 계획의 지금 연결(Story 2.17): 계획이 고정한 Bybit 계정과 portfolio에 붙은 지금 활성 연결과 그 활성 membership.
+     *
+     * <p>계획은 연결 ID가 아니라 provider account에 귀속한다 — 사건 고유성과 source snapshot이 이미 그 계정 단위다(AR-12,
+     * V7). 연결은 교체 가능한 수집 수단이라, 같은 main UID로 재연결하면 새 연결·membership이 그 계획의 연결이 된다. 계획
+     * 계보에 남은 원래 연결 ID는 불변 기록일 뿐 판정에 쓰지 않는다. 새 동기화·정밀 검증 attempt와 그 발행 계보는 여기서 고른
+     * <b>새</b> ID를 쓴다.
+     *
+     * @return 그런 연결이 없으면 빈 값 — 해제됐거나 다른 계정·portfolio의 연결이다
      */
-    @Nullable String completionUnavailableReason(UUID user, UUID planId, UUID membershipId, UUID portfolioId,
-            UUID connectionId, UUID providerAccountId) {
-        if (syncRestricted(planId, portfolioId, connectionId)) return RESTRICTED;
-        if (!sameConnection(user, connectionId, providerAccountId)
-                || !sameMembership(user, membershipId, portfolioId, connectionId, providerAccountId))
-            return connectionCause(user, connectionId);
+    Optional<PlanSource> planSource(UUID user, UUID portfolioId, UUID providerAccountId) {
+        var connection = sources.snapshotConnection(user).orElse(null);
+        if (connection == null || !connection.providerAccountId().equals(providerAccountId)) return Optional.empty();
+        var membership = portfolios.activeSource(user).orElse(null);
+        if (membership == null || !membership.portfolioId().equals(portfolioId)
+                || !membership.connectionId().equals(connection.connectionId())
+                || !membership.providerAccountId().equals(providerAccountId))
+            return Optional.empty();
+        return Optional.of(new PlanSource(membership.membershipId(), connection.connectionId(), providerAccountId));
+    }
+
+    /** 계획의 지금 연결과 그 membership(Story 2.17). */
+    record PlanSource(UUID membershipId, UUID connectionId, UUID providerAccountId) {}
+
+    /**
+     * 완료·종료 후 값 attempt를 지금 받지 못하는 이유(Story 2.14), 없으면 {@code null}: 계획의 종료를 뺀 가드 자신의 이유 —
+     * 제한, 또는 계획 자신의 연결이 더는 없음({@link #planSource}).
+     *
+     * @param recordedConnectionId 계획 계보가 기록한 연결. 지금 연결이 없을 때 제한 차원과 해제 원인을 이것으로 본다
+     */
+    @Nullable String completionUnavailableReason(UUID user, UUID planId, UUID portfolioId, UUID recordedConnectionId,
+            UUID providerAccountId) {
+        var source = planSource(user, portfolioId, providerAccountId).orElse(null);
+        if (syncRestricted(planId, portfolioId, source == null ? recordedConnectionId : source.connectionId()))
+            return RESTRICTED;
+        if (source == null) return connectionCause(user, recordedConnectionId);
         return null;
     }
 
@@ -154,21 +184,28 @@ class PlanSyncGuard {
     }
 
     /**
-     * Why no sync can run now, or {@code null}: a restriction, a connection or membership that is not the plan's
-     * own any more (gone, replaced or ended), or the plan's end reached on the database clock.
+     * 지금 동기화를 받지 못하는 이유, 없으면 {@code null}: 제한, 계획 자신의 연결이 더는 없음({@link #planSource} — 없음·해제·
+     * 다른 계정), 또는 데이터베이스 시각으로 계획 종료.
+     *
+     * @param recordedConnectionId 계획 계보가 기록한 연결(Story 2.17). 지금 연결이 있으면 제한 차원은 지금 연결이다 — 연결 단위
+     *     제한은 같은 계정의 연결 전부에 미친다(판독이 넓힌다). 지금 연결이 없을 때만 제한 차원과 해제 원인을 이것으로 본다
      */
-    @Nullable String unavailableReason(UUID user, UUID planId, UUID membershipId, UUID portfolioId, UUID connectionId,
+    @Nullable String unavailableReason(UUID user, UUID planId, UUID portfolioId, UUID recordedConnectionId,
             UUID providerAccountId, Instant endAt, Instant now) {
-        if (syncRestricted(planId, portfolioId, connectionId)) return RESTRICTED;
-        if (!sameConnection(user, connectionId, providerAccountId)
-                || !sameMembership(user, membershipId, portfolioId, connectionId, providerAccountId))
-            return connectionCause(user, connectionId);
+        var source = planSource(user, portfolioId, providerAccountId).orElse(null);
+        if (syncRestricted(planId, portfolioId, source == null ? recordedConnectionId : source.connectionId()))
+            return RESTRICTED;
+        if (source == null) return connectionCause(user, recordedConnectionId);
         if (!now.isBefore(endAt)) return PLAN_PERIOD_ENDED;
         return null;
     }
 
-    /** Why the plan's connection is not usable: revoked by the user (Story 2.16), or otherwise gone or replaced. */
+    /**
+     * 계획에 자기 연결이 없는 이유. 지금 활성 연결이 있는데 계획의 것이 아니면(다른 계정·portfolio, Story 2.17) 연결 불가이고,
+     * 활성 연결이 없고 계획 버전이 마지막으로 돈 연결을 사용자가 해제했으면(Story 2.16) 해제다. 그 밖은 연결 불가다.
+     */
     private String connectionCause(UUID user, UUID connectionId) {
+        if (sources.snapshotConnection(user).isPresent()) return CONNECTION_UNAVAILABLE;
         return sources.isRevoked(user, connectionId) ? CONNECTION_REVOKED : CONNECTION_UNAVAILABLE;
     }
 

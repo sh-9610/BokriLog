@@ -119,7 +119,10 @@ class SyncJobService implements SyncJobApi {
                 if (same.isPresent()) return same;
                 Optional<Job> active=jobs.active(userId,connection.connectionId());
                 if (active.isPresent()) return active;
-                if (portfolios.officialValue(userId).isPresent()) return Optional.empty();
+                // 공식값이 이미 있으면 첫 확인은 끝났다 — 계획 없이 다른 Bybit 계정으로 다시 연결한 경우만 그 계정의 새 첫
+                // 확인을 받는다(Story 2.17, accountRebaseAllowed).
+                if (portfolios.officialValue(userId).isPresent()
+                        && !accountRebaseAllowed(userId,connection.providerAccountId())) return Optional.empty();
                 UUID id=UUID.randomUUID();
                 jobs.insert(id,userId,connection.connectionId(),connection.providerAccountId(),key);
                 return jobs.byId(userId,id);
@@ -129,6 +132,19 @@ class SyncJobService implements SyncJobApi {
             return source.flatMap(c -> jobs.byKey(userId,c.connectionId(),key)
                     .or(() -> jobs.active(userId,c.connectionId())));
         }
+    }
+    /**
+     * 계획 없이 다른 Bybit 계정으로 다시 연결한 사용자의 새 첫 확인을 받는가(Story 2.17, {@code RECONNECT-1.0}).
+     *
+     * <p>계획이 하나도 없고, 공식값은 있는데 그 계정의 기준 snapshot이 없을 때뿐이다 — 공식값이 이전 계정의 것이다. 그 첫
+     * 확인은 portfolio 포인터를 새 계정의 snapshot으로 한 칸 옮기고({@code publishNext}), 그 snapshot이 이 계정의 계획
+     * 기준이 된다({@code PortfolioMembershipApi.accountBaselineSnapshot}). 이전 snapshot·사건 기록은 지우거나 고치지 않는다.
+     * 같은 계정의 재연결은 이전 연결로 받은 snapshot이 그대로 기준이라 여기 오지 않는다. 종단 계획이 있으면 후속 기준
+     * (Story 2.15)이 이 일을 한다.
+     */
+    private boolean accountRebaseAllowed(UUID userId, UUID providerAccountId) {
+        return publicationPlans.latestPlan(userId).isEmpty() && portfolios.officialValue(userId).isPresent()
+                && portfolios.accountBaselineSnapshot(userId,providerAccountId).isEmpty();
     }
     private Optional<PlanPublicationPort.LatestPlan> successorPredecessor(UUID userId) {
         if (!initialEligible(userId) || publicationPlans.activePlan(userId).isPresent()) return Optional.empty();
@@ -218,20 +234,37 @@ class SyncJobService implements SyncJobApi {
     public Optional<State> state(@Nullable UUID userId) {
         if (userId==null || accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)
                 !=AccessDecision.ALLOWED) return Optional.empty();
-        if (sources.snapshotConnection(userId).isEmpty()) {
+        // 연결은 한 번만 읽는다 — 두 번 읽으면 그 사이의 해제가 빈 값을 낳는다(Story 2.17 리뷰).
+        var active=sources.snapshotConnection(userId).orElse(null);
+        if (active==null) {
             /*
              * Story 2.16: a revoked connection keeps the first official value read-only — the job and the value stay
              * visible, flagged revoked, and no new read is offered. A revocation wins over a restriction.
              */
             if (sources.hasRevokedConnection(userId))
                 return Optional.of(new State(jobs.latest(userId).orElse(null),
-                        portfolios.officialValue(userId).orElse(null),false,false,true));
-            return Optional.of(new State(null,null,false,false,false));
+                        portfolios.officialValue(userId).orElse(null),false,false,true,false));
+            return Optional.of(new State(null,null,false,false,false,false));
         }
         if (syncRestricted(userId))
-            return Optional.of(new State(null,null,true,true,false));
-        return Optional.of(new State(jobs.latest(userId).orElse(null),
-                portfolios.officialValue(userId).orElse(null),true,false,false));
+            return Optional.of(new State(null,null,true,true,false,false));
+        var connection=active;
+        if (accountRebaseAllowed(userId,connection.providerAccountId()))
+            /*
+             * 다른 Bybit 계정으로 다시 연결했고 계획이 없다(Story 2.17): 공식값은 이전 계정의 것이라 이 계정의 첫 값으로 보이지
+             * 않는다. 이 연결의 작업만 보이고 새 첫 확인을 받는다. 이전 값은 지우지 않는다.
+             */
+            return Optional.of(new State(jobs.latestOf(userId,connection.connectionId()).orElse(null),null,true,false,
+                    false,true));
+        /*
+         * 작업은 지금 연결의 것, 없으면 지금 공식값을 만든 연결의 것이다(Story 2.17 리뷰). 사용자의 가장 최근 작업을 그대로 쓰면
+         * A→B(새 첫 확인 실패)→A로 돌아온 사용자에게 B의 실패가 보인다.
+         */
+        var official=portfolios.officialValue(userId).orElse(null);
+        var job=jobs.latestOf(userId,connection.connectionId()).or(() -> official==null ? Optional.empty()
+                : portfolios.ownedSnapshot(userId,official.snapshotId())
+                        .flatMap(s -> jobs.latestOf(userId,s.connectionId()))).orElse(null);
+        return Optional.of(new State(job,official,true,false,false,false));
     }
     @Override
     public Optional<CollectionJob> admitInitialInputs(@Nullable UUID userId, UUID intentId, String key) {
@@ -432,6 +465,17 @@ class SyncJobService implements SyncJobApi {
     public void lockConnectionRevocation(UUID userId) {
         requireCallerTransaction();
         publicationPlans.lockPlanWrites(userId);
+    }
+    @Override
+    public void lockConnectionReconnection(UUID userId) {
+        // 해제와 같은 첫 잠금이다(Story 2.17). 이름이 다른 것은 호출자의 뜻을 읽히게 하려는 것뿐이다.
+        requireCallerTransaction();
+        publicationPlans.lockPlanWrites(userId);
+    }
+    @Override
+    public boolean completeEndedPlanForReconnection(UUID userId) {
+        requireCallerTransaction();
+        return planSyncs.completeIfEnded(userId);
     }
     @Override
     public EndedConnectionWork endConnectionWork(UUID userId, UUID connectionId, Instant revokedAt) {
@@ -721,9 +765,14 @@ class SyncJobService implements SyncJobApi {
         try {
             return transactions.execute(status -> {
                 boolean next=jobs.next(lease.jobId());
-                if (next) publicationPlans.lockPlanWrites(lease.userId());
+                // 공식값이 이미 있는 첫 확인은 다른 계정으로 다시 연결한 뒤의 새 첫 확인뿐이다(Story 2.17). 계획 쓰기와 직렬화하려고
+                // 후속 기준과 같은 잠금 순서(계획 → 계정 생명주기)를 쓰고, 잠금 아래에서 자격을 다시 본다.
+                boolean rebase=!next && portfolios.officialValue(lease.userId()).isPresent();
+                if (next || rebase) publicationPlans.lockPlanWrites(lease.userId());
                 if (!accounts.lockWriteAccess(lease.userId()) || !jobs.lockOwned(lease) || !eligible(lease.userId())
-                        || (next && !preparationValid(lease))) throw new PublicationBlocked();
+                        || (next && !preparationValid(lease))
+                        || (rebase && !accountRebaseAllowed(lease.userId(),lease.providerAccountId())))
+                    throw new PublicationBlocked();
                 if (next) {
                     var preparation=jobs.preparation(lease.userId(),lease.jobId()).orElseThrow();
                     if (!value.measuredAt().isAfter(preparation.terminalAt())
@@ -744,14 +793,16 @@ class SyncJobService implements SyncJobApi {
                         membership.get().portfolioId(),membership.get().membershipId(),
                         lease.connectionId(),lease.providerAccountId(),sourceId,value.decimal(),
                         value.measuredAt(),value.policyVersion());
-                if (next) {
+                if (next || rebase) {
+                    // 포인터를 이 계정의 새 snapshot으로 한 칸 옮긴다. 이전 snapshot은 그대로 남는다.
                     var current=portfolios.officialValue(lease.userId()).orElseThrow(PublicationBlocked::new);
                     var result=portfolios.publishNext(new PortfolioMembershipApi.CandidateComponent(component.userId(),
                             component.portfolioId(),component.membershipId(),component.connectionId(),component.providerAccountId(),
                             component.sourceSnapshotId(),component.decimal(),component.measuredAt(),component.policyVersion()),
                             current.snapshotId(),current.publicationSequence());
                     if (!(result instanceof PortfolioMembershipApi.PublishedSnapshot published)) throw new PublicationBlocked();
-                    jobs.completePreparation(lease.userId(),lease.jobId(),published.snapshotId(),sourceId);
+                    if (next) jobs.completePreparation(lease.userId(),lease.jobId(),published.snapshotId(),sourceId);
+                    // 이전 계정의 snapshot에 걸린 확인·intent는 이제 기준이 아니다.
                     publicationPlans.invalidatePreparedConditions(lease.userId());
                 } else if (!portfolios.publishFirst(component)) throw new PublicationBlocked();
                 if (!jobs.owns(lease) || !eligible(lease.userId())

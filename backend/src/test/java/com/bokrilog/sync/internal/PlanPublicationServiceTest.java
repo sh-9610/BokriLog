@@ -813,8 +813,8 @@ class PlanPublicationServiceTest {
                         .thenReturn(Optional.empty())),
                 new Break("basis source built from a candidate", () -> when(repository.sourceOrigin(USER, BASIS_SOURCE))
                         .thenReturn(Optional.of(tcSource(CANDIDATE, CONNECTION, ACCOUNT, T0, CONNECTION_POLICY)))),
-                new Break("basis source of another connection", () -> when(repository.sourceOrigin(USER, BASIS_SOURCE))
-                        .thenReturn(Optional.of(tcSource(null, stranger, ACCOUNT, T0, CONNECTION_POLICY)))),
+                // 의도 변경(Story 2.17): 같은 provider account의 다른 연결이 만든 기준 snapshot은 계보를 깨지 않는다 — 같은
+                // main UID로 재연결한 뒤의 버전이 그렇다. 계획을 잇는 것은 provider account다(BybitReconnectionTest).
                 new Break("basis source of another provider account", () -> when(repository.sourceOrigin(USER,
                         BASIS_SOURCE)).thenReturn(Optional.of(tcSource(null, CONNECTION, stranger, T0, CONNECTION_POLICY)))),
                 new Break("basis source measured after t0", () -> when(repository.sourceOrigin(USER, BASIS_SOURCE))

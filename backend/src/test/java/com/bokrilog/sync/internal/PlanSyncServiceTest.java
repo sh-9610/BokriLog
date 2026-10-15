@@ -92,7 +92,10 @@ class PlanSyncServiceTest {
         when(guard.base(USER)).thenReturn(Optional.of(base));
         when(syncs.active(USER, PLAN)).thenReturn(Optional.empty());
         when(publications.databaseNow()).thenReturn(now);
-        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any(), any())).thenReturn(null);
+        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any())).thenReturn(null);
+        // 계획의 지금 연결(Story 2.17). 이 시험에서는 기준 버전이 기록한 연결과 같다.
+        when(guard.planSource(eq(USER), any(), any()))
+                .thenReturn(Optional.of(new PlanSyncGuard.PlanSource(MEMBERSHIP, CONNECTION, ACCOUNT)));
         when(syncs.latest(USER, PLAN)).thenReturn(Optional.empty());
         when(syncs.lastAdmission(USER, PLAN)).thenReturn(Optional.empty());
         when(syncs.longGapObserved(USER, PLAN, CALCULATION)).thenReturn(false);
@@ -163,7 +166,7 @@ class PlanSyncServiceTest {
         eligible(VERIFIED.plus(Duration.ofDays(40)));
         SyncJob running = new SyncJob(JOB, "SYNC", null, "ENTRY", "RUNNING", "COLLECTION", null, PUBLISHED, null);
         when(syncs.active(USER, PLAN)).thenReturn(Optional.of(running));
-        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any(), any())).thenReturn("RESTRICTED");
+        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any())).thenReturn("RESTRICTED");
         when(syncs.lastAdmission(USER, PLAN)).thenReturn(Optional.of(VERIFIED.plus(Duration.ofDays(40))));
         for (SyncTrigger trigger : SyncTrigger.values())
             assertThat(service().admit(USER, trigger, KEY)).isEqualTo(new SyncAdmission.Joined(running));
@@ -173,7 +176,7 @@ class PlanSyncServiceTest {
     @Test
     void anUnavailableSyncIsRefusedBeforeTheLongGapAndTheCooldown() {
         eligible(VERIFIED.plus(Duration.ofDays(40)));
-        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any(), any())).thenReturn("PLAN_PERIOD_ENDED");
+        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any())).thenReturn("PLAN_PERIOD_ENDED");
         assertThat(service().admit(USER, SyncTrigger.MANUAL, KEY)).isEqualTo(new SyncAdmission.Refused("SYNC_UNAVAILABLE"));
         verify(syncs, never()).insert(any());
     }
@@ -293,9 +296,9 @@ class PlanSyncServiceTest {
         when(syncs.active(USER, PLAN)).thenReturn(Optional.of(queued));
         assertThat(service().state(USER, base).availability()).isEqualTo("IN_PROGRESS");
         when(syncs.active(USER, PLAN)).thenReturn(Optional.empty());
-        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any(), any())).thenReturn("RESTRICTED");
+        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any())).thenReturn("RESTRICTED");
         assertThat(service().state(USER, base)).isEqualTo(new SyncState("UNAVAILABLE", "RESTRICTED", null, null));
-        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any(), any())).thenReturn(null);
+        when(guard.unavailableReason(eq(USER), any(), any(), any(), any(), any(), any())).thenReturn(null);
         when(publications.databaseNow()).thenReturn(VERIFIED.plus(Duration.ofDays(31)));
         assertThat(service().state(USER, base)).isEqualTo(new SyncState("LONG_GAP", null, null, null));
         when(publications.databaseNow()).thenReturn(admitted.plusSeconds(30));
@@ -727,5 +730,92 @@ class PlanSyncServiceTest {
         org.mockito.Mockito.doThrow(new IllegalArgumentException("refused")).when(signals)
                 .raiseFor(violation, USER, JOB);
         assertThat(service.signalRaised(lease, violation)).isTrue();
+    }
+    // ---------------------------------------------------------------- Story 2.17 재연결
+
+    /** 재연결 뒤 계획의 지금 연결(Story 2.17). 기준 버전이 기록한 연결·membership과 <b>다른</b> ID다. */
+    private static final UUID NEW_MEMBERSHIP = UUID.fromString("00000000-0000-0000-0000-0000000000b1");
+    private static final UUID NEW_CONNECTION = UUID.fromString("00000000-0000-0000-0000-0000000000b2");
+
+    /**
+     * 동기화 접수는 기준 버전의 계보가 아니라 계획의 지금 연결로 attempt를 만든다 — 같은 계정으로 다시 연결한 뒤의 새
+     * membership·연결이다. provider account는 계획의 것 그대로다.
+     */
+    @Test
+    void aSyncAfterAReconnectionIsAdmittedOnTheNewConnectionAndMembership() {
+        eligible(PUBLISHED.plusSeconds(1));
+        when(guard.planSource(eq(USER), any(), any()))
+                .thenReturn(Optional.of(new PlanSyncGuard.PlanSource(NEW_MEMBERSHIP, NEW_CONNECTION, ACCOUNT)));
+        assertThat(service().admit(USER, SyncTrigger.MANUAL, KEY)).isEqualTo(new SyncAdmission.Accepted(queued));
+        ArgumentCaptor<PlanSyncRepository.Admission> admission =
+                ArgumentCaptor.forClass(PlanSyncRepository.Admission.class);
+        verify(syncs).insert(admission.capture());
+        assertThat(admission.getValue().membershipId()).isEqualTo(NEW_MEMBERSHIP);
+        assertThat(admission.getValue().connectionId()).isEqualTo(NEW_CONNECTION);
+        assertThat(admission.getValue().providerAccountId()).isEqualTo(ACCOUNT);
+        assertThat(lineage.connectionId()).as("the base recorded the old connection").isEqualTo(CONNECTION);
+    }
+
+    /** 지금 연결이 없으면(가용성 판정과 접수 사이에 바뀌었다) attempt를 만들지 않는다. */
+    @Test
+    void aSyncWithoutThePlansConnectionAnyMoreIsRefusedWithoutAnAttempt() {
+        eligible(PUBLISHED.plusSeconds(1));
+        when(guard.planSource(eq(USER), any(), any())).thenReturn(Optional.empty());
+        assertThat(service().admit(USER, SyncTrigger.MANUAL, KEY))
+                .isEqualTo(new SyncAdmission.Refused("SYNC_UNAVAILABLE"));
+        verify(syncs, never()).insert(any());
+    }
+
+    /**
+     * 완료된 계획의 완료 attempt(Story 2.14)도 지금 연결로 접수된다 — 기준 버전이 기록한 연결이 아니다.
+     */
+    @Test
+    void aCompletedPlansAttemptIsAdmittedOnTheNewConnectionAndMembership() {
+        PlanPublicationPort plans = mock(PlanPublicationPort.class);
+        com.bokrilog.identity.AccountAccessApi accounts = mock(com.bokrilog.identity.AccountAccessApi.class);
+        PlanSyncService service = new PlanSyncService(syncs, publications, collections, classifications, conversions,
+                sources, new CalculationConformance(() -> true), guard, publisher, plans, accounts,
+                mock(StrongSignals.class), mock(SyncMetrics.class), mock(PlatformTransactionManager.class));
+        var completion = new PlanPublicationPort.PlanCompletion(END, END.plusSeconds(5), "PENDING", null, null, null,
+                null, null, null, null);
+        var completed = new PlanSyncGuard.CompletedBase(base, completion);
+        when(guard.writable(USER)).thenReturn(true);
+        when(syncs.byKey(USER, KEY)).thenReturn(Optional.empty());
+        when(guard.base(USER)).thenReturn(Optional.empty());
+        when(guard.completedBase(USER)).thenReturn(Optional.of(completed));
+        when(accounts.lockWriteAccess(USER)).thenReturn(true);
+        when(syncs.active(USER, PLAN)).thenReturn(Optional.empty());
+        when(guard.completionUnavailableReason(eq(USER), any(), any(), any(), any())).thenReturn(null);
+        when(publications.databaseNow()).thenReturn(END.plusSeconds(60));
+        when(syncs.lastAdmission(USER, PLAN)).thenReturn(Optional.empty());
+        when(guard.planSource(eq(USER), any(), any()))
+                .thenReturn(Optional.of(new PlanSyncGuard.PlanSource(NEW_MEMBERSHIP, NEW_CONNECTION, ACCOUNT)));
+        when(syncs.insert(any())).thenReturn(1);
+        when(syncs.byId(eq(USER), any())).thenReturn(Optional.of(queued));
+
+        assertThat(service.admit(USER, SyncTrigger.MANUAL, KEY)).isEqualTo(new SyncAdmission.Accepted(queued));
+        ArgumentCaptor<PlanSyncRepository.Admission> admission =
+                ArgumentCaptor.forClass(PlanSyncRepository.Admission.class);
+        verify(syncs).insert(admission.capture());
+        assertThat(admission.getValue().purpose()).isEqualTo(PlanSyncRepository.COMPLETION);
+        assertThat(admission.getValue().membershipId()).isEqualTo(NEW_MEMBERSHIP);
+        assertThat(admission.getValue().connectionId()).isEqualTo(NEW_CONNECTION);
+    }
+
+    /**
+     * 늦은 Worker(Story 2.17 AC-6): 수집을 마친 뒤 후보를 남기기 직전의 재검사는 계정·정책·{@code tc}가 같아도 지금 활성 연결이
+     * 그 attempt의 연결이 아니면 막는다 — 해제 종단을 거치지 않고 연결 ID 대조 하나로 잡는다.
+     */
+    @Test
+    void aCollectionOfAnotherConnectionOfTheSameAccountLeavesNoCandidate() {
+        collecting();
+        when(sources.collectWindows(eq(USER), eq(CONNECTION), eq(T0), eq(TC), any(), eq(true), any(), any()))
+                .thenReturn(new SourceConnectionApi.WindowCollectionResult.Collected(clean()));
+        when(sources.snapshotConnection(USER)).thenReturn(Optional.of(new SourceConnectionApi.SnapshotConnection(
+                NEW_CONNECTION, ACCOUNT, "policy-1")));
+        service().run(lease, () -> true);
+        verify(collections, never()).completeTargets(any(), any(), org.mockito.ArgumentMatchers.anyBoolean(), any(),
+                any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
+        verify(syncs).finish(lease, "BLOCKED", "NOT_PERMITTED");
     }
 }

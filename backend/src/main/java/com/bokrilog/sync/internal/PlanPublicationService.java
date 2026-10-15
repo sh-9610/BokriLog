@@ -666,7 +666,7 @@ class PlanPublicationService {
 
     /**
      * 활성 계획의 종료를 제한이 막는가(Story 3.2) — plan 모듈의 판정과 같다: 동기화 또는 계산 표시가 그 계획, 계획의
-     * portfolio, 계산이 기록한 연결, 계산 정책에 걸렸는가.
+     * portfolio, 계획의 지금 연결(Story 2.17 — 없으면 계산이 기록한 연결), 계산 정책에 걸렸는가.
      */
     private boolean planEndRestricted(PlanPublicationPort.ActivePlan plan, UUID connectionId, String calculationPolicy) {
         return restrictions.blocks(java.util.EnumSet.of(RestrictionFeature.SYNC,
@@ -770,7 +770,8 @@ class PlanPublicationService {
                 .orElse(null);
         if (trust == null) return new Dashboard.Unavailable();
         // Whether the plan can be ended now (Story 2.13), by the end's own order, against the same clock and long gap.
-        PlanEndAvailability planEnd = DashboardTrust.planEnd(planEndRestricted(plan, lineage.connectionId(), calculation.calculationPolicy()),
+        PlanEndAvailability planEnd = DashboardTrust.planEnd(planEndRestricted(plan, syncs.planConnection(user, base),
+                        calculation.calculationPolicy()),
                 facts.now(), calculation.endAt(), DashboardTrust.resultTooRecent(facts.now(), calculation.measuredAt(),
                         calculation.verifiedThrough()), facts.longGap());
         return new Dashboard.Ready(new DashboardResult(plan.planId(), ACTIVE, notation(calculation.principal()),
@@ -1188,13 +1189,15 @@ class PlanPublicationService {
                 || !source.policyVersion().equals(candidate.policyVersion()))
             return new EvidenceOutcome.Unavailable();
         /*
-         * The basis source snapshot is the first snapshot's (a first-snapshot job wrote it, not a candidate):
-         * the same connection and provider account, measured at the plan start. It is also the one sync-owned
-         * record of the connection's policy version — the first-snapshot publication stores it only after
-         * checking it against the connection's own (SyncJobService#publish), so no other module is read here.
+         * 기준 source snapshot은 첫 확인 작업이 쓴 것이다(후보가 아니다): 같은 provider account이고 계획 시작 시각에 측정됐다.
+         * 그것은 sync가 소유한 연결 정책 버전의 유일한 기록이기도 하다 — 첫 확인 발행이 연결 자신의 정책과 대조한 뒤에만 저장하므로
+         * (SyncJobService#publish) 여기서 다른 모듈을 읽지 않는다.
+         *
+         * 연결은 같지 않아도 된다(Story 2.17): 같은 main UID로 재연결한 뒤의 버전은 새 연결로 수집했고 기준 snapshot은 처음
+         * 연결의 것이다. 계획을 잇는 것은 provider account다.
          */
         var basis = repository.sourceOrigin(user, lineage.basisSourceSnapshotId()).orElse(null);
-        if (basis == null || basis.candidateId() != null || !basis.connectionId().equals(lineage.connectionId())
+        if (basis == null || basis.candidateId() != null
                 || !basis.providerAccountId().equals(lineage.providerAccountId())
                 || !basis.measuredAt().equals(calculation.t0()))
             return new EvidenceOutcome.Unavailable();

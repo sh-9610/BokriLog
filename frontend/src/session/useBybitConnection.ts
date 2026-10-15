@@ -22,7 +22,10 @@ import { replaceLocation } from './navigation'
 export type ConnectionNotice =
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'rejected'; readonly code: string | null }
-  | { readonly kind: 'succeeded' }
+  /**
+   * 연결을 마쳤다. `planResumed`는 같은 Bybit 계정으로 다시 연결해 기존 계획의 동기화를 이어 가는 경우다(Story 2.17).
+   */
+  | { readonly kind: 'succeeded'; readonly planResumed: boolean }
   /** 연결을 해제했다(Story 2.16). */
   | { readonly kind: 'revoked' }
   | { readonly kind: 'revokeCancelled' }
@@ -225,7 +228,7 @@ export function useBybitConnection(
             revoked: false,
             revokedAt: null,
           })
-          setNotice({ kind: 'succeeded' })
+          setNotice({ kind: 'succeeded', planResumed: result.planResumed })
           return 'connected'
         }
         if (result.code === UNAUTHENTICATED) {

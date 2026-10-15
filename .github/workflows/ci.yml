@@ -277,7 +277,7 @@ jobs:
     # 기다린다. 10분은 그 둘이 겹친 실행을 끊어 버릴 수 있는 값이라 올린다.
     #
     # CI-PLAN §4·§10의 backend 예산 8분은 이 상한과 별개로 계속 측정한다. 이 값은 목표가 아니라
-    # 멈춘 job을 끊는 상한이며, `same-origin-integration`이 17분을 쓰는 것과 같은 이유다.
+    # 멈춘 job을 끊는 상한이며, `same-origin-integration`이 19분(단계 상한 합)을 쓰는 것과 같은 이유다.
     # 실측이 몇 회 쌓이면 두 값을 CI-PLAN 새 버전이 함께 보정한다.
     #
     # Story 2.11이 15분에서 20분으로 올렸다. PR #49의 이 job은 11분 5초였고, 같은 시험의 로컬
@@ -353,7 +353,7 @@ jobs:
     if: needs.changes.outputs.docs-only != 'true'
     runs-on: ubuntu-24.04
     # CI-PLAN §8이 적은 5분은 이 job이 무엇을 하는지 정해지기 전의 *시작* 값이다. 실제 단계
-    # 예산의 합이 그 값을 넘는다. 아래는 단계별 상한이고, Story 1.1 회귀 하나가 이미 6분이라
+    # 예산의 합이 그 값을 넘는다. 아래는 단계별 상한이고, Story 1.1 회귀 하나가 이미 8분이라
     # 5분으로는 정상적인 실행조차 러너가 죽인다. 필수 검사를 빼서 맞추지 않고 예산을 고친다
     # (CI-PLAN §10 "필수 계약을 줄여 시간을 맞추지는 않는다").
     #
@@ -362,19 +362,21 @@ jobs:
     #   동일 출처 검증(docker build + `up --wait` 180s + I/O 표 단언)      5분
     #   Node 준비 + `npm ci`                                               2분
     #   Chromium headless shell 설치(`--with-deps` apt)                    2분
-    #   Story 1.1 회귀                                                     6분 (단계 timeout)
+    #   Story 1.1 회귀                                                     8분 (단계 timeout)
     #   compose 정리 + 실패 진단 업로드                                    1분
     #                                                                    ---------
-    #                                                                     17분
+    #                                                                     19분
     #
     # 회귀 단계는 Story 2.11이 4분에서 6분으로 올렸다(playwright `globalTimeout` 5분). PR #49에서
     # 이미 2분 30초(59건)였고, 2.11이 실제 스택의 동기화 왕복을 더했다.
+    # Story 2.17이 다시 6분에서 8분으로 올렸다(`globalTimeout` 5분 → 7분) — 재연결 왕복을 더한 로컬 CI 모드 실측이 69건
+    # 4분 36초로 5분 상한에 붙었다. job 상한도 단계 합에 맞춰 17분에서 19분으로 올렸다.
     #
     # `npm ci`와 Chromium 설치는 `frontend-quality`가 이미 한 일을 되풀이한다. 그 중복을 없애는
     # 편이 예산을 늘리는 것보다 낫지만 이 스토리 범위 밖이라 `deferred-work.md`에 남겼다.
     # CI-PLAN §10의 PR wall-clock p95 8분은 이 상한과 별개로 계속 측정한다. 이 값은 목표가
     # 아니라 멈춘 job을 끊는 상한이다.
-    timeout-minutes: 17
+    timeout-minutes: 19
     permissions:
       contents: read
 
@@ -432,7 +434,7 @@ jobs:
 
       - name: Story 1.1 회귀 (Nginx origin)
         id: e2e
-        timeout-minutes: 6
+        timeout-minutes: 8
         env:
           CI: 'true'
           # 주입된 origin이 있으면 playwright.config.ts가 자체 preview 서버를 띄우지 않는다.

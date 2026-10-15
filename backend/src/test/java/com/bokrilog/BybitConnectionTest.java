@@ -244,9 +244,9 @@ class BybitConnectionTest extends AuthFlowTestBase {
         UUID providerAccountId = providerAccountIdOf(session.userId()).orElseThrow();
 
         /*
-         * 여기서 보려는 것은 "자격정보·connection 교체에도 안정 식별자가 재사용되는가"다. Story 2.16부터 해제한
-         * 사용자의 새 연결은 단일 거부다(RECONNECT-1.0 구현 전) — 그래서 교체의 전제를 해제가 아니라 연결 행 삭제로
-         * 만든다. 행을 지우면 자격정보와 membership이 CASCADE로 함께 사라지고 제공자 계정·portfolio는 남는다.
+         * 여기서 보려는 것은 "자격정보·connection 교체에도 안정 식별자가 재사용되는가"다. 해제 → 재연결(Story 2.17)과
+         * 별개로, 해제 이력 없는 교체를 보려고 교체의 전제를 연결 행 삭제로 만든다(재연결의 계정 재사용은
+         * {@code BybitReconnectionTest}가 본다). 행을 지우면 자격정보와 membership이 CASCADE로 함께 사라지고 제공자 계정·portfolio는 남는다.
          */
         jdbc().sql("DELETE FROM source_connection WHERE user_id=:u").param("u", session.userId()).update();
 
@@ -550,6 +550,7 @@ class BybitConnectionTest extends AuthFlowTestBase {
          */
         assertThat(BybitConnectionController.emittedCodes())
                 .containsExactlyInAnyOrder(
+                        "CONNECTION_ACCOUNT_MISMATCH",
                         "CONNECTION_ACCOUNT_TAKEN",
                         "CONNECTION_AUTHENTICATION_REJECTED",
                         "CONNECTION_INSUFFICIENT_PERMISSION",

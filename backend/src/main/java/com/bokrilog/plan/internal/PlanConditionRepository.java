@@ -257,15 +257,29 @@ class PlanConditionRepository {
         return rs.getObject(column,OffsetDateTime.class).toInstant();
     }
 
-    /** 운영 제한의 대상 확인(Story 3.2): id로 찾은 계획. */
+    /**
+     * 운영 제한의 대상 확인(Story 3.2): id로 찾은 계획. 연결 열은 계획이 <b>기록한</b> 연결이다 — 지금 연결로 바꾸는 것은
+     * 서비스가 한다(Story 2.17).
+     */
     java.util.Optional<com.bokrilog.plan.PlanConditionApi.PlanTarget> planTarget(UUID planId) {
-        return jdbc.sql("SELECT plan_id,user_id,portfolio_id,connection_id,status,calculation_policy "
-                + "FROM plan_definition WHERE plan_id=:p")
+        return jdbc.sql("SELECT plan_id,user_id,portfolio_id,connection_id,provider_account_id,status,"
+                + "calculation_policy FROM plan_definition WHERE plan_id=:p")
             .param("p",planId)
-            .query((rs,n)->new com.bokrilog.plan.PlanConditionApi.PlanTarget(rs.getObject(1,UUID.class),
-                rs.getObject(2,UUID.class),rs.getObject(3,UUID.class),rs.getObject(4,UUID.class),rs.getString(5),
-                rs.getString(6)))
+            .query(PlanConditionRepository::planTargetOf)
             .optional();
+    }
+
+    /** 그 사용자의 활성 계획이 고정한 제공자 계정(Story 2.17). */
+    java.util.Optional<UUID> activePlanProviderAccount(UUID userId) {
+        return jdbc.sql("SELECT provider_account_id FROM plan_definition WHERE user_id=:u AND status='ACTIVE'")
+            .param("u",userId).query(UUID.class).optional();
+    }
+
+    private static com.bokrilog.plan.PlanConditionApi.PlanTarget planTargetOf(java.sql.ResultSet rs, int n)
+            throws java.sql.SQLException {
+        return new com.bokrilog.plan.PlanConditionApi.PlanTarget(rs.getObject(1,UUID.class),
+                rs.getObject(2,UUID.class),rs.getObject(3,UUID.class),rs.getObject(4,UUID.class),
+                rs.getObject(5,UUID.class),rs.getString(6),rs.getString(7));
     }
 
     /** 조건에 맞는 계획의 수(Story 3.2). {@code null}인 조건은 거르지 않는다. */

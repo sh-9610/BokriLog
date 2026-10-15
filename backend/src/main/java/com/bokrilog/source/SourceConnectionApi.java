@@ -173,8 +173,10 @@ public interface SourceConnectionApi {
          *
          * @param connectionId 이번에 만들어진 연결
          * @param providerAccountId 재사용됐거나 새로 만들어진 <b>안정 식별자</b>
+         * @param sameAccountAsRevoked 가장 최근에 해제한 연결과 같은 제공자 계정인가(Story 2.17 — 같은 main UID의 재연결)
          */
-        record Stored(UUID connectionId, UUID providerAccountId) implements StoreOutcome {}
+        record Stored(UUID connectionId, UUID providerAccountId, boolean sameAccountAsRevoked)
+                implements StoreOutcome {}
 
         /** 저장되지 않았다. 호출자는 이 값을 받으면 자기 트랜잭션을 되돌려야 한다. */
         record Rejected(SourceRejectionReason reason) implements StoreOutcome {}
@@ -220,6 +222,10 @@ public interface SourceConnectionApi {
      * <p>세 행을 함께 만든다 — 제공자 계정(재사용 가능), 연결, 암호화된 자격정보. 소유권·삭제
      * 상태를 여기서 <b>다시</b> 판정하며, 동시 요청은 부분 유일 색인이 갈라 낸다.
      *
+     * <p>해제한 연결이 있어도 거부하지 않는다(Story 2.17). 판정 순서는 활성 연결 → 다른 사용자의 main UID → 그 사용자의
+     * 기존 제공자 계정 재사용 → 새 제공자 계정이다. 활성 계획과의 대조는 계획 잠금을 쥔 호출자가 한다 — 이 모듈은
+     * 계획을 모른다. 해제된 이전 연결 행은 바꾸지 않는다.
+     *
      * @param credentials 평문. 이 호출 안에서 암호화되고 그 뒤 어디에도 남지 않는다
      */
     StoreOutcome store(
@@ -243,13 +249,21 @@ public interface SourceConnectionApi {
     Optional<ConnectionStatus> currentConnection(@Nullable UUID userId);
 
     /**
-     * 그 사용자에게 해제된 연결이 있는가. 새 연결 준비의 단일 거부가 이것을 본다 — 재연결 정책
-     * ({@code RECONNECT-1.0})이 구현되기 전까지 해제한 사용자는 다시 연결하지 않는다.
+     * 그 사용자에게 해제된 연결이 있는가. 첫 스냅샷 상태가 해제 사실을 말하는 데 쓴다. 새 연결을 막지 않는다 — 재연결
+     * ({@code RECONNECT-1.0}, Story 2.17)은 저장({@link #store})이 main UID로 판정한다.
      */
     boolean hasRevokedConnection(@Nullable UUID userId);
 
     /** 그 사용자의 그 연결이 해제된 연결인가. 동기화 가용성의 원인({@code CONNECTION_REVOKED})이 이것을 본다. */
     boolean isRevoked(@Nullable UUID userId, @Nullable UUID connectionId);
+
+    /**
+     * 그 연결과 같은 사용자·같은 제공자 계정의 연결 전부(해제 포함, 자기 자신 포함)(Story 2.17). 연결 단위 운영 제한이 계정을
+     * 따르는 판정이 쓴다. 사용자 없이 연결 ID로 찾는다 — 제한 판독은 사용자를 모른다.
+     *
+     * @return 모르는 연결이면 빈 집합
+     */
+    java.util.Set<UUID> sameAccountConnections(UUID connectionId);
 
     /** 해제의 결과. */
     sealed interface Revocation {

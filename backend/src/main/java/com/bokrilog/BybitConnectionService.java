@@ -2,15 +2,18 @@ package com.bokrilog;
 
 import com.bokrilog.ActionGrantService.Consumption;
 import com.bokrilog.ActionGrantService.ConsumptionRequest;
+import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.operations.OperationalRestrictionApi;
 import com.bokrilog.operations.RestrictionFeature;
 import com.bokrilog.operations.RestrictionSubject;
+import com.bokrilog.plan.PlanConditionApi;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.source.SourceCredentials;
 import com.bokrilog.source.SourceProvider;
 import com.bokrilog.source.SourceRejectionReason;
 import com.bokrilog.source.SourceVerification;
+import com.bokrilog.sync.SyncJobApi;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import java.io.Serial;
@@ -54,6 +57,8 @@ import org.springframework.stereotype.Service;
 @Service
 @ConditionalOnWebApplication(type = Type.SERVLET)
 class BybitConnectionService {
+
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(BybitConnectionService.class);
 
     /**
      * 민감 command의 이름.
@@ -142,8 +147,14 @@ class BybitConnectionService {
      */
     sealed interface Outcome {
 
-        /** 여섯이 한 트랜잭션으로 커밋됐다. 세션 재회전이 뒤따랐다. */
-        record Connected(Instant verifiedAt, String policyVersion, @Nullable UUID connectionId) implements Outcome {}
+        /**
+         * 여섯이 한 트랜잭션으로 커밋됐다. 세션 재회전이 뒤따랐다.
+         *
+         * @param planResumed 같은 Bybit 계정으로 다시 연결해 그 계정의 활성 계획이 동기화를 이어 가는가(Story 2.17).
+         *     저장이 실제로 돈 요청에서만 참일 수 있다 — 재전송은 그 사실을 모른다
+         */
+        record Connected(Instant verifiedAt, String policyVersion, @Nullable UUID connectionId, boolean planResumed)
+                implements Outcome {}
 
         /** 저장되지 않았다. */
         record Rejected(SourceRejectionReason reason) implements Outcome {}
@@ -157,15 +168,30 @@ class BybitConnectionService {
 
     private final ActionGrantService grants;
 
+    /** 재연결 확정의 첫 잠금(계획 쓰기 잠금, Story 2.17). */
+    private final SyncJobApi sync;
+
+    /** 활성 계획의 Bybit 계정(Story 2.17). */
+    private final PlanConditionApi plans;
+
+    /** 계정 생명주기 잠금 — 계획 잠금 다음, 발행자·해제와 같은 순서다. */
+    private final AccountAccessApi accounts;
+
     BybitConnectionService(
             SourceConnectionApi sources,
             PortfolioMembershipApi portfolios,
             OperationalRestrictionApi restrictions,
-            ActionGrantService grants) {
+            ActionGrantService grants,
+            SyncJobApi sync,
+            PlanConditionApi plans,
+            AccountAccessApi accounts) {
         this.sources = sources;
         this.portfolios = portfolios;
         this.restrictions = restrictions;
         this.grants = grants;
+        this.sync = sync;
+        this.plans = plans;
+        this.accounts = accounts;
     }
 
     /** 그 사용자의 활성 연결. 화면이 "연결됨"과 검증 시각·정책 버전을 그리는 값이다. */
@@ -179,13 +205,12 @@ class BybitConnectionService {
     }
 
     /**
-     * 새 연결을 받지 않는 상태인가. 운영 제한, 이미 있는 활성 연결, 그리고 해제된 연결(Story 2.16)이다 — 재연결 정책
-     * ({@code RECONNECT-1.0})이 구현되기 전까지 해제한 사용자의 새 연결은 단일 거부다. 지금의 저장은 활성 계획과 UID를
-     * 대조하지 않으므로 열어 두면 다른 UID가 그 계획의 portfolio에 붙는다.
+     * 새 연결을 받지 않는 상태인가. 운영 제한과 이미 있는 활성 연결이다. 해제한 연결이 있다는 사실은 거부 사유가 아니다
+     * (Story 2.17, {@code RECONNECT-1.0}) — 같은 흐름이 재연결이며, 활성 계획과 main UID의 대조는 확정 트랜잭션 안에서
+     * 계획 잠금을 쥐고 한다({@link #consume}).
      */
     private boolean refusesNewConnection(UUID userId) {
-        return newConnectionRestricted() || this.sources.hasActiveConnection(userId)
-                || this.sources.hasRevokedConnection(userId);
+        return newConnectionRestricted() || this.sources.hasActiveConnection(userId);
     }
 
     /**
@@ -366,13 +391,44 @@ class BybitConnectionService {
         AtomicBoolean stored = new AtomicBoolean(false);
         java.util.concurrent.atomic.AtomicReference<@Nullable UUID> connectionId =
                 new java.util.concurrent.atomic.AtomicReference<>();
-        Outcome outcome = consume(session, armed, verified, credentials, confirmation, stored, connectionId);
+        AtomicBoolean planResumed = new AtomicBoolean(false);
+        AtomicBoolean sameAccountAsRevoked = new AtomicBoolean(false);
+        // 재연결인가(Story 2.17): 해제한 연결이 있는 사용자의 연결. 운영 줄 하나를 더 남기는 데만 쓴다.
+        boolean reconnection = this.sources.hasRevokedConnection(userId);
+        Outcome outcome = consume(session, armed, verified, credentials, confirmation, stored, connectionId,
+                planResumed, sameAccountAsRevoked);
         if (outcome instanceof Outcome.Connected && stored.get()) {
             // 연결이 실제로 저장된 요청에서만. 재전송에서는 돌지 않는다 — 업무 변경이 다시 실행되지 않았는데 회전시키면
             // "커밋 뒤에만"이 깨진다. 재인증 시각도 여기서 함께 지운다(본인 확인 1회는 command 1건).
             SessionRotation.completeSensitiveCommand(request);
         }
+        if (reconnection) reconnectionLog(outcome, stored.get(), sameAccountAsRevoked.get());
         return outcome;
+    }
+
+    /**
+     * 재연결 결과의 운영 줄 하나(Story 2.17 AC-8). 결과 code만 싣는다 — 사용자·연결·제공자 계정·main UID·허가 참조·
+     * 금융값이 없다. 같은 계정({@code SAME_ACCOUNT})·새 계정({@code NEW_ACCOUNT})·다른 계정 거절
+     * ({@code ACCOUNT_MISMATCH})과 활성 계획 재개 여부만 남긴다. 장기 미동기화 진입은 동기화 admission의 제외 카운터가
+     * 이미 센다({@code LONG_GAP}).
+     */
+    private static void reconnectionLog(Outcome outcome, boolean stored, boolean sameAccountAsRevoked) {
+        if (outcome instanceof Outcome.Connected connected) {
+            if (!stored) return;
+            // 같은 계정은 "가장 최근에 해제한 연결과 같은 계정"이다 — A→B→A의 마지막 재연결은 B와 다르므로 NEW_ACCOUNT다.
+            LOG.info("bybit reconnection: result={} planResumed={}",
+                    sameAccountAsRevoked ? "SAME_ACCOUNT" : "NEW_ACCOUNT", connected.planResumed());
+        } else if (outcome instanceof Outcome.Rejected rejected
+                && rejected.reason() == SourceRejectionReason.ACCOUNT_MISMATCH) {
+            LOG.info("bybit reconnection: result=ACCOUNT_MISMATCH planResumed=false");
+        }
+    }
+
+    /** 지금 활성 계획이 지금 활성 연결과 같은 Bybit 계정인가(재전송 응답의 이어 가기 여부, Story 2.17). */
+    private boolean planResumedNow(UUID userId) {
+        var planAccount = this.plans.activePlanProviderAccount(userId).orElse(null);
+        return planAccount != null && this.sources.snapshotConnection(userId)
+                .map(connection -> connection.providerAccountId().equals(planAccount)).orElse(false);
     }
 
     /** 허가 소비와 다섯 저장 한 트랜잭션. 저장소에 닿는 자리는 이 메서드 하나다. */
@@ -383,7 +439,9 @@ class BybitConnectionService {
             SourceCredentials credentials,
             String confirmation,
             AtomicBoolean stored,
-            java.util.concurrent.atomic.AtomicReference<@Nullable UUID> connectionId) {
+            java.util.concurrent.atomic.AtomicReference<@Nullable UUID> connectionId,
+            AtomicBoolean planResumed,
+            AtomicBoolean sameAccountAsRevoked) {
         ConsumptionRequest consumption =
                 new ConsumptionRequest(
                         session,
@@ -405,6 +463,16 @@ class BybitConnectionService {
                             consumption,
                             () -> {
                                 /*
+                                 * 잠금 순서는 발행자·중도 종료·해제와 같다(Story 2.17) — 계획 쓰기 잠금 → 계정
+                                 * 생명주기. 아래 활성 계획 대조가 계획의 발행·종료와 직렬화되어, 준비와 확정 사이에
+                                 * 계획이 생기거나 끝나도(두 탭) 낡은 판정으로 커밋하지 않는다. 삭제가 시작된
+                                 * 계정이면 여기서 닫히고 아무것도 남지 않는다(삭제 우선).
+                                 */
+                                this.sync.lockConnectionReconnection(armed.userId());
+                                if (!this.accounts.lockWriteAccess(armed.userId())) {
+                                    throw new StoreRejected(SourceRejectionReason.NOT_PERMITTED);
+                                }
+                                /*
                                  * 운영 제한을 **이 트랜잭션 안에서** 다시 본다.
                                  *
                                  * 제공자 왕복은 최대 15초이고 그 사이에 운영자가 제한을 켤 수
@@ -415,6 +483,12 @@ class BybitConnectionService {
                                 if (newConnectionRestricted()) {
                                     throw new StoreRejected(SourceRejectionReason.NOT_PERMITTED);
                                 }
+                                /*
+                                 * 종료 시각이 지난 활성 계획은 계정 대조 앞에서 자연 완료로 전환한다(Story 2.17, 2.14와
+                                 * 같은 전환). 해제 상태에서는 동기화 요청이 없어 전환되지 않으므로, 그대로 두면 다른 UID의
+                                 * 연결이 끝난 계획 때문에 영구히 422가 된다. 판정은 DB 시각이고 같은 잠금 아래에서 한다.
+                                 */
+                                this.sync.completeEndedPlanForReconnection(armed.userId());
                                 SourceConnectionApi.StoreOutcome outcome =
                                         this.sources.store(
                                                 armed.userId(),
@@ -427,6 +501,17 @@ class BybitConnectionService {
                                 }
                                 SourceConnectionApi.StoreOutcome.Stored saved =
                                         (SourceConnectionApi.StoreOutcome.Stored) outcome;
+                                /*
+                                 * 다른 main UID는 활성 계획에 붙지 않는다(Story 2.17 AC-4, RECONNECT-1.0). 계획이 고정한
+                                 * Bybit 계정과 방금 저장한 계정이 다르면 트랜잭션 전체(새 제공자 계정·연결·자격정보·
+                                 * 허가 소비)를 되돌린다. 활성 계획이 없으면(종단 계획만) 새 계정으로 연결한다 — 후속
+                                 * 계획은 Story 2.15 경로로만 만들어지고 이전 계정의 사건·snapshot은 그 intent 재검사가
+                                 * 막는다.
+                                 */
+                                var activePlan = this.plans.activePlanProviderAccount(armed.userId()).orElse(null);
+                                if (activePlan != null && !activePlan.equals(saved.providerAccountId())) {
+                                    throw new StoreRejected(SourceRejectionReason.ACCOUNT_MISMATCH);
+                                }
                                 this.portfolios.attachActiveSource(
                                         armed.userId(),
                                         saved.connectionId(),
@@ -434,11 +519,18 @@ class BybitConnectionService {
                                         verified.verifiedAt());
                                 stored.set(true);
                                 connectionId.set(saved.connectionId());
+                                planResumed.set(activePlan != null);
+                                sameAccountAsRevoked.set(saved.sameAccountAsRevoked());
                                 return RESULT_CONNECTED;
                             });
-            return result instanceof Consumption.ConsumedRequiringSessionRotation
-                    ? new Outcome.Connected(verified.verifiedAt(), verified.policyVersion(), connectionId.get())
-                    : rejected(SourceRejectionReason.NOT_PERMITTED);
+            if (!(result instanceof Consumption.ConsumedRequiringSessionRotation))
+                return rejected(SourceRejectionReason.NOT_PERMITTED);
+            /*
+             * 재전송(작업이 다시 돌지 않았다)은 저장된 결과 문자열만 안다. 이어 가기 여부는 지금 상태에서 다시 계산한다 — 같은
+             * 계정의 활성 계획이 지금 활성 연결과 같은 계정인가. 그래야 응답을 잃은 클라이언트가 첫 응답과 같은 문장을 받는다.
+             */
+            boolean resumed = stored.get() ? planResumed.get() : planResumedNow(armed.userId());
+            return new Outcome.Connected(verified.verifiedAt(), verified.policyVersion(), connectionId.get(), resumed);
         } catch (StoreRejected rejection) {
             // 소비 UPDATE까지 함께 롤백됐다. 저장소에 남은 변화는 0건이다.
             return rejected(rejection.reason());

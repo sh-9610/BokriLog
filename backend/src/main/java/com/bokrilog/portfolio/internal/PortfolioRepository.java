@@ -165,15 +165,24 @@ class PortfolioRepository {
             .optional();
     }
 
-    Optional<com.bokrilog.portfolio.PortfolioMembershipApi.FirstOfficialSnapshot> firstOfficial(UUID userId) {
+    /**
+     * 그 계정의 기준 공식 snapshot(Story 2.17): 다른 계정의 snapshot 가운데 가장 늦은 순번보다 뒤에 있는 그 계정의 첫 snapshot.
+     * 한 계정만 쓴 portfolio에서는 첫 공식 snapshot(순번 1)이다.
+     */
+    Optional<com.bokrilog.portfolio.PortfolioMembershipApi.FirstOfficialSnapshot> accountBaseline(UUID userId,
+            UUID providerAccountId) {
         return this.jdbc.sql("SELECT s.portfolio_id,s.portfolio_snapshot_id,s.amount_decimal,s.measured_at,"
                 + "s.composed_at,s.published_at,c.membership_id,c.connection_id,c.provider_account_id,"
                 + "c.source_snapshot_id,c.policy_version "
                 + "FROM portfolio p JOIN portfolio_snapshot s ON s.portfolio_id=p.portfolio_id "
                 + "JOIN portfolio_snapshot_component c ON c.portfolio_snapshot_id=s.portfolio_snapshot_id "
                 + "WHERE p.user_id=:userId AND s.user_id=:userId AND p.is_default "
-                + "AND s.base_currency='USD' ORDER BY s.publication_sequence,s.portfolio_snapshot_id LIMIT 1")
-            .param("userId",userId)
+                + "AND s.base_currency='USD' AND c.provider_account_id=:accountId "
+                + "AND s.publication_sequence>COALESCE((SELECT max(o.publication_sequence) FROM portfolio_snapshot o "
+                + "JOIN portfolio_snapshot_component oc ON oc.portfolio_snapshot_id=o.portfolio_snapshot_id "
+                + "WHERE o.portfolio_id=p.portfolio_id AND oc.provider_account_id<>:accountId),0) "
+                + "ORDER BY s.publication_sequence,s.portfolio_snapshot_id LIMIT 1")
+            .param("userId",userId).param("accountId",providerAccountId)
             .query((rs,n)->new com.bokrilog.portfolio.PortfolioMembershipApi.FirstOfficialSnapshot(
                 rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),rs.getString(3),
                 rs.getObject(4,OffsetDateTime.class).toInstant(),rs.getObject(5,OffsetDateTime.class).toInstant(),

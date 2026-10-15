@@ -8,8 +8,8 @@ import { FirstSnapshotPanel } from './FirstSnapshotPanel'
 import { NextPlanBaselinePanel } from './NextPlanBaselinePanel'
 
 /*
- * Story 2.16: after a revocation the screens offer no connection or new-baseline request that cannot work — reconnecting
- * is not implemented (RECONNECT-1.0) — only a neutral notice.
+ * Story 2.16: 해제 뒤 대시보드 패널은 동작하지 않는 연결·새 기준 요청을 내지 않고 중립 안내만 둔다. 안내는 다시 연결하는 자리인
+ * 설정 화면을 가리킨다(Story 2.17, RECONNECT-1.0). 계획 없이 다른 계정으로 다시 연결한 뒤의 첫 확인 안내도 여기서 본다.
  */
 
 function response(value: unknown, status = 200): Response {
@@ -65,6 +65,38 @@ describe('a revoked connection on the dashboard panels', () => {
     expect(
       screen.getByRole('link', { name: firstSnapshotContent.connectionSettings }),
     ).toBeInTheDocument()
+  })
+
+  it('다른 Bybit 계정으로 다시 연결한 뒤(계획 없음) 이전 값을 보이지 않고 새 첫 확인을 받는다 (Story 2.17)', async () => {
+    stubFirstSnapshotState(() =>
+      Promise.resolve(response({ connected: true, restricted: false, accountChanged: true })),
+    )
+    render(<FirstSnapshotPanel csrfToken="token" ready />)
+    expect(await screen.findByText(firstSnapshotContent.accountChanged)).toBeInTheDocument()
+    // 이전 계정의 공식값(금액)은 그리지 않는다.
+    expect(screen.queryByText(/USD/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: firstSnapshotContent.start })).toBeInTheDocument()
+  })
+
+  it('계정 변경 안내는 새 첫 확인의 실패 문장과 함께 정적 문장으로 남고 live region을 늘리지 않는다 (Story 2.17)', async () => {
+    stubFirstSnapshotState(() =>
+      Promise.resolve(
+        response({
+          connected: true,
+          restricted: false,
+          accountChanged: true,
+          job: { jobId: 'job-2', status: 'FAILED', failureReason: 'TIMEOUT' },
+        }),
+      ),
+    )
+    render(<FirstSnapshotPanel csrfToken="token" ready />)
+    const notice = await screen.findByText(firstSnapshotContent.accountChanged)
+    expect(screen.getByText(firstSnapshotContent.failed)).toBeInTheDocument()
+    // eslint-disable-next-line testing-library/no-node-access -- 역할 없는 live region은 속성으로만 찾을 수 있다.
+    expect(notice.closest('[aria-live]')).toBeNull()
+    // eslint-disable-next-line testing-library/no-node-access -- 화면당 live region 하나를 속성으로 센다.
+    expect(document.querySelectorAll('[aria-live]')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: firstSnapshotContent.retry })).toBeInTheDocument()
   })
 
   it('the new-baseline panel says why no baseline can be read and offers no request', async () => {
