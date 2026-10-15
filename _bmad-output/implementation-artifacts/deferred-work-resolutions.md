@@ -19,8 +19,10 @@ decision_baseline: 'ERD-1.0.0'
 |---|---|
 | 해소 | 26 |
 | 부분 해소 | 20 |
-| 미해소 | 100 |
+| 미해소 | 102 |
 | 미판정 | 0 |
+
+**2026-10-15 갱신(Story 4.1 done 전환).** `spec-4-1-ad-consent.md`(PR #107, 머지 커밋 `176190f`)가 `deferred-work.md`에 항목 **147**(광고 동의 결정 행의 빈도 제한·행 수 상한)·**148**(광고 동의 결정 이력의 보존 기한)을 append했다. 둘 다 미해소로 판정했다. 이 스토리를 결정 지점으로 이름 붙인 항목은 없다. 다만 **67** 잔여가 "Epic 4 `engagement` 같은 새 모듈"을 짚었으므로 재확인했다(부분 해소 그대로). 해소한 항목은 없다. 그래서 앞 표(146건: 해소 26·부분 해소 20·미해소 100·미판정 0)에서 미해소만 +2다 — 합 148.
 
 **2026-10-15 갱신(CI 임계 경로 chore done 전환).** `spec-ci-critical-path.md`(PR #104, 머지 커밋 `571bb3c`)가 `deferred-work.md`에 항목 **146**(CI-PLAN §1·§5 as-built 반영)을 append했다. 표를 **146건** 기준으로 각 절의 마지막 판정 머리말로 다시 셌다. 판정 라운드가 이 chore 몫으로 남긴 보류 셋을 판정했다 — **131** 해소(백업·복원 리허설의 fail-closed 경로 분기와 job 분리, 분류·집계·timeout을 `test-ci-scripts.sh`가 지킨다), **92**·**129** 미해소(이 chore가 compose dispatch와 배포 리허설 시나리오를 건드리지 않고 지나가 주인 상실). **146**은 미해소(Epic 3 회고 AI-10 몫), **145**는 재확인(미해소 그대로). 그래서 판정 라운드 표(145건: 해소 25·부분 해소 20·미해소 97·미판정 3)에서 해소 +1·미해소 +3(92·129·146)·미판정 −3이다 — 합 146.
 
@@ -555,6 +557,13 @@ Docker 없는 정적 리터럴 비교 시험은 이 저장소에 전례가 없�
 
 **미해소 잔여:** 삭제 순서와 참여자 목록은 여전히 `AccountErasure`와 `RestoreInvariants`가 손으로 나열한다. 모듈 술어(`remainingRowsOf`)가 접두사 규칙의 표 전부를 덮는지 보는 검사가 없다 — 시험 모양은 모든 카탈로그 사용자 열에 한 행씩 심고 `residualRows`가 심은 수와 같은지 보는 것이다. Epic 4 `engagement` 같은 새 모듈의 표는 위 대조가 "어느 규칙에도 안 맞음"으로 잡지만, 규칙에 맞는 표를 모듈 SQL이나 erase가 빠뜨린 것은 그 검사가 있어야 드러난다. 사용자 삭제 경로도 아직 없다. 주인은 Epic 5다.
 
+**부분 해소(2026-10-15, Story 4.1 판정, 기준 `176190f`) — 재확인.** 잔여가 예고한 새 모듈이 생겼고, 이번에도 손으로 더했다.
+- **손으로 더한 자리.** Story 4.1(PR #107)이 `engagement`를 `AccountErasure`의 단계 목록(`AccountErasure.java:25`, 필드 `:57`)과 `RestoreInvariants` 합산(`RestoreInvariants.java:85`)에 직접 넣었다. 규칙 대조 시험에도 `engagement_*`·`user_id` 규칙(`RestoreApplyTest.java:359`)과 모듈별 합(`:296`·`:307`)을 직접 넣었다.
+- **이번에 생긴 검사.** `ModuleBoundaryTest`가 `eraseConsents` 호출자를 `AccountErasure`로 고정한다. 같은 시험이 `engagement_` 표 이름이 `engagement/internal` 밖의 운영 소스에 나오지 않음을 훑는다.
+- **아직 없는 검사.** 모듈 `remainingRowsOf`가 규칙의 표 전부를 덮는지 보는 일반 검사는 여전히 없다.
+
+**미해소 잔여:** 위 잔여와 같다. 주인은 Epic 5다.
+
 ### 68. 5분 무장 수명이 화면에 보이지 않고 만료가 구분되지 않는 거부로 끝난다
 
 **미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.1이 append했다. `BybitConnectionFlow.java:58`의 `ARMED_LIFETIME = Duration.ofMinutes(5)`가 그대로이고 화면 카피 `frontend/src/content/connection.ts:236`도 "이 문구는 이번 연결 요청에만 유효합니다"뿐이며 남은 시간을 말하지 않는다. 준비 응답에 무장 시각이나 만료를 싣는 결정은 어느 SPEC에도 없고, 만료는 여전히 구분되지 않는 `FORBIDDEN`이다.
@@ -1030,3 +1039,20 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 **미해소(2026-10-15, CI 임계 경로 chore 판정, 기준 `571bb3c`).** 이 chore(`spec-ci-critical-path.md`, PR #104)의 리뷰가 append했고 그 done 전환 PR에서 판정한다(`CLAUDE.md` 표준 흐름 7번). CI-PLAN은 바뀌지 않았다 — §1 job 구조와 §5 분류 표(`CI-PLAN.md:186-191`)에 `backup-rehearsal`·`backup-restore`가 없는데, `classify-changes.sh`·`aggregate-results.sh` 머리 주석이 정본으로 인용하는 것은 여전히 그 §1·§5다. 결정 변경은 새 버전 발행이어야 하므로 이 chore 범위 밖이었다.
 
 **미해소 잔여:** CI-PLAN as-built 새 버전에 새 job·분류·집계 기대치와 실측 timeout을 반영하는 일. 주인 — Epic 3 회고 AI-10(`epic-3-retro-item-35`, Architect)이 CI-PLAN 차이를 as-built 새 버전에 반영하는 액션이다.
+
+### 147. 광고 동의 결정 행의 빈도 제한·행 수 상한
+
+**미해소(2026-10-15, Story 4.1 판정, 기준 `176190f`).** Story 4.1(`spec-4-1-ad-consent.md`, PR #107)의 리뷰가 이 항목을 append했고, 같은 스토리의 done 전환에서 판정한다(`CLAUDE.md` 표준 흐름 7번).
+- **상한이 없다.** `POST /api/engagement/ad-consent`(`AdConsentController.java:101`)는 상태가 바뀔 때마다 결정 행을 하나씩 더한다(`AdConsentRepository.java:77`). 사용자별 빈도 제한도 행 수 상한도 없다.
+- **같은 선택은 행을 더하지 않는다.** 그래서 늘어나는 경로는 `GRANTED`와 `DENIED`를 번갈아 보내는 것뿐이다. 각 요청은 CSRF·`Origin`·세션·멱등 키를 지나야 한다.
+- **선례는 있다.** 문의(3.6)에는 `INQUIRY_RATE_LIMITED`라는 선례가 있지만, 4.1 SPEC은 rate limit을 범위에 두지 않았다.
+
+**미해소 잔여:** 사용자당 결정 빈도 제한(시간 창과 거절 code), 또는 결정 행 수 상한과 오래된 행 정리 중 하나를 고르는 일. 결정 지점으로 지목된 곳이 없어 주인이 없다. Epic 4의 남은 스토리(4.2~4.4)는 동의 쓰기 경로를 바꾸지 않는다.
+
+### 148. 광고 동의 결정 이력의 보존 기한
+
+**미해소(2026-10-15, Story 4.1 판정, 기준 `176190f`).** Story 4.1(PR #107)의 리뷰가 이 항목을 append했고, 같은 스토리의 done 전환에서 판정한다.
+- **결정 행은 계정 삭제 때까지 남는다.** 결정 행(`engagement_ad_consent_decision`, V26)은 추가 전용이다. 지우는 길은 계정 삭제의 `eraseConsents`(`AccountErasure.java:107` → `AdConsentRepository.java:91`) 하나뿐이다.
+- **기한 규칙이 없다.** 문의(3.6)의 "해결 뒤 90일 삭제" 같은 기한 규칙이 없다. 기획 문서(PRD·ERD·`epics.md`)도 동의 증거의 보존 기간을 정하지 않는다.
+
+**미해소 잔여:** 동의 증거로 남길 기간과 최소 보존 사이에서 기한을 정하고, 지난 행을 지우는 경로(조회 트랜잭션이 먼저 지우는 문의 방식 등)를 더하는 일. 주인은 외부 게이트 G-4(개인정보 검토, 광고 동의 문구 확정과 같은 게이트)다.
