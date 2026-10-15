@@ -158,6 +158,7 @@ context:
   - **patch — 기타:** 창 계산을 `interval '1 second' * :w`로 바꿨다. `?t=` 요청의 access log에 쿼리가 없다는 단정을 더했다.
   - **reject:** `//ad-transition` 같은 비정규 경로(클라이언트가 만들지 않고 결말은 fail-open), 뒤로 가기 이력(두 번째 뒤로 가기로 이전 화면), 광고 코드 lazy chunk(gpt.js는 SHOW에서만 load), 본문 상한 서술(4.2와 같은 관용), 표시되지 않은 시도의 cap 집계(4.2 계약: reservation이 곧 시도), 정확한 120초 경계 시험(DB 시각이라 같은 순간을 만들 수 없다).
   - **KEEP:** 쿼리 `t` → 주소 정리 → 소비 → adapter 순서, 소비의 잠금·`FOR UPDATE`·조건부 UPDATE 한 트랜잭션, `AdGate` 관문 공유, Nginx CSP map과 상위 `add_header` 한 곳, 기본 구성에서의 무변화.
+- 2026-10-16 PR #111 CI(`same-origin-integration`) — `ad-transition.spec.ts:129`가 참조 없음 진입의 `/api` 요청 0건 단정에서 `/api/auth/session` 하나를 받아 실패했다. trace로 보면 그 요청은 직전 `/onboarding` 문서의 세션 확인이 기록 시작 뒤에 나간 것이고, 중립 화면은 `/api` 요청을 보내지 않았다. 셈 범위를 `/ad-transition` 문서 요청과 결과 문서 요청 사이로 좁혔다(시험 결함, 제품 변경 없음).
 
 ## Design Notes
 

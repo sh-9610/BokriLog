@@ -70,10 +70,18 @@ function paths(requests: readonly Request[], method: string, path: string): Requ
   )
 }
 
-/** 그 요청 앞에 보낸 요청들. 그 요청이 없으면 전부다. */
-function requestsBefore(requests: readonly Request[], target: Request | undefined): Request[] {
-  const at = target === undefined ? -1 : requests.indexOf(target)
-  return at < 0 ? [...requests] : requests.slice(0, at)
+/**
+ * 앞 문서 요청 뒤, 뒤 문서 요청 앞에 보낸 요청들 — 그 사이에 열려 있던 문서가 보낸 것이다. 앞 문서보다 먼저 나간 요청(직전
+ * 화면의 늦은 세션 확인 등)은 그 문서의 것이 아니므로 세지 않는다. 둘 중 하나가 없으면 단정이 비지 않도록 전부다.
+ */
+function requestsBetween(
+  requests: readonly Request[],
+  from: Request | undefined,
+  to: Request | undefined,
+): Request[] {
+  const start = from === undefined ? -1 : requests.indexOf(from)
+  const end = to === undefined ? -1 : requests.indexOf(to)
+  return start < 0 || end < 0 ? [...requests] : requests.slice(start + 1, end)
 }
 
 async function storage(page: Page): Promise<Record<string, unknown>> {
@@ -137,11 +145,13 @@ test.describe('중립 전환 화면 · 주입 origin', () => {
     // 그 화면의 것이다.
     await page.goto(AD_TRANSITION_PATH)
     await expect.poll(() => paths(requests, 'GET', '/dashboard').length).toBe(1)
+    const transitionDocument = paths(requests, 'GET', AD_TRANSITION_PATH)[0]
     const resultDocument = paths(requests, 'GET', '/dashboard')[0]
+    expect(transitionDocument).toBeDefined()
     expect(resultDocument).toBeDefined()
-    const beforeResult = requestsBefore(requests, resultDocument)
+    const onTransition = requestsBetween(requests, transitionDocument, resultDocument)
     expect(
-      beforeResult
+      onTransition
         .map((request) => new URL(request.url()).pathname)
         .filter((path) => path.startsWith('/api/')),
     ).toEqual([])
