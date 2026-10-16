@@ -1,7 +1,8 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { App } from './App'
+import { AD_TRANSITION_PATH, adTransitionContent } from './content/adTransition'
 import {
   authContent,
   authorizePath,
@@ -17,7 +18,9 @@ import { entryContent } from './content/entry'
 import { operatorContent } from './content/operator'
 import { planConditionContent } from './content/planConditions'
 import {
+  getObservedAllowedRequests,
   getObservedRequests,
+  stubAdTransitionClaim,
   stubLinkStatusRequest,
   stubOperatorAudit,
   stubOperatorRestrictions,
@@ -136,6 +139,29 @@ describe('App 경로 맵', () => {
       await screen.findByRole('heading', { level: 2, name: planConditionContent.heading }),
     ).toBeInTheDocument()
     expect(await screen.findByText(planConditionContent.blocked)).toBeInTheDocument()
+  })
+
+  it('중립 전환 경로는 주소의 참조를 지우고 세션 확인 뒤 그 참조를 소비한다', async () => {
+    const transition = `${'Zy'.repeat(21)}-`
+    stubSessionRequest(() =>
+      Promise.resolve(
+        jsonResponse({ authenticated: true, destination: 'dashboard', csrfToken: 'csrf' }),
+      ),
+    )
+    // 답하지 않는다 — 이 시험은 경로 대응만 본다(답에 따른 이동은 화면 시험이 본다).
+    stubAdTransitionClaim(() => new Promise(() => undefined))
+    navigate(AD_TRANSITION_PATH, `?t=${transition}`)
+
+    render(<App />)
+
+    expect(
+      screen.getByRole('heading', { level: 1, name: adTransitionContent.heading }),
+    ).toBeInTheDocument()
+    expect(window.location.pathname + window.location.search).toBe(AD_TRANSITION_PATH)
+    await waitFor(() => {
+      expect(getObservedAllowedRequests()).toContain('POST /api/engagement/ad-transition')
+    })
+    expect(getObservedRequests()).toEqual([])
   })
 
   it('미인증으로 되돌려진 화면은 원래 목적지를 `next`로 실어 보낸다', async () => {

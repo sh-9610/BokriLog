@@ -1,0 +1,416 @@
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { showInterstitial } from '../ads/gptAdapter'
+import {
+  AD_TRANSITION_PATH,
+  adTransitionContent,
+  adTransitionCopyStrings,
+} from '../content/adTransition'
+import { authContent, CSRF_HEADER, DASHBOARD_PATH } from '../content/auth'
+import { containsForbiddenCopy } from '../content/copyRules'
+import { replaceAddress, replaceLocation } from '../session/navigation'
+import { SESSION_REQUEST_TIMEOUT_MS } from '../session/useSessionState'
+import {
+  getObservedAllowedRequests,
+  getObservedRequests,
+  getObservedStorageEntries,
+  stubAdTransitionClaim,
+  stubSessionRequest,
+} from '../test/setup'
+import { AdTransitionScreen } from './AdTransitionScreen'
+
+vi.mock('../session/navigation', () => ({
+  navigateTo: vi.fn(),
+  replaceAddress: vi.fn(),
+  replaceLocation: vi.fn(),
+}))
+vi.mock('../ads/gptAdapter', () => ({ showInterstitial: vi.fn() }))
+
+/**
+ * Story 4.3: 금융정보 없는 중립 전환 화면. GPT adapter는 대역이다 — 이 시험은 화면이 adapter를 언제 부르고 언제 부르지 않는지,
+ * 그리고 DOM·주소·제목에 무엇이 없는지를 본다.
+ */
+
+/** 참조 모양 값은 리터럴로 쓰지 않는다(gitleaks) — 반복으로 만든 43자다. */
+const TRANSITION = `${'Zy'.repeat(21)}-`
+const AD_UNIT_PATH = '/1234567/bokrilog_test'
+const TOKEN = 'ad-transition-csrf-token'
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function signedIn(): void {
+  stubSessionRequest(() =>
+    Promise.resolve(json({ authenticated: true, destination: 'dashboard', csrfToken: TOKEN })),
+  )
+}
+
+function claims(...answers: (() => Promise<Response>)[]): (RequestInit | undefined)[] {
+  const inits: (RequestInit | undefined)[] = []
+  stubAdTransitionClaim((init) => {
+    inits.push(init)
+    const next = answers.shift()
+    if (next === undefined) throw new Error('an unexpected claim')
+    return next()
+  })
+  return inits
+}
+
+function claimCount(): number {
+  return getObservedAllowedRequests().filter((entry) => entry.startsWith('POST /api/engagement'))
+    .length
+}
+
+function open(search: string): void {
+  window.history.pushState({}, '', AD_TRANSITION_PATH + search)
+}
+
+const originalTitle = document.title
+
+beforeEach(() => {
+  vi.mocked(replaceLocation).mockClear()
+  vi.mocked(replaceAddress).mockClear()
+  vi.mocked(showInterstitial).mockReset()
+  document.title = '복리 계획 비교 · BokriLog'
+})
+
+afterEach(() => {
+  window.history.pushState({}, '', '/')
+  document.title = originalTitle
+})
+
+describe('중립 전환 화면: 진입', () => {
+  it('참조를 메모리로 옮기고 주소를 지운 뒤, 첫 조작인 광고 닫기에 최초 포커스를 둔다', async () => {
+    signedIn()
+    claims(() => new Promise(() => undefined))
+    open(`?t=${TRANSITION}`)
+
+    render(<AdTransitionScreen />)
+
+    expect(replaceAddress).toHaveBeenCalledWith(AD_TRANSITION_PATH)
+    const close = screen.getByRole('button', { name: adTransitionContent.close })
+    expect(close).toHaveFocus()
+    // DOM 순서: 광고 표지와 닫기가 첫 조작이고, 그 뒤에 제목·문장·결과 보기가 온다.
+    // eslint-disable-next-line testing-library/no-node-access -- 문서 순서의 첫 조작은 역할 조회로 알 수 없다. 조작 요소를 문서 순서대로 모아야 한다.
+    const focusables = document.querySelectorAll('a, button')
+    expect(focusables[0]).toBe(close)
+    expect(screen.getByText(adTransitionContent.adLabel).compareDocumentPosition(close)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    )
+    const heading = screen.getByRole('heading', { level: 1, name: adTransitionContent.heading })
+    expect(close.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByText(adTransitionContent.body)).toBeInTheDocument()
+    const view = screen.getByRole('link', { name: adTransitionContent.viewResult })
+    expect(view).toHaveAttribute('href', DASHBOARD_PATH)
+    // 복리 계획 비교와 비추천 고지를 인접 배치한다.
+    const title = screen.getByText(authContent.pageTitle)
+    // eslint-disable-next-line testing-library/no-node-access -- "바로 다음 요소"라는 인접 배치는 형제 관계로만 확인할 수 있다.
+    expect(title.nextElementSibling).toHaveTextContent(authContent.disclaimer)
+    await waitFor(() => {
+      expect(claimCount()).toBe(1)
+    })
+    expect(replaceLocation).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['참조 없음', ''],
+    ['빈 참조', '?t='],
+    ['모양이 아닌 참조', '?t=abc'],
+    ['43자가 아닌 참조', `?t=${TRANSITION}x`],
+    ['base64url 밖의 글자', `?t=${TRANSITION.slice(1)}=`],
+  ])('%s는 요청 0건으로 결과로 간다(새로고침·뒤로 가기 재진입)', (_name, search) => {
+    open(search)
+
+    render(<AdTransitionScreen />)
+
+    expect(replaceAddress).toHaveBeenCalledWith(AD_TRANSITION_PATH)
+    expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    expect(getObservedAllowedRequests()).toEqual([])
+    expect(getObservedRequests()).toEqual([])
+    expect(showInterstitial).not.toHaveBeenCalled()
+  })
+})
+
+describe('중립 전환 화면: 소비', () => {
+  it('SHOW면 세션 토큰으로 한 번 소비하고 그 단위 경로로 adapter를 부른다', async () => {
+    signedIn()
+    const inits = claims(() => Promise.resolve(json({ outcome: 'SHOW', adUnitPath: AD_UNIT_PATH })))
+    open(`?t=${TRANSITION}`)
+
+    render(<AdTransitionScreen />)
+
+    await waitFor(() => {
+      expect(showInterstitial).toHaveBeenCalledTimes(1)
+    })
+    expect(vi.mocked(showInterstitial).mock.calls[0]?.[0]).toBe(AD_UNIT_PATH)
+    expect(inits).toHaveLength(1)
+    expect(JSON.parse(inits[0]?.body as string)).toEqual({ transition: TRANSITION })
+    expect((inits[0]?.headers as Record<string, string>)[CSRF_HEADER]).toBe(TOKEN)
+    expect(inits[0]?.credentials).toBe('same-origin')
+    expect(inits[0]?.cache).toBe('no-store')
+    // 주소는 adapter보다 먼저 지워졌다.
+    expect(vi.mocked(replaceAddress).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(showInterstitial).mock.invocationCallOrder[0] ?? 0,
+    )
+    expect(replaceLocation).not.toHaveBeenCalled()
+    expect(getObservedStorageEntries()).toEqual([])
+  })
+
+  it.each([
+    'CONSUMED',
+    'EXPIRED',
+    'CONSENT_REQUIRED',
+    'RESTRICTED',
+    'PROVIDER_DISABLED',
+    'NEW_REASON',
+  ])('SKIP %s는 adapter 없이 결과로 간다', async (reason) => {
+    signedIn()
+    claims(() => Promise.resolve(json({ outcome: 'SKIP', reason })))
+    open(`?t=${TRANSITION}`)
+
+    render(<AdTransitionScreen />)
+
+    await waitFor(() => {
+      expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    })
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+    expect(showInterstitial).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      '401',
+      () =>
+        Promise.resolve(json({ code: 'UNAUTHENTICATED', message: 'x', correlationId: 'c' }, 401)),
+    ],
+    [
+      '403',
+      () => Promise.resolve(json({ code: 'FORBIDDEN', message: 'x', correlationId: 'c' }, 403)),
+    ],
+    [
+      '404',
+      () => Promise.resolve(json({ code: 'NOT_FOUND', message: 'x', correlationId: 'c' }, 404)),
+    ],
+    [
+      '500',
+      () =>
+        Promise.resolve(json({ code: 'INTERNAL_ERROR', message: 'x', correlationId: 'c' }, 500)),
+    ],
+    ['네트워크 실패', () => Promise.reject(new Error('network'))],
+    [
+      '모양이 아닌 SHOW',
+      () => Promise.resolve(json({ outcome: 'SHOW', adUnitPath: 'https://x.test/1/a' })),
+    ],
+  ] as const)('%s는 adapter 없이 결과로 간다', async (_name, answer) => {
+    signedIn()
+    claims(answer)
+    open(`?t=${TRANSITION}`)
+
+    render(<AdTransitionScreen />)
+
+    await waitFor(() => {
+      expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    })
+    expect(showInterstitial).not.toHaveBeenCalled()
+  })
+
+  it('미인증 세션은 소비 없이 결과로 간다', async () => {
+    stubSessionRequest(() => Promise.resolve(json({ authenticated: false, destination: 'entry' })))
+    open(`?t=${TRANSITION}`)
+
+    render(<AdTransitionScreen />)
+
+    await waitFor(() => {
+      expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    })
+    expect(claimCount()).toBe(0)
+    expect(getObservedRequests()).toEqual([])
+    expect(showInterstitial).not.toHaveBeenCalled()
+  })
+
+  it('본인 확인이 필요한 세션은 소비 없이 결과로 간다', async () => {
+    stubSessionRequest(() =>
+      Promise.resolve(
+        json({ authenticated: false, csrfToken: 'reauth-token', reauthRequired: true }),
+      ),
+    )
+    open(`?t=${TRANSITION}`)
+
+    render(<AdTransitionScreen />)
+
+    await waitFor(() => {
+      expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    })
+    await new Promise((settle) => setTimeout(settle, 20))
+    expect(claimCount()).toBe(0)
+    expect(getObservedRequests()).toEqual([])
+    expect(showInterstitial).not.toHaveBeenCalled()
+  })
+
+  it('세션 확인이 끝나지 않아 시한 안에 소비가 시작되지 않으면 결과로 간다', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      // 세션 확인이 답하지 않는다(중단 신호에도). 소비 요청은 시작되지 않는다.
+      stubSessionRequest(() => new Promise(() => undefined))
+      open(`?t=${TRANSITION}`)
+
+      render(<AdTransitionScreen />)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SESSION_REQUEST_TIMEOUT_MS - 1)
+      })
+      expect(replaceLocation).not.toHaveBeenCalled()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1)
+      })
+      expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+      expect(replaceLocation).toHaveBeenCalledTimes(1)
+      expect(claimCount()).toBe(0)
+      expect(showInterstitial).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('소비가 시한 안에 시작되면 화면 시한은 떠나게 하지 않는다', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      signedIn()
+      claims(() => new Promise(() => undefined))
+      open(`?t=${TRANSITION}`)
+
+      render(<AdTransitionScreen />)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(claimCount()).toBe(1)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SESSION_REQUEST_TIMEOUT_MS)
+      })
+      // 시작된 소비는 자기 시한(`claimAdTransition`)이 끝낸다. 이 대역은 중단 신호에도 답하지 않으므로, 화면 시한이 떠나게 했다면
+      // 여기서 이동이 보였을 것이다.
+      expect(replaceLocation).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('adapter가 실패를 알리면(null slot·script 오류) 결과로 간다', async () => {
+    vi.mocked(showInterstitial).mockImplementation((_path, onFailure) => {
+      onFailure()
+    })
+    signedIn()
+    claims(() => Promise.resolve(json({ outcome: 'SHOW', adUnitPath: AD_UNIT_PATH })))
+    open(`?t=${TRANSITION}`)
+
+    render(<AdTransitionScreen />)
+
+    await waitFor(() => {
+      expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    })
+    expect(showInterstitial).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('중립 전환 화면: 광고 닫기', () => {
+  it('소비 응답 전에도 결과로 가고, 늦게 온 SHOW는 adapter를 부르지 않는다', async () => {
+    signedIn()
+    let answer: (response: Response) => void = () => undefined
+    claims(
+      () =>
+        new Promise<Response>((resolve) => {
+          answer = resolve
+        }),
+    )
+    open(`?t=${TRANSITION}`)
+    render(<AdTransitionScreen />)
+    await waitFor(() => {
+      expect(claimCount()).toBe(1)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: adTransitionContent.close }))
+    expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+
+    await act(async () => {
+      answer(json({ outcome: 'SHOW', adUnitPath: AD_UNIT_PATH }))
+      await Promise.resolve()
+    })
+    await new Promise((settle) => setTimeout(settle, 20))
+    expect(showInterstitial).not.toHaveBeenCalled()
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+  })
+
+  it('SHOW 화면에서 닫으면 interstitial 없이 결과로 간다', async () => {
+    signedIn()
+    claims(() => Promise.resolve(json({ outcome: 'SHOW', adUnitPath: AD_UNIT_PATH })))
+    open(`?t=${TRANSITION}`)
+    render(<AdTransitionScreen />)
+    await waitFor(() => {
+      expect(showInterstitial).toHaveBeenCalledTimes(1)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: adTransitionContent.close }))
+
+    expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+  })
+})
+
+describe('중립 전환 화면: 데이터 경계', () => {
+  it('결과 보기 외의 anchor는 interstitial trigger가 아니다', () => {
+    signedIn()
+    claims(() => new Promise(() => undefined))
+    open(`?t=${TRANSITION}`)
+
+    render(<AdTransitionScreen />)
+
+    // eslint-disable-next-line testing-library/no-node-access -- href 없는 anchor까지 모두 훑어야 한다. 역할 조회는 href 있는 anchor만 link로 본다.
+    const anchors = [...document.querySelectorAll('a')]
+    const view = screen.getByRole('link', { name: adTransitionContent.viewResult })
+    expect(anchors).toContain(view)
+    expect(view).not.toHaveAttribute('data-google-interstitial')
+    for (const anchor of anchors.filter((candidate) => candidate !== view)) {
+      expect(anchor).toHaveAttribute('data-google-interstitial', 'false')
+    }
+  })
+
+  it('DOM·속성·제목에 금액·%·UUID·transition 값이 없고 카피에 금지 표현이 없다', async () => {
+    signedIn()
+    claims(() => Promise.resolve(json({ outcome: 'SHOW', adUnitPath: AD_UNIT_PATH })))
+    open(`?t=${TRANSITION}`)
+
+    render(<AdTransitionScreen />)
+    await waitFor(() => {
+      expect(showInterstitial).toHaveBeenCalledTimes(1)
+    })
+
+    // CSS Module의 class 이름(시험 환경의 해시)은 화면이 쓴 값이 아니다.
+    // eslint-disable-next-line testing-library/no-node-access -- 모든 요소의 모든 속성 값을 훑는 단정이다. 역할 조회로는 속성 값 전체에 닿을 수 없다.
+    const attributes = [...document.body.querySelectorAll('*')]
+      .flatMap((element) =>
+        [...element.attributes]
+          .filter((attribute) => attribute.name !== 'class')
+          .map((attribute) => attribute.value),
+      )
+      .join(' ')
+    for (const surface of [document.body.textContent, attributes, document.title]) {
+      expect(surface).not.toContain(TRANSITION)
+      expect(surface).not.toMatch(/\d/)
+      expect(surface).not.toContain('%')
+      expect(surface).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
+    }
+    expect(document.title).toBe('복리 계획 비교 · BokriLog')
+    for (const copy of adTransitionCopyStrings) {
+      expect(containsForbiddenCopy(copy)).toBe(false)
+      expect(document.body.textContent).toContain(copy)
+    }
+    // "광고를 시청하면 결과가 열립니다"류가 아니다.
+    expect(document.body.textContent).not.toContain('시청')
+    expect(getObservedStorageEntries()).toEqual([])
+  })
+})

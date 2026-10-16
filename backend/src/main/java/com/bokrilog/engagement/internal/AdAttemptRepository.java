@@ -1,6 +1,7 @@
 package com.bokrilog.engagement.internal;
 
 import com.bokrilog.engagement.AdEligibilityApi.SkipReason;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -11,10 +12,11 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 /**
- * 광고 자격 결정 표 {@code engagement_ad_attempt}의 유일한 SQL 자리(Story 4.2).
+ * 광고 자격 결정 표 {@code engagement_ad_attempt}의 유일한 SQL 자리(Story 4.2·4.3).
  *
- * <p>문장은 INSERT·SELECT와 deletion port의 DELETE뿐이다 — 결정 행을 고치는 문장이 없다. 결정 시각은 INSERT 문장의 DB
- * 시각(열 기본값 {@code statement_timestamp()})이다.
+ * <p>문장은 INSERT·SELECT, transition 소비의 조건부 UPDATE 하나(Story 4.3 — 소비 시각만 쓰고 이미 소비된 행은 바꾸지 않는다)와
+ * deletion port의 DELETE뿐이다 — 결정(결말·사유·참조·결정 시각)을 고치는 문장이 없다. 결정 시각은 INSERT 문장의 DB 시각(열
+ * 기본값 {@code statement_timestamp()})이다.
  */
 @Repository
 class AdAttemptRepository {
@@ -102,6 +104,41 @@ class AdAttemptRepository {
                 .param("u", userId)
                 .param("j", syncJobId)
                 .param("r", reason.name())
+                .update();
+    }
+
+    /**
+     * 소비 판정의 재료가 되는 자격 행 하나(Story 4.3).
+     *
+     * @param id 행 순번
+     * @param consumed 이미 소비됐다
+     * @param expired 결정 뒤 소비 창을 넘었다(이 문장의 DB 시각 기준)
+     */
+    record Transition(long id, boolean consumed, boolean expired) {}
+
+    /**
+     * 그 사용자의 그 transition 참조를 가진 자격 행을 잠근다({@code FOR UPDATE}) — 같은 참조의 동시 소비를 줄 세운다. 남의 참조·없는
+     * 참조는 비어 있다(구분하지 않는다). 만료는 결정 시각에 창을 더한 값을 이 문장의 DB 시각이 넘었는가다(정확히 창 끝은 만료가
+     * 아니다).
+     */
+    Optional<Transition> transitionForUpdate(UUID userId, String transitionRef, Duration window) {
+        return this.jdbc.sql("SELECT id, transition_consumed_at IS NOT NULL AS consumed, statement_timestamp() > "
+                        + "decided_at + interval '1 second' * :w AS expired "
+                        + "FROM engagement_ad_attempt "
+                        + "WHERE user_id = :u AND transition_ref = :t AND outcome = 'ELIGIBLE' FOR UPDATE")
+                .param("u", userId)
+                .param("t", transitionRef)
+                .param("w", window.toSeconds())
+                .query((rs, row) -> new Transition(rs.getLong("id"), rs.getBoolean("consumed"),
+                        rs.getBoolean("expired")))
+                .optional();
+    }
+
+    /** 그 자격 행의 transition을 소비한다 — 이 문장의 DB 시각을 쓴다. 이미 소비된 행은 바꾸지 않는다. */
+    void consume(long id) {
+        this.jdbc.sql("UPDATE engagement_ad_attempt SET transition_consumed_at = statement_timestamp() "
+                        + "WHERE id = :id AND transition_consumed_at IS NULL")
+                .param("id", id)
                 .update();
     }
 

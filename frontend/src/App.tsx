@@ -1,5 +1,6 @@
 import { Component, lazy, Suspense, type ReactElement, type ReactNode } from 'react'
 
+import { AD_TRANSITION_PATH } from './content/adTransition'
 import {
   authContent,
   DASHBOARD_PATH,
@@ -9,6 +10,7 @@ import {
   SETTINGS_PATH,
 } from './content/auth'
 import { planConditionContent } from './content/planConditions'
+import { AdTransitionScreen } from './screens/AdTransitionScreen'
 import { EntryScreen } from './screens/EntryScreen'
 import { OnboardingScreen } from './screens/OnboardingScreen'
 import { PlanConditionScreen } from './screens/PlanConditionScreen'
@@ -74,6 +76,10 @@ export function App(): ReactElement {
   }
   if (pathname === planConditionContent.path) {
     return <PlanConditionScreen />
+  }
+  if (pathname === AD_TRANSITION_PATH) {
+    // 중립 전환 화면(Story 4.3). `/plan-conditions`처럼 화면 경로이지만 로그인 복귀 목적지가 아니다.
+    return <AdTransitionScreen />
   }
   if (pathname === OPERATOR_PATH) {
     return (

@@ -18,7 +18,8 @@
  *    `defaultServiceNotices`의 근거를 참고한다. 설정 화면의 문의 목록(`GET /api/support/inquiries`, Story 3.6)도
  *    같은 근거로 기본 응답(빈 목록)이 있다(`defaultSupportInquiries`).
  *    설정 화면의 광고 동의 조회(`GET /api/engagement/ad-consent`, Story 4.1)도 같은 근거로 기본 응답(미결정)이 있다
- *    (`defaultAdConsent`).
+ *    (`defaultAdConsent`). 수동 동기화 성공 뒤의 광고 자격 판정(`POST /api/engagement/ad-eligibility`, Story 4.3)도
+ *    기본 응답(공급자 꺼짐으로 건너뜀 — 기본 구성의 답)이 있다(`defaultAdEligibility`).
  */
 
 import '@testing-library/jest-dom/vitest'
@@ -27,6 +28,7 @@ import { afterEach, beforeEach } from 'vitest'
 
 import { AD_CONSENT_PATH, AD_CONSENT_POLICY_VERSION } from '../content/adConsent'
 import { DASHBOARD_ADJUSTMENTS_PATH } from '../content/adjustmentHistory'
+import { AD_ELIGIBILITY_PATH, AD_TRANSITION_CLAIM_PATH } from '../content/adTransition'
 import {
   LINK_BASE_PATH,
   linkPath,
@@ -77,6 +79,8 @@ const observedNoticeRequests: string[] = []
 const observedSupportRequests: string[] = []
 /** 기본 응답이 답한 광고 동의 조회(Story 4.1). 공지와 같은 근거로 허용 기록과 따로 센다. */
 const observedAdConsentRequests: string[] = []
+/** 기본 응답이 답한 광고 자격 판정(Story 4.3). 본문(`syncJobId`)도 함께 남긴다 — 어느 job을 물었는지가 계약이다. */
+const observedAdEligibilityRequests: string[] = []
 
 /**
  * 열린 요청과 그것에 답할 함수. 키는 `"<메서드> <URL>"`이다.
@@ -431,6 +435,20 @@ export function stubAdConsentChange(responder: RequestResponder): void {
   responders.set(requestKey('POST', AD_CONSENT_PATH), responder)
 }
 
+/**
+ * 광고 자격 판정 하나를 이 시험 동안만 연다(Story 4.3). 연 응답이 기본 응답(공급자 꺼짐으로 건너뜀)을 이기고 허용 기록에 남는다.
+ * 대시보드는 자기 화면에서 접수한 수동 동기화가 성공하면 이 요청을 보내므로, 열지 않은 시험에는 기본 응답이 답한다 — 기록은
+ * `observedAdEligibilityRequests`에 남는다.
+ */
+export function stubAdEligibility(responder: RequestResponder): void {
+  responders.set(requestKey('POST', AD_ELIGIBILITY_PATH), responder)
+}
+
+/** transition 소비(Story 4.3, 중립 전환 화면). 기본 응답이 없다 — 열지 않은 소비는 전역 거부다. */
+export function stubAdTransitionClaim(responder: RequestResponder): void {
+  responders.set(requestKey('POST', AD_TRANSITION_CLAIM_PATH), responder)
+}
+
 /** 문의 목록(Story 3.6, 운영자 화면). 상태 필터는 쿼리로 가므로 쿼리가 있는 요청도 같은 응답 함수가 받는다. */
 export function stubOperatorInquiries(responder: QueryResponder): void {
   queryResponders.set(requestKey('GET', OPERATOR_INQUIRIES_ENDPOINT), responder)
@@ -509,6 +527,11 @@ export function getObservedAdConsentRequests(): readonly string[] {
   return [...observedAdConsentRequests]
 }
 
+/** 기본 응답이 답한 광고 자격 판정의 본문들(Story 4.3). 열린 판정은 허용 기록(`getObservedAllowedRequests`)에 남는다. */
+export function getObservedAdEligibilityRequests(): readonly string[] {
+  return [...observedAdEligibilityRequests]
+}
+
 /** 지금까지 관측된 네트워크 요청. 비어 있어야 한다. */
 export function getObservedRequests(): readonly string[] {
   return [...observedRequests]
@@ -559,6 +582,19 @@ function defaultAdConsent(): Response {
       state: 'UNDECIDED',
       policyVersion: AD_CONSENT_POLICY_VERSION,
       decidedAt: null,
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )
+}
+
+/** 열지 않은 시험의 광고 자격 판정 응답: 공급자 꺼짐으로 건너뛴다(기본 구성의 답). 기록은 `observedAdEligibilityRequests`에 남긴다. */
+function defaultAdEligibility(): Response {
+  return new Response(
+    JSON.stringify({
+      outcome: 'SKIPPED',
+      reason: 'PROVIDER_DISABLED',
+      transition: null,
+      replayed: false,
     }),
     { status: 200, headers: { 'Content-Type': 'application/json' } },
   )
@@ -633,6 +669,10 @@ globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Respo
     observedAdConsentRequests.push(requestKey(method, url))
     return Promise.resolve(defaultAdConsent())
   }
+  if (method === 'POST' && url === AD_ELIGIBILITY_PATH) {
+    observedAdEligibilityRequests.push(typeof init?.body === 'string' ? init.body : '')
+    return Promise.resolve(defaultAdEligibility())
+  }
   const queryAt = url.indexOf('?')
   const queryResponder =
     queryAt < 0 ? undefined : queryResponders.get(requestKey(method, url.slice(0, queryAt)))
@@ -684,6 +724,7 @@ beforeEach(() => {
   observedNoticeRequests.length = 0
   observedSupportRequests.length = 0
   observedAdConsentRequests.length = 0
+  observedAdEligibilityRequests.length = 0
 })
 
 afterEach(() => {
@@ -698,6 +739,7 @@ afterEach(() => {
   observedNoticeRequests.length = 0
   observedSupportRequests.length = 0
   observedAdConsentRequests.length = 0
+  observedAdEligibilityRequests.length = 0
   window.localStorage.clear()
   window.sessionStorage.clear()
   // 한 시험이 남긴 쿠키가 다음 시험의 저장소 단정을 엉뚱하게 실패시키지 않게 한다.

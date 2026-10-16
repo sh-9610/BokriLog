@@ -435,6 +435,20 @@ class ModuleBoundaryTest {
     }
 
     /**
+     * transition 소비(Story 4.3)에 닿는 운영 클래스는 engagement 모듈 안과 중립 전환 화면이 부르는 루트 컨트롤러 하나다 — 대시보드·
+     * 동기화 경로가 광고 시도를 일으키거나 소비 결과로 결과 접근을 바꿀 길이 없다.
+     */
+    @Test
+    void 광고_transition_API는_engagement와_transition_컨트롤러만_닿는다() {
+        ArchRule rule = noClasses()
+                .that().resideOutsideOfPackage("com.bokrilog.engagement..")
+                .and().haveNameNotMatching("com\\.bokrilog\\.AdTransitionController(\\$.*)?")
+                .should().dependOnClassesThat().belongToAnyOf(com.bokrilog.engagement.AdTransitionApi.class)
+                .because("광고는 결과 조회의 조건이 아니고, 광고 시도는 중립 전환 화면의 소비 하나로만 일어난다.");
+        rule.check(PRODUCTION_CLASSES);
+    }
+
+    /**
      * 광고 자격 결정 행의 삭제도 계정 삭제 orchestrator 한 곳이다(Story 4.2). 다른 자리가 지우면 빈도 제한과 재전송 판정이 삭제
      * 전환 없이 초기화된다.
      */
@@ -451,8 +465,8 @@ class ModuleBoundaryTest {
 
     /**
      * 의존은 engagement에서 다른 모듈 쪽으로만 난다(Story 4.2). 다른 모듈은 engagement를 모르고(sync는 후보 판정을 주기만 하고 그
-     * 소비자를 모른다), 루트에서 engagement에 닿는 곳은 두 컨트롤러·계정 삭제·복원 불변식·계측 허용 표뿐이다 — 대시보드·동기화
-     * 컨트롤러가 광고를 읽거나 일으킬 길이 없다.
+     * 소비자를 모른다), 루트에서 engagement에 닿는 곳은 세 컨트롤러(동의·자격·transition)·계정 삭제·복원 불변식·계측 허용
+     * 표뿐이다 — 대시보드·동기화 컨트롤러가 광고를 읽거나 일으킬 길이 없다.
      */
     @Test
     void 다른_모듈과_대시보드_동기화_경로는_engagement에_의존하지_않는다() {
@@ -465,10 +479,10 @@ class ModuleBoundaryTest {
         modules.check(PRODUCTION_CLASSES);
         ArchRule root = noClasses()
                 .that().resideInAPackage("com.bokrilog")
-                .and().haveNameNotMatching("com\\.bokrilog\\.(AdConsentController|AdEligibilityController|AccountErasure"
-                        + "|RestoreInvariants|TelemetryAllowlist)(\\$.*)?")
+                .and().haveNameNotMatching("com\\.bokrilog\\.(AdConsentController|AdEligibilityController"
+                        + "|AdTransitionController|AccountErasure|RestoreInvariants|TelemetryAllowlist)(\\$.*)?")
                 .should().dependOnClassesThat().resideInAPackage("com.bokrilog.engagement..")
-                .because("engagement에 닿는 루트 자리는 정해진 다섯 곳이다.");
+                .because("engagement에 닿는 루트 자리는 정해진 여섯 곳이다.");
         root.check(PRODUCTION_CLASSES);
     }
 }

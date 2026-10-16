@@ -18,6 +18,7 @@ import {
   verificationJobFixture,
 } from '../test/planResultFixture'
 import {
+  getObservedAdEligibilityRequests,
   getObservedAllowedRequests,
   getObservedRequests,
   getObservedStorageEntries,
@@ -585,6 +586,32 @@ describe('useDashboardSync: a precision verification', () => {
     expect(reads()).toBe(4)
     expect(verificationPosts()).toBe(1)
     expect(getObservedStorageEntries()).toEqual([])
+  })
+
+  it('Story 4.3: a precision verification this screen asked for that succeeds asks no ad eligibility', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    dashboards(
+      ready(),
+      ready(
+        { verification: verificationFixture({ latest: finished({ status: 'SUCCEEDED' }) }) },
+        2,
+      ),
+    )
+    syncs(admitted('NOT_DUE', null, 240))
+    verifications(admitted('ACCEPTED', verificationJobFixture()))
+    const { result } = render()
+    await flush()
+    act(() => {
+      result.current.sync.requestVerification('PRECISION')
+    })
+    await flush()
+    await advance(SYNC_POLL_INTERVAL_MS)
+    expect(result.current.sync.phase).toBe('succeeded')
+    expect(result.current.sync.purpose).toBe('VERIFY')
+    expect(getObservedAdEligibilityRequests()).toEqual([])
+    expect(
+      getObservedAllowedRequests().filter((entry) => entry.includes('/api/engagement')),
+    ).toEqual([])
   })
 
   it('a verification with no change says so in its one closing sentence', async () => {

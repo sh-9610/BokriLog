@@ -97,6 +97,9 @@ abstract class AuthFlowTestBase {
     /** {@link #pollUntil}의 조회 간격. */
     static final Duration POLL = Duration.ofMillis(20);
 
+    /** 시험 컨텍스트의 GPT ad unit 경로(Story 4.3). 형식만 맞는 가짜 값이고 공급자에 닿지 않는다. */
+    static final String AD_UNIT_PATH = "/1234567/bokrilog_test";
+
     @DynamicPropertySource
     static void authProperties(DynamicPropertyRegistry registry) {
         OidcStubConfiguration.registerProperties(registry);
@@ -113,6 +116,8 @@ abstract class AuthFlowTestBase {
         // Story 4.2의 광고 공급자 활성도 같은 근거로 여기서 준다. 운영 기본값은 꺼짐(false)이다. 꺼짐을 보는 시험은
         // `AdProviderTestHook`으로 잠시 끄고 되돌린다.
         registry.add("bokrilog.engagement.ad-provider-enabled", () -> "true");
+        // Story 4.3: 공급자 활성은 플래그와 형식에 맞는 ad unit 경로가 함께일 때다. 운영 기본값은 빈 값이다.
+        registry.add("bokrilog.engagement.ad-unit-path", () -> AD_UNIT_PATH);
     }
 
     /**

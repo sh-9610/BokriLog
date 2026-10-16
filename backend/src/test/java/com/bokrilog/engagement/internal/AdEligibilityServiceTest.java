@@ -69,12 +69,13 @@ class AdEligibilityServiceTest {
         this.consents = mock(AdConsentApi.class);
         this.restrictions = mock(OperationalRestrictionApi.class);
         this.syncs = mock(SyncJobApi.class);
-        this.provider = new AdProviderState(new EngagementProperties(true));
+        this.provider = new AdProviderState(new EngagementProperties(true, "/1234567/bokrilog_test"));
         this.registry = new SimpleMeterRegistry();
         PlatformTransactionManager transactions = mock(PlatformTransactionManager.class);
         when(transactions.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
-        this.service = new AdEligibilityService(this.attempts, this.accounts, this.consents, this.restrictions,
-                this.syncs, this.provider, new AdMetrics(this.registry), transactions);
+        this.service = new AdEligibilityService(this.attempts, this.accounts,
+                new AdGate(this.consents, this.restrictions, this.provider), this.syncs, new AdMetrics(this.registry),
+                transactions);
 
         when(this.accounts.lockWriteAccess(this.user)).thenReturn(true);
         when(this.attempts.byResult(this.user, this.job)).thenReturn(Optional.empty());

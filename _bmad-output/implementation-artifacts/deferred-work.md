@@ -467,3 +467,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-4-2-ad-eligibility.md`
   summary: `engagement_ad_attempt` 결정 행(SKIPPED 포함)의 보존 기한과 정리 경로를 정한다.
   evidence: 판정한 수동 동기화마다 행이 남고 계정 삭제 외에는 지우는 경로가 없다. 빈도 판정은 하루 남짓의 이력만, 재전송은 짧은 창만 필요하다. 문의의 90일 정리 같은 선례가 있고, 동의 이력 보존(항목 148)과 함께 개인정보 검토(G-4)가 정할 몫이다(4.2 리뷰 blind-hunter, 2026-10-15).
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-3-neutral-ad-transition.md`
+  summary: `/ad-transition` CSP 후보값(`frame-src`의 SafeFrame `*.safeframe.googlesyndication.com`, 트래픽 품질 `*.adtrafficquality.google` 등)을 실제 GPT 요청으로 실측해 보정하고, 공급자를 켠 스택에서 SHOW 왕복(주소 정리 → gpt.js load → interstitial → 결과)을 브라우저 층에서 확인한다.
+  evidence: 4.3은 공급자 문서 기준 후보값을 고정 단정하고 e2e는 공급자 꺼짐 경로만 본다. 저장소 e2e는 `page.route` 대역을 쓰지 않고 실제 광고 계정이 없어 SHOW 경로를 브라우저에서 밟을 수 없다. 실제 request field 검사는 출시 게이트 G-4가 소유한다(4.3 리뷰 blind-hunter, 2026-10-15).
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-3-neutral-ad-transition.md`
+  summary: 광고 단위 경로 형식(`^/[0-9]+(/[A-Za-z0-9_.-]+)+$`)이 GAM MCM 경로(`/<parent>,<child>/unit`)를 거부하는지 실제 계정 형식으로 확인하고, 필요하면 백엔드·프런트엔드 두 사본을 공유 fixture 하나로 묶어 함께 넓힌다.
+  evidence: 지금 형식이 맞지 않으면 기동 거부 없이 공급자만 조용히 꺼진다(`PROVIDER_DISABLED`). 정규식은 4.3 SPEC의 승인된 계약이라 이 스토리에서 바꾸지 않았고, 실제 network code 형식은 계정 승인(G-4) 때 정해진다(4.3 리뷰 blind-hunter, 2026-10-15).
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-3-neutral-ad-transition.md`
+  summary: 주입 origin e2e `ad-consent.spec.ts:71`이 간헐적으로 로그인 직후 `/settings`를 미인증 진입 화면으로 열어(광고 동의 region 없음) 5초 시간초과로 실패하는 원인을 trace로 찾는다.
+  evidence: 4.3 로컬 검증에서 전체 실행 다섯 번 중 두 번(둘 다 스택을 새로 띄운 뒤 첫 실행) 실패했고, 같은 스택의 재실행·새 스택 재현·4.3 spec을 뺀 실행은 모두 통과했다. 실패 trace가 뒤 실행에 덮여 원인(세션 응답·쿠키·기동 직후 지연)을 가리지 못했다. 4.3은 설정·인증 경로를 바꾸지 않았다(4.3 검증, 2026-10-15).
