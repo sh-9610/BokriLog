@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 10-16-2026 16:30
+last_updated: 10-16-2026 17:09
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -87,7 +87,7 @@ development_status:
   4-2-수동-동기화-성공-결과에-광고-자격과-빈도-제한-적용하기: done
   4-3-금융정보-없는-중립-화면에서-닫을-수-있는-광고-시도하기: done
   4-4-모든-광고-실패에서-저장된-결과로-fail-open하고-광고만-비활성화하기: done
-  epic-4-retrospective: optional
+  epic-4-retrospective: done
 
   epic-5: backlog
   5-1-삭제-범위와-보존-정책을-확인하고-계정-삭제-요청하기: backlog
@@ -361,7 +361,7 @@ action_items:
       Log에 적으며, 운영 스크립트 스토리용 구현 전 체크리스트(신호·잠금·실패 경로·fail-closed·운영 모드 거부)를 SPEC 템플릿에
       둔다(회고 P-4)"
     owner: "사용자"
-    status: open
+    status: in-progress
     ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
   - id: "epic-3-retro-item-39-시험-값이-민감값-비밀-규칙에-걸리는-계열-85-89-을-막는다-시험-표"
     epic: 3
@@ -370,3 +370,66 @@ action_items:
     owner: "Dev"
     status: open
     ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
+  - id: "epic-4-retro-item-40-준비된-광고-slot에-수명-상한을-둔다-결정-뒤-소비-창-120초-안에"
+    epic: 4
+    action: "준비된 광고 slot에 수명 상한을 둔다 — 결정 뒤 소비 창(120초) 안에서만 광고를 띄우고 지나면 slot을 파기하고
+      결과로 보낸다. 준비 뒤 무기한 머묾을 고정한 gptAdapter.test.ts:186을 상한 시험으로 바꾼다(회고 B-1, 사용자 결정
+      2026-10-16)"
+    owner: "다음 fix(bmad-build)"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
+  - id: "epic-4-retro-item-41-문서-주석-정합-4-2-4-3이-기존-파일에-쓴-영어-주석-usedash"
+    epic: 4
+    action: "문서·주석 정합 — 4.2·4.3이 기존 파일에 쓴 영어 주석(useDashboardSync.ts·PlanSyncRepository.java)을
+      한국어로, AdConsentController 500 로그를 3.7 관용으로, AdAttemptRepository 잠금 주석·ENGAGEMENT_PATH
+      Javadoc·CLAUDE.md 13·264행·4.3 Change Log 누락을 고치고, CLAUDE.md 미검증 목록에 광고 출시 게이트
+      G-4를 더한다(회고 D-1·D-2·D-4·R-4)"
+    owner: "chore"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
+  - id: "epic-4-retro-item-42-검증-공백-transition-참조-모양-api-경로-상수의-프런트-백"
+    epic: 4
+    action: "검증 공백 — transition 참조 모양·API 경로 상수의 프런트·백 파일 대조 시험(AdConsentPolicyVersionTest
+      선례), POST /ad-transition 405의 CSP 단정, 정책 버전 상향을 소비 단계에서 보는 시험을 더한다(회고 D-3·B-4·B-5)"
+    owner: "chore(문서·주석 정합과 같은 작업)"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
+  - id: "epic-4-retro-item-43-deferred-156-광고-이벤트-분리-계측-서버가-아는-소비-결말-카"
+    epic: 4
+    action: "deferred 156(광고 이벤트 분리 계측, 서버가 아는 소비 결말 카운터 포함)·157(Web Vitals 수집과 성능
+      kill switch)의 주인을 정한다 — beacon 경로를 공유하는 후속 스토리로 기획에 새 버전으로 올리거나 광고 출시 게이트의 선행
+      조건으로 명시한다(회고 R-1·R-2·B-2·P-3)"
+    owner: "사용자(기획 결정, bmad-correct-course)"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
+  - id: "epic-4-retro-item-44-광고-기획-문구를-as-built로-맞춘다-reservation-시점-이"
+    epic: 4
+    action: "광고 기획 문구를 as-built로 맞춘다 — reservation 시점, 이동 대상(저장된 최신 결과), 닫기 뒤 포커스
+      요구, adapter 위치(브라우저), frequency_cap 표 없음과 transition 열, ERD engagement 데이터 계약,
+      interstitial 방지 속성 범위, SHOW 뒤 관문 시점. Epic 2 item-19·Epic 3 item-35 범위에 더한다(회고
+      R-1·R-3)"
+    owner: "아키텍트(as-built 새 버전)"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
+  - id: "epic-4-retro-item-45-간헐-실패-시험의-주인과-방법을-정한다-실패-시-trace-보존-문서-이"
+    epic: 4
+    action: "간헐 실패 시험의 주인과 방법을 정한다 — 실패 시 trace 보존, 문서 이동을 넘는 e2e 측정 관용(앞 문서 내리기·최종
+      착지 대기)의 helper와 DEVELOPMENT.md 서술, deferred 155·158 판정(회고 P-1·P-2)"
+    owner: "시험 chore"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
+  - id: "epic-4-retro-item-46-스토리-spec을-쓸-때-그-스토리가-고치는-파일에-걸린-열린-회고-액션"
+    epic: 4
+    action: "스토리 SPEC을 쓸 때 그 스토리가 고치는 파일에 걸린 열린 회고 액션을 Code Map에 적게 한다(bmad-customize로
+      bmad-build 계획 단계에 한 줄, 예: AccountErasure를 고치면 Epic 3 item-27)(회고 P-4·P-5)"
+    owner: "bmad-customize"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
+  - id: "epic-4-retro-item-47-공통-부품-정리-선택-epic-5-전-프런트엔드-동일-출처-json-po"
+    epic: 4
+    action: "공통 부품 정리(선택, Epic 5 전) — 프런트엔드 동일 출처 JSON POST·readJson 하나, 루트 컨트롤러 세션
+      사용자·SENSITIVE 접근·no-store 오류 helper, IdempotencyKey.CONFLICT_CODE, 광고 시험 공용
+      helper, engagement 바깥 의존 허용 목록(회고 D-5·A-2)"
+    owner: "chore(선택)"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
