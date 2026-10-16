@@ -476,3 +476,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-4-3-neutral-ad-transition.md`
   summary: 주입 origin e2e `ad-consent.spec.ts:71`이 간헐적으로 로그인 직후 `/settings`를 미인증 진입 화면으로 열어(광고 동의 region 없음) 5초 시간초과로 실패하는 원인을 trace로 찾는다.
   evidence: 4.3 로컬 검증에서 전체 실행 다섯 번 중 두 번(둘 다 스택을 새로 띄운 뒤 첫 실행) 실패했고, 같은 스택의 재실행·새 스택 재현·4.3 spec을 뺀 실행은 모두 통과했다. 실패 trace가 뒤 실행에 덮여 원인(세션 응답·쿠키·기동 직후 지연)을 가리지 못했다. 4.3은 설정·인증 경로를 바꾸지 않았다(4.3 검증, 2026-10-15).
+- source_spec: none
+  summary: Story 4.4 AC-4의 광고 이벤트 분리 계측(요청·실노출·닫기·skip/failure 사유·저장 결과 도달)을 동일 출처 beacon 경로와 `TelemetryAllowlist` 행으로 더한다.
+  evidence: 4.4를 범위 분할하며 떼었다(사용자 결정 [S], 2026-10-16). 브라우저 → 서버 계측 경로가 아직 없어 beacon 경로·집계·allowlist 설계가 함께 필요한 독립 배포 단위이고, Web Vitals 수집(항목 122)과 같은 경로를 공유하므로 함께 설계하는 편이 낫다. 실노출·닫기는 4.4의 fail-open 이벤트(GPT callback)를 원천으로 쓴다.
+- source_spec: none
+  summary: Story 4.4 AC-3 후반의 Web Vitals 수집(LCP·INP·CLS p75)과 목표를 위협할 때 광고만 끄는 성능 kill switch를 만든다.
+  evidence: 4.4를 범위 분할하며 떼었다(사용자 결정 [S], 2026-10-16). 브라우저 측정(직접 구현 또는 런타임 의존 승인)·beacon·집계 분모와 기간·경보 규칙이 필요하고, 항목 122(3.7이 미룬 Web Vitals 수집)가 4.4를 결정 지점으로 지목했다. 광고만 끄는 수단은 이미 있다 — 운영 command `restrict-advertising`(3.2)과 4.2·4.3 관문의 `ADVERTISING` 판독이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-4-ad-fail-open.md`
+  summary: Windows 로컬 Vitest에서 운영자 lazy chunk를 기다리는 시험(`App.test.tsx` 운영자 경로, `OperatorScreen`·`OperatorNotice`·`SettingsConnectionRevoke`)이 `findBy` 기본 대기 1초를 넘겨 간헐 실패하는 원인을 고친다.
+  evidence: 4.4 검증에서 `develop`(`edac317`) 그대로도 같은 실패가 났다 — 전체 실행 1471건 중 3건, `App.test.tsx`를 다른 두 파일과 함께 돌리면 3회 중 3회(1030~1054ms 시간초과). 파일 하나씩 돌리면 모두 통과하고 CI `frontend-quality`(Linux)는 통과한다. 4.4는 이 파일들과 운영자 화면을 바꾸지 않았다(4.4 검증, 2026-10-16).
