@@ -183,7 +183,9 @@ describe('GPT web interstitial adapter: 준비', () => {
     expect(getObservedStorageEntries()).toEqual([])
   })
 
-  it('3초 안에 우리 slot이 준비되면 시한이 지나도 실패하지 않고 머문다', () => {
+  // 준비는 준비 시한만 해제한다 — adapter가 준비 시한 뒤 스스로 실패하지 않는다는 사실만 고정한다. 준비된 광고의 수명 상한은
+  // adapter 계약 밖이고 화면이 소비 창(`AD_CLAIM_WINDOW_SECONDS`)에 취소로 건다(`AdTransitionScreen`, Epic 4 회고 AI-1).
+  it('3초 안에 우리 slot이 준비되면 준비 시한이 지나도 실패하지 않는다 — 수명 상한은 adapter 밖(화면)', () => {
     const onFailure = vi.fn()
     showInterstitial(AD_UNIT_PATH, onFailure)
     const gpt = loadGpt()
