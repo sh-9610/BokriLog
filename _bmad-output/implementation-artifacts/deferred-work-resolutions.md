@@ -22,6 +22,8 @@ decision_baseline: 'ERD-1.0.0'
 | 미해소 | 110 |
 | 미판정 | 0 |
 
+**2026-10-17 갱신(Epic 4 회고 AI-1 fix done 전환).** `spec-ad-slot-lifetime.md`(PR #116, 머지 커밋 `24e8443`)는 판정할 항목이 없다. 이 fix는 `deferred-work.md`에 아무것도 append하지 않았고(리뷰 결과 defer 0건), 해소한 항목도 없으며, 이 fix를 결정 지점으로 지목한 항목도 없다. 광고 transition 수명을 다룬 **149**는 Story 4.3 done 전환이 이미 해소로 판정했다. 표는 158건 그대로다.
+
 **2026-10-16 갱신(Story 4.4 done 전환).** `spec-4-4-ad-fail-open.md`(PR #113, 머지 커밋 `ec51014`)는 판정 둘을 남겼다.
 - **append한 항목.** 셋을 더했고 모두 미해소다.
   - **156** 광고 이벤트 분리 계측 — 범위 분할로 뗐다

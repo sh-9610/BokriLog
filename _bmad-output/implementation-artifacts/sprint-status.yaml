@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 10-16-2026 17:09
+last_updated: 10-17-2026 09:00
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -376,7 +376,7 @@ action_items:
       결과로 보낸다. 준비 뒤 무기한 머묾을 고정한 gptAdapter.test.ts:186을 상한 시험으로 바꾼다(회고 B-1, 사용자 결정
       2026-10-16)"
     owner: "다음 fix(bmad-build)"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
   - id: "epic-4-retro-item-41-문서-주석-정합-4-2-4-3이-기존-파일에-쓴-영어-주석-usedash"
     epic: 4
