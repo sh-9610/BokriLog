@@ -20,6 +20,12 @@ export const AD_ELIGIBILITY_PATH = '/api/engagement/ad-eligibility'
 /** transition 소비(Story 4.3). 백엔드 `AdTransitionController.AD_TRANSITION_PATH`와 같은 값이다. */
 export const AD_TRANSITION_CLAIM_PATH = '/api/engagement/ad-transition'
 
+/**
+ * 소비 창(초). 백엔드 `AdTransitionApi.CLAIM_WINDOW_SECONDS`와 같은 값이다(`AdClaimWindowTest`가 대조한다). 중립 화면은 준비된
+ * 광고를 이 문서가 시작된 뒤 이 시간까지만 띄울 수 있게 두고, 그때까지 `결과 보기`를 누르지 않았으면 광고를 취소하고 결과로 간다.
+ */
+export const AD_CLAIM_WINDOW_SECONDS = 120
+
 /** transition 참조의 모양 — 256비트 base64url 무패딩 43자. 서버 스키마 CHECK와 같다. */
 export const TRANSITION_PATTERN = /^[A-Za-z0-9_-]{43}$/
 

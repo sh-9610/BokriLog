@@ -1,8 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { StrictMode } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 
 import { showInterstitial } from '../ads/gptAdapter'
 import {
+  AD_CLAIM_WINDOW_SECONDS,
   AD_TRANSITION_PATH,
   adTransitionContent,
   adTransitionCopyStrings,
@@ -436,6 +438,319 @@ describe('중립 전환 화면: 결과 보기·복원·언마운트', () => {
     window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
 
     expect(cancelAd).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).not.toHaveBeenCalled()
+  })
+})
+
+describe('중립 전환 화면: 준비된 광고의 수명 상한', () => {
+  /** 서버 소비 창(ms). 화면은 문서 시작(`performance.now()` 0)부터 센다. */
+  const WINDOW_MS = AD_CLAIM_WINDOW_SECONDS * 1000
+
+  /** 문서 나이(ms). `performance.now`는 가짜 시계가 아니다 — 마운트 시점의 값을 고정한다(기본은 방금 시작한 문서). */
+  let documentAge: MockInstance<() => number>
+
+  beforeEach(() => {
+    documentAge = vi.spyOn(performance, 'now').mockReturnValue(0)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  /** 가짜 시계 아래에서는 `waitFor`가 돌지 않는다 — 응답·effect 연쇄를 microtask로 흘린다. */
+  async function settle(): Promise<void> {
+    for (let turn = 0; turn < 10; turn += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+    }
+  }
+
+  async function advance(ms: number): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms)
+    })
+  }
+
+  function showingAd(): { failLater: () => void } {
+    let onFailure: () => void = () => undefined
+    vi.mocked(showInterstitial).mockImplementation((_path, failure) => {
+      onFailure = failure
+      return cancelAd
+    })
+    signedIn()
+    claims(() => Promise.resolve(json({ outcome: 'SHOW', adUnitPath: AD_UNIT_PATH })))
+    open(`?t=${TRANSITION}`)
+    return {
+      failLater: () => {
+        onFailure()
+      },
+    }
+  }
+
+  it('창 안에서 결과 보기를 눌렀으면 상한이 와도 광고를 취소하지 않고 이동하지 않는다', async () => {
+    showingAd()
+    render(<AdTransitionScreen />)
+    await settle()
+    expect(showInterstitial).toHaveBeenCalledTimes(1)
+
+    await advance(WINDOW_MS - 1)
+    const notPrevented = fireEvent.click(
+      screen.getByRole('link', { name: adTransitionContent.viewResult }),
+    )
+    expect(notPrevented).toBe(true)
+    await advance(WINDOW_MS)
+
+    expect(cancelAd).not.toHaveBeenCalled()
+    expect(replaceLocation).not.toHaveBeenCalled()
+  })
+
+  it('준비된 채 상한까지 누르지 않으면 광고를 한 번 취소한 뒤 결과로 한 번 간다', async () => {
+    showingAd()
+    render(<AdTransitionScreen />)
+    await settle()
+    expect(showInterstitial).toHaveBeenCalledTimes(1)
+
+    await advance(WINDOW_MS - 1)
+    expect(cancelAd).not.toHaveBeenCalled()
+    expect(replaceLocation).not.toHaveBeenCalled()
+    await advance(1)
+
+    expect(cancelAd).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    expect(cancelAd.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(replaceLocation).mock.invocationCallOrder[0] ?? 0,
+    )
+
+    // 그 뒤의 닫기·시간은 두 번째 이동을 만들지 않는다.
+    fireEvent.click(screen.getByRole('button', { name: adTransitionContent.close }))
+    await advance(WINDOW_MS)
+    expect(cancelAd).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+    expect(showInterstitial).toHaveBeenCalledTimes(1)
+    expect(claimCount()).toBe(1)
+  })
+
+  it('남은 시간만큼만 기다린다 — 늦게 열린 문서는 문서 시작 기준의 상한에 떠난다', async () => {
+    documentAge.mockReturnValue(WINDOW_MS - 1_000)
+    showingAd()
+    render(<AdTransitionScreen />)
+    await settle()
+    expect(showInterstitial).toHaveBeenCalledTimes(1)
+
+    await advance(999)
+    expect(replaceLocation).not.toHaveBeenCalled()
+    await advance(1)
+
+    expect(cancelAd).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+  })
+
+  it('소비 응답이 상한 뒤에 오면 SHOW여도 adapter를 부르지 않고 이동은 한 번이다', async () => {
+    signedIn()
+    let answer: (response: Response) => void = () => undefined
+    claims(
+      () =>
+        new Promise<Response>((resolve) => {
+          answer = resolve
+        }),
+    )
+    open(`?t=${TRANSITION}`)
+    render(<AdTransitionScreen />)
+    await settle()
+    expect(claimCount()).toBe(1)
+
+    // 이 대역은 중단 신호에도 답하지 않는다 — 소비 요청 자기 시한이 아니라 상한이 떠나게 한다.
+    await advance(WINDOW_MS - 1)
+    expect(replaceLocation).not.toHaveBeenCalled()
+    await advance(1)
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+
+    answer(json({ outcome: 'SHOW', adUnitPath: AD_UNIT_PATH }))
+    await settle()
+
+    expect(showInterstitial).not.toHaveBeenCalled()
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+  })
+
+  it('창이 이미 지난 문서는 마운트 커밋에서 주소를 지운 뒤 바로 결과로 가고 소비하지 않는다', async () => {
+    documentAge.mockReturnValue(WINDOW_MS)
+    showingAd()
+
+    render(<AdTransitionScreen />)
+
+    // 마운트 커밋에서 이미 떠났다 — 시계를 흘리지 않았다.
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    expect(replaceAddress).toHaveBeenCalledWith(AD_TRANSITION_PATH)
+    expect(vi.mocked(replaceAddress).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(replaceLocation).mock.invocationCallOrder[0] ?? 0,
+    )
+    await settle()
+    await advance(WINDOW_MS)
+    expect(claimCount()).toBe(0)
+    expect(showInterstitial).not.toHaveBeenCalled()
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+  })
+
+  it('창이 이미 지난 문서를 StrictMode로 렌더해도 이동은 한 번이다', async () => {
+    documentAge.mockReturnValue(WINDOW_MS)
+    showingAd()
+
+    render(
+      <StrictMode>
+        <AdTransitionScreen />
+      </StrictMode>,
+    )
+
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    await settle()
+    await advance(WINDOW_MS)
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+    expect(claimCount()).toBe(0)
+    expect(showInterstitial).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['Ctrl', { ctrlKey: true }],
+    ['Cmd', { metaKey: true }],
+    ['Shift', { shiftKey: true }],
+    ['Alt', { altKey: true }],
+    ['가운데 버튼', { button: 1 }],
+  ] as const)(
+    '%s 클릭은 떠남이 아니다 — 이 탭은 남으므로 상한에 광고를 한 번 취소하고 한 번 이동한다',
+    async (_name, init) => {
+      showingAd()
+      render(<AdTransitionScreen />)
+      await settle()
+      expect(showInterstitial).toHaveBeenCalledTimes(1)
+
+      const notPrevented = fireEvent.click(
+        screen.getByRole('link', { name: adTransitionContent.viewResult }),
+        init,
+      )
+      expect(notPrevented).toBe(true)
+      expect(replaceLocation).not.toHaveBeenCalled()
+      await advance(WINDOW_MS)
+
+      expect(cancelAd).toHaveBeenCalledTimes(1)
+      expect(replaceLocation).toHaveBeenCalledTimes(1)
+      expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+      expect(cancelAd.mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(replaceLocation).mock.invocationCallOrder[0] ?? 0,
+      )
+    },
+  )
+
+  it('창이 지난 시점의 결과 보기 클릭은(상한 타이머가 늦었다) 기본 이동을 막고 광고를 취소한 뒤 한 번 이동한다', async () => {
+    showingAd()
+    render(<AdTransitionScreen />)
+    await settle()
+    expect(showInterstitial).toHaveBeenCalledTimes(1)
+
+    // 백그라운드 탭 스로틀링·절전으로 상한 타이머가 아직 돌지 않았다 — 시계를 흘리지 않고 문서 나이만 창을 넘긴다.
+    documentAge.mockReturnValue(WINDOW_MS)
+    const notPrevented = fireEvent.click(
+      screen.getByRole('link', { name: adTransitionContent.viewResult }),
+    )
+
+    expect(notPrevented).toBe(false)
+    expect(cancelAd).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    expect(cancelAd.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(replaceLocation).mock.invocationCallOrder[0] ?? 0,
+    )
+
+    // 늦게 도는 상한 타이머·다시 누른 클릭은 두 번째 이동을 만들지 않는다.
+    await advance(WINDOW_MS)
+    fireEvent.click(screen.getByRole('link', { name: adTransitionContent.viewResult }))
+    expect(cancelAd).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    [
+      '닫기',
+      async (): Promise<void> => {
+        showingAd()
+        render(<AdTransitionScreen />)
+        await settle()
+        fireEvent.click(screen.getByRole('button', { name: adTransitionContent.close }))
+      },
+      1,
+    ],
+    [
+      'adapter 실패',
+      async (): Promise<void> => {
+        const { failLater } = showingAd()
+        render(<AdTransitionScreen />)
+        await settle()
+        act(() => {
+          failLater()
+        })
+      },
+      1,
+    ],
+    [
+      '건너뜀',
+      async (): Promise<void> => {
+        signedIn()
+        claims(() => Promise.resolve(json({ outcome: 'SKIP', reason: 'CONSUMED' })))
+        open(`?t=${TRANSITION}`)
+        render(<AdTransitionScreen />)
+        await settle()
+      },
+      0,
+    ],
+  ] as const)(
+    '%s로 이미 떠났으면 상한은 두 번째 이동을 만들지 않는다',
+    async (_name, conclude, cancels) => {
+      await conclude()
+      expect(replaceLocation).toHaveBeenCalledTimes(1)
+
+      await advance(WINDOW_MS)
+
+      expect(replaceLocation).toHaveBeenCalledTimes(1)
+      expect(cancelAd).toHaveBeenCalledTimes(cancels)
+    },
+  )
+
+  it('StrictMode 이중 실행에서도 상한의 이동은 한 번이고, 언마운트 뒤 남는 타이머가 없다', async () => {
+    showingAd()
+    const { unmount } = render(
+      <StrictMode>
+        <AdTransitionScreen />
+      </StrictMode>,
+    )
+    await settle()
+    expect(showInterstitial).toHaveBeenCalledTimes(1)
+
+    await advance(WINDOW_MS)
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+    expect(cancelAd).toHaveBeenCalledTimes(1)
+
+    unmount()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('상한 전에 언마운트되면 상한 타이머가 남지 않는다', async () => {
+    showingAd()
+    const { unmount } = render(
+      <StrictMode>
+        <AdTransitionScreen />
+      </StrictMode>,
+    )
+    await settle()
+
+    unmount()
+    expect(vi.getTimerCount()).toBe(0)
+    await advance(WINDOW_MS)
     expect(replaceLocation).not.toHaveBeenCalled()
   })
 })

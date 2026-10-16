@@ -1,7 +1,16 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactElement,
+} from 'react'
 
 import { showInterstitial } from '../ads/gptAdapter'
 import {
+  AD_CLAIM_WINDOW_SECONDS,
   AD_TRANSITION_PARAMETER,
   AD_TRANSITION_PATH,
   adTransitionContent,
@@ -31,12 +40,14 @@ export function AdTransitionScreen(): ReactElement | null {
   const [transition] = useState(transitionInAddress)
 
   /*
-   * 주소에서 참조를 지운다(그 뒤에야 공급자 script가 load될 수 있다). 참조가 없으면 떠난다. layout effect다 — passive effect면
-   * 화면이 이미 보이는데 주소에 참조가 남아 있는 틈이 생기고, 아래 화면의 소비 요청(passive)보다 반드시 앞선다.
+   * 참조가 없으면 주소를 정리하고 떠난다. 참조가 있으면 주소 정리는 중립 화면의 첫 layout effect가 한다 — 자식의 layout effect가
+   * 부모의 것보다 먼저 돌므로, 여기서 지우면 중립 화면이 마운트 커밋에서 떠나는 경우(늦게 연 문서의 수명 상한)에 이동이 주소
+   * 정리보다 앞선다.
    */
   useLayoutEffect(() => {
+    if (transition !== null) return
     replaceAddress(AD_TRANSITION_PATH)
-    if (transition === null) replaceLocation(DASHBOARD_PATH)
+    replaceLocation(DASHBOARD_PATH)
   }, [transition])
 
   return transition === null ? null : <NeutralAdTransition transition={transition} />
@@ -48,6 +59,9 @@ export function AdTransitionScreen(): ReactElement | null {
  * 세션이 확인되면 서버에 참조를 소비시키고, `SHOW`일 때만 GPT adapter를 부른다. 광고는 `결과 보기` anchor 클릭이 띄운다.
  * `광고 닫기`, 그리고 `SHOW`가 아닌 모든 결말(건너뜀·401·403·404·오류·시간 초과·adapter 실패)은 광고 없이 `/dashboard`로
  * 간다(덮어쓰기 — 이 화면은 히스토리에 남지 않는다).
+ *
+ * 준비된 광고의 수명은 서버 소비 창(`AD_CLAIM_WINDOW_SECONDS`, 결정 뒤 120초)에 묶는다 — 이 문서가 시작된 뒤 그 시간까지
+ * `결과 보기`를 누르지 않았으면 광고를 취소하고 결과로 간다(Epic 4 회고 AI-1).
  *
  * DOM에 금융값·계획값·신뢰 상태·사용자/결과 식별이 없다. `광고` 표지와 네이티브 `광고 닫기`가 첫 조작이자 최초 포커스이고, 대시보드
  * 카드의 입체 언어(테두리 상자·그림자)를 쓰지 않는다. `결과 보기` 외의 anchor는 interstitial trigger가 아니어야 한다
@@ -82,9 +96,35 @@ function NeutralAdTransition({ transition }: { readonly transition: string }): R
    * `결과 보기`를 눌렀다 — anchor의 기본 이동(과, 준비된 광고면 GPT가 그 클릭으로 띄우는 interstitial)이 결과로 간다. 이 화면은
    * 더 이동하지 않는다: 그 뒤의 늦은 실패(준비 시한 등)·닫기가 `replaceLocation`으로 두 번째 이동을 만들지 않게 떠나는 표시만
    * 세운다. 광고를 취소하지 않는다(준비된 광고는 이 클릭이 띄운다). 기본 동작을 막지 않는다.
+   *
+   * 보조키(Ctrl·Cmd·Shift·Alt) 클릭과 주 버튼이 아닌 클릭은 떠남이 아니다 — 새 탭·창으로 열어도 이 탭은 남으므로 수명 상한과 닫기가
+   * 계속 동작해야 한다. 아무것도 하지 않는다.
+   *
+   * 클릭 시점에 이미 소비 창이 지났으면 기본 이동을 막고 `leave`로 간다(광고 취소 → 이동 한 번). 백그라운드 탭 스로틀링·절전으로
+   * 수명 상한 타이머가 늦게 도는 경우에 대한 방어다. GPT의 클릭 처리와의 순서는 실제 소재로 보는 G-4 몫이고, 이 검사는 타이머
+   * 지연에 대한 방어다.
    */
-  const followResult = useCallback((): void => {
-    leaving.current = true
+  const followResult = useCallback(
+    (event: MouseEvent<HTMLAnchorElement>): void => {
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
+        return
+      }
+      if (performance.now() >= AD_CLAIM_WINDOW_SECONDS * 1000) {
+        event.preventDefault()
+        leave()
+        return
+      }
+      leaving.current = true
+    },
+    [leave],
+  )
+
+  /*
+   * 주소에서 참조를 지운다(그 뒤에야 공급자 script가 load될 수 있다). 이 컴포넌트의 첫 layout effect다 — 아래의 수명 상한·게이트
+   * 이동보다, 그리고 소비 요청(passive)보다 반드시 앞선다. passive effect면 화면이 이미 보이는데 주소에 참조가 남아 있는 틈이 생긴다.
+   */
+  useLayoutEffect(() => {
+    replaceAddress(AD_TRANSITION_PATH)
   }, [])
 
   // 최초 포커스는 닫기다. 커밋과 함께 성립해야 하므로 layout effect다.
@@ -138,6 +178,26 @@ function NeutralAdTransition({ transition }: { readonly transition: string }): R
     }, SESSION_REQUEST_TIMEOUT_MS)
     return () => {
       window.clearTimeout(deadline)
+    }
+  }, [leave])
+
+  /*
+   * 준비된 광고의 수명 상한(Epic 4 회고 AI-1). 광고를 띄울 수 있는 기간은 서버 소비 창(결정 뒤 120초)이고, 화면은 그 시작을 이
+   * 문서가 시작된 시각으로 근사한다 — 대시보드는 자격 응답을 받은 자리에서 문서를 이동하므로 문서 시작은 결정 뒤 응답 전송 시간만큼
+   * 늦을 뿐이다. 기준은 `performance.now()`(문서 시작부터 흐른 단조 시간)이고 벽시계를 쓰지 않는다. 상한까지 `결과 보기`를 누르지
+   * 않았으면 `leave` 한 경로로 떠난다 — 광고 취소(slot 파기)가 먼저이고 이동은 한 번이며, 늦게 온 SHOW는 adapter를 부르지 않는다.
+   * 이미 눌렀으면 `leave`가 아무것도 하지 않는다 — 클릭이 띄운 광고는 창 안에서 시작된 것이므로 표시 중에 파기하지 않는다. 남은
+   * 시간이 없으면(늦게 연 문서) 마운트 커밋에서 바로 떠나므로 소비 요청도 나가지 않는다. 타이머·이동이므로 layout effect다.
+   */
+  useLayoutEffect(() => {
+    const remaining = AD_CLAIM_WINDOW_SECONDS * 1000 - performance.now()
+    if (remaining <= 0) {
+      leave()
+      return
+    }
+    const limit = window.setTimeout(leave, remaining)
+    return () => {
+      window.clearTimeout(limit)
     }
   }, [leave])
 
