@@ -6,7 +6,7 @@ import {
   AD_TRANSITION_CLAIM_PATH,
   AD_TRANSITION_PATH,
 } from '../src/content/adTransition'
-import { authContent } from '../src/content/auth'
+import { authContent, ONBOARDING_PATH } from '../src/content/auth'
 import { planConditionContent } from '../src/content/planConditions'
 import { planResultContent } from '../src/content/planResult'
 import { planSyncContent } from '../src/content/planSync'
@@ -147,7 +147,10 @@ test.describe('중립 전환 화면 · 주입 origin', () => {
     // 참조 없음(새로고침·뒤로 가기 재진입): API 요청 없이(세션 확인도 없이) 결과 문서로 덮어쓴다. 결과 문서가 뜬 뒤의 요청은
     // 그 화면의 것이다.
     await page.goto(AD_TRANSITION_PATH)
-    await expect.poll(() => paths(requests, 'GET', '/dashboard').length).toBe(1)
+    // 연결이 없는 새 계정이라 결과 문서는 세션 확인 뒤 서버가 고른 목적지(`/onboarding`)로 다시 덮어쓴다. 그 이동이 끝나기 전에
+    // 다음 `goto`를 걸면 그 이동에 끊긴다(PR #111 CI 세 번째 실패 원인) — 결과 문서의 GET 기록이 아니라 최종 착지를 기다린다.
+    await page.waitForURL((next) => next.pathname === ONBOARDING_PATH)
+    expect(paths(requests, 'GET', '/dashboard')).toHaveLength(1)
     const transitionDocument = paths(requests, 'GET', AD_TRANSITION_PATH)[0]
     const resultDocument = paths(requests, 'GET', '/dashboard')[0]
     expect(transitionDocument).toBeDefined()
@@ -167,12 +170,13 @@ test.describe('중립 전환 화면 · 주입 origin', () => {
     )
     await page.goto(`${AD_TRANSITION_PATH}?t=${forgedReference()}`)
     expect((await claimed).status()).toBe(404)
-    await expect.poll(() => paths(requests, 'GET', '/dashboard').length).toBe(2)
+    // 여기서도 결과 문서를 거쳐 `/onboarding`까지 간 뒤에 저장소를 읽는다 — 중간 문서에서 읽으면 그 이동에 실행 문맥이 사라진다.
+    await page.waitForURL((next) => next.pathname === ONBOARDING_PATH)
+    expect(paths(requests, 'GET', '/dashboard')).toHaveLength(2)
     // 결과 문서 요청에 참조가 실리지 않는다.
     for (const request of paths(requests, 'GET', '/dashboard')) {
       expect(new URL(request.url()).search).toBe('')
     }
-    await page.waitForURL((next) => next.pathname !== AD_TRANSITION_PATH)
 
     expect(external(requests, origin)).toEqual([])
     expect(await storage(page)).toEqual(EMPTY_STORAGE)
