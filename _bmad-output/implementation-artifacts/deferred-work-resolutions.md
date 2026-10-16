@@ -2,7 +2,7 @@
 title: 'Deferred Work 해소 원장'
 status: living
 created: '2026-09-02'
-updated: '2026-10-15'
+updated: '2026-10-16'
 applies_to: '_bmad-output/implementation-artifacts/deferred-work.md'
 decision_baseline: 'ERD-1.0.0'
 ---
@@ -17,10 +17,20 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 26 |
+| 해소 | 28 |
 | 부분 해소 | 20 |
-| 미해소 | 106 |
+| 미해소 | 107 |
 | 미판정 | 0 |
+
+**2026-10-16 갱신(Story 4.3 done 전환).** `spec-4-3-neutral-ad-transition.md`(PR #111, 머지 커밋 `61aac2b`)는 판정 셋을 남겼다.
+- **해소한 항목.** 이 스토리를 주인으로 지목한 **149**(transition 소비·수명)·**150**(후보 신선도)을 해소로 판정했다. 149는 1회 소비와 120초 수명으로 닫았고, 150은 술어를 바꾸지 않고 그 소비 창으로 묶는 결정으로 닫았다.
+- **append한 항목.** 셋을 더했고 모두 미해소다.
+  - **153** CSP 후보값 실측·SHOW 왕복 — 주인 G-4
+  - **154** 광고 단위 경로 형식(MCM) — 주인 G-4
+  - **155** 주입 origin e2e 새 스택 첫 실행 간헐 실패 — 주인 없음
+- **재확인한 항목.** **151**은 같은 성격의 `BOKRILOG_AD_UNIT_PATH`가 더해져 재확인했다(미해소 그대로).
+
+그래서 앞 표(152건)에서 해소 +2, 미해소 −2+3이다 — 합 155.
 
 **2026-10-15 갱신(Story 4.2 done 전환).** `spec-4-2-ad-eligibility.md`(PR #109, 머지 커밋 `090efb9`)가 `deferred-work.md`에 항목 넷을 append했고 모두 미해소로 판정했다.
 - **149** transition 소비·수명 — 주인 Story 4.3
@@ -1079,6 +1089,11 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소 잔여:** 4.3이 광고를 시도할 때 transition을 한 번만 쓰게(소비) 하거나 수명을 두어, 같은 결정의 재전송이 세지지 않는 노출이 되지 않게 하는 일. 주인은 Story 4.3이다.
 
+**해소(2026-10-16, Story 4.3 판정, 기준 `61aac2b`).** Story 4.3(`spec-4-3-neutral-ad-transition.md`, PR #111)이 닫았다. 4.2의 재전송이 같은 참조를 돌려주는 계약은 그대로 두고, 노출 쪽에 소비와 수명을 더했다.
+- **소비는 한 번이다.** `POST /api/engagement/ad-transition`이 사용자 잠금 → 쓰기 접근 → 행 `FOR UPDATE` 아래에서 판정하고, SKIP이든 SHOW든 `transition_consumed_at`을 조건부 UPDATE로 쓴다(`AdTransitionService.java:52-73`, `AdAttemptRepository.java:125`·`138`, 열은 `V28`). 두 번째 소비는 `CONSUMED`다.
+- **수명은 결정 뒤 120초다.** `AdTransitionApi.CLAIM_WINDOW_SECONDS`(DB 시각)를 넘으면 `EXPIRED`이고 소비를 기록한다.
+- **시험이 지킨다.** `AdTransitionTest`의 처음 소비만 SHOW·자격 재전송 뒤 소비도 `CONSUMED`(`:68`), 120초 경계(`:121`), 동시 소비 중 하나만 SHOW(`:252`)가 PR #111 CI(`backend-quality`)에서 통과했다.
+
 ### 150. 광고 자격 후보의 신선도
 
 **미해소(2026-10-15, Story 4.2 판정, 기준 `090efb9`).** Story 4.2(PR #109)의 리뷰가 이 항목을 append했다.
@@ -1086,6 +1101,11 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **횟수는 묶여 있다.** 빈도 제한(30분·하루 3회)이 횟수를 묶는다. 다만 오래된 수동 성공도 처음 판정이면 reservation을 얻는다.
 
 **미해소 잔여:** 결과 보기 클릭 흐름에 맞는 신선도 조건을 정하는 일. 주인은 Story 4.3이다.
+
+**해소(2026-10-16, Story 4.3 판정, 기준 `61aac2b`) — 결정으로 닫음.** 주인인 Story 4.3이 신선도 조건을 정했다. 판정 술어(`publishedManualSync`)에 시각 조건을 더하지 않고, 노출의 신선도를 결정 뒤 120초의 소비 창으로 묶는다(`spec-4-3-neutral-ad-transition.md` Design Notes "소비가 149를 닫는다").
+- **근거.** 오래된 수동 성공을 처음 판정해도 얻는 것은 빈도 cap 한 칸과 120초 안에만 쓸 수 있는 참조다. 대시보드는 자기 화면에서 접수한 MANUAL job의 성공에만 판정을 부른다(`CLAUDE.md` 광고 시도 4.3 계약).
+- **시험.** 창 경계는 `AdTransitionTest.java:121`이 PR #111 CI에서 지켰다.
+- **남는 성질.** 술어가 그대로이므로, 사용자가 직접 API로 오래된 job을 판정하면 cap을 소비할 수 있다. 이것은 결정된 수용이며 새 잔여로 남기지 않는다.
 
 ### 151. `BOKRILOG_AD_PROVIDER_ENABLED`의 배포 연결
 
@@ -1096,6 +1116,10 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소 잔여:** 실제 광고 계정·ad unit 승인과 함께 이 변수를 운영 compose와 preflight에 연결하고, 승인 전 켜짐을 막을지 정하는 일. 주인은 광고 출시 게이트(`AD-GPT-1.0`의 실제 network·ad unit 승인)다.
 
+**미해소(2026-10-16, Story 4.3 판정, 기준 `61aac2b`) — 재확인.** Story 4.3(PR #111)이 같은 성격의 변수 `BOKRILOG_AD_UNIT_PATH`를 더했다(`application.yml:244`·`249`, 기본 빈 값). 이 변수도 개발·운영 compose와 preflight 어디에도 없다. 형식이 맞지 않거나 비어 있으면 공급자가 꺼진 것으로 접히므로(`PROVIDER_DISABLED`) 지금도 안전하다.
+
+**미해소 잔여:** 위 잔여에 `BOKRILOG_AD_UNIT_PATH`를 더한다. 두 변수를 함께 운영 compose와 preflight에 연결한다. 주인은 그대로 광고 출시 게이트다.
+
 ### 152. 광고 자격 결정 행의 보존 기한
 
 **미해소(2026-10-15, Story 4.2 판정, 기준 `090efb9`).** Story 4.2(PR #109)의 리뷰가 이 항목을 append했다.
@@ -1103,3 +1127,28 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **필요한 이력보다 오래 남는다.** 빈도 판정에는 하루 남짓, 재전송에는 짧은 창의 이력만 필요하다.
 
 **미해소 잔여:** 보존 기한과 정리 경로를 정하는 일. 동의 이력(항목 148)과 함께 정한다. 주인은 G-4(개인정보 검토)다.
+
+### 153. `/ad-transition` CSP 후보값의 실측과 SHOW 왕복의 브라우저 검증
+
+**미해소(2026-10-16, Story 4.3 판정, 기준 `61aac2b`).** Story 4.3(`spec-4-3-neutral-ad-transition.md`, PR #111)의 리뷰가 이 항목을 append했다.
+- **후보값을 고정했다.** `deploy/nginx/bokrilog.conf:102`의 `/ad-transition` CSP 값은 공급자 문서 기준 후보이고, `verify-same-origin.sh:625`가 그 값을 그대로 단정한다. 실제 GPT 요청으로 잰 값이 아니다.
+- **SHOW 경로를 밟지 않는다.** 주입 origin e2e는 공급자 꺼짐 경로만 본다. 실제 광고 계정이 없고 저장소 e2e는 `page.route` 대역을 쓰지 않는다.
+
+**미해소 잔여:** 공급자를 켠 스택에서 실제 GPT 요청으로 CSP 값을 보정하고, 주소 정리 → gpt.js load → interstitial → 결과 왕복을 브라우저 층에서 확인하는 일. 주인은 광고 출시 게이트 G-4다.
+
+### 154. 광고 단위 경로 형식과 GAM MCM 경로
+
+**미해소(2026-10-16, Story 4.3 판정, 기준 `61aac2b`).** Story 4.3(PR #111)의 리뷰가 이 항목을 append했다.
+- **형식이 좁을 수 있다.** 경로 형식 `^/[0-9]+(/[A-Za-z0-9_.-]+)+$`는 MCM 경로(`/<parent>,<child>/unit`)를 거부한다. 맞지 않으면 기동 거부 없이 공급자만 꺼진다(`PROVIDER_DISABLED`).
+- **사본이 둘이다.** 같은 정규식이 백엔드(`AdProviderState.java:18`)와 프런트엔드(`frontend/src/session/adTransition.ts:20`)에 따로 있다. 이 정규식은 4.3 SPEC의 승인된 계약이라 4.3에서 바꾸지 않았다.
+
+**미해소 잔여:** 실제 계정의 network code 형식을 확인하고, 넓혀야 하면 두 사본을 공유 fixture 하나로 묶어 함께 바꾸는 일. 주인은 광고 계정 승인(G-4)이다.
+
+### 155. 주입 origin e2e의 새 스택 첫 실행 간헐 실패
+
+**미해소(2026-10-16, Story 4.3 판정, 기준 `61aac2b`).** Story 4.3(PR #111)의 검증이 이 항목을 append했다.
+- **관측.** `ad-consent.spec.ts:71`이 로그인 직후 `/settings`를 미인증 진입 화면으로 열어 5초 시간초과로 실패했다. 4.3 로컬 검증의 전체 실행 다섯 번 중 두 번이고, 둘 다 스택을 새로 띄운 뒤 첫 실행이었다.
+- **같은 모양의 관측이 하나 더 있다.** PR #111의 시험 수정을 로컬에서 확인할 때(2026-10-16)도 새 스택의 첫 실행에서 `ad-transition.spec.ts:185`가 한 번 실패했다. 그 뒤 같은 파일 5회 반복(10건)과 전체 72건, CI는 모두 통과했다. 이때도 결과 파일이 다음 실행에 덮여 오류 내용을 남기지 못했다.
+- **원인을 가리지 못했다.** 세션 응답·쿠키·기동 직후 지연 가운데 무엇인지 trace가 없다. 4.3은 설정·인증 경로를 바꾸지 않았다.
+
+**미해소 잔여:** 새 스택 첫 실행에서 실패를 재현해 trace를 보존하고(예: 실패 시 `test-results`를 따로 복사) 원인을 찾는 일. 결정 지점이 정해지지 않았다 — 주인 없음, 다음 주입 origin e2e를 건드리는 작업이 이어받는다.
