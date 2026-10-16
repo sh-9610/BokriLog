@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 10-16-2026 12:50
+last_updated: 10-16-2026 15:20
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -86,7 +86,7 @@ development_status:
   4-1-문맥형-광고-동의를-선택하고-철회하기: done
   4-2-수동-동기화-성공-결과에-광고-자격과-빈도-제한-적용하기: done
   4-3-금융정보-없는-중립-화면에서-닫을-수-있는-광고-시도하기: done
-  4-4-모든-광고-실패에서-저장된-결과로-fail-open하고-광고만-비활성화하기: backlog
+  4-4-모든-광고-실패에서-저장된-결과로-fail-open하고-광고만-비활성화하기: review
   epic-4-retrospective: optional
 
   epic-5: backlog

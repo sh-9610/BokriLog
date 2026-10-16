@@ -63,18 +63,62 @@ function NeutralAdTransition({ transition }: { readonly transition: string }): R
   const closeButton = useRef<HTMLButtonElement>(null)
   const claimed = useRef(false)
   const leaving = useRef(false)
+  /** 시도 중인 광고의 취소(adapter가 돌려준 함수). SHOW 전에는 없다. */
+  const cancelAd = useRef<(() => void) | null>(null)
 
-  /** 광고 없이 결과로 간다. 두 번째 호출부터는 아무것도 하지 않는다. */
+  /**
+   * 광고 없이 결과로 간다. 두 번째 호출부터는 아무것도 하지 않는다 — 닫기든 adapter 실패든 이동은 한 번이다. 이동보다 먼저
+   * 광고를 취소한다(Story 4.4): 리스너·시한을 떼고 slot을 파기해, 이동과 문서 unload 사이에 광고가 뜨거나 늦은 callback이 오는
+   * 틈을 닫는다. adapter 실패로 불렸으면 adapter는 이미 결론을 냈고 취소는 아무것도 하지 않는다.
+   */
   const leave = useCallback((): void => {
     if (leaving.current) return
     leaving.current = true
+    cancelAd.current?.()
     replaceLocation(DASHBOARD_PATH)
+  }, [])
+
+  /**
+   * `결과 보기`를 눌렀다 — anchor의 기본 이동(과, 준비된 광고면 GPT가 그 클릭으로 띄우는 interstitial)이 결과로 간다. 이 화면은
+   * 더 이동하지 않는다: 그 뒤의 늦은 실패(준비 시한 등)·닫기가 `replaceLocation`으로 두 번째 이동을 만들지 않게 떠나는 표시만
+   * 세운다. 광고를 취소하지 않는다(준비된 광고는 이 클릭이 띄운다). 기본 동작을 막지 않는다.
+   */
+  const followResult = useCallback((): void => {
+    leaving.current = true
   }, [])
 
   // 최초 포커스는 닫기다. 커밋과 함께 성립해야 하므로 layout effect다.
   useLayoutEffect(() => {
     closeButton.current?.focus()
   }, [])
+
+  /*
+   * bfcache로 복원된 문서(`pageshow`의 `persisted`)는 재진입이다. 살아 있는 slot이 두 번째 interstitial을 띄워 서버 cap을 우회할 수
+   * 있으므로 광고를 취소하고 결과로 간다 — 떠나는 표시와 무관하다(복원 전에 이미 떠났던 문서다). 리스너이므로 layout effect다.
+   */
+  useLayoutEffect(() => {
+    const onPageShow = (event: PageTransitionEvent): void => {
+      if (!event.persisted) return
+      leaving.current = true
+      cancelAd.current?.()
+      replaceLocation(DASHBOARD_PATH)
+    }
+    window.addEventListener('pageshow', onPageShow)
+    return () => {
+      window.removeEventListener('pageshow', onPageShow)
+    }
+  }, [])
+
+  /*
+   * 언마운트되면 시도 중인 광고를 취소한다(리스너·시한·slot 정리). StrictMode의 이중 실행이 부르는 정리는 SHOW 전이라 취소가
+   * 아직 없어(`null`) 아무것도 하지 않는다 — 취소는 소비 응답 뒤에야 생긴다.
+   */
+  useLayoutEffect(
+    () => () => {
+      cancelAd.current?.()
+    },
+    [],
+  )
 
   /*
    * 미인증·삭제된 계정, 그리고 본인 확인이 필요한 세션은 결과 화면이 자기 규칙으로 다룬다(회복 경로가 그 화면에 있다). 이 화면은
@@ -111,7 +155,7 @@ function NeutralAdTransition({ transition }: { readonly transition: string }): R
         leave()
         return
       }
-      showInterstitial(claim.adUnitPath, leave)
+      cancelAd.current = showInterstitial(claim.adUnitPath, leave)
     })()
   }, [transition, csrfToken, leave])
 
@@ -126,7 +170,7 @@ function NeutralAdTransition({ transition }: { readonly transition: string }): R
       <main className={styles.main}>
         <h1 className={styles.heading}>{adTransitionContent.heading}</h1>
         <p className={styles.body}>{adTransitionContent.body}</p>
-        <a className={styles.viewResult} href={DASHBOARD_PATH}>
+        <a className={styles.viewResult} href={DASHBOARD_PATH} onClick={followResult}>
           {adTransitionContent.viewResult}
         </a>
         <div className={styles.notice}>

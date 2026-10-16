@@ -44,5 +44,5 @@
 
 ## Cross-Story Dependencies
 
-- 순서는 **4.1 동의 → 4.2 자격·빈도 제한 → 4.3 중립 화면·adapter → 4.4 단일 fail-open·광고 전용 정지**다. 4.2는 4.1의 동의 판독을, 4.3은 4.2의 reservation·result binding을, 4.4는 4.1~4.3 전체 경로를 전제한다.
-- 다른 Epic: 수동 동기화 성공과 원자 발행 결과(Story 2.11)가 trigger의 원천이고, 운영 제한의 `ADVERTISING` 판독·command(Story 3.2)가 광고 정지를, 관측 계측 기반(Story 3.7)이 지표와 Web Vitals kill switch를 받친다. 사용자 귀속 쓰기는 Epic 1의 삭제 상태 계약을 따르고, 여기서 만든 engagement deletion port는 Epic 5의 계정 삭제 orchestration이 연결한다.
+- 순서는 **4.1 동의 → 4.2 자격·빈도 제한 → 4.3 중립 화면·adapter → 4.4 단일 fail-open·광고 전용 정지**다. 4.4는 범위를 나눠 adapter의 단일 fail-open(준비 시한 3초·미채움·차단·예외·늦은 callback·취소 handle)만 구현했고, 광고 이벤트 분리 계측(AC-4)은 `deferred-work.md` 156, Web Vitals 수집과 성능 kill switch(AC-3 뒷부분)는 157로 뗐다(2026-10-16). 광고 전용 정지(AC-3 앞부분)는 기존 `ADVERTISING` 제한·관문이 지킨다. 4.2는 4.1의 동의 판독을, 4.3은 4.2의 reservation·result binding을, 4.4는 4.1~4.3 전체 경로를 전제한다.
+- 다른 Epic: 수동 동기화 성공과 원자 발행 결과(Story 2.11)가 trigger의 원천이고, 운영 제한의 `ADVERTISING` 판독·command(Story 3.2)가 광고 정지를, 광고 계측과 Web Vitals kill switch는 관측 계측 기반(Story 3.7) 위에 설 예정이었으나 4.4에서 떼어 `deferred-work.md` 156·157로 남았다. 사용자 귀속 쓰기는 Epic 1의 삭제 상태 계약을 따르고, 여기서 만든 engagement deletion port는 Epic 5의 계정 삭제 orchestration이 연결한다.

@@ -28,7 +28,7 @@ vi.mock('../session/navigation', () => ({
 vi.mock('../ads/gptAdapter', () => ({ showInterstitial: vi.fn() }))
 
 /**
- * Story 4.3: 금융정보 없는 중립 전환 화면. GPT adapter는 대역이다 — 이 시험은 화면이 adapter를 언제 부르고 언제 부르지 않는지,
+ * Story 4.3·4.4: 금융정보 없는 중립 전환 화면. GPT adapter는 대역이다 — 이 시험은 화면이 adapter를 언제 부르고 언제 부르지 않는지,
  * 그리고 DOM·주소·제목에 무엇이 없는지를 본다.
  */
 
@@ -72,10 +72,15 @@ function open(search: string): void {
 
 const originalTitle = document.title
 
+/** adapter가 돌려주는 취소(Story 4.4). 화면이 떠날 때 부르는지 본다. */
+const cancelAd = vi.fn()
+
 beforeEach(() => {
   vi.mocked(replaceLocation).mockClear()
   vi.mocked(replaceAddress).mockClear()
+  cancelAd.mockReset()
   vi.mocked(showInterstitial).mockReset()
+  vi.mocked(showInterstitial).mockReturnValue(cancelAd)
   document.title = '복리 계획 비교 · BokriLog'
 })
 
@@ -304,6 +309,7 @@ describe('중립 전환 화면: 소비', () => {
   it('adapter가 실패를 알리면(null slot·script 오류) 결과로 간다', async () => {
     vi.mocked(showInterstitial).mockImplementation((_path, onFailure) => {
       onFailure()
+      return cancelAd
     })
     signedIn()
     claims(() => Promise.resolve(json({ outcome: 'SHOW', adUnitPath: AD_UNIT_PATH })))
@@ -315,6 +321,122 @@ describe('중립 전환 화면: 소비', () => {
       expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
     })
     expect(showInterstitial).toHaveBeenCalledTimes(1)
+  })
+
+  it('adapter의 늦은 실패(시간초과·미채움)는 결과로 한 번 가고, 그 뒤의 실패·닫기는 두 번째 이동을 만들지 않는다', async () => {
+    let failLater: () => void = () => undefined
+    vi.mocked(showInterstitial).mockImplementation((_path, onFailure) => {
+      failLater = onFailure
+      return cancelAd
+    })
+    signedIn()
+    claims(() => Promise.resolve(json({ outcome: 'SHOW', adUnitPath: AD_UNIT_PATH })))
+    open(`?t=${TRANSITION}`)
+    render(<AdTransitionScreen />)
+    await waitFor(() => {
+      expect(showInterstitial).toHaveBeenCalledTimes(1)
+    })
+    expect(replaceLocation).not.toHaveBeenCalled()
+
+    act(() => {
+      failLater()
+    })
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    // 떠날 때 이동보다 먼저 취소를 부른다(adapter는 이미 실패로 종단했으므로 실제 adapter에서는 아무것도 하지 않는다).
+    expect(cancelAd).toHaveBeenCalledTimes(1)
+    expect(cancelAd.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(replaceLocation).mock.invocationCallOrder[0] ?? 0,
+    )
+
+    // 늦은 callback이 다시 실패를 알리거나 사용자가 닫아도 이동은 한 번이고 광고를 다시 시도하지 않는다.
+    act(() => {
+      failLater()
+    })
+    fireEvent.click(screen.getByRole('button', { name: adTransitionContent.close }))
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+    expect(showInterstitial).toHaveBeenCalledTimes(1)
+    expect(claimCount()).toBe(1)
+    expect(getObservedRequests()).toEqual([])
+  })
+})
+
+describe('중립 전환 화면: 결과 보기·복원·언마운트', () => {
+  async function showing(): Promise<{ failLater: () => void; unmount: () => void }> {
+    let onFailure: () => void = () => undefined
+    vi.mocked(showInterstitial).mockImplementation((_path, failure) => {
+      onFailure = failure
+      return cancelAd
+    })
+    signedIn()
+    claims(() => Promise.resolve(json({ outcome: 'SHOW', adUnitPath: AD_UNIT_PATH })))
+    open(`?t=${TRANSITION}`)
+    const { unmount } = render(<AdTransitionScreen />)
+    await waitFor(() => {
+      expect(showInterstitial).toHaveBeenCalledTimes(1)
+    })
+    return {
+      failLater: () => {
+        onFailure()
+      },
+      unmount,
+    }
+  }
+
+  it('결과 보기를 누른 뒤의 늦은 실패·닫기는 두 번째 이동을 만들지 않고, anchor의 기본 이동을 막지 않으며 광고를 취소하지 않는다', async () => {
+    const { failLater } = await showing()
+    const view = screen.getByRole('link', { name: adTransitionContent.viewResult })
+
+    // jsdom은 anchor 이동을 하지 않는다 — 기본 동작이 막히지 않았는지만 본다.
+    const notPrevented = fireEvent.click(view)
+    expect(notPrevented).toBe(true)
+    act(() => {
+      failLater()
+    })
+    fireEvent.click(screen.getByRole('button', { name: adTransitionContent.close }))
+
+    expect(replaceLocation).not.toHaveBeenCalled()
+    expect(cancelAd).not.toHaveBeenCalled()
+  })
+
+  it('bfcache로 복원되면(persisted) 광고를 취소하고 결과로 간다', async () => {
+    await showing()
+    const view = screen.getByRole('link', { name: adTransitionContent.viewResult })
+    // 결과 보기로 떠났던 문서가 뒤로 가기로 복원된다 — 떠나는 표시와 무관하게 간다.
+    fireEvent.click(view)
+
+    act(() => {
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
+    })
+
+    expect(cancelAd).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    expect(cancelAd.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(replaceLocation).mock.invocationCallOrder[0] ?? 0,
+    )
+  })
+
+  it('복원이 아닌 pageshow는 아무것도 하지 않는다', async () => {
+    await showing()
+
+    act(() => {
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }))
+    })
+
+    expect(cancelAd).not.toHaveBeenCalled()
+    expect(replaceLocation).not.toHaveBeenCalled()
+  })
+
+  it('언마운트되면 광고를 취소하고 pageshow 리스너를 뗀다', async () => {
+    const { unmount } = await showing()
+
+    unmount()
+    expect(cancelAd).toHaveBeenCalledTimes(1)
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
+
+    expect(cancelAd).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).not.toHaveBeenCalled()
   })
 })
 
@@ -355,9 +477,22 @@ describe('중립 전환 화면: 광고 닫기', () => {
       expect(showInterstitial).toHaveBeenCalledTimes(1)
     })
 
+    expect(cancelAd).not.toHaveBeenCalled()
+
     fireEvent.click(screen.getByRole('button', { name: adTransitionContent.close }))
 
+    // 이동보다 먼저 광고를 취소한다(Story 4.4) — 리스너·시한을 떼고 slot을 파기한다.
+    expect(cancelAd).toHaveBeenCalledTimes(1)
     expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+    expect(cancelAd.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(replaceLocation).mock.invocationCallOrder[0] ?? 0,
+    )
+
+    // 다시 눌러도 이동·취소는 한 번이다.
+    fireEvent.click(screen.getByRole('button', { name: adTransitionContent.close }))
+    expect(cancelAd).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
   })
 })
 
