@@ -216,6 +216,8 @@ abstract class AuthFlowTestBase {
      */
     @BeforeEach
     void resetStore() {
+        // 긴 빌드 도중 Docker VM 시계가 밀렸으면 이 시험의 엉뚱한 단정 대신 그 사실로 실패한다(Epic 4 회고 AI-6).
+        PostgresTestcontainersConfig.verifyClock();
         PostgresStoreReset.run(this.jdbc, this.storeResetTransactions, this::truncateStore);
     }
 

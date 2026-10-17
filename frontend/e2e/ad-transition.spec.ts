@@ -6,17 +6,17 @@ import {
   AD_TRANSITION_CLAIM_PATH,
   AD_TRANSITION_PATH,
 } from '../src/content/adTransition'
-import { authContent, ONBOARDING_PATH } from '../src/content/auth'
+import { ONBOARDING_PATH } from '../src/content/auth'
 import { planConditionContent } from '../src/content/planConditions'
 import { planResultContent } from '../src/content/planResult'
 import { planSyncContent } from '../src/content/planSync'
 import {
   collectAndClassify,
   connectAndSavePlan,
-  consent,
   publishAndOpenResult,
   startConversionByKeyboard,
 } from './support/firstPlan'
+import { signIn, unloadDocument, waitForLanding } from './support/navigation'
 
 /**
  * 금융정보 없는 중립 전환 화면의 실제 Chromium 검증(Story 4.3).
@@ -95,13 +95,6 @@ async function storage(page: Page): Promise<Record<string, unknown>> {
 
 const EMPTY_STORAGE = { local: 0, session: 0, cookie: '', databases: 0 }
 
-async function signIn(page: Page): Promise<void> {
-  await page.goto('/')
-  await page.getByRole('link', { name: authContent.signIn.labels.google }).click()
-  await consent(page, `e2e-ad-transition-${letters()}`)
-  await page.waitForURL((next) => next.pathname !== '/' && !next.pathname.startsWith('/api/'))
-}
-
 /** 지금 정책 버전으로 광고에 동의한다 — 공급자 꺼짐이 건너뜀의 사유가 되게 한다(동의가 첫 관문이다). */
 async function grantAdConsent(page: Page): Promise<void> {
   const status = await page.evaluate(
@@ -137,11 +130,11 @@ test.describe('중립 전환 화면 · 주입 origin', () => {
   test('참조 없음은 요청 없이, 위조 참조는 소비 404 뒤에 결과로 가고 GPT를 load하지 않는다', async ({
     page,
   }) => {
-    await signIn(page)
+    await signIn(page, `e2e-ad-transition-${letters()}`)
     const origin = new URL(page.url()).origin
     // 로그인 뒤 착지한 화면(세션 확인·대시보드·첫 스냅샷 조회)의 늦은 요청 이벤트는 다음 문서 요청보다 뒤에 기록될 수 있다.
     // 기록 전에 그 문서를 빈 문서로 완전히 내려 두어야 아래 셈이 중립 화면의 요청만 본다(PR #111 CI 두 번의 실패 원인).
-    await page.goto('about:blank')
+    await unloadDocument(page)
     const requests = recordRequests(page)
 
     // 참조 없음(새로고침·뒤로 가기 재진입): API 요청 없이(세션 확인도 없이) 결과 문서로 덮어쓴다. 결과 문서가 뜬 뒤의 요청은
@@ -149,7 +142,7 @@ test.describe('중립 전환 화면 · 주입 origin', () => {
     await page.goto(AD_TRANSITION_PATH)
     // 연결이 없는 새 계정이라 결과 문서는 세션 확인 뒤 서버가 고른 목적지(`/onboarding`)로 다시 덮어쓴다. 그 이동이 끝나기 전에
     // 다음 `goto`를 걸면 그 이동에 끊긴다(PR #111 CI 세 번째 실패 원인) — 결과 문서의 GET 기록이 아니라 최종 착지를 기다린다.
-    await page.waitForURL((next) => next.pathname === ONBOARDING_PATH)
+    await waitForLanding(page, ONBOARDING_PATH)
     expect(paths(requests, 'GET', '/dashboard')).toHaveLength(1)
     const transitionDocument = paths(requests, 'GET', AD_TRANSITION_PATH)[0]
     const resultDocument = paths(requests, 'GET', '/dashboard')[0]
@@ -171,7 +164,7 @@ test.describe('중립 전환 화면 · 주입 origin', () => {
     await page.goto(`${AD_TRANSITION_PATH}?t=${forgedReference()}`)
     expect((await claimed).status()).toBe(404)
     // 여기서도 결과 문서를 거쳐 `/onboarding`까지 간 뒤에 저장소를 읽는다 — 중간 문서에서 읽으면 그 이동에 실행 문맥이 사라진다.
-    await page.waitForURL((next) => next.pathname === ONBOARDING_PATH)
+    await waitForLanding(page, ONBOARDING_PATH)
     expect(paths(requests, 'GET', '/dashboard')).toHaveLength(2)
     // 결과 문서 요청에 참조가 실리지 않는다.
     for (const request of paths(requests, 'GET', '/dashboard')) {

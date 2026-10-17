@@ -1,8 +1,9 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page } from '@playwright/test'
 
-import { authContent } from '../src/content/auth'
+import { authContent, ONBOARDING_PATH } from '../src/content/auth'
 import { connectionContent } from '../src/content/connection'
+import { consent, signIn, waitForScreen } from './support/navigation'
 
 /**
  * 읽기 전용 Bybit 연결의 실제 Chromium 검증(Story 2.1).
@@ -20,15 +21,6 @@ import { connectionContent } from '../src/content/connection'
  */
 
 const injectedOrigin = process.env.PLAYWRIGHT_BASE_URL?.trim() ?? ''
-
-/**
- * 개발용 OIDC 스텁의 동의 화면 카피.
- *
- * {@code auth-entry.spec.ts}가 같은 값을 들고 있다. 화면 카피 정본(`src/content/`)에 두지 않는
- * 이유는 이것이 제품 화면이 아니라 제공자 자리에 서는 개발 전용 표면이기 때문이며, 두 파일이
- * 나눠 갖는 이 중복은 그 값이 제품 계약이 아니라는 사실의 대가다.
- */
-const STUB_CONSENT_LINK = '동의하고 계속하기'
 
 const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']
 
@@ -53,26 +45,6 @@ function apiKey(scenario: string, uid: string): string {
 }
 
 /**
- * 스텁 동의 화면에서 `subject`를 고정한 채 동의한다.
- *
- * 스텁은 기본적으로 요청마다 새 `subject`를 만든다(`DevOidcStub`). 그래서 같은 제공자로 두 번
- * 왕복하면 두 번째는 **다른 사람**이고, 재인증은 "이 식별자가 현재 사용자의 것인가"를 보므로
- * 조용히 실패한다 — 그 실패는 붙들어 둔 목적지로 돌아가는 모양이 성공과 같아서 화면만 보면
- * 구분되지 않는다({@code auth-entry.spec.ts}의 같은 헬퍼와 같은 근거).
- *
- * 고정 수단은 스텁의 인가 요청 파라미터 하나이며(`dev_subject`) 검증 스크립트가 쓰는 것과 같다.
- * 제품 코드는 이 파라미터를 알지 못한다 — 붙이는 대상은 제공자 자리에 선 개발 전용 표면이다.
- */
-async function consentWithSubject(page: Page, subject: string): Promise<void> {
-  // 동의 화면에 도착할 때까지 기다린다. 그 전에 주소를 읽으면 우리 인가 시작 경로가 잡힌다.
-  await expect(page.getByRole('link', { name: STUB_CONSENT_LINK })).toBeVisible()
-  const url = new URL(page.url())
-  url.searchParams.set('dev_subject', subject)
-  await page.goto(url.toString())
-  await page.getByRole('link', { name: STUB_CONSENT_LINK }).click()
-}
-
-/**
  * 스텁 제공자를 지나 로그인하고 본인 확인까지 마친다. 연결의 전제가 정확히 이 상태다.
  *
  * 두 왕복이 **같은 식별자**를 지나야 한다. 첫 왕복이 스텁이 정한 임의 `subject`를 쓰면 두 번째는
@@ -81,17 +53,15 @@ async function consentWithSubject(page: Page, subject: string): Promise<void> {
 async function signInAndReauthenticate(page: Page): Promise<void> {
   const subject = `e2e-connection-${String(Date.now())}-${Math.random().toString(36).slice(2)}`
 
-  await page.goto('/')
-  await page.getByRole('link', { name: authContent.signIn.labels.google }).click()
-  await consentWithSubject(page, subject)
-  await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
+  await signIn(page, subject, { landing: ONBOARDING_PATH })
 
   // 본인 확인. 설정 화면의 조작이며 확인을 마치면 세션이 붙들어 둔 목적지로 돌아온다.
   await page.getByRole('link', { name: authContent.settings.link }).click()
   await expect(page.getByRole('heading', { name: authContent.settings.heading })).toBeVisible()
   await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
-  await consentWithSubject(page, subject)
-  await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
+  await consent(page, subject)
+  // 재인증은 세션의 목적지(신규 계정의 착지인 온보딩)로 돌아온다.
+  await waitForScreen(page, ONBOARDING_PATH)
 }
 
 /** 설정 화면을 열고 연결 구역이 그려질 때까지 기다린다. */

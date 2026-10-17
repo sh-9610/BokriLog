@@ -9,6 +9,7 @@ import {
   operatorRefusalMessage,
   PUBLISH_NOTICE_COMMAND,
 } from '../content/operator'
+import { FIRST_MOUNT_TIMEOUT_MS } from '../test/firstMount'
 import {
   getObservedAllowedRequests,
   getObservedStorageEntries,
@@ -99,7 +100,11 @@ async function open(): Promise<HTMLElement> {
   stubOperatorAudit(() => Promise.resolve(json({ items: [], nextCursor: null })))
   stubOperatorRestrictions(() => Promise.resolve(json({ items: [restriction()] })))
   render(<OperatorScreen />)
-  await screen.findByRole('heading', { level: 2, name: copy.heading })
+  await screen.findByRole(
+    'heading',
+    { level: 2, name: copy.heading },
+    { timeout: FIRST_MOUNT_TIMEOUT_MS },
+  )
   return screen.getByRole('region', { name: copy.heading })
 }
 
@@ -444,7 +449,11 @@ describe('OperatorScreen 서비스 공지', () => {
       )
     })
     render(<OperatorScreen />)
-    await screen.findByRole('heading', { level: 2, name: copy.heading })
+    await screen.findByRole(
+      'heading',
+      { level: 2, name: copy.heading },
+      { timeout: FIRST_MOUNT_TIMEOUT_MS },
+    )
     const section = screen.getByRole('region', { name: copy.heading })
     fireEvent.change(await within(section).findByLabelText(copy.incidentLabel), {
       target: { value: INCIDENT },
@@ -499,6 +508,10 @@ async function openWith(items: readonly Record<string, unknown>[]): Promise<HTML
   stubOperatorAudit(() => Promise.resolve(json({ items: [], nextCursor: null })))
   stubOperatorRestrictions(() => Promise.resolve(json({ items })))
   render(<OperatorScreen />)
-  await screen.findByRole('heading', { level: 2, name: copy.heading })
+  await screen.findByRole(
+    'heading',
+    { level: 2, name: copy.heading },
+    { timeout: FIRST_MOUNT_TIMEOUT_MS },
+  )
   return screen.getByRole('region', { name: copy.heading })
 }

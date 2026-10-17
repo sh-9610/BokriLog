@@ -108,7 +108,7 @@ npm --prefix frontend exec -- playwright install chromium
 
 `test:e2e:run`은 `playwright test`만 실행한다. CI는 앞 단계에서 이미 `build`를 돌리므로 `test:e2e`를 쓰면 같은 빌드를 두 번 한다. 로컬에서는 한 번에 끝나는 `test:e2e`를 계속 쓴다.
 
-Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패를 green으로 덮어 첫 실패의 원인을 지운다. 그래서 trace도 `retain-on-failure`로 첫 실패부터 남긴다. flaky를 조사할 때만 `npm --prefix frontend run test:e2e:run -- --retries=2`처럼 명령에서 덮어쓴다.
+Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패를 green으로 덮어 첫 실패의 원인을 지운다. 그래서 trace도 `retain-on-failure`로 첫 실패부터 남긴다. flaky를 조사할 때만 `npm --prefix frontend run test:e2e:run -- --retries=2`처럼 명령에서 덮어쓴다. 실패 trace가 어디에 남는지는 아래 `### 간헐 실패`가 말한다.
 
 `stress-test.sh`는 부하에서만 드러나는 Vitest 결함을 로컬에서 재현한다. CI 러너는 로컬 8코어보다 붐비고, effect 시점 결함은 React Scheduler가 프레임을 넘겨 양보할 때만 붉게 나온다 — `_bmad-output/implementation-artifacts/spec-frontend-effect-timing.md`의 기준선은 `yes` 16개 아래 전체 Vitest 12회 중 2회 실패였고 부하 없이는 거의 재현되지 않았다. 스크립트는 Node major를 `frontend/.nvmrc`와 대조한 뒤에만 돌고(Node 25의 실패를 부하 탓으로 읽지 않게), 머리에 커밋과 미커밋 변경 여부를 적고, 실패한 회차의 시험 이름을 모아 보이고 그 로그를 남긴다. 정상 종료·실패·Ctrl-C·TERM·HUP에서는 도는 중인 Vitest와 부하 프로세스를 끝내고 바로 나온다. SIGKILL은 트랩을 거치지 않아 부하가 남으므로 그때는 `pkill -x yes`로 지운다. 횟수는 기준선의 실패율에 맞춘다 — 기본 12회는 최소이고, 12회 중 1~2회 실패하던 결함이라면 깨끗한 12회만으로는 약한 근거다. 더 돌리거나 아래 `시험의 대기`의 첫 관측 가드처럼 결정적으로 잡는 시험과 함께 쓴다. CI에는 넣지 않았다 — 넣는다면 판정은 `.github/scripts`가 소유하고 `test-ci-scripts.sh`를 함께 고친다.
 
@@ -123,7 +123,7 @@ Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패
 | `frontend/src/session/` | 서버 세션 확인 훅과 상태 변경 전송(로그아웃·재인증 시작·연결 시작·연결 상태 조회·해제 준비·해제 확인). 로그인 상태 경로의 화면만 쓴다 |
 | `frontend/src/test/setup.ts` | Testing Library 등록과 `fetch`·`XMLHttpRequest`·`sendBeacon` 감시 훅. 탈출구는 (메서드, URL) 쌍 단위이며 `stubSessionRequest`·`stubLogoutRequest`·`stubReauthenticationRequest`·`stubLinkStatusRequest`·`stubLinkRequest`·`stubUnlinkPrepareRequest`·`stubUnlinkConfirmRequest`·`stubUnlinkCancelRequest` 여덟이 열 수 있고(뒤 스토리가 더한 stub도 같은 모양이다) 기본 거부는 그대로다. 세션이 준비되면 화면이 언제나 보내는 조회 셋 — 공지(`GET /api/notices`, 대시보드·설정)·문의 목록(`GET /api/support/inquiries`, 설정)·광고 동의(`GET /api/engagement/ad-consent`, 설정, Story 4.1) — 은 허용 기록과 따로 세는 기본 응답(`defaultServiceNotices`·`defaultSupportInquiries`·`defaultAdConsent` — 광고 동의는 미결정)이 답한다. 광고 동의는 `stubAdConsent`(조회, 기본 응답을 이기고 허용 기록에 남는다)·`stubAdConsentChange`(변경, 기본 응답 없음)로 열고 기본 응답의 기록은 `getObservedAdConsentRequests`가 돌려준다 |
 | `frontend/e2e/` | Playwright 명세 |
-| `frontend/playwright.config.test.ts` | `playwright.config.ts`의 실행 정책(`retries: 0`, trace·screenshot, `globalTimeout`, `CI` 해석) 고정. 대상이 `src/` 밖이라 시험도 그 옆에 두고 `vite.config.ts`의 `test.include`가 이 파일을 더 받는다 |
+| `frontend/playwright.config.test.ts` | `playwright.config.ts`의 실행 정책(`retries: 0`, trace·screenshot, `globalTimeout`, `CI` 해석, 실패 진단물 위치와 로컬 보존 상한) 고정. 대상이 `src/` 밖이라 시험도 그 옆에 두고 `vite.config.ts`의 `test.include`가 이 파일을 더 받는다 |
 | `frontend/eslint.config.ts` | ESLint flat config. typescript-eslint strict·stylistic(타입 인지), React hooks·refresh, perfectionist import 정렬, 파일군별 Vitest·Testing Library·Playwright 플러그인, disable 주석 감사. `eslint-config-prettier`가 서식 규칙을 끈다 |
 | `frontend/stylelint.config.js` | stylelint. `stylelint-config-standard` 위에 `declaration-strict-value`로 `DESIGN.md` 네 범주의 토큰 참조를 강제한다. `*.module.css` 클래스는 camelCase |
 | `frontend/.prettierrc.json`, `frontend/.prettierignore` | 서식 정책. 세미콜론 없음, 단일 인용부호, 후행 쉼표, 2칸 들여쓰기, LF, `printWidth` 100 |
@@ -151,6 +151,29 @@ Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패
 - **effect 시점.** 커밋이 화면을 바꾸는 순간 함께 성립해야 하는 효과 — 초점 이동, `replaceLocation`, 타이머·리스너 등록과 해제, 그 효과들이 읽는 latest-ref 갱신 — 는 `useLayoutEffect`다. passive `useEffect`는 동기 lane 갱신에서만 커밋 끝에 바로 돌고, fetch 응답이 만든 갱신에서는 Scheduler의 다음 작업으로 미뤄진다. 부하가 걸리면 그 작업이 새 DOM을 이미 본 코드(시험의 `findBy*`·`waitFor` 직후 단정, 사용자의 키 입력)보다 늦고, 사용자에게는 한 프레임 동안 초점이 `<body>`에 머문다. 요청을 시작하는 effect는 passive로 둔다(그 요청의 기한 타이머나 `pageshow` 재확인을 함께 붙이는 것도 같다). 보이는 것을 바꾸는 부모 갱신(`onCalculable` — 그 보고로 발행 구역이 나타난다)과 `live` 표지도 passive다 — layout effect에서 부모 `setState`를 부르면 그리기 전에 동기 재렌더가 일어난다. 그리는 것을 바꾸지 않는 일회성 표지를 지우는 부모 갱신은 layout에 있어도 된다(`AdjustmentHistory`의 `Rows`가 부르는 `onFocused`). passive로 남긴 effect에는 근거를 주석으로 적는다. layout effect 본문에 새 동기 `setState`를 넣지 않고, 서로 순서에 기대는 효과는 함께 옮긴다(자식 → 부모 순서는 두 종류가 같다).
 - **`inert` 배경으로 돌려주는 초점은 예외다.** 대화상자가 닫힐 때 호출점으로 돌려주는 초점은 passive effect의 정리에 둔다(`components/useConfirmationDialog.ts` — 세 확인 대화상자가 위임하는 메커니즘 하나). 호출점은 대화상자가 열린 동안 형제 래퍼의 `inert` 아래에 있다. layout effect의 정리는 닫는 커밋의 DOM 변경 단계에서 대화상자 삭제와 함께 돈다. React는 부모의 자식 삭제를 형제 갱신보다 먼저 처리하므로, 그 정리는 `inert` 해제보다 먼저 돌고 브라우저는 그 `focus()`를 무시한다. passive 정리는 커밋이 끝난 뒤 돈다. `Esc`·취소 같은 이산 입력이 닫으면 React가 그 커밋 끝에서 바로 비운다. 열 때의 기본 포커스와 키 처리기는 layout이고, 호출점은 한 번만 기록한다(개발 빌드의 `StrictMode`가 그 effect를 다시 돌릴 때는 포커스가 이미 취소에 있다). 복귀는 포커스를 잃었을 때만 한다. 같은 커밋에서 화면이 layout으로 옮겨 받은 포커스(해제 성공의 결과 문장)를 뒤늦게 덮지 않기 위해서다. jsdom은 `inert`를 모르므로 이 순서는 Playwright만 본다.
 - **시험의 대기.** 비동기 대기(`findBy*`·`waitFor`) 직후에 효과나 늦게 오는 읽기 결과를 동기로 단정하지 않는다. 단정할 조건 자체를 `waitFor`로 기다리고, 읽기 전부터 있는 상태 영역은 영역이 아니라 텍스트를 기다린다. 재시도·`testTimeout`·`asyncUtilTimeout` 상향·단일 스레드로 실패를 덮지 않는다. 예외는 의도된 **첫 관측 가드**다. `waitFor`는 효과가 늦게 와도 통과하므로, 효과가 커밋에 붙어 있다는 사실은 따로 고정한다. 가드는 `src/test/firstSight.ts`의 `atFirstSight`로 act 환경을 끈 채 응답을 풀어 주고, 새 내용이 처음 보이는 순간(커밋 직후의 `MutationObserver` 마이크로태스크)에 효과의 결과를 동기로 읽는다. 그때 layout effect는 이미 돌았고 passive effect는 아직이다(커밋이 그리기를 위해 Scheduler를 양보시킨다). 그래서 부하 없이 결정적으로 갈린다. 종류마다 대표 하나를 둔다 — 목적지 이동과 응답이 옮기는 초점(`SignedInScreen.test.tsx`), 폴링 interval(`InitialInputsCollection.test.tsx`). 새 가드는 그 effect를 `useEffect`로 되돌리면 매번 실패하는지 확인한 뒤 넣는다.
+
+### 간헐 실패
+
+부하·새 스택·시계에서만 나는 시험 실패를 재시도나 시한 상향으로 덮지 않고, 원인을 볼 수 있게 남기거나 원인을 말하며 멈추게 한다(Epic 4 회고 AI-6, `spec-flaky-test-diagnostics.md`). 실패를 만나면 먼저 아래 장치가 남긴 것을 본다.
+
+- **e2e 실패 trace는 실행마다 따로 남는다.** 로컬 실행의 출력 디렉터리는 `frontend/test-results/<UTC 시각>/`이다(예: `2026-10-17T03-04-05-678Z`). Playwright는 실행을 시작할 때 출력 디렉터리를 통째로 지우므로 한 디렉터리를 계속 쓰면 앞선 실패의 trace가 다음 실행에 사라진다 — 새 스택 첫 실행에서만 난 실패(`deferred-work.md` 155)가 그렇게 증거를 잃었다.
+  - 최근 다섯 실행만 남는다. 그보다 오래된 실행 디렉터리는 다음 실행이 시작할 때 지운다(`frontend/e2e/support/runOutput.ts`, 로컬 globalSetup). 지우지 못하면(Windows에서 trace를 열어 둔 `EBUSY`·`EPERM`) 경고 한 줄만 남기고 실행은 그대로 간다.
+  - 정리 대상은 표지 모양의 디렉터리뿐이다. 이 규칙 전의 시험별 디렉터리 같은 표지 아닌 항목은 남으므로 필요 없으면 손으로 지운다.
+  - 증거는 실행 디렉터리의 trace다. HTML 보고서(`frontend/playwright-report/`)는 실행마다 덮어쓴다. trace는 `npm --prefix frontend exec -- playwright show-trace frontend/test-results/<실행>/<시험>/trace.zip`으로 연다.
+  - 실행 표지는 주 프로세스가 설정을 읽을 때마다 새로 정하고 worker만 그것을 물려받는다 — 셸에 `BOKRILOG_E2E_RUN`이 남아 있거나 UI 모드로 여러 번 돌아도 디렉터리가 겹치지 않는다. `--last-failed`의 기록은 실행 디렉터리가 아니라 `frontend/test-results/.last-run.json`에 둔다.
+  - CI(`CI`가 참)의 출력 경로와 실패 진단 artifact는 `ci.yml`이 소유하며 `frontend/test-results/` 하나를 쓴다.
+- **문서 이동을 넘는 e2e 대기는 `frontend/e2e/support/navigation.ts` 하나다.** 주입 origin e2e의 간헐 실패는 같은 계열이었다 — 로그인·재인증 뒤 첫 착지 문서는 세션 확인을 마친 뒤 다른 착지 화면으로 다시 덮어쓸 수 있고(온보딩 ↔ 대시보드), 앞 문서가 늦게 보낸 요청은 다음 문서의 측정 구간에 섞인다(PR #111의 세 실패). 그래서:
+  - 요청을 세기 전에 앞 문서를 내린다 — `unloadDocument(page)`(`about:blank`).
+  - 다음 `goto`·측정·저장소 읽기 전에 화면 착지를 기다린다 — `waitForScreen(page, 경로)`는 주소가 그 경로(`/onboarding`·`/dashboard`·`/settings`·`/operator`)가 되고 **그 화면의 제목이 보일 때까지** 기다린다. 로그인 상태 화면은 세션 게이트가 `ready`일 때만 그 제목을 그리므로 제목이 보이면 그 문서는 더 이동하지 않는다. 로그인 착지는 `waitForLanding(page, 경로?)`(경로를 모르면 두 착지 화면 중 하나)다. 주소만 보는 `waitForURL(pathname !== '/')`은 첫 착지에서 풀리므로 쓰지 않는다.
+  - 재인증은 시작한 화면이 아니라 세션의 목적지 — 그 세션을 연 로그인의 착지 — 로 돌아온다(`ReauthenticationFlow`가 시작 시각에 붙든다). 그래서 `signIn`이 돌려준 착지 경로를 들고 있다가 재인증 뒤 `waitForScreen(page, 그 경로)`로 기다린다.
+  - 이 대기들은 `LANDING_TIMEOUT_MS`(30초)를 쓴다. 새 스택의 첫 로그인 왕복은 콜드 JVM을 지나므로 기본 expect 5초에 기대지 않는다.
+  - 스텁 동의(`consent`)와 로그인(`signIn(page, subject, { provider?, landing? })`)의 정식 경로도 이 파일이다. spec 파일에 사본을 만들지 않는다. `auth-entry.spec.ts`의 `signInThroughStub`만 따로 남는다 — `dev_subject` 없이 스텁의 기본 동작 그대로 지나는 왕복 자체를 시험하기 때문이다(착지 대기는 공용 `waitForLanding`).
+- **큰 화면의 첫 마운트 대기는 이름 있는 시한을 쓴다.** `deferred-work.md` 158이 적은 네 파일 — `App.test.tsx` 운영자 경로(유일한 `React.lazy` chunk 대기), `OperatorScreen`·`OperatorNotice`·`SettingsConnectionRevoke` 시험(정적 import지만 같은 실행에서 함께 넘었다) — 에서 `render` 바로 뒤의 첫 `findBy*`·`waitFor`는 `src/test/firstMount.ts`의 `FIRST_MOUNT_TIMEOUT_MS`(3초)를 준다. Windows 로컬 전체 실행에서 그 첫 마운트가 Testing Library 기본 대기 1초를 넘었다. 전역 `asyncUtilTimeout`은 올리지 않는다(위 `시험의 대기`). 적용 범위는 그 네 파일이다.
+- **백엔드 시험은 JVM↔DB 시계 차이를 확인한다.** `DatabaseClockSkew`가 JVM `Instant.now()`(조회 왕복의 가운데)와 DB `clock_timestamp()`의 차이를 잰다. 컨테이너를 얻을 때(`PostgresTestcontainersConfig`의 bean·`shared()`)와 DB 시험의 저장소 초기화(`AuthFlowTestBase.resetStore`, 시험 메서드마다)가 부르고, 결과를 5분 붙들었다가 그 뒤 다음 진입에서 다시 잰다(긴 빌드 도중의 밀림). 측정 자체가 실패하면 붙들지 않는다.
+  - 통과하면 표준 오류에 `[test-clock] … 차이 Nms, DB가 JVM보다 뒤처짐|앞섬 …` 한 줄을 남긴다. 1초 미만의 차이로도 `RESULT_TOO_RECENT`는 날 수 있으므로(fixture가 측정 시각을 "지금"에 붙여 만든다) 그런 실패에서는 이 줄을 먼저 본다 — Gradle은 시험 보고서(`backend/build/test-results/test/*.xml`의 `system-err`)에 남긴다.
+  - 절댓값이 1초(정상 VM의 수 ms와 수면 뒤 수 초 이상의 뒤처짐을 가르는 값)를 넘으면 두 시각·방향과 대처를 말하며 실패한다. fixture는 측정 시각을 JVM 시계로 만들고 제품은 DB 시각으로 판정하므로, Docker Desktop VM 시계가 뒤처지면 결과가 DB에게 "미래"가 되어 계획 종단 시험이 `RESULT_TOO_RECENT`·작업 `FAILED`로 전체 빌드에서만 실패한다(`deferred-work.md` 159의 유력한 원인). 그 문장이 나오면 Docker Desktop을 재시작해 VM 시계를 맞춘 뒤 다시 돌린다. 상한을 넓히거나 차이를 시험에서 보정하지 않는다.
+  - Spring 컨텍스트를 띄우다 이 검사로 실패하면 같은 구성의 뒤 시험 클래스는 Spring의 컨텍스트 실패 임계 때문에 이 문장 없이 "임계 초과"로만 실패한다. 전체 빌드가 무더기로 실패하면 가장 앞선 실패의 문장을 본다.
+- **부하에서만 나는 Vitest 결함은 `stress-test.sh`로 재현한다**(위 `### 명령`의 설명). 의심 파일만 골라 `bash frontend/scripts/stress-test.sh --runs 3 -- <파일들>`처럼 돌리고, 고친 뒤에도 같은 명령이 0으로 끝나는지 본다.
 
 ## 백엔드 (`backend/`)
 

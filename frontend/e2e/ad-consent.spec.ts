@@ -2,7 +2,7 @@ import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Locator, type Page } from '@playwright/test'
 
 import { adConsentContent, adConsentStateSentence } from '../src/content/adConsent'
-import { authContent } from '../src/content/auth'
+import { signIn } from './support/navigation'
 
 /**
  * 문맥형 광고 동의의 실제 Chromium 검증(Story 4.1).
@@ -13,8 +13,6 @@ import { authContent } from '../src/content/auth'
  */
 
 const injectedOrigin = process.env.PLAYWRIGHT_BASE_URL?.trim() ?? ''
-
-const STUB_CONSENT_LINK = '동의하고 계속하기'
 
 const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']
 
@@ -27,17 +25,6 @@ function letters(): string {
   return Array.from({ length: 8 }, () =>
     String.fromCharCode(97 + Math.floor(Math.random() * 26)),
   ).join('')
-}
-
-async function signIn(page: Page, subject: string): Promise<void> {
-  await page.goto('/')
-  await page.getByRole('link', { name: authContent.signIn.labels.google }).click()
-  await expect(page.getByRole('link', { name: STUB_CONSENT_LINK })).toBeVisible()
-  const url = new URL(page.url())
-  url.searchParams.set('dev_subject', subject)
-  await page.goto(url.toString())
-  await page.getByRole('link', { name: STUB_CONSENT_LINK }).click()
-  await page.waitForURL((next) => next.pathname !== '/' && !next.pathname.startsWith('/api/'))
 }
 
 async function openConsent(page: Page): Promise<Locator> {

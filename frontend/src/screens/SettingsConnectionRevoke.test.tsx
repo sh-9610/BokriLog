@@ -14,6 +14,7 @@ import {
   revocationRejectionMessage,
 } from '../content/connection'
 import { replaceLocation } from '../session/navigation'
+import { FIRST_MOUNT_TIMEOUT_MS } from '../test/firstMount'
 import { expectReauthGateRejection } from '../test/reauthGate'
 import {
   getObservedAllowedRequests,
@@ -117,7 +118,11 @@ function connectionSection(): HTMLElement {
 async function renderConnected(): Promise<void> {
   stubConnectionStatusRequest(connected)
   render(<SettingsScreen />)
-  await screen.findByRole('button', { name: revocationContent.start })
+  await screen.findByRole(
+    'button',
+    { name: revocationContent.start },
+    { timeout: FIRST_MOUNT_TIMEOUT_MS },
+  )
 }
 
 async function openDialog(): Promise<HTMLElement> {
@@ -363,7 +368,11 @@ describe('SettingsScreen의 Bybit 연결 해제', () => {
     stubConnectionStatusRequest(revokedState)
     render(<SettingsScreen />)
 
-    const section = await screen.findByRole('region', { name: connectionContent.heading })
+    const section = await screen.findByRole(
+      'region',
+      { name: connectionContent.heading },
+      { timeout: FIRST_MOUNT_TIMEOUT_MS },
+    )
     expect(await within(section).findByText(revocationContent.revoked)).toBeInTheDocument()
     // 의도 변경(Story 2.17): 재연결은 Story 2.1의 같은 흐름이다. 여는 조작은 아무것도 바꾸지 않는다.
     for (const text of reconnectCopyStrings) {
@@ -480,7 +489,13 @@ describe('SettingsScreen의 Bybit 연결 해제', () => {
       ),
     )
     render(<SettingsScreen />)
-    fireEvent.click(await screen.findByRole('button', { name: connectionContent.start }))
+    fireEvent.click(
+      await screen.findByRole(
+        'button',
+        { name: connectionContent.start },
+        { timeout: FIRST_MOUNT_TIMEOUT_MS },
+      ),
+    )
     await screen.findByRole('heading', { level: 3, name: connectionContent.form.heading })
     fireEvent.change(screen.getByLabelText(connectionContent.form.apiKeyLabel), {
       target: { value: 'uta2.100001' },

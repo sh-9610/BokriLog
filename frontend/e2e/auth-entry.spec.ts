@@ -4,11 +4,13 @@ import { expect, test, type Page } from '@playwright/test'
 import {
   authContent,
   authorizePath,
+  ONBOARDING_PATH,
   SIGN_IN_PROVIDERS,
   type SignInProvider,
 } from '../src/content/auth'
 import { firstSnapshotContent } from '../src/content/firstSnapshot'
 import { planResultContent } from '../src/content/planResult'
+import { consent, STUB_CONSENT_LINK, waitForLanding } from './support/navigation'
 
 /**
  * 로그인 진입과 로그인 상태 경로의 실제 Chromium 검증.
@@ -39,7 +41,7 @@ const injectedOrigin = process.env.PLAYWRIGHT_BASE_URL?.trim() ?? ''
  * 백엔드 `DevOidcStubConfig`가 소유하는 문자열이다. 화면 카피 정본(`src/content/`)에 두지 않는
  * 이유는 이것이 제품 화면이 아니라 제공자 자리에 서는 개발 전용 표면이기 때문이다.
  */
-const STUB_CONSENT = { heading: '개발용 로그인 스텁', link: '동의하고 계속하기' } as const
+const STUB_CONSENT = { heading: '개발용 로그인 스텁', link: STUB_CONSENT_LINK } as const
 
 const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']
 
@@ -76,13 +78,19 @@ async function expectAuthScreenMounted(page: Page): Promise<void> {
  * 아래 `스텁 제공자 성공 왕복` 절의 시험들이 이 상태에서 시작한다. 왕복을 각 시험에 복사하면
  * 단계 하나가 갈라져도 아무도 모른다. 스텁의 `subject`는 요청마다 새로 만들어지므로 이 호출은
  * 늘 신규 가입이고 목적지는 온보딩이다(`DevOidcStub`).
+ *
+ * 공용 `signIn`(`support/navigation.ts`)과 따로 두는 이유는 이 시험들이 고정하는 것이 다르기 때문이다. `signIn`은
+ * `dev_subject`를 붙여 동의 화면을 다시 연다 — 여기서는 그 재요청 없이 **스텁의 기본 동작 그대로**(요청마다 새 subject) 한
+ * 번에 지나야 한다. 제공자별 외부 요청 0건 시험은 이 왕복의 요청 전체를 세고, 진입 화면 마운트(세 제공자 버튼)도 함께
+ * 단정하며, 착지 뒤 두 단계(대시보드 응답 → 첫 스냅샷 패널)가 가라앉을 때까지 기다린다. 착지 대기 자체는 공용
+ * `waitForLanding`이다.
  */
 async function signInThroughStub(page: Page, provider: SignInProvider = 'google'): Promise<void> {
   await page.goto('/')
   await expectAuthScreenMounted(page)
   await page.getByRole('link', { name: authContent.signIn.labels[provider] }).click()
   await page.getByRole('link', { name: STUB_CONSENT.link }).click()
-  await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
+  await waitForLanding(page, ONBOARDING_PATH)
   /*
    * The landing screen settles in two steps (Story 2.8): the dashboard answers first, and only then —
    * with no plan to show — does the first-snapshot panel mount and read its own state (a new account
@@ -91,29 +99,6 @@ async function signInThroughStub(page: Page, provider: SignInProvider = 'google'
    */
   await expect(page.getByRole('status')).toHaveText(planResultContent.status.noPlan)
   await expect(page.getByText(firstSnapshotContent.unconnected)).toBeVisible()
-}
-
-/**
- * 스텁 동의 화면에서 `subject`를 고정한 채 동의한다.
- *
- * 스텁은 기본적으로 요청마다 새 `subject`를 만든다(`DevOidcStub`). 그래서 같은 제공자로 두 번
- * 왕복하면 두 번째는 **다른 사람**이고, 재인증은 "이 식별자가 현재 사용자의 것인가"를 보므로
- * 조용히 실패한다 — 그 실패는 붙들어 둔 목적지로 돌아가는 모양이 성공과 같아서 화면만 보면
- * 구분되지 않는다.
- *
- * 고정 수단은 스텁의 인가 요청 파라미터 하나이며(`dev_subject`) 검증 스크립트가 쓰는 것과 같다.
- * 여기서는 동의 화면에 도착한 뒤 그 주소에 파라미터를 더해 다시 연다 — 스텁의 인가 화면은 상태를
- * 만들지 않으므로 다시 여는 것이 안전하고, 우리 세션의 `state`·PKCE는 그대로 남는다.
- *
- * 제품 코드는 이 파라미터를 알지 못한다. 붙이는 대상은 제공자 자리에 선 개발 전용 표면이다.
- */
-async function consentWithSubject(page: Page, subject: string): Promise<void> {
-  // 동의 화면에 도착할 때까지 기다린다. 그 전에 주소를 읽으면 우리 인가 시작 경로가 잡힌다.
-  await expect(page.getByRole('link', { name: STUB_CONSENT.link })).toBeVisible()
-  const url = new URL(page.url())
-  url.searchParams.set('dev_subject', subject)
-  await page.goto(url.toString())
-  await page.getByRole('link', { name: STUB_CONSENT.link }).click()
 }
 
 test.describe('로그인 진입', () => {
@@ -898,7 +883,7 @@ test.describe('스텁 제공자 성공 왕복', () => {
     await page.goto('/')
     await expectAuthScreenMounted(page)
     await page.getByRole('link', { name: authContent.signIn.labels.google }).click()
-    await consentWithSubject(page, `google-${marker}`)
+    await consent(page, `google-${marker}`)
     await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
 
     await page.getByRole('link', { name: authContent.settings.link }).click()
@@ -906,7 +891,7 @@ test.describe('스텁 제공자 성공 왕복', () => {
 
     // 본인 확인. 복귀 목적지는 세션이 로그인 시각에 붙들어 둔 값이라 온보딩이다(Story 1.8).
     await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
-    await consentWithSubject(page, `google-${marker}`)
+    await consent(page, `google-${marker}`)
     await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
     /*
      * 성공한 재인증은 표지 없이 돌아온다. 이 단정이 없으면 실패한 재인증도 같은 화면으로
@@ -917,7 +902,7 @@ test.describe('스텁 제공자 성공 왕복', () => {
     // 두 번째 수단 연결. 여기까지가 해제의 전제다.
     await page.getByRole('link', { name: authContent.settings.link }).click()
     await page.getByRole('button', { name: authContent.settings.linkLabels.naver }).click()
-    await consentWithSubject(page, `naver-${marker}`)
+    await consent(page, `naver-${marker}`)
     await expect(page.getByText(authContent.notices.linkSucceeded)).toBeVisible()
     await expect(page.getByText(authContent.settings.linked)).toHaveCount(2)
     // 수단이 둘이므로 마지막 수단 설명이 사라진다.
@@ -940,7 +925,7 @@ test.describe('스텁 제공자 성공 왕복', () => {
      * 세션이 붙들어 둔 온보딩이다.
      */
     await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
-    await consentWithSubject(page, `google-${marker}`)
+    await consent(page, `google-${marker}`)
     await expect(page.getByRole('heading', { name: authContent.onboarding.heading })).toBeVisible()
     expect(new URL(page.url()).search).toBe('')
     await page.getByRole('link', { name: authContent.settings.link }).click()

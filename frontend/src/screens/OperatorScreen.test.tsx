@@ -14,6 +14,7 @@ import {
   UNKNOWN_ORIGIN_LABEL,
 } from '../content/operator'
 import { replaceLocation } from '../session/navigation'
+import { FIRST_MOUNT_TIMEOUT_MS } from '../test/firstMount'
 import {
   getObservedAllowedRequests,
   getObservedRequests,
@@ -101,7 +102,11 @@ async function openAsOperator(items = [entry(2), entry(1, 'DENIED', 'CONFIRMATIO
   stubSessionRequest(() => authenticated())
   stubOperatorAudit(() => page(items))
   render(<OperatorScreen />)
-  await screen.findByRole('heading', { level: 2, name: copy.audit.heading })
+  await screen.findByRole(
+    'heading',
+    { level: 2, name: copy.audit.heading },
+    { timeout: FIRST_MOUNT_TIMEOUT_MS },
+  )
 }
 
 /** 준비를 눌러 대화상자를 연다. */
@@ -132,7 +137,11 @@ describe('OperatorScreen', () => {
     render(<OperatorScreen />)
 
     expect(
-      await screen.findByRole('heading', { level: 1, name: copy.notFound.heading }),
+      await screen.findByRole(
+        'heading',
+        { level: 1, name: copy.notFound.heading },
+        { timeout: FIRST_MOUNT_TIMEOUT_MS },
+      ),
     ).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: copy.audit.heading })).not.toBeInTheDocument()
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
@@ -162,7 +171,7 @@ describe('OperatorScreen', () => {
       return url.includes('cursor=') ? page([entry(1)]) : page([entry(3), entry(2)], 'next-cursor')
     })
     render(<OperatorScreen />)
-    await screen.findByText('사유 3')
+    await screen.findByText('사유 3', {}, { timeout: FIRST_MOUNT_TIMEOUT_MS })
 
     fireEvent.click(screen.getByRole('button', { name: copy.audit.more }))
     await screen.findByText('사유 1')
@@ -382,9 +391,12 @@ describe('OperatorScreen', () => {
     stubOperatorAudit(() => error('INTERNAL_ERROR', 500))
     stubOperatorRestrictions(() => error('NOT_FOUND', 404))
     render(<OperatorScreen />)
-    await waitFor(() => {
-      expect(screen.getByRole('status').textContent).toBe(copy.loadFailed)
-    })
+    await waitFor(
+      () => {
+        expect(screen.getByRole('status').textContent).toBe(copy.loadFailed)
+      },
+      { timeout: FIRST_MOUNT_TIMEOUT_MS },
+    )
     expect(screen.queryByRole('heading', { name: copy.audit.heading })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: copy.export.start })).not.toBeInTheDocument()
     expect(document.body.textContent).not.toContain('운영자')
@@ -428,9 +440,12 @@ describe('OperatorScreen', () => {
     stubSessionRequest(() => authenticated())
     stubOperatorAudit(() => error('UNAUTHENTICATED', 401))
     render(<OperatorScreen />)
-    await waitFor(() => {
-      expect(replaceLocation).toHaveBeenCalledWith('/?auth=expired')
-    })
+    await waitFor(
+      () => {
+        expect(replaceLocation).toHaveBeenCalledWith('/?auth=expired')
+      },
+      { timeout: FIRST_MOUNT_TIMEOUT_MS },
+    )
   })
 
   // ------------------------------------------------------------------ Story 3.2 영향 범위 제한
@@ -757,7 +772,11 @@ describe('OperatorScreen', () => {
     )
     render(<OperatorScreen />)
     expect(
-      await screen.findByRole('heading', { level: 2, name: copy.restriction.heading }),
+      await screen.findByRole(
+        'heading',
+        { level: 2, name: copy.restriction.heading },
+        { timeout: FIRST_MOUNT_TIMEOUT_MS },
+      ),
     ).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 1, name: copy.heading })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: copy.audit.heading })).not.toBeInTheDocument()

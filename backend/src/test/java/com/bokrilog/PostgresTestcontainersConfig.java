@@ -36,10 +36,13 @@ public class PostgresTestcontainersConfig {
 
     private static final PostgreSQLContainer CONTAINER = new PostgreSQLContainer(IMAGE);
 
+    /**
+     * Spring 컨텍스트의 데이터베이스. 컨텍스트가 연결을 만들기 전에 여기서 시작해 시계 차이를 잰다 — 아래 {@link #started()}.
+     */
     @Bean
     @ServiceConnection
     PostgreSQLContainer postgresContainer() {
-        return CONTAINER;
+        return started();
     }
 
     /**
@@ -47,8 +50,25 @@ public class PostgresTestcontainersConfig {
      * 시작됐으면 그대로 돌려준다 — JVM 하나에 컨테이너 하나라는 위 계약이 그대로다.
      */
     public static PostgreSQLContainer shared() {
+        return started();
+    }
+
+    /**
+     * 컨테이너를 시작하고(이미 시작됐으면 아무 일도 하지 않는다) JVM↔DB 시계 차이를 확인한다. 차이가 상한을 넘으면 두 시각·방향과
+     * 대처를 말하며 실패한다({@link DatabaseClockSkew}, Epic 4 회고 AI-6).
+     */
+    private static PostgreSQLContainer started() {
         CONTAINER.start();
+        DatabaseClockSkew.verify(CONTAINER);
         return CONTAINER;
+    }
+
+    /**
+     * 이미 뜬 컨테이너의 시계 차이를 다시 확인한다 — 붙들어 둔 결과가 새로우면 비교 하나뿐이고, 오래됐으면 다시 잰다. 시험 메서드마다
+     * 도는 저장소 초기화({@code AuthFlowTestBase.resetStore})가 불러 긴 빌드 도중의 시계 밀림을 잡는다.
+     */
+    static void verifyClock() {
+        DatabaseClockSkew.verify(CONTAINER);
     }
 
     /**
