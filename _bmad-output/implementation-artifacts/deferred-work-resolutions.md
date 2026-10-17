@@ -17,10 +17,18 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 28 |
+| 해소 | 31 |
 | 부분 해소 | 20 |
-| 미해소 | 110 |
+| 미해소 | 107 |
 | 미판정 | 0 |
+
+**2026-10-17 갱신(Story 4.5 done 전환).** `spec-4-5-ad-telemetry-web-vitals.md`(PR #119, 머지 커밋 `ae06d92`)를 판정했다. 세 부류는 다음과 같다.
+
+- **append한 항목.** 없다. 1차 리뷰 결과 defer는 0건이었다.
+- **해소한 항목.** 이 스토리를 주인으로 지목한 셋을 해소로 판정했다. **156**(광고 이벤트 분리 계측)과 **157**(Web Vitals 수집과 성능 kill switch)은 이 스토리의 범위 자체였다. **122**(3.7이 미룬 Web Vitals 수집)는 157로 주인을 옮겨 둔 항목이다.
+- **결정 지점으로 지목된 항목.** 위 셋 말고는 없다.
+
+그래서 앞 표(158건)에서 해소 +3, 미해소 −3이다. 합은 158 그대로다.
 
 **2026-10-17 갱신(Epic 4 회고 AI-1 fix done 전환).** `spec-ad-slot-lifetime.md`(PR #116, 머지 커밋 `24e8443`)는 판정할 항목이 없다. 이 fix는 `deferred-work.md`에 아무것도 append하지 않았고(리뷰 결과 defer 0건), 해소한 항목도 없으며, 이 fix를 결정 지점으로 지목한 항목도 없다. 광고 transition 수명을 다룬 **149**는 Story 4.3 done 전환이 이미 해소로 판정했다. 표는 158건 그대로다.
 
@@ -927,6 +935,8 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소(2026-10-17, Epic 4 회고 AI-4) — 주인 지정.** 주인은 Epic 4 보완 Story 4.5(`epics.md` `### Story 4.5`, 광고 이벤트·Web Vitals 계측과 성능 kill switch)다. 157과 함께 4.5가 수집한다. 코드 사실은 위 판정과 같다.
 
+**해소(2026-10-17, Story 4.5 done 전환, 기준 `ae06d92`).** 인증된 핵심 화면 넷(대시보드·설정·계획 조건·중립 전환 화면)의 LCP·INP·CLS를 `web-vitals` 6.2.3(SPEC 승인 런타임 의존)으로 잰다. 측정값은 동일 출처 `POST /api/engagement/telemetry`로 보낸다. 서버는 `bokrilog.web.vitals{metric,route,rating,ad}`로 세고, 경보 `WebVitalsAboveTarget`·`WebVitalsUnmeasured`가 promtool 시험과 함께 붙었다. 진입·온보딩 화면은 요청 0건 계약 때문에 재지 않는다 — 4.5 SPEC이 정한 범위다. 지키는 검사는 `ClientTelemetryTest`, 프런트 `beacon.test.ts`·`screens.test.tsx`, 주입 origin e2e `auth-entry.spec.ts` "계측 beacon"(204)이고, PR #119의 `ci-required` 전 job이 성공했다. 운영 Grafana 연결은 이 항목이 아니라 3.8 운영 연결 몫(115·121)이다.
+
 ### 123. 운영 작업시간·월 비용 장부
 
 **미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.7이 범위 분리로 append했다(source_spec 없음). 장부는 없고 경보 규칙만 미측정으로 기다린다 — `deploy/observability/alerts.yml:224`가 "운영 장부가 만들기 전에는 미측정이다(분리된 후속 작업)"라 적고 `:233-240`의 `MonthlyCostUnmeasured`가 `absent(bokrilog_monthly_cost_krw{…})`를 info로 알린다. `backend/src/main`에서 `monthly_cost`는 0건이고 작업시간 입력 표·화면도 없다. 항목 8(주 2시간 목표의 측정 기준, 해소)이 정의만 닫았고 측정 수단이 이 항목에 남았다.
@@ -1180,6 +1190,14 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소(2026-10-17, Epic 4 회고 AI-4) — 주인 지정.** 주인은 Epic 4 보완 Story 4.5(`epics.md` `### Story 4.5`, 광고 이벤트·Web Vitals 계측과 성능 kill switch)다. 회고 B-2(서버가 아는 소비 결말 카운터)도 4.5 범위에 들었다. 코드 사실은 위 판정과 같다.
 
+**해소(2026-10-17, Story 4.5 done 전환, 기준 `ae06d92`).**
+- **브라우저 이벤트.** adapter 계약을 `showInterstitial(adUnitPath, onFailure(reason), onReady)`로 넓혀 사유(TIMEOUT·NO_FILL·BLOCKED·UNSUPPORTED·ERROR)와 준비를 내보낸다. 중립 화면은 REQUESTED·READY·CLOSED·FAILED(창 경과 WINDOW_EXPIRED 포함)·RESULT를 문서당 한 번씩 보낸다. 서버는 `bokrilog.ad.client.event{event,reason}`로 센다.
+- **소비 결말.** 서버가 아는 결말(회고 B-2)은 `bokrilog.ad.transition{outcome}`으로 센다.
+- **어휘 대조.** 프런트·백 어휘는 공유 fixture `telemetryVocabulary.fixture.json`을 두 시험(`vocabulary.test.ts`·`ClientTelemetryVocabularyTest`)이 함께 대조한다.
+- **검사.** `gptAdapter.test.ts`·`AdTransitionScreen.test.tsx`·`ClientTelemetryTest`가 지키고, PR #119의 `ci-required` 전 job이 성공했다.
+
+**남은 것(이 항목 밖).** 실제 공급자 SHOW 경로의 브라우저 왕복은 153·G-4 몫이다.
+
 ### 157. Web Vitals 수집과 성능 kill switch
 
 **미해소(2026-10-16, Story 4.4 판정, 기준 `ec51014`).** Story 4.4가 범위 분할로 append했다(source_spec 없음). 항목 **122**가 이 항목으로 주인을 옮겼다.
@@ -1189,6 +1207,14 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 **미해소 잔여:** Web Vitals 수집(직접 구현 또는 런타임 의존 승인)과, 목표(p75 LCP 2.5초·INP 200ms·CLS 0.1)를 위협할 때 광고만 끄는 판정. 주인 없음 — Epic 4 회고 또는 후속 작업이 정한다.
 
 **미해소(2026-10-17, Epic 4 회고 AI-4) — 주인 지정.** 주인은 Epic 4 보완 Story 4.5(`epics.md` `### Story 4.5`, 광고 이벤트·Web Vitals 계측과 성능 kill switch)다. kill switch는 기존 `ADVERTISING` 제한으로 광고만 끄고 해제는 3.4 수동 복구다. 코드 사실은 위 판정과 같다.
+
+**해소(2026-10-17, Story 4.5 done 전환, 기준 `ae06d92`).**
+- **표본.** 광고를 띄운 문서의 Vitals만 SHOW 소비 1건당 metric 하나씩 비식별 표본(`engagement_ad_vital_sample`, V29)으로 저장한다.
+- **판정.** Worker·`all`의 `AdPerformanceJudge`가 5분마다 24시간 창을 본다. 표본이 40개 이상이고 `percentile_disc(0.75)`가 NFR-14 임계를 넘으면 `AdvertisingStopApi`가 `PERFORMANCE` 출처의 전역 `ADVERTISING` 제한과 감사 SYSTEM 행(`performance-stop`, `AD-PERF-1.0`)을 쓴다.
+- **해제.** 3.4 `lift-restriction`으로만 닫히고, 이미 효력 중인 전역 광고 제한 아래에서는 표본을 비운다.
+- **검사.** `ClientTelemetryTest`(임계·표본 부족·기존 제한·해제 뒤 재발동 없음)와 `AdPerformanceJudgeRoleTest`가 지키고, PR #119의 `ci-required` 전 job이 성공했다.
+
+**남은 것(이 항목 밖).** 임계·창·최소 표본(`AD-PERF-1.0`)은 실측 전 시작값이다. 운영 데이터로 보정할지는 운영 관측 연결 뒤 정한다.
 
 ### 158. Windows 로컬 Vitest의 운영자 lazy chunk 대기 시간초과
 
