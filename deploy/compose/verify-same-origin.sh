@@ -1434,15 +1434,12 @@ assert_rows '재인증이 세션 행을 늘리지 않는다' 'SELECT count(*) FR
 assert_rows '재인증이 계정을 만들지 않는다' 'SELECT count(*) FROM identity_account_lifecycle' '3'
 assert_rows '재인증이 인증 매핑을 만들지 않는다' 'SELECT count(*) FROM identity_social_link' '3'
 
-# 무장은 일회성이다. 소비 뒤 속성 행 수가 무장 전으로 되돌아간다 — 되돌아오지 않으면 소비된
-# 흐름이 세션에 그대로 남아 다음 콜백이 같은 무장을 다시 쓴다.
-reauth_attributes_consumed="$(psql_value 'SELECT count(*) FROM spring_session_attributes')"
-if [ "${reauth_attributes_consumed}" = "${reauth_attributes_before}" ]; then
-  record_pass '재인증 콜백이 무장 속성을 소비한다'
-else
-  record_fail '재인증 콜백이 무장 속성을 소비한다' \
-    "속성 행이 '${reauth_attributes_consumed}'다 (기대 '${reauth_attributes_before}')"
-fi
+# 무장은 일회성이다. 소비 뒤 그 속성이 어느 세션에도 남지 않는다 — 남으면 소비된 흐름이 세션에
+# 그대로 남아 다음 콜백이 같은 무장을 다시 쓴다. 연결 무장과 같이 이름으로 센다. 전체 행 수를 무장
+# 전과 비교하면 같은 콜백이 지우고 더하는 다른 속성(Spring Security가 인증 성공에서 지우는 CSRF
+# 토큰과 그것을 미리 다시 저장하는 `AuthFlowHandlers.storeCsrfToken`, 재인증 시각)의 합에 결과가 묶인다.
+assert_rows '재인증 콜백이 무장 속성을 소비한다' \
+  "SELECT count(*) FROM spring_session_attributes WHERE attribute_name = 'bokrilog.auth.reauthentication'" '0'
 
 # 6) 회전 전 쿠키는 죽었고 새 쿠키는 인증 상태다.
 fetch GET /api/auth/session -H "Cookie: BOKRILOG_SESSION=${reauth_session_cookie}"
