@@ -36,6 +36,7 @@ import org.springframework.security.web.authentication.logout.LogoutHandler;
 import org.springframework.security.web.authentication.preauth.PreAuthenticatedAuthenticationToken;
 import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.security.web.context.SecurityContextRepository;
+import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.session.Session;
 import org.springframework.session.SessionRepository;
 import org.springframework.stereotype.Component;
@@ -848,6 +849,9 @@ class AuthFlowHandlers {
      * <p>Spring Session의 기본 flush 시점은 요청 끝이라, 덮어쓴 뒤에는 마지막 값 하나만
      * 데이터베이스로 간다 — ID Token은 저장소에 닿지 않는다. 이 값의 이름이 곧 세션 행의
      * {@code principal_name}이고 {@code SessionGuard}가 그 색인으로 사용자 단위 조작을 한다.
+     *
+     * <p>개설된 세션을 남기는 인증 성공 경로(로그인·재인증과 그 실패 수렴·연결)가 모두 여기를 지나므로 CSRF 토큰도 여기서 미리
+     * 저장한다({@link #storeCsrfToken}).
      */
     private void writeEstablishedPrincipal(
             HttpServletRequest request, HttpServletResponse response, UUID userId) {
@@ -860,6 +864,27 @@ class AuthFlowHandlers {
                         List.of(new SimpleGrantedAuthority("ROLE_USER"))));
         SecurityContextHolder.setContext(minimal);
         this.securityContexts.saveContext(minimal, request, response);
+        storeCsrfToken(request);
+    }
+
+    /**
+     * 이 세션의 CSRF 토큰을 인증 성공 요청 안에서 만들어 저장한다.
+     *
+     * <p>그렇지 않으면 토큰은 로그인 뒤 첫 세션 확인({@code GET /api/auth/session})에서 처음 만들어진다. 그 요청들이 겹치면
+     * 요청마다 다른 토큰을 만들어 응답에 싣고 세션에는 마지막에 저장한 하나만 남으므로(last-write-wins), 다른 응답의 토큰을 든
+     * 화면은 다음 상태 변경이 403이 된다. 재인증·연결 콜백도 같다 — 인증 성공 시 Spring Security의
+     * {@code CsrfAuthenticationStrategy}가 기존 토큰을 지우고 지연 토큰으로 바꿔 두기 때문이다. 여기서 만들어 두면 뒤따르는 세션
+     * 확인은 저장된 같은 토큰을 읽기만 한다.
+     *
+     * <p>방법은 {@code CsrfFilter}가 요청 속성에 얹어 둔 지연 토큰의 {@code getToken()} 하나다 — 지연 토큰이 저장소에서 읽고 없으면
+     * 만들어 저장한다. 저장소 구현·속성 이름은 그대로이고({@code AuthSecurityConfig.SessionBoundCsrfTokenRepository}), 응답에
+     * 토큰을 싣는 자격(인증·표시된 세션)도 그대로다({@code AuthSessionController}). 이 경로는 세션이 있을 때만 오므로 저장소의
+     * "세션을 만들지 않는다"와 부딪히지 않는다.
+     */
+    private static void storeCsrfToken(HttpServletRequest request) {
+        if (request.getAttribute(CsrfToken.class.getName()) instanceof CsrfToken deferred) {
+            deferred.getToken();
+        }
     }
 
     /**

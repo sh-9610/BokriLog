@@ -57,6 +57,19 @@ class SessionAttributeConversion {
                 new org.springframework.session.DelegatingIndexResolver<>(new ReadablePrincipalNameIndexResolver()));
     }
 
+    /**
+     * 세션 속성 저장을 PostgreSQL upsert({@code INSERT … ON CONFLICT … DO UPDATE})로 바꾼다. 기본은 plain {@code INSERT}라
+     * 같은 세션의 동시 요청이 둘 다 "속성 없음"으로 읽은 뒤 같은 속성을 처음 저장하면 {@code (SESSION_PRIMARY_ID,
+     * ATTRIBUTE_NAME)} 기본 키 충돌로 한쪽이 500이 된다. 이 customizer가 닫는 것은 그 첫 {@code INSERT}의 충돌 하나다 — 늦게 저장한
+     * 쪽의 값이 남는다(update 경로와 같은 last-write-wins). 값이 요청마다 다르면 안 되는 속성은 경쟁하지 않게 따로 막는다: CSRF
+     * 토큰은 인증 성공 요청이 미리 저장하므로({@code AuthFlowHandlers.storeCsrfToken}) 뒤따르는 세션 확인들은 읽기만 한다. 위 주체
+     * 색인 customizer와 함께 적용된다({@code AuthSessionConcurrencyTest}).
+     */
+    @Bean
+    org.springframework.session.jdbc.PostgreSqlJdbcIndexedSessionRepositoryCustomizer postgreSqlAttributeUpsert() {
+        return new org.springframework.session.jdbc.PostgreSqlJdbcIndexedSessionRepositoryCustomizer();
+    }
+
     /** 읽을 수 없는 로그인 문맥·주체 이름 속성을 주체 없음으로 접는 주체 이름 색인. */
     static final class ReadablePrincipalNameIndexResolver
             extends org.springframework.session.PrincipalNameIndexResolver<org.springframework.session.Session> {
