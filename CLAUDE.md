@@ -214,7 +214,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 회고 AI-1 광고 slot 수명 상한 fix | done | `spec-ad-slot-lifetime.md`, PR #116 머지 커밋 `24e8443` |
 | 4.5 광고 이벤트·Web Vitals 계측과 성능 kill switch | done | `spec-4-5-ad-telemetry-web-vitals.md`, PR #119 머지 커밋 `ae06d92` |
 | 회고 AI-2·AI-3 문서·주석 정합과 검증 공백 chore | done | `spec-epic-4-retro-docs-and-verification.md`, PR #121 머지 커밋 `1333c62` |
-| 동시 첫 세션 확인 500(세션 속성 upsert·CSRF 선저장) fix | done | `spec-session-attribute-upsert.md`, PR 머지 대기 |
+| 동시 첫 세션 확인 500(세션 속성 upsert·CSRF 선저장) fix | done | `spec-session-attribute-upsert.md`, PR #124 |
 
 ## 스토리가 고정한 계약
 
