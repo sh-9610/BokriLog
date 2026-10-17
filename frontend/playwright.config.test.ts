@@ -1,3 +1,5 @@
+import type { FullConfig } from '@playwright/test'
+
 /**
  * `playwright.config.ts` 계약 시험.
  *
@@ -20,7 +22,12 @@
  * 같은 jsdom 환경에서 돈다. 설정 파일이 import하는 `@playwright/test`는 Node API만 쓰고
  * jsdom 환경에서도 그대로 로드된다.
  */
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import globalSetup, { KEPT_RUNS, pruneRuns } from './e2e/support/runOutput'
 
 /*
  * 첫 시험 하나가 `@playwright/test`를 처음 로드한다. 그 모듈 그래프는 크고, worker pool이
@@ -35,12 +42,23 @@ vi.setConfig({ testTimeout: 30_000 })
 
 const originalCi = process.env.CI
 const originalBaseUrl = process.env.PLAYWRIGHT_BASE_URL
+const originalRun = process.env.BOKRILOG_E2E_RUN
+const originalLastRun = process.env.PLAYWRIGHT_LAST_RUN_OUTPUT_FILE
+const originalWorker = process.env.TEST_WORKER_INDEX
 
 /**
  * `undefined`면 지우고, 값이 있으면 설정한다. 빈 문자열도 의미가 있는 값이라 그대로 넣는다.
  * 설정 파일이 두 변수를 각각 다르게 읽으므로 이름을 인자로 받아 한 함수로 다룬다.
  */
-function setEnv(name: 'CI' | 'PLAYWRIGHT_BASE_URL', value: string | undefined): void {
+function setEnv(
+  name:
+    | 'BOKRILOG_E2E_RUN'
+    | 'CI'
+    | 'PLAYWRIGHT_BASE_URL'
+    | 'PLAYWRIGHT_LAST_RUN_OUTPUT_FILE'
+    | 'TEST_WORKER_INDEX',
+  value: string | undefined,
+): void {
   if (value === undefined) {
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- 값 대입으로는 "변수 없음"을 재현할 수 없다. 설정 파일이 `undefined`와 빈 문자열을 다르게 다루므로 실제로 지워야 한다.
     delete process.env[name]
@@ -61,6 +79,10 @@ async function loadConfig(ci: string | undefined, baseUrl?: string) {
 afterEach(() => {
   setEnv('CI', originalCi)
   setEnv('PLAYWRIGHT_BASE_URL', originalBaseUrl)
+  // 로컬 분기는 실행 표지와 `--last-failed` 기록 위치를 환경에 둔다(worker가 물려받게). 시험 사이에 남기지 않는다.
+  setEnv('BOKRILOG_E2E_RUN', originalRun)
+  setEnv('PLAYWRIGHT_LAST_RUN_OUTPUT_FILE', originalLastRun)
+  setEnv('TEST_WORKER_INDEX', originalWorker)
   vi.resetModules()
 })
 
@@ -157,4 +179,180 @@ describe('playwright.config.ts의 origin 주입', () => {
     expect(injected.retries).toBe(0)
     expect(injected.use?.trace).toBe('retain-on-failure')
   })
+})
+
+/*
+ * 로컬 실행은 실행마다 새 출력 디렉터리를 쓴다(Epic 4 회고 AI-6, `deferred-work.md` 155). Playwright는 실행을 시작할 때
+ * `outputDir`을 통째로 지우므로, 한 디렉터리를 계속 쓰면 앞선 실패의 trace가 다음 실행에 사라진다. CI의 경로와 artifact는
+ * `ci.yml`이 소유한다.
+ */
+const RUN_DIR = /^test-results\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/
+const STAMP = '2026-10-17T03-04-05-678Z'
+
+describe('playwright.config.ts의 실패 진단물 위치', () => {
+  it('CI는 지금 경로 그대로 쓰고 보존 정리를 걸지 않는다', async () => {
+    setEnv('BOKRILOG_E2E_RUN', undefined)
+    const config = await loadConfig('true')
+
+    expect(config.outputDir).toBe('test-results')
+    expect(config.globalSetup).toBeUndefined()
+    expect(process.env.BOKRILOG_E2E_RUN).toBeUndefined()
+  })
+
+  it('로컬 주 프로세스는 실행 표지 디렉터리를 쓰고 worker가 물려받을 표지를 환경에 둔다', async () => {
+    setEnv('TEST_WORKER_INDEX', undefined)
+    setEnv('BOKRILOG_E2E_RUN', undefined)
+    setEnv('PLAYWRIGHT_LAST_RUN_OUTPUT_FILE', undefined)
+    const config = await loadConfig(undefined)
+
+    expect(config.outputDir).toMatch(RUN_DIR)
+    expect(config.globalSetup).toBe('./e2e/support/runOutput.ts')
+    expect(config.outputDir).toBe(`test-results/${String(process.env.BOKRILOG_E2E_RUN)}`)
+    // `--last-failed`의 기록은 실행 디렉터리가 아니라 뿌리에 둔다.
+    expect(process.env.PLAYWRIGHT_LAST_RUN_OUTPUT_FILE).toMatch(
+      /test-results[\\/]\.last-run\.json$/,
+    )
+  })
+
+  it('주 프로세스는 환경에 남은 표지를 믿지 않고 실행마다 새로 정한다', async () => {
+    // 셸에 export돼 있거나 UI 모드가 한 프로세스에서 다시 읽어도 앞 실행의 디렉터리를 쓰지 않는다.
+    setEnv('TEST_WORKER_INDEX', undefined)
+    setEnv('BOKRILOG_E2E_RUN', STAMP)
+    const config = await loadConfig(undefined)
+
+    expect(config.outputDir).toMatch(RUN_DIR)
+    expect(config.outputDir).not.toBe(`test-results/${STAMP}`)
+  })
+
+  it('worker는 주 프로세스가 둔 표지를 물려받아 같은 디렉터리를 쓴다', async () => {
+    setEnv('TEST_WORKER_INDEX', '0')
+    setEnv('BOKRILOG_E2E_RUN', STAMP)
+    const config = await loadConfig(undefined)
+
+    expect(config.outputDir).toBe(`test-results/${STAMP}`)
+  })
+
+  it('worker라도 표지 모양이 아닌 값은 물려받지 않는다', async () => {
+    setEnv('TEST_WORKER_INDEX', '0')
+    setEnv('BOKRILOG_E2E_RUN', '../elsewhere')
+    const config = await loadConfig(undefined)
+
+    expect(config.outputDir).not.toContain('elsewhere')
+    expect(config.outputDir).toMatch(RUN_DIR)
+  })
+
+  it('`--last-failed` 기록 위치는 준 값을 두고, 빈 문자열은 주지 않은 것으로 본다', async () => {
+    setEnv('PLAYWRIGHT_LAST_RUN_OUTPUT_FILE', 'custom/last.json')
+    await loadConfig(undefined)
+    expect(process.env.PLAYWRIGHT_LAST_RUN_OUTPUT_FILE).toBe('custom/last.json')
+
+    setEnv('PLAYWRIGHT_LAST_RUN_OUTPUT_FILE', '')
+    await loadConfig(undefined)
+    expect(process.env.PLAYWRIGHT_LAST_RUN_OUTPUT_FILE).toMatch(
+      /test-results[\\/]\.last-run\.json$/,
+    )
+  })
+})
+
+describe('로컬 실행 디렉터리의 보존 상한', () => {
+  const runs = [
+    '2026-10-10T00-00-00-000Z',
+    '2026-10-11T00-00-00-000Z',
+    '2026-10-12T00-00-00-000Z',
+    '2026-10-13T00-00-00-000Z',
+    '2026-10-14T00-00-00-000Z',
+    '2026-10-15T00-00-00-000Z',
+    '2026-10-16T00-00-00-000Z',
+  ]
+  const current = '2026-10-17T00-00-00-000Z'
+  const legacy = 'ad-consent-legacy-chromium'
+  const roots: string[] = []
+
+  /** 실행 디렉터리 일곱·이번 실행·이 규칙 이전의 시험별 디렉터리·`.last-run.json`을 둔 뿌리. */
+  function seededRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), 'bokrilog-e2e-runs-'))
+    roots.push(root)
+    for (const name of [...runs, current, legacy]) {
+      mkdirSync(join(root, name))
+      writeFileSync(join(root, name, 'trace.zip'), '')
+    }
+    writeFileSync(join(root, '.last-run.json'), '{}')
+    return root
+  }
+
+  /** globalSetup이 받는 것과 같은 모양 — 첫 project의 절대 `outputDir`. */
+  function fullConfig(projects: { outputDir: string }[]): FullConfig {
+    return { projects } as unknown as FullConfig
+  }
+
+  const kept = [...runs.slice(runs.length - (KEPT_RUNS - 1)), current, legacy, '.last-run.json']
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      chmodSync(root, 0o755)
+      rmSync(root, { recursive: true, force: true })
+    }
+    vi.restoreAllMocks()
+  })
+
+  it('이번 실행을 포함해 최근 실행만 남기고 표지 모양이 아닌 항목은 건드리지 않는다', () => {
+    const root = seededRoot()
+
+    const removed = pruneRuns(root, current)
+
+    expect(KEPT_RUNS).toBe(5)
+    expect(removed.sort()).toEqual(runs.slice(0, runs.length - (KEPT_RUNS - 1)))
+    expect(readdirSync(root).sort()).toEqual([...kept].sort())
+  })
+
+  it('globalSetup은 실제 설정 모양의 첫 project 출력 디렉터리 형제를 상한까지 줄인다', () => {
+    const root = seededRoot()
+
+    globalSetup(fullConfig([{ outputDir: join(root, current) }]))
+
+    expect(readdirSync(root).sort()).toEqual([...kept].sort())
+  })
+
+  it('globalSetup은 project가 없거나 출력 디렉터리가 실행 표지가 아니면 아무것도 지우지 않는다', () => {
+    const root = seededRoot()
+    const before = readdirSync(root).sort()
+
+    globalSetup(fullConfig([]))
+    globalSetup(fullConfig([{ outputDir: join(root, legacy) }]))
+    globalSetup(fullConfig([{ outputDir: root }]))
+
+    expect(readdirSync(root).sort()).toEqual(before)
+  })
+
+  it('뿌리가 없으면(첫 실행) 경고 없이 아무것도 지우지 않는다', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    expect(pruneRuns(join(tmpdir(), 'bokrilog-e2e-runs-missing', 'nowhere'), current)).toEqual([])
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('뿌리를 읽지 못하면 경고 한 줄만 남기고 실행을 막지 않는다', () => {
+    const root = seededRoot()
+    const file = join(root, '.last-run.json')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    expect(pruneRuns(file, current)).toEqual([])
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0]?.[0])).toContain('ENOTDIR')
+  })
+
+  // 권한으로 지우기를 막는 재현은 POSIX의 비root 사용자에서만 성립한다(root는 권한을 무시하고, Windows는 모드를 보지 않는다).
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    '지난 실행을 지우지 못하면 그 디렉터리마다 경고 한 줄만 남기고 나머지를 이어 간다',
+    () => {
+      const root = seededRoot()
+      chmodSync(root, 0o555)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+      expect(pruneRuns(root, current)).toEqual([])
+      expect(warn).toHaveBeenCalledTimes(runs.length - (KEPT_RUNS - 1))
+      chmodSync(root, 0o755)
+      expect(readdirSync(root)).toHaveLength(runs.length + 3)
+    },
+  )
 })

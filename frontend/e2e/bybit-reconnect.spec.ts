@@ -8,10 +8,10 @@ import { planSyncContent } from '../src/content/planSync'
 import {
   collectAndClassify,
   connectAndSavePlan,
-  consent,
   publishAndOpenResult,
   startConversionByKeyboard,
 } from './support/firstPlan'
+import { consent, waitForLanding } from './support/navigation'
 
 /*
  * Story 2.17(재연결, `RECONNECT-1.0`)의 실제 Chromium 왕복 하나: 첫 공식 결과 → 설정에서 연결 해제(Story 2.16) → 해제 기간에
@@ -57,7 +57,8 @@ async function reauthenticate(page: Page, subject: string): Promise<void> {
   await page.goto('/settings')
   await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
   await consent(page, subject)
-  await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+  // 재인증은 세션의 목적지(착지 화면)로 돌아온다. 그 이동이 끝난 뒤에 설정 화면을 다시 연다.
+  await waitForLanding(page)
   await page.goto('/settings')
   await expect(page.getByRole('heading', { name: connectionContent.heading })).toBeVisible()
 }
