@@ -17,6 +17,7 @@ import {
 import { entryContent } from './content/entry'
 import { operatorContent } from './content/operator'
 import { planConditionContent } from './content/planConditions'
+import { FIRST_MOUNT_TIMEOUT_MS } from './test/firstMount'
 import {
   getObservedAllowedRequests,
   getObservedRequests,
@@ -318,7 +319,11 @@ describe('App 경로 맵', () => {
     render(<App />)
 
     expect(
-      await screen.findByRole('heading', { level: 1, name: operatorContent.notFound.heading }),
+      await screen.findByRole(
+        'heading',
+        { level: 1, name: operatorContent.notFound.heading },
+        { timeout: FIRST_MOUNT_TIMEOUT_MS },
+      ),
     ).toBeInTheDocument()
     expect(getObservedRequests()).toEqual([])
   })
@@ -331,7 +336,11 @@ describe('App 경로 맵', () => {
 
     render(<App />)
 
-    const link = await screen.findByRole('link', { name: authContent.signIn.labels.google })
+    const link = await screen.findByRole(
+      'link',
+      { name: authContent.signIn.labels.google },
+      { timeout: FIRST_MOUNT_TIMEOUT_MS },
+    )
     expect(link).toHaveAttribute('href', `${authorizePath('google')}?next=%2Foperator`)
   })
 })

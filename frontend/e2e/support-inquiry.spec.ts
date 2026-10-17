@@ -4,6 +4,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 import { authContent } from '../src/content/auth'
 import { operatorContent } from '../src/content/operator'
 import { supportContent } from '../src/content/support'
+import { consent, signIn, waitForScreen, type LandingPath } from './support/navigation'
 
 /**
  * 사용자 문의의 실제 Chromium 검증(Story 3.6).
@@ -16,8 +17,6 @@ import { supportContent } from '../src/content/support'
 
 const injectedOrigin = process.env.PLAYWRIGHT_BASE_URL?.trim() ?? ''
 
-const STUB_CONSENT_LINK = '동의하고 계속하기'
-
 const OPERATOR_SUBJECT = 'e2e-operator'
 
 const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']
@@ -29,21 +28,6 @@ function letters(): string {
   return Array.from({ length: 8 }, () =>
     String.fromCharCode(97 + Math.floor(Math.random() * 26)),
   ).join('')
-}
-
-async function consentWithSubject(page: Page, subject: string): Promise<void> {
-  await expect(page.getByRole('link', { name: STUB_CONSENT_LINK })).toBeVisible()
-  const url = new URL(page.url())
-  url.searchParams.set('dev_subject', subject)
-  await page.goto(url.toString())
-  await page.getByRole('link', { name: STUB_CONSENT_LINK }).click()
-}
-
-async function signIn(page: Page, subject: string): Promise<void> {
-  await page.goto('/')
-  await page.getByRole('link', { name: authContent.signIn.labels.google }).click()
-  await consentWithSubject(page, subject)
-  await page.waitForURL((url) => url.pathname !== '/' && !url.pathname.startsWith('/api/'))
 }
 
 async function signOut(page: Page): Promise<void> {
@@ -68,17 +52,21 @@ async function openOperator(page: Page): Promise<void> {
 /**
  * 문의 처리를 준비해 확인 대화상자를 연다. 최근 본인 확인이 없으면 화면이 세 로그인 수단을 보이고, 확인을 마친 뒤 다시
  * 준비한다 — 자동으로 이어 하지 않는다. 방금 로그인한 세션은 본인 확인을 요구받지 않을 수 있으므로 두 갈래를 다 받는다
- * (`operator.spec.ts`의 `preparedDialog`와 같은 관용).
+ * (`operator.spec.ts`의 `preparedDialog`와 같은 관용). 재인증은 그 세션을 연 로그인의 착지(`returnTo`)로 돌아온다.
  */
-async function preparedInquiryDialog(page: Page, prepare: () => Promise<void>): Promise<Locator> {
+async function preparedInquiryDialog(
+  page: Page,
+  returnTo: LandingPath,
+  prepare: () => Promise<void>,
+): Promise<Locator> {
   await prepare()
   const dialog = page.getByRole('dialog', { name: operatorContent.inquiryDialog.title })
   const reauth = page.getByText(operatorContent.inquiry.reauthLabel, { exact: true })
   await expect(dialog.or(reauth)).toBeVisible()
   if (await reauth.isVisible()) {
     await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
-    await consentWithSubject(page, OPERATOR_SUBJECT)
-    await page.waitForURL((url) => url.pathname !== '/' && !url.pathname.startsWith('/api/'))
+    await consent(page, OPERATOR_SUBJECT)
+    await waitForScreen(page, returnTo)
     await openOperator(page)
     await prepare()
   }
@@ -147,7 +135,7 @@ test.describe('사용자 문의 · 주입 origin', () => {
     await signOut(page)
 
     // 2. 운영자 답변.
-    await signIn(page, OPERATOR_SUBJECT)
+    const operatorLanding = await signIn(page, OPERATOR_SUBJECT)
     await openOperator(page)
     const copy = operatorContent.inquiry
     const dialogCopy = operatorContent.inquiryDialog
@@ -162,7 +150,7 @@ test.describe('사용자 문의 · 주입 origin', () => {
       await section.getByLabel(copy.reasonLabel).fill('e2e 문의 답변 기록')
       await section.getByRole('button', { name: copy.start }).click()
     }
-    const dialog = await preparedInquiryDialog(page, prepare)
+    const dialog = await preparedInquiryDialog(page, operatorLanding, prepare)
     await expect(dialog.getByRole('button', { name: dialogCopy.cancel })).toBeFocused()
     await expect(dialog).toContainText(`${dialogCopy.transition}: 접수됨 → 답변 완료`)
     const dialogScan = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze()

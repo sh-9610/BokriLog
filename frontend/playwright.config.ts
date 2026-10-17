@@ -1,4 +1,14 @@
 import { defineConfig, devices, type PlaywrightTestConfig } from '@playwright/test'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { E2E_RUN_ENV, isRunStamp, RESULTS_ROOT, runStamp } from './e2e/support/runOutput'
+
+/*
+ * 이 설정 파일이 있는 디렉터리(`frontend/`). `new URL('./…', import.meta.url)` 꼴은 Vite가 자산 URL로 바꿔 Vitest(이 설정의 계약
+ * 시험)에서 파일 경로가 되지 않으므로 경로 함수로 만든다.
+ */
+const CONFIG_DIR = dirname(fileURLToPath(import.meta.url))
 
 // `vite preview` 기본 포트(4173)를 피한다. 손으로 띄워 둔 preview와 포트가 겹치지 않게 한다.
 const PORT = 4183
@@ -37,6 +47,35 @@ const usesInjectedOrigin = injectedBaseUrl !== ''
  */
 const BASE_URL = usesInjectedOrigin ? injectedBaseUrl : PREVIEW_URL
 
+/**
+ * 로컬 실행의 출력 디렉터리(`test-results/<UTC 시각>`).
+ *
+ * Playwright는 실행을 시작할 때 `outputDir`을 통째로 지운다. 한 디렉터리를 계속 쓰면 앞선 실행의 실패 trace가 다음 실행에
+ * 사라져(`deferred-work.md` 155) 새 스택 첫 실행에서만 나는 실패를 다시 볼 수 없다. 실행마다 새 디렉터리를 쓰고, 보존 상한은
+ * `e2e/support/runOutput.ts`(globalSetup)가 지킨다. CI는 run마다 깨끗한 러너라 지울 앞선 실행이 없고, artifact 경로를
+ * `ci.yml`이 소유하므로 `test-results` 그대로다.
+ *
+ * 표지는 주 프로세스가 설정을 읽을 때마다 새로 정한다 — 셸에 같은 변수가 export돼 있거나 UI 모드가 한 프로세스에서 여러 번
+ * 돌아도 실행 디렉터리가 겹치지 않는다. Playwright는 worker(`TEST_WORKER_INDEX`가 있다)에서 이 설정을 다시 읽으므로, worker만
+ * 주 프로세스가 환경(`E2E_RUN_ENV`)에 둔 표지를 물려받아 같은 디렉터리를 쓴다.
+ */
+function localOutputDir(): string {
+  const inherited = process.env[E2E_RUN_ENV]?.trim() ?? ''
+  const inWorker = (process.env.TEST_WORKER_INDEX ?? '') !== ''
+  const run = inWorker && isRunStamp(inherited) ? inherited : runStamp(new Date())
+  process.env[E2E_RUN_ENV] = run
+  /*
+   * `--last-failed`는 기본으로 `<outputDir>/.last-run.json`을 읽는다. 실행마다 디렉터리가 바뀌면 직전 실행의 기록을 찾지
+   * 못하므로 기록 파일만 뿌리에 고정한다. 손으로 준 값은 그대로 두고, 빈 문자열은 주지 않은 것으로 본다.
+   */
+  if ((process.env.PLAYWRIGHT_LAST_RUN_OUTPUT_FILE?.trim() ?? '') === '') {
+    process.env.PLAYWRIGHT_LAST_RUN_OUTPUT_FILE = join(CONFIG_DIR, RESULTS_ROOT, '.last-run.json')
+  }
+  return `${RESULTS_ROOT}/${run}`
+}
+
+const outputDir = isCi ? RESULTS_ROOT : localOutputDir()
+
 /*
  * 빌드는 `test:e2e` 스크립트가 먼저 실행한다. 여기서는 산출물을 제공하기만 한다.
  * 빌드를 서버 기동과 묶으면 서버가 재사용될 때 빌드까지 건너뛰어 낡은 `dist/`를 검증하게 된다.
@@ -72,7 +111,7 @@ export default defineConfig({
    */
   globalTimeout: usesInjectedOrigin ? 420_000 : 180_000,
   reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
-  outputDir: 'test-results',
+  outputDir,
   use: {
     baseURL: BASE_URL,
     // `on-first-retry`는 retries가 0이면 trace를 하나도 남기지 않는다. 첫 실패부터 보존한다.
@@ -86,6 +125,8 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
+  // 로컬 실행만 보존 상한을 지킨다. CI의 출력 디렉터리에는 지울 앞선 실행이 없다.
+  ...(isCi ? {} : { globalSetup: './e2e/support/runOutput.ts' }),
   // 주입된 origin에서는 `webServer` 키 자체를 두지 않는다. `undefined`를 넣어도 Playwright는
   // 같게 다루지만, 키가 없는 편이 "이 실행에는 관리할 서버가 없다"를 설정 자체로 드러낸다.
   ...(usesInjectedOrigin ? {} : { webServer: previewServer }),

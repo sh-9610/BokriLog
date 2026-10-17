@@ -8,6 +8,7 @@ import {
   RECOVERY_CONDITION_LABELS,
 } from '../src/content/operator'
 import { serviceNoticeContent } from '../src/content/serviceNotice'
+import { consent, signIn, waitForScreen, type LandingPath } from './support/navigation'
 
 /**
  * 보호된 운영자 화면의 실제 Chromium 검증(Story 3.1·3.2·3.4).
@@ -24,9 +25,6 @@ import { serviceNoticeContent } from '../src/content/serviceNotice'
 
 const injectedOrigin = process.env.PLAYWRIGHT_BASE_URL?.trim() ?? ''
 
-/** 개발용 OIDC 스텁의 동의 링크. `auth-entry.spec.ts`와 같은 값이다(제품 카피가 아니다). */
-const STUB_CONSENT_LINK = '동의하고 계속하기'
-
 /** compose 스택의 운영자 subject. allowlist가 이 값을 운영자로 둔다. */
 const OPERATOR_SUBJECT = 'e2e-operator'
 
@@ -37,23 +35,6 @@ const NARROW_VIEWPORT = { width: 320, height: 640 } as const
 /** 운영자 화면 chunk의 요청인가. Vite가 모듈 이름으로 chunk 파일을 짓는다. */
 function isOperatorChunk(url: string): boolean {
   return /\/assets\/OperatorScreen-[^/]+\.js$/.test(new URL(url).pathname)
-}
-
-/** 스텁 동의 화면에서 `subject`를 고정한 채 동의한다(`bybit-connection.spec.ts`와 같은 관용). */
-async function consentWithSubject(page: Page, subject: string): Promise<void> {
-  await expect(page.getByRole('link', { name: STUB_CONSENT_LINK })).toBeVisible()
-  const url = new URL(page.url())
-  url.searchParams.set('dev_subject', subject)
-  await page.goto(url.toString())
-  await page.getByRole('link', { name: STUB_CONSENT_LINK }).click()
-}
-
-/** 그 subject로 Google 스텁 로그인을 지난다. 착지 화면은 신규·기존에 따라 다르다. */
-async function signIn(page: Page, subject: string): Promise<void> {
-  await page.goto('/')
-  await page.getByRole('link', { name: authContent.signIn.labels.google }).click()
-  await consentWithSubject(page, subject)
-  await page.waitForURL((url) => url.pathname !== '/' && !url.pathname.startsWith('/api/'))
 }
 
 /** 스택의 지원 연락처(`verify-same-origin.sh`가 넣는 개발용 주소). */
@@ -69,10 +50,12 @@ function letters(): string {
 /**
  * 운영 명령 하나를 준비해 확인 대화상자를 연다. 최근 본인 확인이 없으면 화면이 세 로그인 수단을 보이고, 확인을 마친 뒤
  * 다시 준비한다 — 자동으로 이어 하지 않는다. 방금 로그인한 세션은 본인 확인을 요구받지 않을 수 있으므로 두 갈래를 다
- * 받는다.
+ * 받는다. 재인증은 세션의 목적지 — 그 세션을 연 로그인의 착지(`returnTo`) — 로 돌아오므로 그 화면에 착지한 뒤 운영자 화면을
+ * 다시 연다.
  */
 async function preparedDialog(
   page: Page,
+  returnTo: LandingPath,
   title: string,
   reauthLabel: string,
   prepare: () => Promise<void>,
@@ -83,8 +66,8 @@ async function preparedDialog(
   await expect(dialog.or(reauth)).toBeVisible()
   if (await reauth.isVisible()) {
     await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
-    await consentWithSubject(page, OPERATOR_SUBJECT)
-    await page.waitForURL((url) => url.pathname !== '/' && !url.pathname.startsWith('/api/'))
+    await consent(page, OPERATOR_SUBJECT)
+    await waitForScreen(page, returnTo)
     await openOperator(page)
     await prepare()
   }
@@ -182,7 +165,7 @@ test.describe('운영자 화면 · 주입 origin', () => {
 
   test('운영자가 재인증 뒤 감사 원장을 내보낸다', async ({ page }) => {
     await page.setViewportSize(NARROW_VIEWPORT)
-    await signIn(page, OPERATOR_SUBJECT)
+    const landing = await signIn(page, OPERATOR_SUBJECT)
     await openOperator(page)
 
     // 일반 사용자와 구분되는 제목과 인접 고지.
@@ -209,9 +192,9 @@ test.describe('운영자 화면 · 주입 origin', () => {
     await page.getByRole('button', { name: operatorContent.export.start }).click()
     await expect(page.getByText(operatorContent.export.reauthLabel, { exact: true })).toBeVisible()
     await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
-    await consentWithSubject(page, OPERATOR_SUBJECT)
-    await page.waitForURL((url) => url.pathname !== '/' && !url.pathname.startsWith('/api/'))
-    // 재인증은 세션의 목적지로 돌아온다(첫 로그인이면 온보딩, `next=/operator` 로그인이면 이 화면). 어느 쪽이든 다시 연다.
+    await consent(page, OPERATOR_SUBJECT)
+    // 재인증은 세션의 목적지(이 세션을 연 로그인의 착지)로 돌아온다. 거기 착지한 뒤 운영자 화면을 다시 연다.
+    await waitForScreen(page, landing)
     await openOperator(page)
 
     await page.getByLabel(operatorContent.export.reasonLabel, { exact: true }).fill('e2e 정기 점검')
@@ -254,7 +237,7 @@ test.describe('운영자 화면 · 주입 origin', () => {
   }) => {
     // 본인 확인 왕복이 여럿이다(제한·공지·복구·복구 공지).
     test.slow()
-    await signIn(page, OPERATOR_SUBJECT)
+    let landing = await signIn(page, OPERATOR_SUBJECT)
     await openOperator(page)
     const copy = operatorContent.restriction
     await expect(page.getByRole('heading', { level: 2, name: copy.heading })).toBeVisible()
@@ -270,8 +253,8 @@ test.describe('운영자 화면 · 주입 origin', () => {
     await prepare()
     await expect(page.getByText(copy.reauthLabel, { exact: true })).toBeVisible()
     await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
-    await consentWithSubject(page, OPERATOR_SUBJECT)
-    await page.waitForURL((url) => url.pathname !== '/' && !url.pathname.startsWith('/api/'))
+    await consent(page, OPERATOR_SUBJECT)
+    await waitForScreen(page, landing)
     await openOperator(page)
 
     await prepare()
@@ -324,7 +307,13 @@ test.describe('운영자 화면 · 주입 origin', () => {
       await section.getByLabel(notice.nextUpdateLabel).fill(nextUpdate)
       await section.getByRole('button', { name: notice.start }).click()
     }
-    const opened = await preparedDialog(page, noticeDialog.title, notice.reauthLabel, publishNew)
+    const opened = await preparedDialog(
+      page,
+      landing,
+      noticeDialog.title,
+      notice.reauthLabel,
+      publishNew,
+    )
     await expect(opened.getByRole('button', { name: noticeDialog.cancel })).toBeFocused()
     await expect(opened).toContainText(`${noticeDialog.affected}: 광고`)
     await expect(opened).toContainText(
@@ -346,7 +335,7 @@ test.describe('운영자 화면 · 주입 origin', () => {
     // 같은 사용자가 다시 로그인해 대시보드에서 공지를 본다(첫 로그인 세션은 온보딩으로 밀린다).
     await page.getByRole('button', { name: authContent.signOut.label }).click()
     await page.waitForURL((url) => url.pathname === '/')
-    await signIn(page, OPERATOR_SUBJECT)
+    landing = await signIn(page, OPERATOR_SUBJECT)
     const shown = await dashboardNotice(page, investigating)
     await expect(shown).toContainText(`${serviceNoticeContent.stateLabel}: 조사 중`)
     await openOperator(page)
@@ -376,6 +365,7 @@ test.describe('운영자 화면 · 주입 origin', () => {
 
     const recoveryDialog = await preparedDialog(
       page,
+      landing,
       operatorContent.recoveryDialog.title,
       recovery.reauthLabel,
       recover,
@@ -424,6 +414,7 @@ test.describe('운영자 화면 · 주입 origin', () => {
     }
     const closing = await preparedDialog(
       page,
+      landing,
       noticeDialog.title,
       notice.reauthLabel,
       publishRecovered,

@@ -15,20 +15,7 @@ import { connectionContent } from '../../src/content/connection'
 import { firstSnapshotContent } from '../../src/content/firstSnapshot'
 import { planConditionContent } from '../../src/content/planConditions'
 import { planPublicationContent } from '../../src/content/planResult'
-
-const STUB_CONSENT = '동의하고 계속하기'
-
-/**
- * Passes the local OIDC stub's consent page as the given subject: the same person across a sign-in, a
- * reauthentication or a second sign-in (the stub's default is a new subject per request).
- */
-export async function consent(page: Page, subject: string): Promise<void> {
-  await expect(page.getByRole('link', { name: STUB_CONSENT })).toBeVisible()
-  const url = new URL(page.url())
-  url.searchParams.set('dev_subject', subject)
-  await page.goto(url.toString())
-  await page.getByRole('link', { name: STUB_CONSENT }).click()
-}
+import { consent, signIn, waitForScreen } from './navigation'
 
 /**
  * Signs in, connects the stub with the given scenario, takes the first official snapshot and saves
@@ -44,12 +31,12 @@ export async function connectAndSavePlan(
   firstValue = /1,234\.56 USD/,
 ): Promise<{ key: string; secret: string; snapshotSeenAt: number; subject: string }> {
   const subject = `e2e-snapshot-${String(Date.now())}-${Math.random().toString(36).slice(2)}`
-  await page.goto('/')
-  await page.getByRole('link', { name: authContent.signIn.labels.google }).click()
-  await consent(page, subject)
+  const landing = await signIn(page, subject)
   await page.getByRole('link', { name: authContent.settings.link }).click()
   await page.getByRole('button', { name: authContent.settings.reauth.labels.google }).click()
   await consent(page, subject)
+  // 재인증은 세션의 목적지(로그인의 착지)로 돌아온다. 그 이동이 끝난 뒤에 설정 화면을 연다.
+  await waitForScreen(page, landing)
   await page.goto('/settings')
   await expect(page.getByRole('heading', { name: connectionContent.heading })).toBeVisible()
   await page.getByRole('button', { name: connectionContent.start }).click()

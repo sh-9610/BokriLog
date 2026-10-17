@@ -14,10 +14,10 @@ import { planVerificationContent } from '../src/content/planVerification'
 import {
   collectAndClassify,
   connectAndSavePlan,
-  consent,
   publishAndOpenResult,
   startConversionByKeyboard,
 } from './support/firstPlan'
+import { consent } from './support/navigation'
 import { tabStopsOutsideNotices } from './support/tabStops'
 
 const injectedOrigin = process.env.PLAYWRIGHT_BASE_URL?.trim() ?? ''
