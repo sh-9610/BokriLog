@@ -200,10 +200,10 @@ class AdConsentController {
 
     private static ResponseEntity<?> internal(String step, RuntimeException failure, HttpServletRequest request,
             long started) {
-        // 클래스 이름만 debug로 남긴다. 메시지·원인에는 SQL이나 입력 값이 실릴 수 있다.
-        if (LOG.isDebugEnabled()) {
-            LOG.debug("ad consent request failed: failure={}", failure.getClass().getName());
-        }
+        // 운영에서 보이도록 WARN으로 예외의 단순 이름 하나만 남긴다. 메시지·원인·스택에는 SQL이나 입력 값이 실릴 수 있다.
+        // 문장은 요약 줄("ad consent request: …")과 접두사가 겹치지 않는다 — 요약 줄을 세는 시험·집계가 이 줄을 세지 않는다.
+        LOG.atWarn().addKeyValue("exception", failure.getClass().getSimpleName())
+                .log("ad consent failed closed");
         log(step, "ERROR", HttpStatus.INTERNAL_SERVER_ERROR.value(), started);
         return error(HttpStatus.INTERNAL_SERVER_ERROR, new ApiErrorHandler.ApiError(
                 ApiErrorHandler.CODE_INTERNAL_ERROR, ApiErrorHandler.MESSAGE_INTERNAL_ERROR, correlationIdOf(request)));

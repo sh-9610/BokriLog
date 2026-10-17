@@ -160,6 +160,7 @@ context:
   - **KEEP:** 쿼리 `t` → 주소 정리 → 소비 → adapter 순서, 소비의 잠금·`FOR UPDATE`·조건부 UPDATE 한 트랜잭션, `AdGate` 관문 공유, Nginx CSP map과 상위 `add_header` 한 곳, 기본 구성에서의 무변화.
 - 2026-10-16 PR #111 CI(`same-origin-integration`) — `ad-transition.spec.ts:129`가 참조 없음 진입의 `/api` 요청 0건 단정에서 `/api/auth/session` 하나를 받아 실패했다. trace로 보면 그 요청은 직전 `/onboarding` 문서의 세션 확인이 기록 시작 뒤에 나간 것이고, 중립 화면은 `/api` 요청을 보내지 않았다. 셈 범위를 `/ad-transition` 문서 요청과 결과 문서 요청 사이로 좁혔다(시험 결함, 제품 변경 없음).
 - 2026-10-16 PR #111 CI 두 번째 — 같은 단정이 `/api/snapshots/first`를 받아 다시 실패했다. 이것도 직전 `/onboarding` 문서의 요청이었다. 앞 문서의 늦은 요청 이벤트는 다음 문서 요청보다 뒤에 기록될 수 있어 문서 요청 순서로 자르는 첫 수정으로는 막을 수 없었다. 기록 전에 `about:blank`로 앞 문서를 완전히 내리도록 고쳤다(로컬 미재현, spec 10회 반복·전체 72건 통과).
+- 2026-10-16 PR #111 CI 세 번째(`8b26c59`, **2026-10-17 추가 기록** — Epic 4 회고 D-4가 이 줄의 누락을 잡았다) — `ad-transition.spec.ts`의 시험 "참조 없음은 요청 없이, 위조 참조는 소비 404 뒤에 결과로 가고 GPT를 load하지 않는다"에서, 참조 없음 진입 뒤 결과 문서 요청 셈(`expect.poll(...'/dashboard').length).toBe(1)`, 수정 전 `:150`)만 기다리고 시작한 다음 단계의 `page.goto(`${AD_TRANSITION_PATH}?t=…`)`(수정 전 `:168`)가 결과 문서의 `/onboarding` 리다이렉트에 끊겨 실패했다. 연결이 없는 새 계정이라 `/dashboard` 결과 문서가 세션 확인 뒤 서버 목적지 `/onboarding`으로 다시 덮어쓰기 때문이다. 두 셈 자리(수정 전 `:150`·`:170`)를 최종 착지(`/onboarding`)의 `waitForURL`(수정 뒤 `:152`·`:174`)과 셈 단정으로 바꿨다(시험 결함, 제품 변경 없음).
 
 ## Design Notes
 

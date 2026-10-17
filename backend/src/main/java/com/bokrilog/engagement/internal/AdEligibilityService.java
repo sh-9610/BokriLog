@@ -32,8 +32,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 class AdEligibilityService implements AdEligibilityApi {
 
-    /** transition 참조의 바이트 수(256비트). base64url 무패딩으로 43자다(스키마 CHECK와 같다). */
-    private static final int TRANSITION_BYTES = 32;
+    /**
+     * transition 참조의 바이트 수(256비트). base64url 무패딩으로 43자다(스키마 CHECK와 같다). 발급 길이와 모양의 대조는
+     * {@code AdSharedValuesTest}가 시험 문({@code AdProviderTestHook})으로 하므로 package-private이다.
+     */
+    static final int TRANSITION_BYTES = 32;
 
     private static final SecureRandom RANDOM = new SecureRandom();
 

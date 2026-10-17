@@ -292,9 +292,9 @@ interface Followed {
   /** Asked for from this tab (an admission answer), or found in progress in a read (another tab, a reload). */
   readonly origin: 'here' | 'elsewhere'
   /**
-   * The job a `동기화` press of this screen was admitted as (`ACCEPTED`) — never one it only joined, never an automatic
-   * or a verification admission. Kept when the following moves on to another job, so the moved-to job is never taken
-   * for it. Only this job's success may lead to an ad (Story 4.3).
+   * 이 화면의 `동기화` 누름이 새 작업으로 접수된(`ACCEPTED`) 작업 — 합류만 한 작업, 자동 접수·검증 접수는 아니다.
+   * 따라가기가 다른 작업으로 옮겨 가도 유지해서, 옮겨 간 작업을 이 작업으로 잘못 보지 않는다. 광고로 이어질 수 있는
+   * 것은 이 작업의 성공뿐이다(Story 4.3).
    */
   readonly manualSyncAdmission: string | null
   /** The view shown when following began. Only a later answer can end it. */
@@ -337,9 +337,9 @@ interface Judgement {
   readonly verificationCooldown?: number | null
   readonly focus: SyncFocus['target'] | null
   /**
-   * The job whose ad eligibility to ask for (Story 4.3): the job a `동기화` press of this screen was admitted as
-   * (`manualSyncAdmission`, the ended job's trigger `MANUAL`, purpose `SYNC`) that ended `succeeded`. Never an automatic
-   * job, one only joined, one another tab admitted, a verification, a failure or a review.
+   * 광고 자격을 물을 작업(Story 4.3): 이 화면의 `동기화` 누름이 접수된 작업(`manualSyncAdmission`, 끝난 작업의 trigger
+   * `MANUAL`, purpose `SYNC`)이 `succeeded`로 끝난 것. 자동 작업, 합류만 한 작업, 다른 탭이 접수한 작업, 검증, 실패,
+   * 검토는 아니다.
    */
   readonly adCandidate?: string
 }
@@ -474,9 +474,8 @@ function judge(
       // An ending this screen does not know is one that published nothing it can vouch for.
       const ending = ENDINGS[latest.status] ?? 'failed'
       const purpose = purposeOf(latest)
-      // Story 4.3: only the job a `동기화` press of this screen was admitted as (not one it joined, not one another tab
-      // admitted, not one the following moved on to), ended with a new official result, may lead to an ad. The ended job
-      // decides: its id, its trigger, its purpose.
+      // Story 4.3: 이 화면의 `동기화` 누름이 접수된 작업(합류한 작업, 다른 탭이 접수한 작업, 따라가기가 옮겨 간 작업이
+      // 아닌 것)이 새 공식 결과로 끝났을 때만 광고로 이어질 수 있다. 판단은 끝난 작업이 한다 — 그 id·trigger·purpose다.
       const adCandidate =
         followed.manual &&
         followed.manualSyncAdmission === latest.jobId &&
@@ -579,7 +578,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   const [focus, setFocus] = useState<SyncFocus | null>(null)
   const [gaveUp, setGaveUp] = useState<readonly string[]>([])
   const [visible, setVisible] = useState(() => document.visibilityState !== 'hidden')
-  // Story 4.3: the last succeeded manual sync whose ad eligibility is asked for.
+  // Story 4.3: 광고 자격을 물을, 마지막으로 성공한 수동 동기화.
   const [adJob, setAdJob] = useState<string | null>(null)
   const [seen, setSeen] = useState(view)
   const [wasLoading, setWasLoading] = useState(loading)
@@ -594,7 +593,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   const entryOn = useRef<DashboardView['kind'] | null>(null)
   const observationEntryDecided = useRef(false)
   const manualInFlight = useRef(false)
-  // Jobs whose ad eligibility was asked for: once per job, whatever the answer.
+  // 광고 자격을 이미 물은 작업들: 답이 무엇이든 작업마다 한 번이다.
   const adAsked = useRef(new Set<string>())
   const posts = useRef(0)
   const hiddenAt = useRef<number | null>(null)
@@ -772,7 +771,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
             // stays one following (a manual press is never forgotten by an automatic answer for it). A sync
             // may join a verification in progress: the job decides the purpose, not the request.
             const since = viewRef.current
-            // Story 4.3: only a `동기화` press admitted as a new job is its own manual sync; a press that joined a job is not.
+            // Story 4.3: 새 작업으로 접수된 `동기화` 누름만 이 화면의 수동 동기화다. 작업에 합류한 누름은 아니다.
             const ownSync =
               manual && operation.kind === 'sync' && admitted === 'ACCEPTED' ? job.jobId : null
             setFollowed((current) =>
@@ -819,11 +818,11 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   }, [])
 
   /*
-   * Story 4.3: after a manual sync of this screen succeeded, ask once whether that result may lead to an ad. Only an
-   * eligible answer changes anything — a document move to the neutral transition screen with the server's opaque
-   * reference. Any other answer (skipped, 404, a failure, the time limit) changes nothing: the new result, its
-   * sentence and its focus stay as they are. Passive: it starts a request. It runs again when the session token
-   * arrives (a job judged before it is asked then); `adAsked` keeps it to once per job.
+   * Story 4.3: 이 화면의 수동 동기화가 성공하면 그 결과가 광고로 이어질 수 있는지 한 번 묻는다. 무언가를 바꾸는 것은
+   * 자격 있음 답 하나뿐이다 — 서버의 불투명 참조를 들고 중립 전환 화면으로 문서를 이동한다. 다른 답(건너뜀, 404,
+   * 실패, 시한)은 아무것도 바꾸지 않는다: 새 결과, 그 문장, 그 초점이 그대로다. passive다: 요청을 시작할 뿐이고 요청 시작은
+   * 커밋과 함께 성립할 필요가 없다. 세션 토큰이 도착하면 다시 돈다(그 전에 판정된 작업은 그때 묻는다). `adAsked`가 작업마다
+   * 한 번으로 묶는다.
    */
   useEffect(() => {
     if (adJob === null || csrfToken === null || adAsked.current.has(adJob)) return
@@ -832,10 +831,9 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
       const transition = await requestAdEligibility(adJob, csrfToken)
       if (transition === null || !live.current) return
       /*
-       * The user moved on while the answer was on its way: a confirmation dialog is open (ending the plan, a
-       * revocation…), or a new admission — a sync, a verification — is in flight or followed. Leaving the document now
-       * would throw that away. An ad is never a condition of the result, so skipping it is the safe side (fail-open);
-       * the reference simply expires unused.
+       * 답이 오는 사이 사용자가 다른 일로 넘어갔다: 확인 대화상자가 열려 있거나(계획 종료, 연결 해제…), 새 접수 —
+       * 동기화·검증 — 가 진행 중이거나 따라가는 중이다. 지금 문서를 떠나면 그것을 버리게 된다. 광고는 결과의 조건이
+       * 아니므로 건너뛰는 쪽이 안전하다(fail-open). 참조는 쓰이지 않은 채 만료된다.
        */
       if (document.querySelector('[aria-modal="true"]') !== null) return
       if (posts.current > 0 || followedRef.current !== null) return

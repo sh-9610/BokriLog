@@ -408,6 +408,51 @@ class AdConsentTest extends OperatorTestBase {
         assertThat(all).doesNotContain(grantKey);
     }
 
+    /**
+     * 판독 실패는 500 공통 본문·{@code no-store}이고, 운영에서 보이도록 WARN 한 줄(예외 단순 이름만)과 결과 code {@code ERROR}의
+     * 요약 줄로 남는다(Epic 4 회고 D-2 — 4.2·4.3 컨트롤러와 같은 관용). 실패는 운영 코드의 시험 분기 없이 만든다 — 동의 표의 CHECK를
+     * 잠시 내리고 읽을 수 없는 선택 값 하나를 넣는다({@code AdEligibilityTest}·{@code AdTransitionTest}와 같은 방법). 끝나면 행을
+     * 지우고 같은 정의로 CHECK를 되살린다. WARN 줄의 문장은 요약 줄의 접두사({@code "ad consent request"})를 담지 않아 요약 줄을
+     * 세는 필터(위 로그 시험)에 섞이지 않는다.
+     */
+    @Test
+    void 판독_실패는_500_공통_본문이고_WARN으로_보이며_요약_줄_필터에_섞이지_않는다(CapturedOutput output) throws Exception {
+        Signed user = signedIn("consent-read-failure");
+        String definition = jdbc().sql("SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                + "WHERE conname = 'engagement_ad_consent_decision_choice_check'").query(String.class).single();
+        jdbc().sql("ALTER TABLE engagement_ad_consent_decision DROP CONSTRAINT engagement_ad_consent_decision_choice_check")
+                .update();
+        try {
+            insertDecision(user.user(), VERSION, "UNREADABLE");
+            var failed = get(CONSENT, user.cookie());
+            assertThat(failed.statusCode()).as(failed.body()).isEqualTo(500);
+            assertThat(failed.headers().firstValue("Cache-Control")).hasValueSatisfying(value -> assertThat(value)
+                    .contains("no-store"));
+            assertThat(topLevelFieldsOf(failed.body())).containsOnlyKeys("code", "message", "correlationId")
+                    .containsEntry("code", ApiErrorHandler.CODE_INTERNAL_ERROR);
+            assertThat(failed.body()).doesNotContain("UNREADABLE").doesNotContain(user.user().toString());
+        } finally {
+            jdbc().sql("DELETE FROM engagement_ad_consent_decision WHERE choice NOT IN ('GRANTED', 'DENIED')").update();
+            jdbc().sql("ALTER TABLE engagement_ad_consent_decision ADD CONSTRAINT "
+                    + "engagement_ad_consent_decision_choice_check " + definition).update();
+        }
+        String all = output.getOut() + output.getErr();
+        List<String> summaries = LogLines.events(all, "ad consent request");
+        assertThat(summaries).anySatisfy(event -> assertThat(event).contains("step=read").contains("result=ERROR")
+                .contains("status=500"));
+        // 요약 줄 필터는 실패 줄을 세지 않는다 — 걸린 줄은 모두 요약 줄이다.
+        assertThat(summaries).allSatisfy(event -> assertThat(event).startsWith("ad consent request: "));
+        List<Map<String, Object>> warnings = LogLines.records(all).stream()
+                .filter(record -> String.valueOf(record.get("event")).contains("ad consent failed closed"))
+                .toList();
+        assertThat(warnings).isNotEmpty().allSatisfy(record -> {
+            assertThat(record).containsEntry("level", "WARN").containsEntry("exception", "IllegalArgumentException");
+            assertThat(record.toString()).doesNotContain("UNREADABLE").doesNotContain("GRANTED")
+                    .doesNotContain("DENIED").doesNotContain(user.user().toString()).doesNotContain(user.subject())
+                    .doesNotContain("\tat ");
+        });
+    }
+
     // ------------------------------------------------------------------ 도구
 
     private HttpResponse<String> decide(Signed signed, String choice, String policyVersion, String key)

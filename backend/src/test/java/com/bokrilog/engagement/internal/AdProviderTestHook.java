@@ -18,4 +18,7 @@ public final class AdProviderTestHook {
 
     /** 판정을 직렬화하는 사용자 advisory 잠금 이름의 접두사. 운영 상수 그대로다(사본이 아니다). */
     public static final String USER_LOCK_PREFIX = AdAttemptRepository.USER_LOCK_PREFIX;
+
+    /** 발급하는 transition 참조의 바이트 수. 운영 상수 그대로다(사본이 아니다). */
+    public static final int TRANSITION_BYTES = AdEligibilityService.TRANSITION_BYTES;
 }

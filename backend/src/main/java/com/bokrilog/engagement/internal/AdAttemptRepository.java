@@ -23,8 +23,13 @@ import org.springframework.stereotype.Repository;
 class AdAttemptRepository {
 
     /**
-     * 한 사용자의 자격 판정을 직렬화하는 advisory 잠금 이름의 접두사. 동의 결정의 잠금({@code AdConsentRepository})과 다른 이름이다
-     * — 동의 변경과 자격 판정이 서로를 기다리지 않는다(판정은 커밋된 최신 동의를 읽는다).
+     * 한 사용자의 자격 판정·transition 소비·계측 기록을 직렬화하는 advisory 잠금 이름의 접두사. 동의 쓰기는 이 잠금이 아니라
+     * {@code AdConsentRepository}의 {@code bokrilog.engagement.ad_consent.user:} 잠금을 쥔다.
+     *
+     * <p>각 경로는 자기 advisory 잠금 하나 → 같은 {@code AccountAccessApi.lockWriteAccess}(계정 생명주기 행 {@code FOR UPDATE})
+     * 순서이므로, 동의 쓰기·판정·소비·계측은 결국 그 생명주기 행에서 한 줄로 선다 — 동의 변경과 자격 판정도 서로를 기다린다.
+     * 두 advisory 잠금을 함께 쥐는 경로가 없고, 생명주기 행을 먼저 쥔 뒤 이 잠금을 쥐는 경로도 없어(계정 삭제의 erase port는
+     * advisory 잠금 없이 행을 지운다) 교착이 없다. 판정은 커밋된 최신 동의를 읽는다.
      */
     static final String USER_LOCK_PREFIX = "bokrilog.engagement.ad_eligibility.user:";
 

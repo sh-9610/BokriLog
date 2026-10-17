@@ -620,7 +620,8 @@ normalized_error_body() {
 expected_csp="default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 # 중립 전환 화면(`/ad-transition`, Story 4.3)만 받는 CSP 전문. 광고 공급자(GPT web interstitial)의 script·이미지·연결·frame
-# origin을 그 경로에만 연다. 다른 모든 응답은 위 `expected_csp` 그대로여야 한다 — 그 단정이 `assert_security_headers`의
+# origin을 그 경로에만 연다. map이 메서드·상태가 아니라 경로로 고르므로 그 경로의 문서가 아닌 응답(`POST /ad-transition`의
+# 405 JSON)도 이 정책을 받는다. 다른 모든 경로의 응답은 위 `expected_csp` 그대로여야 한다 — 그 단정이 `assert_security_headers`의
 # 기본값이다. 값을 바꿀 때는 `deploy/nginx/bokrilog.conf`의 `$content_security_policy` map과 함께 바꾼다.
 expected_ad_transition_csp="default-src 'none'; script-src 'self' https://securepubads.g.doubleclick.net https://pagead2.googlesyndication.com https://tpc.googlesyndication.com; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: https://*.doubleclick.net https://*.googlesyndication.com https://*.gstatic.com; connect-src 'self' https://securepubads.g.doubleclick.net https://pagead2.googlesyndication.com; frame-src https://*.doubleclick.net https://tpc.googlesyndication.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
@@ -655,8 +656,9 @@ assert_cache_control() {
 # 해시 자산을 확인하는 호출만 값을 넘긴다. 캐시 단정을 이 함수에 두어 모든 응답 그룹에 한 번에
 # 전파시킨다 — 그룹마다 따로 적으면 새 그룹이 조용히 빠진다.
 #
-# 세 번째 인자는 기대하는 CSP 전문이다. 생략하면 기본 정책(`expected_csp`)이며 중립 전환 화면(`/ad-transition`)을
-# 확인하는 호출만 값을 넘긴다(Story 4.3). 그래서 나머지 모든 호출이 "CSP가 4.2 시점과 같다"를 그대로 단정한다.
+# 세 번째 인자는 기대하는 CSP 전문이다. 생략하면 기본 정책(`expected_csp`)이며 `/ad-transition` 경로의 응답 — 문서(쿼리가
+# 붙은 것 포함)와 `POST`의 405 오류 응답 — 을 확인하는 호출만 값을 넘긴다(Story 4.3, Epic 4 회고 B-4). 그래서 나머지 모든 호출이
+# "CSP가 4.2 시점과 같다"를 그대로 단정한다.
 assert_security_headers() {
   local context="$1" value
   local want_cache="${2:-${expected_document_cache_control}}"
@@ -2865,6 +2867,9 @@ done
 fetch POST /ad-transition
 assert_equals '`POST /ad-transition` 상태 405' "${last_status}" '405'
 assert_equals '`POST /ad-transition` Content-Type' "$(header_value 'Content-Type')" 'application/json'
+# 문서가 아닌 405 오류 응답도 CSP map이 경로로 고르므로 광고 정책 전문을 받는다(Epic 4 회고 B-4). 캐시 지시는 오류 응답이라
+# `$cache_control` map의 `no-store`(문서와 같은 값)이고, 나머지 보안 헤더도 이웃 404와 같은 한 벌로 단정한다.
+assert_security_headers '`POST /ad-transition`' "${expected_document_cache_control}" "${expected_ad_transition_csp}"
 # 접두사가 겹치는 경로는 허용 목록 밖의 404이고 기본 CSP다 — 광고 정책은 정확히 그 경로 하나에만 열린다.
 for ad_transition_neighbor in /ad-transition/x /ad-transition-x; do
   fetch GET "${ad_transition_neighbor}"

@@ -139,9 +139,9 @@ class PlanSyncRepository {
     }
 
     /**
-     * Story 4.2's candidate predicate, in one statement: the user's own manual sync that succeeded with its official
-     * result. A verification, a continuation, a completion, an automatic or system trigger, an ending other than a
-     * success and an attempt in progress are not; neither is another user's attempt nor a missing one.
+     * Story 4.2의 후보 술어를 한 문장으로: 그 사용자 자신의 수동 동기화가 공식 결과와 함께 성공한 것. 검증, 계속,
+     * 완료, 자동·시스템 trigger, 성공이 아닌 결말, 진행 중인 attempt는 후보가 아니고, 다른 사용자의 attempt와 없는
+     * attempt도 아니다.
      */
     boolean publishedManualSync(UUID user, UUID jobId) {
         return Boolean.TRUE.equals(jdbc.sql("SELECT EXISTS (SELECT 1 FROM sync_plan_sync_job WHERE user_id=:u "
