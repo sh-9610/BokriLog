@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 10-17-2026 15:00
+last_updated: 10-17-2026 18:00
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -386,14 +386,14 @@ action_items:
       Javadoc·CLAUDE.md 13·264행·4.3 Change Log 누락을 고치고, CLAUDE.md 미검증 목록에 광고 출시 게이트
       G-4를 더한다(회고 D-1·D-2·D-4·R-4)"
     owner: "chore"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
   - id: "epic-4-retro-item-42-검증-공백-transition-참조-모양-api-경로-상수의-프런트-백"
     epic: 4
     action: "검증 공백 — transition 참조 모양·API 경로 상수의 프런트·백 파일 대조 시험(AdConsentPolicyVersionTest
       선례), POST /ad-transition 405의 CSP 단정, 정책 버전 상향을 소비 단계에서 보는 시험을 더한다(회고 D-3·B-4·B-5)"
     owner: "chore(문서·주석 정합과 같은 작업)"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
   - id: "epic-4-retro-item-43-deferred-156-광고-이벤트-분리-계측-서버가-아는-소비-결말-카"
     epic: 4
