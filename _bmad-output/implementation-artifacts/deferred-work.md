@@ -488,3 +488,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-epic-4-retro-docs-and-verification.md`
   summary: 백엔드 전체 빌드 중에만 나는 계획 종단 시험의 간헐 실패 둘 — `PlanEndTest` 16건의 409 `PLAN_END_UNAVAILABLE`·`RESULT_TOO_RECENT`, `PlanCompletionTest.laterSyncsOnlyMoveThePostEndValue`의 작업 `FAILED` — 의 원인(부하 아래 시각 어긋남 또는 순차 시험 중 Worker 경합 추정)을 찾아 고친다.
   evidence: 2026-10-17 Epic 4 회고 AI-2·AI-3 chore 검증에서 첫 `backend/gradlew --project-dir backend build`가 이 16건으로 실패했고, 같은 코드의 재실행과 `PlanEndTest` 단독 실행(26/26)은 통과했다. patch 뒤 첫 전체 빌드에서는 `PlanCompletionTest` 1건이 실패했고 단독 `--rerun`과 두 번째 전체 빌드는 통과했다. 이 chore는 계획 종료·완료 경로를 바꾸지 않았다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-session-attribute-upsert.md`
+  summary: 세션 행이 동시 로그아웃·만료 정리로 먼저 지워진 뒤 같은 세션의 다른 요청이 속성을 저장하면 FK 위반(500)이 날 수 있는 경합을 미인증 응답으로 접을지 정한다.
+  evidence: upsert는 같은 속성 첫 INSERT의 기본 키 충돌만 닫는다. 세션 행이 사라진 뒤의 속성 INSERT는 `SPRING_SESSION_ATTRIBUTES` FK에서 실패하고, 동시 삭제 뒤 UPDATE는 0행이 된다(2026-10-17 fix 리뷰 edge-case-hunter·blind-hunter). 재현 시험은 아직 없다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-session-attribute-upsert.md`
+  summary: 세션 확인이 500(일시 오류)이면 화면이 "로그인 상태가 아닙니다"(미인증)로 그리는 대신 일시 오류임을 구분해 안내하는 처리를 정한다.
+  evidence: PR #123 CI 실패의 화면 기록에서 서버 500이 미인증 안내로 보였다(run 39039915046). fail-closed 자체는 맞지만 문구가 원인을 잘못 가리킨다(2026-10-17 fix 리뷰 blind-hunter). 재시도로 덮는 것은 SPEC이 금지했다.

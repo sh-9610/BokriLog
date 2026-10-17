@@ -17,10 +17,18 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 31 |
+| 해소 | 32 |
 | 부분 해소 | 20 |
-| 미해소 | 108 |
+| 미해소 | 109 |
 | 미판정 | 0 |
+
+**2026-10-17 갱신(세션 속성 upsert fix).** `spec-session-attribute-upsert.md`(PR 자체가 판정 자리 — done 전환 PR이 없는 fix)를 판정했다.
+
+- **append한 항목.** **160**(세션 행이 먼저 지워진 뒤 속성 저장의 FK 위반)·**161**(세션 확인 500을 미인증 문구로 그림)을 더했고 둘 다 미해소다.
+- **해소한 항목.** **155**(주입 origin e2e의 로그인 직후 미인증)를 해소로 판정했다 — 원인을 찾아 고쳤다.
+- **결정 지점으로 지목된 항목.** 없다.
+
+그래서 앞 표(159건)에서 해소 +1, 미해소 −1+2다. 합은 161이다.
 
 **2026-10-17 갱신(Epic 4 회고 AI-2·AI-3 chore done 전환).** `spec-epic-4-retro-docs-and-verification.md`(PR #121, 머지 커밋 `1333c62`)를 판정했다.
 
@@ -1188,6 +1196,11 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소 잔여:** 새 스택 첫 실행에서 실패를 재현해 trace를 보존하고(예: 실패 시 `test-results`를 따로 복사) 원인을 찾는 일. 결정 지점이 정해지지 않았다 — 주인 없음, 다음 주입 origin e2e를 건드리는 작업이 이어받는다.
 
+**해소(2026-10-17, 세션 속성 upsert fix, `spec-session-attribute-upsert.md`).**
+- **원인.** PR #123 CI(run 39039915046)의 `ad-transition.spec.ts:137`이 같은 증상으로 실패했고, artifact trace에서 원인이 드러났다. 로그인 직후 회전된 쿠키로 보낸 `GET /api/auth/session`이 500이었다. 같은 세션의 첫 세션 확인 둘이 겹치면 CSRF 토큰 속성을 Spring Session JDBC가 plain `INSERT`로 두 번 저장해 기본 키가 충돌했고, 화면은 fail-closed로 미인증을 그렸다.
+- **수정.** 세션 속성 저장을 PostgreSQL upsert(`SessionAttributeConversion.postgreSqlAttributeUpsert`)로 바꿨다. CSRF 토큰은 인증 성공 요청에서 미리 저장(`AuthFlowHandlers.storeCsrfToken`)해 동시 첫 확인이 같은 토큰을 받는다.
+- **검사.** `AuthSessionConcurrencyTest`가 지킨다. 이 시험은 고치기 전에 결정적으로 실패했다(11건 중 11건). 주입 origin `ad-consent`·`ad-transition` `--repeat-each 5`는 15건 통과했다. 이 fix PR의 `ci-required` 전 job 성공이 머지 조건이다.
+
 ### 156. 광고 이벤트 분리 계측
 
 **미해소(2026-10-16, Story 4.4 판정, 기준 `ec51014`).** Story 4.4가 범위 분할(사용자 결정 [S])로 append했다(source_spec 없음, step-01 분할 형식).
@@ -1243,3 +1256,15 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **이 chore는 원인이 아니다.** 계획 종료·완료 경로를 바꾸지 않았다.
 
 **미해소 잔여:** 원인 확정이 남았다. 부하 아래 결과 시각과 DB 시각의 어긋남, 또는 순차 시험 중 scheduler·Worker의 경합으로 추정한다. 실패 시 시각·작업 상태를 남기는 진단이 먼저다. 주인은 없다 — Epic 4 회고 AI-6(간헐 실패 시험의 주인과 방법, `epic-4-retro-item-45`)이 155·158과 함께 볼 자리다.
+
+### 160. 세션 행이 먼저 지워진 뒤 속성 저장의 FK 위반
+
+**미해소(2026-10-17, 세션 속성 upsert fix가 append).** upsert는 같은 속성 첫 INSERT의 기본 키 충돌만 닫는다. 같은 세션의 다른 요청이 동시 로그아웃·만료 정리로 세션 행이 지워진 뒤 속성을 저장하면 `SPRING_SESSION_ATTRIBUTES` FK에서 500이 날 수 있고, 동시 삭제 뒤 UPDATE는 0행이 된다. 재현 시험은 없다.
+
+**미해소 잔여:** 재현 시험을 두고 그 실패를 미인증 응답으로 접을지 정하는 일. 주인 없음 — 다음에 세션 저장·로그아웃 경로를 건드리는 작업이 이어받는다.
+
+### 161. 세션 확인 500을 미인증 문구로 그림
+
+**미해소(2026-10-17, 세션 속성 upsert fix가 append).** PR #123 CI 실패 화면에서 서버 500(일시 오류)이 "로그인 상태가 아닙니다"로 보였다. fail-closed 자체는 맞지만 문구가 원인을 잘못 가리킨다. 재시도로 덮는 것은 금지다.
+
+**미해소 잔여:** 세션 확인 실패(5xx·네트워크)를 미인증과 구분해 안내할지 정하는 일. 주인 없음 — 다음에 진입·세션 게이트 화면을 건드리는 작업이 이어받는다.
