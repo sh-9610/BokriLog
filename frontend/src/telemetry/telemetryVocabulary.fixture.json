@@ -1,0 +1,9 @@
+{
+  "path": "/api/engagement/telemetry",
+  "maxEvents": 16,
+  "maxBodyBytes": 8192,
+  "metrics": ["LCP", "INP", "CLS"],
+  "routes": ["/dashboard", "/settings", "/plan-conditions", "/ad-transition"],
+  "adEvents": ["REQUESTED", "READY", "CLOSED", "FAILED", "RESULT"],
+  "failureReasons": ["TIMEOUT", "NO_FILL", "BLOCKED", "UNSUPPORTED", "ERROR", "WINDOW_EXPIRED"]
+}

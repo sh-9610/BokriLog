@@ -20,6 +20,10 @@
  *    설정 화면의 광고 동의 조회(`GET /api/engagement/ad-consent`, Story 4.1)도 같은 근거로 기본 응답(미결정)이 있다
  *    (`defaultAdConsent`). 수동 동기화 성공 뒤의 광고 자격 판정(`POST /api/engagement/ad-eligibility`, Story 4.3)도
  *    기본 응답(공급자 꺼짐으로 건너뜀 — 기본 구성의 답)이 있다(`defaultAdEligibility`).
+ * 6. 계측 beacon(`POST /api/engagement/telemetry`, Story 4.5)도 기본 응답(204)이 있다. 네 화면이 숨김·떠남에서 보내므로 열지 않은
+ *    시험에서 전역 거부로 기록되면 그 화면의 "요청 0건" 단정이 계측 때문에 깨진다. 본문·`keepalive`·CSRF 헤더는
+ *    `getObservedTelemetryRequests`로 따로 센다 — 허용 기록에도 거부 기록에도 넣지 않는다. 계측 모듈의 문서 상태(큐·토큰·등록)는
+ *    시험마다 처음으로 되돌린다. `sendBeacon`은 여전히 거부다(계측은 CSRF 헤더를 실을 수 있는 `fetch`만 쓴다).
  */
 
 import '@testing-library/jest-dom/vitest'
@@ -30,6 +34,7 @@ import { AD_CONSENT_PATH, AD_CONSENT_POLICY_VERSION } from '../content/adConsent
 import { DASHBOARD_ADJUSTMENTS_PATH } from '../content/adjustmentHistory'
 import { AD_ELIGIBILITY_PATH, AD_TRANSITION_CLAIM_PATH } from '../content/adTransition'
 import {
+  CSRF_HEADER,
   LINK_BASE_PATH,
   linkPath,
   LOGOUT_ENDPOINT,
@@ -68,6 +73,7 @@ import { DASHBOARD_SYNC_PATH } from '../content/planSync'
 import { DASHBOARD_VERIFICATION_PATH } from '../content/planVerification'
 import { SERVICE_NOTICES_PATH } from '../content/serviceNotice'
 import { SUPPORT_INQUIRIES_PATH } from '../content/support'
+import { resetTelemetryForTests, TELEMETRY_PATH } from '../telemetry/beacon'
 
 const observedRequests: string[] = []
 const observedIndexedDbNames: string[] = []
@@ -81,6 +87,18 @@ const observedSupportRequests: string[] = []
 const observedAdConsentRequests: string[] = []
 /** 기본 응답이 답한 광고 자격 판정(Story 4.3). 본문(`syncJobId`)도 함께 남긴다 — 어느 job을 물었는지가 계약이다. */
 const observedAdEligibilityRequests: string[] = []
+
+/** 계측 beacon 하나(Story 4.5). 본문, `keepalive`, 실은 CSRF 헤더 값. */
+export interface TelemetryRequest {
+  readonly body: unknown
+  readonly keepalive: boolean
+  readonly csrfToken: string | null
+}
+
+/** 기본 응답이 답한(또는 시험이 연) 계측 beacon(Story 4.5). 허용·거부 기록과 따로 센다. */
+const observedTelemetryRequests: TelemetryRequest[] = []
+/** 시험이 바꾼 계측 응답. 없으면 204다. */
+let telemetryResponder: RequestResponder | null = null
 
 /**
  * 열린 요청과 그것에 답할 함수. 키는 `"<메서드> <URL>"`이다.
@@ -532,6 +550,16 @@ export function getObservedAdEligibilityRequests(): readonly string[] {
   return [...observedAdEligibilityRequests]
 }
 
+/** 보낸 계측 beacon들(Story 4.5). 본문은 JSON으로 읽은 값이다. */
+export function getObservedTelemetryRequests(): readonly TelemetryRequest[] {
+  return [...observedTelemetryRequests]
+}
+
+/** 계측 beacon의 응답을 바꾼다(Story 4.5) — 실패·거절이 화면에 영향이 없는지 보는 시험이 쓴다. 기록은 그대로 남는다. */
+export function stubTelemetry(responder: RequestResponder): void {
+  telemetryResponder = responder
+}
+
 /** 지금까지 관측된 네트워크 요청. 비어 있어야 한다. */
 export function getObservedRequests(): readonly string[] {
   return [...observedRequests]
@@ -673,6 +701,17 @@ globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Respo
     observedAdEligibilityRequests.push(typeof init?.body === 'string' ? init.body : '')
     return Promise.resolve(defaultAdEligibility())
   }
+  if (method === 'POST' && url === TELEMETRY_PATH) {
+    const headers = new Headers(init?.headers)
+    observedTelemetryRequests.push({
+      body: typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : null,
+      keepalive: init?.keepalive === true,
+      csrfToken: headers.get(CSRF_HEADER),
+    })
+    return telemetryResponder === null
+      ? Promise.resolve(new Response(null, { status: 204 }))
+      : telemetryResponder(init)
+  }
   const queryAt = url.indexOf('?')
   const queryResponder =
     queryAt < 0 ? undefined : queryResponders.get(requestKey(method, url.slice(0, queryAt)))
@@ -725,6 +764,9 @@ beforeEach(() => {
   observedSupportRequests.length = 0
   observedAdConsentRequests.length = 0
   observedAdEligibilityRequests.length = 0
+  observedTelemetryRequests.length = 0
+  telemetryResponder = null
+  resetTelemetryForTests()
 })
 
 afterEach(() => {
@@ -740,6 +782,9 @@ afterEach(() => {
   observedSupportRequests.length = 0
   observedAdConsentRequests.length = 0
   observedAdEligibilityRequests.length = 0
+  observedTelemetryRequests.length = 0
+  telemetryResponder = null
+  resetTelemetryForTests()
   window.localStorage.clear()
   window.sessionStorage.clear()
   // 한 시험이 남긴 쿠키가 다음 시험의 저장소 단정을 엉뚱하게 실패시키지 않게 한다.

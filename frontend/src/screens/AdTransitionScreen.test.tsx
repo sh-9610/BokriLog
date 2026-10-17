@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 
-import { showInterstitial } from '../ads/gptAdapter'
+import { showInterstitial, type AdFailure } from '../ads/gptAdapter'
 import {
   AD_CLAIM_WINDOW_SECONDS,
   AD_TRANSITION_PATH,
@@ -17,8 +17,10 @@ import {
   getObservedAllowedRequests,
   getObservedRequests,
   getObservedStorageEntries,
+  getObservedTelemetryRequests,
   stubAdTransitionClaim,
   stubSessionRequest,
+  stubTelemetry,
 } from '../test/setup'
 import { AdTransitionScreen } from './AdTransitionScreen'
 
@@ -310,7 +312,7 @@ describe('중립 전환 화면: 소비', () => {
 
   it('adapter가 실패를 알리면(null slot·script 오류) 결과로 간다', async () => {
     vi.mocked(showInterstitial).mockImplementation((_path, onFailure) => {
-      onFailure()
+      onFailure('UNSUPPORTED')
       return cancelAd
     })
     signedIn()
@@ -328,7 +330,9 @@ describe('중립 전환 화면: 소비', () => {
   it('adapter의 늦은 실패(시간초과·미채움)는 결과로 한 번 가고, 그 뒤의 실패·닫기는 두 번째 이동을 만들지 않는다', async () => {
     let failLater: () => void = () => undefined
     vi.mocked(showInterstitial).mockImplementation((_path, onFailure) => {
-      failLater = onFailure
+      failLater = () => {
+        onFailure('TIMEOUT')
+      }
       return cancelAd
     })
     signedIn()
@@ -365,7 +369,7 @@ describe('중립 전환 화면: 소비', () => {
 
 describe('중립 전환 화면: 결과 보기·복원·언마운트', () => {
   async function showing(): Promise<{ failLater: () => void; unmount: () => void }> {
-    let onFailure: () => void = () => undefined
+    let onFailure: (reason: AdFailure) => void = () => undefined
     vi.mocked(showInterstitial).mockImplementation((_path, failure) => {
       onFailure = failure
       return cancelAd
@@ -379,7 +383,7 @@ describe('중립 전환 화면: 결과 보기·복원·언마운트', () => {
     })
     return {
       failLater: () => {
-        onFailure()
+        onFailure('NO_FILL')
       },
       unmount,
     }
@@ -475,7 +479,7 @@ describe('중립 전환 화면: 준비된 광고의 수명 상한', () => {
   }
 
   function showingAd(): { failLater: () => void } {
-    let onFailure: () => void = () => undefined
+    let onFailure: (reason: AdFailure) => void = () => undefined
     vi.mocked(showInterstitial).mockImplementation((_path, failure) => {
       onFailure = failure
       return cancelAd
@@ -485,7 +489,7 @@ describe('중립 전환 화면: 준비된 광고의 수명 상한', () => {
     open(`?t=${TRANSITION}`)
     return {
       failLater: () => {
-        onFailure()
+        onFailure('NO_FILL')
       },
     }
   }
@@ -862,5 +866,198 @@ describe('중립 전환 화면: 데이터 경계', () => {
     // "광고를 시청하면 결과가 열립니다"류가 아니다.
     expect(document.body.textContent).not.toContain('시청')
     expect(getObservedStorageEntries()).toEqual([])
+  })
+})
+
+describe('중립 전환 화면: 광고 이벤트 계측(Story 4.5)', () => {
+  /** 보낸 beacon들의 광고 이벤트를 순서대로 편다(Vitals는 jsdom에서 보고되지 않는다). */
+  function adEvents(): unknown[] {
+    return getObservedTelemetryRequests()
+      .flatMap((request) => (request.body as { events: { kind: string }[] }).events)
+      .filter((event) => event.kind === 'AD')
+  }
+
+  /** `replaceLocation`이 불린 순간까지 보낸 beacon 수. 떠나기 직전에 보냈는지 본다. */
+  function beaconsAtLeave(): number[] {
+    const counts: number[] = []
+    vi.mocked(replaceLocation).mockImplementation(() => {
+      counts.push(getObservedTelemetryRequests().length)
+    })
+    return counts
+  }
+
+  async function shown(): Promise<{
+    fail: (reason: AdFailure) => void
+    ready: () => void
+  }> {
+    let fail: (reason: AdFailure) => void = () => undefined
+    let ready: () => void = () => undefined
+    vi.mocked(showInterstitial).mockImplementation((_path, onFailure, onReady) => {
+      fail = onFailure
+      ready = onReady
+      return cancelAd
+    })
+    signedIn()
+    claims(() => Promise.resolve(json({ outcome: 'SHOW', adUnitPath: AD_UNIT_PATH })))
+    open(`?t=${TRANSITION}`)
+    render(<AdTransitionScreen />)
+    await waitFor(() => {
+      expect(showInterstitial).toHaveBeenCalledTimes(1)
+    })
+    return {
+      fail: (reason) => {
+        fail(reason)
+      },
+      ready: () => {
+        ready()
+      },
+    }
+  }
+
+  it('SHOW·준비·닫기는 REQUESTED·READY·CLOSED·RESULT로 남고 떠나기 직전 keepalive 한 묶음으로 보낸다', async () => {
+    const atLeave = beaconsAtLeave()
+    const ad = await shown()
+    act(() => {
+      ad.ready()
+      ad.ready()
+    })
+    expect(getObservedTelemetryRequests()).toEqual([])
+
+    fireEvent.click(screen.getByRole('button', { name: adTransitionContent.close }))
+
+    expect(atLeave).toEqual([1])
+    expect(getObservedTelemetryRequests()).toHaveLength(1)
+    expect(getObservedTelemetryRequests()[0]).toMatchObject({ keepalive: true, csrfToken: TOKEN })
+    expect(adEvents()).toEqual([
+      { kind: 'AD', event: 'REQUESTED' },
+      { kind: 'AD', event: 'READY' },
+      { kind: 'AD', event: 'CLOSED' },
+      { kind: 'AD', event: 'RESULT' },
+    ])
+    expect(getObservedRequests()).toEqual([])
+    expect(getObservedStorageEntries()).toEqual([])
+  })
+
+  it.each(['TIMEOUT', 'NO_FILL', 'BLOCKED', 'UNSUPPORTED', 'ERROR'] as const)(
+    'adapter 실패 %s는 FAILED 사유와 RESULT로 남는다',
+    async (reason) => {
+      const atLeave = beaconsAtLeave()
+      const ad = await shown()
+
+      act(() => {
+        ad.fail(reason)
+      })
+
+      expect(atLeave).toEqual([1])
+      expect(adEvents()).toEqual([
+        { kind: 'AD', event: 'REQUESTED' },
+        { kind: 'AD', event: 'FAILED', reason },
+        { kind: 'AD', event: 'RESULT' },
+      ])
+    },
+  )
+
+  it('결과 보기는 RESULT를 기본 이동 앞에서 보내고 이동을 막지 않는다', async () => {
+    await shown()
+
+    const notPrevented = fireEvent.click(
+      screen.getByRole('link', { name: adTransitionContent.viewResult }),
+    )
+
+    expect(notPrevented).toBe(true)
+    expect(adEvents()).toEqual([
+      { kind: 'AD', event: 'REQUESTED' },
+      { kind: 'AD', event: 'RESULT' },
+    ])
+    expect(replaceLocation).not.toHaveBeenCalled()
+  })
+
+  it('광고를 시도한 채 bfcache로 복원되면 RESULT를 남기고 이동 앞에 보낸다', async () => {
+    const atLeave = beaconsAtLeave()
+    await shown()
+
+    act(() => {
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
+    })
+
+    expect(atLeave).toEqual([1])
+    expect(adEvents()).toEqual([
+      { kind: 'AD', event: 'REQUESTED' },
+      { kind: 'AD', event: 'RESULT' },
+    ])
+  })
+
+  it('결과 보기로 떠났던 문서의 복원은 RESULT를 다시 남기지 않는다', async () => {
+    await shown()
+    fireEvent.click(screen.getByRole('link', { name: adTransitionContent.viewResult }))
+    expect(getObservedTelemetryRequests()).toHaveLength(1)
+
+    act(() => {
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
+    })
+
+    expect(getObservedTelemetryRequests()).toHaveLength(1)
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+  })
+
+  it('SHOW가 아닌 결말(건너뜀)은 광고 이벤트가 없고 빈 묶음을 보내지 않는다', async () => {
+    signedIn()
+    claims(() => Promise.resolve(json({ outcome: 'SKIP', reason: 'PROVIDER_DISABLED' })))
+    open(`?t=${TRANSITION}`)
+    render(<AdTransitionScreen />)
+
+    await waitFor(() => {
+      expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    })
+    expect(getObservedTelemetryRequests()).toEqual([])
+  })
+
+  it('계측 전송이 실패해도 이동은 한 번이고 다시 보내지 않는다', async () => {
+    stubTelemetry(() => Promise.reject(new TypeError('network down')))
+    await shown()
+
+    fireEvent.click(screen.getByRole('button', { name: adTransitionContent.close }))
+    await act(async () => {
+      await Promise.resolve()
+    })
+    // 문서가 내려가는 순간에도 보낸 것을 다시 보내지 않는다.
+    window.dispatchEvent(new Event('pagehide'))
+
+    expect(replaceLocation).toHaveBeenCalledTimes(1)
+    expect(replaceLocation).toHaveBeenCalledWith(DASHBOARD_PATH)
+    expect(getObservedTelemetryRequests()).toHaveLength(1)
+    expect(getObservedRequests()).toEqual([])
+  })
+
+  it('소비 창이 지나면 FAILED WINDOW_EXPIRED와 RESULT로 남는다', async () => {
+    vi.spyOn(performance, 'now').mockReturnValue(0)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      vi.mocked(showInterstitial).mockReturnValue(cancelAd)
+      signedIn()
+      claims(() => Promise.resolve(json({ outcome: 'SHOW', adUnitPath: AD_UNIT_PATH })))
+      open(`?t=${TRANSITION}`)
+      render(<AdTransitionScreen />)
+      for (let turn = 0; turn < 10; turn += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0)
+        })
+      }
+      expect(showInterstitial).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(AD_CLAIM_WINDOW_SECONDS * 1000)
+      })
+
+      expect(replaceLocation).toHaveBeenCalledTimes(1)
+      expect(adEvents()).toEqual([
+        { kind: 'AD', event: 'REQUESTED' },
+        { kind: 'AD', event: 'FAILED', reason: 'WINDOW_EXPIRED' },
+        { kind: 'AD', event: 'RESULT' },
+      ])
+    } finally {
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+    }
   })
 })

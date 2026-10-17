@@ -9,7 +9,7 @@ import { PlanResultPanel } from '../components/PlanResultPanel'
 import { ReauthPanel } from '../components/ReauthPanel'
 import { ServiceNotice } from '../components/ServiceNotice'
 import { SignOutButton } from '../components/SignOutButton'
-import { authContent, reauthNoticeKindOf, SETTINGS_PATH } from '../content/auth'
+import { authContent, DASHBOARD_PATH, reauthNoticeKindOf, SETTINGS_PATH } from '../content/auth'
 import { entryContent } from '../content/entry'
 import { useDashboardAdjustments } from '../session/useAdjustmentHistory'
 import { useDashboardEvidence } from '../session/useCalculationEvidence'
@@ -26,6 +26,7 @@ import { useReauthentication } from '../session/useReauthentication'
 import { useServiceNotices } from '../session/useServiceNotices'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
+import { useTelemetry } from '../telemetry/useTelemetry'
 import { EntryScreen } from './EntryScreen'
 import styles from './SignedInScreen.module.css'
 
@@ -60,6 +61,8 @@ const MAIN_ID = 'signed-in-main'
  */
 export function SignedInScreen(): ReactElement {
   const { csrfToken, gate } = useSessionGate('dashboard')
+  // 이 문서의 Web Vitals(Story 4.5). 세션 토큰이 있을 때만 숨김·떠남에서 보낸다.
+  useTelemetry(DASHBOARD_PATH, csrfToken)
   const signOut = useSignOut(csrfToken)
   const reauthentication = useReauthentication(csrfToken)
   const [selected, setSelected] = useState<string | null>(null)

@@ -13,6 +13,7 @@ import {
   authContent,
   linkNoticeKindOf,
   reauthNoticeKindOf,
+  SETTINGS_PATH,
   SIGN_IN_PROVIDERS,
   type SignInProvider,
 } from '../content/auth'
@@ -34,6 +35,7 @@ import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
 import { supportSentence, useSupportInquiries } from '../session/useSupportInquiries'
 import { useUnlinking } from '../session/useUnlinking'
+import { useTelemetry } from '../telemetry/useTelemetry'
 import { EntryScreen } from './EntryScreen'
 import styles from './SettingsScreen.module.css'
 
@@ -140,6 +142,8 @@ type LinkStatus = 'checking' | 'loaded' | 'unavailable'
  */
 export function SettingsScreen(): ReactElement {
   const { csrfToken, gate } = useSessionGate('settings')
+  // 이 문서의 Web Vitals(Story 4.5). 세션 토큰이 있을 때만 숨김·떠남에서 보낸다.
+  useTelemetry(SETTINGS_PATH, csrfToken)
   const signOut = useSignOut(csrfToken)
   const reauthentication = useReauthentication(csrfToken)
   const linking = useLinking(csrfToken)

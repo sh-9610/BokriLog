@@ -114,6 +114,18 @@ public final class TelemetryAllowlist {
         meters.put(AdTelemetry.TRIGGER, Map.of());
         meters.put(AdTelemetry.SKIP, Map.of("reason", Values.of(AdTelemetry.SKIP_REASONS)));
         meters.put(AdTelemetry.RESERVATION, Map.of());
+        // 광고 소비·브라우저 계측과 kill switch 표본(Story 4.5). 값은 모두 AdTelemetry의 닫힌 enum 문자열이다 — route는 화면
+        // 경로 넷이고 사용자·결과·transition 값은 없다.
+        meters.put(AdTelemetry.TRANSITION, Map.of("outcome", Values.of(AdTelemetry.TRANSITION_OUTCOMES)));
+        meters.put(AdTelemetry.CLIENT_EVENT, Map.of(
+                "event", Values.of(AdTelemetry.CLIENT_EVENTS),
+                "reason", Values.of(AdTelemetry.CLIENT_REASONS)));
+        meters.put(AdTelemetry.WEB_VITALS, Map.of(
+                "metric", Values.of(AdTelemetry.VITAL_METRICS),
+                "route", Values.of(AdTelemetry.VITAL_ROUTES),
+                "rating", Values.of(AdTelemetry.VITAL_RATINGS),
+                "ad", Values.of(AdTelemetry.VITAL_ADS)));
+        meters.put(AdTelemetry.VITAL_SAMPLES, Map.of("metric", Values.of(AdTelemetry.VITAL_METRICS)));
         // 백업(Story 3.9, operations.internal.BackupMetrics). 저장소는 OCI와 OCI 밖 둘이다. 기록이 없으면 등록되지 않는다(NaN 없음).
         meters.put("bokrilog.backup.last.success.timestamp", Map.of());
         meters.put("bokrilog.backup.store.usage.ratio", Map.of("store", Values.of(BACKUP_STORES)));

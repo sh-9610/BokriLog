@@ -551,6 +551,35 @@ describe('OperatorScreen', () => {
     expect(rows[2]?.textContent).not.toContain(copy.restriction.active.states.verificationRequired)
   })
 
+  it('성능 kill switch가 만든 광고 제한은 성능 자동 정지·수동 검증 필요로 보이고 사유는 metric 문장이다(Story 4.5)', async () => {
+    stubOperatorRestrictions(() =>
+      Promise.resolve(
+        jsonResponse({
+          items: [
+            activeRestriction({
+              restrictionId: 'r-performance',
+              feature: 'ADVERTISING',
+              scope: 'GLOBAL',
+              target: 'ALL',
+              reason: 'PERFORMANCE_LCP',
+              origin: 'PERFORMANCE',
+              requiresVerification: true,
+            }),
+          ],
+        }),
+      ),
+    )
+    await openRestrictionSection()
+    const list = screen.getByRole('list', { name: copy.restriction.active.heading })
+    const row = within(list).getByRole('listitem')
+    expect(row.textContent).toContain('성능 자동 정지')
+    expect(row.textContent).toContain(copy.restriction.active.states.verificationRequired)
+    expect(row.textContent).toContain('광고 화면 LCP p75 목표(2.5초) 초과')
+    expect(row.textContent).not.toContain('PERFORMANCE_LCP')
+    // 해제는 다른 제한과 같은 복구(lift-restriction) 동작 하나다.
+    expect(within(row).getByRole('button')).toBeInTheDocument()
+  })
+
   it('모르는 출처나 빠진 검증 표시는 그 행만 수동 검증 필요로 접는다', async () => {
     stubOperatorRestrictions(() =>
       Promise.resolve(

@@ -54,6 +54,7 @@ import {
   originLabel,
   OUTCOME_FILTERS,
   outcomeLabel,
+  performanceReasonLabel,
   PUBLISH_NOTICE_COMMAND,
   REASON_MAX_LENGTH,
   recoverButtonLabel,
@@ -199,7 +200,9 @@ function RestrictionRow({
               ? copy.restriction.active.noReason
               : restriction.origin === 'SIGNAL'
                 ? signalReasonLabel(restriction.reason)
-                : restriction.reason}
+                : restriction.origin === 'PERFORMANCE'
+                  ? performanceReasonLabel(restriction.reason)
+                  : restriction.reason}
         </span>
       </div>
       <div className={styles.entryRow}>
