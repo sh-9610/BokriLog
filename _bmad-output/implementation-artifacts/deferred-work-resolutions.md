@@ -925,6 +925,8 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소 잔여:** 위와 같다. 주인은 항목 157(Web Vitals 수집과 성능 kill switch 후속)이며, 156(광고 이벤트 계측)과 beacon 경로를 함께 설계한다.
 
+**미해소(2026-10-17, Epic 4 회고 AI-4) — 주인 지정.** 주인은 Epic 4 보완 Story 4.5(`epics.md` `### Story 4.5`, 광고 이벤트·Web Vitals 계측과 성능 kill switch)다. 157과 함께 4.5가 수집한다. 코드 사실은 위 판정과 같다.
+
 ### 123. 운영 작업시간·월 비용 장부
 
 **미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.7이 범위 분리로 append했다(source_spec 없음). 장부는 없고 경보 규칙만 미측정으로 기다린다 — `deploy/observability/alerts.yml:224`가 "운영 장부가 만들기 전에는 미측정이다(분리된 후속 작업)"라 적고 `:233-240`의 `MonthlyCostUnmeasured`가 `absent(bokrilog_monthly_cost_krw{…})`를 info로 알린다. `backend/src/main`에서 `monthly_cost`는 0건이고 작업시간 입력 표·화면도 없다. 항목 8(주 2시간 목표의 측정 기준, 해소)이 정의만 닫았고 측정 수단이 이 항목에 남았다.
@@ -1176,6 +1178,8 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소 잔여:** beacon 경로·집계·allowlist 행을 정하고, adapter 계약을 넓혀 사유와 이벤트를 내보내는 일. 이 계측이 있어야 4.4 3초 시한의 실제 실패율을 알 수 있다(`spec-4-4-ad-fail-open.md` Design Notes "시한과 느린 망"). 주인 없음 — Epic 4 회고 또는 157과 묶은 후속 작업이 정한다.
 
+**미해소(2026-10-17, Epic 4 회고 AI-4) — 주인 지정.** 주인은 Epic 4 보완 Story 4.5(`epics.md` `### Story 4.5`, 광고 이벤트·Web Vitals 계측과 성능 kill switch)다. 회고 B-2(서버가 아는 소비 결말 카운터)도 4.5 범위에 들었다. 코드 사실은 위 판정과 같다.
+
 ### 157. Web Vitals 수집과 성능 kill switch
 
 **미해소(2026-10-16, Story 4.4 판정, 기준 `ec51014`).** Story 4.4가 범위 분할로 append했다(source_spec 없음). 항목 **122**가 이 항목으로 주인을 옮겼다.
@@ -1183,6 +1187,8 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **광고를 끄는 수단은 있다.** 운영 command `restrict-advertising`(3.2)과 4.2·4.3 관문의 `ADVERTISING` 판독이다.
 
 **미해소 잔여:** Web Vitals 수집(직접 구현 또는 런타임 의존 승인)과, 목표(p75 LCP 2.5초·INP 200ms·CLS 0.1)를 위협할 때 광고만 끄는 판정. 주인 없음 — Epic 4 회고 또는 후속 작업이 정한다.
+
+**미해소(2026-10-17, Epic 4 회고 AI-4) — 주인 지정.** 주인은 Epic 4 보완 Story 4.5(`epics.md` `### Story 4.5`, 광고 이벤트·Web Vitals 계측과 성능 kill switch)다. kill switch는 기존 `ADVERTISING` 제한으로 광고만 끄고 해제는 3.4 수동 복구다. 코드 사실은 위 판정과 같다.
 
 ### 158. Windows 로컬 Vitest의 운영자 lazy chunk 대기 시간초과
 

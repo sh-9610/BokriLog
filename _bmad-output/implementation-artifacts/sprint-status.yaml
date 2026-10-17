@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 10-17-2026 09:00
+last_updated: 10-17-2026 10:30
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -82,11 +82,12 @@ development_status:
   3-10-외부-복구-매니페스트로-격리-복원하고-삭제-계정-재활성화를-차단하기: done
   epic-3-retrospective: done
 
-  epic-4: done
+  epic-4: in-progress
   4-1-문맥형-광고-동의를-선택하고-철회하기: done
   4-2-수동-동기화-성공-결과에-광고-자격과-빈도-제한-적용하기: done
   4-3-금융정보-없는-중립-화면에서-닫을-수-있는-광고-시도하기: done
   4-4-모든-광고-실패에서-저장된-결과로-fail-open하고-광고만-비활성화하기: done
+  4-5-광고-이벤트와-web-vitals를-동일-출처로-계측하고-성능-목표를-위협하면-광고만-끄기: backlog
   epic-4-retrospective: done
 
   epic-5: backlog
@@ -400,7 +401,7 @@ action_items:
       kill switch)의 주인을 정한다 — beacon 경로를 공유하는 후속 스토리로 기획에 새 버전으로 올리거나 광고 출시 게이트의 선행
       조건으로 명시한다(회고 R-1·R-2·B-2·P-3)"
     owner: "사용자(기획 결정, bmad-correct-course)"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
   - id: "epic-4-retro-item-44-광고-기획-문구를-as-built로-맞춘다-reservation-시점-이"
     epic: 4

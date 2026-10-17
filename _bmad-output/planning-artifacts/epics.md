@@ -11,7 +11,7 @@ finalValidationStatus: passed
 implementationReadinessStatus: ready-for-sprint-planning
 implementationDecisionVersion: ERD-1.0.0
 externalLaunchGates: ['G-4-provider-account-and-live-approval', 'G-5-legal-and-privacy-approval', 'production-secrets-and-accounts']
-approvedStories: ['1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '2.1', '2.2', '2.3', '2.4', '2.5', '2.6', '2.7', '2.8', '2.9', '2.10', '2.11', '2.12', '2.13', '2.14', '2.15', '2.16', '2.17', '3.1', '3.2', '3.3', '3.4', '3.5', '3.6', '3.7', '3.8', '3.9', '3.10', '4.1', '4.2', '4.3', '4.4', '5.1', '5.2', '5.3', '5.4']
+approvedStories: ['1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '2.1', '2.2', '2.3', '2.4', '2.5', '2.6', '2.7', '2.8', '2.9', '2.10', '2.11', '2.12', '2.13', '2.14', '2.15', '2.16', '2.17', '3.1', '3.2', '3.3', '3.4', '3.5', '3.6', '3.7', '3.8', '3.9', '3.10', '4.1', '4.2', '4.3', '4.4', '4.5', '5.1', '5.2', '5.3', '5.4']
 inputDocuments:
   - _bmad-output/planning-artifacts/prds/prd-BokriLog-2026-08-23/prd.md
   - _bmad-output/planning-artifacts/architecture/architecture-BokriLog-2026-08-24/ARCHITECTURE-SPINE.md
@@ -154,7 +154,7 @@ inputDocuments:
 
 ## Epic List
 
-요구사항 원장과 아래 5개 에픽·45개 스토리는 사용자 승인과 최종 검증을 완료했다. Story 2.17(재연결, `RECONNECT-1.0`)은 2026-10-14 Epic 2 보완 스토리로 추가 승인했다(Epic 2 회고 AI-1). 삭제 경로 조기 구현, 중간 검증 지점, Epic 1의 삭제 상태·접근 차단 계약, 개발·출시·운영 증거의 분리를 반영했다. 구현 세부 결정은 `ERD-1.0.0`으로 고정했으며 frontmatter의 `approvedStories`는 설계 승인 상태를 뜻한다. 실제 구현·테스트 완료 상태를 뜻하지 않는다.
+요구사항 원장과 아래 5개 에픽·45개 스토리는 사용자 승인과 최종 검증을 완료했다. Story 2.17(재연결, `RECONNECT-1.0`)은 2026-10-14 Epic 2 보완 스토리로 추가 승인했다(Epic 2 회고 AI-1). Story 4.5(광고 이벤트·Web Vitals 계측과 성능 kill switch)는 2026-10-17 Epic 4 보완 스토리로 추가 승인했다(Epic 4 회고 AI-4, Story 4.4의 범위 분할 몫). 삭제 경로 조기 구현, 중간 검증 지점, Epic 1의 삭제 상태·접근 차단 계약, 개발·출시·운영 증거의 분리를 반영했다. 구현 세부 결정은 `ERD-1.0.0`으로 고정했으며 frontmatter의 `approvedStories`는 설계 승인 상태를 뜻한다. 실제 구현·테스트 완료 상태를 뜻하지 않는다.
 
 ### 설계 원칙
 
@@ -3374,6 +3374,34 @@ Google·네이버·카카오 중 하나로 가입·로그인하고, 최근 재�
 **AC-5:** 오류 메시지·로그·분석·provider payload에 금융·사용자 식별을 포함하지 않고 transition·cap·동의 데이터 삭제 뒤 늦은 callback이 재생성하지 못한다.
 
 **테스트 기준:** 전체 실패 matrix와 동일 result 도달 — AC-1; retry/provider fallback 부재 — AC-2; advertising-only restriction·Web Vitals kill switch — AC-3; 지표 분리·실제 승인 상태 — AC-4; 삭제 경쟁·payload 누출 — AC-5.
+
+**범위 분할(2026-10-16):** Story 4.4는 사용자 결정 [S]로 AC-3 뒷부분(Web Vitals 성능 kill switch)과 AC-4 앞부분(광고 이벤트 분리 계측)을 떼었다. 두 요구는 Story 4.5가 소유한다.
+
+### Story 4.5: 광고 이벤트와 Web Vitals를 동일 출처로 계측하고 성능 목표를 위협하면 광고만 끄기
+
+**As a** 운영자, **I want** 광고가 실제로 어떻게 끝나는지와 핵심 화면의 Web Vitals를 사용자 식별 없이 측정하고 싶다. **So that** 광고가 성능 목표를 위협하면 핵심 기능은 그대로 두고 광고만 끌 수 있다.
+
+**범위:** 브라우저 → 서버 동일 출처 계측 경로 하나(beacon), 광고 이벤트 분리 계측(요청·실노출·닫기·skip/failure 사유·저장 결과 도달)과 서버가 이미 아는 소비 결말 카운터, 인증된 핵심 화면의 Web Vitals(LCP·INP·CLS) p75 집계, 목표를 위협할 때 광고만 끄는 성능 kill switch. **제외:** 외부 분석 SDK·제3자 RUM, 진입 화면 계측(문서·번들 외 요청 0건 계약 유지), 사용자·세션 단위 행동 추적, 광고 공급자 보고서 연동, 실제 운영 Grafana 연결(Story 3.8 운영 연결 몫).
+
+**선행:** Story 3.2, Story 3.4, Story 3.7, Story 4.1~Story 4.4.
+
+**결정 상태:** 2026-10-17 Epic 4 회고 AI-4로 `deferred-work.md` 156(광고 이벤트 분리 계측)·157(Web Vitals 수집과 성능 kill switch)·회고 B-2(서버가 아는 소비 결말 카운터)를 이 보완 스토리 하나에 묶었다 — 둘은 beacon 경로를 공유하고, 122(Story 3.7이 미룬 Web Vitals 수집)는 157로 주인을 옮긴 상태다. 광고 오류·성능 저하는 `OPS-SIGNAL-1.0`의 강한 신호가 아니다. kill switch는 기존 `ADVERTISING` 운영 제한(Story 3.2)으로 광고만 끄며, 새 스위치나 다른 기능의 제한을 만들지 않는다. 측정을 직접 구현할지 런타임 의존을 승인할지, 판정의 분모·기간·발동 방식은 SPEC이 정한다.
+
+**연결 요구사항:** FR-15, NFR-14·NFR-17, AR-13·AR-18, Story 3.7 AC-3의 Web Vitals 부분, Story 4.4 AC-3 뒷부분·AC-4 앞부분.
+
+**Acceptance Criteria:**
+
+**AC-1 — 동일 출처 계측 경로:** 브라우저 측정은 `/api` 아래 동일 출처 경로 하나로만 보내고 외부 분석·CDN·광고 공급자 보고로 보내지 않는다. 경로는 인증된 세션과 기존 상태 변경 요청 규칙(CSRF·`Origin`)을 따르고, 본문은 닫힌 어휘(이벤트 이름·사유 code·경로 템플릿·수치)만 받으며 크기·빈도 상한을 넘거나 어휘 밖이면 기록하지 않는다. 전송 실패·거절은 화면 동작·이동·초점에 아무 영향이 없고 재시도하지 않으며 브라우저 저장소를 쓰지 않는다. 진입 화면은 측정하지 않는다.
+
+**AC-2 — 광고 이벤트 분리 계측:** 중립 화면은 광고 요청, 실노출(준비), 닫기, skip/failure 사유(준비 시간초과·미채움·차단·interstitial 미지원·예외·소비 창 경과·SHOW 아님), 저장 결과 도달을 서로 다른 이벤트로 보낸다. 이를 위해 adapter 계약이 사유와 이벤트를 내보내되 Story 4.4의 단일 fail-open(종단 하나·취소·늦은 callback 무시)은 바뀌지 않는다. 서버는 이미 아는 소비 결말(SHOW·`CONSUMED`·`EXPIRED`·관문 skip 사유)을 판정 카운터와 같은 telemetry allowlist에 센다.
+
+**AC-3 — Web Vitals 집계:** 인증된 핵심 화면(대시보드·설정·계획 조건·중립 전환 화면)의 LCP·INP·CLS를 경로 템플릿별로 수집해 명시된 분모·기간·환경(`env`)으로 p75를 집계한다. 개발·CI 측정을 운영 실적과 합치지 않는다. 사용자·세션·결과 식별자, 전체 URL·쿼리, 금융값은 수집하지 않는다.
+
+**AC-4 — 성능 kill switch:** 광고가 노출되는 경로의 p75가 NFR-14 목표(LCP 2.5초·INP 200ms·CLS 0.1)를 명시된 기간·최소 표본 이상에서 넘으면 광고만 끄는 `ADVERTISING` 제한이 출처와 근거를 남기며 발동한다. 연결·동기화·계산 표시·대시보드는 계속 동작하고, 발동한 제한은 kill switch가 스스로 풀지 않으며 Story 3.4의 보호된 수동 복구로만 닫힌다. 표본이 부족하거나 측정이 끊기면 발동하지 않고 미측정으로 드러난다.
+
+**AC-5 — 데이터 경계와 출시 상태:** 계측 행·메트릭·로그는 사용자 귀속 데이터가 아니며(식별 없는 집계) 사용자·결과·transition·금융값을 label이나 본문에 싣지 않는다. 새 메트릭 이름·tag 값은 `TelemetryAllowlist`에 행을 먼저 더해야 출력된다. 실제 광고 계정·소재·request field 검사 전에는 이 계측만으로 유광고 출시 준비 완료를 선언하지 않는다.
+
+**테스트 기준:** 동일 출처·인증·CSRF·어휘 밖·상한 초과 거절과 전송 실패 무영향, 진입 화면 요청 0건 유지 — AC-1; adapter 이벤트·사유 matrix와 4.4 fail-open 회귀, 서버 소비 결말 카운터 — AC-2; p75 분모·기간·환경 분리와 식별자 부재 — AC-3; 임계 초과·표본 부족·측정 중단 가상 시계, 광고 외 기능 무영향, 수동 복구로만 해제 — AC-4; allowlist·redaction·payload 누출 — AC-5.
 
 ## Epic 5: 계정과 금융 기록을 삭제하고 복원 후에도 되살아나지 않게 하기
 
