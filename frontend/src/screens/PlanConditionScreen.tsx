@@ -5,9 +5,11 @@ import { ReauthPanel } from '../components/ReauthPanel'
 import { SignOutButton } from '../components/SignOutButton'
 import { authContent, DASHBOARD_PATH, reauthNoticeKindOf, SETTINGS_PATH } from '../content/auth'
 import { entryContent } from '../content/entry'
+import { planConditionContent } from '../content/planConditions'
 import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
+import { useTelemetry } from '../telemetry/useTelemetry'
 import { EntryScreen } from './EntryScreen'
 import styles from './SignedInScreen.module.css'
 
@@ -19,6 +21,8 @@ export function PlanConditionScreen(): ReactElement {
   const { csrfToken, gate } = useSessionGate('settings')
   const signOut = useSignOut(csrfToken)
   const reauthentication = useReauthentication(csrfToken)
+  // 이 문서의 Web Vitals(Story 4.5). 세션 토큰이 있을 때만 숨김·떠남에서 보낸다.
+  useTelemetry(planConditionContent.path, csrfToken)
 
   if (gate === 'unauthenticated') return <EntryScreen notice="signedOut" />
   const ready = gate === 'ready'

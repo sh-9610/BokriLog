@@ -1213,3 +1213,51 @@ test.describe('스텁 제공자 성공 왕복', () => {
     expect(asset.headers()['content-security-policy']).toContain("default-src 'none'")
   })
 })
+
+test.describe('계측 beacon · 주입 origin', () => {
+  // eslint-disable-next-line playwright/no-skipped-test -- 주입된 origin에서만 성립하는 시험이다. 파일째 사라지는 것보다 보고서에 "건너뜀"으로 남는 편이 낫다.
+  test.skip(
+    injectedOrigin === '',
+    'PLAYWRIGHT_BASE_URL로 Nginx origin과 dev-oidc 스텁을 주입한 실행에서만 의미가 있다.',
+  )
+
+  /*
+   * Story 4.5: 로그인한 계측 화면이 Web Vitals를 동일 출처 beacon 하나로 보내고 서버가 204로 받는다. 신규 계정은 대시보드에서
+   * 온보딩으로 밀리므로 밀리지 않는 설정 화면에서 본다. 문서를 실제로 떠나는 이동이 보내는 keepalive 요청은 Playwright가 떠난
+   * 문서의 응답으로 보고하지 않으므로, 문서를 그대로 두고 `pagehide`를 보내 flush를 부른다. LCP는 신뢰된 입력 뒤 유휴 시점에
+   * 확정되므로 보고가 큐에 들어올 때까지 되풀이한다.
+   */
+  test('설정 화면의 Vitals가 /api/engagement/telemetry에 204로 받아진다', async ({ page }) => {
+    await signInThroughStub(page)
+    await page.goto('/settings')
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+    const answers: { status: number; body: unknown }[] = []
+    page.on('response', (response) => {
+      if (
+        new URL(response.url()).pathname === '/api/engagement/telemetry' &&
+        response.request().method() === 'POST'
+      ) {
+        answers.push({ status: response.status(), body: response.request().postDataJSON() })
+      }
+    })
+    // LCP는 신뢰된 입력(클릭)으로 확정된다.
+    await page.mouse.click(1, 1)
+
+    await expect
+      .poll(
+        async () => {
+          await page.evaluate(() => window.dispatchEvent(new Event('pagehide')))
+          return answers.length
+        },
+        { timeout: 15_000 },
+      )
+      .toBeGreaterThan(0)
+
+    expect(answers[0]?.status).toBe(204)
+    expect(answers[0]?.body).toMatchObject({
+      events: expect.arrayContaining([
+        expect.objectContaining({ kind: 'VITAL', metric: 'LCP', route: '/settings', ad: false }),
+      ]),
+    })
+  })
+})

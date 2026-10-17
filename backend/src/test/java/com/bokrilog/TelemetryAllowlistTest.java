@@ -110,7 +110,58 @@ class TelemetryAllowlistTest extends OperatorTestBase {
                 .forEach(each -> reasons.add(each.labels().get("reason")));
         assertThat(reasons).containsExactlyInAnyOrderElementsOf(AdTelemetry.SKIP_REASONS);
         assertThat(series.stream().filter(each -> each.name().startsWith("bokrilog_ad_")).map(Series::labels))
-                .allSatisfy(labels -> assertThat(labels.keySet()).isSubsetOf("env", "role", "reason"));
+                .allSatisfy(labels -> assertThat(labels.keySet()).isSubsetOf("env", "role", "reason", "event", "outcome",
+                        "metric"));
+
+        // Story 4.5: 소비 결말·광고 이벤트·Web Vitals 카운터는 0으로 미리 있고, 표본 gauge는 metric 셋이다(시험 컨텍스트는 all).
+        Set<String> outcomes = new LinkedHashSet<>();
+        series.stream().filter(each -> each.name().equals("bokrilog_ad_transition_total"))
+                .forEach(each -> outcomes.add(each.labels().get("outcome")));
+        assertThat(outcomes).containsExactlyInAnyOrderElementsOf(AdTelemetry.TRANSITION_OUTCOMES);
+        assertThat(series.stream().filter(each -> each.name().equals("bokrilog_ad_client_event_total")))
+                .hasSize(AdTelemetry.CLIENT_EVENTS.size() - 1 + AdTelemetry.CLIENT_REASONS.size() - 1);
+        List<Map<String, String>> vitals = series.stream()
+                .filter(each -> each.name().equals("bokrilog_web_vitals_total")).map(Series::labels).toList();
+        assertThat(vitals).hasSize(3 * 4 * 2 * 2).allSatisfy(labels -> assertThat(labels)
+                .containsOnlyKeys("env", "role", "metric", "route", "rating", "ad"));
+        assertThat(vitals).extracting(labels -> labels.get("route")).containsOnly("/dashboard", "/settings",
+                "/plan-conditions", "/ad-transition");
+        Set<String> sampled = new LinkedHashSet<>();
+        series.stream().filter(each -> each.name().equals("bokrilog_ad_vitals_samples"))
+                .forEach(each -> sampled.add(each.labels().get("metric")));
+        assertThat(sampled).containsExactlyInAnyOrder("LCP", "INP", "CLS");
+    }
+
+    /** Story 4.5: 소비 결말·광고 이벤트·Web Vitals·표본 gauge는 닫힌 enum 값만 tag로 받는다. */
+    @Test
+    void 계측_beacon과_kill_switch_meter는_닫힌_값만_받는다() {
+        assertThat(TelemetryAllowlist.tagKeys(AdTelemetry.TRANSITION)).containsExactly("outcome");
+        assertThat(TelemetryAllowlist.tagKeys(AdTelemetry.CLIENT_EVENT)).containsExactlyInAnyOrder("event", "reason");
+        assertThat(TelemetryAllowlist.tagKeys(AdTelemetry.WEB_VITALS)).containsExactlyInAnyOrder("metric", "route",
+                "rating", "ad");
+        assertThat(TelemetryAllowlist.tagKeys(AdTelemetry.VITAL_SAMPLES)).containsExactly("metric");
+        assertThat(AdTelemetry.CLIENT_EVENTS).containsExactlyInAnyOrder("REQUESTED", "READY", "CLOSED", "FAILED",
+                "RESULT");
+        assertThat(AdTelemetry.CLIENT_REASONS).containsExactlyInAnyOrder("TIMEOUT", "NO_FILL", "BLOCKED",
+                "UNSUPPORTED", "ERROR", "WINDOW_EXPIRED", "NONE");
+        assertThat(AdTelemetry.VITAL_ROUTES).containsExactlyInAnyOrder("/dashboard", "/settings", "/plan-conditions",
+                "/ad-transition");
+        assertThat(TelemetryAllowlist.allows(AdTelemetry.WEB_VITALS,
+                Map.of("metric", "LCP", "route", "/dashboard", "rating", "POOR", "ad", "true", "env", "ci"), Set.of()))
+                .isTrue();
+        assertThat(TelemetryAllowlist.allows(AdTelemetry.WEB_VITALS,
+                Map.of("metric", "LCP", "route", "/dashboard", "rating", "POOR", "ad", "maybe"), Set.of())).isFalse();
+        assertThat(TelemetryAllowlist.allows(AdTelemetry.WEB_VITALS,
+                Map.of("metric", "FID", "route", "/dashboard", "rating", "POOR"), Set.of())).isFalse();
+        assertThat(TelemetryAllowlist.allows(AdTelemetry.WEB_VITALS,
+                Map.of("metric", "LCP", "route", "/onboarding", "rating", "GOOD"), Set.of())).isFalse();
+        assertThat(TelemetryAllowlist.allows(AdTelemetry.CLIENT_EVENT, Map.of("event", "FAILED", "reason", "TIMEOUT"),
+                Set.of())).isTrue();
+        String marker = UUID.randomUUID().toString();
+        assertThat(TelemetryAllowlist.allows(AdTelemetry.TRANSITION, Map.of("outcome", "SHOW", "transition", marker),
+                Set.of())).isFalse();
+        assertThat(TelemetryAllowlist.allows(AdTelemetry.VITAL_SAMPLES, Map.of("metric", "LCP", "userId", marker),
+                Set.of())).isFalse();
     }
 
     /** Story 4.2: 광고 카운터 셋. trigger·reservation은 tag가 없고 skip은 닫힌 사유 일곱만 받는다. */

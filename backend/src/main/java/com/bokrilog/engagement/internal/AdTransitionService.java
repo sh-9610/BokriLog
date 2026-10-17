@@ -1,6 +1,7 @@
 package com.bokrilog.engagement.internal;
 
 import com.bokrilog.engagement.AdEligibilityApi;
+import com.bokrilog.engagement.AdTelemetry;
 import com.bokrilog.engagement.AdTransitionApi;
 import com.bokrilog.identity.AccountAccessApi;
 import java.time.Duration;
@@ -16,7 +17,9 @@ import org.springframework.transaction.support.TransactionTemplate;
  * 사용자의 판정과 소비가 한 줄로 서므로, 같은 참조를 동시에 소비하면 하나만 처음 소비이고 다른 하나는 {@code CONSUMED}다. 관문은
  * {@link AdGate} 한 벌을 자격 판정과 공유한다.
  *
- * <p>로그를 남기지 않는다 — 사용자·transition이 로그로 갈 길을 만들지 않는다. 결과 code만 호출자가 남긴다.
+ * <p>로그를 남기지 않는다 — 사용자·transition이 로그로 갈 길을 만들지 않는다. 결과 code만 호출자가 남긴다. 결말은 커밋 뒤
+ * {@code bokrilog_ad_transition_total{outcome}}으로 센다(Story 4.5). SHOW 소비는 같은 문장에서 SHOW 표지를 세운다 — 그 문서의
+ * Vitals만 kill switch 표본이 될 수 있다.
  */
 @Service
 class AdTransitionService implements AdTransitionApi {
@@ -31,14 +34,17 @@ class AdTransitionService implements AdTransitionApi {
 
     private final AdProviderState provider;
 
+    private final AdMetrics metrics;
+
     private final TransactionTemplate transactions;
 
     AdTransitionService(AdAttemptRepository attempts, AccountAccessApi accounts, AdGate gate,
-            AdProviderState provider, PlatformTransactionManager transactionManager) {
+            AdProviderState provider, AdMetrics metrics, PlatformTransactionManager transactionManager) {
         this.attempts = attempts;
         this.accounts = accounts;
         this.gate = gate;
         this.provider = provider;
+        this.metrics = metrics;
         this.transactions = new TransactionTemplate(transactionManager);
     }
 
@@ -47,24 +53,37 @@ class AdTransitionService implements AdTransitionApi {
         Claim claimed = this.transactions.execute(status -> {
             this.attempts.lockUser(userId);
             if (!this.accounts.lockWriteAccess(userId)) {
-                return new Claim.NotFound();
+                return counted(new Claim.NotFound());
             }
             var row = this.attempts.transitionForUpdate(userId, transition, WINDOW).orElse(null);
             if (row == null) {
-                return new Claim.NotFound();
+                return counted(new Claim.NotFound());
             }
             if (row.consumed()) {
                 // 이미 소비된 행은 그대로 둔다 — 첫 소비 시각이 남는다.
-                return new Claim.Skip(SkipReason.CONSUMED);
+                return counted(new Claim.Skip(SkipReason.CONSUMED));
             }
             Claim decided = judge(userId, row);
-            this.attempts.consume(row.id());
-            return decided;
+            this.attempts.consume(row.id(), decided instanceof Claim.Show);
+            return counted(decided);
         });
         if (claimed == null) {
             throw new IllegalStateException("transition 소비의 결과가 없다.");
         }
         return claimed;
+    }
+
+    /**
+     * 소비 결말 하나를 센다(Story 4.5, 커밋 뒤). 쓰기 잠금 아래의 거절도 {@code NOT_FOUND}로 센다 — 그 앞 컨트롤러의 접근 판정
+     * 404는 이 판정에 닿지 않았으므로 세지 않는다. 판독 실패(예외)는 롤백이라 세지 않는다.
+     */
+    private Claim counted(Claim claim) {
+        this.metrics.transition(switch (claim) {
+            case Claim.Show show -> AdTelemetry.SHOW;
+            case Claim.Skip skip -> skip.reason().name();
+            case Claim.NotFound notFound -> AdTelemetry.NOT_FOUND;
+        });
+        return claim;
     }
 
     /** 처음 소비의 판정. 만료가 관문보다 앞선다. 관문 판독 실패는 예외로 올라간다(소비도 롤백된다). */

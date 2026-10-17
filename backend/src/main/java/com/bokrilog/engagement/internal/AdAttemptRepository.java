@@ -6,17 +6,18 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 /**
- * 광고 자격 결정 표 {@code engagement_ad_attempt}의 유일한 SQL 자리(Story 4.2·4.3).
+ * 광고 자격 결정 표 {@code engagement_ad_attempt}의 유일한 SQL 자리(Story 4.2·4.3·4.5).
  *
- * <p>문장은 INSERT·SELECT, transition 소비의 조건부 UPDATE 하나(Story 4.3 — 소비 시각만 쓰고 이미 소비된 행은 바꾸지 않는다)와
- * deletion port의 DELETE뿐이다 — 결정(결말·사유·참조·결정 시각)을 고치는 문장이 없다. 결정 시각은 INSERT 문장의 DB 시각(열
- * 기본값 {@code statement_timestamp()})이다.
+ * <p>문장은 INSERT·SELECT, transition 소비의 조건부 UPDATE 하나(Story 4.3 — 소비 시각과 SHOW 표지만 쓰고 이미 소비된 행은 바꾸지
+ * 않는다), Vitals metric별 보고 표지의 UPDATE 하나(Story 4.5 — SHOW 행만)와 deletion port의 DELETE뿐이다 — 결정
+ * (결말·사유·참조·결정 시각)을 고치는 문장이 없다. 결정 시각은 INSERT 문장의 DB 시각(열 기본값 {@code statement_timestamp()})이다.
  */
 @Repository
 class AdAttemptRepository {
@@ -134,11 +135,56 @@ class AdAttemptRepository {
                 .optional();
     }
 
-    /** 그 자격 행의 transition을 소비한다 — 이 문장의 DB 시각을 쓴다. 이미 소비된 행은 바꾸지 않는다. */
-    void consume(long id) {
-        this.jdbc.sql("UPDATE engagement_ad_attempt SET transition_consumed_at = statement_timestamp() "
-                        + "WHERE id = :id AND transition_consumed_at IS NULL")
+    /**
+     * 그 자격 행의 transition을 소비한다 — 이 문장의 DB 시각을 쓴다. 광고를 시도하는 소비(SHOW)면 같은 문장에서 SHOW 표지를 세운다
+     * (Story 4.5 — 그 문서의 Vitals만 표본이 될 수 있다). 이미 소비된 행은 바꾸지 않는다.
+     */
+    void consume(long id, boolean shown) {
+        this.jdbc.sql("UPDATE engagement_ad_attempt SET transition_consumed_at = statement_timestamp(), "
+                        + "transition_shown = :shown WHERE id = :id AND transition_consumed_at IS NULL")
                 .param("id", id)
+                .param("shown", shown)
+                .update();
+    }
+
+    /**
+     * Vitals를 보고할 수 있는 SHOW 행 하나(Story 4.5).
+     *
+     * @param id 행 순번
+     * @param reported 그 SHOW에서 이미 표본이 된 metric 이름들
+     */
+    record Reportable(long id, Set<String> reported) {}
+
+    /**
+     * Vitals를 보고할 수 있는 그 사용자의 SHOW 행 하나를 잠근다(Story 4.5) — SHOW로 소비됐고 소비 뒤 {@code window} 안인(이 문장의
+     * DB 시각 기준) 행 가운데 순번이 가장 큰 것. 이미 보고된 metric은 {@link Reportable#reported}에 있다. 없으면 비어 있다.
+     */
+    Optional<Reportable> reportableShownForUpdate(UUID userId, Duration window) {
+        return this.jdbc.sql("SELECT id, array_to_string(vitals_reported_metrics, ',') AS reported "
+                        + "FROM engagement_ad_attempt WHERE user_id = :u AND transition_shown "
+                        + "AND transition_consumed_at >= statement_timestamp() - interval '1 second' * :w "
+                        + "ORDER BY id DESC LIMIT 1 FOR UPDATE")
+                .param("u", userId)
+                .param("w", window.toSeconds())
+                .query((rs, row) -> {
+                    String reported = rs.getString("reported");
+                    return new Reportable(rs.getLong("id"), reported == null || reported.isEmpty() ? Set.of()
+                            : Set.of(reported.split(",")));
+                })
+                .optional();
+    }
+
+    /**
+     * 그 SHOW 행에 metric들의 보고를 표시한다. 이미 표시된 metric은 다시 더하지 않는다(SHOW 행만 바꾼다).
+     *
+     * @param metrics 닫힌 metric 이름들(LCP·INP·CLS)
+     */
+    void markVitalsReported(long id, Set<String> metrics) {
+        this.jdbc.sql("UPDATE engagement_ad_attempt SET vitals_reported_metrics = ARRAY(SELECT DISTINCT m FROM "
+                        + "unnest(vitals_reported_metrics || string_to_array(:m, ',')) AS m ORDER BY m) "
+                        + "WHERE id = :id AND transition_shown")
+                .param("id", id)
+                .param("m", String.join(",", metrics))
                 .update();
     }
 

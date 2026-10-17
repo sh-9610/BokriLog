@@ -449,6 +449,34 @@ class ModuleBoundaryTest {
     }
 
     /**
+     * 브라우저 계측 beacon(Story 4.5)을 기록하는 운영 클래스는 engagement 모듈 안과 beacon을 여는 루트 컨트롤러 하나다 — 대시보드·
+     * 동기화 경로가 계측을 만들거나 표본을 쓸 길이 없다.
+     */
+    @Test
+    void 계측_beacon_API는_engagement와_계측_컨트롤러만_닿는다() {
+        ArchRule rule = noClasses()
+                .that().resideOutsideOfPackage("com.bokrilog.engagement..")
+                .and().haveNameNotMatching("com\\.bokrilog\\.ClientTelemetryController(\\$.*)?")
+                .should().dependOnClassesThat().belongToAnyOf(com.bokrilog.engagement.ClientTelemetryApi.class)
+                .because("계측은 브라우저 beacon 하나로만 들어온다.");
+        rule.check(PRODUCTION_CLASSES);
+    }
+
+    /**
+     * 광고 성능 kill switch(Story 4.5)를 부르는 운영 클래스는 engagement의 판정 하나다(구현은 operations 안). 다른 자리가 부르면
+     * 표본·창·최소 표본 수 없이 광고가 꺼진다 — 운영자의 광고 정지는 {@code restrict-advertising} command가 따로 있다.
+     */
+    @Test
+    void 광고_성능_정지_API는_engagement_판정만_부른다() {
+        ArchRule rule = noClasses()
+                .that().resideOutsideOfPackage("com.bokrilog.operations..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.engagement.internal.AdPerformanceJudge")
+                .should().dependOnClassesThat().belongToAnyOf(com.bokrilog.operations.AdvertisingStopApi.class)
+                .because("kill switch는 Web Vitals 표본 판정만 연다.");
+        rule.check(PRODUCTION_CLASSES);
+    }
+
+    /**
      * 광고 자격 결정 행의 삭제도 계정 삭제 orchestrator 한 곳이다(Story 4.2). 다른 자리가 지우면 빈도 제한과 재전송 판정이 삭제
      * 전환 없이 초기화된다.
      */
@@ -465,8 +493,8 @@ class ModuleBoundaryTest {
 
     /**
      * 의존은 engagement에서 다른 모듈 쪽으로만 난다(Story 4.2). 다른 모듈은 engagement를 모르고(sync는 후보 판정을 주기만 하고 그
-     * 소비자를 모른다), 루트에서 engagement에 닿는 곳은 세 컨트롤러(동의·자격·transition)·계정 삭제·복원 불변식·계측 허용
-     * 표뿐이다 — 대시보드·동기화 컨트롤러가 광고를 읽거나 일으킬 길이 없다.
+     * 소비자를 모른다), 루트에서 engagement에 닿는 곳은 네 컨트롤러(동의·자격·transition·계측 beacon, Story 4.5)·계정 삭제·복원
+     * 불변식·계측 허용 표뿐이다 — 대시보드·동기화 컨트롤러가 광고를 읽거나 일으킬 길이 없다.
      */
     @Test
     void 다른_모듈과_대시보드_동기화_경로는_engagement에_의존하지_않는다() {
@@ -480,9 +508,10 @@ class ModuleBoundaryTest {
         ArchRule root = noClasses()
                 .that().resideInAPackage("com.bokrilog")
                 .and().haveNameNotMatching("com\\.bokrilog\\.(AdConsentController|AdEligibilityController"
-                        + "|AdTransitionController|AccountErasure|RestoreInvariants|TelemetryAllowlist)(\\$.*)?")
+                        + "|AdTransitionController|ClientTelemetryController|AccountErasure|RestoreInvariants"
+                        + "|TelemetryAllowlist)(\\$.*)?")
                 .should().dependOnClassesThat().resideInAPackage("com.bokrilog.engagement..")
-                .because("engagement에 닿는 루트 자리는 정해진 여섯 곳이다.");
+                .because("engagement에 닿는 루트 자리는 정해진 일곱 곳이다.");
         root.check(PRODUCTION_CLASSES);
     }
 }

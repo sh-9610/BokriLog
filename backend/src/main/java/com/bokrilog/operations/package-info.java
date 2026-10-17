@@ -44,5 +44,10 @@
  * 지난 문의를 버전 seed 영업일 달력({@code support_business_calendar})으로 계산한 답변 목표와 함께 한 INSERT로 쓰고,
  * 상태·답변은 운영 command {@code update-inquiry} 하나가 감사 {@code COMPLETED}와 같은 트랜잭션에서 바꾼다. 해결 뒤 90일이
  * 지난 문의는 조회 트랜잭션이 먼저 지운다(백그라운드 없음). 원장에는 reference의 keyed digest만 남는다.
+ *
+ * <p><b>Story 4.5가 광고 성능 kill switch를 더했다.</b> engagement의 Web Vitals 판정이 목표를 넘으면 {@link
+ * com.bokrilog.operations.AdvertisingStopApi#stop} 하나를 부르고, stop은 자기 트랜잭션 하나에 원장 잠금 → 열린 전역
+ * {@code ADVERTISING} 제한이 없을 때만 제한({@code origin='PERFORMANCE'}) → 감사 SYSTEM 행({@code performance-stop},
+ * {@code AD-PERF-1.0})을 쓴다. 다른 기능은 제한하지 않고, 해제는 {@code lift-restriction} 하나다.
  */
 package com.bokrilog.operations;

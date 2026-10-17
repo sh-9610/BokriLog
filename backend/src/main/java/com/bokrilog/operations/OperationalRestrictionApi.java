@@ -15,7 +15,8 @@ import org.jspecify.annotations.Nullable;
  * 행이다({@link RestrictionScope#specificity()}) — 구체 우선은 차단을 줄이지 않고 어느 제한이 효력을 갖는지 보고할 뿐이다.
  *
  * <p><b>생성은 이 인터페이스에 없다.</b> 제한 행은 감사 행과 같은 트랜잭션에서만 생겨야 하므로 운영 command(제한 생성
- * command의 확정, {@link OperatorCommandApi#complete})와 강한 신호({@link OperationalSignalApi#raise}, Story 3.3)가 만든다.
+ * command의 확정, {@link OperatorCommandApi#complete})와 강한 신호({@link OperationalSignalApi#raise}, Story 3.3), 광고 성능
+ * kill switch({@link AdvertisingStopApi#stop}, Story 4.5 — 전역 {@code ADVERTISING} 하나)가 만든다.
  * 해제도 여기 없다 — 운영 command {@code lift-restriction} 하나(같은 확정 템플릿, Story 3.4)가 감사 행과 같은 트랜잭션에서
  * 행 하나를 닫는다. 시간·신호·재시작으로 닫히는 경로는 없다.
  *
@@ -45,9 +46,12 @@ public interface OperationalRestrictionApi {
             @Nullable String target, boolean targetErased, Instant effectiveFrom, @Nullable String reason,
             @Nullable String actorDigest, RestrictionOrigin origin, int linkedSignals, @Nullable UUID reinstatedFrom) {
 
-        /** 강한 신호가 만들었거나 연결된 제한인가 — 해제(Story 3.4) 전에 수동 검증이 필요하다. */
+        /**
+         * 자동 정지(강한 신호·성능 kill switch, Story 4.5)가 만들었거나 신호가 연결된 제한인가 — 해제(Story 3.4) 전에 수동 검증이
+         * 필요하다. 운영자가 만든 제한만 신호 연결이 없을 때 거짓이다.
+         */
         public boolean requiresVerification() {
-            return this.origin == RestrictionOrigin.SIGNAL || this.linkedSignals > 0;
+            return this.origin != RestrictionOrigin.OPERATOR || this.linkedSignals > 0;
         }
     }
 

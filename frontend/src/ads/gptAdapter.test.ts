@@ -4,7 +4,7 @@ import { getObservedRequests, getObservedStorageEntries } from '../test/setup'
 import { AD_READY_TIMEOUT_MS, GPT_SCRIPT_SRC, showInterstitial } from './gptAdapter'
 
 /**
- * Story 4.3·4.4: `AD-GPT-1.0` adapter. jsdom은 외부 script를 받지 않으므로 GPT는 대역이다 — 시험이 load된 GPT처럼 command
+ * Story 4.3·4.4·4.5: `AD-GPT-1.0` adapter. jsdom은 외부 script를 받지 않으므로 GPT는 대역이다 — 시험이 load된 GPT처럼 command
  * queue를 처리해, adapter가 부르는 순서와 부르지 않는 것(targeting), 그리고 결론(준비·실패·취소)이 한 번인지를 본다. 시한은
  * 가짜 시계로 센다. 실제 소재·request field 검사는 출시 게이트 G-4다.
  */
@@ -139,8 +139,12 @@ const RELEASE_SEQUENCE = [
   'destroySlots true',
 ]
 
+/** 준비 알림(Story 4.5). 시험마다 새로 만든다 — 준비·사유를 보지 않는 시험은 이것을 넘기기만 한다. */
+let onReady = vi.fn()
+
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  onReady = vi.fn()
 })
 
 afterEach(() => {
@@ -169,7 +173,7 @@ describe('GPT web interstitial adapter: 준비', () => {
   it('GPT를 script 요소로 load하고, 비개인화 설정 → interstitial slot → 리스너 → 서비스 → display 순서로 부르며 targeting이 없다', () => {
     const onFailure = vi.fn()
 
-    showInterstitial(AD_UNIT_PATH, onFailure)
+    showInterstitial(AD_UNIT_PATH, onFailure, onReady)
 
     const scripts = gptScripts()
     expect(scripts).toHaveLength(1)
@@ -187,7 +191,7 @@ describe('GPT web interstitial adapter: 준비', () => {
   // adapter 계약 밖이고 화면이 소비 창(`AD_CLAIM_WINDOW_SECONDS`)에 취소로 건다(`AdTransitionScreen`, Epic 4 회고 AI-1).
   it('3초 안에 우리 slot이 준비되면 준비 시한이 지나도 실패하지 않는다 — 수명 상한은 adapter 밖(화면)', () => {
     const onFailure = vi.fn()
-    showInterstitial(AD_UNIT_PATH, onFailure)
+    showInterstitial(AD_UNIT_PATH, onFailure, onReady)
     const gpt = loadGpt()
 
     vi.advanceTimersByTime(AD_READY_TIMEOUT_MS - 1)
@@ -203,7 +207,7 @@ describe('GPT web interstitial adapter: 준비', () => {
 
   it('준비 뒤에도 미채움이면 한 번 실패하고 slot을 파기한다', () => {
     const onFailure = vi.fn()
-    showInterstitial(AD_UNIT_PATH, onFailure)
+    showInterstitial(AD_UNIT_PATH, onFailure, onReady)
     const gpt = loadGpt()
     gpt.fire('slotOnload', { slot: gpt.slot })
 
@@ -220,7 +224,7 @@ describe('GPT web interstitial adapter: 준비', () => {
 describe('GPT web interstitial adapter: 실패', () => {
   it('3초 안에 준비 신호가 없으면 한 번 실패하고 리스너를 떼고 slot을 파기한다', () => {
     const onFailure = vi.fn()
-    showInterstitial(AD_UNIT_PATH, onFailure)
+    showInterstitial(AD_UNIT_PATH, onFailure, onReady)
     const gpt = loadGpt()
 
     vi.advanceTimersByTime(AD_READY_TIMEOUT_MS - 1)
@@ -242,7 +246,7 @@ describe('GPT web interstitial adapter: 실패', () => {
 
   it('GPT가 3초 안에 load되지 않으면 실패하고, 늦게 load된 GPT의 command는 아무것도 부르지 않는다', () => {
     const onFailure = vi.fn()
-    showInterstitial(AD_UNIT_PATH, onFailure)
+    showInterstitial(AD_UNIT_PATH, onFailure, onReady)
 
     vi.advanceTimersByTime(AD_READY_TIMEOUT_MS)
     expect(onFailure).toHaveBeenCalledTimes(1)
@@ -255,7 +259,7 @@ describe('GPT web interstitial adapter: 실패', () => {
 
   it('준비 전 미채움은 한 번 실패하고 slot을 파기한다', () => {
     const onFailure = vi.fn()
-    showInterstitial(AD_UNIT_PATH, onFailure)
+    showInterstitial(AD_UNIT_PATH, onFailure, onReady)
     const gpt = loadGpt()
 
     gpt.fire('slotRenderEnded', { slot: gpt.slot, isEmpty: true })
@@ -269,7 +273,7 @@ describe('GPT web interstitial adapter: 실패', () => {
 
   it('다른 slot의 준비·미채움은 무시한다', () => {
     const onFailure = vi.fn()
-    showInterstitial(AD_UNIT_PATH, onFailure)
+    showInterstitial(AD_UNIT_PATH, onFailure, onReady)
     const gpt = loadGpt()
     const other = {}
 
@@ -288,7 +292,7 @@ describe('GPT web interstitial adapter: 실패', () => {
   it('slot이 null이면 한 번 실패를 알리고 서비스를 켜지 않으며, 시한도 다시 실패하지 않는다', () => {
     const onFailure = vi.fn()
 
-    showInterstitial(AD_UNIT_PATH, onFailure)
+    showInterstitial(AD_UNIT_PATH, onFailure, onReady)
     const gpt = loadGpt({ slotKind: null })
     vi.advanceTimersByTime(AD_READY_TIMEOUT_MS)
 
@@ -303,7 +307,7 @@ describe('GPT web interstitial adapter: 실패', () => {
   it('script load 오류(차단)는 한 번 실패를 알리고, 그 뒤의 시한·늦은 GPT는 아무것도 부르지 않는다', () => {
     const onFailure = vi.fn()
 
-    showInterstitial(AD_UNIT_PATH, onFailure)
+    showInterstitial(AD_UNIT_PATH, onFailure, onReady)
     gptScripts()[0]?.dispatchEvent(new Event('error'))
     gptScripts()[0]?.dispatchEvent(new Event('error'))
     vi.advanceTimersByTime(AD_READY_TIMEOUT_MS)
@@ -316,7 +320,7 @@ describe('GPT web interstitial adapter: 실패', () => {
 
   it('정의 중 예외도 한 번 실패를 알린다', () => {
     const onFailure = vi.fn()
-    showInterstitial(AD_UNIT_PATH, onFailure)
+    showInterstitial(AD_UNIT_PATH, onFailure, onReady)
     const host = window as unknown as Host
     const queued = (host.googletag as { cmd: (() => void)[] }).cmd
     host.googletag = {
@@ -342,7 +346,7 @@ describe('GPT web interstitial adapter: 실패', () => {
     'slot 정의 뒤 %s에서 예외가 나면 한 번 실패하고 리스너 둘을 떼고 slot을 파기한다',
     (method) => {
       const onFailure = vi.fn()
-      showInterstitial(AD_UNIT_PATH, onFailure)
+      showInterstitial(AD_UNIT_PATH, onFailure, onReady)
 
       const gpt = loadGpt({ throwIn: [method] })
       vi.advanceTimersByTime(AD_READY_TIMEOUT_MS)
@@ -359,7 +363,7 @@ describe('GPT web interstitial adapter: 실패', () => {
 describe('GPT web interstitial adapter: 정리 단계의 예외', () => {
   it('리스너 제거가 던져도 slot은 파기하고, 시한초과의 실패는 한 번이다', () => {
     const onFailure = vi.fn()
-    showInterstitial(AD_UNIT_PATH, onFailure)
+    showInterstitial(AD_UNIT_PATH, onFailure, onReady)
     const gpt = loadGpt({ throwIn: ['removeEventListener'] })
 
     vi.advanceTimersByTime(AD_READY_TIMEOUT_MS)
@@ -373,7 +377,7 @@ describe('GPT web interstitial adapter: 정리 단계의 예외', () => {
 
   it('slot 파기가 던져도 미채움의 실패는 한 번이다', () => {
     const onFailure = vi.fn()
-    showInterstitial(AD_UNIT_PATH, onFailure)
+    showInterstitial(AD_UNIT_PATH, onFailure, onReady)
     const gpt = loadGpt({ throwIn: ['destroySlots'] })
 
     gpt.fire('slotRenderEnded', { slot: gpt.slot, isEmpty: true })
@@ -387,7 +391,7 @@ describe('GPT web interstitial adapter: 정리 단계의 예외', () => {
 
   it('정리 단계가 모두 던져도 취소는 던지지 않고 실패를 알리지 않는다', () => {
     const onFailure = vi.fn()
-    const cancel = showInterstitial(AD_UNIT_PATH, onFailure)
+    const cancel = showInterstitial(AD_UNIT_PATH, onFailure, onReady)
     const gpt = loadGpt({ throwIn: ['removeEventListener', 'destroySlots'] })
 
     expect(() => {
@@ -404,7 +408,7 @@ describe('GPT web interstitial adapter: 정리 단계의 예외', () => {
 describe('GPT web interstitial adapter: 취소', () => {
   it('display 뒤 취소하면 리스너를 떼고 slot을 파기하며, 그 뒤 어떤 callback도 실패를 알리지 않는다', () => {
     const onFailure = vi.fn()
-    const cancel = showInterstitial(AD_UNIT_PATH, onFailure)
+    const cancel = showInterstitial(AD_UNIT_PATH, onFailure, onReady)
     const gpt = loadGpt()
 
     cancel()
@@ -423,7 +427,7 @@ describe('GPT web interstitial adapter: 취소', () => {
 
   it('준비 뒤 취소해도 실패를 알리지 않고 slot을 파기한다', () => {
     const onFailure = vi.fn()
-    const cancel = showInterstitial(AD_UNIT_PATH, onFailure)
+    const cancel = showInterstitial(AD_UNIT_PATH, onFailure, onReady)
     const gpt = loadGpt()
     gpt.fire('slotOnload', { slot: gpt.slot })
 
@@ -438,7 +442,7 @@ describe('GPT web interstitial adapter: 취소', () => {
 
   it('GPT load 전에 취소하면 늦게 처리되는 command는 아무것도 부르지 않는다', () => {
     const onFailure = vi.fn()
-    const cancel = showInterstitial(AD_UNIT_PATH, onFailure)
+    const cancel = showInterstitial(AD_UNIT_PATH, onFailure, onReady)
 
     cancel()
     vi.advanceTimersByTime(AD_READY_TIMEOUT_MS)
@@ -451,7 +455,7 @@ describe('GPT web interstitial adapter: 취소', () => {
 
   it('실패 뒤 취소는 아무것도 다시 부르지 않는다', () => {
     const onFailure = vi.fn()
-    const cancel = showInterstitial(AD_UNIT_PATH, onFailure)
+    const cancel = showInterstitial(AD_UNIT_PATH, onFailure, onReady)
     const gpt = loadGpt()
     vi.advanceTimersByTime(AD_READY_TIMEOUT_MS)
 
@@ -459,5 +463,81 @@ describe('GPT web interstitial adapter: 취소', () => {
 
     expect(onFailure).toHaveBeenCalledTimes(1)
     expect(gpt.calls).toEqual([...DISPLAY_SEQUENCE, ...RELEASE_SEQUENCE])
+  })
+})
+
+describe('GPT web interstitial adapter: 실패 사유와 준비 알림(Story 4.5)', () => {
+  it('시한 안의 우리 slot 준비는 준비를 한 번 알리고, 남의 slot·두 번째 준비·종단 뒤는 알리지 않는다', () => {
+    const onFailure = vi.fn()
+    showInterstitial(AD_UNIT_PATH, onFailure, onReady)
+    const gpt = loadGpt()
+
+    gpt.fire('slotOnload', { slot: {} })
+    expect(onReady).not.toHaveBeenCalled()
+    gpt.fire('slotOnload', { slot: gpt.slot })
+    gpt.fire('slotOnload', { slot: gpt.slot })
+    expect(onReady).toHaveBeenCalledTimes(1)
+
+    // 준비 뒤 미채움은 실패(NO_FILL)이고, 그 뒤 준비는 다시 알리지 않는다.
+    gpt.fire('slotRenderEnded', { slot: gpt.slot, isEmpty: true })
+    gpt.fire('slotOnload', { slot: gpt.slot })
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith('NO_FILL')
+    expect(onReady).toHaveBeenCalledTimes(1)
+  })
+
+  it('시간초과·취소 뒤의 늦은 준비는 알리지 않는다', () => {
+    const late = vi.fn()
+    showInterstitial(AD_UNIT_PATH, late, onReady)
+    const timedOut = loadGpt()
+    vi.advanceTimersByTime(AD_READY_TIMEOUT_MS)
+    timedOut.fire('slotOnload', { slot: timedOut.slot })
+    expect(late).toHaveBeenCalledExactlyOnceWith('TIMEOUT')
+    expect(onReady).not.toHaveBeenCalled()
+
+    for (const script of gptScripts()) script.remove()
+    delete (window as unknown as Host).googletag
+    const cancelledReady = vi.fn()
+    const cancel = showInterstitial(AD_UNIT_PATH, vi.fn(), cancelledReady)
+    const cancelled = loadGpt()
+    cancel()
+    cancelled.fire('slotOnload', { slot: cancelled.slot })
+    expect(cancelledReady).not.toHaveBeenCalled()
+  })
+
+  it('실패마다 닫힌 사유 하나를 알린다 — 시간초과·미채움·차단·미지원·예외', () => {
+    const reasons: string[] = []
+    const remember = (reason: string): void => {
+      reasons.push(reason)
+    }
+    const reset = (): void => {
+      for (const script of gptScripts()) script.remove()
+      delete (window as unknown as Host).googletag
+    }
+
+    showInterstitial(AD_UNIT_PATH, remember, onReady)
+    loadGpt()
+    vi.advanceTimersByTime(AD_READY_TIMEOUT_MS)
+    reset()
+
+    showInterstitial(AD_UNIT_PATH, remember, onReady)
+    const empty = loadGpt()
+    empty.fire('slotRenderEnded', { slot: empty.slot, isEmpty: true })
+    reset()
+
+    showInterstitial(AD_UNIT_PATH, remember, onReady)
+    gptScripts()[0]?.dispatchEvent(new Event('error'))
+    reset()
+
+    showInterstitial(AD_UNIT_PATH, remember, onReady)
+    loadGpt({ slotKind: null })
+    reset()
+
+    showInterstitial(AD_UNIT_PATH, remember, onReady)
+    loadGpt({ throwIn: ['display'] })
+    reset()
+
+    expect(reasons).toEqual(['TIMEOUT', 'NO_FILL', 'BLOCKED', 'UNSUPPORTED', 'ERROR'])
+    expect(onReady).not.toHaveBeenCalled()
+    expect(getObservedRequests()).toEqual([])
   })
 })

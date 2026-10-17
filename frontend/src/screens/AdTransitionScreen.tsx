@@ -20,6 +20,8 @@ import { authContent, DASHBOARD_PATH } from '../content/auth'
 import { claimAdTransition } from '../session/adTransition'
 import { replaceAddress, replaceLocation } from '../session/navigation'
 import { SESSION_REQUEST_TIMEOUT_MS, useSessionGate } from '../session/useSessionState'
+import { flushTelemetry, recordAdEvent } from '../telemetry/beacon'
+import { useTelemetry } from '../telemetry/useTelemetry'
 import styles from './AdTransitionScreen.module.css'
 
 /** 마운트 시점 주소의 transition 참조. 없거나 모양이 아니면 `null`이다. 렌더 단계에서 한 번만 읽는다. */
@@ -63,6 +65,10 @@ export function AdTransitionScreen(): ReactElement | null {
  * 준비된 광고의 수명은 서버 소비 창(`AD_CLAIM_WINDOW_SECONDS`, 결정 뒤 120초)에 묶는다 — 이 문서가 시작된 뒤 그 시간까지
  * `결과 보기`를 누르지 않았으면 광고를 취소하고 결과로 간다(Epic 4 회고 AI-1).
  *
+ * 광고 이벤트(Story 4.5)는 SHOW 뒤에만 이벤트마다 한 번 기록한다 — adapter 호출 `REQUESTED`, 준비 `READY`, `광고 닫기` `CLOSED`,
+ * adapter 실패·소비 창 경과 `FAILED`(사유), 결과로 떠남 `RESULT`. 떠나기 직전(이동·`결과 보기` 기본 이동 앞)에 계측 묶음을 한 번
+ * 보낸다. 문서의 Web Vitals는 `useTelemetry`가 이 화면 경로로 잰다 — SHOW 뒤에 보고된 값은 광고를 띄운 문서의 것으로 표시된다.
+ *
  * DOM에 금융값·계획값·신뢰 상태·사용자/결과 식별이 없다. `광고` 표지와 네이티브 `광고 닫기`가 첫 조작이자 최초 포커스이고, 대시보드
  * 카드의 입체 언어(테두리 상자·그림자)를 쓰지 않는다. `결과 보기` 외의 anchor는 interstitial trigger가 아니어야 한다
  * (`data-google-interstitial="false"`) — 지금 이 화면에는 그런 anchor가 없다.
@@ -74,9 +80,12 @@ function NeutralAdTransition({ transition }: { readonly transition: string }): R
    * 무관하게 머무는 `settings`의 규칙을 빌린다. 이 화면에 필요한 것은 세션 확인과 CSRF 토큰뿐이다.
    */
   const { csrfToken, gate } = useSessionGate('settings')
+  useTelemetry(AD_TRANSITION_PATH, csrfToken)
   const closeButton = useRef<HTMLButtonElement>(null)
   const claimed = useRef(false)
   const leaving = useRef(false)
+  /** SHOW를 받아 adapter를 불렀다(`REQUESTED`). 광고 이벤트는 그 뒤에만 기록한다. */
+  const requested = useRef(false)
   /** 시도 중인 광고의 취소(adapter가 돌려준 함수). SHOW 전에는 없다. */
   const cancelAd = useRef<(() => void) | null>(null)
 
@@ -89,8 +98,23 @@ function NeutralAdTransition({ transition }: { readonly transition: string }): R
     if (leaving.current) return
     leaving.current = true
     cancelAd.current?.()
+    if (requested.current) recordAdEvent('RESULT')
+    // 떠나기 직전의 계측 묶음. 실패해도 이동은 그대로다.
+    flushTelemetry()
     replaceLocation(DASHBOARD_PATH)
   }, [])
+
+  /** `광고 닫기`. 광고를 시도한 뒤면 닫기를 기록하고 떠난다. */
+  const close = useCallback((): void => {
+    if (!leaving.current && requested.current) recordAdEvent('CLOSED')
+    leave()
+  }, [leave])
+
+  /** 소비 창이 지나 광고를 취소하고 떠난다. 광고를 시도한 뒤면 창 경과의 실패를 기록한다. */
+  const expire = useCallback((): void => {
+    if (!leaving.current && requested.current) recordAdEvent('FAILED', 'WINDOW_EXPIRED')
+    leave()
+  }, [leave])
 
   /**
    * `결과 보기`를 눌렀다 — anchor의 기본 이동(과, 준비된 광고면 GPT가 그 클릭으로 띄우는 interstitial)이 결과로 간다. 이 화면은
@@ -111,12 +135,16 @@ function NeutralAdTransition({ transition }: { readonly transition: string }): R
       }
       if (performance.now() >= AD_CLAIM_WINDOW_SECONDS * 1000) {
         event.preventDefault()
-        leave()
+        expire()
         return
       }
+      if (leaving.current) return
       leaving.current = true
+      if (requested.current) recordAdEvent('RESULT')
+      // 기본 이동 앞에서 계측 묶음을 보낸다. 실패해도 이동은 그대로다.
+      flushTelemetry()
     },
-    [leave],
+    [expire],
   )
 
   /*
@@ -139,8 +167,14 @@ function NeutralAdTransition({ transition }: { readonly transition: string }): R
   useLayoutEffect(() => {
     const onPageShow = (event: PageTransitionEvent): void => {
       if (!event.persisted) return
+      // 광고를 시도했고 아직 떠나지 않은 문서(결과 보기 없이 숨겨졌다 돌아온 문서)면 결과 도달을 남기고 보낸다(Story 4.5).
+      const unrecorded = requested.current && !leaving.current
       leaving.current = true
       cancelAd.current?.()
+      if (unrecorded) {
+        recordAdEvent('RESULT')
+        flushTelemetry()
+      }
       replaceLocation(DASHBOARD_PATH)
     }
     window.addEventListener('pageshow', onPageShow)
@@ -192,14 +226,14 @@ function NeutralAdTransition({ transition }: { readonly transition: string }): R
   useLayoutEffect(() => {
     const remaining = AD_CLAIM_WINDOW_SECONDS * 1000 - performance.now()
     if (remaining <= 0) {
-      leave()
+      expire()
       return
     }
-    const limit = window.setTimeout(leave, remaining)
+    const limit = window.setTimeout(expire, remaining)
     return () => {
       window.clearTimeout(limit)
     }
-  }, [leave])
+  }, [expire])
 
   /*
    * 소비 요청은 세션 토큰이 생긴 뒤 한 번이다. passive effect다 — 요청 시작은 커밋이 보여 주는 것이 아니고, 답은 어차피 뒤의
@@ -215,7 +249,18 @@ function NeutralAdTransition({ transition }: { readonly transition: string }): R
         leave()
         return
       }
-      cancelAd.current = showInterstitial(claim.adUnitPath, leave)
+      requested.current = true
+      recordAdEvent('REQUESTED')
+      cancelAd.current = showInterstitial(
+        claim.adUnitPath,
+        (reason) => {
+          recordAdEvent('FAILED', reason)
+          leave()
+        },
+        () => {
+          recordAdEvent('READY')
+        },
+      )
     })()
   }, [transition, csrfToken, leave])
 
@@ -223,7 +268,7 @@ function NeutralAdTransition({ transition }: { readonly transition: string }): R
     <div className={styles.page}>
       <div className={styles.adBar}>
         <p className={styles.adLabel}>{adTransitionContent.adLabel}</p>
-        <button className={styles.close} onClick={leave} ref={closeButton} type="button">
+        <button className={styles.close} onClick={close} ref={closeButton} type="button">
           {adTransitionContent.close}
         </button>
       </div>

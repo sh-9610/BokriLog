@@ -339,10 +339,25 @@ export function signalReasonLabel(reason: string): string {
   return SIGNAL_REASON_LABELS[reason] ?? reason
 }
 
-/** 제한의 출처(Story 3.3) → 화면 문장. 모르는 출처는 원 값이 아니라 안전한 문장 하나로 접는다. */
+/**
+ * 광고 성능 kill switch(Story 4.5, `AD-PERF-1.0`)의 사유 code → 화면 문장. 서버가 `PERFORMANCE_<metric>`으로 남긴다. 모르는 code는
+ * 그대로 보인다 — 운영자 표면이라 원 code가 단서다.
+ */
+const PERFORMANCE_REASON_LABELS: Readonly<Record<string, string>> = {
+  PERFORMANCE_LCP: '광고 화면 LCP p75 목표(2.5초) 초과',
+  PERFORMANCE_INP: '광고 화면 INP p75 목표(200ms) 초과',
+  PERFORMANCE_CLS: '광고 화면 CLS p75 목표(0.1) 초과',
+}
+
+export function performanceReasonLabel(reason: string): string {
+  return PERFORMANCE_REASON_LABELS[reason] ?? reason
+}
+
+/** 제한의 출처(Story 3.3·4.5) → 화면 문장. 모르는 출처는 원 값이 아니라 안전한 문장 하나로 접는다. */
 const ORIGIN_LABELS: Readonly<Record<string, string>> = {
   OPERATOR: '운영자',
   SIGNAL: '자동 정지',
+  PERFORMANCE: '성능 자동 정지',
 }
 
 export const UNKNOWN_ORIGIN_LABEL = '확인되지 않은 출처'

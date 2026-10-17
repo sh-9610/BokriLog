@@ -635,3 +635,85 @@ tests:
       - eval_time: 10m
         alertname: MonthlyCostUnmeasured
         exp_alerts: []
+
+  # ---------------------------------------------------------------- Web Vitals(Story 4.5)
+  # 24시간 창의 POOR 비율 > 25%이고 표본 ≥ 40이면 발화한다. 대시보드 LCP: 60건 중 20건 POOR(33%) → 발화. 설정 INP: 60건 중 10건
+  # POOR(17%) → 미발화. 계획 조건 CLS: 30건 전부 POOR지만 표본 부족 → 미발화. 개발 시계열은 무시한다. 값은 10분에 한 번에 들어온다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_web_vitals_total{env="production",route="/dashboard",metric="LCP",rating="POOR",ad="false"}'
+        values: '0x10 20x30'
+      - series: 'bokrilog_web_vitals_total{env="production",route="/dashboard",metric="LCP",rating="GOOD",ad="false"}'
+        values: '0x10 40x30'
+      - series: 'bokrilog_web_vitals_total{env="production",route="/settings",metric="INP",rating="POOR",ad="false"}'
+        values: '0x10 10x30'
+      - series: 'bokrilog_web_vitals_total{env="production",route="/settings",metric="INP",rating="GOOD",ad="false"}'
+        values: '0x10 50x30'
+      - series: 'bokrilog_web_vitals_total{env="production",route="/plan-conditions",metric="CLS",rating="POOR",ad="false"}'
+        values: '0x10 30x30'
+      - series: 'bokrilog_web_vitals_total{env="production",route="/plan-conditions",metric="CLS",rating="GOOD",ad="false"}'
+        values: '0x40'
+      - series: 'bokrilog_web_vitals_total{env="development",route="/ad-transition",metric="LCP",rating="POOR",ad="true"}'
+        values: '0x10 500x30'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: WebVitalsAboveTarget
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: WebVitalsAboveTarget
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: performance
+              env: production
+              route: /dashboard
+              metric: LCP
+            exp_annotations:
+              summary: 최근 24시간 Web Vitals p75가 목표(LCP 2.5초·INP 200ms·CLS 0.1)를 넘었다.
+      - eval_time: 20m
+        alertname: WebVitalsUnmeasured
+        exp_alerts: []
+
+  # 운영 시계열이 없으면 1시간 뒤 미측정(info)으로 알린다. 개발 시계열은 측정이 아니다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_web_vitals_total{env="development",route="/dashboard",metric="LCP",rating="GOOD",ad="false"}'
+        values: '0+1x70'
+    alert_rule_test:
+      - eval_time: 59m
+        alertname: WebVitalsUnmeasured
+        exp_alerts: []
+      - eval_time: 1h
+        alertname: WebVitalsUnmeasured
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              group: unmeasured
+              env: production
+            exp_annotations:
+              summary: 최근 24시간 Web Vitals가 하나도 측정되지 않았다.
+
+  # 운영 시계열이 0으로 미리 등록돼 있어도 24시간 증가가 0이면 미측정이다. 하나라도 측정되면 해제한다. 증가는 표본이 둘 이상일
+  # 때부터 계산되므로 조건은 1분부터 참이고 1시간 지속은 61분에 찬다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_web_vitals_total{env="production",route="/dashboard",metric="LCP",rating="GOOD",ad="false"}'
+        values: '0x70 1x20'
+      - series: 'bokrilog_web_vitals_total{env="production",route="/dashboard",metric="LCP",rating="POOR",ad="false"}'
+        values: '0x90'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: WebVitalsUnmeasured
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: WebVitalsUnmeasured
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              group: unmeasured
+              env: production
+            exp_annotations:
+              summary: 최근 24시간 Web Vitals가 하나도 측정되지 않았다.
+      - eval_time: 75m
+        alertname: WebVitalsUnmeasured
+        exp_alerts: []
