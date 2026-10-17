@@ -169,6 +169,64 @@ class AdTransitionTest extends OperatorTestBase {
     }
 
     /**
+     * 정책 버전 상향은 소비 단계에서도 동의가 아니다(Epic 4 회고 B-5) — 자격 판정은 지금 버전의 동의로 났어도, 소비 전에 최신 동의
+     * 행이 옛 정책 버전의 GRANTED가 되면 소비는 {@code CONSENT_REQUIRED}로 건너뛰고 소비만 기록한다. SHOW 표지가 서지 않으므로 그
+     * 사용자가 광고 문서의 Vitals를 보내도 표본이 되지 않는다(Story 4.5). 소비가 관문을 따로 갖게 되어 정책 버전을 보지 않는 변경을
+     * 이 시험이 막는다.
+     */
+    @Test
+    void 자격_뒤_최신_동의가_옛_정책_버전이면_소비는_동의_필요로_건너뛰고_SHOW와_표본이_없다() throws Exception {
+        Signed signed = signedIn("ad-transition-old-policy");
+        grant(signed.user());
+        String transition = insertEligible(signed.user(), "statement_timestamp()");
+        // 옛 정책 버전의 동의 행은 직접 넣는다 — 쓰기 경로(`AdConsentApi.decide`·`POST /ad-consent`)는 지금 정책 버전만 받으므로
+        // (다르면 409 `AD_CONSENT_POLICY_CHANGED`) 정책 버전을 올린 뒤 남은 옛 행을 그 경로로는 만들 수 없다.
+        jdbc().sql("INSERT INTO engagement_ad_consent_decision (user_id, policy_version, choice, idempotency_key_digest, "
+                        + "request_digest) VALUES (:u, 'AD-CONSENT-0.9', 'GRANTED', :k, :r)")
+                .param("u", signed.user()).param("k", sha256(UUID.randomUUID().toString()))
+                .param("r", sha256(UUID.randomUUID().toString())).update();
+
+        assertSkip(claim(signed, transition), "CONSENT_REQUIRED");
+        assertThat(consumedAt(transition)).isNotNull();
+        assertThat(jdbc().sql("SELECT transition_shown FROM engagement_ad_attempt WHERE transition_ref = :t")
+                .param("t", transition).query(Boolean.class).single()).isFalse();
+        assertThat(jdbc().sql("SELECT count(*) FROM engagement_ad_attempt WHERE user_id = :u AND transition_shown")
+                .param("u", signed.user()).query(Long.class).single()).isZero();
+        assertSkip(claim(signed, transition), "CONSUMED");
+
+        // 그 사용자가 광고 문서의 Vitals 묶음을 보내도 표본이 되지 않는다 — 표본이 될 SHOW 행이 없다(beacon 자체는 204).
+        long samplesBefore = vitalSamples();
+        var reported = sendJson("POST", ClientTelemetryController.TELEMETRY_PATH, adDocumentVitals(), signed.cookie(),
+                headers(signed.csrf(), null));
+        assertThat(reported.statusCode()).as(reported.body()).isEqualTo(204);
+        assertThat(vitalSamples()).isEqualTo(samplesBefore);
+
+        // 지금 버전으로 다시 동의하면 새 자격의 소비는 SHOW이고 같은 묶음이 표본이 된다 — 위의 건너뜀·표본 0건은 정책 버전 때문이었다.
+        grant(signed.user());
+        assertShow(claim(signed, insertEligible(signed.user(), "statement_timestamp()")));
+        var shownReport = sendJson("POST", ClientTelemetryController.TELEMETRY_PATH, adDocumentVitals(), signed.cookie(),
+                headers(signed.csrf(), null));
+        assertThat(shownReport.statusCode()).as(shownReport.body()).isEqualTo(204);
+        assertThat(vitalSamples()).isEqualTo(samplesBefore + 3);
+    }
+
+    /** 광고 문서({@code /ad-transition}, {@code ad=true})의 Vitals 세 metric 한 묶음(Story 4.5 beacon 본문). */
+    private static String adDocumentVitals() {
+        StringBuilder events = new StringBuilder("{\"events\":[");
+        String separator = "";
+        for (String metric : List.of("LCP", "INP", "CLS")) {
+            events.append(separator).append("{\"kind\":\"VITAL\",\"metric\":\"").append(metric)
+                    .append("\",\"route\":\"/ad-transition\",\"value\":1,\"ad\":true}");
+            separator = ",";
+        }
+        return events.append("]}").toString();
+    }
+
+    private long vitalSamples() {
+        return jdbc().sql("SELECT count(*) FROM engagement_ad_vital_sample").query(Long.class).single();
+    }
+
+    /**
      * 판독 실패는 fail-closed다: 동의 판독이 예외면 500 공통 본문·{@code no-store}이고 소비가 롤백된다(다음 소비는 다시 처음
      * 소비다). 실패는 WARN 한 줄(예외 단순 이름만)로 보인다. 실패를 만드는 방법은 4.2 판독 실패 시험과 같다 — 동의 표의 CHECK를 잠시
      * 내리고 읽을 수 없는 선택 값을 넣는다.

@@ -49,8 +49,11 @@ class AdTransitionController {
     /** 요청 본문의 상한(문자). 필드 하나의 43자 참조를 넉넉히 담는다. */
     private static final int MAX_BODY_CHARS = 256;
 
-    /** transition 참조의 모양 — 256비트 base64url 무패딩 43자(V27 CHECK와 같다). */
-    private static final Pattern TRANSITION = Pattern.compile("[A-Za-z0-9_-]{43}");
+    /**
+     * transition 참조의 모양 — 256비트 base64url 무패딩 43자(V27 CHECK와 같다). 전체 일치로 본다. 화면의 {@code TRANSITION_PATTERN}·
+     * V27 CHECK와의 대조는 {@code AdSharedValuesTest}가 하므로 package-private이다.
+     */
+    static final Pattern TRANSITION = Pattern.compile("[A-Za-z0-9_-]{43}");
 
     private static final tools.jackson.databind.json.JsonMapper JSON =
             tools.jackson.databind.json.JsonMapper.builder().build();

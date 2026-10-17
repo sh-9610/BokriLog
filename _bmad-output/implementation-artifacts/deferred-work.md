@@ -485,3 +485,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-4-4-ad-fail-open.md`
   summary: Windows 로컬 Vitest에서 운영자 lazy chunk를 기다리는 시험(`App.test.tsx` 운영자 경로, `OperatorScreen`·`OperatorNotice`·`SettingsConnectionRevoke`)이 `findBy` 기본 대기 1초를 넘겨 간헐 실패하는 원인을 고친다.
   evidence: 4.4 검증에서 `develop`(`edac317`) 그대로도 같은 실패가 났다 — 전체 실행 1471건 중 3건, `App.test.tsx`를 다른 두 파일과 함께 돌리면 3회 중 3회(1030~1054ms 시간초과). 파일 하나씩 돌리면 모두 통과하고 CI `frontend-quality`(Linux)는 통과한다. 4.4는 이 파일들과 운영자 화면을 바꾸지 않았다(4.4 검증, 2026-10-16).
+- source_spec: `_bmad-output/implementation-artifacts/spec-epic-4-retro-docs-and-verification.md`
+  summary: 백엔드 전체 빌드 중에만 나는 계획 종단 시험의 간헐 실패 둘 — `PlanEndTest` 16건의 409 `PLAN_END_UNAVAILABLE`·`RESULT_TOO_RECENT`, `PlanCompletionTest.laterSyncsOnlyMoveThePostEndValue`의 작업 `FAILED` — 의 원인(부하 아래 시각 어긋남 또는 순차 시험 중 Worker 경합 추정)을 찾아 고친다.
+  evidence: 2026-10-17 Epic 4 회고 AI-2·AI-3 chore 검증에서 첫 `backend/gradlew --project-dir backend build`가 이 16건으로 실패했고, 같은 코드의 재실행과 `PlanEndTest` 단독 실행(26/26)은 통과했다. patch 뒤 첫 전체 빌드에서는 `PlanCompletionTest` 1건이 실패했고 단독 `--rerun`과 두 번째 전체 빌드는 통과했다. 이 chore는 계획 종료·완료 경로를 바꾸지 않았다.
