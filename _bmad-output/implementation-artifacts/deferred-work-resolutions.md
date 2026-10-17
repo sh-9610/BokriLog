@@ -19,8 +19,16 @@ decision_baseline: 'ERD-1.0.0'
 |---|---|
 | 해소 | 31 |
 | 부분 해소 | 20 |
-| 미해소 | 107 |
+| 미해소 | 108 |
 | 미판정 | 0 |
+
+**2026-10-17 갱신(Epic 4 회고 AI-2·AI-3 chore done 전환).** `spec-epic-4-retro-docs-and-verification.md`(PR #121, 머지 커밋 `1333c62`)를 판정했다.
+
+- **append한 항목.** **159**(전체 빌드에서만 나는 계획 종단 시험 간헐 실패) 하나를 더했고 미해소로 판정했다.
+- **해소한 항목.** 없다. 이 chore는 회고 액션 둘을 닫았지만 원장 항목을 닫지는 않았다.
+- **결정 지점으로 지목된 항목.** 없다. 다만 G-4가 묶는 151·153·154·148·152를 `CLAUDE.md` 미검증 문장에 이름으로 적었다. 판정은 그대로 미해소다.
+
+그래서 앞 표(158건)에서 미해소만 +1이다. 합은 159다.
 
 **2026-10-17 갱신(Story 4.5 done 전환).** `spec-4-5-ad-telemetry-web-vitals.md`(PR #119, 머지 커밋 `ae06d92`)를 판정했다. 세 부류는 다음과 같다.
 
@@ -1224,3 +1232,14 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **4.4는 원인이 아니다.** 4.4는 이 파일들과 운영자 화면을 바꾸지 않았다.
 
 **미해소 잔여:** lazy chunk를 기다리는 시험의 대기 방식(명시적 시한 또는 chunk 선적재)을 고치는 일. 주인 없음 — 다음에 운영자 화면·그 시험을 건드리는 작업이 이어받는다.
+
+### 159. 전체 빌드에서만 나는 계획 종단 시험 간헐 실패
+
+**미해소(2026-10-17, Epic 4 회고 AI-2·AI-3 chore done 전환, 기준 `1333c62`).** 이 chore의 검증이 append했다.
+- **관측.** 로컬 macOS 전체 `backend/gradlew --project-dir backend build`에서 두 번 났다.
+  - 한 번은 `PlanEndTest` 16건이 409 `PLAN_END_UNAVAILABLE`·`RESULT_TOO_RECENT`로 실패했다.
+  - 다른 한 번은 `PlanCompletionTest.laterSyncsOnlyMoveThePostEndValue`의 작업이 `FAILED`로 끝났다.
+- **재현되지 않는 조건.** 단독 `--rerun`과 같은 코드의 재실행은 통과했다. PR #121의 CI `backend-quality`도 통과했다.
+- **이 chore는 원인이 아니다.** 계획 종료·완료 경로를 바꾸지 않았다.
+
+**미해소 잔여:** 원인 확정이 남았다. 부하 아래 결과 시각과 DB 시각의 어긋남, 또는 순차 시험 중 scheduler·Worker의 경합으로 추정한다. 실패 시 시각·작업 상태를 남기는 진단이 먼저다. 주인은 없다 — Epic 4 회고 AI-6(간헐 실패 시험의 주인과 방법, `epic-4-retro-item-45`)이 155·158과 함께 볼 자리다.
