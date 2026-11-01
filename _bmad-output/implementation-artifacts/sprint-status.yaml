@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 10-17-2026 18:00
+last_updated: 10-17-2026 20:00
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -424,7 +424,7 @@ action_items:
     action: "스토리 SPEC을 쓸 때 그 스토리가 고치는 파일에 걸린 열린 회고 액션을 Code Map에 적게 한다(bmad-customize로
       bmad-build 계획 단계에 한 줄, 예: AccountErasure를 고치면 Epic 3 item-27)(회고 P-4·P-5)"
     owner: "bmad-customize"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
   - id: "epic-4-retro-item-47-공통-부품-정리-선택-epic-5-전-프런트엔드-동일-출처-json-po"
     epic: 4

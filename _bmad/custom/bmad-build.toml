@@ -1,0 +1,10 @@
+# bmad-build 팀 override. 저장소에 커밋되어 이 프로젝트의 모든 개발자·에이전트에 적용된다.
+# 병합 규칙: 문자열은 기본값을 대체하고, 목록은 기본 목록 뒤에 붙는다.
+
+[workflow]
+
+# Epic 4 회고 AI-7(`epic-4-retro-item-46`): 스토리·chore·fix의 SPEC이 그 작업이 고치는 파일에 걸린 열린 회고 액션을 보게 한다.
+# Epic 4 SPEC 넷이 열린 회고 액션을 하나도 참조하지 않아 액션 상태가 범위 안에서 한 줄도 바뀌지 않았다(회고 P-4·P-5).
+persistent_facts = [
+  "계획 단계(step-02)에서 SPEC을 쓸 때는 `{project-root}/_bmad-output/implementation-artifacts/sprint-status.yaml`의 `action_items` 가운데 `status`가 `open`·`in-progress`인 회고 액션을 읽고, 이 작업이 고치거나 새로 만드는 파일·모듈·계약에 걸린 것을 찾는다. 찾은 액션은 `## Code Map`에 id와 함께 한 줄씩 적고, 그 액션을 이 작업 범위에서 닫는지·일부만 다루는지·건드리지 않고 지나가는지를 밝힌다(예: `AccountErasure`를 고치는 작업은 `epic-3-retro-item-27`을 본다). 걸린 액션이 없으면 Code Map에 '걸린 열린 회고 액션 없음'이라고 한 줄 적는다.",
+]
