@@ -18,9 +18,17 @@ decision_baseline: 'ERD-1.0.0'
 | 상태 | 건수 |
 |---|---|
 | 해소 | 32 |
-| 부분 해소 | 20 |
-| 미해소 | 109 |
+| 부분 해소 | 22 |
+| 미해소 | 107 |
 | 미판정 | 0 |
+
+**2026-10-18 갱신(Epic 4 회고 AI-6 chore done 전환).** `spec-flaky-test-diagnostics.md`(PR #125, 머지 커밋 `4e248b8`)를 판정했다.
+
+- **append한 항목.** 없다(리뷰 defer 0건).
+- **해소·부분 해소한 항목.** 이 chore를 주인으로 지목한 셋 가운데 **158**·**159**를 부분 해소로 판정했다. **155**는 세션 속성 upsert fix(PR #124)가 이미 해소로 판정했다.
+- **결정 지점으로 지목된 항목.** 위 셋 말고는 없다.
+
+그래서 앞 표(161건)에서 미해소 −2, 부분 해소 +2다. 합은 161 그대로다.
 
 **2026-10-17 갱신(세션 속성 upsert fix).** `spec-session-attribute-upsert.md`(PR 자체가 판정 자리 — done 전환 PR이 없는 fix)를 판정했다.
 
@@ -1246,6 +1254,13 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소 잔여:** lazy chunk를 기다리는 시험의 대기 방식(명시적 시한 또는 chunk 선적재)을 고치는 일. 주인 없음 — 다음에 운영자 화면·그 시험을 건드리는 작업이 이어받는다.
 
+**부분 해소(2026-10-18, Epic 4 회고 AI-6 chore done 전환, 기준 `4e248b8`).**
+- **한 것.** 158이 적은 네 파일(`App.test.tsx` 운영자 경로·`OperatorScreen`·`OperatorNotice`·`SettingsConnectionRevoke`)의 첫 대기가 이름 있는 시한 `FIRST_MOUNT_TIMEOUT_MS`(3초, `frontend/src/test/firstMount.ts`)를 쓴다.
+- **조건.** 전역 `asyncUtilTimeout`은 올리지 않았다. 진짜 lazy chunk는 `App.test.tsx` 하나이고, 나머지 셋은 같은 실행에서 함께 넘은 큰 화면의 첫 마운트다.
+- **검사.** macOS에서 `stress-test.sh --runs 3`(네 파일)과 전체 Vitest가 통과했다. PR #125 `frontend-quality`도 통과했다.
+
+**부분 해소인 이유:** 실패가 관측된 Windows 로컬에서는 다시 확인하지 않았다. 3초가 그 환경에서 충분한지가 남았다. 다음에 Windows에서 전체 Vitest를 돌리는 작업이 확인한다.
+
 ### 159. 전체 빌드에서만 나는 계획 종단 시험 간헐 실패
 
 **미해소(2026-10-17, Epic 4 회고 AI-2·AI-3 chore done 전환, 기준 `1333c62`).** 이 chore의 검증이 append했다.
@@ -1256,6 +1271,14 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **이 chore는 원인이 아니다.** 계획 종료·완료 경로를 바꾸지 않았다.
 
 **미해소 잔여:** 원인 확정이 남았다. 부하 아래 결과 시각과 DB 시각의 어긋남, 또는 순차 시험 중 scheduler·Worker의 경합으로 추정한다. 실패 시 시각·작업 상태를 남기는 진단이 먼저다. 주인은 없다 — Epic 4 회고 AI-6(간헐 실패 시험의 주인과 방법, `epic-4-retro-item-45`)이 155·158과 함께 볼 자리다.
+
+**부분 해소(2026-10-18, Epic 4 회고 AI-6 chore done 전환, 기준 `4e248b8`).**
+- **진단 장치.** 유력한 원인 가설(fixture가 측정 시각을 JVM 시계로 만들고 판정은 DB(Docker VM) 시각으로 하므로, VM 시계가 뒤처지면 결과가 "미래"가 된다)을 드러내는 장치를 뒀다.
+  - `DatabaseClockSkew`가 JVM↔DB 시계 차이를 컨테이너 진입과 시험별 저장소 초기화에서 잰다(5분마다 다시 잰다).
+  - 1초를 넘으면 두 시각·방향·대처(Docker Desktop 재시작)를 말하며 실패하고, 통과할 때도 차이를 한 줄 남긴다.
+- **검사.** `DatabaseClockSkewTest`(7건 — 밀린 JVM 시계에서 던짐, 결과 캐시, 측정 실패 뒤 재측정)가 지킨다. PR #125 `backend-quality`도 통과했다. 이번 전체 빌드의 차이는 1ms 안팎이었다.
+
+**부분 해소인 이유:** 원인은 확정하지 않았다. 다음 발생 때 시험 보고서의 `[test-clock]` 줄을 읽어 가른다 — 시계 차이가 크면 VM 재동기화로 끝난다. 차이가 작은데도 나면 1초 미만의 어긋남이나 순차 시험 중 Worker 경합이 남는다.
 
 ### 160. 세션 행이 먼저 지워진 뒤 속성 저장의 FK 위반
 
