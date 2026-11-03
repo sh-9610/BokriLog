@@ -19,8 +19,16 @@ decision_baseline: 'ERD-1.0.0'
 |---|---|
 | 해소 | 32 |
 | 부분 해소 | 22 |
-| 미해소 | 108 |
+| 미해소 | 111 |
 | 미판정 | 0 |
+
+**2026-11-03 갱신(CI backend jar 생성 job chore).** `spec-ci-backend-assemble-job.md`(브랜치 `chore/ci-backend-assemble-job`, PR #129, 기준 `6b16acb` — done 전환 PR이 없는 chore라 그 PR 자체가 판정 자리다)를 판정했다.
+
+- **append한 항목.** 2026-11-03 CI 시간 분석이 이 chore의 SPEC 앞에서 단일 목표 규칙으로 떼어 더한 둘 — **163**(`backend-quality` 시험의 JVM 병렬화)·**164**(리허설 셋을 백엔드 변경 PR의 필수 경로에서 빼는 정책) — 을 미해소로 판정했다. 둘 다 이 chore의 Never(백엔드 시험 병렬화·suite 배치, 리허설의 PR 경로 분리)이고 이 chore는 손대지 않았다. 1차 리뷰(blind-hunter)가 낸 defer **165**(소비 job 넷이 내려받은 jar를 생산자 output과 대조하지 않음)도 미해소로 판정했다.
+- **해소한 항목.** 없다. 이 chore가 닫은 것은 CI 임계 경로이지 원장 항목이 아니다.
+- **결정 지점으로 지목된 항목.** **20**(`same-origin-integration`의 `npm ci`·Chromium 설치 중복)을 재확인했다 — 이 chore가 건드리지 않아 미해소 그대로다(아래 절). 걸린 열린 회고 액션 `epic-3-retro-item-31`(셸 규약 검사 통일)은 새 셸 코드가 `aggregate-results.sh` 안에만 들어가므로 건드리지 않고 지나갔고, `epic-3-retro-item-37`(CI 임계 경로)은 done이며 이 chore는 그 후속이다.
+
+그래서 앞 표(162건)에서 미해소 +3이다. 합은 165다.
 
 **2026-11-03 갱신(계정 삭제·감사 원장 잠금 직렬화 fix done 전환).** `spec-erasure-audit-lock.md`(PR #127, 머지 커밋 `c6362a7`, Epic 3 회고 item-27)를 판정했다.
 
@@ -268,6 +276,8 @@ X-Frame-Options: DENY
 ### 20. `same-origin-integration`의 중복 설치
 
 **미해소(2026-09-06).** Story 1.2가 append했다. 통합 job이 `frontend-quality`와 같은 `npm ci`·Chromium 설치를 되풀이한다. CI-PLAN §10의 시간 예산 조정 순서가 "중복 build·설치 제거"를 첫 번째로 두므로, 예산이 문제가 되는 시점의 첫 후보다. 지금은 job timeout을 16분으로 잡아 감당하고 있다.
+
+**미해소(2026-11-03, CI backend jar 생성 job chore 판정, 기준 `6b16acb`) — 재확인.** 이 chore는 backend jar의 생산자를 `backend-assemble`로 떼어 통합 job이 시험을 기다리지 않게 했을 뿐, 통합 job 안의 `npm ci`·Chromium 설치 중복(`ci.yml`의 `의존 설치`·`Chromium headless shell 설치` 단계)은 건드리지 않았다. 통합 job이 더 일찍 시작하므로 그 2~4분이 PR 임계 경로에 남는 비중은 줄었고, job timeout은 19분이다. 미해소 그대로이고 주인 없음.
 
 ### 21. 백엔드 품질 게이트(포매터·정적 분석·아키텍처 규칙)
 
@@ -1307,3 +1317,28 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **남은 것.** 운영 command의 거절·실패 행(롤백 뒤 별도 트랜잭션, 예: `ACCESS_REVOKED`)은 삭제 커밋 뒤 잠금을 얻어 append하고, 그 경로에는 계정 상태 판정이 없다. 그래서 삭제된 운영자의 `actor_user_id`가 다시 붙을 수 있다. 지금은 사용자 삭제 경로가 없어 잠재 결함이다.
 
 **미해소 잔여:** 거절·실패 행을 쓸 때 계정 상태를 보고 수행자 귀속을 비울지, 또는 Epic 5 삭제 완료 검사(5.2·5.4)가 잡게 할지 정하는 일. 주인 — Epic 5에서 사용자 삭제 경로를 여는 스토리(5.2·5.4)가 결정 지점이다.
+
+### 163. `backend-quality` 시험의 JVM 병렬화(`maxParallelForks`)
+
+**미해소(2026-11-03, CI backend jar 생성 job chore 판정, 기준 `6b16acb`).** 2026-11-03 CI 시간 분석이 append했다(source_spec 없음 — jar 생성 job 분리와 독립적으로 머지 가능해 단일 목표 규칙으로 뗐다).
+- **지금 값.** `backend-quality`는 Gradle `build` 한 단계이고 시험은 JVM 하나(`tasks.withType<Test>`에 `maxParallelForks` 없음)에서 순차로 돈다 — Gradle test 14분 25초, 상위 8개 파이프라인 시험 클래스가 12.6분. CI `backend-quality`는 12~16분이다.
+- **이 chore가 바꾼 것.** jar 생산자를 뗐을 뿐 시험 시간 자체는 그대로다. 분리 뒤 PR 임계 경로는 `backend-quality` ≈16분 하나이므로, 이 항목이 다음 단축의 자리다.
+- **경계.** `spec-backend-test-speed.md` Never와 `spec-ci-critical-path.md` Ask First가 시험 병렬화·suite 배치를 막아 두었다. 이 chore의 Never도 같다.
+
+**미해소 잔여:** `maxParallelForks` 2~3(JVM마다 PostgreSQL 컨테이너 하나, 포트는 무작위)으로 15분을 8~10분으로 줄이는 변경과, 그 앞에 두 SPEC의 병렬화 경계를 새 SPEC Intent에서 다시 여는 결정. 순차 시험 중에도 scheduler·virtual worker가 돌고 DB 초기화가 public 전체 테이블을 NOWAIT로 잠그는 지금 구조(`CLAUDE.md` "시험·CI")가 JVM 여럿에서 안전한지가 그 SPEC의 첫 질문이다. 주인 없음 — 다음 CI 시간 chore가 이어받는다.
+
+### 164. 리허설 셋을 백엔드 변경 PR의 필수 경로에서 빼는 정책
+
+**미해소(2026-11-03, CI backend jar 생성 job chore 판정, 기준 `6b16acb`).** 2026-11-03 CI 시간 분석이 append했다(source_spec 없음).
+- **지금 값.** 배포·백업·복원 리허설 셋은 백엔드 변경 PR마다 돈다(`backup-restore` 분류는 프런트엔드·문서-only PR에서만 백업·복원 둘을 끈다). 리허설은 jar 자체를 돌리므로 "백엔드 변경인데 리허설과 무관하다"를 기술적으로 가를 수 없고, 3.9 defer(경로별 job 분기, 항목 131)도 같은 이유로 `deploy/**` 허용 목록을 거부했다.
+- **이 chore가 바꾼 것.** 리허설이 `backend-assemble`(≈1.5분)만 기다리므로 백엔드 PR에서도 리허설이 시험과 겹쳐 돌고, 분리 뒤 추정에서 리허설 꼬리는 임계 경로가 아니다(assemble 1.5 + 백업 12 ≈ 13.5 < `backend-quality` ≈16). 리허설 시나리오·`deploy/**`·분류기 규칙은 이 chore의 Never라 손대지 않았다.
+
+**미해소 잔여:** 리허설 셋을 `deploy/**`·Dockerfile 변경 PR과 `develop` push에서만 돌릴지 정하는 정책 결정 — `spec-ci-critical-path.md` Always가 "관련 경로 허용 목록은 새 경로를 조용히 건너뛴다"로 거부한 방식이라 fail-closed 분류로는 정의할 수 없고, CI-PLAN §5 표의 "backend 변경 → backend 품질·관련 통합" 해석과 함께 사람이 정한다. 러너 분(비용) 절약이 주된 동기이고 wall-clock 동기는 이 chore 뒤 약해졌다. 주인 없음 — CI-PLAN 새 버전(항목 146의 as-built 반영)과 함께 볼 자리다.
+
+### 165. 소비 job 넷이 내려받은 jar를 생산자 output과 대조하지 않는다
+
+**미해소(2026-11-03, CI backend jar 생성 job chore 판정, 기준 `6b16acb`).** 이 chore의 1차 리뷰(blind-hunter)가 append했다.
+- **지금 값.** `same-origin-integration`·`deploy-rehearsal`·`backup-rehearsal`·`restore-rehearsal`은 `backend-jar-<run_id>-<run_attempt>`를 내려받아 그대로 쓴다. 내려받은 `bokrilog-backend.jar`의 SHA-256을 `needs.backend-assemble.outputs.jar-sha256`과 대조하는 단계가 없다. 이 변경 전에도 같았다(`backend-quality`가 올린 것을 그대로 썼다).
+- **이 chore가 지키는 것.** `ci-required`가 생산자 두 쪽(`backend-assemble`·`backend-quality`)의 digest 일치를 사후에 본다. artifact 저장소 왕복(업로드 → 내려받기)이 바이트를 바꾸지 않았다는 것은 CI-PLAN §8의 "통합 job이 SHA와 checksum을 검증한다"가 요구하는 바이지만 여전히 가정이다.
+
+**미해소 잔여:** 네 job의 내려받기 뒤 `sha256sum -c` 한 단계(판정은 `.github/scripts/`의 스크립트로, `test-ci-scripts.sh`가 네 job의 단계 목록 계약을 함께 갱신). 주인 없음 — 다음 CI 계약 chore가 이어받는다.

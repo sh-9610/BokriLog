@@ -4,35 +4,46 @@
 # Story 1.2에서 backend와 deploy가 생기면서 단일 job을 CI-PLAN §1의 병렬 구조로 전환했다.
 #
 #   changes ──> frontend-quality ──┐
-#           └─> backend-quality ───┼─> same-origin-integration ─┐
-#                    │             ├─> deploy-rehearsal ────────┤
-#                    │             └────────────────────────────┤
-#                    ├─> backup-rehearsal ──────────────────────┤
-#                    └─> restore-rehearsal ─────────────────────┴─> ci-required
+#       │                          ├─> same-origin-integration ─┐
+#       ├───> backend-assemble ────┤   (dist + jar)             │
+#       │             │            └─> deploy-rehearsal ────────┤
+#       │             ├──────────────> backup-rehearsal ────────┤
+#       │             └──────────────> restore-rehearsal ───────┤
+#       └───> backend-quality ──(digest output)──────────────────┴─> ci-required
 #
 # `deploy-rehearsal`(Story 3.8)은 같은 두 산출물로 운영 배포 절차(`deploy/production/`)의 gate 시험과 blue/green 리허설을 돈다.
 # 통합 job과 서로 기다리지 않는다 — 둘은 다른 compose 프로젝트·포트를 쓴다. `backup-rehearsal`(Story 3.9)과
 # `restore-rehearsal`(Story 3.10)은 backend jar 하나로 백업·격리 복원 리허설을 돌아 `deploy-rehearsal`과 병렬이다.
 #
 # 백업 리허설은 원래 `deploy-rehearsal` 안에서 배포 리허설 뒤에 직렬로 돌아 PR의 임계 경로였다(PR #100: backend 15분 →
-# 배포 5.4분 + 백업 9.5분). spec-ci-critical-path.md가 그것을 `backend-quality`만 기다리는 job으로 뗐다. 또 PR의 변경이 전부
+# 배포 5.4분 + 백업 9.5분). spec-ci-critical-path.md가 그것을 backend jar만 기다리는 job으로 뗐다. 또 PR의 변경이 전부
 # 프런트엔드·문서 경로(`frontend/**`, `_bmad-output/**`, 최상위 `*.md`)면 `changes`가 `backup-restore=false`를 내고 백업·복원
 # 두 리허설은 승인된 비적용으로 건너뛴다(CI-PLAN §5). 게이트는 `!= 'false'`다 — 출력이 빈 값(이 출력을 모르는 target base의
 # 분류기)이면 돈다. push·workflow_dispatch는 항상 `true`다.
 #
+# backend jar의 생산자는 `backend-assemble`이다(spec-ci-backend-assemble-job.md). 리허설 셋과 통합 job이 기다리는 것은
+# 시험 통과가 아니라 jar 파일인데, 그 jar가 시험을 돌리는 `backend-quality`의 같은 Gradle `build`에서 나와 뒤 job 넷이
+# 시험 14분을 통째로 기다렸다(PR wall-clock 26~30분). 그래서 컴파일 + `bootJar`만 하는 job(약 1분 30초)을 따로 두고 jar
+# 소비 job 넷이 그것만 기다린다. `backend-quality`는 지금처럼 `build`를 돌리되 jar를 올리지 않고 자기 jar의 SHA-256을
+# job output으로 내며, `backend-assemble`도 같은 output을 낸다. `ci-required`의 집계가 두 digest의 일치를 함께 판정해
+# "시험이 검증한 바이트를 통합이 소비한다"(CI-PLAN §8)를 가정이 아니라 증거로 유지한다 — bootJar는 build.gradle.kts의
+# 재현 가능 archive 설정으로 바이트 단위 결정적이다. digest를 artifact가 아니라 job output으로 넘기는 이유는 내려받기
+# 경합·실패 job의 빈 artifact 처리를 없애기 위해서다.
+#
 # branch protection이 참조하는 이름은 전환 전후 모두 `ci-required`다. 이제 이 job은 검사를
 # 직접 실행하지 않고 선행 job의 결과만 집계한다(CI-PLAN §5 CI-D5).
 #
-# 두 품질 job은 `same-origin-integration`이 소비할 산출물을 만든다. 통합 job은 그 산출물을
-# 다시 빌드하지 않는다. 재빌드하면 통합 시험이 검증하는 바이트가 품질 job이 검증한 바이트와
-# 같다는 보장이 사라진다(CI-PLAN §8). 통합 입력 artifact의 retention은 1일이다.
+# `frontend-quality`와 `backend-assemble`이 `same-origin-integration`이 소비할 산출물을 만든다. 통합 job은 그 산출물을
+# 다시 빌드하지 않는다. 재빌드하면 통합 시험이 검증하는 바이트가 `frontend-quality`가 검증한 바이트, 그리고
+# `backend-assemble`이 올리고 digest 일치로 `backend-quality`의 시험에 묶인 바이트와 같다는 보장이 사라진다(CI-PLAN §8).
+# 통합 입력 artifact의 retention은 1일이다.
 #
 # 판정 논리는 `.github/scripts/`의 셸 스크립트가 소유한다. YAML 안의 인라인 스크립트는
 # 저장소의 시험으로 고정할 수 없기 때문이다(CI-PLAN §5).
 #   verify-merge-commit.sh -- PR merge commit의 부모가 이벤트의 base·head와 같은지 검증
 #   classify-changes.sh    -- 문서-only·백업·복원 리허설 필요 여부 판정. `docs-only`·`reason`·`backup-restore`를
 #                             GITHUB_OUTPUT과 GITHUB_STEP_SUMMARY에 기록
-#   aggregate-results.sh   -- 선행 job 결과를 모아 병합 가능 여부 판정
+#   aggregate-results.sh   -- 선행 job 결과를 모아 병합 가능 여부 판정. backend jar 두 digest의 일치도 여기서 본다
 #   check-alert-rules.sh   -- 경보 규칙의 형식 계약·문법·promtool 단위시험(Story 3.7). 통합 job에서 실행한다
 #   test-ci-scripts.sh     -- 위 스크립트들과 이 파일의 계약 시험. changes job 안에서
 #                             조건 없이 실행한다
@@ -300,6 +311,9 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    outputs:
+      # 시험이 돈 빌드의 jar SHA-256. `ci-required`가 `backend-assemble`의 같은 output과 대조한다.
+      jar-sha256: ${{ steps.digest.outputs.jar-sha256 }}
 
     steps:
       - name: 저장소 checkout
@@ -323,7 +337,9 @@ jobs:
             backend/gradle/wrapper/gradle-wrapper.properties
 
       - name: Gradle 빌드
-        # compile, 시험, 실행 가능한 jar를 한 번에 만든다.
+        # compile, 시험, 실행 가능한 jar를 한 번에 만든다. jar는 올리지 않는다 — 생산자는 `backend-assemble`이고
+        # 이 job은 아래 digest 단계로 "시험이 돈 jar"의 SHA-256만 낸다. `build`를 `check`로 바꾸면 jar가 없어 digest를
+        # 낼 수 없다(spec-ci-backend-assemble-job.md Ask First).
         #
         # Story 1.3부터 이 한 단계가 Modulith 경계 검사와 실제 PostgreSQL 통합 시험까지 포함한다.
         # Testcontainers가 러너의 docker 데몬으로 `postgres:18.6-alpine`을 직접 띄우므로 job에
@@ -335,15 +351,17 @@ jobs:
         # 제공자 자격정보는 여전히 필요 없다.
         run: bash backend/gradlew --project-dir backend --no-daemon build
 
-      - name: 통합 입력 업로드 (backend jar)
-        # frontend와 같은 이유로 producer 성공 조건이다(CI-PLAN §8).
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: backend-jar-${{ github.run_id }}-${{ github.run_attempt }}
-          path: backend/build/libs/bokrilog-backend.jar
-          retention-days: 1
-          if-no-files-found: error
-          overwrite: false
+      - name: jar digest
+        id: digest
+        # 판정이 아니라 계산이다. 판정(두 digest의 모양·일치)은 aggregate-results.sh가 한다.
+        # `backend-assemble`의 같은 단계와 블록이 글자까지 같아야 한다 — test-ci-scripts.sh가 대조한다.
+        # jar가 없으면 sha256sum이 실패하고 `&&` 뒤의 기록이 돌지 않아 단계가 실패한다(`$(...)`의 실패를 echo 한 줄에
+        # 묻지 않는다). `java -version`과 `unzip -lv`(항목 이름·크기·CRC)는 두 job의 digest가 어긋났을 때 로그를 대조해
+        # 원인(JDK patch 차이·어느 항목이 다른가)을 가르는 자료다.
+        run: |
+          java -version 2>&1
+          unzip -lv backend/build/libs/bokrilog-backend.jar
+          digest="$(sha256sum backend/build/libs/bokrilog-backend.jar | cut -d ' ' -f1)" && echo "jar-sha256=${digest}" >>"${GITHUB_OUTPUT}"
 
       - name: 실패 진단 artifact 업로드
         if: ${{ failure() || cancelled() }}
@@ -356,9 +374,72 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  backend-assemble:
+    name: backend-assemble
+    needs: changes
+    if: needs.changes.outputs.docs-only != 'true'
+    runs-on: ubuntu-24.04
+    # spec-ci-backend-assemble-job.md. backend jar의 생산자다 — 컴파일과 `bootJar`만 하고 시험은 돌지 않는다. 통합 job과
+    # 리허설 셋이 이 job만 기다리므로 `backend-quality`의 시험 14분이 PR 임계 경로에서 빠진다. 실측 약 1분 30초(컴파일·jar
+    # 1.2분)에 checkout·JDK·캐시 복원을 더한 상한이다. 시험을 돌지 않으므로 Docker가 필요 없고 진단 artifact도 없다 —
+    # 컴파일 실패는 단계 로그가 전부다.
+    #
+    # 이 job의 jar가 시험이 돈 jar와 같은 바이트라는 것은 `ci-required`가 두 job의 `jar-sha256` output을 대조해 지킨다.
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    outputs:
+      jar-sha256: ${{ steps.digest.outputs.jar-sha256 }}
+
+    steps:
+      - name: 저장소 checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: JDK 준비
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          # `backend-quality`와 같은 Temurin 25다. 두 job의 patch 버전이 갈리면 digest가 어긋날 수 있고, 그때는 재실행이
+          # 답이지 조용히 통과시키는 것이 아니다(spec-ci-backend-assemble-job.md Design Notes).
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+          # `backend-quality`와 캐시 키를 일부러 가른다. 같은 `cache-dependency-path`면 setup-java의 키가 같고, 먼저 끝나는
+          # 이 job(bootJar는 compile·runtime classpath만 해석)이 그 키를 저장하면 같은 키의 `backend-quality`는 시험 classpath
+          # (Testcontainers·Modulith·ArchUnit·starter-test)를 실행마다 다시 내려받는다. `backend-quality`는 `backend/*.gradle.kts`
+          # glob으로 `settings.gradle.kts`까지 hash에 넣고, 여기는 `build.gradle.kts` 하나만 명시해 hash 입력 집합을 다르게 한다.
+          cache-dependency-path: |
+            backend/build.gradle.kts
+            backend/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Gradle bootJar
+        # 컴파일 + 실행 가능한 jar. `build`·`test`·`check`를 부르지 않는다 — 시험은 `backend-quality`의 몫이다.
+        run: bash backend/gradlew --project-dir backend --no-daemon bootJar
+
+      - name: jar digest
+        id: digest
+        # 업로드보다 앞이다 — digest를 내지 못한 jar가 artifact 저장소에 남지 않게 하고, 두 job의 `Gradle → digest` 순서를
+        # 대칭으로 둔다. `backend-quality`의 같은 단계와 블록이 글자까지 같다(주석 밖) — test-ci-scripts.sh가 대조한다.
+        run: |
+          java -version 2>&1
+          unzip -lv backend/build/libs/bokrilog-backend.jar
+          digest="$(sha256sum backend/build/libs/bokrilog-backend.jar | cut -d ' ' -f1)" && echo "jar-sha256=${digest}" >>"${GITHUB_OUTPUT}"
+
+      - name: 통합 입력 업로드 (backend jar)
+        # frontend와 같은 이유로 producer 성공 조건이다(CI-PLAN §8). 올라가지 않으면 이 job이 실패하고 소비 job 넷은 돌지 않는다.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-jar-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backend/build/libs/bokrilog-backend.jar
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: false
+
   same-origin-integration:
     name: same-origin-integration
-    needs: [changes, frontend-quality, backend-quality]
+    needs: [changes, frontend-quality, backend-assemble]
     if: needs.changes.outputs.docs-only != 'true'
     runs-on: ubuntu-24.04
     # CI-PLAN §8이 적은 5분은 이 job이 무엇을 하는지 정해지기 전의 *시작* 값이다. 실제 단계
@@ -406,13 +487,14 @@ jobs:
         run: bash .github/scripts/check-alert-rules.sh
 
       - name: 통합 입력 내려받기 (frontend dist)
-        # 두 품질 job이 검증한 그 산출물이다. 여기서 다시 빌드하지 않는다(CI-PLAN §8).
+        # `frontend-quality`가 검증한 그 산출물이다. 여기서 다시 빌드하지 않는다(CI-PLAN §8).
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: frontend-dist-${{ github.run_id }}-${{ github.run_attempt }}
           path: frontend/dist
 
       - name: 통합 입력 내려받기 (backend jar)
+        # `backend-assemble`이 올린 jar다. 시험이 돈 jar와 같은 바이트라는 것은 `ci-required`의 digest 판정이 지킨다.
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: backend-jar-${{ github.run_id }}-${{ github.run_attempt }}
@@ -468,7 +550,7 @@ jobs:
 
   deploy-rehearsal:
     name: deploy-rehearsal
-    needs: [changes, frontend-quality, backend-quality]
+    needs: [changes, frontend-quality, backend-assemble]
     if: needs.changes.outputs.docs-only != 'true'
     runs-on: ubuntu-24.04
     # Story 3.8. 운영 배포 절차의 gate 고정 입력 시험과 blue/green 리허설(정상 2회 — 두 번째는 제한 중·두 번째 Worker·drain
@@ -503,13 +585,14 @@ jobs:
         run: bash deploy/production/test-preflight.sh
 
       - name: 통합 입력 내려받기 (frontend dist)
-        # 두 품질 job이 검증한 그 산출물이다. 여기서 다시 빌드하지 않는다(CI-PLAN §8).
+        # `frontend-quality`가 검증한 그 산출물이다. 여기서 다시 빌드하지 않는다(CI-PLAN §8).
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: frontend-dist-${{ github.run_id }}-${{ github.run_attempt }}
           path: frontend/dist
 
       - name: 통합 입력 내려받기 (backend jar)
+        # `backend-assemble`이 올린 jar다. 시험이 돈 jar와 같은 바이트라는 것은 `ci-required`의 digest 판정이 지킨다.
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: backend-jar-${{ github.run_id }}-${{ github.run_attempt }}
@@ -536,13 +619,13 @@ jobs:
 
   backup-rehearsal:
     name: backup-rehearsal
-    needs: [changes, backend-quality]
+    needs: [changes, backend-assemble]
     # 문서-only면 다른 제품 job처럼 건너뛰고, PR의 변경이 전부 프런트엔드·문서 경로(`backup-restore=false`)여도 건너뛴다.
     # `!= 'false'`라서 빈 값(이 출력을 모르는 옛 분류기)은 돈다 — fail-closed다.
     if: needs.changes.outputs.docs-only != 'true' && needs.changes.outputs.backup-restore != 'false'
     runs-on: ubuntu-24.04
     # Story 3.9. 운영 compose 위에 MinIO 두 개를 겹쳐 `backup.sh`를 열두 시나리오로 돈다(실행마다 일회성 기록 역할 JVM 둘). backend jar
-    # 하나만 쓰므로 `backend-quality`만 기다려 `deploy-rehearsal`·`restore-rehearsal`과 병렬로 돈다 — 셋은 다른 compose 프로젝트·포트를
+    # 하나만 쓰므로 `backend-assemble`만 기다려 `deploy-rehearsal`·`restore-rehearsal`과 병렬로 돈다 — 셋은 다른 compose 프로젝트·포트를
     # 쓴다. spec-ci-critical-path.md가 `deploy-rehearsal`의 두 백업 단계를 이 job으로 옮겼다(단계 timeout은 그대로). 실패하면 실행
     # 출력·도구 기록(key·저장소 설정·비밀 파일 제외)을 진단 artifact로 올린다.
     #
@@ -572,7 +655,8 @@ jobs:
         run: bash deploy/production/test-backup-scripts.sh
 
       - name: 통합 입력 내려받기 (backend jar)
-        # 품질 job이 검증한 그 산출물이다. 여기서 다시 빌드하지 않는다(CI-PLAN §8).
+        # `backend-assemble`이 올린 jar다. 여기서 다시 빌드하지 않는다(CI-PLAN §8) — 시험이 돈 jar와 같은 바이트라는 것은
+        # `ci-required`의 digest 판정이 지킨다.
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: backend-jar-${{ github.run_id }}-${{ github.run_attempt }}
@@ -600,7 +684,7 @@ jobs:
 
   restore-rehearsal:
     name: restore-rehearsal
-    needs: [changes, backend-quality]
+    needs: [changes, backend-assemble]
     # `backup-rehearsal`과 같은 게이트다 — 프런트엔드·문서만 바뀐 PR에서는 복원 리허설이 검증하는 jar·`deploy/` 경로가 그대로다.
     if: needs.changes.outputs.docs-only != 'true' && needs.changes.outputs.backup-restore != 'false'
     runs-on: ubuntu-24.04
@@ -638,7 +722,8 @@ jobs:
         run: bash deploy/production/test-restore-scripts.sh
 
       - name: 통합 입력 내려받기 (backend jar)
-        # 품질 job이 검증한 그 산출물이다. 여기서 다시 빌드하지 않는다(CI-PLAN §8).
+        # `backend-assemble`이 올린 jar다. 여기서 다시 빌드하지 않는다(CI-PLAN §8) — 시험이 돈 jar와 같은 바이트라는 것은
+        # `ci-required`의 digest 판정이 지킨다.
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: backend-jar-${{ github.run_id }}-${{ github.run_attempt }}
@@ -665,7 +750,7 @@ jobs:
   ci-required:
     # 이 이름이 branch protection의 required status check 이름이다. 바꾸지 않는다.
     name: ci-required
-    needs: [changes, frontend-quality, backend-quality, same-origin-integration, deploy-rehearsal, backup-rehearsal, restore-rehearsal]
+    needs: [changes, frontend-quality, backend-quality, backend-assemble, same-origin-integration, deploy-rehearsal, backup-rehearsal, restore-rehearsal]
     # 선행 job이 실패·취소·skip 어느 쪽이든 이 job은 반드시 실행되어 판정을 남겨야 한다.
     # 실행되지 않으면 required check가 영원히 대기 상태로 남는다.
     if: ${{ always() }}
@@ -689,6 +774,10 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           FRONTEND_RESULT: ${{ needs.frontend-quality.result }}
           BACKEND_RESULT: ${{ needs.backend-quality.result }}
+          ASSEMBLE_RESULT: ${{ needs.backend-assemble.result }}
+          # 두 digest의 일치가 "통합이 소비한 jar = 시험이 돈 jar"의 증거다. 판정은 스크립트가 한다.
+          ASSEMBLE_JAR_SHA256: ${{ needs.backend-assemble.outputs.jar-sha256 }}
+          QUALITY_JAR_SHA256: ${{ needs.backend-quality.outputs.jar-sha256 }}
           INTEGRATION_RESULT: ${{ needs.same-origin-integration.result }}
           REHEARSAL_RESULT: ${{ needs.deploy-rehearsal.result }}
           BACKUP_RESULT: ${{ needs.backup-rehearsal.result }}
