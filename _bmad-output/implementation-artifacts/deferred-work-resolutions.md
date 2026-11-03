@@ -19,8 +19,19 @@ decision_baseline: 'ERD-1.0.0'
 |---|---|
 | 해소 | 32 |
 | 부분 해소 | 22 |
-| 미해소 | 111 |
+| 미해소 | 113 |
 | 미판정 | 0 |
+
+**2026-11-03 갱신(루트 컨트롤러 공통 부품 chore done 전환).** `spec-controller-commons.md`(PR #130, 머지 커밋 `0456622`, Epic 4 회고 AI-8 `epic-4-retro-item-47`의 ① 백엔드 묶음)를 판정했다.
+
+- **append한 항목.** AI-8을 세 목표로 나눈 결정([S])이 SPEC 앞에서 남은 두 묶음을 더했고, 둘 다 미해소다.
+  - **166:** 프런트엔드 동일 출처 JSON POST·JSON 판독 helper(② 묶음).
+  - **167:** 광고 시험 공용 helper·engagement 바깥 의존 허용 목록(③ 묶음).
+  - 1차 리뷰의 defer는 0건이다.
+- **해소한 항목.** 없다. 이 chore가 닫은 것은 회고 액션 item-47의 ①이고, 그 액션은 ②·③이 남아 `in-progress`다.
+- **결정 지점으로 지목된 항목.** 없다. 원장에서 AI-8·item-47을 가리키는 항목은 이 chore가 append한 둘뿐이고, 104(Epic 2 회고 AI-8의 프런트엔드 묶음)는 이미 해소된 다른 액션이다.
+
+그래서 앞 표(165건)에서 미해소 +2다. 합은 167이다.
 
 **2026-11-03 갱신(CI backend jar 생성 job chore).** `spec-ci-backend-assemble-job.md`(브랜치 `chore/ci-backend-assemble-job`, PR #129, 기준 `6b16acb` — done 전환 PR이 없는 chore라 그 PR 자체가 판정 자리다)를 판정했다.
 
@@ -1342,3 +1353,24 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **이 chore가 지키는 것.** `ci-required`가 생산자 두 쪽(`backend-assemble`·`backend-quality`)의 digest 일치를 사후에 본다. artifact 저장소 왕복(업로드 → 내려받기)이 바이트를 바꾸지 않았다는 것은 CI-PLAN §8의 "통합 job이 SHA와 checksum을 검증한다"가 요구하는 바이지만 여전히 가정이다.
 
 **미해소 잔여:** 네 job의 내려받기 뒤 `sha256sum -c` 한 단계(판정은 `.github/scripts/`의 스크립트로, `test-ci-scripts.sh`가 네 job의 단계 목록 계약을 함께 갱신). 주인 없음 — 다음 CI 계약 chore가 이어받는다.
+
+### 166. 프런트엔드 동일 출처 JSON POST·JSON 판독 helper(Epic 4 회고 AI-8 ②)
+
+**미해소(2026-11-03, 루트 컨트롤러 공통 부품 chore가 append, 기준 `6b16acb`, 판정은 done 전환 — 머지 커밋 `0456622`).** source_spec은 없다. AI-8을 세 목표로 나눈 결정([S])이 ① 백엔드만 이 chore에 두고 이 묶음을 뗐다.
+- **지금 값.**
+  - 동일 출처 POST(CSRF 헤더·`Origin`·JSON 본문)를 직접 만드는 곳이 17개 파일이다.
+  - JSON 판독 사본(`readJson`·`objectOf`·`fieldsOf`)이 여섯 파일에 아홉 개다: `session/adTransition.ts`·`useAdConsent.ts`·`operatorApi.ts`·`useSupportInquiries.ts`·`bybitConnection.ts`·`useServiceNotices.ts`.
+- **이 chore가 바꾼 것.** 없다. 백엔드 `ControllerSupport`·`IdempotencyKey.CONFLICT_CODE`만 다뤘고 `frontend/`는 건드리지 않았다.
+
+**미해소 잔여:** POST 한 벌과 판독 한 벌을 공통 부품으로 두고 호출자를 옮기는 일. `CLAUDE.md` 프런트엔드 공통 부품 문단과 사본 재발 방지 시험이 함께 필요하다. 주인은 `epic-4-retro-item-47`(in-progress)의 다음 chore다.
+
+### 167. 광고 시험 공용 helper·engagement 바깥 의존 허용 목록(Epic 4 회고 AI-8 ③)
+
+**미해소(2026-11-03, 루트 컨트롤러 공통 부품 chore가 append, 기준 `6b16acb`, 판정은 done 전환 — 머지 커밋 `0456622`).** source_spec은 없다. 회고 A-2의 묶음이다.
+- **지금 값.**
+  - `AdEligibilityTest`·`AdTransitionTest`의 `admitManual`은 이미 갈라졌다. 차이는 접수 시각을 당기는가이다.
+  - `grant`·자격 행 삽입·`assertNotFound`도 광고 시험마다 사본이다.
+  - `engagement/package-info.java`가 적은 바깥 의존(sync·operations·identity)을 강제하는 `ModuleBoundaryTest` 규칙이 없다.
+- **이 chore가 바꾼 것.** 없다. 운영 소스의 루트 컨트롤러만 다뤘다. engagement 컨트롤러 넷이 새 helper를 쓰게 됐지만 engagement 모듈의 의존은 바뀌지 않았다.
+
+**미해소 잔여:** 시험 helper 한 곳으로 모으기, 그리고 engagement의 허용 의존 목록을 `ModuleBoundaryTest`에 단정하기. 주인은 `epic-4-retro-item-47`(in-progress)의 다음 chore다.
