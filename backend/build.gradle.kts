@@ -174,6 +174,20 @@ tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {
 }
 
 /*
+ * archive를 바이트 단위로 결정적이게 만든다(`spec-ci-backend-assemble-job.md`).
+ *
+ * CI는 같은 커밋에서 jar를 두 번 만든다 — `backend-assemble`(컴파일 + `bootJar`, 리허설·통합 job이 소비)과
+ * `backend-quality`(`build`, 시험이 돈 바이트). `ci-required`가 두 jar의 SHA-256 일치를 요구해 "통합이 소비한
+ * 바이트 = 시험이 검증한 바이트"를 증거로 유지한다. 기본값에서는 Gradle이 항목마다 파일 시스템의 mtime을 쓰고
+ * 디렉터리 순회 순서로 항목을 넣으므로 같은 소스·같은 JDK라도 두 러너의 jar가 다르다. 타임스탬프를 고정값으로,
+ * 항목 순서를 정렬로 바꾸면 bootJar를 포함한 모든 archive가 같은 입력에 같은 바이트를 낸다.
+ */
+tasks.withType<AbstractArchiveTask>().configureEach {
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+}
+
+/*
  * 라이브러리용 plain jar는 만들지 않는다. `build/libs/`에 실행 가능한 jar 하나만 남겨
  * "어느 jar를 이미지에 넣는가"라는 질문 자체를 없앤다.
  */

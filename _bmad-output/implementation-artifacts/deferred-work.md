@@ -497,3 +497,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-erasure-audit-lock.md`
   summary: 계정 삭제가 커밋된 뒤 원장에 붙는 운영자 거절·실패 행(롤백 뒤 별도 트랜잭션, 예: `ACCESS_REVOKED`)이 삭제된 운영자의 `actor_user_id`를 다시 붙이지 않게 할지 정한다 — 계정 상태를 보고 수행자 귀속을 비울지, 또는 Epic 5 삭제 완료 검사(5.2·5.4)가 잡게 할지.
   evidence: 원장 잠금 직렬화(이 fix)는 삭제보다 먼저 잠금을 쥔 쓰기만 덮는다. 거절 행은 삭제 커밋 뒤 잠금을 얻어 append하며 그 경로에 계정 상태 판정이 없다(2026-11-03 fix 리뷰 blind-hunter, SPEC Ask First로 범위 밖). 지금은 사용자 삭제 경로가 없어 잠재 결함이다.
+- source_spec: none
+  summary: `backend-quality`의 시험을 Gradle `maxParallelForks` 2~3으로 JVM 여럿에 나눠(JVM마다 PostgreSQL 컨테이너 하나, 포트는 무작위) 15분을 8~10분으로 줄인다 — `spec-backend-test-speed.md` Never·`spec-ci-critical-path.md` Ask First의 병렬화 경계를 새 SPEC Intent에서 다시 여는 결정이 함께 필요하다.
+  evidence: 2026-11-03 CI 시간 분석에서 PR wall-clock 26~30분의 임계 경로가 `backend-quality`(Gradle test 14분 25초, 상위 8개 파이프라인 시험 클래스가 12.6분) → `backup-rehearsal`(12분)이었다. jar 생성 job 분리(첫 목표)와 독립적으로 머지 가능해 단일 목표 규칙으로 분리했다.
+- source_spec: none
+  summary: 배포·백업·복원 리허설 셋을 백엔드 변경 PR의 필수 경로에서 빼고 `deploy/**`·Dockerfile 변경 PR과 `develop` push에서만 돌릴지 정한다 — `spec-ci-critical-path.md` Always가 "관련 경로 허용 목록은 새 경로를 조용히 건너뛴다"로 거부한 방식이라 fail-closed 분류로는 정의할 수 없는 정책 결정이다(CI-PLAN §5 표의 "backend 변경 → backend 품질·관련 통합" 해석 포함).
+  evidence: 2026-11-03 CI 시간 분석. 리허설은 jar 자체를 돌리므로 "백엔드 변경인데 리허설과 무관하다"를 기술적으로 가를 수 없고, 3.9 defer(경로별 job 분기)도 같은 이유로 미해소다. jar 생성 job 분리(첫 목표)와 독립적이라 단일 목표 규칙으로 분리했다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-ci-backend-assemble-job.md`
+  summary: jar를 내려받는 소비 job 넷(same-origin·배포·백업·복원 리허설)이 내려받은 `bokrilog-backend.jar`의 SHA-256을 생산자 output(`needs.backend-assemble.outputs.jar-sha256`)과 대조하지 않는다 — CI-PLAN §8의 "통합 job이 SHA와 checksum을 검증한다"는 artifact 저장소 왕복에 대해 여전히 가정이다.
+  evidence: 이 변경 전에도 소비 job은 내려받은 jar를 검증하지 않았고(`backend-quality`가 올린 것을 그대로 썼다), 이번 digest 판정은 생산자 두 쪽(`backend-assemble`·`backend-quality`)의 일치를 `ci-required`에서 사후에 볼 뿐이다. 내려받기 뒤 `sha256sum -c` 한 단계면 닫히지만 판정은 `.github/scripts/`의 스크립트와 `test-ci-scripts.sh`의 단정을 요구해 네 job의 단계 목록 계약을 함께 바꾸는 별도 범위다(2026-11-03 리뷰 blind-hunter).

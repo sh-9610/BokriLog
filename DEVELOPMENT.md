@@ -737,23 +737,32 @@ Story 1.2에서 backend와 deploy가 생기면서 단일 job이 `CI-PLAN.md` §1
 
 ```text
 changes ──> frontend-quality ──┐
-        └─> backend-quality ───┼─> same-origin-integration ─┐
-                 │             ├─> deploy-rehearsal ────────┤
-                 │             └────────────────────────────┤
-                 ├─> backup-rehearsal ──────────────────────┤
-                 └─> restore-rehearsal ─────────────────────┴─> ci-required
+    │                          ├─> same-origin-integration ─┐
+    ├───> backend-assemble ────┤   (dist + jar)             │
+    │             │            └─> deploy-rehearsal ────────┤
+    │             ├──────────────> backup-rehearsal ────────┤
+    │             └──────────────> restore-rehearsal ───────┤
+    └───> backend-quality ──(digest output)──────────────────┴─> ci-required
 ```
 
 | job | 역할 | timeout |
 |---|---|---|
 | `changes` | secret 검사, CI 계약 시험, 변경 분류 | 5분 |
 | `frontend-quality` | 타입 검사 → ESLint → stylelint → Prettier → 빌드 → Vitest → Chromium E2E | 8분 |
-| `backend-quality` | JDK 25 준비 → Gradle `build`(컴파일·Modulith 경계 검사·PostgreSQL Testcontainers 시험·jar) | 20분 |
-| `same-origin-integration` | 경보 규칙 시험 → 두 품질 job의 산출물로 동일 출처 검증(`--keep-stack`, `BOKRILOG_ENV=ci`) → 같은 스택에서 Story 1.1 회귀 | 19분 |
+| `backend-quality` | JDK 25 준비 → Gradle `build`(컴파일·Modulith 경계 검사·PostgreSQL Testcontainers 시험·jar) → 자기 jar의 SHA-256을 job output `jar-sha256`으로. jar는 올리지 않는다 | 20분 |
+| `backend-assemble` | JDK 25 준비 → Gradle `bootJar`(컴파일·jar, 시험 없음·Docker 없음) → backend jar 업로드 → 같은 SHA-256 output. jar 소비 job 넷의 유일한 생산자(`spec-ci-backend-assemble-job.md`) | 8분 |
+| `same-origin-integration` | 경보 규칙 시험 → `frontend-quality`·`backend-assemble`의 산출물로 동일 출처 검증(`--keep-stack`, `BOKRILOG_ENV=ci`) → 같은 스택에서 Story 1.1 회귀 | 19분 |
 | `deploy-rehearsal` | 배포 gate 고정 입력 시험 → 같은 두 산출물로 운영 배포 리허설(Story 3.8, 위 `## 운영 배포`). green은 운영 배포의 증거가 아니다 | 30분 |
 | `backup-rehearsal` | 백업 스크립트 고정 입력 시험 → backend jar로 백업 리허설(Story 3.9, 위 `## 백업` — MinIO 두 개, `deploy-rehearsal`과 병렬). PR의 변경이 전부 프런트엔드·문서 경로면 건너뛴다(`backup-restore=false`). green은 실저장소의 증거가 아니다 | 50분 |
 | `restore-rehearsal` | 복원 스크립트 고정 입력 시험 → backend jar로 격리 복원 리허설(Story 3.10, 위 `## 복원` — `deploy-rehearsal`·`backup-rehearsal`과 병렬). `backup-rehearsal`과 같은 게이트(`docs-only != 'true' && backup-restore != 'false'`)로 건너뛴다. green은 실제 복원의 증거가 아니다 | 40분 |
-| `ci-required` | 선행 job 결과 집계. 병합 가능 여부 판정 | 1분 |
+| `ci-required` | 선행 job 결과 집계. 병합 가능 여부 판정. `backend-assemble`·`backend-quality`가 각자 낸 jar SHA-256의 일치도 여기서 판정한다 | 1분 |
+
+backend jar의 생산자는 `backend-assemble`이다(`spec-ci-backend-assemble-job.md`, 2026-11-03). 그전에는 `backend-quality`의 `build` 한 번이 시험과 jar를 함께 냈고, 리허설 셋과 통합 job은 jar 파일만 필요한데도 시험 14분을 통째로 기다려 제품 PR의 wall-clock이 26~30분이었다(최근 5회: `backend-quality` 12~16분 → `backup-rehearsal` 11.5~14분). 컴파일과 `bootJar`만 하는 job(약 1분 30초)을 따로 두고 jar 소비 job 넷이 그것만 기다리므로 임계 경로는 max(`backend-quality` ≈16, assemble 1.5 + 백업 12, `frontend-quality` 4.5 + 통합 7) ≈ 16분으로 약 11분 준다. 같은 커밋에서 jar를 두 번 만들므로 "통합이 소비한 바이트 = 시험이 돈 바이트"는 가정이 아니라 증거로 지킨다 — 두 job이 같은 명령(`sha256sum`)으로 자기 jar의 digest를 job output `jar-sha256`으로 내고, `aggregate-results.sh`가 두 job이 모두 success일 때 둘 다 64자 hex이며 같은지 판정한다(하나라도 비거나 다르면 종료 1, "같은 커밋의 두 빌드가 다른 jar를 냈다"). 그것이 성립하려면 bootJar가 바이트 단위로 결정적이어야 하므로 `backend/build.gradle.kts`가 모든 archive task에 `isPreserveFileTimestamps = false`·`isReproducibleFileOrder = true`를 건다. 로컬에서 같은 커밋의 `clean bootJar` 두 번이 같은 digest를 내는지는 아래 명령으로 본다. 두 job의 JDK는 `setup-java`가 각각 해석한 Temurin 25 최신이라 그 사이 patch가 갈리면 digest가 어긋날 수 있고, 그때는 `Re-run all jobs`가 답이지 조용히 통과시키지 않는다. `backend-quality`의 Gradle 명령을 `build`에서 `check`로 바꾸지 않는다 — jar를 만들지 않으면 digest를 낼 수 없다. 러너 분은 assemble 1.5분이 더 들고, 실패 PR에서는 시험이 끝나기 전에 리허설이 돌아 낭비가 생길 수 있다(CI-PLAN §10 비용 주의).
+
+```bash
+bash backend/gradlew --project-dir backend clean bootJar && sha256sum backend/build/libs/bokrilog-backend.jar
+bash backend/gradlew --project-dir backend clean bootJar && sha256sum backend/build/libs/bokrilog-backend.jar
+```
 
 `backend-quality`의 15분은 Story 1.3이 10분에서 올린 값이다. 이 job은 이제 Testcontainers로 실제 PostgreSQL을 띄우고, 콜드 실행에는 `postgres:18.6-alpine` 내려받기가, 동시성 시험에는 실제 잠금 경합 대기가 더해진다. 러너에 docker 데몬이 이미 있으므로 서비스 컨테이너도 새 action도 더하지 않았고, 시험은 기존 `Gradle 빌드` 단계 안에서 돈다. `CI-PLAN.md` §4·§10의 backend 예산 8분은 이 상한과 별개로 계속 측정한다. Story 2.11이 15분을 20분으로 올렸다. PR #49에서 이 job이 11분 5초였고, 같은 시험의 로컬 실행보다 1분쯤 길었다. 2.11의 로컬 `clean build`가 12분 56초라 CI는 14분 안팎이 된다. PR #52의 이 job은 13분 0초였다. 그 시간의 대부분은 실제 파이프라인을 모는 `FirstSnapshotTest`·`IncrementalSyncTest`가 워커의 1초 dispatch tick과 고정 `Thread.sleep`을 기다린 몫이었다. `spec-backend-test-speed.md`가 시험의 dispatch 간격을 100ms로 줄이고(`bokrilog.sync.worker.dispatch-interval`, 운영 기본 1초, heartbeat 5초는 그대로) 관측 가능한 조건은 조건 대기로 바꿨다. 그 변경이 변경 전 커밋(`3824c3c`)을 다시 잰 로컬 `clean build`는 13분 2초였고(위 2.11의 12분 56초와 별개의 재측정이다), 변경 뒤에는 3분 13초다(시험 869건에 운영 주기를 고정하는 Docker 없는 시험 두 건을 더해 871건, 두 클래스 605초 → 115초, 124초 → 28초). Story 2.12가 그 위에 정밀 검증·호출 예산 시험을 더해 로컬 `clean build`가 4분 41초가 됐다(989건, 새 `PlanVerificationTest` 75초). 위 값들은 그 시점의 기록이고 지금 값이 아니다 — Epic 3 회고(P-2)가 Windows 로컬에서 잰 백엔드 build는 17~18분이었다. `spec-ci-critical-path.md`가 2026-10-15에 다시 잰 로컬 `clean build`는 18분 36초다(Windows 11·Docker Desktop 29.7.2, 다른 작업 없이, 시험 1,496건). 같은 날 다른 검사와 겹쳐 돈 측정은 22분 35초였으니 부하가 있으면 더 길어진다. 같은 시기 CI `backend-quality`는 13~15분이다(PR #100 14분 55초). timeout 20분은 CI-PLAN 새 버전이 보정할 때까지 그대로 둔다.
 
@@ -761,7 +770,7 @@ changes ──> frontend-quality ──┐
 
 이 job 구조는 Story 1.2의 PR #9에서 2026-09-06에 처음 GitHub에서 돌았다. 첫 실측 wall-clock은 4분 3초로 `CI-PLAN.md` §10의 PR p95 8분 안이다. job별로는 `changes` 16초, `frontend-quality` 1분 9초, `backend-quality` 1분 26초, `same-origin-integration` 2분 2초, `ci-required` 7초다. 같은 날 문서-only PR #10은 `changes` 10초 → `ci-required` 6초로 끝났다. 위 표의 timeout은 이 실측이 몇 회 더 쌓인 뒤 `CI-PLAN.md` 새 버전에서 보정한다.
 
-두 품질 job은 `same-origin-integration`이 소비할 산출물(`frontend/dist`, `backend/build/libs/bokrilog-backend.jar`)을 업로드한다. 통합 job은 그 산출물을 다시 빌드하지 않는다. 재빌드하면 통합 시험이 검증하는 바이트가 품질 job이 검증한 바이트와 같다는 보장이 사라진다. artifact 이름에는 run ID와 attempt가 들어가 취소되거나 대체된 실행의 것을 재사용하지 않고, retention은 1일이다. 이름에 attempt가 들어가는 대가로 GitHub의 `Re-run failed jobs`는 쓸 수 없다. 이미 성공한 품질 job은 다시 돌지 않아 새 attempt 번호의 artifact를 만들지 않고, 통합 job만 다시 돌면 없는 이름을 찾는다. 재실행이 필요하면 `Re-run all jobs`를 쓴다. 이 제약은 `deferred-work.md`에 남겼다.
+`frontend-quality`와 `backend-assemble`이 `same-origin-integration`·리허설 셋이 소비할 산출물(`frontend/dist`, `backend/build/libs/bokrilog-backend.jar`)을 업로드한다. 통합 job은 그 산출물을 다시 빌드하지 않는다. 재빌드하면 통합 시험이 검증하는 바이트가 품질 job이 검증한 바이트와 같다는 보장이 사라진다(backend jar는 위 digest 판정이 그 보장을 잇는다). artifact 이름에는 run ID와 attempt가 들어가 취소되거나 대체된 실행의 것을 재사용하지 않고, retention은 1일이다. 이름에 attempt가 들어가는 대가로 GitHub의 `Re-run failed jobs`는 쓸 수 없다. 이미 성공한 품질 job은 다시 돌지 않아 새 attempt 번호의 artifact를 만들지 않고, 통합 job만 다시 돌면 없는 이름을 찾는다. 재실행이 필요하면 `Re-run all jobs`를 쓴다. 이 제약은 `deferred-work.md`에 남겼다.
 
 집계는 fail-closed다. `success`와 "예상한 `skipped`" 두 가지만 통과이고 `failure`·`cancelled`·빈 값·예상하지 않은 `skipped`는 모두 실패다. GitHub의 `needs.<job>.result`는 job이 실행되지 않으면 빈 문자열로 오는데, 그것을 통과로 읽으면 job 하나를 지우는 것만으로 필수 검사가 사라진다.
 
@@ -772,14 +781,14 @@ changes ──> frontend-quality ──┐
 | `.github/workflows/ci.yml` | 이벤트·권한·job 구조·단계 순서. 판정은 아래 스크립트에 위임한다 |
 | `.github/scripts/verify-merge-commit.sh` | PR merge commit의 부모가 이벤트의 base·head와 같은 순서인지 검증 |
 | `.github/scripts/classify-changes.sh` | 문서-only·백업·복원 리허설 필요 여부 판정. `docs-only`·`reason`·`backup-restore`를 `GITHUB_OUTPUT`과 job summary에 기록 |
-| `.github/scripts/aggregate-results.sh` | 선행 job 결과를 모아 병합 가능 여부 판정. 기대치는 job마다 정한다(백업·복원 리허설 둘은 `backup-restore`를 따른다) |
+| `.github/scripts/aggregate-results.sh` | 선행 job 결과를 모아 병합 가능 여부 판정. 기대치는 job마다 정한다(백업·복원 리허설 둘은 `backup-restore`를 따른다). `backend-assemble`·`backend-quality`의 jar SHA-256 일치도 여기서 판정한다 |
 | `.github/scripts/check-alert-rules.sh` | 경보 규칙의 형식 계약·문법·promtool 단위시험(Story 3.7). 통합 job에서 돈다 |
 | `.github/scripts/test-ci-scripts.sh` | 위 스크립트들과 `ci.yml`의 계약 시험(경보 규칙 스크립트는 가짜 promtool로 종료 코드 0/1/2를 단정한다) |
 | `deploy/production/test-preflight.sh`·`rehearse-deploy.sh` | 배포 gate 고정 입력 시험, 운영 배포 리허설(Story 3.8). `deploy-rehearsal` job에서 돈다 |
 | `deploy/production/test-backup-scripts.sh`·`rehearse-backup.sh` | 백업 스크립트 고정 입력 시험, 백업 리허설(Story 3.9). `backup-rehearsal` job에서 돈다 |
 | `deploy/production/test-restore-scripts.sh`·`rehearse-restore.sh` | 복원 스크립트 고정 입력 시험, 격리 복원 리허설(Story 3.10). `restore-rehearsal` job에서 돈다 |
 
-lint·stylelint·format 세 단계는 `spec-frontend-lint-policy.md`가 합의한 품질 정책이며 `ci-required`가 집계하는 job 안에 있으므로 별도 보호 규칙 변경 없이 필수 검사다. 문서-only 변경(`_bmad-output/**`와 최상위 `*.md`)은 `changes` job만 돌고 제품 job 여섯(`frontend-quality`·`backend-quality`·`same-origin-integration`·`deploy-rehearsal`·`backup-rehearsal`·`restore-rehearsal`)은 건너뛴다. 분류는 fail-closed다. 규칙에 없는 경로가 하나라도 있으면 전체 검사를 실행하며, `backend/`·`deploy/`처럼 `<디렉터리>/<파일>` 모양인 경로는 자동으로 제품 변경이라 분류 규칙을 손댈 필요가 없다. PR에서는 체크아웃된 head가 아니라 target base의 승인된 분류기를 꺼내 실행한다. PR이 자기 분류 규칙을 고쳐 그 PR의 검사를 축소할 수 없게 한다.
+lint·stylelint·format 세 단계는 `spec-frontend-lint-policy.md`가 합의한 품질 정책이며 `ci-required`가 집계하는 job 안에 있으므로 별도 보호 규칙 변경 없이 필수 검사다. 문서-only 변경(`_bmad-output/**`와 최상위 `*.md`)은 `changes` job만 돌고 제품 job 일곱(`frontend-quality`·`backend-quality`·`backend-assemble`·`same-origin-integration`·`deploy-rehearsal`·`backup-rehearsal`·`restore-rehearsal`)은 건너뛴다. 분류는 fail-closed다. 규칙에 없는 경로가 하나라도 있으면 전체 검사를 실행하며, `backend/`·`deploy/`처럼 `<디렉터리>/<파일>` 모양인 경로는 자동으로 제품 변경이라 분류 규칙을 손댈 필요가 없다. PR에서는 체크아웃된 head가 아니라 target base의 승인된 분류기를 꺼내 실행한다. PR이 자기 분류 규칙을 고쳐 그 PR의 검사를 축소할 수 없게 한다.
 
 백업·복원 리허설은 두 번째 분류 `backup-restore`를 따른다(`spec-ci-critical-path.md`, Epic 3 회고 AI-12). PR의 변경이 전부 건너뛰기 목록(`frontend/**`, `_bmad-output/**`, 최상위 `*.md`) 안이면 `false`이고 `backup-rehearsal`·`restore-rehearsal`이 승인된 비적용으로 건너뛴다 — 프런트엔드만 바꾼 PR이 백업·복원 리허설을 기다리지 않는다. 목록 밖 경로가 하나라도 있거나, 비교 기준이 없거나, 빈 diff거나, git이 실패하거나, push·`workflow_dispatch`면 `true`다(`develop` 통합 CI는 전체를 돈다). 관련 경로를 나열하는 허용 목록이 아니라 건너뛰기 목록이라 새 경로는 리허설을 탄다. 두 job의 게이트는 `!= 'false'`이고 집계는 빈 값을 `success` 기대로 읽는다 — 이 출력을 모르는 옛 분류기(target base)로 분류된 PR에서는 두 job이 돈다. 배포 리허설·동일 출처 통합은 분기하지 않는다. 그것을 분기에 넣거나 `backend/src/test/**`를 건너뛰기 목록에 더하는 것은 따로 정할 일이다.
 
