@@ -12,9 +12,6 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -64,7 +61,7 @@ class FirstSnapshotController {
     @PostMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<JobState> start(@RequestHeader(name=IdempotencyKey.HEADER,required=false)
             @Nullable String key,HttpServletResponse response) throws IOException {
-        UUID user=currentUserId();
+        UUID user=ControllerSupport.currentUserId();
         if (user==null) { response.sendError(403); return null; }
         var job=jobs.admit(user,key==null ? UUID.randomUUID().toString() : key);
         if (job.isEmpty()) { response.sendError(403); return null; }
@@ -75,7 +72,7 @@ class FirstSnapshotController {
             produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<JobState> job(@PathVariable UUID id,HttpServletResponse response)
             throws IOException {
-        UUID user=currentUserId();
+        UUID user=ControllerSupport.currentUserId();
         if (user==null) { response.sendError(403); return null; }
         var job=jobs.job(user,id);
         if (job.isEmpty()) { response.sendError(404); return null; }
@@ -83,7 +80,7 @@ class FirstSnapshotController {
     }
     @GetMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<SnapshotState> state(HttpServletResponse response) throws IOException {
-        UUID user=currentUserId();
+        UUID user=ControllerSupport.currentUserId();
         if (user==null) { response.sendError(403); return null; }
         var state=jobs.state(user);
         if (state.isEmpty()) { response.sendError(403); return null; }
@@ -104,7 +101,7 @@ class FirstSnapshotController {
     @Nullable ResponseEntity<CollectionJobState> startInitialInputs(@RequestBody CollectionRequest body,
             @RequestHeader(name=IdempotencyKey.HEADER,required=false) @Nullable String key,
             HttpServletResponse response) throws IOException {
-        UUID user=currentUserId();
+        UUID user=ControllerSupport.currentUserId();
         if(user==null){response.sendError(403);return null;}
         var job=jobs.admitInitialInputs(user,body.intentId(),key==null?UUID.randomUUID().toString():key);
         if(job.isEmpty()){response.sendError(409);return null;}
@@ -114,7 +111,7 @@ class FirstSnapshotController {
     @GetMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/inputs",produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<CollectionState> initialInputs(@RequestParam UUID intentId,
             HttpServletResponse response) throws IOException {
-        UUID user=currentUserId();
+        UUID user=ControllerSupport.currentUserId();
         if(user==null){response.sendError(403);return null;}
         var state=jobs.initialCollectionState(user,intentId);
         if(!state.permitted()){response.sendError(403);return null;}
@@ -126,7 +123,7 @@ class FirstSnapshotController {
     @Nullable ResponseEntity<CashflowClassificationState> classifyCashflows(@RequestBody CollectionRequest body,
             @RequestHeader(name=IdempotencyKey.HEADER,required=false) @Nullable String key,
             HttpServletResponse response) throws IOException {
-        UUID user=currentUserId();
+        UUID user=ControllerSupport.currentUserId();
         if(user==null){response.sendError(403);return null;}
         var job=jobs.admitCashflowClassification(user,body.intentId(),key==null?UUID.randomUUID().toString():key);
         if(job.isEmpty()){response.sendError(409);return null;}
@@ -137,7 +134,7 @@ class FirstSnapshotController {
             produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<CashflowClassificationState> cashflowClassification(@RequestParam UUID intentId,
             HttpServletResponse response) throws IOException {
-        UUID user=currentUserId();
+        UUID user=ControllerSupport.currentUserId();
         if(user==null){response.sendError(403);return null;}
         var state=jobs.cashflowClassificationState(user,intentId);
         if(!state.permitted()){response.sendError(403);return null;}
@@ -155,7 +152,7 @@ class FirstSnapshotController {
     @Nullable ResponseEntity<CashflowConversionState> convertCashflows(@RequestBody CollectionRequest body,
             @RequestHeader(name=IdempotencyKey.HEADER,required=false) @Nullable String key,
             HttpServletResponse response) throws IOException {
-        UUID user=currentUserId();
+        UUID user=ControllerSupport.currentUserId();
         if(user==null){response.sendError(403);return null;}
         var job=jobs.admitCashflowConversion(user,body.intentId(),key==null?UUID.randomUUID().toString():key);
         if(job.isEmpty()){response.sendError(409);return null;}
@@ -166,7 +163,7 @@ class FirstSnapshotController {
             produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<CashflowConversionState> cashflowConversion(@RequestParam UUID intentId,
             HttpServletResponse response) throws IOException {
-        UUID user=currentUserId();
+        UUID user=ControllerSupport.currentUserId();
         if(user==null){response.sendError(403);return null;}
         var state=jobs.cashflowConversionState(user,intentId);
         if(!state.permitted()){response.sendError(403);return null;}
@@ -191,7 +188,7 @@ class FirstSnapshotController {
      * has a sentence here, and only the stable code travels as the machine value.
      */
     static final java.util.Map<String,String> PUBLICATION_REFUSALS=java.util.Map.of(
-            "IDEMPOTENCY_CONFLICT","같은 요청 키가 다른 계획 조건에 이미 쓰였습니다. 새로 요청해 주세요.",
+            IdempotencyKey.CONFLICT_CODE,"같은 요청 키가 다른 계획 조건에 이미 쓰였습니다. 새로 요청해 주세요.",
             "ACTIVE_PLAN_EXISTS",PlanConditionController.MESSAGE_ACTIVE_PLAN_EXISTS,
             "PLAN_CONDITIONS_REQUIRED","저장된 계획 조건을 쓸 수 없습니다. 계획 조건을 다시 확인해 주세요.",
             "PLAN_PERIOD_ENDED","계획 종료 시각이 지나 이 조건으로는 계획을 만들 수 없습니다. 새 조건을 정해 주세요.",
@@ -213,30 +210,27 @@ class FirstSnapshotController {
     @Nullable ResponseEntity<?> publishPlan(@RequestBody CollectionRequest body,
             @RequestHeader(name=IdempotencyKey.HEADER,required=false) @Nullable String key,
             jakarta.servlet.http.HttpServletRequest request,HttpServletResponse response) throws IOException {
-        UUID user=currentUserId();
+        UUID user=ControllerSupport.currentUserId();
         if(user==null){response.sendError(403);return null;}
         var admission=jobs.admitPlanPublication(user,body.intentId(),key);
         if(admission instanceof SyncJobApi.PublicationAdmission.Accepted accepted)
             return ResponseEntity.status(HttpStatus.ACCEPTED).cacheControl(CacheControl.noStore())
                     .body(toPublicationState(accepted.job()));
         String code=((SyncJobApi.PublicationAdmission.Refused)admission).code();
-        String correlation=ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER));
+        String correlation=ControllerSupport.correlationIdOf(request);
         // 요청 자체의 잘못인 유일한 거절: 이 command는 호출자의 키를 요구한다. 규칙·code는 IdempotencyKey가 소유한다.
         if(IdempotencyKey.REQUIRED_CODE.equals(code))
-            return ResponseEntity.status(422).contentType(MediaType.APPLICATION_JSON)
-                    .cacheControl(CacheControl.noStore())
-                    .body(new ApiErrorHandler.ApiError(code,ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED,correlation));
+            return ControllerSupport.error(HttpStatus.UNPROCESSABLE_CONTENT,
+                    new ApiErrorHandler.ApiError(code,ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED,correlation));
         String message=PUBLICATION_REFUSALS.get(code);
         if(message==null){response.sendError(403);return null;}
-        return ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)
-                .cacheControl(CacheControl.noStore())
-                .body(new ApiErrorHandler.ApiError(code,message,correlation));
+        return ControllerSupport.error(HttpStatus.CONFLICT,new ApiErrorHandler.ApiError(code,message,correlation));
     }
     @GetMapping(path=AuthSecurityConfig.FIRST_SNAPSHOT_PATH+"/plan-publication",
             produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<PublicationView> planPublication(@RequestParam UUID intentId,
             HttpServletResponse response) throws IOException {
-        UUID user=currentUserId();
+        UUID user=ControllerSupport.currentUserId();
         if(user==null){response.sendError(403);return null;}
         var state=jobs.planPublicationState(user,intentId);
         if(!state.permitted()){response.sendError(403);return null;}
@@ -267,12 +261,5 @@ class FirstSnapshotController {
         return new CashflowClassificationState(job.jobId(),job.status(),job.failureCode(),
                 job.processedAt()==null?null:job.processedAt().toString(),job.depositCount(),job.withdrawalCount(),
                 job.excludedCount(),job.reviewCount(),job.reasonCode());
-    }
-    private static @Nullable UUID currentUserId() {
-        Authentication authentication=SecurityContextHolder.getContext().getAuthentication();
-        if (authentication==null || !authentication.isAuthenticated()
-                || authentication instanceof AnonymousAuthenticationToken) return null;
-        try { return UUID.fromString(authentication.getName()); }
-        catch (IllegalArgumentException invalid) { return null; }
     }
 }

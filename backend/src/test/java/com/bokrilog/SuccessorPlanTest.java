@@ -296,6 +296,10 @@ class SuccessorPlanTest extends PlanSyncTestBase {
         // 모든 엄격 키 경로가 같은 code와 같은 메시지 한 문장으로 답한다(`ApiErrorHandler`).
         assertThat(topLevelFieldsOf(keyless.body())).containsEntry("code","IDEMPOTENCY_KEY_REQUIRED")
                 .containsEntry("message",ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED);
+        // 기본 Accept에서 협상된 결과를 고정한다 — no-store, application/json, 본문 키 셋(code·message·correlationId).
+        assertThat(keyless.headers().firstValue("Cache-Control")).contains("no-store");
+        assertThat(keyless.headers().firstValue("Content-Type")).hasValueSatisfying(type -> assertThat(type).startsWith("application/json"));
+        assertThat(topLevelFieldsOf(keyless.body())).containsOnlyKeys("code","message","correlationId");
         var admitted=send("POST",path,cookie,"Origin",OidcStubConfiguration.PUBLIC_BASE_URL,"X-CSRF-TOKEN",csrfTokenOf(cookie),"Idempotency-Key",key("http-admit"));
         assertThat(admitted.statusCode()).isEqualTo(202);
         assertThat(admitted.headers().firstValue("Cache-Control")).contains("no-store");

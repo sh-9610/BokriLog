@@ -1,9 +1,7 @@
 package com.bokrilog;
 
 import com.bokrilog.engagement.ClientTelemetryApi;
-import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
-import com.bokrilog.identity.AccountAccessKind;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
@@ -16,11 +14,7 @@ import org.jspecify.annotations.Nullable;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -75,15 +69,15 @@ class ClientTelemetryController {
     @Nullable ResponseEntity<?> record(@RequestBody(required = false) @Nullable String body, HttpServletRequest request,
             HttpServletResponse response) throws IOException {
         long started = System.nanoTime();
-        UUID userId = allowedUser();
+        UUID userId = ControllerSupport.allowedUser(this.accounts);
         if (userId == null) {
             return notFound(response, started, 0);
         }
         List<ClientTelemetryApi.Event> events = eventsOf(body);
         if (events == null) {
             log(ApiErrorHandler.CODE_BAD_REQUEST, HttpStatus.BAD_REQUEST.value(), 0, started);
-            return error(HttpStatus.BAD_REQUEST, new ApiErrorHandler.ApiError(ApiErrorHandler.CODE_BAD_REQUEST,
-                    ApiErrorHandler.MESSAGE_BAD_REQUEST, correlationIdOf(request)));
+            return ControllerSupport.error(HttpStatus.BAD_REQUEST, ApiErrorHandler.CODE_BAD_REQUEST,
+                    ApiErrorHandler.MESSAGE_BAD_REQUEST, request);
         }
         ClientTelemetryApi.Result result;
         try {
@@ -93,9 +87,8 @@ class ClientTelemetryController {
             LOG.atWarn().addKeyValue("exception", failure.getClass().getSimpleName())
                     .log("client telemetry record failed");
             log("ERROR", HttpStatus.INTERNAL_SERVER_ERROR.value(), events.size(), started);
-            return error(HttpStatus.INTERNAL_SERVER_ERROR, new ApiErrorHandler.ApiError(
-                    ApiErrorHandler.CODE_INTERNAL_ERROR, ApiErrorHandler.MESSAGE_INTERNAL_ERROR,
-                    correlationIdOf(request)));
+            return ControllerSupport.error(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorHandler.CODE_INTERNAL_ERROR,
+                    ApiErrorHandler.MESSAGE_INTERNAL_ERROR, request);
         }
         if (result == ClientTelemetryApi.Result.DENIED) {
             // 쓰기 잠금 아래에서 거절된 계정(삭제 시작)은 앞의 접근 판정과 같은 404다.
@@ -206,16 +199,6 @@ class ClientTelemetryController {
         return null;
     }
 
-    /** 세션 사용자. 미인증은 인가 필터가 먼저 401로 끝낸다. 삭제가 시작된 계정·쓸 수 없는 계정은 {@code null}(404)이다. */
-    private @Nullable UUID allowedUser() {
-        UUID userId = currentUserId();
-        if (userId == null
-                || this.accounts.decide(userId, userId, AccountAccessKind.SENSITIVE) != AccessDecision.ALLOWED) {
-            return null;
-        }
-        return userId;
-    }
-
     private static @Nullable ResponseEntity<?> notFound(HttpServletResponse response, long started, int events)
             throws IOException {
         // 없는 경로와 같은 404. 오류 디스패치를 지나 공통 본문(no-store)이 된다.
@@ -224,31 +207,9 @@ class ClientTelemetryController {
         return null;
     }
 
-    private static ResponseEntity<ApiErrorHandler.ApiError> error(HttpStatus status, ApiErrorHandler.ApiError body) {
-        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON)
-                .cacheControl(CacheControl.noStore()).body(body);
-    }
-
-    private static String correlationIdOf(HttpServletRequest request) {
-        return ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER));
-    }
-
     /** 결과 code·상태·이벤트 수·지연만 남긴다. 사용자·값은 싣지 않는다. */
     private static void log(String result, int status, int events, long started) {
         LOG.info("client telemetry request: result={} status={} events={} latencyMs={}", result, status, events,
                 (System.nanoTime() - started) / 1_000_000);
-    }
-
-    private static @Nullable UUID currentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()
-                || authentication instanceof AnonymousAuthenticationToken) {
-            return null;
-        }
-        try {
-            return UUID.fromString(authentication.getName());
-        } catch (IllegalArgumentException invalid) {
-            return null;
-        }
     }
 }

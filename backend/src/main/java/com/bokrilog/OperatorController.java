@@ -27,9 +27,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -153,7 +150,7 @@ class OperatorController {
                     "확인된 운영 명령이 아니어서 실행하지 않았습니다. 명령을 다시 준비해 주세요.")),
             Map.entry(OperatorCommandService.CONFIRMATION_MISMATCH, new Refusal(HttpStatus.CONFLICT,
                     "확인 문구가 일치하지 않아 실행하지 않았습니다. 화면의 문구를 그대로 입력해 주세요.")),
-            Map.entry(OperatorCommandService.IDEMPOTENCY_CONFLICT, new Refusal(HttpStatus.CONFLICT,
+            Map.entry(IdempotencyKey.CONFLICT_CODE, new Refusal(HttpStatus.CONFLICT,
                     "같은 요청 키가 다른 운영 명령에 이미 쓰였습니다. 명령을 새로 준비해 주세요.")),
             Map.entry(IdempotencyKey.REQUIRED_CODE, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
                     ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED)),
@@ -400,8 +397,8 @@ class OperatorController {
             @RequestParam(required = false) @Nullable String limit, HttpServletRequest request,
             HttpServletResponse response) throws IOException {
         long started = System.nanoTime();
-        String correlationId = correlationIdOf(request);
-        if (!this.access.permits(currentUserId(), Set.of(OperatorPermission.AUDIT))) {
+        String correlationId = ControllerSupport.correlationIdOf(request);
+        if (!this.access.permits(ControllerSupport.currentUserId(), Set.of(OperatorPermission.AUDIT))) {
             return notFound("audit", response, started);
         }
         OperatorAuditApi.Filter filter = filterOf(from, to, command, scope, outcome);
@@ -422,7 +419,7 @@ class OperatorController {
     @Nullable ResponseEntity<?> operation(@PathVariable String operationId, HttpServletResponse response)
             throws IOException {
         long started = System.nanoTime();
-        UUID userId = currentUserId();
+        UUID userId = ControllerSupport.currentUserId();
         if (!this.access.permits(userId, Set.of())) {
             return notFound("operation", response, started);
         }
@@ -442,8 +439,8 @@ class OperatorController {
     @Nullable ResponseEntity<?> restrictions(HttpServletRequest request, HttpServletResponse response)
             throws IOException {
         long started = System.nanoTime();
-        String correlationId = correlationIdOf(request);
-        if (!this.access.permits(currentUserId(), Set.of(OperatorPermission.COMMAND))) {
+        String correlationId = ControllerSupport.correlationIdOf(request);
+        if (!this.access.permits(ControllerSupport.currentUserId(), Set.of(OperatorPermission.COMMAND))) {
             return notFound("restrictions", response, started);
         }
         List<RestrictionView> items;
@@ -461,8 +458,8 @@ class OperatorController {
     @GetMapping(path = NOTICES_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<?> notices(HttpServletRequest request, HttpServletResponse response) throws IOException {
         long started = System.nanoTime();
-        String correlationId = correlationIdOf(request);
-        if (!this.access.permits(currentUserId(), Set.of(OperatorPermission.COMMAND))) {
+        String correlationId = ControllerSupport.correlationIdOf(request);
+        if (!this.access.permits(ControllerSupport.currentUserId(), Set.of(OperatorPermission.COMMAND))) {
             return notFound("notices", response, started);
         }
         List<IncidentView> items;
@@ -481,8 +478,8 @@ class OperatorController {
     @Nullable ResponseEntity<?> inquiries(@RequestParam(required = false) @Nullable String status,
             HttpServletRequest request, HttpServletResponse response) throws IOException {
         long started = System.nanoTime();
-        String correlationId = correlationIdOf(request);
-        if (!this.access.permits(currentUserId(), Set.of(OperatorPermission.COMMAND))) {
+        String correlationId = ControllerSupport.correlationIdOf(request);
+        if (!this.access.permits(ControllerSupport.currentUserId(), Set.of(OperatorPermission.COMMAND))) {
             return notFound("inquiries", response, started);
         }
         SupportInquiryApi.Status filter = null;
@@ -508,8 +505,8 @@ class OperatorController {
             @RequestParam(required = false) @Nullable String to, HttpServletRequest request,
             HttpServletResponse response) throws IOException {
         long started = System.nanoTime();
-        String correlationId = correlationIdOf(request);
-        if (!this.access.permits(currentUserId(), Set.of(OperatorPermission.COMMAND))) {
+        String correlationId = ControllerSupport.correlationIdOf(request);
+        if (!this.access.permits(ControllerSupport.currentUserId(), Set.of(OperatorPermission.COMMAND))) {
             return notFound("inquiry-metrics", response, started);
         }
         LocalDate fromDate = dateOf(from);
@@ -537,8 +534,8 @@ class OperatorController {
     @Nullable ResponseEntity<?> inquiry(@PathVariable String reference, HttpServletRequest request,
             HttpServletResponse response) throws IOException {
         long started = System.nanoTime();
-        String correlationId = correlationIdOf(request);
-        if (!this.access.permits(currentUserId(), Set.of(OperatorPermission.COMMAND))) {
+        String correlationId = ControllerSupport.correlationIdOf(request);
+        if (!this.access.permits(ControllerSupport.currentUserId(), Set.of(OperatorPermission.COMMAND))) {
             return notFound("inquiry", response, started);
         }
         java.util.Optional<SupportInquiryApi.OperatorInquiryDetail> found;
@@ -563,8 +560,8 @@ class OperatorController {
             @RequestHeader(name = IdempotencyKey.HEADER, required = false) @Nullable String key,
             HttpServletRequest request, HttpServletResponse response) throws IOException {
         long started = System.nanoTime();
-        String correlationId = correlationIdOf(request);
-        UUID userId = currentUserId();
+        String correlationId = ControllerSupport.correlationIdOf(request);
+        UUID userId = ControllerSupport.currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null || session == null
                 || !this.access.permits(userId, Set.of(OperatorPermission.COMMAND))) {
@@ -605,8 +602,8 @@ class OperatorController {
             @RequestHeader(name = IdempotencyKey.HEADER, required = false) @Nullable String key,
             HttpServletRequest request, HttpServletResponse response) throws IOException {
         long started = System.nanoTime();
-        String correlationId = correlationIdOf(request);
-        UUID userId = currentUserId();
+        String correlationId = ControllerSupport.correlationIdOf(request);
+        UUID userId = ControllerSupport.currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null || session == null) {
             return notFound("confirm", response, started);
@@ -645,8 +642,8 @@ class OperatorController {
     void cancel(@PathVariable String type, HttpServletRequest request, HttpServletResponse response)
             throws IOException {
         long started = System.nanoTime();
-        String correlationId = correlationIdOf(request);
-        UUID userId = currentUserId();
+        String correlationId = ControllerSupport.correlationIdOf(request);
+        UUID userId = ControllerSupport.currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null) {
             notFound("cancel", response, started);
@@ -843,12 +840,7 @@ class OperatorController {
 
     private static ResponseEntity<OperatorError> error(HttpStatus status, String code, String message,
             String correlationId) {
-        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).cacheControl(CacheControl.noStore())
-                .body(new OperatorError(code, message, correlationId));
-    }
-
-    private static String correlationIdOf(HttpServletRequest request) {
-        return ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER));
+        return ControllerSupport.noStoreJson(status, new OperatorError(code, message, correlationId));
     }
 
     private static ResponseEntity<?> answer(String step, ResponseEntity<?> response, String result, long started) {
@@ -860,18 +852,5 @@ class OperatorController {
     private static void log(String step, String result, int status, long started) {
         LOG.info("operator request: step={} result={} status={} latencyMs={}", step, result, status,
                 (System.nanoTime() - started) / 1_000_000);
-    }
-
-    private static @Nullable UUID currentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()
-                || authentication instanceof AnonymousAuthenticationToken) {
-            return null;
-        }
-        try {
-            return UUID.fromString(authentication.getName());
-        } catch (IllegalArgumentException invalid) {
-            return null;
-        }
     }
 }

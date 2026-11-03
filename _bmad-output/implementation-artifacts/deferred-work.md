@@ -497,3 +497,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-erasure-audit-lock.md`
   summary: 계정 삭제가 커밋된 뒤 원장에 붙는 운영자 거절·실패 행(롤백 뒤 별도 트랜잭션, 예: `ACCESS_REVOKED`)이 삭제된 운영자의 `actor_user_id`를 다시 붙이지 않게 할지 정한다 — 계정 상태를 보고 수행자 귀속을 비울지, 또는 Epic 5 삭제 완료 검사(5.2·5.4)가 잡게 할지.
   evidence: 원장 잠금 직렬화(이 fix)는 삭제보다 먼저 잠금을 쥔 쓰기만 덮는다. 거절 행은 삭제 커밋 뒤 잠금을 얻어 append하며 그 경로에 계정 상태 판정이 없다(2026-11-03 fix 리뷰 blind-hunter, SPEC Ask First로 범위 밖). 지금은 사용자 삭제 경로가 없어 잠재 결함이다.
+- source_spec: none
+  summary: 프런트엔드의 동일 출처 JSON POST와 JSON 판독(`readJson`·`objectOf`·`fieldsOf`)을 helper 하나로 모은다(Epic 4 회고 AI-8 `epic-4-retro-item-47`의 ② 프런트엔드 묶음).
+  evidence: 2026-11-03 AI-8을 세 목표로 나눠([S]) 이번 작업은 백엔드 컨트롤러 helper·`IdempotencyKey.CONFLICT_CODE`만 한다. 지금 POST를 직접 만드는 곳이 17개 파일, JSON 판독 사본이 여섯 파일에 아홉 개다(`session/adTransition.ts`·`useAdConsent.ts`·`operatorApi.ts`·`useSupportInquiries.ts`·`bybitConnection.ts`·`useServiceNotices.ts`).
+- source_spec: none
+  summary: 광고 시험 공용 helper(`admitManual`·`grant`·자격 행 삽입·`assertNotFound`)를 한 곳으로 모으고 engagement 모듈의 바깥 의존 허용 목록을 `ModuleBoundaryTest`로 강제한다(Epic 4 회고 AI-8 `epic-4-retro-item-47`의 ③ 시험·경계 묶음, 회고 A-2).
+  evidence: 2026-11-03 AI-8을 세 목표로 나눠([S]) 이번 작업은 백엔드 컨트롤러 helper만 한다. `AdEligibilityTest`·`AdTransitionTest`의 `admitManual`은 이미 갈라졌고(접수 시각을 당기는가), `engagement/package-info.java`가 적은 바깥 의존(sync·operations·identity)을 강제하는 시험이 없다.

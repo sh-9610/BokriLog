@@ -31,6 +31,13 @@ public final class IdempotencyKey {
     /** 키가 없거나 규칙에 맞지 않을 때의 안정적인 machine code(422). */
     public static final String REQUIRED_CODE = "IDEMPOTENCY_KEY_REQUIRED";
 
+    /**
+     * 같은 키가 다른 요청에 이미 쓰였을 때의 안정적인 machine code. 상태(409 등)와 메시지는 경로마다 다르고 code만 이
+     * 하나다 — 루트 컨트롤러·command service와 {@code sync} 접수가 함께 쓴다. {@code operations}는 {@code sync}를 참조하지
+     * 않는다({@code sync → operations} 의존이 있어 순환이 된다).
+     */
+    public static final String CONFLICT_CODE = "IDEMPOTENCY_CONFLICT";
+
     /** 허용 길이의 하한(문자 수). 짧은 키는 추측·충돌이 쉽다. */
     public static final int MIN_LENGTH = 16;
 

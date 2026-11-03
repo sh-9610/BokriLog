@@ -21,30 +21,28 @@ class NextPlanBaselineController {
     private static final String PATH="/api/plans/next/baseline";
     private final SyncJobApi jobs;
     NextPlanBaselineController(SyncJobApi jobs) { this.jobs=jobs; }
-    private static java.util.@Nullable UUID user() {
-        var a=org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
-        if (a==null || !a.isAuthenticated() || a instanceof org.springframework.security.authentication.AnonymousAuthenticationToken) return null;
-        try { return java.util.UUID.fromString(a.getName()); } catch (IllegalArgumentException invalid) { return null; }
-    }
     @GetMapping(PATH)
     @Nullable ResponseEntity<?> state(HttpServletResponse response) throws IOException {
-        var state=jobs.nextBaselineState(user());
+        var state=jobs.nextBaselineState(ControllerSupport.currentUserId());
         if ("NOT_PERMITTED".equals(state.reason())) { response.sendError(403); return null; }
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(state);
     }
     @PostMapping(PATH)
     @Nullable ResponseEntity<?> prepare(@RequestHeader(name=IdempotencyKey.HEADER,required=false) @Nullable String key,
             HttpServletRequest request,HttpServletResponse response) throws IOException {
-        if (user()==null) { response.sendError(403); return null; }
+        var user=ControllerSupport.currentUserId();
+        if (user==null) { response.sendError(403); return null; }
+        // 이 경로의 오류 응답은 Content-Type을 명시하지 않고 내용 협상에 맡긴다(기본 Accept면 JSON). ControllerSupport.error는
+        // JSON을 강제하므로 JSON이 아닌 Accept에서 결과가 달라질 수 있다 — 그래서 따로 둔다(별도 결정).
         if (!IdempotencyKey.isValid(key))
             return ResponseEntity.unprocessableContent().cacheControl(CacheControl.noStore()).body(new ApiErrorHandler.ApiError(
-                    IdempotencyKey.REQUIRED_CODE,ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED,ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER))));
-        var job=jobs.admitNextBaseline(user(),key);
-        if (job.isEmpty() && "NOT_PERMITTED".equals(jobs.nextBaselineState(user()).reason())) {
+                    IdempotencyKey.REQUIRED_CODE,ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED,ControllerSupport.correlationIdOf(request)));
+        var job=jobs.admitNextBaseline(user,key);
+        if (job.isEmpty() && "NOT_PERMITTED".equals(jobs.nextBaselineState(user).reason())) {
             response.sendError(403); return null;
         }
         if (job.isEmpty()) return ResponseEntity.status(409).cacheControl(CacheControl.noStore()).body(new ApiErrorHandler.ApiError(
-                "NEXT_BASELINE_UNAVAILABLE","새 기준을 준비할 수 없습니다. 진행 중인 작업과 연결 상태를 확인해 주세요.",ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER))));
+                "NEXT_BASELINE_UNAVAILABLE","새 기준을 준비할 수 없습니다. 진행 중인 작업과 연결 상태를 확인해 주세요.",ControllerSupport.correlationIdOf(request)));
         return ResponseEntity.accepted().cacheControl(CacheControl.noStore()).body(job.get());
     }
 }

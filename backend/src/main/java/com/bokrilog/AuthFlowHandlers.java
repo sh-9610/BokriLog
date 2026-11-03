@@ -1152,21 +1152,7 @@ class AuthFlowHandlers {
         String destination =
                 Optional.ofNullable(allowedDestination(attribute(request, DESTINATION_ATTRIBUTE)))
                         .orElse(DASHBOARD_PATH);
-        return this.operators.foldDestination(sessionPrincipal(), destination);
-    }
-
-    /** 지금 요청의 인증 주체. 없거나 읽히지 않으면 {@code null}이다. */
-    private static @Nullable UUID sessionPrincipal() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()
-                || authentication instanceof AnonymousAuthenticationToken) {
-            return null;
-        }
-        try {
-            return UUID.fromString(authentication.getName());
-        } catch (IllegalArgumentException invalid) {
-            return null;
-        }
+        return this.operators.foldDestination(ControllerSupport.currentUserId(), destination);
     }
 
     private static @Nullable String attribute(HttpServletRequest request, String name) {

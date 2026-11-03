@@ -131,7 +131,8 @@ class PlanVerificationService {
     /** A user's replayed key: the same kind (from the user, not the system) joins; anything else conflicts. */
     private static VerificationAdmission userReplay(SyncJob keyed, String purpose) {
         return purpose.equals(keyed.purpose()) && "MANUAL".equals(keyed.trigger())
-                ? new VerificationAdmission.Joined(keyed) : new VerificationAdmission.Refused("IDEMPOTENCY_CONFLICT");
+                ? new VerificationAdmission.Joined(keyed)
+                : new VerificationAdmission.Refused(IdempotencyKey.CONFLICT_CODE);
     }
 
     /** An attempt in progress for a user's request: the same purpose joins, another refuses. */
@@ -168,7 +169,7 @@ class PlanVerificationService {
         if (!guard.writable(user)) return new VerificationAdmission.NotPermitted();
         var keyed = syncs.byKey(user, key).orElse(null);
         if (keyed != null) return sameSystemRequest(user, keyed, reason, explicit) ? new VerificationAdmission.Joined(keyed)
-                : new VerificationAdmission.Refused("IDEMPOTENCY_CONFLICT");
+                : new VerificationAdmission.Refused(IdempotencyKey.CONFLICT_CODE);
         var base = guard.base(user).orElse(null);
         if (base == null) return new VerificationAdmission.Refused("NO_ACTIVE_PLAN");
         UUID planId = base.plan().planId();
@@ -236,7 +237,8 @@ class PlanVerificationService {
             boolean system = "SYSTEM".equals(trigger);
             var raced = syncs.byKey(user, key).orElse(null);
             if (raced != null) return system ? (sameSystemRequest(user, raced, reason, explicit)
-                    ? new VerificationAdmission.Joined(raced) : new VerificationAdmission.Refused("IDEMPOTENCY_CONFLICT"))
+                    ? new VerificationAdmission.Joined(raced)
+                    : new VerificationAdmission.Refused(IdempotencyKey.CONFLICT_CODE))
                     : userReplay(raced, purpose);
             var active = syncs.active(user, planId).orElse(null);
             if (active != null) return system ? (sameSystemRequest(user, active, reason, explicit)
