@@ -20,22 +20,32 @@
 # 보고하고 즉시 끝낸다. 계속 진행하면 정상적으로 건너뛰어진 job마다 오해를 부르는 `::error::`
 # 줄이 더 붙는다.
 #
+# backend jar의 생산자는 `backend-assemble`(컴파일 + `bootJar`)이고 시험은 `backend-quality`(`build`)가 돈다
+# (spec-ci-backend-assemble-job.md). 통합·리허설 job 넷이 소비한 바이트가 시험이 돈 바이트와 같다는 보장은 두 job이
+# 각각 낸 jar SHA-256(`ASSEMBLE_JAR_SHA256`·`QUALITY_JAR_SHA256`)의 일치로 여기서 확인한다 — 두 job이 모두 `success`일
+# 때만 보고, 둘 다 64자 hex이며 같아야 통과다. 하나라도 비거나 모양이 다르거나 값이 다르면 실패다. 둘 중 한 job이라도
+# `success`가 아니면 digest를 판정하지 않는다(그 job의 결과가 이미 실패이거나 예상한 skip이다).
+#
 # 정본: _bmad-output/implementation-artifacts/spec-1-2-same-origin-shell.md `## Tasks & Acceptance`
 #       _bmad-output/implementation-artifacts/spec-ci-critical-path.md `## I/O & Edge-Case Matrix`
-#       CI-PLAN.md §1(job 구조), §5(CI-D5 고정된 required gate 판정, 승인된 비적용)
+#       _bmad-output/implementation-artifacts/spec-ci-backend-assemble-job.md `## I/O & Edge-Case Matrix`
+#       CI-PLAN.md §1(job 구조), §5(CI-D5 고정된 required gate 판정, 승인된 비적용), §8(시험이 검증한 바이트를 통합이 소비)
 #
 # 입력 (환경변수)
-#   DOCS_ONLY           -- `changes` job이 낸 분류 결과. `true`면 제품 job은 건너뛴 것이 정상이다.
-#   BACKUP_RESTORE      -- `changes` job이 낸 백업·복원 분류. `false`면 백업·복원 리허설은 건너뛴 것이 정상이다.
-#                          빈 값(옛 분류기)은 `true`와 같게 읽는다.
-#   CHANGES_RESULT      -- `needs.changes.result`
-#   FRONTEND_RESULT     -- `needs.frontend-quality.result`
-#   BACKEND_RESULT      -- `needs.backend-quality.result`
-#   INTEGRATION_RESULT  -- `needs.same-origin-integration.result`
-#   REHEARSAL_RESULT    -- `needs.deploy-rehearsal.result`(Story 3.8 — 운영 배포 절차의 리허설)
-#   BACKUP_RESULT       -- `needs.backup-rehearsal.result`(Story 3.9 — 백업 리허설, spec-ci-critical-path.md가 job을 분리)
-#   RESTORE_RESULT      -- `needs.restore-rehearsal.result`(Story 3.10 — 격리 복원 리허설)
-#   GITHUB_STEP_SUMMARY -- 선택. 있으면 판정 표를 job summary에도 남긴다.
+#   DOCS_ONLY            -- `changes` job이 낸 분류 결과. `true`면 제품 job은 건너뛴 것이 정상이다.
+#   BACKUP_RESTORE       -- `changes` job이 낸 백업·복원 분류. `false`면 백업·복원 리허설은 건너뛴 것이 정상이다.
+#                           빈 값(옛 분류기)은 `true`와 같게 읽는다.
+#   CHANGES_RESULT       -- `needs.changes.result`
+#   FRONTEND_RESULT      -- `needs.frontend-quality.result`
+#   BACKEND_RESULT       -- `needs.backend-quality.result`
+#   ASSEMBLE_RESULT      -- `needs.backend-assemble.result`(spec-ci-backend-assemble-job.md — jar 생산자)
+#   ASSEMBLE_JAR_SHA256  -- `needs.backend-assemble.outputs.jar-sha256`. 생산자가 올린 jar의 SHA-256
+#   QUALITY_JAR_SHA256   -- `needs.backend-quality.outputs.jar-sha256`. 시험이 돈 빌드의 jar SHA-256
+#   INTEGRATION_RESULT   -- `needs.same-origin-integration.result`
+#   REHEARSAL_RESULT     -- `needs.deploy-rehearsal.result`(Story 3.8 — 운영 배포 절차의 리허설)
+#   BACKUP_RESULT        -- `needs.backup-rehearsal.result`(Story 3.9 — 백업 리허설, spec-ci-critical-path.md가 job을 분리)
+#   RESTORE_RESULT       -- `needs.restore-rehearsal.result`(Story 3.10 — 격리 복원 리허설)
+#   GITHUB_STEP_SUMMARY  -- 선택. 있으면 판정 표를 job summary에도 남긴다.
 #
 # 종료 코드
 #   0 -- 병합 가능
@@ -51,6 +61,8 @@ changes_result="${CHANGES_RESULT:-}"
 
 failures=0
 summary_rows=''
+# jar digest 판정의 요약 한 줄. 판정을 하지 않은 실행(문서-only·한쪽 job 실패·changes 실패)에서도 그 사실을 적는다.
+digest_summary='판정 없음'
 
 # add_row <job 이름> <실제 결과> <기대>
 add_row() {
@@ -67,6 +79,7 @@ write_summary() {
     echo ''
     echo "- \`docs-only\`: \`${docs_only:-<빈 값>}\`"
     echo "- \`backup-restore\`: \`${backup_restore:-<빈 값>}\`"
+    echo "- backend jar digest(backend-assemble ↔ backend-quality): ${digest_summary}"
     echo ''
     echo '| job | 결과 | 기대 |'
     echo '|---|---|---|'
@@ -85,8 +98,10 @@ add_row 'changes' "${changes_result}" 'success'
 if [ "${changes_result}" != 'success' ]; then
   printf '::error::changes job이 success가 아니다 (실제 %s). 분류 결과가 없으므로 나머지 job은 판정하지 않는다. 이 실행의 원인은 changes job 하나다.\n' \
     "${changes_result:-<빈 값>}"
+  # 행 순서는 실행 순서가 아니라 `ci.yml`의 job 목록 순서다(`backend-quality` 다음 `backend-assemble`).
   add_row 'frontend-quality' "${FRONTEND_RESULT:-}" '판정 불가'
   add_row 'backend-quality' "${BACKEND_RESULT:-}" '판정 불가'
+  add_row 'backend-assemble' "${ASSEMBLE_RESULT:-}" '판정 불가'
   add_row 'same-origin-integration' "${INTEGRATION_RESULT:-}" '판정 불가'
   add_row 'deploy-rehearsal' "${REHEARSAL_RESULT:-}" '판정 불가'
   add_row 'backup-rehearsal' "${BACKUP_RESULT:-}" '판정 불가'
@@ -183,15 +198,73 @@ check_job() {
   failures=$((failures + 1))
 }
 
+# is_sha256 <값>. 소문자 64자 hex인지. `sha256sum`의 출력 모양이고 다른 모양(대문자·공백·짧은 값)은 digest가 아니다.
+# 글자를 나열한다 — `[!0-9a-f]` 범위는 로케일·bash 버전에 따라 대문자를 통과시킬 수 있다.
+is_sha256() {
+  case "$1" in
+    '' | *[!0123456789abcdef]*) return 1 ;;
+  esac
+  [ "${#1}" -eq 64 ]
+}
+
+# check_jar_digest. 생산자(`backend-assemble`)와 시험(`backend-quality`)이 각각 낸 jar SHA-256의 일치를 본다.
+# 두 job이 모두 success일 때만 판정한다 — 한쪽이 실패·취소·skip이면 그 job의 결과가 이미 판정이고, 그때의 빈 digest는
+# 새 오류가 아니다. 둘 다 success인데 digest가 비었거나 모양이 아니면 어느 쪽이 그런지 이름을 적고, 둘 다 모양인데
+# 다르면 같은 커밋의 두 빌드가 다른 jar를 낸 것이다 — 통합·리허설이 돈 바이트가 시험이 돈 바이트와 다르므로 병합을 막는다.
+check_jar_digest() {
+  local assemble_result="${ASSEMBLE_RESULT:-}" quality_result="${BACKEND_RESULT:-}"
+  local assemble_digest="${ASSEMBLE_JAR_SHA256:-}" quality_digest="${QUALITY_JAR_SHA256:-}"
+  local invalid=0
+
+  if [ "${assemble_result}" != 'success' ] || [ "${quality_result}" != 'success' ]; then
+    digest_summary="판정 없음 (backend-assemble=${assemble_result:-<빈 값>}, backend-quality=${quality_result:-<빈 값>} — 두 job이 모두 success일 때만 본다)"
+    printf '  생략  jar digest 판정 (backend-assemble=%s, backend-quality=%s)\n' \
+      "${assemble_result:-<빈 값>}" "${quality_result:-<빈 값>}"
+    return
+  fi
+
+  if ! is_sha256 "${assemble_digest}"; then
+    printf '::error::backend-assemble job의 jar digest가 비었거나 64자 hex가 아니다 (실제 %s). job output jar-sha256이 ci-required의 needs·env에서 빠졌거나, digest 단계가 돌지 않았거나, jar가 없어 sha256sum이 실패했다.\n' \
+      "${assemble_digest:-<빈 값>}"
+    invalid=1
+  fi
+  if ! is_sha256 "${quality_digest}"; then
+    printf '::error::backend-quality job의 jar digest가 비었거나 64자 hex가 아니다 (실제 %s). job output jar-sha256이 ci-required의 needs·env에서 빠졌거나, digest 단계가 돌지 않았거나, jar가 없어 sha256sum이 실패했다.\n' \
+      "${quality_digest:-<빈 값>}"
+    invalid=1
+  fi
+  if [ "${invalid}" -ne 0 ]; then
+    digest_summary="실패 — digest가 비었거나 모양이 아니다 (backend-assemble \`${assemble_digest:-<빈 값>}\`, backend-quality \`${quality_digest:-<빈 값>}\`)"
+    printf '  실패  jar digest 판정 (digest가 비었거나 모양이 아니다)\n'
+    failures=$((failures + 1))
+    return
+  fi
+
+  if [ "${assemble_digest}" != "${quality_digest}" ]; then
+    printf '::error::같은 커밋의 두 빌드가 다른 jar를 냈다 (backend-assemble %s, backend-quality %s). 통합·리허설이 소비한 jar가 시험이 돈 jar와 다르므로 병합할 수 없다. 재현 가능 archive 설정(build.gradle.kts)이나 두 job의 JDK가 어긋났는지 두 job의 jar digest 단계 로그(java -version·unzip -lv)를 대조해 본 뒤 Re-run all jobs로 다시 돈다 — artifact 이름에 run_attempt가 들어가 failed jobs만 재실행할 수 없다.\n' \
+      "${assemble_digest}" "${quality_digest}"
+    digest_summary="실패 — 불일치 (backend-assemble \`${assemble_digest}\`, backend-quality \`${quality_digest}\`)"
+    printf '  실패  jar digest 판정 (불일치)\n'
+    failures=$((failures + 1))
+    return
+  fi
+
+  digest_summary="일치 (\`${assemble_digest}\`)"
+  printf '  통과  jar digest 일치 = %s\n' "${assemble_digest}"
+}
+
 printf '필수 검사 집계 (docs-only=%s, backup-restore=%s, 기대 결과=%s, 백업·복원 리허설 기대=%s)\n' \
   "${docs_only:-<빈 값>}" "${backup_restore:-<빈 값>}" "${expected}" "${backup_expected}"
 
+# 호출 순서는 실행 순서가 아니라 `ci.yml`의 job 목록 순서다(`backend-quality` 다음 `backend-assemble`). 요약 표도 같은 순서다.
 check_job 'frontend-quality' "${FRONTEND_RESULT:-}" "${expected}" "${basis}"
 check_job 'backend-quality' "${BACKEND_RESULT:-}" "${expected}" "${basis}"
+check_job 'backend-assemble' "${ASSEMBLE_RESULT:-}" "${expected}" "${basis}"
 check_job 'same-origin-integration' "${INTEGRATION_RESULT:-}" "${expected}" "${basis}"
 check_job 'deploy-rehearsal' "${REHEARSAL_RESULT:-}" "${expected}" "${basis}"
 check_job 'backup-rehearsal' "${BACKUP_RESULT:-}" "${backup_expected}" "${backup_basis}"
 check_job 'restore-rehearsal' "${RESTORE_RESULT:-}" "${backup_expected}" "${backup_basis}"
+check_jar_digest
 
 write_summary
 

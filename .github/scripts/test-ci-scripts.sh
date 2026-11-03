@@ -764,18 +764,34 @@ printf '\n필수 검사 집계\n'
 # 만들어 낸 가짜 판정 표가 실제 PR 화면의 job summary에 그대로 실린다. 시험 전용 sink로 돌린다.
 aggregate_sink="${work_root}/aggregate-sink.md"
 
+# jar digest fixture(spec-ci-backend-assemble-job.md). 두 job이 success면 기본으로 같은 64자 hex를 낸다. 리터럴 대신 만든다 —
+# 비밀값 모양의 리터럴은 두지 않는다(CLAUDE.md). 낮은 엔트로피라 gitleaks가 보지 않지만 모양(소문자 hex 64자)은 실제와 같다.
+jar_digest_a="$(printf '%064d' 0 | tr '0' 'a')"
+jar_digest_b="$(printf '%064d' 0 | tr '0' 'b')"
+
 # check_aggregate <라벨> <docs_only> <changes> <frontend> <backend> <integration> <rehearsal>
 #                 <기대 종료 코드> [기대 메시지 조각] [없어야 하는 메시지 조각]
 #
 # 백업 리허설(Story 3.9)·복원 리허설(Story 3.10)의 결과는 기본으로 <rehearsal>과 같고, 백업·복원 분류(`BACKUP_RESTORE`)는 기본으로
 # `true`다 — 그 분류에서 세 리허설은 같이 돌고 문서-only면 같이 건너뛴다. 다른 경우는 호출 앞에 `backup_restore_override=<값>`,
 # `backup_result_override=<값>`, `restore_result_override=<값>`을 붙인다(빈 값도 그대로 쓴다).
+#
+# jar 생산자 `backend-assemble`(spec-ci-backend-assemble-job.md)의 결과는 기본으로 <backend>와 같다 — 제품 변경이면 둘 다 돌고
+# 문서-only면 둘 다 건너뛴다. 두 digest(`ASSEMBLE_JAR_SHA256`·`QUALITY_JAR_SHA256`)는 그 job이 success일 때 같은 fixture 값이고
+# 아니면 빈 값이다(실행되지 않은 job의 output이 빈 값으로 오는 모양 그대로). 다른 경우는 `assemble_result_override=<값>`,
+# `assemble_digest_override=<값>`, `quality_digest_override=<값>`을 붙인다.
 check_aggregate() {
   local label="$1" docs="$2" changes="$3" frontend="$4" backend="$5" integration="$6" rehearsal="$7"
   local want_status="$8" want_message="${9:-}" unwanted_message="${10:-}"
-  local log_file status
+  local log_file status assemble assemble_digest quality_digest
 
   log_file="${work_root}/aggregate-$((tests_run + 1)).txt"
+
+  assemble="${assemble_result_override-${backend}}"
+  assemble_digest=''
+  quality_digest=''
+  [ "${assemble}" = 'success' ] && assemble_digest="${jar_digest_a}"
+  [ "${backend}" = 'success' ] && quality_digest="${jar_digest_a}"
 
   (
     DOCS_ONLY="${docs}" \
@@ -783,6 +799,9 @@ check_aggregate() {
     CHANGES_RESULT="${changes}" \
     FRONTEND_RESULT="${frontend}" \
     BACKEND_RESULT="${backend}" \
+    ASSEMBLE_RESULT="${assemble}" \
+    ASSEMBLE_JAR_SHA256="${assemble_digest_override-${assemble_digest}}" \
+    QUALITY_JAR_SHA256="${quality_digest_override-${quality_digest}}" \
     INTEGRATION_RESULT="${integration}" \
     REHEARSAL_RESULT="${rehearsal}" \
     BACKUP_RESULT="${backup_result_override-${rehearsal}}" \
@@ -810,10 +829,10 @@ check_aggregate() {
   record_pass "${label}"
 }
 
-check_aggregate '제품 변경 · 네 job 모두 success -> 종료 0' \
+check_aggregate '제품 변경 · 모든 job success -> 종료 0' \
   false success success success success success 0 '모든 예상 결과가 일치한다.'
 
-check_aggregate '문서-only · 네 job 모두 skipped -> 종료 0' \
+check_aggregate '문서-only · 모든 제품 job skipped -> 종료 0' \
   true success skipped skipped skipped skipped 0 '모든 예상 결과가 일치한다.'
 
 # 실패는 어느 job에서 나든 병합을 막는다.
@@ -955,6 +974,131 @@ backup_restore_override=FALSE backup_result_override=skipped restore_result_over
 backup_restore_override=maybe check_aggregate '문서-only · BACKUP_RESTORE가 알 수 없는 값 -> 종료 1' \
   true success skipped skipped skipped skipped 1 '::error::BACKUP_RESTORE가 true·false·빈 값이 아니다 (실제 maybe).'
 
+# --- backend-assemble job과 jar digest(spec-ci-backend-assemble-job.md) ---------------
+# backend jar의 생산자가 `backend-assemble`로 갈라졌다. 필수 검사이고, 두 job이 success면 각자 낸 jar SHA-256이 같아야 한다.
+# I/O 표 "제품 PR 정상": 아홉 job success, 두 digest 같음 → 종료 0이고 digest 일치가 로그에 남는다.
+check_aggregate '제품 PR 정상 · 아홉 job success, 두 digest 같음 -> 종료 0 + digest 일치' \
+  false success success success success success 0 "통과  jar digest 일치 = ${jar_digest_a}" '::error::'
+
+# I/O 표 "digest 불일치": 두 job success인데 값이 다르다. 통합·리허설이 돈 바이트가 시험이 돈 바이트와 다르다.
+quality_digest_override="${jar_digest_b}" check_aggregate 'digest 불일치 -> 종료 1' \
+  false success success success success success 1 '::error::같은 커밋의 두 빌드가 다른 jar를 냈다'
+quality_digest_override="${jar_digest_b}" check_aggregate 'digest 불일치 · 두 값이 메시지에 있다' \
+  false success success success success success 1 "(backend-assemble ${jar_digest_a}, backend-quality ${jar_digest_b})"
+
+# I/O 표 "digest 하나 비거나 모양 아님": 어느 쪽이 그런지 이름을 적는다.
+quality_digest_override='' check_aggregate 'assemble success · QUALITY_JAR_SHA256 빈 값 -> 종료 1' \
+  false success success success success success 1 \
+  '::error::backend-quality job의 jar digest가 비었거나 64자 hex가 아니다 (실제 <빈 값>).'
+quality_digest_override='' check_aggregate 'assemble success · QUALITY_JAR_SHA256 빈 값 · 불일치로 오인하지 않는다' \
+  false success success success success success 1 'backend-quality job의 jar digest가 비었거나' '다른 jar를 냈다'
+assemble_digest_override='' check_aggregate 'quality success · ASSEMBLE_JAR_SHA256 빈 값 -> 종료 1' \
+  false success success success success success 1 \
+  '::error::backend-assemble job의 jar digest가 비었거나 64자 hex가 아니다 (실제 <빈 값>).'
+quality_digest_override="${jar_digest_a%a}" check_aggregate 'QUALITY_JAR_SHA256 63자 -> 종료 1' \
+  false success success success success success 1 '::error::backend-quality job의 jar digest가 비었거나 64자 hex가 아니다'
+quality_digest_override="$(printf '%s' "${jar_digest_a}" | tr 'a' 'A')" check_aggregate 'QUALITY_JAR_SHA256 대문자 hex -> 종료 1' \
+  false success success success success success 1 '::error::backend-quality job의 jar digest가 비었거나 64자 hex가 아니다'
+quality_digest_override="${jar_digest_a%a}g" check_aggregate 'QUALITY_JAR_SHA256 hex 밖 문자 -> 종료 1' \
+  false success success success success success 1 '::error::backend-quality job의 jar digest가 비었거나 64자 hex가 아니다'
+assemble_digest_override='' quality_digest_override='' check_aggregate '두 digest 모두 빈 값 -> 종료 1, 둘 다 이름을 적는다' \
+  false success success success success success 1 '::error::backend-assemble job의 jar digest가 비었거나'
+assemble_digest_override='' quality_digest_override='' check_aggregate '두 digest 모두 빈 값 · backend-quality도 적는다' \
+  false success success success success success 1 '::error::backend-quality job의 jar digest가 비었거나'
+
+# I/O 표 "assemble 실패": 결과가 이미 실패다. digest는 판정하지 않는다(빈 digest로 두 번째 오류를 만들지 않는다).
+assemble_result_override=failure check_aggregate '제품 변경 · backend-assemble failure -> 종료 1' \
+  false success success success success success 1 '::error::backend-assemble job이 failure로 끝났다.'
+assemble_result_override=failure check_aggregate '제품 변경 · backend-assemble failure · digest 판정 없음' \
+  false success success success success success 1 '생략  jar digest 판정' 'jar digest가 비었거나'
+assemble_result_override=cancelled check_aggregate '제품 변경 · backend-assemble cancelled -> 종료 1' \
+  false success success success success success 1 '::error::backend-assemble job이 cancelled로 끝났다.'
+# backend-quality가 실패하면 assemble이 success여도 digest를 판정하지 않는다 — 시험 실패가 원인이다.
+check_aggregate '제품 변경 · backend-quality failure · digest 판정 없음' \
+  false success success failure success success 1 '::error::backend-quality job이 failure로 끝났다.' 'jar digest가 비었거나'
+assemble_result_override=success check_aggregate '제품 변경 · backend-quality failure, assemble success · digest 판정 없음' \
+  false success success failure success success 1 '생략  jar digest 판정' '::error::backend-assemble'
+
+# I/O 표 "문서-only": 제품 job 일곱이 skipped이고 digest가 빈 값이다. 종료 0이고 digest 판정이 없다.
+check_aggregate '문서-only · 일곱 job skipped, digest 빈 값 -> 종료 0, digest 판정 없음' \
+  true success skipped skipped skipped skipped 0 '생략  jar digest 판정' 'jar digest가 비었거나'
+
+# I/O 표 "문서-only인데 assemble success": 분류와 게이트가 어긋난다.
+assemble_result_override=success check_aggregate '문서-only · backend-assemble만 예상 밖 success -> 종료 1' \
+  true success skipped skipped skipped skipped 1 \
+  '::error::backend-assemble job이 실행됐지만 이 변경은 문서-only로 분류됐다. 분류와 게이트가 어긋난다.'
+
+# I/O 표 "옛 workflow 입력": `ASSEMBLE_RESULT`가 빈 값이다(needs에서 빠졌거나 옛 workflow). 제품 변경에서는 실패다.
+assemble_result_override='' check_aggregate '제품 변경 · backend-assemble 결과 없음 -> 종료 1' \
+  false success success success success success 1 \
+  '::error::backend-assemble job의 결과가 비었다. job이 실행되지 않았거나 needs에서 빠졌다.'
+# 예상 밖 skip도 잡는다.
+assemble_result_override=skipped check_aggregate '제품 변경 · backend-assemble만 예상 밖 skipped -> 종료 1' \
+  false success success success success success 1 \
+  '::error::backend-assemble job이 건너뛰어졌지만 이 변경은 제품 변경으로 분류됐다.'
+
+# backup-restore=false(프런트엔드 PR)에서도 assemble은 필수이고 digest 판정은 그대로다 — 분기는 백업·복원 두 job뿐이다.
+backup_restore_override=false backup_result_override=skipped restore_result_override=skipped \
+  check_aggregate '프런트엔드 PR · assemble success, digest 일치 -> 종료 0' \
+  false success success success success success 0 '통과  jar digest 일치'
+backup_restore_override=false backup_result_override=skipped restore_result_override=skipped quality_digest_override="${jar_digest_b}" \
+  check_aggregate '프런트엔드 PR · digest 불일치 -> 종료 1' \
+  false success success success success success 1 '::error::같은 커밋의 두 빌드가 다른 jar를 냈다'
+# 불일치 오류는 복구 절차까지 말한다 — artifact 이름에 run_attempt가 들어가 failed jobs만 재실행할 수 없다.
+quality_digest_override="${jar_digest_b}" check_aggregate 'digest 불일치 · 복구 절차(Re-run all jobs)를 안내한다' \
+  false success success success success success 1 'Re-run all jobs로 다시 돈다'
+
+# 제품 변경에서 backend-quality가 skipped이고 backend-assemble이 success면 skip 오류로 종료 1이고 digest 판정은 생략이다.
+assemble_result_override=success check_aggregate '제품 변경 · backend-quality skipped, assemble success -> 종료 1, digest 판정 생략' \
+  false success success skipped success success 1 '생략  jar digest 판정' 'jar digest가 비었거나'
+assemble_result_override=success check_aggregate '제품 변경 · backend-quality skipped, assemble success · skip 오류가 원인이다' \
+  false success success skipped success success 1 \
+  '::error::backend-quality job이 건너뛰어졌지만 이 변경은 제품 변경으로 분류됐다.'
+
+# 문서-only인데 두 job이 모두 success면 분류 어긋남 오류가 둘 나고, 둘 다 success이므로 digest 판정도 돈다(지금 동작을 고정한다 —
+# 어긋남 오류가 이미 병합을 막고, digest는 두 job이 success라는 사실만 본다).
+check_aggregate '문서-only · 두 backend job 모두 success -> 종료 1, backend-quality 어긋남 오류' \
+  true success skipped success skipped skipped 1 \
+  '::error::backend-quality job이 실행됐지만 이 변경은 문서-only로 분류됐다. 분류와 게이트가 어긋난다.'
+check_aggregate '문서-only · 두 backend job 모두 success -> backend-assemble 어긋남 오류' \
+  true success skipped success skipped skipped 1 \
+  '::error::backend-assemble job이 실행됐지만 이 변경은 문서-only로 분류됐다. 분류와 게이트가 어긋난다.'
+check_aggregate '문서-only · 두 backend job 모두 success -> digest 판정도 돈다(일치)' \
+  true success skipped success skipped skipped 1 "통과  jar digest 일치 = ${jar_digest_a}" '생략  jar digest 판정'
+
+# GITHUB_STEP_SUMMARY의 digest 줄은 실패 사유를 담는다. 불일치와 모양 아님을 각각 본다.
+# aggregate_digest_summary <라벨> <ASSEMBLE_JAR_SHA256> <QUALITY_JAR_SHA256> <기대 summary 조각>
+aggregate_digest_summary() {
+  local label="$1" assemble_digest="$2" quality_digest="$3" want="$4" summary_file
+  summary_file="${work_root}/aggregate-digest-summary-$((tests_run + 1)).md"
+  : >"${summary_file}"
+  (
+    DOCS_ONLY=false \
+    BACKUP_RESTORE=true \
+    CHANGES_RESULT=success \
+    FRONTEND_RESULT=success \
+    BACKEND_RESULT=success \
+    ASSEMBLE_RESULT=success \
+    ASSEMBLE_JAR_SHA256="${assemble_digest}" \
+    QUALITY_JAR_SHA256="${quality_digest}" \
+    INTEGRATION_RESULT=success \
+    REHEARSAL_RESULT=success \
+    BACKUP_RESULT=success \
+    RESTORE_RESULT=success \
+    GITHUB_STEP_SUMMARY="${summary_file}" \
+    bash "${aggregate_script}"
+  ) >/dev/null 2>&1
+  if grep -F -- "${want}" "${summary_file}" >/dev/null; then
+    record_pass "${label}"
+  else
+    record_fail "${label}" "summary에 '${want}'가 없다 — $(tr '\n' '|' <"${summary_file}")"
+  fi
+}
+aggregate_digest_summary 'digest 불일치 · summary의 digest 줄이 실패 — 불일치다' "${jar_digest_a}" "${jar_digest_b}" \
+  "- backend jar digest(backend-assemble ↔ backend-quality): 실패 — 불일치 (backend-assemble \`${jar_digest_a}\`, backend-quality \`${jar_digest_b}\`)"
+aggregate_digest_summary 'digest 모양 아님 · summary의 digest 줄이 실패 — 비었거나 모양이 아니다' "${jar_digest_a}" '' \
+  "- backend jar digest(backend-assemble ↔ backend-quality): 실패 — digest가 비었거나 모양이 아니다 (backend-assemble \`${jar_digest_a}\`, backend-quality \`<빈 값>\`)"
+
 check_aggregate 'changes job 실패 -> 종료 1' \
   false failure skipped skipped skipped skipped 1 '::error::changes job이 success가 아니다'
 
@@ -984,6 +1128,9 @@ changes_fail_log="${work_root}/aggregate-changes-fail.txt"
   CHANGES_RESULT=failure \
   FRONTEND_RESULT=skipped \
   BACKEND_RESULT=skipped \
+  ASSEMBLE_RESULT=skipped \
+  ASSEMBLE_JAR_SHA256='' \
+  QUALITY_JAR_SHA256='' \
   INTEGRATION_RESULT=skipped \
   REHEARSAL_RESULT=skipped \
   BACKUP_RESULT=skipped \
@@ -994,7 +1141,7 @@ changes_fail_log="${work_root}/aggregate-changes-fail.txt"
 assert_equals 'changes 실패 · ::error::는 원인 1줄 + 종료 1줄뿐' \
   "$(grep -c -- '::error::' "${changes_fail_log}")" '2'
 
-# changes 실패의 판정 표에도 백업 리허설 행이 판정 불가로 실린다. 행이 빠지면 그 job이 표에서 사라진다.
+# changes 실패의 판정 표에도 백업 리허설·jar 생산자 행이 판정 불가로 실린다. 행이 빠지면 그 job이 표에서 사라진다.
 changes_fail_summary="${work_root}/aggregate-changes-fail-summary.md"
 : >"${changes_fail_summary}"
 (
@@ -1003,6 +1150,9 @@ changes_fail_summary="${work_root}/aggregate-changes-fail-summary.md"
   CHANGES_RESULT=failure \
   FRONTEND_RESULT=skipped \
   BACKEND_RESULT=skipped \
+  ASSEMBLE_RESULT=skipped \
+  ASSEMBLE_JAR_SHA256='' \
+  QUALITY_JAR_SHA256='' \
   INTEGRATION_RESULT=skipped \
   REHEARSAL_RESULT=skipped \
   BACKUP_RESULT=skipped \
@@ -1010,12 +1160,23 @@ changes_fail_summary="${work_root}/aggregate-changes-fail-summary.md"
   GITHUB_STEP_SUMMARY="${changes_fail_summary}" \
   bash "${aggregate_script}"
 ) >/dev/null 2>&1
-assert_equals 'changes 실패 · 판정 표에 판정 불가 행 여섯(백업 리허설 포함)' \
-  "$(grep -cF '| `판정 불가` |' "${changes_fail_summary}")" '6'
+assert_equals 'changes 실패 · 판정 표에 판정 불가 행 일곱(백업 리허설·backend-assemble 포함)' \
+  "$(grep -cF '| `판정 불가` |' "${changes_fail_summary}")" '7'
 if grep -F '| `backup-rehearsal` | `skipped` | `판정 불가` |' "${changes_fail_summary}" >/dev/null; then
   record_pass 'changes 실패 · backup-rehearsal 행이 판정 불가다'
 else
   record_fail 'changes 실패 · backup-rehearsal 행이 판정 불가다' "$(tr '\n' '|' <"${changes_fail_summary}")"
+fi
+if grep -F '| `backend-assemble` | `skipped` | `판정 불가` |' "${changes_fail_summary}" >/dev/null; then
+  record_pass 'changes 실패 · backend-assemble 행이 판정 불가다'
+else
+  record_fail 'changes 실패 · backend-assemble 행이 판정 불가다' "$(tr '\n' '|' <"${changes_fail_summary}")"
+fi
+# changes 실패에서는 digest도 판정하지 않는다 — 요약 줄은 그 사실을 적는다.
+if grep -F -- '- backend jar digest(backend-assemble ↔ backend-quality): 판정 없음' "${changes_fail_summary}" >/dev/null; then
+  record_pass 'changes 실패 · 요약의 digest 줄이 판정 없음이다'
+else
+  record_fail 'changes 실패 · 요약의 digest 줄이 판정 없음이다' "$(tr '\n' '|' <"${changes_fail_summary}")"
 fi
 
 # 분류 결과 자체가 깨진 경우. fail-closed로 가장 엄격한 기대치를 적용한다.
@@ -1035,6 +1196,9 @@ aggregate_summary_status=0
   CHANGES_RESULT=success \
   FRONTEND_RESULT=success \
   BACKEND_RESULT=success \
+  ASSEMBLE_RESULT=success \
+  ASSEMBLE_JAR_SHA256="${jar_digest_a}" \
+  QUALITY_JAR_SHA256="${jar_digest_a}" \
   INTEGRATION_RESULT=success \
   REHEARSAL_RESULT=success \
   BACKUP_RESULT=skipped \
@@ -1048,7 +1212,9 @@ if [ "${aggregate_summary_status}" -ne 0 ]; then
     "종료 코드 ${aggregate_summary_status} (기대 0) — $(tr '\n' '|' <"${work_root}/aggregate-summary-log.txt")"
 elif grep -qF '### 필수 검사 집계' "${aggregate_summary}" \
   && grep -qF -- '- `backup-restore`: `false`' "${aggregate_summary}" \
+  && grep -qF -- "- backend jar digest(backend-assemble ↔ backend-quality): 일치 (\`${jar_digest_a}\`)" "${aggregate_summary}" \
   && grep -qF '| `frontend-quality` | `success` | `success` |' "${aggregate_summary}" \
+  && grep -qF '| `backend-assemble` | `success` | `success` |' "${aggregate_summary}" \
   && grep -qF '| `backend-quality` |' "${aggregate_summary}" \
   && grep -qF '| `same-origin-integration` |' "${aggregate_summary}" \
   && grep -qF '| `deploy-rehearsal` | `success` | `success` |' "${aggregate_summary}" \
@@ -1285,46 +1451,56 @@ printf '\nci.yml 계약\n'
 # job 하나를 지우거나 `needs`를 한 줄 고치면 필수 검사가 조용히 사라지고, branch protection은
 # `ci-required`라는 이름 하나만 보므로 그 사실을 알지 못한다.
 
-# `changes → frontend-quality·backend-quality → same-origin-integration·deploy-rehearsal·backup-rehearsal·restore-rehearsal → ci-required`.
+# `changes → frontend-quality·backend-quality·backend-assemble → same-origin-integration·deploy-rehearsal·backup-rehearsal·restore-rehearsal → ci-required`.
 # 순서까지 단정한다. 파일에서 읽는 순서가 곧 사람이 이해하는 실행 순서다. `deploy-rehearsal`은 Story 3.8이 더했고,
-# `backup-rehearsal`은 spec-ci-critical-path.md가 `deploy-rehearsal`에서 뗐다.
+# `backup-rehearsal`은 spec-ci-critical-path.md가 `deploy-rehearsal`에서 뗐고, `backend-assemble`(jar 생산자)은
+# spec-ci-backend-assemble-job.md가 `backend-quality`에서 뗐다.
 assert_equals 'ci.yml · job 목록과 순서' \
   "$(workflow_job_ids)" \
-  'changes frontend-quality backend-quality same-origin-integration deploy-rehearsal backup-rehearsal restore-rehearsal ci-required'
+  'changes frontend-quality backend-quality backend-assemble same-origin-integration deploy-rehearsal backup-rehearsal restore-rehearsal ci-required'
 
 # branch protection이 참조하는 이름이다. 바뀌면 required check가 영원히 대기 상태로 남고
 # 병합은 아무 검사 없이 열린다.
 assert_equals 'ci.yml · job name은 ci-required' \
   "$(count_lines '^    name: ci-required$')" '1'
 
-# `ubuntu-latest`는 러너 갱신이 CI 판정을 바꾼다. 여덟 job 모두 고정한다.
+# `ubuntu-latest`는 러너 갱신이 CI 판정을 바꾼다. 아홉 job 모두 고정한다.
 assert_equals 'ci.yml · 모든 job이 runs-on: ubuntu-24.04 고정' \
-  "$(count_lines '^    runs-on: ubuntu-24\.04$')" '8'
+  "$(count_lines '^    runs-on: ubuntu-24\.04$')" '9'
 
-for job_id in changes frontend-quality backend-quality same-origin-integration deploy-rehearsal backup-rehearsal restore-rehearsal ci-required; do
+for job_id in changes frontend-quality backend-quality backend-assemble same-origin-integration deploy-rehearsal backup-rehearsal restore-rehearsal ci-required; do
   assert_equals "ci.yml · '${job_id}' job이 ubuntu-24.04를 쓴다" \
     "$(count_job_lines "${job_id}" '^    runs-on: ubuntu-24\.04$')" '1'
 done
 
 # --- needs 배선 ------------------------------------------------------------
-# 이 네 줄이 위 mermaid 그림 전체다. 하나만 어긋나도 검사가 병렬이 아니라 무관해진다.
+# 이 줄들이 위 그림 전체다. 하나만 어긋나도 검사가 병렬이 아니라 무관해진다.
 assert_equals 'ci.yml · frontend-quality는 changes를 기다린다' \
   "$(count_job_lines frontend-quality '^    needs: changes$')" '1'
 assert_equals 'ci.yml · backend-quality는 changes를 기다린다' \
   "$(count_job_lines backend-quality '^    needs: changes$')" '1'
-assert_equals 'ci.yml · same-origin-integration은 두 품질 job을 기다린다' \
-  "$(count_job_lines same-origin-integration '^    needs: \[changes, frontend-quality, backend-quality\]$')" '1'
-assert_equals 'ci.yml · deploy-rehearsal은 두 품질 job을 기다린다' \
-  "$(count_job_lines deploy-rehearsal '^    needs: \[changes, frontend-quality, backend-quality\]$')" '1'
+# jar 생산자는 `changes`만 기다린다. `backend-quality`를 기다리면 임계 경로 분리(spec-ci-backend-assemble-job.md)가 사라진다.
+assert_equals 'ci.yml · backend-assemble은 changes만 기다린다' \
+  "$(count_job_lines backend-assemble '^    needs: changes$')" '1'
+# jar 소비 job 넷은 `backend-quality`가 아니라 `backend-assemble`을 기다린다. 시험이 끝나기를 기다리던 14분이 여기서 빠진다.
+assert_equals 'ci.yml · same-origin-integration은 frontend-quality와 backend-assemble을 기다린다' \
+  "$(count_job_lines same-origin-integration '^    needs: \[changes, frontend-quality, backend-assemble\]$')" '1'
+assert_equals 'ci.yml · deploy-rehearsal은 frontend-quality와 backend-assemble을 기다린다' \
+  "$(count_job_lines deploy-rehearsal '^    needs: \[changes, frontend-quality, backend-assemble\]$')" '1'
 # 백업 리허설(Story 3.9)과 복원 리허설(Story 3.10)은 backend jar 하나만 쓴다 — 프런트엔드 산출물을 기다리지 않는다.
 # 백업 리허설이 frontend-quality까지 기다리면 임계 경로 단축(spec-ci-critical-path.md)이 조용히 사라진다.
-assert_equals 'ci.yml · backup-rehearsal은 changes와 backend-quality를 기다린다' \
-  "$(count_job_lines backup-rehearsal '^    needs: \[changes, backend-quality\]$')" '1'
-assert_equals 'ci.yml · restore-rehearsal은 changes와 backend-quality를 기다린다' \
-  "$(count_job_lines restore-rehearsal '^    needs: \[changes, backend-quality\]$')" '1'
-# 집계가 기다리지 않는 job의 결과는 빈 값으로 온다. 일곱 job이 모두 있어야 한다.
+assert_equals 'ci.yml · backup-rehearsal은 changes와 backend-assemble을 기다린다' \
+  "$(count_job_lines backup-rehearsal '^    needs: \[changes, backend-assemble\]$')" '1'
+assert_equals 'ci.yml · restore-rehearsal은 changes와 backend-assemble을 기다린다' \
+  "$(count_job_lines restore-rehearsal '^    needs: \[changes, backend-assemble\]$')" '1'
+# 소비 job 넷 어디에도 `backend-quality`가 needs로 남아 있지 않다 — 남으면 그 job 하나가 시험 전체를 다시 기다린다.
+for consumer in same-origin-integration deploy-rehearsal backup-rehearsal restore-rehearsal; do
+  assert_equals "ci.yml · '${consumer}'의 needs에 backend-quality가 없다" \
+    "$(workflow_job_block "${consumer}" | grep -E '^    needs: ' | grep -cF 'backend-quality' | tr -d '[:space:]')" '0'
+done
+# 집계가 기다리지 않는 job의 결과는 빈 값으로 온다. 여덟 job이 모두 있어야 한다.
 assert_equals 'ci.yml · ci-required는 모든 선행 job을 기다린다' \
-  "$(count_job_lines ci-required '^    needs: \[changes, frontend-quality, backend-quality, same-origin-integration, deploy-rehearsal, backup-rehearsal, restore-rehearsal\]$')" '1'
+  "$(count_job_lines ci-required '^    needs: \[changes, frontend-quality, backend-quality, backend-assemble, same-origin-integration, deploy-rehearsal, backup-rehearsal, restore-rehearsal\]$')" '1'
 
 # 선행 job이 실패·취소·skip 어느 쪽이든 집계는 실행되어 판정을 남겨야 한다.
 # 이 줄이 없으면 실패한 실행에서 required check가 영원히 대기 상태로 남는다.
@@ -1353,6 +1529,9 @@ for aggregate_input in \
   'CHANGES_RESULT: ${{ needs.changes.result }}' \
   'FRONTEND_RESULT: ${{ needs.frontend-quality.result }}' \
   'BACKEND_RESULT: ${{ needs.backend-quality.result }}' \
+  'ASSEMBLE_RESULT: ${{ needs.backend-assemble.result }}' \
+  'ASSEMBLE_JAR_SHA256: ${{ needs.backend-assemble.outputs.jar-sha256 }}' \
+  'QUALITY_JAR_SHA256: ${{ needs.backend-quality.outputs.jar-sha256 }}' \
   'INTEGRATION_RESULT: ${{ needs.same-origin-integration.result }}' \
   'REHEARSAL_RESULT: ${{ needs.deploy-rehearsal.result }}' \
   'BACKUP_RESULT: ${{ needs.backup-rehearsal.result }}' \
@@ -1415,8 +1594,16 @@ assert_job_steps backend-quality <<'STEPS'
 저장소 checkout
 JDK 준비
 Gradle 빌드
-통합 입력 업로드 (backend jar)
+jar digest
 실패 진단 artifact 업로드
+STEPS
+
+assert_job_steps backend-assemble <<'STEPS'
+저장소 checkout
+JDK 준비
+Gradle bootJar
+통합 입력 업로드 (backend jar)
+jar digest
 STEPS
 
 assert_job_steps same-origin-integration <<'STEPS'
@@ -1468,17 +1655,17 @@ STEPS
 # 줄고, 하나 지우면 문서-only PR이 전체 검사를 돈다. 둘 다 여기서 걸린다.
 # `ci-required`에는 붙지 않는다. 집계는 어떤 분류에서도 실행되어야 한다.
 #
-# 게이트는 두 모양이다. 품질·통합·배포 리허설 넷은 docs-only 게이트 하나를, 백업·복원 리허설 둘은 그 뒤에 backup-restore
-# 게이트를 더한 한 줄을 단다(spec-ci-critical-path.md). 줄 전체를 비교한다 — 부분 문자열로 세면 두 번째 모양도 첫 번째로
-# 세어져 어느 job이 분기에 들어갔는지 구분되지 않는다.
+# 게이트는 두 모양이다. 품질 둘·jar 생산자·통합·배포 리허설 다섯은 docs-only 게이트 하나를, 백업·복원 리허설 둘은 그 뒤에
+# backup-restore 게이트를 더한 한 줄을 단다(spec-ci-critical-path.md). 줄 전체를 비교한다 — 부분 문자열로 세면 두 번째 모양도
+# 첫 번째로 세어져 어느 job이 분기에 들어갔는지 구분되지 않는다.
 docs_gate="if: needs.changes.outputs.docs-only != 'true'"
 backup_gate="if: needs.changes.outputs.docs-only != 'true' && needs.changes.outputs.backup-restore != 'false'"
-assert_equals 'ci.yml · docs-only 게이트만 단 job은 4개' \
-  "$(grep -cxF "    ${docs_gate}" "${workflow_file}")" '4'
+assert_equals 'ci.yml · docs-only 게이트만 단 job은 5개' \
+  "$(grep -cxF "    ${docs_gate}" "${workflow_file}")" '5'
 assert_equals 'ci.yml · docs-only + backup-restore 게이트를 단 job은 2개' \
   "$(grep -cxF "    ${backup_gate}" "${workflow_file}")" '2'
 
-for gated_job in frontend-quality backend-quality same-origin-integration deploy-rehearsal; do
+for gated_job in frontend-quality backend-quality backend-assemble same-origin-integration deploy-rehearsal; do
   if workflow_job_block "${gated_job}" | grep -xF -- "    ${docs_gate}" >/dev/null; then
     record_pass "ci.yml · '${gated_job}' job에 docs-only 게이트가 있다"
   else
@@ -1563,7 +1750,7 @@ fi
 
 # 후속 job은 움직이는 ref가 아니라 이벤트가 고정한 commit을 checkout한다(CI-PLAN §5).
 assert_equals 'ci.yml · 모든 job이 github.sha를 checkout한다' \
-  "$(count_lines '^          ref: \$\{\{ github\.sha \}\}$')" '8'
+  "$(count_lines '^          ref: \$\{\{ github\.sha \}\}$')" '9'
 
 # --- frontend-quality ------------------------------------------------------
 # lint·stylelint·format 검사는 타입 검사 뒤, 프로덕션 빌드 앞이다(spec-frontend-lint-policy.md,
@@ -1616,8 +1803,117 @@ else
   record_fail 'ci.yml · backend-quality는 wrapper로 빌드한다' 'gradlew 호출이 없다.'
 fi
 
+# `build`를 `check`로 바꾸면 jar가 없어 digest를 낼 수 없다(spec-ci-backend-assemble-job.md Ask First). 명령 전체를 고정한다.
+assert_equals 'ci.yml · backend-quality는 Gradle build를 돈다(check가 아니다)' \
+  "$(workflow_step_block backend-quality 'Gradle 빌드' | grep -E '^        run: ' | sed 's/^        run: //')" \
+  'bash backend/gradlew --project-dir backend --no-daemon build'
+
+# --- backend-assemble(spec-ci-backend-assemble-job.md) ------------------------------
+# jar 생산자다. 컴파일과 `bootJar`만 하고 시험은 돌지 않는다 — `build`·`test`·`check`가 들어오면 생산자가 다시 시험을 기다린다.
+if workflow_step_block backend-assemble 'JDK 준비' | grep -F "java-version: '25'" >/dev/null; then
+  record_pass 'ci.yml · backend-assemble은 JDK 25를 준비한다'
+else
+  record_fail 'ci.yml · backend-assemble은 JDK 25를 준비한다' "java-version: '25' 줄이 없다."
+fi
+assert_equals 'ci.yml · backend-assemble은 wrapper로 bootJar만 돈다' \
+  "$(workflow_step_block backend-assemble 'Gradle bootJar' | grep -E '^        run: ' | sed 's/^        run: //')" \
+  'bash backend/gradlew --project-dir backend --no-daemon bootJar'
+# `run:` 한 줄만 보면 `run: |` 블록 안의 두 번째 gradlew 호출을 놓친다. job 블록 전체에서 gradlew가 들어간 줄은 정확히
+# 하나이고 그것이 위 bootJar 명령이어야 한다.
+assert_equals 'ci.yml · backend-assemble의 gradlew 호출은 bootJar 한 줄뿐이다' \
+  "$(workflow_job_block backend-assemble | grep -F 'gradlew' | sed 's/^[[:space:]]*//')" \
+  'run: bash backend/gradlew --project-dir backend --no-daemon bootJar'
+assert_equals 'ci.yml · backend-assemble에 build·test·check 호출이 없다' \
+  "$(workflow_job_block backend-assemble | grep -vE '^[[:space:]]*#' | grep -cE '(^| )(build|test|check)( |$)' | tr -d '[:space:]')" '0'
+# 단계 순서: bootJar → digest → 업로드. digest가 업로드 앞이라야 digest를 내지 못한 jar가 artifact 저장소에 남지 않는다.
+assemble_gradle_line="$(job_step_line backend-assemble 'Gradle bootJar')"
+assemble_digest_line="$(job_step_line backend-assemble 'jar digest')"
+assemble_upload_line="$(job_step_line backend-assemble '통합 입력 업로드 (backend jar)')"
+if [ -n "${assemble_gradle_line}" ] && [ -n "${assemble_digest_line}" ] && [ -n "${assemble_upload_line}" ] \
+  && [ "${assemble_gradle_line}" -lt "${assemble_digest_line}" ] && [ "${assemble_digest_line}" -lt "${assemble_upload_line}" ]; then
+  record_pass 'ci.yml · backend-assemble의 단계 순서는 bootJar → jar digest → 업로드'
+else
+  record_fail 'ci.yml · backend-assemble의 단계 순서는 bootJar → jar digest → 업로드' \
+    "bootJar 줄 '${assemble_gradle_line}', digest 줄 '${assemble_digest_line}', 업로드 줄 '${assemble_upload_line}'"
+fi
+# 두 Gradle job의 setup-java 캐시 키를 가른다. `cache-dependency-path`가 같으면 키가 같고, 먼저 끝나는 backend-assemble이
+# 저장한 캐시(compile·runtime classpath)를 backend-quality가 받아 시험 classpath를 매번 다시 내려받는다.
+cache_paths_of() {
+  workflow_step_block "$1" 'JDK 준비' | awk '
+    /^          cache-dependency-path: \|$/ { inpaths = 1; next }
+    inpaths && /^            / { print; next }
+    inpaths { exit }
+  ' | sed 's/^[[:space:]]*//' | tr '\n' ' ' | sed 's/ *$//'
+}
+assert_equals 'ci.yml · backend-assemble의 cache-dependency-path는 build.gradle.kts와 wrapper properties 둘' \
+  "$(cache_paths_of backend-assemble)" 'backend/build.gradle.kts backend/gradle/wrapper/gradle-wrapper.properties'
+if [ -n "$(cache_paths_of backend-quality)" ] && [ "$(cache_paths_of backend-quality)" != "$(cache_paths_of backend-assemble)" ]; then
+  record_pass 'ci.yml · 두 Gradle job의 cache-dependency-path가 서로 다르다(캐시 키 분리)'
+else
+  record_fail 'ci.yml · 두 Gradle job의 cache-dependency-path가 서로 다르다(캐시 키 분리)' \
+    "backend-quality '$(cache_paths_of backend-quality)', backend-assemble '$(cache_paths_of backend-assemble)'"
+fi
+# 새 job만 8분을 받는다(spec Never: 다른 job의 timeout은 바꾸지 않는다).
+assert_equals 'ci.yml · backend-assemble job timeout은 8분' \
+  "$(count_job_lines backend-assemble '^    timeout-minutes: 8$')" '1'
+assert_equals 'ci.yml · backend-quality job timeout은 20분 그대로' \
+  "$(count_job_lines backend-quality '^    timeout-minutes: 20$')" '1'
+# 시험이 없으므로 진단 artifact 업로드도 없다. 컴파일 실패는 단계 로그가 전부다 — 업로드 단계는 jar 하나뿐이다.
+assert_equals 'ci.yml · backend-assemble의 upload-artifact는 jar 하나' \
+  "$(count_job_lines backend-assemble '^        uses: actions/upload-artifact@')" '1'
+
+# --- jar digest(두 job의 output) ----------------------------------------------------
+# 두 job이 같은 이름의 output `jar-sha256`을 같은 블록으로 낸다. 블록이 글자까지 같아야 "같은 파일을 같은 방식으로 잰" 값이다.
+# 블록은 `java -version`(JDK 대조 자료) → `unzip -lv`(항목 이름·크기·CRC — 불일치 원인을 가르는 자료) → `sha256sum` 치환 `&&`
+# 기록이다. 치환이 실패하면(jar 없음) `&&` 뒤가 돌지 않아 단계가 실패해야 한다 — `echo "…$(…)"` 한 줄은 그 실패를 묻는다.
+# 판정(모양·일치)은 aggregate-results.sh가 소유한다.
+digest_block_of() {
+  # 단계 이름은 workflow_step_block이 이미 뺐다. 주석 줄은 job마다 다를 수 있으므로 비교에서 뺀다.
+  workflow_step_block "$1" 'jar digest' | grep -vE '^[[:space:]]*#'
+}
+digest_record_line='          digest="$(sha256sum backend/build/libs/bokrilog-backend.jar | cut -d '"'"' '"'"' -f1)" && echo "jar-sha256=${digest}" >>"${GITHUB_OUTPUT}"'
+for digest_job in backend-quality backend-assemble; do
+  assert_equals "ci.yml · '${digest_job}'의 jar digest 단계 id는 digest" \
+    "$(workflow_step_block "${digest_job}" 'jar digest' | grep -cxF '        id: digest')" '1'
+  assert_equals "ci.yml · '${digest_job}'의 jar digest 단계는 run: | 블록이다" \
+    "$(workflow_step_block "${digest_job}" 'jar digest' | grep -cxF '        run: |')" '1'
+  assert_equals "ci.yml · '${digest_job}'의 jar digest 블록이 java -version을 남긴다" \
+    "$(workflow_step_block "${digest_job}" 'jar digest' | grep -cxF '          java -version 2>&1')" '1'
+  assert_equals "ci.yml · '${digest_job}'의 jar digest 블록이 unzip -lv로 항목을 남긴다" \
+    "$(workflow_step_block "${digest_job}" 'jar digest' | grep -cxF '          unzip -lv backend/build/libs/bokrilog-backend.jar')" '1'
+  assert_equals "ci.yml · '${digest_job}'의 jar digest 블록은 치환 실패가 단계를 실패시키는 && 기록이다" \
+    "$(workflow_step_block "${digest_job}" 'jar digest' | grep -cxF -- "${digest_record_line}")" '1'
+  assert_equals "ci.yml · '${digest_job}'의 jar digest 블록에 다른 명령이 없다" \
+    "$(workflow_step_block "${digest_job}" 'jar digest' | grep -cE '^          ')" '3'
+  assert_equals "ci.yml · '${digest_job}'의 jar digest 단계에 조건이 없다" \
+    "$(workflow_step_block "${digest_job}" 'jar digest' | grep -cE '^        if:')" '0'
+  assert_equals "ci.yml · '${digest_job}'이 jar-sha256을 job output으로 낸다" \
+    "$(count_job_lines "${digest_job}" '^      jar-sha256: \$\{\{ steps\.digest\.outputs\.jar-sha256 \}\}$')" '1'
+done
+assert_equals 'ci.yml · 두 job의 jar digest 단계 블록(이름·주석 제외)이 글자까지 같다' \
+  "$(digest_block_of backend-assemble)" "$(digest_block_of backend-quality)"
+# `backend-quality`는 jar를 올리지 않는다. 올리면 같은 이름의 artifact를 두 job이 만들어 `overwrite: false`에서 한쪽이 실패하고,
+# 어느 jar를 소비했는지가 순서에 달린다.
+assert_equals 'ci.yml · backend-quality는 backend-jar artifact를 올리지 않는다' \
+  "$(count_job_lines backend-quality '^          name: backend-jar-')" '0'
+# digest 단계는 Gradle 단계 뒤에 온다(jar가 그때 생긴다).
+for digest_job in backend-quality backend-assemble; do
+  case "${digest_job}" in
+    backend-quality) gradle_step='Gradle 빌드' ;;
+    *) gradle_step='Gradle bootJar' ;;
+  esac
+  gradle_step_line="$(job_step_line "${digest_job}" "${gradle_step}")"
+  digest_step_line="$(job_step_line "${digest_job}" 'jar digest')"
+  if [ -n "${gradle_step_line}" ] && [ -n "${digest_step_line}" ] && [ "${gradle_step_line}" -lt "${digest_step_line}" ]; then
+    record_pass "ci.yml · '${digest_job}'의 jar digest 단계가 Gradle 단계 뒤에 있다"
+  else
+    record_fail "ci.yml · '${digest_job}'의 jar digest 단계가 Gradle 단계 뒤에 있다" \
+      "Gradle 줄 '${gradle_step_line}', digest 줄 '${digest_step_line}'"
+  fi
+done
+
 # --- 통합 입력 artifact ----------------------------------------------------
-# 두 품질 job이 만든 산출물을 통합 job이 재빌드 없이 소비한다(CI-PLAN §8).
+# `frontend-quality`와 `backend-assemble`이 만든 산출물을 통합 job이 재빌드 없이 소비한다(CI-PLAN §8).
 # retention 1일은 그 계약의 일부다. 통합 입력을 장기 보존하지 않는다.
 assert_equals 'ci.yml · 통합 입력 artifact retention은 1일' \
   "$(count_lines '^          retention-days: 1$')" '2'
@@ -1630,9 +1926,11 @@ assert_equals 'ci.yml · 통합 입력 업로드는 if-no-files-found: error' \
 # 부분 문자열 비교는 `retention-days: 14`·`retention-days: 10`에도 맞는다. 진단 artifact가
 # 7일이라 지금은 우연히 통과하지만, 그 값을 늘리는 순간 이 단정은 통합 입력이 사라져도
 # 통과한다. 파일의 다른 단정과 같게 줄 전체를 앵커로 잡고 job 안에서 센다.
-for producer in frontend-quality backend-quality; do
+for producer in frontend-quality backend-assemble; do
   assert_equals "ci.yml · '${producer}'가 retention 1일 통합 입력을 만든다" \
     "$(count_job_lines "${producer}" '^          retention-days: 1$')" '1'
+  assert_equals "ci.yml · '${producer}'의 통합 입력 업로드는 if-no-files-found: error" \
+    "$(count_job_lines "${producer}" '^          if-no-files-found: error$')" '1'
 done
 
 # 진단 업로드는 여섯 job 모두 `warn`이다. `ignore`로 바꾸면 report·trace 경로가 어긋나도 이 단계가
@@ -1647,27 +1945,30 @@ for diagnostics_job in frontend-quality backend-quality same-origin-integration 
 done
 
 # 이름에 run ID와 attempt가 들어가야 취소되거나 대체된 실행의 artifact를 재사용하지 않는다.
-# 생산 2건(두 품질 job)과 소비 2건(통합 job)을 따로 센다. 같은 정규식이 양쪽에 걸린다는 것이
+# 생산 2건(`frontend-quality`·`backend-assemble`)과 소비 2건(통합 job)을 따로 센다. 같은 정규식이 양쪽에 걸린다는 것이
 # 곧 "소비자가 생산자와 같은 이름을 본다"는 뜻이다. 한쪽 이름만 바꾸면 여기서 걸린다.
 artifact_name_pattern='^          name: (frontend-dist|backend-jar)-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}$'
-assert_equals 'ci.yml · 두 품질 job이 run ID·attempt가 붙은 통합 입력을 만든다' \
+assert_equals 'ci.yml · 두 생산자 job이 run ID·attempt가 붙은 통합 입력을 만든다' \
   "$(( $(count_job_lines frontend-quality "${artifact_name_pattern}") \
-     + $(count_job_lines backend-quality "${artifact_name_pattern}") ))" '2'
+     + $(count_job_lines backend-assemble "${artifact_name_pattern}") ))" '2'
+assert_equals 'ci.yml · backend jar artifact의 생산자는 backend-assemble 하나' \
+  "$(count_job_lines backend-assemble '^          name: backend-jar-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}$')" '1'
 assert_equals 'ci.yml · 통합 job이 같은 이름의 통합 입력을 소비한다' \
   "$(count_job_lines same-origin-integration "${artifact_name_pattern}")" '2'
 
 # --- same-origin-integration ----------------------------------------------
-# 통합 job이 다시 빌드하면 검증 대상이 품질 job이 검증한 바이트와 달라진다.
+# 통합 job이 다시 빌드하면 검증 대상이 `frontend-quality`가 검증한 바이트·`backend-assemble`이 올린(digest로 시험에 묶인) 바이트와
+# 달라진다.
 if workflow_job_block same-origin-integration | grep -E 'run: npm --prefix frontend run build$' >/dev/null; then
   record_fail 'ci.yml · 통합 job은 프런트엔드를 다시 빌드하지 않는다' \
-    '통합 job에 build 단계가 있다. 품질 job의 산출물을 그대로 써야 한다.'
+    '통합 job에 build 단계가 있다. frontend-quality의 산출물을 그대로 써야 한다.'
 else
   record_pass 'ci.yml · 통합 job은 프런트엔드를 다시 빌드하지 않는다'
 fi
 
 if workflow_job_block same-origin-integration | grep -F 'gradlew' >/dev/null; then
   record_fail 'ci.yml · 통합 job은 백엔드를 다시 빌드하지 않는다' \
-    '통합 job에 gradlew 호출이 있다. 품질 job의 jar를 그대로 써야 한다.'
+    '통합 job에 gradlew 호출이 있다. backend-assemble이 올린 jar를 그대로 써야 한다.'
 else
   record_pass 'ci.yml · 통합 job은 백엔드를 다시 빌드하지 않는다'
 fi
@@ -1777,7 +2078,7 @@ else
 fi
 
 # --- backup-rehearsal(Story 3.9, spec-ci-critical-path.md가 분리) -----------------
-# 백업 리허설도 품질 job의 jar를 그대로 소비한다(프런트엔드 산출물은 쓰지 않는다). 판정은 두 스크립트가 소유한다.
+# 백업 리허설도 backend-assemble이 올린 jar를 그대로 소비한다(프런트엔드 산출물은 쓰지 않는다). 판정은 두 스크립트가 소유한다.
 assert_equals 'ci.yml · 백업 리허설 job이 같은 이름의 backend jar를 소비한다' \
   "$(count_job_lines backup-rehearsal "${artifact_name_pattern}")" '1'
 if workflow_job_block backup-rehearsal | grep -E 'gradlew|run: npm --prefix frontend run build$' >/dev/null; then
@@ -1811,7 +2112,7 @@ else
   record_fail 'ci.yml · 백업 리허설 진단 기록 자리와 업로드 경로가 같다' '진단 디렉터리 env 또는 업로드 경로가 없다.'
 fi
 # --- restore-rehearsal(Story 3.10) -------------------------------------------
-# 복원 리허설도 품질 job의 jar를 그대로 소비한다(프런트엔드 산출물은 쓰지 않는다). 판정은 두 스크립트가 소유한다.
+# 복원 리허설도 backend-assemble이 올린 jar를 그대로 소비한다(프런트엔드 산출물은 쓰지 않는다). 판정은 두 스크립트가 소유한다.
 assert_equals 'ci.yml · 복원 리허설 job이 같은 이름의 backend jar를 소비한다' \
   "$(count_job_lines restore-rehearsal "${artifact_name_pattern}")" '1'
 if workflow_job_block restore-rehearsal | grep -E 'gradlew|run: npm --prefix frontend run build$' >/dev/null; then
