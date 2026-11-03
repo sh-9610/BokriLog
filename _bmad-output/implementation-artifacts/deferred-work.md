@@ -494,3 +494,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-session-attribute-upsert.md`
   summary: 세션 확인이 500(일시 오류)이면 화면이 "로그인 상태가 아닙니다"(미인증)로 그리는 대신 일시 오류임을 구분해 안내하는 처리를 정한다.
   evidence: PR #123 CI 실패의 화면 기록에서 서버 500이 미인증 안내로 보였다(run 39039915046). fail-closed 자체는 맞지만 문구가 원인을 잘못 가리킨다(2026-10-17 fix 리뷰 blind-hunter). 재시도로 덮는 것은 SPEC이 금지했다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-erasure-audit-lock.md`
+  summary: 계정 삭제가 커밋된 뒤 원장에 붙는 운영자 거절·실패 행(롤백 뒤 별도 트랜잭션, 예: `ACCESS_REVOKED`)이 삭제된 운영자의 `actor_user_id`를 다시 붙이지 않게 할지 정한다 — 계정 상태를 보고 수행자 귀속을 비울지, 또는 Epic 5 삭제 완료 검사(5.2·5.4)가 잡게 할지.
+  evidence: 원장 잠금 직렬화(이 fix)는 삭제보다 먼저 잠금을 쥔 쓰기만 덮는다. 거절 행은 삭제 커밋 뒤 잠금을 얻어 append하며 그 경로에 계정 상태 판정이 없다(2026-11-03 fix 리뷰 blind-hunter, SPEC Ask First로 범위 밖). 지금은 사용자 삭제 경로가 없어 잠재 결함이다.

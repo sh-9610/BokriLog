@@ -1,8 +1,6 @@
 package com.bokrilog;
 
-import com.bokrilog.identity.AccessDecision;
-import com.bokrilog.identity.AccountAccessApi;
-import com.bokrilog.identity.AccountAccessKind;
+import com.bokrilog.operations.AccountErasureState;
 import com.bokrilog.operations.OperationalRestrictionApi.ActiveRestriction;
 import com.bokrilog.operations.OperatorCommandApi.LiftExpectation;
 import com.bokrilog.operations.OperatorCommandApi.LiftTarget;
@@ -23,7 +21,8 @@ import org.springframework.stereotype.Component;
  * 운영 command가 operations 밖에서 얻는 사실({@link OperatorCommandEnvironment})의 루트 구현(Epic 3 회고 AI-5).
  *
  * <p>각 사실은 이미 있는 루트 부품이 소유한다 — 제한 대상·영향·해제 차원은 {@link RestrictionTargets}(각 모듈 공개 API),
- * 지원 연락처는 {@link SupportContact}(배포 설정), 문의 주인 계정의 상태는 identity의 {@link AccountAccessApi}다. 이
+ * 지원 연락처는 {@link SupportContact}(배포 설정), 문의 주인 계정의 상태는 삭제 시작 여부 port {@link AccountErasureState}다(판정식은 루트 구현
+ * {@link IdentityAccountErasureState} 한 곳 — identity의 민감 작업 판정이 허용인가). 이
  * 클래스는 그것을 잇기만 하고 command를 가르지 않는다. servlet 웹 애플리케이션에서만 배선한다(운영 command가 API
  * 프로세스에만 있다).
  */
@@ -35,9 +34,9 @@ class OperatorCommandFacts implements OperatorCommandEnvironment {
 
     private final SupportContact supportContact;
 
-    private final AccountAccessApi accounts;
+    private final AccountErasureState accounts;
 
-    OperatorCommandFacts(RestrictionTargets targets, SupportContact supportContact, AccountAccessApi accounts) {
+    OperatorCommandFacts(RestrictionTargets targets, SupportContact supportContact, AccountErasureState accounts) {
         this.targets = targets;
         this.supportContact = supportContact;
         this.accounts = accounts;
@@ -85,6 +84,6 @@ class OperatorCommandFacts implements OperatorCommandEnvironment {
 
     @Override
     public boolean accountUsable(UUID userId) {
-        return this.accounts.decide(userId, userId, AccountAccessKind.SENSITIVE) == AccessDecision.ALLOWED;
+        return !this.accounts.erasureStarted(userId);
     }
 }

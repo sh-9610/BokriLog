@@ -26,6 +26,15 @@ import org.springframework.transaction.support.TransactionTemplate;
  *   <li>{@code identity} payload·인증 매핑·세션 삭제와 {@code DELETED} 전환 — 마지막이다.
  * </ol>
  *
+ * <p><b>operations 단계는 감사 원장 추가 잠금을 쥔다(Epic 3 회고 B-2).</b> 수행자·제한 target 비식별이 그 잠금을 이 트랜잭션의
+ * 커밋까지 쥐므로, 같은 잠금 아래에서 사용자 귀속 제한을 쓰는 경로(제한 생성 command·강한 신호·해제 smoke 되돌림)와 한 줄로
+ * 선다 — 먼저 쥔 쓰기가 커밋한 행은 비식별이 보고, 뒤에 깨어난 신호는 이 삭제를 보고 자기 귀속을 비식별한다. 잠금을 이
+ * 단계보다 앞당기지 않는다 — 신호 {@code raise}는 sync 행 잠금을 쥔 감지 트랜잭션이 애플리케이션에서 기다리는 별도
+ * 트랜잭션이라, 삭제가 sync erase 전에 원장 잠금을 쥐면 "삭제 → sync 행 → 감지가 raise를 기다림 → raise가 원장 잠금"의
+ * PostgreSQL이 모르는 교착이 된다. 잠금은 커밋까지 가지만 그 뒤 단계는 짧은 꼬리(문의·engagement·payload)뿐이고, 그동안
+ * 다른 원장 잠금 사용자는 기다린다. 운영자가 자기 계정의 삭제와 동시에 command를 확정하면 PostgreSQL이 교착(40P01, 허가 행
+ * {@code action_grant}과 원장 잠금)을 감지해 한쪽을 통째로 롤백할 수 있다 — 삭제는 멱등이라 다시 돌리면 된다.
+ *
  * <p><b>사용자 경로가 없다.</b> 실제 계정 삭제 요청(재인증·고지·법정 보존)은 Epic 5가 소유한다. 지금 이 클래스를 부르는 것은 검증용
  * 일회성 역할({@code deletion-sample})과 복원 적용({@link RestoreApplication})뿐이다. HTTP 표면이 없다.
  */

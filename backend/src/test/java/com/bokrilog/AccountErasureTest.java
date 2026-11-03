@@ -8,8 +8,15 @@ import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.operations.DeletionTombstoneApi;
 import com.bokrilog.operations.OperationsDeletionApi;
+import com.bokrilog.plan.PlanConditionApi;
+import com.bokrilog.portfolio.PortfolioMembershipApi;
+import com.bokrilog.source.SourceConnectionApi;
+import com.bokrilog.sync.SyncJobApi;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -248,6 +255,59 @@ class AccountErasureTest extends PlanSyncTestBase {
         assertThatThrownBy(() -> tombstones.record(UUID.randomUUID(), "erasure-outside-1"))
                 .isInstanceOf(IllegalStateException.class);
         assertThat(outbox()).isEmpty();
+    }
+
+    /**
+     * 순서(Epic 3 회고 B-2, {@code spec-erasure-audit-lock.md}): operations 비식별과 그것이 쥐는 감사 원장 추가 잠금은
+     * portfolio·sync·plan·source erase가 모두 끝난 뒤다. 잠금을 sync erase 앞으로 당기면 sync 행을 쥔 신호 감지 트랜잭션이
+     * 애플리케이션에서 기다리는 {@code raise}와 PostgreSQL이 모르는 교착을 만든다. 각 erase 호출 직전에 이 삭제 트랜잭션이
+     * 원장 잠금을 쥐었는지도 함께 적는다.
+     */
+    @Test
+    void operations_비식별과_원장_잠금은_다른_모듈_erase_뒤에_온다() throws Exception {
+        UUID user = connect(DevBybitStub.Scenario.UTA2);
+        publishedPlan(user, "erasure-order", null);
+        List<String> calls = new ArrayList<>();
+        AccountErasure recorded = new AccountErasure(accountDeletion(), tombstones,
+                recording(PortfolioMembershipApi.class, portfolio, calls), recording(SyncJobApi.class, sync, calls),
+                recording(PlanConditionApi.class, plans, calls), recording(SourceConnectionApi.class, source, calls),
+                recording(OperationsDeletionApi.class, operations, calls), engagement, transactionManager);
+
+        assertThat(recorded.erase(user, "erasure-order-1")).isEqualTo(AccountErasure.Outcome.ERASED);
+        assertThat(calls).containsExactly(
+                "PortfolioMembershipApi.erasePortfolioData|unlocked",
+                "SyncJobApi.eraseSyncData|unlocked",
+                "PlanConditionApi.erasePlanData|unlocked",
+                "SourceConnectionApi.eraseSourceData|unlocked",
+                "OperationsDeletionApi.eraseActor|unlocked",
+                "OperationsDeletionApi.eraseRestrictionTargets|locked",
+                "OperationsDeletionApi.eraseInquiries|locked");
+    }
+
+    /**
+     * 그 port를 감싸 {@code erase*} 호출을 {@code <port>.<메서드>|<원장 잠금 여부>}로 적고 실제 구현에 위임한다. 잠금 여부는 호출
+     * 직전 이 스레드의 트랜잭션(삭제 트랜잭션)의 backend가 원장 추가 잠금을 쥐었는가다.
+     */
+    private <T> T recording(Class<T> port, T delegate, List<String> calls) {
+        return port.cast(Proxy.newProxyInstance(port.getClassLoader(), new Class<?>[] {port}, (proxy, method, args) -> {
+            if (method.getName().startsWith("erase")) {
+                calls.add(port.getSimpleName() + "." + method.getName() + "|"
+                        + (holdsAppendLock() ? "locked" : "unlocked"));
+            }
+            try {
+                return method.invoke(delegate, args);
+            } catch (InvocationTargetException failure) {
+                throw failure.getCause();
+            }
+        }));
+    }
+
+    /** 이 스레드의 트랜잭션 backend가 감사 원장 추가 잠금({@code OperatorAuditRepository}의 이름)을 쥐었는가. */
+    private boolean holdsAppendLock() {
+        return Boolean.TRUE.equals(jdbc().sql("SELECT count(*) > 0 FROM pg_locks WHERE locktype = 'advisory' AND granted "
+                        + "AND objsubid = 1 AND pid = pg_backend_pid() "
+                        + "AND ((classid::bigint << 32) | objid::bigint) = hashtextextended(:name, 0)")
+                .param("name", "bokrilog.operations_audit_event.append").query(Boolean.class).single());
     }
 
     private void insertTombstone(String digest, String request, String ago) {
