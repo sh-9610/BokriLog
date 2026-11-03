@@ -216,7 +216,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 회고 AI-2·AI-3 문서·주석 정합과 검증 공백 chore | done | `spec-epic-4-retro-docs-and-verification.md`, PR #121 머지 커밋 `1333c62` |
 | 동시 첫 세션 확인 500(세션 속성 upsert·CSRF 선저장) fix | done | `spec-session-attribute-upsert.md`, PR #124 |
 | 회고 AI-6 간헐 실패 진단 장치 chore | done | `spec-flaky-test-diagnostics.md`, PR #125 머지 커밋 `4e248b8` |
-| CI backend jar 생성 job chore | done | `spec-ci-backend-assemble-job.md`, PR #129 |
+| CI backend jar 생성 job chore | done | `spec-ci-backend-assemble-job.md`, PR #129 머지 커밋 `cfbdaf0` |
 | Epic 3 회고 item-27 계정 삭제·감사 원장 잠금 직렬화 fix | done | `spec-erasure-audit-lock.md`, PR #127 머지 커밋 `c6362a7` |
 
 ## 스토리가 고정한 계약

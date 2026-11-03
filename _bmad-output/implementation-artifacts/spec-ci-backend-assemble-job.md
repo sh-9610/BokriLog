@@ -101,7 +101,7 @@ CI-PLAN §8은 "두 품질 job이 산출물을 전달하고 통합은 다시 bui
 - `bash backend/gradlew --project-dir backend clean bootJar && sha256sum backend/build/libs/bokrilog-backend.jar` ×2 -- expected: 같은 digest (macOS는 `shasum -a 256`을 쓴다)
 - `bash .github/scripts/test-ci-scripts.sh` -- expected: 통과, 실패 0
 - `bash backend/gradlew --project-dir backend build` -- expected: 통과(설정 변경이 시험에 영향 없음)
-- PR CI -- expected: 아홉 job green, 리허설 시작 시각 < backend-quality 종료 시각, `ci-required` 요약에 digest 일치
+- PR CI -- expected: 아홉 job green, 리허설 시작 시각 < backend-quality 종료 시각, `ci-required` 요약에 digest 일치 -- 실측(PR #129, run 41594289163): 아홉 job green, 전체 16분 11초, `backup-rehearsal` 시작 07:10:27 < `backend-quality` 종료 07:24:03, digest 일치 `7a3cd439…caf53`(로컬과 같은 값), 머지 커밋 `cfbdaf0`
 
 **로컬 실측(2026-11-03, Windows 11, Temurin 25, Gradle 9.7.1).** `clean bootJar` ×2와 `clean build`의 `bokrilog-backend.jar` SHA-256이 셋 다 `7a3cd439003bfaf5b7a7a93c7e9e1d3945a22acc8ef34cb927d817a1b9ccaf53`이다 — `build`(시험 포함)와 `bootJar`만의 jar가 바이트까지 같다. `clean build`는 19분 42초였고 `BybitAdapterTest` 5건이 `java.net.SocketException: Bad address: listen`(loopback 포트 0 바인딩)으로 실패했는데, 이 build 스크립트 변경을 되돌린 baseline에서도 같은 예외가 재현돼 이 호스트의 Windows 환경 문제(Hyper-V 제외 포트 범위)이지 이 변경의 결과가 아니다 — 시험 통과 여부는 PR CI `backend-quality`가 본다.
 
