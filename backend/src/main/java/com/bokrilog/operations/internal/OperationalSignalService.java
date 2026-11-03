@@ -1,5 +1,6 @@
 package com.bokrilog.operations.internal;
 
+import com.bokrilog.operations.AccountErasureState;
 import com.bokrilog.operations.OperationalSignalApi;
 import com.bokrilog.operations.RestrictionOrigin;
 import com.bokrilog.operations.RestrictionScope;
@@ -35,6 +36,13 @@ import tools.jackson.databind.json.JsonMapper;
  * 판정표 읽기 → 중복 판정 → 제한 INSERT → 신호 행 → 감사 SYSTEM 행을 쓴다. 본보기는 3.2의 제한 생성 확정({@code
  * RestrictCommand.complete}, 엔진 템플릿의 잠금 뒤 재검사 → INSERT → {@code COMPLETED})이다. 원장 잠금이 운영 command와
  * 신호를 함께 직렬화하므로 같은 기능·scope·target의 동시 신호는 활성 제한 1행으로 모인다.
+ *
+ * <p><b>삭제가 시작된 사용자(Epic 3 회고 B-2).</b> 계정 삭제의 operations 비식별도 같은 원장 잠금 아래에서 돈다. 그래서 잠금을
+ * 기다린 신호가 깨어났을 때 대상 사용자의 삭제가 이미 커밋됐으면 그 비식별은 지나간 뒤다 — 신호는 정지 기록(제한·신호·감사
+ * SYSTEM 행)을 그대로 남기되, 같은 트랜잭션에서 자기가 쓴 귀속을 삭제 port와 같은 본문({@link
+ * OperationsDeletionService#eraseAttributed})으로 즉시 비식별한다. 계정 상태는 루트가 구현하는 port({@link
+ * AccountErasureState})로 잠금 없이 묻고, 귀속 사용자가 없는 신호는 묻지 않는다. 삭제가 이미 비식별한 같은 대상의 열린 제한은
+ * target이 digest이므로 그 digest로도 찾아 잇는다 — 새로 만들면 같은 digest의 열린 제한이 둘이 되어 활성 유일 색인에 걸린다.
  *
  * <p><b>판정표 읽기 실패.</b> 판정표 읽기는 savepoint({@code NESTED}) 안에서 한다 — 그 문장이 실패해도 트랜잭션 전체가
  * 깨지지 않고 신규 연결+동기화 전역 제한으로 이어 쓴다({@code POLICY_UNAVAILABLE}). 행이 없을 때도 같다.
@@ -76,17 +84,25 @@ class OperationalSignalService implements OperationalSignalApi {
 
     private final ObjectProvider<ActorDigest> digest;
 
+    /** 대상 사용자의 삭제 시작 여부(루트 구현). */
+    private final AccountErasureState accounts;
+
+    /** 삭제가 시작된 사용자의 귀속 비식별. 계정 삭제 port와 같은 본문이다. */
+    private final OperationsDeletionService deletion;
+
     private final TransactionTemplate requiresNew;
 
     private final TransactionTemplate savepoint;
 
     OperationalSignalService(SignalRepository signals, OperationalRestrictionRepository restrictions,
-            OperatorAuditRepository audit, ObjectProvider<ActorDigest> digest,
-            PlatformTransactionManager transactionManager) {
+            OperatorAuditRepository audit, ObjectProvider<ActorDigest> digest, AccountErasureState accounts,
+            OperationsDeletionService deletion, PlatformTransactionManager transactionManager) {
         this.signals = signals;
         this.restrictions = restrictions;
         this.audit = audit;
         this.digest = digest;
+        this.accounts = accounts;
+        this.deletion = deletion;
         this.requiresNew = new TransactionTemplate(transactionManager);
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.savepoint = new TransactionTemplate(transactionManager);
@@ -122,6 +138,10 @@ class OperationalSignalService implements OperationalSignalApi {
                 ? signal.detectedAt() : started;
         this.audit.lockAppends();
         Choice choice = choose(signal);
+        // 원장 잠금 뒤의 계정 상태. 삭제의 비식별도 이 잠금을 쥐고 커밋하므로, 여기서 보이지 않는 삭제는 이 트랜잭션이
+        // 끝난 뒤에야 비식별에 이르고 그때 이 트랜잭션이 쓴 행을 본다. 귀속 사용자가 없는 신호는 묻지 않는다.
+        @Nullable UUID targetUser = signal.targetUserId();
+        @Nullable UUID erasedOwner = targetUser != null && this.accounts.erasureStarted(targetUser) ? targetUser : null;
         String operationId = OperationIds.next();
         String systemDigest = keyed.ofSystem(AUDIT_COMMAND);
         String evidenceJson = JSON.writeValueAsString(signal.evidence());
@@ -135,6 +155,10 @@ class OperationalSignalService implements OperationalSignalApi {
             UUID owner = item.scope().userAttributed() ? signal.targetUserId() : null;
             String ledgerTarget = item.scope().userAttributed() ? keyed.ofTarget(item.scope().name(), target) : target;
             var existing = this.restrictions.activeRow(item.feature(), item.scope(), target).orElse(null);
+            if (existing == null && erasedOwner != null && item.scope().userAttributed()) {
+                // 삭제가 이미 비식별한 같은 대상의 열린 제한(target이 그 digest)에 잇는다.
+                existing = this.restrictions.activeRow(item.feature(), item.scope(), ledgerTarget).orElse(null);
+            }
             UUID restrictionId;
             Instant effectiveAt;
             Outcome outcome;
@@ -166,6 +190,10 @@ class OperationalSignalService implements OperationalSignalApi {
                     signal.type().name(), AUDIT_COMPLETED, POLICY_VERSION, detectedAt, operationId,
                     JSON.writeValueAsString(details));
             decisions.add(new Decision(signalId, item.feature(), item.scope(), restrictionId, outcome, sliMs));
+        }
+        if (erasedOwner != null) {
+            // 삭제가 먼저 커밋됐다. 정지 기록은 남기고 이 트랜잭션이 쓴 귀속만 같은 커밋에서 비식별한다.
+            this.deletion.eraseAttributed(erasedOwner);
         }
         return new Raised(operationId, List.copyOf(decisions));
     }

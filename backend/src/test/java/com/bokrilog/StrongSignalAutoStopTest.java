@@ -246,7 +246,7 @@ class StrongSignalAutoStopTest extends OperatorTestBase {
     /** 같은 fingerprint의 반복은 제한 1행에 연결되고, 신호 행은 각각 남는다. 제한은 다시 오지 않아도 풀리지 않는다. */
     @Test
     void 같은_fingerprint의_반복은_제한_하나에_연결된다() throws Exception {
-        UUID user = UUID.randomUUID();
+        UUID user = signalOwner();
         UUID connection = UUID.randomUUID();
         var first = this.signals.raise(unknownEnum(user, connection));
         var second = this.signals.raise(unknownEnum(user, connection));
@@ -275,7 +275,7 @@ class StrongSignalAutoStopTest extends OperatorTestBase {
     /** 동시에 온 같은 fingerprint는 원장 잠금 아래에서 제한 1행이 된다. */
     @Test
     void 동시에_온_같은_fingerprint는_제한_하나가_된다() throws Exception {
-        UUID user = UUID.randomUUID();
+        UUID user = signalOwner();
         UUID connection = UUID.randomUUID();
         var start = new CountDownLatch(1);
         List<Throwable> failures = java.util.Collections.synchronizedList(new ArrayList<>());
@@ -306,7 +306,7 @@ class StrongSignalAutoStopTest extends OperatorTestBase {
      */
     @Test
     void 넓고_좁은_신호는_병합되고_운영자_제한에는_연결된다() throws Exception {
-        UUID user = UUID.randomUUID();
+        UUID user = signalOwner();
         UUID connection = UUID.randomUUID();
         UUID plan = UUID.randomUUID();
         UUID operatorMade = restrict(RestrictionFeature.SYNC, RestrictionScope.PROVIDER_CONNECTION,
@@ -350,7 +350,7 @@ class StrongSignalAutoStopTest extends OperatorTestBase {
     /** SLI는 DB 시각의 감지→효력 차다. 늦은 감지는 그대로 드러난다(60초 경계를 숨기지 않는다). */
     @Test
     void SLI는_감지부터_효력까지의_DB_시각_차다() throws Exception {
-        UUID user = UUID.randomUUID();
+        UUID user = signalOwner();
         var prompt = this.signals.raise(unknownEnum(user, UUID.randomUUID()));
         assertThat(prompt.decisions().getFirst().sliMs()).isBetween(0L, 59_999L);
 
@@ -376,7 +376,7 @@ class StrongSignalAutoStopTest extends OperatorTestBase {
     /** 감사 SYSTEM 행과 경보 한 줄. 사용자 귀속 target은 원장에 digest로만 남고, 경보에는 허용 필드 외 값이 없다. */
     @Test
     void 감사는_SYSTEM_행이고_경보에는_식별자가_없다(CapturedOutput output) throws Exception {
-        UUID user = UUID.randomUUID();
+        UUID user = signalOwner();
         UUID connection = UUID.randomUUID();
         var raised = this.signals.raise(unknownEnum(user, connection));
 
@@ -451,8 +451,8 @@ class StrongSignalAutoStopTest extends OperatorTestBase {
     /** 계정 삭제의 deletion port는 신호 행의 사용자 귀속도 비운다. 다른 사용자의 행은 그대로다. */
     @Test
     void 삭제_port는_신호_행의_사용자_귀속을_비운다() throws Exception {
-        UUID erased = UUID.randomUUID();
-        UUID kept = UUID.randomUUID();
+        UUID erased = signalOwner();
+        UUID kept = signalOwner();
         this.signals.raise(unknownEnum(erased, UUID.randomUUID()));
         this.signals.raise(new Signal(SignalType.RESULT_HASH_MISMATCH,
                 RestrictionSubject.none().withCalculationPolicy(CALC), erased,
@@ -474,14 +474,14 @@ class StrongSignalAutoStopTest extends OperatorTestBase {
     void 운영자_목록은_자동_정지의_출처를_싣는다() throws Exception {
         Signed operator = operator("signal-list", "command");
         UUID connection = UUID.randomUUID();
-        this.signals.raise(unknownEnum(UUID.randomUUID(), connection));
+        this.signals.raise(unknownEnum(signalOwner(), connection));
         restrictGlobally(RestrictionFeature.ADVERTISING);
 
         // 운영자가 건 제한에 신호가 연결되면 출처와 무관하게 수동 검증이 필요하다.
         UUID linkedPlan = UUID.randomUUID();
         restrict(RestrictionFeature.SYNC, RestrictionScope.PLAN, linkedPlan.toString());
         this.signals.raise(new Signal(SignalType.SOURCE_ID_CONFLICT,
-                RestrictionSubject.none().withPlan(linkedPlan).withConnection(UUID.randomUUID()), UUID.randomUUID(),
+                RestrictionSubject.none().withPlan(linkedPlan).withConnection(UUID.randomUUID()), signalOwner(),
                 Map.of("jobId", UUID.randomUUID().toString(), "observationId", UUID.randomUUID().toString()), null));
 
         var listed = restrictionsGet(operator);

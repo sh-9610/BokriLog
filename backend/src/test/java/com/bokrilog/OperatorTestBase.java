@@ -199,6 +199,14 @@ abstract class OperatorTestBase extends PlanSyncTestBase {
                 .param("u", user).query(String.class).list();
     }
 
+    /**
+     * 강한 신호의 대상 소유자로 쓸 활성 계정 하나. 신호는 원장 잠금 뒤 소유자의 삭제가 시작됐는지 묻고, 없는 계정은 삭제가
+     * 시작된 것으로 보아 자기 귀속을 바로 비식별한다(Epic 3 회고 B-2) — 원문 target·귀속을 보는 시험은 실제 계정을 쓴다.
+     */
+    UUID signalOwner() {
+        return accountLifecycle().createAccount();
+    }
+
     long auditCount() {
         return jdbc().sql("SELECT count(*) FROM operations_audit_event").query(Long.class).single();
     }

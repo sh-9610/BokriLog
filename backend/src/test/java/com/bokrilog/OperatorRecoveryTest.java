@@ -286,7 +286,7 @@ class OperatorRecoveryTest extends OperatorTestBase {
 
     @Test
     void 준비_뒤_같은_제한에_새_신호가_연결되면_NEW_SIGNAL_SINCE_PREPARE이고_제한은_유지된다() throws Exception {
-        UUID user = UUID.randomUUID();
+        UUID user = signalOwner();
         UUID connection = UUID.randomUUID();
         var raised = this.signals.raise(unknownEnum(user, connection));
         UUID restrictionId = raised.decisions().getFirst().restrictionId();
@@ -399,7 +399,7 @@ class OperatorRecoveryTest extends OperatorTestBase {
     @Test
     void 시간이_지나고_신호가_다시_오지_않아도_제한은_스스로_풀리지_않는다() throws Exception {
         UUID connection = UUID.randomUUID();
-        UUID restrictionId = this.signals.raise(unknownEnum(UUID.randomUUID(), connection)).decisions().getFirst()
+        UUID restrictionId = this.signals.raise(unknownEnum(signalOwner(), connection)).decisions().getFirst()
                 .restrictionId();
         // 행 시각을 90일 앞으로 옮긴다(시간 경과). 신호는 다시 오지 않는다.
         jdbc().sql("UPDATE operations_signal SET detected_at = detected_at - interval '90 days', "
@@ -650,7 +650,7 @@ class OperatorRecoveryTest extends OperatorTestBase {
      */
     @Test
     void smoke가_해제된_제한을_계속_보면_계보를_이은_새_제한과_FAILED를_남기고_REVERTED다() throws Exception {
-        UUID user = UUID.randomUUID();
+        UUID user = signalOwner();
         UUID connection = UUID.randomUUID();
         UUID restrictionId = this.signals.raise(unknownEnum(user, connection)).decisions().getFirst().restrictionId();
         Signed operator = operator("lift-smoke", "command");

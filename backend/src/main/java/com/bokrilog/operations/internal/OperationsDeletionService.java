@@ -48,35 +48,64 @@ class OperationsDeletionService implements OperationsDeletionApi {
         this.transactions = new TransactionTemplate(transactionManager);
     }
 
+    /**
+     * 원장 잠금 아래에서 비식별한다(Epic 3 회고 B-2). 잠금이 없으면 원장 잠금을 쥔 다른 트랜잭션(운영 command·신호)이 아직
+     * 커밋하지 않은 이 사용자의 행을 이 읽기가 보지 못하고 지나간다. 계정 삭제({@code AccountErasure})의 바깥 트랜잭션에
+     * 참여하면 잠금은 그 커밋까지 간다.
+     *
+     * <p>덮는 것은 이 삭제보다 먼저 잠금을 쥔 쓰기뿐이다. 삭제가 커밋된 뒤 롤백·별도 트랜잭션으로 append되는 운영자
+     * 거절·실패 행은 삭제된 수행자의 {@code actor_user_id}를 다시 실을 수 있다 — 열린 결정이다({@code deferred-work.md}).
+     */
     @Override
     public int eraseActor(@Nullable UUID userId) {
-        return userId == null ? 0 : this.audit.eraseActor(userId);
+        if (userId == null) {
+            return 0;
+        }
+        Integer erased = this.transactions.execute(status -> {
+            this.audit.lockAppends();
+            return this.audit.eraseActor(userId);
+        });
+        return erased == null ? 0 : erased;
     }
 
+    /** 원장 잠금 아래에서 비식별한다({@link #eraseActor}와 같은 근거). */
     @Override
     public int eraseRestrictionTargets(@Nullable UUID userId) {
         if (userId == null) {
             return 0;
         }
         Integer erased = this.transactions.execute(status -> {
-            // 신호 행의 귀속은 digest 키 없이 비운다 — target 원문이 없고 fingerprint는 처음부터 keyed digest의 hash다.
-            int signalRows = this.signals.eraseTargetUser(userId);
-            var rows = this.restrictions.attributedTo(userId);
-            if (rows.isEmpty()) {
-                return signalRows;
-            }
-            ActorDigest keyed = this.digest.getIfAvailable();
-            if (keyed == null) {
-                throw new IllegalStateException("제한 target을 비식별할 digest 키가 이 역할에 없다.");
-            }
-            int count = signalRows;
-            for (var row : rows) {
-                count += this.restrictions.eraseTarget(row.restrictionId(), userId,
-                        keyed.ofTarget(row.scope(), row.target()));
-            }
-            return count;
+            this.audit.lockAppends();
+            return eraseAttributed(userId);
         });
         return erased == null ? 0 : erased;
+    }
+
+    /**
+     * 그 사용자에게 귀속된 신호 행·제한 target을 비식별한다. 호출자가 {@link OperatorAuditRepository#lockAppends}를 쥔
+     * 트랜잭션 안에서 부른다 — 계정 삭제 port와, 삭제가 이미 시작된 사용자에게 귀속을 쓴 강한 신호({@code
+     * OperationalSignalService})가 이 본문 하나를 쓴다.
+     *
+     * @return 이번에 비식별한 행 수(제한 행과 신호 행의 합)
+     * @throws IllegalStateException 비식별할 제한 행이 있는데 이 역할에 digest 키가 없다
+     */
+    int eraseAttributed(UUID userId) {
+        // 신호 행의 귀속은 digest 키 없이 비운다 — target 원문이 없고 fingerprint는 처음부터 keyed digest의 hash다.
+        int signalRows = this.signals.eraseTargetUser(userId);
+        var rows = this.restrictions.attributedTo(userId);
+        if (rows.isEmpty()) {
+            return signalRows;
+        }
+        ActorDigest keyed = this.digest.getIfAvailable();
+        if (keyed == null) {
+            throw new IllegalStateException("제한 target을 비식별할 digest 키가 이 역할에 없다.");
+        }
+        int count = signalRows;
+        for (var row : rows) {
+            count += this.restrictions.eraseTarget(row.restrictionId(), userId,
+                    keyed.ofTarget(row.scope(), row.target()));
+        }
+        return count;
     }
 
     @Override

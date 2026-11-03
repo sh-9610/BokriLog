@@ -16,6 +16,15 @@ import org.jspecify.annotations.Nullable;
  * 삭제의 답은 비식별이 아니라 행 삭제다({@link #eraseInquiries}). 멱등 기록은 문의 행 자체이므로 함께 사라진다. 문의를 처리한
  * 운영 command의 감사 행은 reference의 keyed digest만 담으므로 그대로 둔다.
  *
+ * <p><b>원장 잠금과 직렬화한다(Epic 3 회고 B-2).</b> {@link #eraseActor}·{@link #eraseRestrictionTargets}는 감사 원장 추가
+ * 잠금을 쥔 뒤 귀속 행을 읽고 비식별한다 — 같은 잠금 아래에서 사용자 귀속 제한을 쓰는 경로(제한 생성 command·강한 신호·해제
+ * smoke 되돌림)와 한 줄로 선다. 호출자 트랜잭션이 있으면 거기에 참여해 그 커밋까지 쥐고, 없으면 자기 트랜잭션 안에서 쥔다.
+ * <b>한계:</b> 이 직렬화가 덮는 것은 삭제보다 먼저 잠금을 쥔 쓰기뿐이다. 삭제가 커밋된 뒤 원장에 붙는 운영자 거절·실패
+ * 행(롤백 뒤 별도 트랜잭션에서 append, 예: {@code ACCESS_REVOKED})은 삭제된 수행자의 {@code actor_user_id}를 여전히 실을 수
+ * 있다 — 그 경로에 계정 상태 판정이 없고, 열린 결정으로 {@code deferred-work.md}에 남아 있다. 사용자 귀속 제한·신호의 늦은
+ * 쓰기는 강한 신호가 계정 상태를 보고 스스로 비식별한다. {@link #eraseInquiries}는 이 잠금이 아니라 문의 접수의 사용자
+ * 잠금으로 직렬화한다.
+ *
  * <p>실제 계정 삭제 요청과의 통합(orchestration)은 Epic 5가 한다. 이 port는 그때 부를 모듈 경계다.
  */
 public interface OperationsDeletionApi {

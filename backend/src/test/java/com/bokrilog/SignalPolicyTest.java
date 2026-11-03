@@ -73,7 +73,7 @@ class SignalPolicyTest extends AuthFlowTestBase {
     void 모든_행의_scope_규칙이_읽힌다() {
         for (SignalType type : SignalType.values()) {
             jdbc().sql("TRUNCATE TABLE operations_signal, operations_restriction").update();
-            var raised = this.signals.raise(new Signal(type, fullSubject(), UUID.randomUUID(), fullEvidence(type),
+            var raised = this.signals.raise(new Signal(type, fullSubject(), owner(), fullEvidence(type),
                     null));
             assertThat(raised.decisions()).as(type.name()).isNotEmpty();
             assertThat(jdbc().sql("SELECT DISTINCT scope_decision FROM operations_signal").query(String.class).list())
@@ -98,10 +98,10 @@ class SignalPolicyTest extends AuthFlowTestBase {
                 .param("v", OperationalSignalApi.POLICY_VERSION).update();
         try {
             assertThatThrownBy(() -> this.signals.raise(new Signal(SignalType.SOURCE_ID_CONFLICT, fullSubject(),
-                    UUID.randomUUID(), Map.of(), null))).isInstanceOf(IllegalArgumentException.class);
+                    owner(), Map.of(), null))).isInstanceOf(IllegalArgumentException.class);
             assertThat(jdbc().sql("SELECT count(*) FROM operations_signal").query(Integer.class).single()).isZero();
 
-            this.signals.raise(new Signal(SignalType.SOURCE_ID_CONFLICT, fullSubject(), UUID.randomUUID(),
+            this.signals.raise(new Signal(SignalType.SOURCE_ID_CONFLICT, fullSubject(), owner(),
                     fullEvidence(SignalType.SOURCE_ID_CONFLICT), null));
             assertFallback("SOURCE_ID_CONFLICT");
         } finally {
@@ -119,7 +119,7 @@ class SignalPolicyTest extends AuthFlowTestBase {
     void 판정표를_읽지_못하면_신규_연결과_동기화를_전역으로_막는다() {
         jdbc().sql("ALTER TABLE operations_signal_policy RENAME TO operations_signal_policy_away").update();
         try {
-            this.signals.raise(new Signal(SignalType.UNKNOWN_TRANSACTION_ENUM, fullSubject(), UUID.randomUUID(),
+            this.signals.raise(new Signal(SignalType.UNKNOWN_TRANSACTION_ENUM, fullSubject(), owner(),
                     fullEvidence(SignalType.UNKNOWN_TRANSACTION_ENUM), null));
             assertFallback("UNKNOWN_TRANSACTION_ENUM");
         } finally {
@@ -138,6 +138,14 @@ class SignalPolicyTest extends AuthFlowTestBase {
         assertThat(jdbc().sql("SELECT DISTINCT reason || '|' || (details->>'scopeDecision') FROM operations_audit_event "
                 + "WHERE actor_kind = 'SYSTEM'").query(String.class).list())
                 .containsExactly(type + "|" + OperationalSignalApi.POLICY_UNAVAILABLE);
+    }
+
+    /**
+     * 신호 대상의 소유자로 쓸 활성 계정. 없는 계정은 삭제가 시작된 것으로 보아 신호가 자기 귀속을 바로 비식별한다(Epic 3 회고
+     * B-2) — 이 시험은 판정만 보지만 실제 신호와 같은 경로를 밟게 실제 계정을 쓴다.
+     */
+    private UUID owner() {
+        return accountLifecycle().createAccount();
     }
 
     private static RestrictionSubject fullSubject() {
