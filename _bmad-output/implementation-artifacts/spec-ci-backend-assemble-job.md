@@ -71,7 +71,7 @@ context:
 - [x] `.github/workflows/ci.yml` -- `backend-assemble` 추가, `backend-quality` 업로드 제거·digest output, `needs` 다섯 곳, ci-required env -- 임계 경로 분리
 - [x] `CLAUDE.md`, `DEVELOPMENT.md`, `AGENTS.md` -- 구조 문장·그림·표 -- 문서 정합
 - [x] `deferred-work-resolutions.md` -- 위 defer 판정 -- done 전환 규칙
-- [ ] PR을 열 때 `CLAUDE.md` `## 현재 진행 지점` 표에 이 chore 행(PR 번호)과 `deferred-work-resolutions.md` 2026-11-03 문단의 PR 번호를 채운다 -- 추적 산출물 정합
+- [x] PR을 열 때 `CLAUDE.md` `## 현재 진행 지점` 표에 이 chore 행(PR 번호)과 `deferred-work-resolutions.md` 2026-11-03 문단의 PR 번호를 채운다 -- 추적 산출물 정합
 
 **Acceptance Criteria:**
 - Given 같은 커밋, when `clean bootJar`를 두 번 돌리면, then `bokrilog-backend.jar`의 SHA-256이 같다.

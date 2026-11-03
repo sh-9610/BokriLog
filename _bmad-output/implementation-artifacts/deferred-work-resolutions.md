@@ -22,7 +22,7 @@ decision_baseline: 'ERD-1.0.0'
 | 미해소 | 111 |
 | 미판정 | 0 |
 
-**2026-11-03 갱신(CI backend jar 생성 job chore).** `spec-ci-backend-assemble-job.md`(브랜치 `chore/ci-backend-assemble-job`, 기준 `6b16acb` — done 전환 PR이 없는 chore라 그 PR 자체가 판정 자리다)를 판정했다.
+**2026-11-03 갱신(CI backend jar 생성 job chore).** `spec-ci-backend-assemble-job.md`(브랜치 `chore/ci-backend-assemble-job`, PR #129, 기준 `6b16acb` — done 전환 PR이 없는 chore라 그 PR 자체가 판정 자리다)를 판정했다.
 
 - **append한 항목.** 2026-11-03 CI 시간 분석이 이 chore의 SPEC 앞에서 단일 목표 규칙으로 떼어 더한 둘 — **163**(`backend-quality` 시험의 JVM 병렬화)·**164**(리허설 셋을 백엔드 변경 PR의 필수 경로에서 빼는 정책) — 을 미해소로 판정했다. 둘 다 이 chore의 Never(백엔드 시험 병렬화·suite 배치, 리허설의 PR 경로 분리)이고 이 chore는 손대지 않았다. 1차 리뷰(blind-hunter)가 낸 defer **165**(소비 job 넷이 내려받은 jar를 생산자 output과 대조하지 않음)도 미해소로 판정했다.
 - **해소한 항목.** 없다. 이 chore가 닫은 것은 CI 임계 경로이지 원장 항목이 아니다.
