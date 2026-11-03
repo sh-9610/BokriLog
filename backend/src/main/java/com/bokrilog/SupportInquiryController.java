@@ -1,8 +1,6 @@
 package com.bokrilog;
 
-import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
-import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.operations.SupportInquiryApi;
 import com.bokrilog.sync.IdempotencyKey;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -19,9 +17,6 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -62,9 +57,6 @@ class SupportInquiryController {
 
     /** 최근 24시간 접수 상한을 넘었다. */
     static final String RATE_LIMITED = "INQUIRY_RATE_LIMITED";
-
-    /** 같은 멱등 키가 다른 입력에 쓰였다. */
-    static final String IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT";
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(SupportInquiryController.class);
 
@@ -132,7 +124,7 @@ class SupportInquiryController {
     @GetMapping(path = INQUIRIES_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<?> list(HttpServletRequest request, HttpServletResponse response) throws IOException {
         long started = System.nanoTime();
-        UUID userId = allowedUser();
+        UUID userId = ControllerSupport.allowedUser(this.accounts);
         if (userId == null) {
             return notFound("list", response, started);
         }
@@ -152,8 +144,8 @@ class SupportInquiryController {
             @RequestHeader(name = IdempotencyKey.HEADER, required = false) @Nullable String key,
             HttpServletRequest request, HttpServletResponse response) throws IOException {
         long started = System.nanoTime();
-        String correlationId = correlationIdOf(request);
-        UUID userId = allowedUser();
+        String correlationId = ControllerSupport.correlationIdOf(request);
+        UUID userId = ControllerSupport.allowedUser(this.accounts);
         if (userId == null) {
             return notFound("submit", response, started);
         }
@@ -203,8 +195,8 @@ class SupportInquiryController {
                         correlationId, null, null));
             }
             case SupportInquiryApi.Submission.Conflict conflict -> {
-                log("submit", IDEMPOTENCY_CONFLICT, null, HttpStatus.CONFLICT.value(), started);
-                yield error(HttpStatus.CONFLICT, new InquiryError(IDEMPOTENCY_CONFLICT,
+                log("submit", IdempotencyKey.CONFLICT_CODE, null, HttpStatus.CONFLICT.value(), started);
+                yield error(HttpStatus.CONFLICT, new InquiryError(IdempotencyKey.CONFLICT_CODE,
                         "같은 요청 키가 다른 문의에 이미 쓰였습니다. 화면을 새로 열어 다시 보내 주세요.", correlationId,
                         null, null));
             }
@@ -269,16 +261,6 @@ class SupportInquiryController {
         return instant == null ? null : instant.toString();
     }
 
-    /** 세션 사용자. 미인증은 인가 필터가 먼저 401로 끝낸다. 삭제가 시작된 계정·쓸 수 없는 계정은 {@code null}(404)이다. */
-    private @Nullable UUID allowedUser() {
-        UUID userId = currentUserId();
-        if (userId == null
-                || this.accounts.decide(userId, userId, AccountAccessKind.SENSITIVE) != AccessDecision.ALLOWED) {
-            return null;
-        }
-        return userId;
-    }
-
     private static @Nullable ResponseEntity<?> notFound(String step, HttpServletResponse response, long started)
             throws IOException {
         // 없는 경로와 같은 404. 오류 디스패치를 지나 공통 본문이 된다. 사용자별 항목을 만들지 않는다.
@@ -295,33 +277,15 @@ class SupportInquiryController {
         }
         log(step, "ERROR", null, HttpStatus.INTERNAL_SERVER_ERROR.value(), started);
         return error(HttpStatus.INTERNAL_SERVER_ERROR, new InquiryError(ApiErrorHandler.CODE_INTERNAL_ERROR,
-                ApiErrorHandler.MESSAGE_INTERNAL_ERROR, correlationIdOf(request), null, null));
+                ApiErrorHandler.MESSAGE_INTERNAL_ERROR, ControllerSupport.correlationIdOf(request), null, null));
     }
 
     private static ResponseEntity<InquiryError> error(HttpStatus status, InquiryError body) {
-        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON)
-                .cacheControl(CacheControl.noStore()).body(body);
-    }
-
-    private static String correlationIdOf(HttpServletRequest request) {
-        return ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER));
+        return ControllerSupport.noStoreJson(status, body);
     }
 
     private static void log(String step, String result, @Nullable String rule, int status, long started) {
         LOG.info("support inquiry request: step={} result={} rule={} status={} latencyMs={}", step, result,
                 rule == null ? "-" : rule, status, (System.nanoTime() - started) / 1_000_000);
-    }
-
-    private static @Nullable UUID currentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()
-                || authentication instanceof AnonymousAuthenticationToken) {
-            return null;
-        }
-        try {
-            return UUID.fromString(authentication.getName());
-        } catch (IllegalArgumentException invalid) {
-            return null;
-        }
     }
 }

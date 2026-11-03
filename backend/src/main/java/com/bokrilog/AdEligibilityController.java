@@ -1,9 +1,7 @@
 package com.bokrilog;
 
 import com.bokrilog.engagement.AdEligibilityApi;
-import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
-import com.bokrilog.identity.AccountAccessKind;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -16,9 +14,6 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -76,15 +71,15 @@ class AdEligibilityController {
     @Nullable ResponseEntity<?> judge(@RequestBody(required = false) @Nullable String body, HttpServletRequest request,
             HttpServletResponse response) throws IOException {
         long started = System.nanoTime();
-        UUID userId = allowedUser();
+        UUID userId = ControllerSupport.allowedUser(this.accounts);
         if (userId == null) {
             return notFound("NOT_FOUND", response, started);
         }
         UUID syncJobId = syncJobIdOf(body);
         if (syncJobId == null) {
             log(ApiErrorHandler.CODE_BAD_REQUEST, false, HttpStatus.BAD_REQUEST.value(), started);
-            return error(HttpStatus.BAD_REQUEST, new ApiErrorHandler.ApiError(ApiErrorHandler.CODE_BAD_REQUEST,
-                    ApiErrorHandler.MESSAGE_BAD_REQUEST, correlationIdOf(request)));
+            return ControllerSupport.error(HttpStatus.BAD_REQUEST, ApiErrorHandler.CODE_BAD_REQUEST,
+                    ApiErrorHandler.MESSAGE_BAD_REQUEST, request);
         }
         AdEligibilityApi.Decision decision;
         try {
@@ -95,9 +90,8 @@ class AdEligibilityController {
             LOG.atWarn().addKeyValue("exception", failure.getClass().getSimpleName())
                     .log("ad eligibility judgment failed closed");
             log("ERROR", false, HttpStatus.INTERNAL_SERVER_ERROR.value(), started);
-            return error(HttpStatus.INTERNAL_SERVER_ERROR, new ApiErrorHandler.ApiError(
-                    ApiErrorHandler.CODE_INTERNAL_ERROR, ApiErrorHandler.MESSAGE_INTERNAL_ERROR,
-                    correlationIdOf(request)));
+            return ControllerSupport.error(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorHandler.CODE_INTERNAL_ERROR,
+                    ApiErrorHandler.MESSAGE_INTERNAL_ERROR, request);
         }
         return switch (decision) {
             case AdEligibilityApi.Decision.Eligible eligible -> {
@@ -141,16 +135,6 @@ class AdEligibilityController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(view);
     }
 
-    /** 세션 사용자. 미인증은 인가 필터가 먼저 401로 끝낸다. 삭제가 시작된 계정·쓸 수 없는 계정은 {@code null}(404)이다. */
-    private @Nullable UUID allowedUser() {
-        UUID userId = currentUserId();
-        if (userId == null
-                || this.accounts.decide(userId, userId, AccountAccessKind.SENSITIVE) != AccessDecision.ALLOWED) {
-            return null;
-        }
-        return userId;
-    }
-
     private static @Nullable ResponseEntity<?> notFound(String result, HttpServletResponse response, long started)
             throws IOException {
         // 없는 경로와 같은 404. 오류 디스패치를 지나 공통 본문이 된다.
@@ -159,31 +143,9 @@ class AdEligibilityController {
         return null;
     }
 
-    private static ResponseEntity<ApiErrorHandler.ApiError> error(HttpStatus status, ApiErrorHandler.ApiError body) {
-        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON)
-                .cacheControl(CacheControl.noStore()).body(body);
-    }
-
-    private static String correlationIdOf(HttpServletRequest request) {
-        return ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER));
-    }
-
     /** 단계·결과 code·재전송 여부·상태·지연만 남긴다. 사용자·결과·transition은 싣지 않는다. */
     private static void log(String result, boolean replayed, int status, long started) {
         LOG.info("ad eligibility request: step=judge result={} replayed={} status={} latencyMs={}", result, replayed,
                 status, (System.nanoTime() - started) / 1_000_000);
-    }
-
-    private static @Nullable UUID currentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()
-                || authentication instanceof AnonymousAuthenticationToken) {
-            return null;
-        }
-        try {
-            return UUID.fromString(authentication.getName());
-        } catch (IllegalArgumentException invalid) {
-            return null;
-        }
     }
 }

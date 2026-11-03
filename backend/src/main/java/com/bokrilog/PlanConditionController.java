@@ -21,9 +21,6 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -77,7 +74,7 @@ class PlanConditionController {
 
     @GetMapping(path=AuthSecurityConfig.PLAN_CONDITIONS_PATH,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<StateView> state(HttpServletResponse response) throws IOException {
-        UUID user=currentUserId();
+        UUID user=ControllerSupport.currentUserId();
         if (user==null) { response.sendError(403); return null; }
         var state=plans.state(user);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new StateView(
@@ -90,7 +87,7 @@ class PlanConditionController {
             consumes=MediaType.APPLICATION_JSON_VALUE,produces=MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<?> preview(@RequestBody PreviewInput input,
             HttpServletRequest request,HttpServletResponse response) throws IOException {
-        UUID user=currentUserId();
+        UUID user=ControllerSupport.currentUserId();
         if (user==null) { response.sendError(403); return null; }
         var session=request.getSession(false);
         if (session==null) { response.sendError(403); return null; }
@@ -117,7 +114,7 @@ class PlanConditionController {
     @Nullable ResponseEntity<?> confirm(@RequestBody ConfirmRequest body,
             @RequestHeader(name=IdempotencyKey.HEADER,required=false) @Nullable String key,
             HttpServletRequest request,HttpServletResponse response) throws IOException {
-        UUID user=currentUserId();
+        UUID user=ControllerSupport.currentUserId();
         if (user==null) { response.sendError(403); return null; }
         var session=request.getSession(false);
         if (session==null) { response.sendError(403); return null; }
@@ -135,18 +132,13 @@ class PlanConditionController {
      * created; the client reloads the condition state, which carries the active plan summary.
      */
     private static ResponseEntity<ApiError> activePlanExists(HttpServletRequest request) {
-        return ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)
-                .cacheControl(CacheControl.noStore())
-                .body(new ApiError(PlanConditionApi.ACTIVE_PLAN_EXISTS,MESSAGE_ACTIVE_PLAN_EXISTS,
-                        ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER))));
+        return ControllerSupport.error(HttpStatus.CONFLICT,PlanConditionApi.ACTIVE_PLAN_EXISTS,
+                MESSAGE_ACTIVE_PLAN_EXISTS,request);
     }
 
     /** 409 with the stable code {@code PLAN_ENDED} in the common error shape (Story 2.13). Nothing is created. */
     private static ResponseEntity<ApiError> planEnded(HttpServletRequest request) {
-        return ResponseEntity.status(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)
-                .cacheControl(CacheControl.noStore())
-                .body(new ApiError(PlanConditionApi.PLAN_ENDED,MESSAGE_PLAN_ENDED,
-                        ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER))));
+        return ControllerSupport.error(HttpStatus.CONFLICT,PlanConditionApi.PLAN_ENDED,MESSAGE_PLAN_ENDED,request);
     }
 
     private static SnapshotView view(Snapshot s) {
@@ -167,12 +159,5 @@ class PlanConditionController {
     private static String canonical(String decimal) {
         String notation=PlanCalculator.plainDecimal(decimal);
         return notation==null?decimal:notation;
-    }
-    private static @Nullable UUID currentUserId() {
-        Authentication authentication=SecurityContextHolder.getContext().getAuthentication();
-        if (authentication==null || !authentication.isAuthenticated()
-                || authentication instanceof AnonymousAuthenticationToken) return null;
-        try { return UUID.fromString(authentication.getName()); }
-        catch (IllegalArgumentException invalid) { return null; }
     }
 }

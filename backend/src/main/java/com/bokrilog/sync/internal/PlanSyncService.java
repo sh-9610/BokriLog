@@ -149,7 +149,7 @@ class PlanSyncService {
         if (!guard.writable(user)) return new SyncAdmission.NotPermitted();
         var keyed = syncs.byKey(user, key).orElse(null);
         if (keyed != null) return sameSync(keyed, trigger) ? new SyncAdmission.Joined(keyed)
-                : new SyncAdmission.Refused("IDEMPOTENCY_CONFLICT");
+                : new SyncAdmission.Refused(IdempotencyKey.CONFLICT_CODE);
         var base = guard.base(user).orElse(null);
         if (base == null) {
             // A plan that reached its end and completed (Story 2.14): its post-end syncs.
@@ -201,7 +201,7 @@ class PlanSyncService {
             // The key or the in-progress index was taken in between: the same key, or the attempt it let stand.
             var raced = syncs.byKey(user, key).orElse(null);
             if (raced != null) return sameSync(raced, trigger) ? new SyncAdmission.Joined(raced)
-                    : new SyncAdmission.Refused("IDEMPOTENCY_CONFLICT");
+                    : new SyncAdmission.Refused(IdempotencyKey.CONFLICT_CODE);
             return syncs.active(user, planId).<SyncAdmission>map(SyncAdmission.Joined::new)
                     .orElse(new SyncAdmission.Deferred(trigger == SyncTrigger.MANUAL ? "COOLDOWN" : "NOT_DUE",
                             syncs.latest(user, planId).orElse(null), 1L));
@@ -309,7 +309,7 @@ class PlanSyncService {
         if (inserted != 1) {
             var raced = syncs.byKey(user, key).orElse(null);
             if (raced != null) return sameSync(raced, trigger) ? new SyncAdmission.Joined(raced)
-                    : new SyncAdmission.Refused("IDEMPOTENCY_CONFLICT");
+                    : new SyncAdmission.Refused(IdempotencyKey.CONFLICT_CODE);
             return syncs.active(user, planId).<SyncAdmission>map(SyncAdmission.Joined::new)
                     .orElse(new SyncAdmission.Deferred(trigger == SyncTrigger.MANUAL ? "COOLDOWN" : "NOT_DUE",
                             syncs.latest(user, planId).orElse(null), 1L));

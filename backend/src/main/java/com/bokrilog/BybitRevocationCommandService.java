@@ -7,6 +7,7 @@ import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
+import com.bokrilog.sync.IdempotencyKey;
 import com.bokrilog.sync.SyncJobApi;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
@@ -74,9 +75,6 @@ class BybitRevocationCommandService {
 
     /** 무장·확인 문구·허가 중 하나가 이 확정과 맞지 않는다(만료·재사용·다른 연결·다른 command·흐름 없음). */
     static final String REVOCATION_NOT_CONFIRMED = "REVOCATION_NOT_CONFIRMED";
-
-    /** 같은 키가 다른 해제 요청에 이미 쓰였다. */
-    static final String IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT";
 
     /** 해제의 결과 code. */
     static final String OUTCOME_REVOKED = "REVOKED";
@@ -266,7 +264,8 @@ class BybitRevocationCommandService {
         return switch (this.sources.revocationReplay(userId, key, requestHash)) {
             case SourceConnectionApi.RevocationReplay.Stored stored ->
                     new Outcome.Done(new Revoked(stored.connectionId(), stored.revokedAt()));
-            case SourceConnectionApi.RevocationReplay.Conflict conflict -> new Outcome.Refused(IDEMPOTENCY_CONFLICT);
+            case SourceConnectionApi.RevocationReplay.Conflict conflict ->
+                    new Outcome.Refused(IdempotencyKey.CONFLICT_CODE);
             case SourceConnectionApi.RevocationReplay.None none -> null;
         };
     }

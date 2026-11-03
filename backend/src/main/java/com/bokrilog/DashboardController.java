@@ -1,5 +1,8 @@
 package com.bokrilog;
 
+import static com.bokrilog.ControllerSupport.currentUserId;
+import static com.bokrilog.ControllerSupport.error;
+
 import com.bokrilog.sync.SyncJobApi;
 import com.bokrilog.sync.IdempotencyKey;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -14,9 +17,6 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -126,7 +126,7 @@ class DashboardController {
     static final java.util.Map<String,String> SYNC_REFUSALS=java.util.Map.of(
             "NO_ACTIVE_PLAN","동기화할 활성 계획이 없습니다. 대시보드를 다시 불러와 주세요.",
             "SYNC_UNAVAILABLE","지금은 동기화할 수 없습니다. 대시보드에서 이유를 확인해 주세요.",
-            "IDEMPOTENCY_CONFLICT","같은 요청 키가 다른 동기화 요청에 이미 쓰였습니다. 새로 요청해 주세요.");
+            IdempotencyKey.CONFLICT_CODE,"같은 요청 키가 다른 동기화 요청에 이미 쓰였습니다. 새로 요청해 주세요.");
 
     /**
      * @param calculationDisplay 계산 표시 제한이 결과를 막는 동안 {@value #DISPLAY_RESTRICTED}(Story 3.2). 그 밖에는 없다
@@ -261,10 +261,8 @@ class DashboardController {
         } catch (RuntimeException failure) {
             // The class name at debug only: a message or cause can carry SQL or values.
             if (LOG.isDebugEnabled()) LOG.debug("dashboard read failed: failure={}",failure.getClass().getName());
-            ResponseEntity<ApiErrorHandler.ApiError> failed=ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .contentType(MediaType.APPLICATION_JSON).cacheControl(CacheControl.noStore())
-                    .body(new ApiErrorHandler.ApiError(ApiErrorHandler.CODE_INTERNAL_ERROR,
-                            ApiErrorHandler.MESSAGE_INTERNAL_ERROR,correlationOf(request)));
+            ResponseEntity<ApiErrorHandler.ApiError> failed=error(HttpStatus.INTERNAL_SERVER_ERROR,
+                    ApiErrorHandler.CODE_INTERNAL_ERROR,ApiErrorHandler.MESSAGE_INTERNAL_ERROR,request);
             log("ERROR",failed.getStatusCode().value(),started,"unknown");
             return failed;
         }
@@ -275,10 +273,7 @@ class DashboardController {
             }
             case SyncJobApi.Dashboard.NotFound missing -> { response.sendError(404); yield null; }
             case SyncJobApi.Dashboard.Unavailable unavailable ->
-                    ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).contentType(MediaType.APPLICATION_JSON)
-                            .cacheControl(CacheControl.noStore())
-                            .body(new ApiErrorHandler.ApiError(DASHBOARD_UNAVAILABLE,MESSAGE_DASHBOARD_UNAVAILABLE,
-                                    correlationOf(request)));
+                    error(HttpStatus.SERVICE_UNAVAILABLE,DASHBOARD_UNAVAILABLE,MESSAGE_DASHBOARD_UNAVAILABLE,request);
             case SyncJobApi.Dashboard.NoPlan none ->
                     ok(new DashboardView("NO_PLAN",none.nextAction(),null,null,null,null,null,null));
             case SyncJobApi.Dashboard.Preparing preparing ->
@@ -465,10 +460,8 @@ class DashboardController {
                 String code=refused.code();
                 if (IdempotencyKey.REQUIRED_CODE.equals(code)) {
                     logSync(triggerName,code,422,started);
-                    return ResponseEntity.status(422).contentType(MediaType.APPLICATION_JSON)
-                            .cacheControl(CacheControl.noStore())
-                            .body(new ApiErrorHandler.ApiError(code,ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED,
-                                    correlationOf(request)));
+                    return error(HttpStatus.UNPROCESSABLE_CONTENT,code,ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED,
+                            request);
                 }
                 if ("BAD_REQUEST".equals(code)) {
                     logSync(triggerName,code,400,started);
@@ -529,7 +522,7 @@ class DashboardController {
             "LONG_GAP","오래 동기화하지 않아 정밀 검증 대신 기존 계획 계속을 선택해야 합니다.",
             "NOT_LONG_GAP","장기 미동기화 상태가 아니어서 기존 계획 계속을 받지 않았습니다.",
             "VERIFICATION_NOT_USEFUL","같은 결과의 정밀 검증이나 기존 계획 계속이 이미 검토 필요로 끝났습니다. 다시 요청해도 바뀌지 않습니다.",
-            "IDEMPOTENCY_CONFLICT","같은 요청 키가 다른 요청에 이미 쓰였습니다. 새로 요청해 주세요.");
+            IdempotencyKey.CONFLICT_CODE,"같은 요청 키가 다른 요청에 이미 쓰였습니다. 새로 요청해 주세요.");
 
     /** The body of a verification request, read here for the same {@code no-store} reason as the sync's. */
     record VerificationBody(SyncJobApi.VerificationKind kind,SyncJobApi.EvidenceReference reference) {}
@@ -586,10 +579,8 @@ class DashboardController {
                 String code=refused.code();
                 if (IdempotencyKey.REQUIRED_CODE.equals(code)) {
                     logVerification(kind,code,422,started);
-                    return ResponseEntity.status(422).contentType(MediaType.APPLICATION_JSON)
-                            .cacheControl(CacheControl.noStore())
-                            .body(new ApiErrorHandler.ApiError(code,ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED,
-                                    correlationOf(request)));
+                    return error(HttpStatus.UNPROCESSABLE_CONTENT,code,ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED,
+                            request);
                 }
                 if ("BAD_REQUEST".equals(code)) {
                     logVerification(kind,code,400,started);
@@ -753,13 +744,6 @@ class DashboardController {
     private static void logEvidence(String state,int status,long started,String consistent) {
         LOG.info("calculation evidence read: state={} status={} latencyMs={} consistent={}",state,status,
                 (System.nanoTime()-started)/1_000_000,consistent);
-    }
-
-    /** The common error body, {@code no-store} like every answer of this surface. */
-    private static ResponseEntity<ApiErrorHandler.ApiError> error(HttpStatus status,String code,String message,
-            HttpServletRequest request) {
-        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).cacheControl(CacheControl.noStore())
-                .body(new ApiErrorHandler.ApiError(code,message,correlationOf(request)));
     }
 
     /**
@@ -1001,10 +985,6 @@ class DashboardController {
                 h.nextCursor());
     }
 
-    private static String correlationOf(HttpServletRequest request) {
-        return ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER));
-    }
-
     private static ResponseEntity<DashboardView> ok(DashboardView body) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(body);
     }
@@ -1033,13 +1013,5 @@ class DashboardController {
                                 nature.unavailableMetrics(),nature.estimatedFlowCount(),nature.axis().nextAction())),
                 r.metrics().stream().map(m -> new MetricView(m.metric(),m.value(),m.nature(),m.unavailableReason()))
                         .toList(),r.calculationKind());
-    }
-
-    private static @Nullable UUID currentUserId() {
-        Authentication authentication=SecurityContextHolder.getContext().getAuthentication();
-        if (authentication==null || !authentication.isAuthenticated()
-                || authentication instanceof AnonymousAuthenticationToken) return null;
-        try { return UUID.fromString(authentication.getName()); }
-        catch (IllegalArgumentException invalid) { return null; }
     }
 }

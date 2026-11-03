@@ -187,7 +187,7 @@ class PlanPublicationService {
 
     private static PublicationAdmission keyed(PlanPublicationRepository.KeyedJob keyed, UUID intentId) {
         return keyed.intentId().equals(intentId) ? new PublicationAdmission.Accepted(keyed.job())
-                : new PublicationAdmission.Refused("IDEMPOTENCY_CONFLICT");
+                : new PublicationAdmission.Refused(IdempotencyKey.CONFLICT_CODE);
     }
 
     /** Admission speaks the HTTP vocabulary; attempt endings keep the stored closed codes. */

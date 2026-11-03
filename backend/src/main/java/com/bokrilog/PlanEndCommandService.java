@@ -6,6 +6,7 @@ import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.plan.PlanEndApi;
+import com.bokrilog.sync.IdempotencyKey;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import java.time.Instant;
@@ -48,9 +49,6 @@ class PlanEndCommandService {
 
     /** 무장·확인 문구·허가 중 하나가 이 확정과 맞지 않는다(만료·재사용·다른 계획·다른 command·흐름 없음). */
     static final String PLAN_END_NOT_CONFIRMED = "PLAN_END_NOT_CONFIRMED";
-
-    /** 같은 키가 다른 종료 요청에 이미 쓰였다. */
-    static final String IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT";
 
     /** 준비의 결과. */
     sealed interface Preparation {
@@ -217,7 +215,7 @@ class PlanEndCommandService {
     private @Nullable Outcome replayed(UUID userId, String key, String requestHash) {
         return switch (this.planEnds.replay(userId, key, requestHash)) {
             case PlanEndApi.Replay.Stored stored -> new Outcome.Ended(stored.ended());
-            case PlanEndApi.Replay.Conflict conflict -> new Outcome.Refused(IDEMPOTENCY_CONFLICT, null);
+            case PlanEndApi.Replay.Conflict conflict -> new Outcome.Refused(IdempotencyKey.CONFLICT_CODE, null);
             case PlanEndApi.Replay.None none -> null;
         };
     }

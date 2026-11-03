@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.bokrilog.engagement.AdConsentApi;
 import com.bokrilog.engagement.EngagementDeletionApi;
+import com.bokrilog.sync.IdempotencyKey;
 import java.net.http.HttpResponse;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -159,7 +160,7 @@ class AdConsentTest extends OperatorTestBase {
         assertThat(rows(user)).isEqualTo(1);
 
         var conflict = decide(user, "DENIED", VERSION, key);
-        assertRefused(conflict, 409, AdConsentController.IDEMPOTENCY_CONFLICT);
+        assertRefused(conflict, 409, IdempotencyKey.CONFLICT_CODE);
         assertThat(rows(user)).isEqualTo(1);
         assertThat(topLevelFieldsOf(get(CONSENT, user.cookie()).body())).containsEntry("state", "GRANTED");
 

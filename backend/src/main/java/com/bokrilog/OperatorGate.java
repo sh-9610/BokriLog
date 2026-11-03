@@ -11,9 +11,6 @@ import java.util.Set;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.http.HttpStatus;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
@@ -57,7 +54,7 @@ final class OperatorGate extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        UUID userId = currentUserId();
+        UUID userId = ControllerSupport.currentUserId();
         if (!this.access.permits(userId, requiredFor(AuthSecurityConfig.applicationPath(request)))) {
             abandonRevokedArming(request, userId);
             response.sendError(HttpStatus.NOT_FOUND.value());
@@ -82,8 +79,7 @@ final class OperatorGate extends OncePerRequestFilter {
             return;
         }
         try {
-            this.commands.abandonRevoked(session, userId,
-                    ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER)));
+            this.commands.abandonRevoked(session, userId, ControllerSupport.correlationIdOf(request));
         } catch (RuntimeException ignored) {
             // 응답은 같은 404다. 남은 무장은 다음 준비가 덮고, 허가는 5분 뒤 만료된다.
         }
@@ -109,18 +105,5 @@ final class OperatorGate extends OncePerRequestFilter {
             return Set.of(OperatorPermission.AUDIT);
         }
         return Set.of();
-    }
-
-    private static @Nullable UUID currentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()
-                || authentication instanceof AnonymousAuthenticationToken) {
-            return null;
-        }
-        try {
-            return UUID.fromString(authentication.getName());
-        } catch (IllegalArgumentException invalid) {
-            return null;
-        }
     }
 }

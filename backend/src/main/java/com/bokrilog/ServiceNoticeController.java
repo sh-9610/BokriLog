@@ -1,9 +1,7 @@
 package com.bokrilog;
 
 import com.bokrilog.calculation.PlanCalculator;
-import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
-import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.operations.RestrictionFeature;
 import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.operations.ServiceNoticeApi;
@@ -26,9 +24,6 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -103,9 +98,8 @@ class ServiceNoticeController {
     @GetMapping(path = AuthSecurityConfig.NOTICES_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<?> notices(HttpServletRequest request, HttpServletResponse response) throws IOException {
         long started = System.nanoTime();
-        UUID userId = currentUserId();
-        if (userId == null
-                || this.accounts.decide(userId, userId, AccountAccessKind.SENSITIVE) != AccessDecision.ALLOWED) {
+        UUID userId = ControllerSupport.allowedUser(this.accounts);
+        if (userId == null) {
             // 삭제가 시작된 계정·쓸 수 없는 계정: 없는 경로와 같은 404. 사용자별 항목을 만들지 않는다.
             response.sendError(HttpStatus.NOT_FOUND.value());
             log("NOT_FOUND", HttpStatus.NOT_FOUND.value(), 0, started);
@@ -120,11 +114,8 @@ class ServiceNoticeController {
                 LOG.debug("service notice read failed: failure={}", failure.getClass().getName());
             }
             log("ERROR", HttpStatus.INTERNAL_SERVER_ERROR.value(), 0, started);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).contentType(MediaType.APPLICATION_JSON)
-                    .cacheControl(CacheControl.noStore())
-                    .body(new ApiErrorHandler.ApiError(ApiErrorHandler.CODE_INTERNAL_ERROR,
-                            ApiErrorHandler.MESSAGE_INTERNAL_ERROR,
-                            ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER))));
+            return ControllerSupport.error(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorHandler.CODE_INTERNAL_ERROR,
+                    ApiErrorHandler.MESSAGE_INTERNAL_ERROR, request);
         }
         String contact = this.supportContact.value();
         List<ItemView> items = found.items().stream().map(item -> view(item, contact)).toList();
@@ -185,18 +176,5 @@ class ServiceNoticeController {
     private static void log(String result, int status, int items, long started) {
         LOG.info("service notice request: result={} status={} items={} latencyMs={}", result, status, items,
                 (System.nanoTime() - started) / 1_000_000);
-    }
-
-    private static @Nullable UUID currentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()
-                || authentication instanceof AnonymousAuthenticationToken) {
-            return null;
-        }
-        try {
-            return UUID.fromString(authentication.getName());
-        } catch (IllegalArgumentException invalid) {
-            return null;
-        }
     }
 }

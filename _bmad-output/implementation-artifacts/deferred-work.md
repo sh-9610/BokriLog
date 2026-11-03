@@ -506,3 +506,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-ci-backend-assemble-job.md`
   summary: jar를 내려받는 소비 job 넷(same-origin·배포·백업·복원 리허설)이 내려받은 `bokrilog-backend.jar`의 SHA-256을 생산자 output(`needs.backend-assemble.outputs.jar-sha256`)과 대조하지 않는다 — CI-PLAN §8의 "통합 job이 SHA와 checksum을 검증한다"는 artifact 저장소 왕복에 대해 여전히 가정이다.
   evidence: 이 변경 전에도 소비 job은 내려받은 jar를 검증하지 않았고(`backend-quality`가 올린 것을 그대로 썼다), 이번 digest 판정은 생산자 두 쪽(`backend-assemble`·`backend-quality`)의 일치를 `ci-required`에서 사후에 볼 뿐이다. 내려받기 뒤 `sha256sum -c` 한 단계면 닫히지만 판정은 `.github/scripts/`의 스크립트와 `test-ci-scripts.sh`의 단정을 요구해 네 job의 단계 목록 계약을 함께 바꾸는 별도 범위다(2026-11-03 리뷰 blind-hunter).
+- source_spec: none
+  summary: 프런트엔드의 동일 출처 JSON POST와 JSON 판독(`readJson`·`objectOf`·`fieldsOf`)을 helper 하나로 모은다(Epic 4 회고 AI-8 `epic-4-retro-item-47`의 ② 프런트엔드 묶음).
+  evidence: 2026-11-03 AI-8을 세 목표로 나눠([S]) 이번 작업은 백엔드 컨트롤러 helper·`IdempotencyKey.CONFLICT_CODE`만 한다. 지금 POST를 직접 만드는 곳이 17개 파일, JSON 판독 사본이 여섯 파일에 아홉 개다(`session/adTransition.ts`·`useAdConsent.ts`·`operatorApi.ts`·`useSupportInquiries.ts`·`bybitConnection.ts`·`useServiceNotices.ts`).
+- source_spec: none
+  summary: 광고 시험 공용 helper(`admitManual`·`grant`·자격 행 삽입·`assertNotFound`)를 한 곳으로 모으고 engagement 모듈의 바깥 의존 허용 목록을 `ModuleBoundaryTest`로 강제한다(Epic 4 회고 AI-8 `epic-4-retro-item-47`의 ③ 시험·경계 묶음, 회고 A-2).
+  evidence: 2026-11-03 AI-8을 세 목표로 나눠([S]) 이번 작업은 백엔드 컨트롤러 helper만 한다. `AdEligibilityTest`·`AdTransitionTest`의 `admitManual`은 이미 갈라졌고(접수 시각을 당기는가), `engagement/package-info.java`가 적은 바깥 의존(sync·operations·identity)을 강제하는 시험이 없다.

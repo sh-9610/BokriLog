@@ -19,7 +19,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.web.authentication.preauth.PreAuthenticatedAuthenticationToken;
 import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -188,7 +187,7 @@ class AuthSessionController {
         String destination =
                 authenticated
                         ? AuthFlowHandlers.destinationKind(settled == null ? null
-                                : this.operators.foldDestination(currentUserId(), settled))
+                                : this.operators.foldDestination(ControllerSupport.currentUserId(), settled))
                         : AuthFlowHandlers.destinationKind(null);
 
         return ResponseEntity.ok()
@@ -321,7 +320,7 @@ class AuthSessionController {
             response.sendError(HttpStatus.NOT_FOUND.value());
             return;
         }
-        UUID userId = currentUserId();
+        UUID userId = ControllerSupport.currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null || session == null) {
             // 무장할 대상이 없다. 미인증 상태 변경과 같은 하나의 코드이며 사유를 남기지 않는다.
@@ -396,7 +395,7 @@ class AuthSessionController {
             path = AuthSecurityConfig.LINK_BASE_URI,
             produces = MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<LinkState> links(HttpServletResponse response) throws IOException {
-        UUID userId = currentUserId();
+        UUID userId = ControllerSupport.currentUserId();
         if (userId == null) {
             response.sendError(HttpStatus.FORBIDDEN.value());
             return null;
@@ -443,7 +442,7 @@ class AuthSessionController {
             response.sendError(HttpStatus.NOT_FOUND.value());
             return;
         }
-        UUID userId = currentUserId();
+        UUID userId = ControllerSupport.currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null
                 || session == null
@@ -496,7 +495,7 @@ class AuthSessionController {
             response.sendError(HttpStatus.NOT_FOUND.value());
             return;
         }
-        UUID userId = currentUserId();
+        UUID userId = ControllerSupport.currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null
                 || session == null
@@ -571,7 +570,7 @@ class AuthSessionController {
             response.sendError(HttpStatus.NOT_FOUND.value());
             return;
         }
-        UUID userId = currentUserId();
+        UUID userId = ControllerSupport.currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null
                 || session == null
@@ -582,31 +581,6 @@ class AuthSessionController {
             return;
         }
         response.setStatus(HttpStatus.NO_CONTENT.value());
-    }
-
-    /**
-     * 지금 요청 주체의 내부 {@code user_id}.
-     *
-     * <p>{@code AuthFlowHandlers}가 로그인 성공 시 심은 {@link PreAuthenticatedAuthenticationToken}
-     * 의 이름이다. 그 값이 세션 행의 {@code principal_name}이자 이 애플리케이션이 아는 유일한
-     * 사용자 식별자이며, 클라이언트가 보낸 값이 아니다.
-     *
-     * @return 인증된 주체의 식별자, 없거나 읽히지 않으면 {@code null}
-     */
-    private static @Nullable UUID currentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null
-                || !authentication.isAuthenticated()
-                || authentication instanceof AnonymousAuthenticationToken) {
-            return null;
-        }
-        try {
-            return UUID.fromString(authentication.getName());
-        } catch (IllegalArgumentException ex) {
-            // 이 배선이 심는 이름은 언제나 UUID 문자열이다. 아니라면 무장할 대상을 모른다는
-            // 뜻이므로 거부한다 — 예외를 밖으로 내보내지 않는다(스택도 로그도 남지 않는다).
-            return null;
-        }
     }
 
     private static @Nullable String sessionAttribute(HttpServletRequest request) {

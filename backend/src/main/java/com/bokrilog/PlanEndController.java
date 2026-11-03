@@ -14,9 +14,6 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -77,8 +74,8 @@ class PlanEndController {
                     "오래 동기화하지 않아 장기 미동기화 선택지의 새 계획 시작으로만 종료할 수 있습니다.")),
             Map.entry(PlanEndApi.NOT_LONG_GAP, new Refusal(HttpStatus.CONFLICT, PlanEndApi.NOT_LONG_GAP,
                     "장기 미동기화 상태가 아니어서 새 계획 시작으로 종료하지 않았습니다.")),
-            Map.entry(PlanEndCommandService.IDEMPOTENCY_CONFLICT, new Refusal(HttpStatus.CONFLICT,
-                    PlanEndCommandService.IDEMPOTENCY_CONFLICT, "같은 요청 키가 다른 종료 요청에 이미 쓰였습니다. 새로 요청해 주세요.")));
+            Map.entry(IdempotencyKey.CONFLICT_CODE, new Refusal(HttpStatus.CONFLICT,
+                    IdempotencyKey.CONFLICT_CODE, "같은 요청 키가 다른 종료 요청에 이미 쓰였습니다. 새로 요청해 주세요.")));
 
     /** A request body is a few hundred bytes; anything much longer is not one. */
     private static final int MAX_BODY_CHARS = 1024;
@@ -120,7 +117,7 @@ class PlanEndController {
         long started = System.nanoTime();
         Body parsed = bodyOf(body, false);
         if (parsed == null) return answer("prepare", badRequest(request), "BAD_REQUEST", started);
-        UUID userId = currentUserId();
+        UUID userId = ControllerSupport.currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null || session == null)
             return answer("prepare", refused(PlanEndApi.NOT_PERMITTED, null, request), PlanEndApi.NOT_PERMITTED,
@@ -153,7 +150,7 @@ class PlanEndController {
             return answer("confirm", error(HttpStatus.UNPROCESSABLE_CONTENT, IdempotencyKey.REQUIRED_CODE,
                     ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED, null, request), IdempotencyKey.REQUIRED_CODE,
                     started);
-        UUID userId = currentUserId();
+        UUID userId = ControllerSupport.currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null || session == null)
             return answer("confirm", refused(PlanEndApi.NOT_PERMITTED, null, request), PlanEndApi.NOT_PERMITTED,
@@ -263,9 +260,8 @@ class PlanEndController {
 
     private static ResponseEntity<PlanEndError> error(HttpStatus status, String code, String message,
             @Nullable String reason, HttpServletRequest request) {
-        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).cacheControl(CacheControl.noStore())
-                .body(new PlanEndError(code, message, ApiErrorHandler.correlationIdOf(
-                        request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER)), reason));
+        return ControllerSupport.noStoreJson(status,
+                new PlanEndError(code, message, ControllerSupport.correlationIdOf(request), reason));
     }
 
     private static ResponseEntity<?> answer(String step, ResponseEntity<?> response, String result, long started) {
@@ -277,16 +273,5 @@ class PlanEndController {
     private static void log(String step, String result, int status, long started) {
         LOG.info("plan end request: step={} result={} status={} latencyMs={}", step, result, status,
                 (System.nanoTime() - started) / 1_000_000);
-    }
-
-    private static @Nullable UUID currentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()
-                || authentication instanceof AnonymousAuthenticationToken) return null;
-        try {
-            return UUID.fromString(authentication.getName());
-        } catch (IllegalArgumentException invalid) {
-            return null;
-        }
     }
 }

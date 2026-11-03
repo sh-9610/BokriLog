@@ -1,9 +1,7 @@
 package com.bokrilog;
 
 import com.bokrilog.engagement.AdConsentApi;
-import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
-import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.sync.IdempotencyKey;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.servlet.http.HttpServletRequest;
@@ -16,9 +14,6 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -55,9 +50,6 @@ class AdConsentController {
     /** 화면이 본 정책 버전이 지금 버전과 다르다. 화면은 상태를 다시 읽는다. */
     static final String POLICY_CHANGED = "AD_CONSENT_POLICY_CHANGED";
 
-    /** 같은 멱등 키가 다른 입력에 쓰였다. */
-    static final String IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT";
-
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AdConsentController.class);
 
     /** 요청 본문의 상한(문자). 두 필드의 이스케이프된 값과 키를 넉넉히 담는다. */
@@ -84,7 +76,7 @@ class AdConsentController {
     @GetMapping(path = AD_CONSENT_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<?> current(HttpServletRequest request, HttpServletResponse response) throws IOException {
         long started = System.nanoTime();
-        UUID userId = allowedUser();
+        UUID userId = ControllerSupport.allowedUser(this.accounts);
         if (userId == null) {
             return notFound("read", response, started);
         }
@@ -103,21 +95,21 @@ class AdConsentController {
             @RequestHeader(name = IdempotencyKey.HEADER, required = false) @Nullable String key,
             HttpServletRequest request, HttpServletResponse response) throws IOException {
         long started = System.nanoTime();
-        String correlationId = correlationIdOf(request);
-        UUID userId = allowedUser();
+        String correlationId = ControllerSupport.correlationIdOf(request);
+        UUID userId = ControllerSupport.allowedUser(this.accounts);
         if (userId == null) {
             return notFound("decide", response, started);
         }
         Request parsed = requestOf(body);
         if (parsed == null) {
             log("decide", ApiErrorHandler.CODE_BAD_REQUEST, HttpStatus.BAD_REQUEST.value(), started);
-            return error(HttpStatus.BAD_REQUEST, new ApiErrorHandler.ApiError(ApiErrorHandler.CODE_BAD_REQUEST,
-                    ApiErrorHandler.MESSAGE_BAD_REQUEST, correlationId));
+            return ControllerSupport.error(HttpStatus.BAD_REQUEST, new ApiErrorHandler.ApiError(
+                    ApiErrorHandler.CODE_BAD_REQUEST, ApiErrorHandler.MESSAGE_BAD_REQUEST, correlationId));
         }
         if (!IdempotencyKey.isValid(key)) {
             log("decide", IdempotencyKey.REQUIRED_CODE, HttpStatus.UNPROCESSABLE_CONTENT.value(), started);
-            return error(HttpStatus.UNPROCESSABLE_CONTENT, new ApiErrorHandler.ApiError(IdempotencyKey.REQUIRED_CODE,
-                    ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED, correlationId));
+            return ControllerSupport.error(HttpStatus.UNPROCESSABLE_CONTENT, new ApiErrorHandler.ApiError(
+                    IdempotencyKey.REQUIRED_CODE, ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED, correlationId));
         }
         AdConsentApi.Decision decision;
         try {
@@ -132,12 +124,13 @@ class AdConsentController {
             }
             case AdConsentApi.Decision.PolicyChanged changed -> {
                 log("decide", POLICY_CHANGED, HttpStatus.CONFLICT.value(), started);
-                yield error(HttpStatus.CONFLICT, new ApiErrorHandler.ApiError(POLICY_CHANGED,
+                yield ControllerSupport.error(HttpStatus.CONFLICT, new ApiErrorHandler.ApiError(POLICY_CHANGED,
                         "광고 동의 안내가 바뀌었습니다. 바뀐 안내를 확인한 뒤 다시 선택해 주세요.", correlationId));
             }
             case AdConsentApi.Decision.Conflict conflict -> {
-                log("decide", IDEMPOTENCY_CONFLICT, HttpStatus.CONFLICT.value(), started);
-                yield error(HttpStatus.CONFLICT, new ApiErrorHandler.ApiError(IDEMPOTENCY_CONFLICT,
+                log("decide", IdempotencyKey.CONFLICT_CODE, HttpStatus.CONFLICT.value(), started);
+                yield ControllerSupport.error(HttpStatus.CONFLICT, new ApiErrorHandler.ApiError(
+                        IdempotencyKey.CONFLICT_CODE,
                         "같은 요청 키가 다른 선택에 이미 쓰였습니다. 화면을 새로 열어 다시 선택해 주세요.", correlationId));
             }
             // 쓰기 잠금 아래에서 본 계정이 쓰기를 받지 않는다(삭제 시작). 앞의 접근 판정과 같은 404다.
@@ -180,16 +173,6 @@ class AdConsentController {
                 view.decidedAt() == null ? null : view.decidedAt().toString());
     }
 
-    /** 세션 사용자. 미인증은 인가 필터가 먼저 401로 끝낸다. 삭제가 시작된 계정·쓸 수 없는 계정은 {@code null}(404)이다. */
-    private @Nullable UUID allowedUser() {
-        UUID userId = currentUserId();
-        if (userId == null
-                || this.accounts.decide(userId, userId, AccountAccessKind.SENSITIVE) != AccessDecision.ALLOWED) {
-            return null;
-        }
-        return userId;
-    }
-
     private static @Nullable ResponseEntity<?> notFound(String step, HttpServletResponse response, long started)
             throws IOException {
         // 없는 경로와 같은 404. 오류 디스패치를 지나 공통 본문이 된다.
@@ -205,35 +188,13 @@ class AdConsentController {
         LOG.atWarn().addKeyValue("exception", failure.getClass().getSimpleName())
                 .log("ad consent failed closed");
         log(step, "ERROR", HttpStatus.INTERNAL_SERVER_ERROR.value(), started);
-        return error(HttpStatus.INTERNAL_SERVER_ERROR, new ApiErrorHandler.ApiError(
-                ApiErrorHandler.CODE_INTERNAL_ERROR, ApiErrorHandler.MESSAGE_INTERNAL_ERROR, correlationIdOf(request)));
-    }
-
-    private static ResponseEntity<ApiErrorHandler.ApiError> error(HttpStatus status, ApiErrorHandler.ApiError body) {
-        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON)
-                .cacheControl(CacheControl.noStore()).body(body);
-    }
-
-    private static String correlationIdOf(HttpServletRequest request) {
-        return ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER));
+        return ControllerSupport.error(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorHandler.CODE_INTERNAL_ERROR,
+                ApiErrorHandler.MESSAGE_INTERNAL_ERROR, request);
     }
 
     /** 단계·결과 code·상태·지연만 남긴다. 사용자·선택값·키는 싣지 않는다. */
     private static void log(String step, String result, int status, long started) {
         LOG.info("ad consent request: step={} result={} status={} latencyMs={}", step, result, status,
                 (System.nanoTime() - started) / 1_000_000);
-    }
-
-    private static @Nullable UUID currentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()
-                || authentication instanceof AnonymousAuthenticationToken) {
-            return null;
-        }
-        try {
-            return UUID.fromString(authentication.getName());
-        } catch (IllegalArgumentException invalid) {
-            return null;
-        }
     }
 }

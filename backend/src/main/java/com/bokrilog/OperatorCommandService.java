@@ -9,6 +9,7 @@ import com.bokrilog.operations.OperatorCommandApi.Envelope;
 import com.bokrilog.operations.OperatorCommandApi.Executed;
 import com.bokrilog.operations.OperatorCommandApi.Inspection;
 import com.bokrilog.operations.OperatorPermission;
+import com.bokrilog.sync.IdempotencyKey;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import java.time.Instant;
@@ -65,9 +66,6 @@ class OperatorCommandService {
 
     /** 재인증이 신선하지 않아 허가가 서지 않았다(준비). */
     static final String REAUTHENTICATION_REQUIRED = "REAUTHENTICATION_REQUIRED";
-
-    /** 같은 멱등 키가 다른 입력·끝난 operation에 이미 쓰였다. */
-    static final String IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT";
 
     /** 운영자가 아니거나 권한이 없다 — 미존재와 같은 404로 옮긴다. */
     static final String NOT_FOUND = "NOT_FOUND";
@@ -181,8 +179,9 @@ class OperatorCommandService {
 
         var keyUse = this.commands.keyUse(userId, keyDigest, accepted.requestDigest());
         if (keyUse instanceof OperatorCommandApi.KeyUse.Conflict) {
-            this.commands.recordRefusedProposal(userId, proposal, IDEMPOTENCY_CONFLICT, keyDigest, correlationId);
-            return new Preparation.Refused(IDEMPOTENCY_CONFLICT);
+            this.commands.recordRefusedProposal(userId, proposal, IdempotencyKey.CONFLICT_CODE, keyDigest,
+                    correlationId);
+            return new Preparation.Refused(IdempotencyKey.CONFLICT_CODE);
         }
         // 미리 본 판정이다. 확정적인 판정은 허가 발급 뒤 원장 잠금 안에서 다시 한다(`claim`).
         String candidateId;
@@ -242,8 +241,9 @@ class OperatorCommandService {
         }
         if (!(claim instanceof OperatorCommandApi.Claim.Claimed claimed)) {
             this.grants.invalidateReference(userId, reference.get());
-            this.commands.recordRefusedProposal(userId, proposal, IDEMPOTENCY_CONFLICT, keyDigest, correlationId);
-            return new Preparation.Refused(IDEMPOTENCY_CONFLICT);
+            this.commands.recordRefusedProposal(userId, proposal, IdempotencyKey.CONFLICT_CODE, keyDigest,
+                    correlationId);
+            return new Preparation.Refused(IdempotencyKey.CONFLICT_CODE);
         }
         String operationId = claimed.operationId();
         Instant recorded = claimed.requestedAt();
@@ -408,7 +408,7 @@ class OperatorCommandService {
     private @Nullable Outcome replayed(UUID userId, String operationId, String keyDigest, String command) {
         return switch (this.commands.replay(userId, operationId, keyDigest, command)) {
             case OperatorCommandApi.Replay.Stored stored -> new Outcome.Completed(stored.view(), false);
-            case OperatorCommandApi.Replay.Conflict conflict -> new Outcome.Refused(IDEMPOTENCY_CONFLICT);
+            case OperatorCommandApi.Replay.Conflict conflict -> new Outcome.Refused(IdempotencyKey.CONFLICT_CODE);
             case OperatorCommandApi.Replay.None none -> null;
         };
     }

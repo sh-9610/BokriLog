@@ -22,9 +22,6 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -42,7 +39,7 @@ import org.springframework.web.bind.annotation.RestController;
  * {@code authenticated()}가 걸리고 나머지는 {@code permitAll}을 유지한다
  * ({@code AuthSecurityConfig}) — 전역으로 켜면 Story 1.2가 고정한 404·405가 401·302로 뒤집힌다.
  * 그럼에도 아래 핸들러들이 주체를 다시 확인한다. 인가 규칙이 생겨도 핸들러 검사를 지우지 않는
- * 것이 이중 방어이며 {@code AuthSessionController.currentUserId}가 같은 관용이다.
+ * 것이 이중 방어이며, 그 근거는 {@link ControllerSupport#currentUserId()}가 소유한다.
  *
  * <p><b>Secret이 응답·주소·로그 어디에도 없다.</b> 자격정보는 {@code POST} 본문으로만 오고 성공
  * 응답에는 연결 사실과 시각·정책 버전뿐이다. 마스킹 값도 재표시하지 않는다 — 마스킹은 "일부를
@@ -200,7 +197,7 @@ class BybitConnectionController {
             path = AuthSecurityConfig.BYBIT_CONNECTION_PATH,
             produces = MediaType.APPLICATION_JSON_VALUE)
     @Nullable ResponseEntity<ConnectionState> state(HttpServletResponse response) throws IOException {
-        UUID userId = currentUserId();
+        UUID userId = ControllerSupport.currentUserId();
         if (userId == null) {
             response.sendError(HttpStatus.FORBIDDEN.value());
             return null;
@@ -242,7 +239,7 @@ class BybitConnectionController {
             path = AuthSecurityConfig.BYBIT_CONNECTION_PATH,
             produces = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<?> prepare(HttpServletRequest request) {
-        UUID userId = currentUserId();
+        UUID userId = ControllerSupport.currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null || session == null) {
             return error(SourceRejectionReason.NOT_PERMITTED, request);
@@ -287,7 +284,7 @@ class BybitConnectionController {
             produces = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<?> connect(
             @RequestBody ConnectRequest body, HttpServletRequest request) {
-        UUID userId = currentUserId();
+        UUID userId = ControllerSupport.currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null || session == null) {
             return error(SourceRejectionReason.NOT_PERMITTED, request);
@@ -375,8 +372,8 @@ class BybitConnectionController {
             Map.entry(BybitRevocationCommandService.CONNECTION_NOT_FOUND, new RevocationRefusal(HttpStatus.NOT_FOUND,
                     BybitRevocationCommandService.CONNECTION_NOT_FOUND,
                     "해제할 활성 연결을 찾지 못했습니다. 설정 화면을 다시 불러와 주세요.")),
-            Map.entry(BybitRevocationCommandService.IDEMPOTENCY_CONFLICT, new RevocationRefusal(HttpStatus.CONFLICT,
-                    BybitRevocationCommandService.IDEMPOTENCY_CONFLICT,
+            Map.entry(IdempotencyKey.CONFLICT_CODE, new RevocationRefusal(HttpStatus.CONFLICT,
+                    IdempotencyKey.CONFLICT_CODE,
                     "같은 요청 키가 다른 해제 요청에 이미 쓰였습니다. 새로 요청해 주세요.")));
 
     /** 본문은 수십 바이트다. 훨씬 긴 것은 이 요청이 아니다. */
@@ -408,7 +405,7 @@ class BybitConnectionController {
         long started = System.nanoTime();
         RevocationBody parsed = revocationBodyOf(body, false);
         if (parsed == null) return revocationAnswer("prepare", revocationBadRequest(request), "BAD_REQUEST", started);
-        UUID userId = currentUserId();
+        UUID userId = ControllerSupport.currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null || session == null)
             return revocationAnswer("prepare", revocationRefused(BybitRevocationCommandService.NOT_PERMITTED, request),
@@ -444,10 +441,10 @@ class BybitConnectionController {
         if (parsed == null || parsed.confirmation() == null)
             return revocationAnswer("confirm", revocationBadRequest(request), "BAD_REQUEST", started);
         if (!IdempotencyKey.isValid(key))
-            return revocationAnswer("confirm", revocationError(HttpStatus.UNPROCESSABLE_CONTENT,
+            return revocationAnswer("confirm", ControllerSupport.error(HttpStatus.UNPROCESSABLE_CONTENT,
                     IdempotencyKey.REQUIRED_CODE, ApiErrorHandler.MESSAGE_IDEMPOTENCY_KEY_REQUIRED, request),
                     IdempotencyKey.REQUIRED_CODE, started);
-        UUID userId = currentUserId();
+        UUID userId = ControllerSupport.currentUserId();
         HttpSession session = request.getSession(false);
         if (userId == null || session == null)
             return revocationAnswer("confirm", revocationRefused(BybitRevocationCommandService.NOT_PERMITTED, request),
@@ -522,29 +519,22 @@ class BybitConnectionController {
         RevocationRefusal refusal = REVOCATION_REFUSALS.get(code);
         if (refusal == null) {
             // A refusal this surface does not know is a broken contract, not the caller's fault.
-            return revocationError(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorHandler.CODE_INTERNAL_ERROR,
+            return ControllerSupport.error(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorHandler.CODE_INTERNAL_ERROR,
                     ApiErrorHandler.MESSAGE_INTERNAL_ERROR, request);
         }
-        return revocationError(refusal.status(), refusal.code(), refusal.message(), request);
+        return ControllerSupport.error(refusal.status(), refusal.code(), refusal.message(), request);
     }
 
     private static ResponseEntity<?> revocationBadRequest(HttpServletRequest request) {
-        return revocationError(HttpStatus.BAD_REQUEST, ApiErrorHandler.CODE_BAD_REQUEST,
+        return ControllerSupport.error(HttpStatus.BAD_REQUEST, ApiErrorHandler.CODE_BAD_REQUEST,
                 ApiErrorHandler.MESSAGE_BAD_REQUEST, request);
     }
 
     private static ResponseEntity<?> revocationInternal(RuntimeException failure, HttpServletRequest request) {
         // The class name at debug only: a message or cause can carry SQL or values.
         if (LOG.isDebugEnabled()) LOG.debug("bybit revocation failed: failure={}", failure.getClass().getName());
-        return revocationError(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorHandler.CODE_INTERNAL_ERROR,
+        return ControllerSupport.error(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorHandler.CODE_INTERNAL_ERROR,
                 ApiErrorHandler.MESSAGE_INTERNAL_ERROR, request);
-    }
-
-    private static ResponseEntity<ApiError> revocationError(HttpStatus status, String code, String message,
-            HttpServletRequest request) {
-        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).cacheControl(CacheControl.noStore())
-                .body(new ApiError(code, message,
-                        ApiErrorHandler.correlationIdOf(request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER))));
     }
 
     private static ResponseEntity<?> revocationAnswer(String step, ResponseEntity<?> response, String result,
@@ -573,17 +563,13 @@ class BybitConnectionController {
                 reason == SourceRejectionReason.NOT_PERMITTED
                         ? HttpStatus.FORBIDDEN
                         : HttpStatus.UNPROCESSABLE_CONTENT;
-        return ResponseEntity.status(status)
-                .contentType(MediaType.APPLICATION_JSON)
-                .cacheControl(CacheControl.noStore())
-                .body(
-                        new ApiError(
-                                codeOf(reason),
-                                reason == SourceRejectionReason.NOT_PERMITTED
-                                        ? ApiErrorHandler.MESSAGE_FORBIDDEN
-                                        : MESSAGE_CONNECTION_REJECTED,
-                                ApiErrorHandler.correlationIdOf(
-                                        request.getHeader(ApiErrorHandler.REQUEST_ID_HEADER))));
+        return ControllerSupport.error(
+                status,
+                codeOf(reason),
+                reason == SourceRejectionReason.NOT_PERMITTED
+                        ? ApiErrorHandler.MESSAGE_FORBIDDEN
+                        : MESSAGE_CONNECTION_REJECTED,
+                request);
     }
 
     /** 거절 이유가 전부 code를 갖는가. 시험이 닫힌 맵의 완전성을 보는 창이다. */
@@ -605,27 +591,5 @@ class BybitConnectionController {
     /** 그 거절 이유의 안정 machine code. 시험과 검증 스크립트가 같은 값을 본다. */
     static String codeOf(SourceRejectionReason reason) {
         return CODES.getOrDefault(reason, ApiErrorHandler.CODE_BAD_REQUEST);
-    }
-
-    /**
-     * 지금 요청 주체의 내부 {@code user_id}.
-     *
-     * <p>{@code AuthSessionController.currentUserId}와 같은 판정이다. 인가 규칙이 이 접두사를 이미
-     * 막으므로 이 값이 {@code null}인 요청은 <b>지금 배선에서는 여기 도달하지 않는다</b> — 미인증
-     * 요청의 실제 답은 인가 필터의 401이다. 그럼에도 핸들러 검사를 지우지 않는 것은 이중 방어이고,
-     * 규칙이 실수로 넓어지거나 좁아지는 날 이 검사가 마지막 말을 한다.
-     */
-    private static @Nullable UUID currentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null
-                || !authentication.isAuthenticated()
-                || authentication instanceof AnonymousAuthenticationToken) {
-            return null;
-        }
-        try {
-            return UUID.fromString(authentication.getName());
-        } catch (IllegalArgumentException ex) {
-            return null;
-        }
     }
 }
