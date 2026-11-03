@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 10-18-2026 10:00
+last_updated: 11-03-2026 14:00
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -283,7 +283,7 @@ action_items:
     action: "계정 삭제(AccountErasure → eraseRestrictionTargets)를 감사 원장 잠금(lockAppends)과
       직렬화한다. 사용자 삭제 경로를 여는 Epic 5 전이어야 한다(회고 B-2)"
     owner: "Dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
   - id: "epic-3-retro-item-28-실제-비밀값-기반-로그-가림-secret_exposed를-비밀을-받는-모"
     epic: 3
