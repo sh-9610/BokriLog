@@ -17,10 +17,18 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 34 |
+| 해소 | 35 |
 | 부분 해소 | 22 |
-| 미해소 | 113 |
+| 미해소 | 112 |
 | 미판정 | 0 |
+
+**2026-11-04 갱신(광고 시험 공용 helper·engagement 바깥 의존 규칙 chore done 전환).** `spec-ad-test-commons.md`(PR #137, 머지 커밋 `51fd410`, Epic 4 회고 AI-8 `epic-4-retro-item-47`의 ③ 시험·경계 묶음)를 판정했다.
+
+- **append한 항목.** 없다. 1차 리뷰(blind-hunter·edge-case-hunter·verification-gap)는 patch 7 · defer 0 · reject 10이었다.
+- **해소한 항목.** **167**(광고 시험 공용 helper·engagement 바깥 의존 허용 목록). 아래 절에 적었다. 이로써 item-47의 세 묶음(①·②·③)이 모두 닫혀 sprint-status에서 그 액션을 `done`으로 바꿨다.
+- **결정 지점으로 지목된 항목.** 없다. 이 chore가 지나간 열린 회고 액션 `epic-3-retro-item-39`(시험 표지 생성 도우미)·`epic-2-retro-item-24`(erase 완전성 시험)는 그대로 열려 있다.
+
+그래서 앞 표(169건)에서 미해소 −1·해소 +1이다. 합은 169 그대로다.
 
 **2026-11-04 갱신(프런트엔드 POST·JSON 판독 공통 부품 chore done 전환).** `spec-frontend-request-commons.md`(PR #135, 머지 커밋 `afb08f0`, Epic 4 회고 AI-8 `epic-4-retro-item-47`의 ② 프런트엔드 묶음)를 판정했다.
 
@@ -1434,6 +1442,23 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **이 chore가 바꾼 것.** 없다. 운영 소스의 루트 컨트롤러만 다뤘다. engagement 컨트롤러 넷이 새 helper를 쓰게 됐지만 engagement 모듈의 의존은 바뀌지 않았다.
 
 **미해소 잔여:** 시험 helper 한 곳으로 모으기, 그리고 engagement의 허용 의존 목록을 `ModuleBoundaryTest`에 단정하기. 주인은 `epic-4-retro-item-47`(in-progress)의 다음 chore다.
+→ 아래 2026-11-04 해소 블록.
+
+**해소(2026-11-04, 광고 시험 공용 helper·engagement 바깥 의존 규칙 chore, `spec-ad-test-commons.md`, PR #137 머지 커밋 `51fd410`).**
+- **바꾼 것.**
+  - 루트 시험 패키지의 `abstract class AdTestBase extends OperatorTestBase`가 광고 시험 helper의 단일 정의다(`grant`·`admitManual`·`backdateAdmission`·`claim`·`insertConsent`·`insertEligible`·`newTransition`·`assertNotFound`·`@AfterEach providerBackOn`). 새 시험 컨텍스트를 만드는 설정은 두지 않았다.
+  - AdConsent·AdEligibility·AdTransition·ClientTelemetry 시험이 이것을 상속한다.
+  - 갈라졌던 `admitManual`은 공통부와 Eligibility의 쿨다운 사정(`backdateAdmission`)으로 나눴다. 세 벌이던 `concurrently`는 `OperatorTestBase`로 올렸다.
+  - `ModuleBoundaryTest`의 `engagement는_sync_operations_identity에만_의존한다`가 package-info의 산문을 기계 판정으로 바꿨다. 루트 패키지 의존도 막고, 대상이 비면 실패한다.
+- **재발 방지.** `AdTestBaseTest`가 그 base의 하위 시험을 훑어, 옮긴 helper 이름의 재정의가 base 밖에 생기지 않게 막는다. 이름을 바꾼 사본과 인라인 SQL은 리뷰 몫이다.
+- **바꾸지 않은 것(Never).**
+  - `AccountErasureTest`·`RestoreApplyTest`의 인라인 engagement 행, `ErasureAuditLockTest`의 `LOCK_WAITERS`, `TelemetryAllowlistTest`의 `scrape`
+  - 한 클래스에만 있는 helper
+  - engagement 공개 API의 타입 단위 제한
+- **검증.**
+  - 로컬 `clean build`: 시험 1,638건 전부 통과(기준 1,625건 + 새 13건). 기존 클래스의 `@Test` 수는 같다.
+  - 부정 확인: 루트·plan 타입을 참조하는 임시 클래스에서 새 규칙이 실패했다.
+  - PR #137 CI: 아홉 job 모두 통과(`backend-quality` 8분 36초).
 
 ### 168. fork 격리 불변식의 소스 스캔 시험
 
