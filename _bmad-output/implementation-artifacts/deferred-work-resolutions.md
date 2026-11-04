@@ -22,7 +22,7 @@ decision_baseline: 'ERD-1.0.0'
 | 미해소 | 114 |
 | 미판정 | 0 |
 
-**2026-11-03 갱신(CI 시험 fork 분할 chore).** `spec-ci-test-forks.md`(브랜치 `chore/ci-test-forks`, PR 번호는 열 때 채운다, 기준 `66d4938`, PR 전에 `develop` `c213b6c`(PR #130·#132 뒤) 위로 다시 얹음 — done 전환 PR이 없는 chore라 그 PR 자체가 판정 자리다)를 판정했다.
+**2026-11-03 갱신(CI 시험 fork 분할 chore).** `spec-ci-test-forks.md`(브랜치 `chore/ci-test-forks`, PR #133, 기준 `66d4938`, PR 전에 `develop` `c213b6c`(PR #130·#132 뒤) 위로 다시 얹음 — done 전환 PR이 없는 chore라 그 PR 자체가 판정 자리다)를 판정했다.
 
 - **append한 항목.** 1차 리뷰(blind-hunter·edge-case-hunter·verification-gap)가 낸 defer 둘 — **168**(fork 격리 불변식을 `src/test/java` 소스 스캔 시험으로 고정)·**169**(CI에서 fork 수를 기계가 판정 — `[test-forks]` executor 줄 집계와 `org.gradle.workers.max` 부재 단정) — 를 미해소로 판정했다. 둘 다 SPEC Always(시험 코드·`ci.yml`·`.github/scripts` 불변)가 이 chore에서 막은 범위이고 아래 절에 적었다.
 - **해소한 항목.** 없다.
