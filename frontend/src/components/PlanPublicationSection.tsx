@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react'
 
-import { CSRF_HEADER, DASHBOARD_PATH } from '../content/auth'
+import { DASHBOARD_PATH } from '../content/auth'
 import { planPublicationContent as copy, PLAN_PUBLICATION_PATH } from '../content/planResult'
+import { postJson } from '../session/http'
 import styles from './InitialInputsCollection.module.css'
 
 type PublicationStatus = 'QUEUED' | 'RUNNING' | 'PUBLISHED' | 'BLOCKED' | 'FAILED'
@@ -168,15 +169,10 @@ export function PlanPublicationSection({
     setRefusal(null)
     key.current ??= crypto.randomUUID()
     try {
-      const response = await fetch(PLAN_PUBLICATION_PATH, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          'Content-Type': 'application/json',
-          [CSRF_HEADER]: csrfToken,
-          'Idempotency-Key': key.current,
-        },
-        body: JSON.stringify({ intentId }),
+      const response = await postJson(PLAN_PUBLICATION_PATH, {
+        csrfToken,
+        body: { intentId },
+        idempotencyKey: key.current,
       })
       if (response.status === 409 || response.status === 403) {
         // A definite refusal: nothing was accepted under this key. Re-read what is startable now.

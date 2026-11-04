@@ -1,10 +1,10 @@
-import { CSRF_HEADER } from '../content/auth'
 import {
   PLAN_END_CANCEL_PATH,
   PLAN_END_CONFIRM_PATH,
   PLAN_END_PATH,
   type PlanEndReason,
 } from '../content/planEnd'
+import { postJson, readJson } from './http'
 import { isInstant } from './instant'
 import { DASHBOARD_REQUEST_TIMEOUT_MS, record } from './useDashboard'
 
@@ -81,20 +81,15 @@ async function send(
       reject(new Error('The plan-end request timed out.'))
     }, DASHBOARD_REQUEST_TIMEOUT_MS)
   })
-  const headers: Record<string, string> = { Accept: 'application/json', [CSRF_HEADER]: csrfToken }
-  if (body !== null) headers['Content-Type'] = 'application/json'
-  if (idempotencyKey !== null) headers['Idempotency-Key'] = idempotencyKey
   const exchange = async (): Promise<Answer> => {
-    const response = await fetch(path, {
-      method: 'POST',
-      credentials: 'same-origin',
-      cache: 'no-store',
-      headers,
-      body: body === null ? undefined : JSON.stringify(body),
+    const response = await postJson(path, {
+      csrfToken,
+      body: body ?? undefined,
+      idempotencyKey: idempotencyKey ?? undefined,
       signal: controller.signal,
     })
     // 오류 계약은 언제나 JSON이지만 그 사실에 기대지 않는다. JSON이 아닌 본문은 `null`이다.
-    const payload: unknown = await response.json().catch(() => null)
+    const payload: unknown = await readJson(response)
     return { status: response.status, payload }
   }
   try {

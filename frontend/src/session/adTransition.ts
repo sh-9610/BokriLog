@@ -3,7 +3,7 @@ import {
   AD_TRANSITION_CLAIM_PATH,
   TRANSITION_PATTERN,
 } from '../content/adTransition'
-import { CSRF_HEADER } from '../content/auth'
+import { objectOf, postJson, readJson } from './http'
 import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
 
 /*
@@ -12,8 +12,8 @@ import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
  * 둘 다 광고 쪽 결정만 묻는다 — 결과 조회의 성공 조건이 아니다. 그래서 어느 실패(네트워크·시간 초과·거절·모르는 응답)도 "광고
  * 없음"과 같은 값으로 접힌다. 호출자는 그 값으로 아무것도 바꾸지 않거나(대시보드) 광고 없이 결과로 간다(중립 화면).
  *
- * 공통 POST helper가 없으므로 `useAdConsent`의 관용(동일 출처 쿠키·`no-store`·CSRF 헤더·시한)을 그대로 따른다. 멱등 키 헤더는
- * 싣지 않는다 — 판정의 자연 키는 `(사용자, jobId)`이고 소비의 참조는 그 자체로 일회성이다.
+ * 전송 모양은 `http.ts`의 `postJson`이 정하고(동일 출처 쿠키·`no-store`·CSRF 헤더) 시한은 여기서 둔다. 멱등 키 헤더는 싣지
+ * 않는다 — 판정의 자연 키는 `(사용자, jobId)`이고 소비의 참조는 그 자체로 일회성이다.
  */
 
 /** GPT ad unit 경로의 모양. 서버 `AdProviderState.AD_UNIT_PATH`와 같다. 모양이 아니면 광고를 시도하지 않는다. */
@@ -25,12 +25,6 @@ export type AdTransitionClaim =
 
 const SKIP: AdTransitionClaim = { kind: 'skip' }
 
-function fieldsOf(value: unknown): Readonly<Record<string, unknown>> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Readonly<Record<string, unknown>>)
-    : null
-}
-
 /** 시한이 있는 동일 출처 JSON POST. 200의 본문만 돌려주고, 그 밖의 모든 결말은 `null`이다. */
 async function post(path: string, body: unknown, csrfToken: string): Promise<unknown> {
   const controller = new AbortController()
@@ -38,26 +32,8 @@ async function post(path: string, body: unknown, csrfToken: string): Promise<unk
     controller.abort()
   }, SESSION_REQUEST_TIMEOUT_MS)
   try {
-    const response = await fetch(path, {
-      method: 'POST',
-      credentials: 'same-origin',
-      cache: 'no-store',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        [CSRF_HEADER]: csrfToken,
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    })
-    if (response.status !== 200) {
-      return null
-    }
-    try {
-      return (await response.json()) as unknown
-    } catch {
-      return null
-    }
+    const response = await postJson(path, { csrfToken, body, signal: controller.signal })
+    return response.status === 200 ? await readJson(response) : null
   } catch {
     // 네트워크 실패·시간 초과. 광고 쪽 결정을 모르는 것은 광고가 없는 것과 같다.
     return null
@@ -74,7 +50,7 @@ export async function requestAdEligibility(
   syncJobId: string,
   csrfToken: string,
 ): Promise<string | null> {
-  const fields = fieldsOf(await post(AD_ELIGIBILITY_PATH, { syncJobId }, csrfToken))
+  const fields = objectOf(await post(AD_ELIGIBILITY_PATH, { syncJobId }, csrfToken))
   if (fields?.outcome !== 'ELIGIBLE') {
     return null
   }
@@ -90,7 +66,7 @@ export async function claimAdTransition(
   transition: string,
   csrfToken: string,
 ): Promise<AdTransitionClaim> {
-  const fields = fieldsOf(await post(AD_TRANSITION_CLAIM_PATH, { transition }, csrfToken))
+  const fields = objectOf(await post(AD_TRANSITION_CLAIM_PATH, { transition }, csrfToken))
   if (fields?.outcome !== 'SHOW') {
     return SKIP
   }

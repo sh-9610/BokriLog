@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react'
 
-import { CSRF_HEADER } from '../content/auth'
 import { planConditionContent as copy } from '../content/planConditions'
+import { postJson } from '../session/http'
 import { isInstant } from '../session/instant'
 import styles from './InitialInputsCollection.module.css'
 import { PlanPublicationSection } from './PlanPublicationSection'
@@ -381,15 +381,10 @@ function CashflowConversionSection({
     setError(null)
     key.current ??= crypto.randomUUID()
     try {
-      const response = await fetch('/api/snapshots/first/cashflow-conversion', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          'Content-Type': 'application/json',
-          [CSRF_HEADER]: csrfToken,
-          'Idempotency-Key': key.current,
-        },
-        body: JSON.stringify({ intentId }),
+      const response = await postJson('/api/snapshots/first/cashflow-conversion', {
+        csrfToken,
+        body: { intentId },
+        idempotencyKey: key.current,
       })
       if (response.status === 409) {
         // A definite refusal: nothing was accepted under this key. The state is refreshed first
@@ -788,15 +783,10 @@ export function InitialInputsCollection({
     }
     key.current ??= crypto.randomUUID()
     try {
-      const response = await fetch('/api/snapshots/first/inputs', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-TOKEN': csrfToken,
-          'Idempotency-Key': key.current,
-        },
-        body: JSON.stringify({ intentId }),
+      const response = await postJson('/api/snapshots/first/inputs', {
+        csrfToken,
+        body: { intentId },
+        idempotencyKey: key.current,
       })
       if (response.status === 409) {
         setError(copy.collection.ineligible)
@@ -833,15 +823,10 @@ export function InitialInputsCollection({
     setClassifying(true)
     classificationKey.current = crypto.randomUUID()
     try {
-      const response = await fetch('/api/snapshots/first/cashflow-classification', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-TOKEN': csrfToken,
-          'Idempotency-Key': classificationKey.current,
-        },
-        body: JSON.stringify({ intentId }),
+      const response = await postJson('/api/snapshots/first/cashflow-classification', {
+        csrfToken,
+        body: { intentId },
+        idempotencyKey: classificationKey.current,
       })
       if (response.status === 409) throw new Error('ineligible')
       if (!response.ok) throw new Error('request')

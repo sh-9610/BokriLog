@@ -1,12 +1,12 @@
 import {
   authorizePath,
-  CSRF_HEADER,
   LINK_BASE_PATH,
   linkNoticePath,
   linkPath,
   SIGN_IN_PROVIDERS,
   type SignInProvider,
 } from '../content/auth'
+import { postNoContent } from './http'
 import { navigateTo, replaceLocation } from './navigation'
 import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
 
@@ -135,36 +135,14 @@ export async function startLinking(
 
 /** 무장 요청 하나. 이동을 하지 않고 결과만 정한다. */
 async function arm(provider: SignInProvider, csrfToken: string | null): Promise<LinkOutcome> {
-  if (csrfToken === null) {
-    /*
-     * 토큰이 없으면 보내지 않는다. 보내도 서버가 403으로 거절하므로 결과는 같지만, 그 요청은
-     * 실패가 예정된 상태 변경 시도 하나를 로그에 남긴다.
-     */
-    return 'failed'
-  }
-
-  // 시한은 세션 확인·로그아웃·재인증 시작과 같은 값이다. 같은 진입점을 지나므로 갈라질 이유가 없다.
-  const controller = new AbortController()
-  const deadline = setTimeout(() => {
-    controller.abort()
-  }, SESSION_REQUEST_TIMEOUT_MS)
-
-  try {
-    const response = await fetch(linkPath(provider), {
-      method: 'POST',
-      credentials: 'same-origin',
-      cache: 'no-store',
-      headers: { [CSRF_HEADER]: csrfToken },
-      signal: controller.signal,
-    })
-    if (response.status === 204) {
-      // 서버가 허가를 발급하고 흐름을 심었다. 여기서 성공이 확정된다.
-      return 'started'
-    }
-  } catch {
-    // 네트워크 단절·응답 유실·시한 초과도 아래와 같은 결과다. 무엇이 일어났는지 추측하지 않는다.
-  } finally {
-    clearTimeout(deadline)
+  /*
+   * 전송은 `http.ts`의 `postNoContent` 하나다. 토큰이 없으면 보내지 않고(보내도 서버가 403으로
+   * 거절한다), 시한은 세션 확인·로그아웃·재인증 시작과 같은 값이며, 네트워크 단절·응답 유실·시한
+   * 초과도 아래와 같은 결과다.
+   */
+  if (await postNoContent(linkPath(provider), csrfToken)) {
+    // 서버가 허가를 발급하고 흐름을 심었다. 여기서 성공이 확정된다.
+    return 'started'
   }
 
   /*

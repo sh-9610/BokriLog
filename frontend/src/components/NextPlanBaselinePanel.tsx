@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { nextPlanContent as copy } from '../content/nextPlan'
 import { planConditionContent } from '../content/planConditions'
 import { formatSeoulTime } from '../format/decimal'
+import { postJson, type PostJsonOptions } from '../session/http'
 import { isInstant } from '../session/instant'
 import { DASHBOARD_REQUEST_TIMEOUT_MS, record } from '../session/useDashboard'
 import styles from './PlanConditionPanel.module.css'
@@ -54,10 +55,13 @@ function parse(value: unknown): Preparation | null {
     job,
   } as unknown as Preparation
 }
-/** The deadline includes headers and the complete JSON body, and unmount abort settles the request. */
+/**
+ * 시한은 응답 머리와 JSON 본문 전체를 덮고, 언마운트의 중단이 요청을 끝낸다. 쓰기(`write`)가 있으면 본문 없는 POST를
+ * `http.ts`의 `postJson`으로 보내고, 없으면 읽기(GET)다.
+ */
 async function request(
   controller: AbortController,
-  init?: RequestInit,
+  write?: Required<Pick<PostJsonOptions, 'csrfToken' | 'idempotencyKey'>>,
 ): Promise<{ response: Response; payload: unknown }> {
   let timer: number | undefined
   let abort: (() => void) | undefined
@@ -73,12 +77,13 @@ async function request(
     })
     return await Promise.race([
       (async () => {
-        const response = await fetch(PATH, {
-          ...init,
-          credentials: 'same-origin',
-          cache: 'no-store',
-          signal: controller.signal,
-        })
+        const response = await (write === undefined
+          ? fetch(PATH, {
+              credentials: 'same-origin',
+              cache: 'no-store',
+              signal: controller.signal,
+            })
+          : postJson(PATH, { ...write, signal: controller.signal }))
         const payload: unknown =
           response.status === 401 || response.status === 403 ? null : await response.json()
         return { response, payload }
@@ -220,8 +225,8 @@ export function NextPlanBaselinePanel({
     writes.current = controller
     try {
       const { response } = await request(controller, {
-        method: 'POST',
-        headers: { 'X-CSRF-TOKEN': csrfToken, 'Idempotency-Key': retryKey.current },
+        csrfToken,
+        idempotencyKey: retryKey.current,
       })
       if (!mounted.current) return
       if (response.status === 401 || response.status === 403) {

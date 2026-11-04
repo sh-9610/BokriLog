@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { CSRF_HEADER, noticePath } from '../content/auth'
+import { noticePath } from '../content/auth'
 import {
   INQUIRY_CATEGORIES,
   INQUIRY_STATUSES,
@@ -15,6 +15,7 @@ import {
   type InquiryTargetState,
   type SensitiveRule,
 } from '../content/support'
+import { objectOf, postJson, readJson, type JsonObject } from './http'
 import { isInstant } from './instant'
 import { replaceLocation } from './navigation'
 import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
@@ -108,8 +109,6 @@ export interface SupportInquiries {
   readonly reportInvalid: () => void
 }
 
-type Body = Readonly<Record<string, unknown>>
-
 const CONTACT = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/
 
 const REFERENCE = /^Q-[A-Z2-7]{10}$/
@@ -124,13 +123,9 @@ const FIELDS: readonly InquiryField[] = [
 
 const RULES: readonly SensitiveRule[] = ['SECRET', 'WALLET', 'FINANCIAL', 'EMAIL']
 
-function objectOf(value: unknown): Body | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Body)
-    : null
-}
-
-function targetOf(body: Body): { targetAt: string | null; targetState: InquiryTargetState } | null {
+function targetOf(
+  body: JsonObject,
+): { targetAt: string | null; targetState: InquiryTargetState } | null {
   if (body.targetState === 'SET' && isInstant(body.targetAt)) {
     return { targetAt: body.targetAt, targetState: 'SET' }
   }
@@ -215,14 +210,6 @@ export function parseReceipt(payload: unknown): InquiryReceipt | null {
     return null
   }
   return { reference: body.reference, receivedAt: body.receivedAt, ...target }
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  try {
-    return await response.json()
-  } catch {
-    return null
-  }
 }
 
 /**
@@ -358,17 +345,11 @@ export function useSupportInquiries(ready: boolean, csrfToken: string | null): S
         controller.abort()
       }, SESSION_REQUEST_TIMEOUT_MS)
       try {
-        const response = await fetch(SUPPORT_INQUIRIES_PATH, {
-          method: 'POST',
-          credentials: 'same-origin',
-          cache: 'no-store',
-          headers: {
-            Accept: 'application/json',
-            'Content-Type': 'application/json',
-            [CSRF_HEADER]: csrfToken,
-            'Idempotency-Key': idempotencyKey,
-          },
-          body: text,
+        // 본문은 키를 고른 `text`와 같은 객체다 — `postJson`의 `JSON.stringify`가 같은 문자열을 만든다.
+        const response = await postJson(SUPPORT_INQUIRIES_PATH, {
+          csrfToken,
+          body,
+          idempotencyKey,
           signal: controller.signal,
         })
         const payload = await readJson(response)

@@ -1,4 +1,3 @@
-import { CSRF_HEADER } from '../content/auth'
 import {
   LIFT_RESTRICTION_COMMAND,
   OPERATOR_AUDIT_ENDPOINT,
@@ -13,6 +12,7 @@ import {
   type RecoveryCondition,
   type RestrictionCommand,
 } from '../content/operator'
+import { objectOf, postJson, readJson, type JsonObject } from './http'
 import { isInstant } from './instant'
 import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
 
@@ -138,9 +138,6 @@ export type CommandConfirmOutcome<C> =
   /** 응답을 받지 못했거나 서버가 커밋 여부를 말하지 못했다. 자동으로 다시 실행하지 않는다. */
   | { readonly outcome: 'unanswered' }
 
-/** 응답 본문 하나. 해석기가 받는 모양이다. */
-export type CommandBody = Readonly<Record<string, unknown>>
-
 /** 준비 응답의 공통 머리. 모든 command가 같은 필드를 준다. */
 export interface PreparedHead {
   readonly operationId: string
@@ -151,7 +148,7 @@ export interface PreparedHead {
 }
 
 /** 준비 응답의 공통 머리. 하나라도 모양이 아니면 `null`이다(확인 문구가 비어 있어도). */
-export function preparedHeadOf(body: CommandBody): PreparedHead | null {
+export function preparedHeadOf(body: JsonObject): PreparedHead | null {
   if (
     typeof body.operationId !== 'string' ||
     typeof body.scope !== 'string' ||
@@ -184,7 +181,7 @@ export async function prepareCommand<P>(
   command: string,
   body: object,
   idempotencyKey: string,
-  parse: (body: CommandBody) => P | null,
+  parse: (body: JsonObject) => P | null,
 ): Promise<CommandPrepareOutcome<P>> {
   const result = await post(
     commandEndpoint(command),
@@ -215,7 +212,7 @@ export async function confirmCommand<C>(
   operationId: string,
   confirmation: string,
   idempotencyKey: string,
-  parse: (body: CommandBody, operationId: string) => C | null,
+  parse: (body: JsonObject, operationId: string) => C | null,
   timeoutMs: number = SESSION_REQUEST_TIMEOUT_MS,
 ): Promise<CommandConfirmOutcome<C>> {
   const result = await post(
@@ -266,7 +263,7 @@ export async function cancelCommand(csrfToken: string | null, command: string): 
 export const EXPORT_CONFIRM_TIMEOUT_MS = 30_000
 
 /** 내보내기 준비의 응답. 정책 버전까지 있어야 한다. */
-export function preparedExportOf(body: CommandBody): PreparedExport | null {
+export function preparedExportOf(body: JsonObject): PreparedExport | null {
   const head = preparedHeadOf(body)
   if (head === null || typeof body.policyVersion !== 'string') {
     return null
@@ -275,7 +272,7 @@ export function preparedExportOf(body: CommandBody): PreparedExport | null {
 }
 
 /** 내보내기 확정의 응답. 행 묶음이 하나라도 모양이 아니면 받지 않는다. */
-export function completedExportOf(body: CommandBody, operationId: string): CompletedExport | null {
+export function completedExportOf(body: JsonObject, operationId: string): CompletedExport | null {
   const rows = entriesIn(body.rows)
   if (
     rows === null ||
@@ -372,7 +369,7 @@ export async function fetchRestrictions(
 
 /** 제한 준비의 응답. 영향 미리보기가 있고 command가 요청한 것과 같아야 한다. */
 export function preparedRestrictionOf(
-  body: CommandBody,
+  body: JsonObject,
   command: RestrictionCommand,
 ): PreparedRestriction | null {
   const head = preparedHeadOf(body)
@@ -385,7 +382,7 @@ export function preparedRestrictionOf(
 
 /** 제한 확정의 응답. */
 export function completedRestrictionOf(
-  body: CommandBody,
+  body: JsonObject,
   operationId: string,
 ): CompletedRestriction | null {
   if (
@@ -477,7 +474,7 @@ export function recoveryBodyOf(input: RecoveryInput): object {
 
 /** 복구 준비의 응답. 미리보기가 있고 대상이 고른 제한이어야 한다. */
 export function preparedRecoveryOf(
-  body: CommandBody,
+  body: JsonObject,
   restrictionId: string,
 ): PreparedRecovery | null {
   const head = preparedHeadOf(body)
@@ -495,7 +492,7 @@ export function preparedRecoveryOf(
 
 /** 복구 확정의 응답. 커밋 뒤 smoke 결말이 있어야 한다. */
 export function completedRecoveryOf(
-  body: CommandBody,
+  body: JsonObject,
   operationId: string,
 ): CompletedRecovery | null {
   const smoke = smokeOf(body.smoke)
@@ -630,7 +627,7 @@ export function noticeBodyOf(input: NoticeInput): object {
 }
 
 /** 공지 발행 준비의 응답. 미리보기가 있고 사건이 고른 것이어야 한다. */
-export function preparedNoticeOf(body: CommandBody, incident: string): PreparedNotice | null {
+export function preparedNoticeOf(body: JsonObject, incident: string): PreparedNotice | null {
   const head = preparedHeadOf(body)
   const impact = noticeImpactOf(body.impact)
   if (
@@ -645,7 +642,7 @@ export function preparedNoticeOf(body: CommandBody, incident: string): PreparedN
 }
 
 /** 공지 발행 확정의 응답. */
-export function completedNoticeOf(body: CommandBody, operationId: string): CompletedNotice | null {
+export function completedNoticeOf(body: JsonObject, operationId: string): CompletedNotice | null {
   if (
     typeof body.incidentId !== 'string' ||
     typeof body.version !== 'number' ||
@@ -870,7 +867,7 @@ export function inquiryUpdateBodyOf(input: InquiryUpdateInput): object {
 
 /** 문의 처리 준비의 응답. 미리보기가 있고 대상이 고른 문의여야 한다. */
 export function preparedInquiryUpdateOf(
-  body: CommandBody,
+  body: JsonObject,
   reference: string,
 ): PreparedInquiryUpdate | null {
   const head = preparedHeadOf(body)
@@ -888,7 +885,7 @@ export function preparedInquiryUpdateOf(
 
 /** 문의 처리 확정의 응답. reference·답변 원문은 오지 않는다. */
 export function completedInquiryUpdateOf(
-  body: CommandBody,
+  body: JsonObject,
   operationId: string,
 ): CompletedInquiryUpdate | null {
   if (typeof body.status !== 'string' || !isInstant(body.transitionedAt)) {
@@ -1164,9 +1161,7 @@ function stringArray(value: unknown): value is readonly string[] {
 
 // ------------------------------------------------------------------ 전송
 
-type Body = CommandBody
-
-async function read(path: string, signal: AbortSignal): Promise<ReadResult<Body>> {
+async function read(path: string, signal: AbortSignal): Promise<ReadResult<JsonObject>> {
   const controller = new AbortController()
   const abort = (): void => {
     controller.abort()
@@ -1225,19 +1220,10 @@ async function post(
     controller.abort()
   }, timeoutMs)
   try {
-    const headers: Record<string, string> = { [CSRF_HEADER]: csrfToken, Accept: 'application/json' }
-    if (idempotencyKey !== null) {
-      headers['Idempotency-Key'] = idempotencyKey
-    }
-    if (body !== null) {
-      headers['Content-Type'] = 'application/json'
-    }
-    const response = await fetch(path, {
-      method: 'POST',
-      credentials: 'same-origin',
-      cache: 'no-store',
-      headers,
-      body: body === null ? undefined : JSON.stringify(body),
+    const response = await postJson(path, {
+      csrfToken,
+      body: body ?? undefined,
+      idempotencyKey: idempotencyKey ?? undefined,
       signal: controller.signal,
     })
     const payload = await readJson(response)
@@ -1253,20 +1239,6 @@ async function post(
   } finally {
     clearTimeout(deadline)
   }
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  try {
-    return await response.json()
-  } catch {
-    return null
-  }
-}
-
-function objectOf(value: unknown): Body | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Body)
-    : null
 }
 
 function codeIn(payload: unknown): string | null {
