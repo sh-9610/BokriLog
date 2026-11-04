@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 11-03-2026 17:30
+last_updated: 11-04-2026 16:50
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -432,5 +432,5 @@ action_items:
       사용자·SENSITIVE 접근·no-store 오류 helper, IdempotencyKey.CONFLICT_CODE, 광고 시험 공용
       helper, engagement 바깥 의존 허용 목록(회고 D-5·A-2)"
     owner: "chore(선택)"
-    status: in-progress
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
