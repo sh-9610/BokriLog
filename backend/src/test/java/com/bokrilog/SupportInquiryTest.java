@@ -957,27 +957,6 @@ class SupportInquiryTest extends OperatorTestBase {
         }
     }
 
-    private interface Call {
-        HttpResponse<String> run() throws Exception;
-    }
-
-    /** 두 요청을 동시에 보낸다(가상 스레드 둘이 같은 출발선에서). */
-    private static List<HttpResponse<String>> concurrently(Call first, Call second) throws Exception {
-        var start = new java.util.concurrent.CountDownLatch(1);
-        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
-            var a = executor.submit(() -> {
-                start.await();
-                return first.run();
-            });
-            var b = executor.submit(() -> {
-                start.await();
-                return second.run();
-            });
-            start.countDown();
-            return List.of(a.get(), b.get());
-        }
-    }
-
     /** 그 운영자의 소비된 문의 처리 허가 수. */
     private long consumedGrants(Signed operator) {
         return jdbc().sql("SELECT count(*) FROM action_grant WHERE user_id = :u AND command = 'operator-update-inquiry' "

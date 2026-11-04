@@ -5,17 +5,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.bokrilog.engagement.AdConsentApi;
 import com.bokrilog.engagement.AdEligibilityApi;
 import com.bokrilog.engagement.AdTelemetry;
-import com.bokrilog.engagement.EngagementDeletionApi;
 import com.bokrilog.engagement.internal.AdProviderTestHook;
 import com.bokrilog.operations.RestrictionFeature;
-import com.bokrilog.sync.SyncJobApi;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.security.SecureRandom;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -24,14 +20,12 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalManagementPort;
-import org.springframework.context.ApplicationContext;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -45,7 +39,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * 가상 시계로 보고, 여기서는 DB 시각에 상대적인 자격 행으로 본다.
  */
 @ExtendWith(OutputCaptureExtension.class)
-class AdEligibilityTest extends OperatorTestBase {
+class AdEligibilityTest extends AdTestBase {
 
     private static final String PATH = AdEligibilityController.AD_ELIGIBILITY_PATH;
 
@@ -56,37 +50,21 @@ class AdEligibilityTest extends OperatorTestBase {
     private static final tools.jackson.databind.json.JsonMapper JSON =
             tools.jackson.databind.json.JsonMapper.builder().build();
 
-    private static final SecureRandom RANDOM = new SecureRandom();
-
     /** 그 이름의 사용자 advisory 잠금(bigint 키)을 기다리는 backend 수(`BybitReconnectionTest`의 계획 잠금 질의와 같은 모양). */
     private static final String LOCK_WAITERS = "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted "
             + "AND objsubid = 1 AND ((classid::bigint << 32) | objid::bigint) = hashtextextended(:name, 0)";
 
     @Autowired
-    private AdConsentApi consents;
-
-    @Autowired
     private AdEligibilityApi eligibility;
 
     @Autowired
-    private EngagementDeletionApi deletion;
-
-    @Autowired
     private AccountErasure erasure;
-
-    @Autowired
-    private ApplicationContext context;
 
     @Autowired
     private PlatformTransactionManager transactionManager;
 
     @LocalManagementPort
     private int managementPort;
-
-    @AfterEach
-    void providerBackOn() {
-        AdProviderTestHook.providerEnabled(this.context, true);
-    }
 
     /** 실제 수동 동기화 성공 하나를 가진 로그인 사용자. */
     record Fixture(Signed signed, UUID job) {
@@ -102,7 +80,7 @@ class AdEligibilityTest extends OperatorTestBase {
     void 자격은_행_하나와_transition이고_재전송은_같은_결과이며_대시보드는_판정과_무관하다(CapturedOutput output)
             throws Exception {
         Fixture fixture = manualSync("ad-eligible");
-        grant(fixture);
+        grant(fixture.user());
         String dashboardBefore = get(AuthSecurityConfig.DASHBOARD_PATH, fixture.signed().cookie()).body();
         double triggers = count(AdTelemetry.TRIGGER);
         double reservations = count(AdTelemetry.RESERVATION);
@@ -176,7 +154,7 @@ class AdEligibilityTest extends OperatorTestBase {
         assertSkipped(judge(fixture.signed(), denied), "CONSENT_REQUIRED", false);
 
         // 운영 제한: 동의 뒤 전역 ADVERTISING 제한.
-        grant(fixture);
+        grant(fixture.user());
         UUID restriction = restrictGlobally(RestrictionFeature.ADVERTISING);
         UUID restricted = cloneJob(fixture.job(), Map.of());
         assertSkipped(judge(fixture.signed(), restricted), "RESTRICTED", false);
@@ -210,7 +188,7 @@ class AdEligibilityTest extends OperatorTestBase {
     @Test
     void 자격_뒤_철회와_정지는_재전송부터_바로_적용되고_행은_그대로다() throws Exception {
         Fixture fixture = manualSync("ad-revoke");
-        grant(fixture);
+        grant(fixture.user());
         var first = judge(fixture.signed(), fixture.job());
         String transition = (String) topLevelFieldsOf(first.body()).get("transition");
         assertThat(transition).isNotNull();
@@ -220,7 +198,7 @@ class AdEligibilityTest extends OperatorTestBase {
         assertSkipped(judge(fixture.signed(), fixture.job()), "CONSENT_REQUIRED", true);
         assertThat(attempts(fixture.user())).containsExactly("ELIGIBLE:" + transition);
 
-        grant(fixture);
+        grant(fixture.user());
         UUID restriction = restrictGlobally(RestrictionFeature.ADVERTISING);
         assertSkipped(judge(fixture.signed(), fixture.job()), "RESTRICTED", true);
         lift(restriction);
@@ -244,7 +222,7 @@ class AdEligibilityTest extends OperatorTestBase {
         assertSkipped(judge(fixture.signed(), fixture.job()), "CONSENT_REQUIRED", true);
 
         // 지금 버전으로 동의한 뒤의 자격도, 그 뒤 최신 행이 옛 버전의 동의가 되면 재전송에서 동의 필요로 낮아진다.
-        grant(fixture);
+        grant(fixture.user());
         UUID current = cloneJob(fixture.job(), Map.of());
         var eligible = judge(fixture.signed(), current);
         assertThat(topLevelFieldsOf(eligible.body())).as(eligible.body()).containsEntry("outcome", "ELIGIBLE");
@@ -258,14 +236,14 @@ class AdEligibilityTest extends OperatorTestBase {
     @Test
     void 마지막_자격_30분_미만은_간격이고_KST_하루_3건은_상한이며_날짜가_바뀌면_다시_센다() throws Exception {
         Fixture fixture = manualSync("ad-frequency");
-        grant(fixture);
+        grant(fixture.user());
 
         // 30분 간격: 마지막 자격이 25분 전이면 INTERVAL(정확한 경계는 순수 판정 시험이 가상 시계로 본다).
-        insertEligibleRow(fixture.user(), "statement_timestamp() - interval '25 minutes'");
+        insertEligible(fixture.user(), "statement_timestamp() - interval '25 minutes'");
         assertSkipped(judge(fixture.signed(), cloneJob(fixture.job(), Map.of())), "INTERVAL", false);
         clearEligible(fixture.user());
         // 30분이 넘었으면 자격이다.
-        insertEligibleRow(fixture.user(), "statement_timestamp() - interval '31 minutes'");
+        insertEligible(fixture.user(), "statement_timestamp() - interval '31 minutes'");
         var afterInterval = judge(fixture.signed(), cloneJob(fixture.job(), Map.of()));
         assertThat(topLevelFieldsOf(afterInterval.body())).as(afterInterval.body()).containsEntry("outcome", "ELIGIBLE");
         clearEligible(fixture.user());
@@ -278,7 +256,7 @@ class AdEligibilityTest extends OperatorTestBase {
         // 3건이 전날 KST(오늘 KST 자정 33·32·31분 전)이면 날짜 경계를 넘어 상한이 아니고, 마지막 자격에서 이미 31분 넘게 지났으므로
         // 간격도 충족한다 — 언제 돌아도 결정적이다(DB의 KST 자정 기준).
         for (int minutes : new int[] {33, 32, 31}) {
-            insertEligibleRow(fixture.user(), KST_MIDNIGHT + " - interval '" + minutes + " minutes'");
+            insertEligible(fixture.user(), KST_MIDNIGHT + " - interval '" + minutes + " minutes'");
         }
         var yesterday = judge(fixture.signed(), cloneJob(fixture.job(), Map.of()));
         assertThat(topLevelFieldsOf(yesterday.body())).as(yesterday.body()).containsEntry("outcome", "ELIGIBLE");
@@ -291,12 +269,12 @@ class AdEligibilityTest extends OperatorTestBase {
     @Test
     void 자격_행이_3건을_넘어도_최근_자격으로_간격과_상한을_판정한다() throws Exception {
         Fixture fixture = manualSync("ad-recent-order");
-        grant(fixture);
+        grant(fixture.user());
         for (int seconds = 1; seconds <= 3; seconds++) {
-            insertEligibleRow(fixture.user(), "statement_timestamp() - interval '2 days' + interval '" + seconds
+            insertEligible(fixture.user(), "statement_timestamp() - interval '2 days' + interval '" + seconds
                     + " seconds'");
         }
-        insertEligibleRow(fixture.user(), "statement_timestamp() - interval '5 minutes'");
+        insertEligible(fixture.user(), "statement_timestamp() - interval '5 minutes'");
         assertSkipped(judge(fixture.signed(), cloneJob(fixture.job(), Map.of())), "INTERVAL", false);
 
         // 5분 전 행을 빼고 오늘 KST 자정 직후의 3건을 더한다 — 이틀 전 3건 뒤의 순번이다. 상한이 사유다.
@@ -311,7 +289,7 @@ class AdEligibilityTest extends OperatorTestBase {
     /** 오늘 KST 자정 직후(1·2·3초)의 자격 3건. 지금이 자정 뒤 30분 이후면 간격도 충족한 상태다. */
     private void insertTodayThree(UUID user) {
         for (int second = 1; second <= 3; second++) {
-            insertEligibleRow(user, KST_MIDNIGHT + " + interval '" + second + " seconds'");
+            insertEligible(user, KST_MIDNIGHT + " + interval '" + second + " seconds'");
         }
     }
 
@@ -320,7 +298,7 @@ class AdEligibilityTest extends OperatorTestBase {
     @Test
     void 수동_동기화_성공이_아닌_attempt와_남의_것_없는_것은_공통_404이고_행을_쓰지_않는다() throws Exception {
         Fixture fixture = manualSync("ad-candidate");
-        grant(fixture);
+        grant(fixture.user());
         String missing = topLevelFieldsOf(get("/api/engagement/nope", fixture.signed().cookie()).body()).get("code")
                 .toString();
         double notCandidates = skips(AdTelemetry.NOT_CANDIDATE);
@@ -376,7 +354,8 @@ class AdEligibilityTest extends OperatorTestBase {
     void 서로_다른_두_성공_결과를_동시에_보내면_하나만_자격이고_판정은_사용자_잠금을_기다린다() throws Exception {
         Fixture fixture = manualSync("ad-race");
         UUID second = admitManual(fixture.user(), key("ad-race-manual"));
-        grant(fixture);
+        backdateAdmission(second);
+        grant(fixture.user());
 
         var both = concurrently(() -> judge(fixture.signed(), fixture.job()),
                 () -> judge(fixture.signed(), second));
@@ -441,9 +420,9 @@ class AdEligibilityTest extends OperatorTestBase {
     void 삭제가_시작된_계정은_404이고_계정_삭제는_결정_행을_지우며_다시_만들지_않는다() throws Exception {
         Fixture fixture = manualSync("ad-deletion");
         Signed kept = signedIn("ad-deletion-kept");
-        grant(fixture);
+        grant(fixture.user());
         assertThat(topLevelFieldsOf(judge(fixture.signed(), fixture.job()).body())).containsEntry("outcome", "ELIGIBLE");
-        insertEligibleRow(kept.user(), "statement_timestamp() - interval '2 hours'");
+        insertEligible(kept.user(), "statement_timestamp() - interval '2 hours'");
         String missing = topLevelFieldsOf(get("/api/engagement/nope", fixture.signed().cookie()).body()).get("code")
                 .toString();
 
@@ -549,7 +528,7 @@ class AdEligibilityTest extends OperatorTestBase {
         });
 
         // CHECK가 되살아났고, 동의하면 같은 결과가 정상 판정된다(실패가 행을 남기지 않았으므로 새 판정이다).
-        grant(fixture);
+        grant(fixture.user());
         var recovered = judge(fixture.signed(), fixture.job());
         assertThat(topLevelFieldsOf(recovered.body())).as(recovered.body()).containsEntry("outcome", "ELIGIBLE")
                 .containsEntry("replayed", false);
@@ -581,29 +560,17 @@ class AdEligibilityTest extends OperatorTestBase {
 
     // ------------------------------------------------------------------ 도구
 
-    /** 로그인 → Bybit 연결 → 첫 공식 발행 → 수동 동기화 성공. */
+    /**
+     * 로그인 → Bybit 연결 → 첫 공식 발행 → 수동 동기화 성공. 다음 수동 접수와 대시보드가 쿨다운에 흔들리지 않게 접수 시각을 1분
+     * 당긴다.
+     */
     private Fixture manualSync(String prefix) throws Exception {
         Signed signed = signedIn(prefix);
         store(signed.user(), DevBybitStub.Scenario.UTA2);
         publishedPlan(signed.user(), prefix, null);
-        return new Fixture(signed, admitManual(signed.user(), key(prefix + "-manual")));
-    }
-
-    /** 수동 동기화 하나를 접수하고 성공을 기다린다. 다음 수동 접수와 대시보드가 쿨다운에 흔들리지 않게 접수 시각을 1분 당긴다. */
-    private UUID admitManual(UUID user, String key) throws Exception {
-        var admission = sync.admitPlanSync(user, SyncJobApi.SyncTrigger.MANUAL, key);
-        assertThat(admission).isInstanceOf(SyncJobApi.SyncAdmission.Accepted.class);
-        UUID job = ((SyncJobApi.SyncAdmission.Accepted) admission).job().jobId();
-        assertThat(awaitSync(job)).isEqualTo("SUCCEEDED");
-        jdbc().sql("UPDATE sync_plan_sync_job SET admitted_at = admitted_at - interval '1 minute' WHERE job_id = :j")
-                .param("j", job).update();
-        return job;
-    }
-
-    private void grant(Fixture fixture) {
-        var decided = this.consents.decide(fixture.user(), key("ad-grant"), AdConsentApi.Choice.GRANTED,
-                AdConsentApi.POLICY_VERSION);
-        assertThat(decided).isInstanceOf(AdConsentApi.Decision.Saved.class);
+        UUID job = admitManual(signed.user(), key(prefix + "-manual"));
+        backdateAdmission(job);
+        return new Fixture(signed, job);
     }
 
     private HttpResponse<String> judge(Signed signed, UUID job) throws Exception {
@@ -635,24 +602,6 @@ class AdEligibilityTest extends OperatorTestBase {
         return overrides;
     }
 
-    /** 다른 결과의 자격 행 하나를 그 DB 시각 식으로 넣는다(빈도 제한의 입력). */
-    private void insertEligibleRow(UUID user, String decidedAt) {
-        byte[] bytes = new byte[32];
-        RANDOM.nextBytes(bytes);
-        jdbc().sql("INSERT INTO engagement_ad_attempt (user_id, sync_job_id, outcome, transition_ref, decided_at) "
-                        + "VALUES (:u, :j, 'ELIGIBLE', :t, " + decidedAt + ")")
-                .param("u", user).param("j", UUID.randomUUID())
-                .param("t", Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)).update();
-    }
-
-    /** 동의 결정 행 하나를 직접 넣는다(옛 정책 버전·읽을 수 없는 값을 만드는 시험용). 최신 행이 된다. */
-    private void insertConsent(UUID user, String policyVersion, String choice) {
-        jdbc().sql("INSERT INTO engagement_ad_consent_decision (user_id, policy_version, choice, idempotency_key_digest, "
-                        + "request_digest) VALUES (:u, :p, :c, :k, :r)")
-                .param("u", user).param("p", policyVersion).param("c", choice).param("k", sha256(UUID.randomUUID().toString()))
-                .param("r", sha256(UUID.randomUUID().toString())).update();
-    }
-
     private void clearEligible(UUID user) {
         jdbc().sql("DELETE FROM engagement_ad_attempt WHERE user_id = :u AND outcome = 'ELIGIBLE'").param("u", user)
                 .update();
@@ -676,12 +625,6 @@ class AdEligibilityTest extends OperatorTestBase {
                 .containsEntry("reason", reason).containsEntry("transition", null).containsEntry("replayed", replayed);
     }
 
-    private static void assertNotFound(HttpResponse<String> response, String code, String what) {
-        assertThat(response.statusCode()).as(what + ": " + response.body()).isEqualTo(404);
-        assertThat(topLevelFieldsOf(response.body())).as(what).containsOnlyKeys("code", "message", "correlationId")
-                .containsEntry("code", code);
-    }
-
     private double count(String name) {
         var counter = meters.find(name).counter();
         return counter == null ? 0.0 : counter.count();
@@ -698,27 +641,6 @@ class AdEligibilityTest extends OperatorTestBase {
                     + "/actuator/prometheus")).GET().build(), HttpResponse.BodyHandlers.ofString());
             assertThat(response.statusCode()).isEqualTo(200);
             return response.body();
-        }
-    }
-
-    private interface Call {
-        HttpResponse<String> run() throws Exception;
-    }
-
-    /** 두 요청을 동시에 보낸다(가상 스레드 둘이 같은 출발선에서). */
-    private static List<HttpResponse<String>> concurrently(Call first, Call second) throws Exception {
-        var start = new CountDownLatch(1);
-        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            var a = executor.submit(() -> {
-                start.await();
-                return first.run();
-            });
-            var b = executor.submit(() -> {
-                start.await();
-                return second.run();
-            });
-            start.countDown();
-            return List.of(a.get(), b.get());
         }
     }
 }

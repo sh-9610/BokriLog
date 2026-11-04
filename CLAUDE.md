@@ -286,6 +286,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 - 시험 클래스는 Gradle이 JVM(fork) 여럿에 class 단위 round-robin으로 나눈다(`maxParallelForks = 3`, 실제 수는 `min(3, --max-workers)` — CI는 2). JVM마다 PostgreSQL 컨테이너 하나(`PostgresTestcontainersConfig`의 static 컨테이너)이고 위 NOWAIT 잠금도 그 컨테이너 안이라 fork 사이에 DB·포트·파일을 공유하는 시험이 없어야 한다 — 서버 포트는 전부 임의(`RANDOM_PORT`·루프백 0)이고 고정 포트·`System.setProperty`·공유 파일 경로를 쓰는 시험을 들이지 않는다. JVM 안 병렬(JUnit `junit.jupiter.execution.parallel.*`)과 컨테이너 공유(`reuse`)는 쓰지 않는다(`spec-ci-test-forks.md`).
 - 시험의 멱등 키·토큰 모양 값은 리터럴로 쓰지 않는다. gitleaks `generic-api-key`가 잡고, PR 커밋 범위가 스캔되므로 뒤 커밋으로는 지워지지 않는다(PR #60).
 - `inert` 배경으로 돌려주는 대화상자의 초점 복귀만 passive 정리이고 나머지 초점 이동은 layout effect다(PR #57·#58, `DEVELOPMENT.md`).
+- 광고 통합 시험은 `AdTestBase`(`OperatorTestBase` 상속, 새 시험 컨텍스트 없음)를 상속하고 그 helper(`grant`·`admitManual`·`backdateAdmission`·`claim`·`insertConsent`·`insertEligible`·`newTransition`·`assertNotFound`·`providerBackOn`)와 `OperatorTestBase.concurrently`의 사본을 만들지 않는다(`AdTestBaseTest`가 그 base의 하위 시험을 훑어 같은 이름의 재정의를 막는다 — 이름을 바꾼 사본과 인라인 SQL은 리뷰 몫이다). engagement의 바깥 의존이 `sync`·`operations`·`identity` 셋뿐인 것은 `ModuleBoundaryTest`가 강제한다(`spec-ad-test-commons.md`).
 
 ## 미룬 결정
 

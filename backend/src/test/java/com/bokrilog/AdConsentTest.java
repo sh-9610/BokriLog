@@ -3,7 +3,6 @@ package com.bokrilog;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.bokrilog.engagement.AdConsentApi;
-import com.bokrilog.engagement.EngagementDeletionApi;
 import com.bokrilog.sync.IdempotencyKey;
 import java.net.http.HttpResponse;
 import java.time.Instant;
@@ -28,7 +27,7 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
  * <p>멱등 키는 실행 시점에 만든다(키 모양 리터럴은 gitleaks가 잡는다).
  */
 @ExtendWith(OutputCaptureExtension.class)
-class AdConsentTest extends OperatorTestBase {
+class AdConsentTest extends AdTestBase {
 
     private static final String CONSENT = AdConsentController.AD_CONSENT_PATH;
 
@@ -36,12 +35,6 @@ class AdConsentTest extends OperatorTestBase {
 
     private static final tools.jackson.databind.json.JsonMapper JSON =
             tools.jackson.databind.json.JsonMapper.builder().build();
-
-    @Autowired
-    private AdConsentApi consents;
-
-    @Autowired
-    private EngagementDeletionApi deletion;
 
     @Autowired
     private AccountErasure erasure;
@@ -122,7 +115,7 @@ class AdConsentTest extends OperatorTestBase {
     @Test
     void 최신_행이_옛_정책_버전이면_미결정이고_다시_고르면_새_버전의_행을_쓴다() throws Exception {
         Signed user = signedIn("consent-old-policy");
-        insertDecision(user.user(), "AD-CONSENT-0.9", "GRANTED");
+        insertConsent(user.user(), "AD-CONSENT-0.9", "GRANTED");
         assertThat(topLevelFieldsOf(get(CONSENT, user.cookie()).body())).containsEntry("state", "UNDECIDED")
                 .containsEntry("policyVersion", VERSION).containsEntry("decidedAt", null);
         assertThat(this.consents.current(user.user()).granted()).isFalse();
@@ -424,7 +417,7 @@ class AdConsentTest extends OperatorTestBase {
         jdbc().sql("ALTER TABLE engagement_ad_consent_decision DROP CONSTRAINT engagement_ad_consent_decision_choice_check")
                 .update();
         try {
-            insertDecision(user.user(), VERSION, "UNREADABLE");
+            insertConsent(user.user(), VERSION, "UNREADABLE");
             var failed = get(CONSENT, user.cookie());
             assertThat(failed.statusCode()).as(failed.body()).isEqualTo(500);
             assertThat(failed.headers().firstValue("Cache-Control")).hasValueSatisfying(value -> assertThat(value)
@@ -479,36 +472,8 @@ class AdConsentTest extends OperatorTestBase {
                 .query(OffsetDateTime.class).single().toInstant();
     }
 
-    private void insertDecision(UUID user, String policyVersion, String choice) {
-        jdbc().sql("INSERT INTO engagement_ad_consent_decision (user_id, policy_version, choice, idempotency_key_digest, "
-                        + "request_digest) VALUES (:u, :p, :c, :k, :r)")
-                .param("u", user).param("p", policyVersion).param("c", choice).param("k", "a".repeat(64))
-                .param("r", "b".repeat(64)).update();
-    }
-
     private static void assertRefused(HttpResponse<String> response, int status, String code) {
         assertThat(response.statusCode()).as(response.body()).isEqualTo(status);
         assertThat(topLevelFieldsOf(response.body())).containsEntry("code", code);
-    }
-
-    private interface Call {
-        HttpResponse<String> run() throws Exception;
-    }
-
-    /** 두 요청을 동시에 보낸다(가상 스레드 둘이 같은 출발선에서). */
-    private static List<HttpResponse<String>> concurrently(Call first, Call second) throws Exception {
-        var start = new java.util.concurrent.CountDownLatch(1);
-        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
-            var a = executor.submit(() -> {
-                start.await();
-                return first.run();
-            });
-            var b = executor.submit(() -> {
-                start.await();
-                return second.run();
-            });
-            start.countDown();
-            return List.of(a.get(), b.get());
-        }
     }
 }

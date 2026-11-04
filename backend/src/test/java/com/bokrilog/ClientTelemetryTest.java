@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.bokrilog.engagement.AdConsentApi;
 import com.bokrilog.engagement.AdTelemetry;
 import com.bokrilog.engagement.ClientTelemetryApi;
-import com.bokrilog.engagement.EngagementDeletionApi;
 import com.bokrilog.operations.AdvertisingStopApi;
 import com.bokrilog.operations.OperationalRestrictionApi;
 import com.bokrilog.operations.OperatorCommandApi;
@@ -13,9 +12,7 @@ import com.bokrilog.operations.RestrictionFeature;
 import com.bokrilog.operations.RestrictionOrigin;
 import com.bokrilog.operations.RestrictionSubject;
 import java.net.http.HttpResponse;
-import java.security.SecureRandom;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
@@ -26,7 +23,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
-import org.springframework.context.ApplicationContext;
 
 /**
  * Story 4.5: 동일 출처 beacon({@code POST /api/engagement/telemetry})의 계약, 광고 문서 Vitals 표본, 성능 kill switch 판정, 소비
@@ -37,25 +33,12 @@ import org.springframework.context.ApplicationContext;
  * 주기로 배경에서도 돌 수 있으므로 판정 시험은 반환값이 아니라 끝난 상태(제한·원장·표본)를 단정한다.
  */
 @ExtendWith(OutputCaptureExtension.class)
-class ClientTelemetryTest extends OperatorTestBase {
+class ClientTelemetryTest extends AdTestBase {
 
     private static final String PATH = ClientTelemetryController.TELEMETRY_PATH;
 
-    private static final String CLAIM_PATH = AdTransitionController.AD_TRANSITION_PATH;
-
-    private static final SecureRandom RANDOM = new SecureRandom();
-
-    @Autowired
-    private AdConsentApi consents;
-
-    @Autowired
-    private EngagementDeletionApi deletion;
-
     @Autowired
     private OperationalRestrictionApi restrictions;
-
-    @Autowired
-    private ApplicationContext context;
 
     // ------------------------------------------------------------------ beacon 계약
 
@@ -474,11 +457,6 @@ class ClientTelemetryTest extends OperatorTestBase {
         return sendJson("POST", PATH, body, signed.cookie(), headers(signed.csrf(), null));
     }
 
-    private HttpResponse<String> claim(Signed signed, String transition) throws Exception {
-        return sendJson("POST", CLAIM_PATH, "{\"transition\":\"" + transition + "\"}", signed.cookie(),
-                headers(signed.csrf(), null));
-    }
-
     private static String events(String... events) {
         return "{\"events\":[" + String.join(",", events) + "]}";
     }
@@ -493,12 +471,6 @@ class ClientTelemetryTest extends OperatorTestBase {
                 : "{\"kind\":\"AD\",\"event\":\"" + event + "\",\"reason\":\"" + reason + "\"}";
     }
 
-    private void grant(UUID user) {
-        var decided = this.consents.decide(user, key("telemetry-grant"), AdConsentApi.Choice.GRANTED,
-                AdConsentApi.POLICY_VERSION);
-        assertThat(decided).isInstanceOf(AdConsentApi.Decision.Saved.class);
-    }
-
     /** 그 사용자의 소비된 자격 행 하나(SHOW 표지·소비 시각 식)를 넣고 순번을 돌려준다. */
     private long insertConsumed(UUID user, boolean shown, String consumedAt) {
         return jdbc().sql("INSERT INTO engagement_ad_attempt (user_id, sync_job_id, outcome, transition_ref, "
@@ -508,24 +480,10 @@ class ClientTelemetryTest extends OperatorTestBase {
                 .query(Long.class).single();
     }
 
-    private String insertEligible(UUID user) {
-        String transition = newTransition();
-        jdbc().sql("INSERT INTO engagement_ad_attempt (user_id, sync_job_id, outcome, transition_ref) "
-                        + "VALUES (:u, :j, 'ELIGIBLE', :t)")
-                .param("u", user).param("j", UUID.randomUUID()).param("t", transition).update();
-        return transition;
-    }
-
     private void insertSamples(String metric, int count, double value, String recordedAt) {
         jdbc().sql("INSERT INTO engagement_ad_vital_sample (metric, value, recorded_at) SELECT :m, :v, " + recordedAt
                         + " FROM generate_series(1, :n)")
                 .param("m", metric).param("v", value).param("n", count).update();
-    }
-
-    private static String newTransition() {
-        byte[] bytes = new byte[32];
-        RANDOM.nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
     /** 그 attempt에서 보고된 metric들, 이름 순으로 쉼표로 이어서. 없으면 빈 문자열이다. */

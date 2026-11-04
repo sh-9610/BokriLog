@@ -51,6 +51,8 @@ class ModuleBoundaryTest {
 
     private static final String CALCULATION = "com.bokrilog.calculation";
 
+    private static final String ENGAGEMENT = "com.bokrilog.engagement";
+
     private static final JavaClasses PRODUCTION_CLASSES =
             new ClassFileImporter()
                     .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
@@ -513,5 +515,34 @@ class ModuleBoundaryTest {
                 .should().dependOnClassesThat().resideInAPackage("com.bokrilog.engagement..")
                 .because("engagement에 닿는 루트 자리는 정해진 일곱 곳이다.");
         root.check(PRODUCTION_CLASSES);
+    }
+
+    /**
+     * engagement의 바깥 의존은 {@code sync}·{@code operations}·{@code identity} 셋뿐이다(package-info의 산문을 기계 판정으로,
+     * Epic 4 회고 AI-8 ③ {@code epic-4-retro-item-47}, 회고 A-2). 루트 패키지({@code com.bokrilog})와 나머지 모듈도 막는다 — 루트는 engagement를 부르는 쪽이지 engagement가
+     * 기대는 쪽이 아니다. 공개 API의 타입 단위 제한은 하지 않는다({@code verify()}가 {@code internal} 미노출을 이미 막는다).
+     */
+    @Test
+    void engagement는_sync_operations_identity에만_의존한다() {
+        // 규칙이 아무것도 보지 않고 통과하지 않게 대상이 비어 있지 않음을 먼저 본다(패키지 이동·이름 변경 대비).
+        assertThat(PRODUCTION_CLASSES.that(JavaClass.Predicates.resideInAPackage(ENGAGEMENT + "..")))
+                .withFailMessage("engagement 운영 클래스가 발견되지 않는다.")
+                .isNotEmpty();
+
+        ArchRule rule =
+                noClasses()
+                        .that()
+                        .resideInAPackage(ENGAGEMENT + "..")
+                        .should()
+                        .dependOnClassesThat(
+                                JavaClass.Predicates.resideInAPackage("com.bokrilog..")
+                                        .and(DescribedPredicate.not(JavaClass.Predicates.resideInAnyPackage(
+                                                ENGAGEMENT + "..",
+                                                "com.bokrilog.sync..",
+                                                "com.bokrilog.operations..",
+                                                "com.bokrilog.identity.."))))
+                        .because("광고 참여 모듈은 동기화 후보 조회·운영 제한 판정과 성능 정지 발동·계정 접근 판정에만 기댄다.");
+
+        rule.check(PRODUCTION_CLASSES);
     }
 }
