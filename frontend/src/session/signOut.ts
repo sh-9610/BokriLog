@@ -1,6 +1,6 @@
-import { CSRF_HEADER, LOGOUT_ENDPOINT, noticePath } from '../content/auth'
+import { LOGOUT_ENDPOINT, noticePath } from '../content/auth'
+import { postNoContent } from './http'
 import { navigateTo } from './navigation'
-import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
 
 /**
  * 로그아웃 전송.
@@ -52,42 +52,17 @@ export async function signOut(csrfToken: string | null): Promise<SignOutOutcome>
 
 /** 전송 하나. 이동을 하지 않고 결과만 정한다. */
 async function attempt(csrfToken: string | null): Promise<SignOutOutcome> {
-  if (csrfToken === null) {
-    /*
-     * 토큰이 없으면 보내지 않는다. 보내도 서버가 403으로 거절하므로 결과는 같지만, 그 요청은
-     * 실패가 예정된 상태 변경 시도 하나를 로그에 남긴다.
-     */
-    return 'failed'
-  }
-
   /*
-   * 시한을 둔다. `useSessionState`의 세션 확인과 같은 값·같은 관용이다.
+   * 전송은 `http.ts`의 `postNoContent` 하나다. 토큰이 없으면 보내지 않고(보내도 서버가 403으로 거절한다),
+   * 시한은 `useSessionState`의 세션 확인과 같은 값이다.
    *
-   * 없으면 매달린 요청 하나가 버튼을 영구히 pending으로 남긴다 — 진입점의 읽기 timeout(30초)을
-   * 넘겨 응답이 아예 오지 않는 경우에는 그 상태가 끝나지 않는다. 시한이 지나면 다른 모든 실패와
-   * 같은 결과로 수렴하고, 자동 재시도는 하지 않는다.
+   * 시한이 없으면 매달린 요청 하나가 버튼을 영구히 pending으로 남긴다 — 진입점의 읽기 timeout(30초)을
+   * 넘겨 응답이 아예 오지 않는 경우에는 그 상태가 끝나지 않는다. 시한 초과·네트워크 단절은 다른 모든
+   * 실패와 같은 결과로 수렴하고, 자동 재시도는 하지 않는다.
    */
-  const controller = new AbortController()
-  const deadline = setTimeout(() => {
-    controller.abort()
-  }, SESSION_REQUEST_TIMEOUT_MS)
-
-  try {
-    const response = await fetch(LOGOUT_ENDPOINT, {
-      method: 'POST',
-      credentials: 'same-origin',
-      cache: 'no-store',
-      headers: { [CSRF_HEADER]: csrfToken },
-      signal: controller.signal,
-    })
-    if (response.status === 204) {
-      // 서버가 세션을 폐기했다. 여기서 성공이 확정된다.
-      return 'signedOut'
-    }
-  } catch {
-    // 네트워크 단절·응답 유실·시한 초과도 아래와 같은 결과다. 무엇이 일어났는지 추측하지 않는다.
-  } finally {
-    clearTimeout(deadline)
+  if (await postNoContent(LOGOUT_ENDPOINT, csrfToken)) {
+    // 서버가 세션을 폐기했다. 여기서 성공이 확정된다.
+    return 'signedOut'
   }
 
   /*

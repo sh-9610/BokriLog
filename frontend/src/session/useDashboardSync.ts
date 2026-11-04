@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { adTransitionHref } from '../content/adTransition'
-import { CSRF_HEADER } from '../content/auth'
 import { DASHBOARD_SYNC_PATH } from '../content/planSync'
 import { DASHBOARD_VERIFICATION_PATH, type VerificationKind } from '../content/planVerification'
 import { requestAdEligibility } from './adTransition'
+import { postJson, readJson } from './http'
 import { navigateTo } from './navigation'
 import {
   bundleOf,
@@ -206,14 +206,6 @@ type Answer =
   | { readonly kind: 'refused'; readonly phase: Refusal }
   | { readonly kind: 'error' }
 
-async function jsonOf(response: Response): Promise<unknown> {
-  try {
-    return await response.json()
-  } catch {
-    return null
-  }
-}
-
 /**
  * What an admission answer means here. A refusal (403, the account or the CSRF/Origin check) or a gone
  * session (401) is `denied`; a 409 is told apart by its stable code; any other answer that is not a whole
@@ -222,12 +214,12 @@ async function jsonOf(response: Response): Promise<unknown> {
 async function readAdmission(response: Response): Promise<Answer> {
   if (response.status === 401 || response.status === 403) return { kind: 'denied' }
   if (response.status === 409) {
-    const code = record(await jsonOf(response))?.code
+    const code = record(await readJson(response))?.code
     if (code === 'NO_ACTIVE_PLAN') return { kind: 'noPlan' }
     return code === 'SYNC_UNAVAILABLE' ? { kind: 'unavailable' } : { kind: 'error' }
   }
   if (response.status !== 200 && response.status !== 202) return { kind: 'error' }
-  const admission = parseAdmission(await jsonOf(response))
+  const admission = parseAdmission(await readJson(response))
   return admission === null ? { kind: 'error' } : { kind: 'admitted', admission }
 }
 
@@ -244,7 +236,7 @@ async function readVerificationAdmission(
 ): Promise<Answer> {
   if (response.status === 401 || response.status === 403) return { kind: 'denied' }
   if (response.status === 409) {
-    const code = record(await jsonOf(response))?.code
+    const code = record(await readJson(response))?.code
     if (code === 'NO_ACTIVE_PLAN') return { kind: 'noPlan' }
     if (code === 'VERIFICATION_UNAVAILABLE') return { kind: 'unavailable' }
     if (typeof code !== 'string') return { kind: 'error' }
@@ -257,7 +249,7 @@ async function readVerificationAdmission(
     return refusal === undefined ? { kind: 'error' } : { kind: 'refused', phase: refusal }
   }
   if (response.status !== 200 && response.status !== 202) return { kind: 'error' }
-  const admission = parseVerificationAdmission(await jsonOf(response))
+  const admission = parseVerificationAdmission(await readJson(response))
   return admission === null ? { kind: 'error' } : { kind: 'admitted', admission }
 }
 
@@ -682,23 +674,15 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
     void (async () => {
       let answer: Answer
       try {
-        const response = await fetch(
+        const response = await postJson(
           operation.kind === 'sync' ? DASHBOARD_SYNC_PATH : DASHBOARD_VERIFICATION_PATH,
           {
-            method: 'POST',
-            credentials: 'same-origin',
-            cache: 'no-store',
-            headers: {
-              'Content-Type': 'application/json',
-              Accept: 'application/json',
-              'Idempotency-Key': crypto.randomUUID(),
-              [CSRF_HEADER]: token,
-            },
-            body: JSON.stringify(
+            csrfToken: token,
+            idempotencyKey: crypto.randomUUID(),
+            body:
               operation.kind === 'sync'
                 ? { trigger: operation.trigger }
                 : { kind: operation.verification, ...operation.reference },
-            ),
             signal: controller.signal,
           },
         )

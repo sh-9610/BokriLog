@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { CSRF_HEADER } from '../content/auth'
 import { FIRST_SNAPSHOT_PATH } from '../content/firstSnapshot'
+import { postJson } from './http'
 
 export interface SnapshotJob {
   readonly jobId: string
@@ -123,12 +123,7 @@ export function useFirstSnapshot(
     setPending(true)
     void (async () => {
       try {
-        const response = await fetch(FIRST_SNAPSHOT_PATH, {
-          method: 'POST',
-          credentials: 'same-origin',
-          cache: 'no-store',
-          headers: { [CSRF_HEADER]: csrfToken, Accept: 'application/json' },
-        })
+        const response = await postJson(FIRST_SNAPSHOT_PATH, { csrfToken })
         if (!response.ok) throw new Error('snapshot admission failed')
         const payload: unknown = await response.json()
         if (!isJob(payload)) throw new Error('invalid job')

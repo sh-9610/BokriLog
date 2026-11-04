@@ -8,7 +8,8 @@ import {
   type AdConsentChoice,
   type AdConsentState,
 } from '../content/adConsent'
-import { CSRF_HEADER, noticePath } from '../content/auth'
+import { noticePath } from '../content/auth'
+import { objectOf, postJson, readJson } from './http'
 import { isInstant } from './instant'
 import { replaceLocation } from './navigation'
 import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
@@ -55,14 +56,6 @@ export interface AdConsentControl {
   readonly decide: (choice: AdConsentChoice) => Promise<void>
 }
 
-type Body = Readonly<Record<string, unknown>>
-
-function objectOf(value: unknown): Body | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Body)
-    : null
-}
-
 /**
  * 동의 상태 응답. 미결정이면 시각이 없고 그 밖에는 시각이 있다 — 서버가 지키는 짝이다. 모르는 모양은 믿지 않는다.
  */
@@ -81,14 +74,6 @@ export function parseAdConsent(payload: unknown): AdConsent | null {
   return isInstant(body.decidedAt)
     ? { state, policyVersion: body.policyVersion, decidedAt: body.decidedAt }
     : null
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  try {
-    return await response.json()
-  } catch {
-    return null
-  }
 }
 
 /**
@@ -203,18 +188,11 @@ export function useAdConsent(ready: boolean, csrfToken: string | null): AdConsen
         controller.abort()
       }, SESSION_REQUEST_TIMEOUT_MS)
       try {
-        const response = await fetch(AD_CONSENT_PATH, {
-          method: 'POST',
-          credentials: 'same-origin',
-          cache: 'no-store',
-          headers: {
-            Accept: 'application/json',
-            'Content-Type': 'application/json',
-            [CSRF_HEADER]: csrfToken,
-            'Idempotency-Key': idempotencyKey,
-          },
+        const response = await postJson(AD_CONSENT_PATH, {
+          csrfToken,
           // 사용자가 읽은 설명의 정책 버전을 싣는다. 서버의 지금 버전과 다르면 저장되지 않는다.
-          body: JSON.stringify({ choice, policyVersion: AD_CONSENT_POLICY_VERSION }),
+          body: { choice, policyVersion: AD_CONSENT_POLICY_VERSION },
+          idempotencyKey,
           signal: controller.signal,
         })
         const payload = await readJson(response)

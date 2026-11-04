@@ -1,4 +1,3 @@
-import { CSRF_HEADER } from '../content/auth'
 import {
   BYBIT_CANCEL_PATH,
   BYBIT_CONNECT_PATH,
@@ -7,8 +6,8 @@ import {
   BYBIT_REVOCATION_CONFIRM_PATH,
   BYBIT_REVOCATION_PATH,
 } from '../content/connection'
+import { postJson, postNoContent, readJson } from './http'
 import { isInstant } from './instant'
-import { post } from './unlinkProvider'
 import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
 
 /*
@@ -193,11 +192,11 @@ export async function connectBybit(
  * 준비가 서버 상태를 만들므로(무장과 허가) 취소에도 되돌리는 요청이 있어야 한다 — 없으면 화면의
  * "바뀐 것은 없습니다"가 거짓이 되고 아무도 참조하지 않는 허가가 5분을 산다.
  *
- * 전송을 `unlinkProvider.ts`의 것을 그대로 쓴다. 모양이 정확히 같고(`POST`, 토큰 헤더, 204만
- * 성공, 재시도 없음) 복제하면 시한·실패 접기 규칙이 네 번째 사본으로 갈라진다.
+ * 전송은 `http.ts`의 `postNoContent`를 그대로 쓴다. 모양이 정확히 같고(`POST`, 토큰 헤더, 204만
+ * 성공, 재시도 없음) 복제하면 시한·실패 접기 규칙이 또 하나의 사본으로 갈라진다.
  */
 export async function cancelConnection(csrfToken: string | null): Promise<void> {
-  await post(BYBIT_CANCEL_PATH, csrfToken)
+  await postNoContent(BYBIT_CANCEL_PATH, csrfToken)
 }
 
 /**
@@ -241,7 +240,7 @@ export async function confirmRevocation(
     csrfToken,
     { connectionId, confirmation },
     SESSION_REQUEST_TIMEOUT_MS,
-    { 'Idempotency-Key': idempotencyKey },
+    idempotencyKey,
   )
   if (!result.received) {
     return csrfToken === null ? { outcome: 'failed', code: null } : { outcome: 'unanswered' }
@@ -270,7 +269,7 @@ export async function confirmRevocation(
 
 /** 해제 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다(`cancelConnection`과 같다). */
 export async function cancelRevocation(csrfToken: string | null): Promise<void> {
-  await post(BYBIT_REVOCATION_CANCEL_PATH, csrfToken)
+  await postNoContent(BYBIT_REVOCATION_CANCEL_PATH, csrfToken)
 }
 
 /** 본문이 있는 상태 변경 하나의 결과. `received`는 응답이 왔는가다(시한 초과·단절이면 거짓). */
@@ -283,18 +282,17 @@ interface RequestResult {
 }
 
 /**
- * 준비·확인이 공유하는 전송.
+ * 준비·확인이 공유하는 전송. 요청 모양은 `http.ts`의 `postJson`이 정하고, 여기서는 시한과 결과 모양만 정한다.
  *
- * `unlinkProvider.ts`의 `post()`를 쓰지 않는다. 그쪽은 본문이 없고 204만 보며, 여기서는 JSON
- * 본문을 보내고 응답 본문을 읽어야 한다 — 같은 함수로 접으면 그 함수가 두 계약을 겸하게 된다.
- * 취소는 모양이 정확히 같으므로 그쪽을 그대로 쓴다.
+ * 본문 없는 204 묶음(`postNoContent`)을 쓰지 않는다. 그쪽은 204만 보며, 여기서는 응답 본문을 읽어야
+ * 한다 — 같은 함수로 접으면 그 함수가 두 계약을 겸하게 된다. 취소는 모양이 정확히 같으므로 그쪽을 쓴다.
  */
 async function request(
   path: string,
   csrfToken: string | null,
   body: object | null,
   timeoutMs: number,
-  extraHeaders: Readonly<Record<string, string>> = {},
+  idempotencyKey?: string,
 ): Promise<RequestResult> {
   if (csrfToken === null) {
     /*
@@ -312,20 +310,10 @@ async function request(
   }, timeoutMs)
 
   try {
-    const headers: Record<string, string> = {
-      ...extraHeaders,
-      [CSRF_HEADER]: csrfToken,
-      Accept: 'application/json',
-    }
-    if (body !== null) {
-      headers['Content-Type'] = 'application/json'
-    }
-    const response = await fetch(path, {
-      method: 'POST',
-      credentials: 'same-origin',
-      cache: 'no-store',
-      headers,
-      body: body === null ? undefined : JSON.stringify(body),
+    const response = await postJson(path, {
+      csrfToken,
+      body: body ?? undefined,
+      idempotencyKey,
       signal: controller.signal,
     })
     const payload: unknown = await readJson(response)
@@ -351,15 +339,6 @@ function commonError(payload: unknown): boolean {
   }
   const body = payload as Record<string, unknown>
   return typeof body.code === 'string' && typeof body.correlationId === 'string'
-}
-
-/** 본문이 JSON이 아니면 `null`이다. 오류 계약은 언제나 JSON이지만 그 사실에 기대지 않는다. */
-async function readJson(response: Response): Promise<unknown> {
-  try {
-    return await response.json()
-  } catch {
-    return null
-  }
 }
 
 /**

@@ -1,10 +1,11 @@
 import { useCallback, useRef, useState } from 'react'
 
+import type { JsonObject } from './http'
+
 import {
   cancelCommand,
   confirmCommand,
   prepareCommand,
-  type CommandBody,
   type CommandConfirmOutcome,
   type CommandPrepareOutcome,
 } from './operatorApi'
@@ -63,9 +64,9 @@ export interface OperatorCommandSpec<I, P extends { readonly operationId: string
   /** 멱등 키를 가르는 입력 글. 같으면 같은 키를 다시 쓴다. */
   readonly keyOf: (input: I) => string
   /** 준비 응답의 해석기. 받지 않으면 `null`(거절로 접는다). */
-  readonly preparedOf: (body: CommandBody, input: I) => P | null
+  readonly preparedOf: (body: JsonObject, input: I) => P | null
   /** 확정 응답의 해석기. 받지 않으면 `null`(실행 여부를 모른다). */
-  readonly completedOf: (body: CommandBody, operationId: string) => C | null
+  readonly completedOf: (body: JsonObject, operationId: string) => C | null
   /** 확정의 시한. 없으면 기본 요청 시한이다. */
   readonly confirmTimeoutMs?: number
   /** 준비 거절 가운데 목록을 다시 읽게 하는 code. */

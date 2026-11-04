@@ -11,6 +11,7 @@ import { DASHBOARD_PATH } from '../content/auth'
 import { planConditionContent as copy } from '../content/planConditions'
 import { activePlanContent } from '../content/planResult'
 import { formatAmount, isCanonicalNonNegative, percentFromRatio } from '../format/decimal'
+import { postJson, readJson } from '../session/http'
 import { isInstant } from '../session/instant'
 import { InitialInputsCollection } from './InitialInputsCollection'
 import { NextPlanBaselinePanel } from './NextPlanBaselinePanel'
@@ -376,14 +377,12 @@ export function PlanConditionPanel({
     }
     setBusy(true)
     try {
-      const response = await fetch('/api/plans/conditions/preview', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
-        body: JSON.stringify({ endAtSeoul: local, period, targetRate: ratio }),
+      const response = await postJson('/api/plans/conditions/preview', {
+        csrfToken,
+        body: { endAtSeoul: local, period, targetRate: ratio },
       })
       if (response.status === 409) {
-        const refusal: unknown = await response.json().catch(() => null)
+        const refusal: unknown = await readJson(response)
         if (codeOf(refusal) === ACTIVE_PLAN_EXISTS) {
           reloadForActivePlan()
           return
@@ -418,15 +417,10 @@ export function PlanConditionPanel({
     setError(null)
     retryKey.current ??= crypto.randomUUID()
     try {
-      const response = await fetch('/api/plans/conditions/confirm', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-TOKEN': csrfToken,
-          'Idempotency-Key': retryKey.current,
-        },
-        body: JSON.stringify({ confirmationRef: preview.confirmationRef }),
+      const response = await postJson('/api/plans/conditions/confirm', {
+        csrfToken,
+        body: { confirmationRef: preview.confirmationRef },
+        idempotencyKey: retryKey.current,
       })
       const body = (await response.json()) as {
         accepted: boolean

@@ -7,6 +7,7 @@ import {
   type NoticeFeature,
   type NoticeStatus,
 } from '../content/serviceNotice'
+import { objectOf } from './http'
 import { isInstant } from './instant'
 import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
 
@@ -67,14 +68,6 @@ export const NOTICE_RETRY_MS = 30_000
 
 /** 지원 연락처의 모양. `mailto:`에 그대로 싣는 값이라 공백·꺾쇠·따옴표·쿼리가 없어야 한다. */
 const CONTACT = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/
-
-type Body = Readonly<Record<string, unknown>>
-
-function objectOf(value: unknown): Body | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Body)
-    : null
-}
 
 function featuresOf(value: unknown): readonly NoticeFeature[] | null {
   if (!Array.isArray(value)) return null
