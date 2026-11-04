@@ -160,7 +160,7 @@ tasks.withType<JavaCompile>().configureEach {
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
     /*
-     * 시험 클래스를 JVM(fork) 셋에 나눈다(`spec-ci-test-forks.md`, deferred 163).
+     * 시험 클래스를 JVM(fork) 최대 셋에 나눈다(`spec-ci-test-forks.md`, deferred 163).
      *
      * CI `backend-quality`의 임계 경로는 이 시험 하나다(PR #129 실측 14분 19초, 그중 Gradle 시험 ≈14분).
      * 시험 1,610건(137 클래스, 2026-11-03 실측)이 JVM 하나에서 순차로 돌아 클래스 시간의 합(2026-11-03 로컬 기준
@@ -169,11 +169,14 @@ tasks.withType<Test>().configureEach {
      * 분배는 Gradle이 class 단위로 round-robin한다(Gradle 9.7.1 `MaxNParallelTestDefinitionProcessor`: 스캔 순서로
      * i번째 클래스를 fork i mod N에 보내고, 빈 fork에 다음 클래스를 주지 않는다). 그래서 wall-clock은 가장 무거운
      * fork의 합이고, 위 보고서로 무작위 순서를 모의한 최장 fork의 p50/p90은 2 fork 12.1/14.4분, 3 fork 9.3/11.5분,
-     * 4 fork 7.9/9.9분이다. 3을 고르는 이유 — 러너(`ubuntu-24.04`, 4 vCPU·16 GB)에서 worker JVM 셋 + PostgreSQL 셋 +
-     * Gradle 클라이언트 JVM(`ci.yml`은 `--no-daemon`이라 1회성)에 코어 하나를 남겨 부하가 유발하는 간헐 실패
-     * (deferred 159)를 키우지 않으면서 목표 8~10분의 중앙값에 든다. 메모리는 worker JVM당 heap 상한 512 MB +
-     * metaspace·off-heap 약 0.3 GB ≈ 0.8 GB의 추정으로 셋 ≈ 2.5 GB이고 PostgreSQL 셋·클라이언트 JVM을 더해도
-     * 16 GB 안이다. 2·4로 바꾸는 것은 CI 실측(분배·시간·간헐 실패)을 본 뒤의 결정이다(SPEC Ask First).
+     * 4 fork 7.9/9.9분이다. 3은 4코어 러너에서 worker JVM 셋 + PostgreSQL 셋 + Gradle 클라이언트 JVM(`ci.yml`은
+     * `--no-daemon`이라 1회성)에 코어 하나를 남긴다는 가정으로 골랐다.
+     *
+     * 실제 fork 수는 `min(3, --max-workers)`이고 `--max-workers` 기본은 CPU 수다. CI 러너는 private 저장소의 기본
+     * `ubuntu-24.04`라 4코어가 아니었다 — PR #133 실측에서 executor가 2개였고(764건·861건) `backend-quality`는
+     * 14분 19초 → 10분 14초였다. 그래서 CI는 fork 2, 4코어 이상 로컬 기기는 fork 3으로 돈다. 2 vCPU에서 fork를 더
+     * 늘리면 코어를 나눠 쓸 뿐이라 3을 그대로 둔다. 메모리는 worker JVM당 heap 상한 512 MB + metaspace·off-heap 약
+     * 0.3 GB ≈ 0.8 GB의 추정이고, CI는 fork 둘이라 여유가 더 크다.
      *
      * JVM(fork)마다 PostgreSQL 컨테이너 하나다 — `PostgresTestcontainersConfig`의 static 컨테이너는 JVM 안에서만
      * 공유되고, `AuthFlowTestBase.resetStore`의 NOWAIT 전체 잠금도 그 컨테이너 안이다. 서버 포트는 전부 임의

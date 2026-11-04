@@ -54,14 +54,14 @@ context:
 
 ## Code Map
 
-- `backend/build.gradle.kts:160-231` -- `tasks.withType<Test>().configureEach` — 여기에 `maxParallelForks`(`:187`)와 근거 주석(`:162-186`), fork 분배·시험 수를 CI 로그에 남기는 `addTestListener`(`:192-230`, 판정 없이 출력만). 다른 설정은 그대로.
+- `backend/build.gradle.kts:160-234` -- `tasks.withType<Test>().configureEach` — 여기에 `maxParallelForks`(`:190`)와 근거 주석(`:162-189`), fork 분배·시험 수를 CI 로그에 남기는 `addTestListener`(`:195-233`, 판정 없이 출력만). 다른 설정은 그대로.
 - `backend/gradle.properties:10` -- `org.gradle.parallel=false`(변경 전 `:8`) — 값은 손대지 않는다. 주석이 "병렬화는 켜지 않는다"고 적지만 그것은 프로젝트 병렬이므로 시험 fork는 별개라는 한 줄(`:8-9`)을 더한다.
 - `backend/src/test/java/com/bokrilog/PostgresTestcontainersConfig.java:37` -- static `CONTAINER` — JVM당 컨테이너 하나의 근거. `AuthFlowTestBase.resetStore`의 NOWAIT 전체 잠금은 그 컨테이너 안이라 fork 사이에 경합하지 않는다.
 - fork 공유 자원 조사(읽기 전용, 결과 없음): `@SpringBootTest`는 `RANDOM_PORT` 2·`NONE` 8이고 `DEFINED_PORT` 없음, 루프백 서버 셋은 모두 포트 0(`OidcStubConfiguration.java:188`·`BybitStubConfiguration.java:221`·`source/internal/BybitAdapterTest.java:79`), 파일은 `RestoreRunnersTest`의 `@TempDir` 하나, `System.setProperty`·고정 포트 바인딩 없음, `DevOidcStubProfileTest.java:175`의 `18080`은 문자열 정규화 단정일 뿐이다.
 - `.github/workflows/ci.yml:290-376` -- `backend-quality` — 변경 없음. 명령 `build`(`:352`), timeout 20분(`:311`), 진단 artifact 단계(`:366-375`, 실패·취소 때만 `build/reports/tests`·`build/test-results`)가 fork와 무관하다.
 - `CLAUDE.md:97`(Docker 전제 문장 — JVM당 컨테이너, fork 수 `min(3, --max-workers)`) · `:130`(시험 시간 문장) · `:154`(진행 지점 문단의 "deferred 163·164로 남았다") · `:222` 표 끝(이 chore 행, `develop`의 AI-8 ① 행 뒤) · `:283-285`(시험·CI 계약 — JVM당 컨테이너 한 줄) · `:291`(미룬 결정의 163·168·169 판정).
 - `DEVELOPMENT.md:220`(Docker 전제 문단 — fork 수·컨테이너 수·로컬 정식 명령) · `:277`(파일 표의 `PostgresTestcontainersConfig` 행) · `:752`(`backend-quality` 행) · `:760`(마지막 문장 "남은 병목 … deferred 163") · `:767`(시험 시간 문단) 뒤 `:769`(fork 분할 문단 — 근거·실측).
-- `_bmad-output/implementation-artifacts/deferred-work-resolutions.md:18-23`(상태 표) · `:25`(이 chore의 2026-11-03 갱신 문단) · `:1341`(163 절, 부분 해소 블록 `:1351` — 해소 판정은 CI 실측 뒤에 적는다) · `:1395`·`:1403`(리뷰 defer 168·169 절).
+- `_bmad-output/implementation-artifacts/deferred-work-resolutions.md:18-23`(상태 표) · `:25`(2026-11-04 CI 실측 판정 문단) · `:33`(이 chore의 2026-11-03 갱신 문단) · `:1349`(163 절, 부분 해소 블록 `:1359`, 해소 블록 `:1366`) · `:1409`·`:1417`(리뷰 defer 168·169 절).
 - 걸린 열린 회고 액션: `epic-3-retro-item-38`(SPEC [K] 선택·patch 건수 기록 규약, in-progress) — 이 SPEC이 그 규약을 따르되 닫지는 않는다. `epic-3-retro-item-37`(CI 임계 경로)은 done이고 이 chore는 그 둘째 후속이다. 그 외 이 변경이 고치는 파일에 걸린 액션 없음.
 
 ## Tasks & Acceptance
@@ -72,7 +72,7 @@ context:
 - [x] 로컬 측정 -- `clean build` 통과·총시간, `build/test-results`의 `timestamp`+`time`으로 fork 타임라인(겹침·fork별 합)을 재구성해 `## Verification`에 기록 -- 분할이 실제로 일어났다는 증거
 - [x] `CLAUDE.md`, `DEVELOPMENT.md` -- 시험 시간 서술·job 표·시험·CI 계약 한 줄 -- 문서와 실측 일치
 - [x] `deferred-work-resolutions.md` -- 이 chore의 갱신 문단과 163 판정(CI 실측 뒤 해소), 상태 표·`CLAUDE.md:291` 건수 -- done 전환 규칙(163 절의 CI 실측 칸은 PR 실측으로 채운다)
-- [ ] PR을 열 때 PR 번호와 CI 실측을 채운다 -- 추적 산출물 정합. 채울 자리 전부: `CLAUDE.md:130` 문장(분할 뒤 CI `backend-quality` 실측) · `:154` 문단(PR 번호, 163의 해소 여부) · `:222` 표 행(PR 번호, 상태) · `:291` 문단(163 판정) · `DEVELOPMENT.md:769` 문단(CI 실측, pull·컨테이너 시작 오버헤드) · `deferred-work-resolutions.md:25` 갱신 문단(PR 번호)과 `### 163`의 실측 bullet·역전 규칙 적용(해소/Ask First/실패, 상태 표 건수) · 이 SPEC `## Verification`의 마지막 bullet(PR CI 실측)
+- [x] PR을 열 때 PR 번호와 CI 실측을 채운다 -- 추적 산출물 정합. 채울 자리 전부: `CLAUDE.md:130` 문장(분할 뒤 CI `backend-quality` 실측) · `:154` 문단(PR 번호, 163의 해소 여부) · `:222` 표 행(PR 번호, 상태) · `:291` 문단(163 판정) · `DEVELOPMENT.md:769` 문단(CI 실측, pull·컨테이너 시작 오버헤드) · `deferred-work-resolutions.md:25` 갱신 문단(PR 번호)과 `### 163`의 실측 bullet·역전 규칙 적용(해소/Ask First/실패, 상태 표 건수) · 이 SPEC `## Verification`의 마지막 bullet(PR CI 실측) — PR 번호는 PR #133의 `ec5982a`가, CI 실측과 163 판정은 머지 뒤 기록 PR이 채웠다
 
 **Acceptance Criteria:**
 - Given 이 변경, when PR CI의 `backend-quality`가 돌면, then 아홉 job이 green이고 시험 수가 변경 전과 같으며 그 job이 PR #129의 14분 19초보다 뚜렷이 짧다(목표 8~10분). 통과 범위: `backend-quality` ≤ 10분 → 통과(163 해소), 10분 초과 ~ 14분 19초 미만 → Ask First(fork 수 2·4 또는 suite 배치) 뒤 결정, 14분 19초 이상 → 실패.
@@ -84,6 +84,7 @@ context:
 
 - 1차 리뷰(blind-hunter·edge-case-hunter·verification-gap) patch 루프, 2026-11-03: patch 14·defer 2·reject 3. patch — 163을 해소에서 부분 해소로(CI 실측 전, 역전 규칙 명시), "1,5xx건" 자리표시를 실측 1,610건으로, 기준 보고서와 실측의 차이·`Bad address: listen`의 출처 설명, Code Map 줄 번호 정정, `Test`에 fork별 시험 수·길이와 전체 건수를 찍는 `TestListener`(green CI 로그에서 분할을 관측하는 유일한 자리), AC 1의 통과 범위(≤10분 해소·10~14분19초 Ask First·≥14분19초 실패), PR 시점 자리 열거, DEVELOPMENT.md job 표 행 복원, 콜드 러너를 기본 경로로, fork 수 결정 입력(상위 20 클래스 표·모의 방법) 보존, 자원 산수 유도, Gradle 9.7.1 클래스 이름 `MaxNParallelTestDefinitionProcessor`(분배 규칙은 bytecode로 확인), `min(3, --max-workers)`와 로컬 정식 명령 서술, CLAUDE.md 표 행 상태 `review`. defer — 168(fork 격리 불변식의 소스 스캔 시험, SPEC Always가 시험 코드 변경을 막음)·169(CI의 fork 수 기계 판정, `ci.yml`·스크립트 불변). 리뷰 당시 166·167로 적었고 아래 2026-11-04 항목이 번호를 옮겼다. reject — CPU 경합 행렬 행(Ask First "fork 환경에서만 나는 실패는 보고"가 이미 덮음), fork JVM 죽음의 미실행 클래스(Gradle이 executor 비정상 종료로 task를 실패시킴), `PostgresTestcontainersConfig` Javadoc 교차 참조(시험 트리 불변). KEEP — fork 분할은 `build.gradle.kts` 한 곳의 설정이고 시험 코드·`ci.yml`·스크립트는 그대로라는 틀.
 - PR 전 기준 갱신, 2026-11-04: 작업 중 `develop`이 PR #130(루트 컨트롤러 공통 부품)·#132(그 done 전환)로 `66d4938` → `c213b6c`가 됐고, #132가 deferred 166·167을 AI-8 ②·③ 묶음에 먼저 썼다. 이 브랜치(자체 커밋 없음)를 `c213b6c`로 fast-forward하고 변경을 3-way로 다시 얹어 문서 충돌 여섯(`CLAUDE.md` 셋·원장 둘·`deferred-work.md` 하나)을 풀었다 — `develop` 쪽 문장·절은 글자 그대로 두고 이 chore의 문장만 더했다. 리뷰 defer를 168·169로 옮기고 상태 표를 해소 32·부분 해소 23·미해소 114(합 169)로, `CLAUDE.md`의 건수·표 행·Code Map과 아래 리뷰 순서의 줄 앵커를 맞췄다. `baseline_commit`은 구현을 시작한 `66d4938` 그대로다. `develop`이 바꾼 백엔드 파일(컨트롤러·`IdempotencyKey`·`ControllerSupportTest` 등)은 이 chore의 파일과 겹치지 않고 새 시험에 고정 포트·`System.setProperty`가 없다.
+- CI 실측과 AC 1 판정, 2026-11-04(머지 뒤 기록 PR): PR #133 CI의 `backend-quality`가 14분 19초 → 10분 14초로 AC 1의 Ask First 구간(10분 초과 ~ 14분 19초 미만)에 들었다. 원인은 러너 사양이었다 — 저장소가 private이라 기본 `ubuntu-24.04` 러너가 4코어가 아니고 Gradle이 fork를 CPU 수로 상한해 executor가 2개였다. 동결 블록 Always의 "러너 4 vCPU·16 GB" 전제와 Design Notes의 같은 근거는 틀렸다(동결 문장은 고치지 않고 여기에 편차로 남긴다). 2 vCPU에서 fork를 늘릴 이득이 없어 사용자가 fork 수 변경·suite 배치 없이 이 값을 수용했고 163을 해소로 판정했다. `build.gradle.kts` 주석·`CLAUDE.md`·`DEVELOPMENT.md`의 4코어 전제를 고치고 설정은 3 그대로 둔다(4코어 이상 로컬은 3, CI는 2).
 
 ## Design Notes
 
@@ -144,14 +145,15 @@ context:
   ```
 
   Windows 콘솔로 받은 로그는 Gradle 클라이언트가 cp949로 써서 한글이 깨져 보이고(`iconv -f cp949`로 복원), ubuntu 러너의 UTF-8 로그에서는 그대로 보인다. 전체 `clean build`는 다시 돌리지 않았다 — 변경이 로그 출력뿐이고 부분 실행이 listener의 모양·executor 수를 보였다.
-- PR CI 실측은 PR을 열어 채운다(AC 1). 실측이 10분을 넘으면 fork 수·suite 배치는 Ask First다.
+- PR CI 실측(PR #133, run 41752910193, 2026-11-04): 아홉 job green, `backend-quality` 14분 19초 → 10분 14초(Gradle `build` 10분 1초), `[test-forks]` 로그 executor 2개(764건 455.4초·861건 522.2초)·전체 1,625건 성공, 전체 wall-clock은 `changes` 시작부터 `ci-required` 끝까지 14분 43초 → 12분 19초, digest 일치. 가장 늦게 끝난 job은 `deploy-rehearsal`(`frontend-quality` 뒤 01:22:26 → 01:30:15)이고 `backup-rehearsal`은 9분 44초였다. AC 1 판정은 Spec Change Log 2026-11-04 항목.
+- 새 기준 로컬 `clean build`(`develop` `c213b6c` 위, 2026-11-04, Docker Desktop 기동 뒤 안정화한 다음): 10분 56초, 1,625건 전부 성공(fork 셋 570건 4.9분·525건 6.3분·530건 10.1분). 그 앞 실행 하나는 Docker Desktop을 켠 직후라 fork 하나가 Docker 환경을 찾지 못하고 다른 fork의 컨테이너가 중간에 사라져 무효로 멈췄다.
 
 ## Suggested Review Order
 
 **fork 분할 — 설정 한 줄과 그 근거**
 
 - 진입점: 시험 클래스를 JVM 셋에 나누는 유일한 변경. 러너 4 vCPU·round-robin 분배·모의 p50/p90이 3을 고른 근거
-  [`build.gradle.kts:187`](../../backend/build.gradle.kts#L187)
+  [`build.gradle.kts:190`](../../backend/build.gradle.kts#L190)
 - JVM당 컨테이너 하나·임의 포트라 fork 사이 공유 자원이 없다는 안전성 근거와 2·4 변경이 Ask First인 이유
   [`build.gradle.kts:163`](../../backend/build.gradle.kts#L163)
 - `org.gradle.parallel=false`는 프로젝트 병렬이지 시험 fork가 아니라는 구분(값 불변)
@@ -160,18 +162,18 @@ context:
 **관측 — green CI 로그에서 분할을 보는 자리**
 
 - fork(executor)마다 시험 수·길이, 전체 건수·executor 수를 찍는 listener. 판정 없이 출력만, fork가 1로 접히면 executor 1개로 드러난다
-  [`build.gradle.kts:200`](../../backend/build.gradle.kts#L200)
+  [`build.gradle.kts:203`](../../backend/build.gradle.kts#L203)
 - 왜 로그가 유일한 자리인가 — 성공 실행은 test-results를 올리지 않고 `events("failed")`는 침묵한다
-  [`build.gradle.kts:193`](../../backend/build.gradle.kts#L193)
+  [`build.gradle.kts:196`](../../backend/build.gradle.kts#L196)
 
 **결정의 입력과 측정**
 
 - Gradle 9.7.1 bytecode로 확인한 round-robin 규칙과 3,000회 모의 결과
-  [`spec-ci-test-forks.md:92`](spec-ci-test-forks.md#L92)
+  [`spec-ci-test-forks.md:93`](spec-ci-test-forks.md#L93)
 - 상위 20 클래스 시간 표와 모의 방법 — 나중에 2·4·suite 배치를 다시 셈할 수 있는 입력
-  [`spec-ci-test-forks.md:94`](spec-ci-test-forks.md#L94)
+  [`spec-ci-test-forks.md:95`](spec-ci-test-forks.md#L95)
 - 로컬 실측 19분 42초 → 11분 44초, fork 타임라인, 허용된 Windows 예외 1건
-  [`spec-ci-test-forks.md:132`](spec-ci-test-forks.md#L132)
+  [`spec-ci-test-forks.md:133`](spec-ci-test-forks.md#L133)
 
 **계약·문서**
 
@@ -191,9 +193,9 @@ context:
 **미룬 결정 원장**
 
 - 163을 부분 해소로 — CI 실측 범위(≤10분 해소·10~14분19초 Ask First·≥14분19초 실패)에 따른 역전 규칙
-  [`deferred-work-resolutions.md:1351`](deferred-work-resolutions.md#L1351)
+  [`deferred-work-resolutions.md:1359`](deferred-work-resolutions.md#L1359)
 - 이 chore의 갱신 문단 — append 168·169 미해소, 164·165·159 그대로
-  [`deferred-work-resolutions.md:25`](deferred-work-resolutions.md#L25)
+  [`deferred-work-resolutions.md:33`](deferred-work-resolutions.md#L33)
 - 리뷰가 남긴 defer 둘 — fork 격리 불변식의 소스 스캔 시험, CI의 fork 수 기계 판정
   [`deferred-work.md:515`](deferred-work.md#L515)
 - patch 14·defer 2·reject 3의 기록과 PR 전 `develop`(`c213b6c`) 위로 다시 얹은 기록

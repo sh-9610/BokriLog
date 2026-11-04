@@ -17,10 +17,18 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 32 |
-| 부분 해소 | 23 |
+| 해소 | 33 |
+| 부분 해소 | 22 |
 | 미해소 | 114 |
 | 미판정 | 0 |
+
+**2026-11-04 갱신(CI 시험 fork 분할 chore 첫 CI 실측).** `spec-ci-test-forks.md`(PR #133, 머지 커밋 `7fad060`)의 CI 실측 뒤 판정을 마저 적었다. 그 PR이 163을 부분 해소로 두고 "PR CI `backend-quality`가 SPEC AC 1의 범위(≤ 10분)에 들면 해소로 올린다"는 역전 규칙을 남겼다.
+
+- **append한 항목.** 없다.
+- **해소로 올린 항목.** **163**. PR #133 CI(run 41752910193)의 `backend-quality`가 14분 19초 → 10분 14초였다. 경계 10분을 14초 넘어 규칙상 Ask First 구간이었지만, 원인이 확인됐다 — private 저장소의 기본 러너가 4코어가 아니라 Gradle이 fork를 CPU 수로 상한해 executor가 2개였다. 2 vCPU에서 fork를 늘려도 이득이 없어 사용자가 이 값을 수용했고(2026-11-04) 해소로 판정했다.
+- **결정 지점으로 지목된 항목.** 없다. 164(리허설의 PR 경로 분리)는 그대로 미해소이고, 이 실측에서 가장 늦게 끝난 job은 `deploy-rehearsal`(`frontend-quality` 뒤 약 7분 50초)이었다.
+
+그래서 앞 표(169건)에서 부분 해소 −1·해소 +1이다. 합은 169 그대로다.
 
 **2026-11-03 갱신(CI 시험 fork 분할 chore).** `spec-ci-test-forks.md`(브랜치 `chore/ci-test-forks`, PR #133, 기준 `66d4938`, PR 전에 `develop` `c213b6c`(PR #130·#132 뒤) 위로 다시 얹음 — done 전환 PR이 없는 chore라 그 PR 자체가 판정 자리다)를 판정했다.
 
@@ -1354,6 +1362,12 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **바꾼 것.** `backend/build.gradle.kts`의 `Test`에 `maxParallelForks = 3`과 근거 주석(러너 4 vCPU·16 GB, Gradle의 class 단위 round-robin, 클래스 시간 수치, JVM당 컨테이너 하나), `gradle.properties`의 `org.gradle.parallel=false` 주석에 시험 fork는 별개라는 한 줄. 시험 코드·`ci.yml`·`.github/scripts/*`·timeout 20분은 그대로다. 3을 고른 근거는 2026-11-03 로컬 보고서(136 클래스, 합 20.3분)로 무작위 순서를 모의한 최장 fork p50/p90 — 2 fork 12.1/14.4분, 3 fork 9.3/11.5분, 4 fork 7.9/9.9분 — 과 4 vCPU에서 코어 하나를 남겨 부하 유발 간헐 실패(159)를 키우지 않는 것이다.
 - **실측.** 로컬 `clean build`(Windows 11, Temurin 25, Gradle 9.7.1) 19분 42초 → 11분 44초(시험 1,610건·137 클래스, 실패는 알려진 Windows 환경 문제인 `BybitAdapterTest` `Bad address: listen` 1건뿐). `build/test-results`의 `timestamp`·`time`으로 재구성한 타임라인은 클래스 시간 합 22.1분이 11.1분 구간에 들어가고 세 클래스가 동시에 돌던 구간이 4.6분이다(`docker ps`에 `postgres:18.6-alpine` 셋·ryuk 셋). CI `backend-quality`의 분할 뒤 실측(PR #129의 14분 19초 대비, 목표 8~10분)은 이 chore의 PR이 채운다.
 - **부분 해소인 이유와 역전 규칙.** 로컬 실측만 있다. PR CI `backend-quality` 실측이 AC 1의 범위(≤ 10분)에 들면 PR에서 해소로 올린다. 10분 초과~14분 19초 미만이면 fork 수 변경(2·4)이나 suite 배치는 그 SPEC Ask First의 결정이고, 14분 19초 이상이면 실패다.
+
+**해소(2026-11-04, CI 시험 fork 분할 chore 첫 CI 실측, PR #133 머지 커밋 `7fad060`).**
+- **CI 실측.** run 41752910193: `backend-quality` 14분 19초 → 10분 14초(Gradle `build` 10분 1초). `[test-forks]` 로그는 executor 2개(764건 455초·861건 522초)·전체 1,625건 성공이다. 전체 wall-clock은 `changes` 시작부터 `ci-required` 끝까지 14분 43초 → 12분 19초다.
+- **fork가 둘인 이유.** 저장소가 private이라 기본 `ubuntu-24.04` 러너가 4코어가 아니었고, Gradle은 `maxParallelForks`를 `--max-workers`(기본 CPU 수)로 상한한다. SPEC과 첫 주석이 전제한 "러너 4 vCPU·16 GB"는 틀렸고, 기록 PR이 `build.gradle.kts` 주석·`CLAUDE.md`·`DEVELOPMENT.md`를 고쳤다. 설정은 3 그대로다(4코어 이상 로컬은 3, CI는 2).
+- **판정.** AC 1의 경계 10분을 14초 넘었지만 원인이 러너 사양이고 2 vCPU에서 fork를 늘릴 이득이 없어 사용자가 수용했다(2026-11-04). 해소다.
+- **로컬 재확인.** `develop` `c213b6c` 위 `clean build` 10분 56초, 1,625건 전부 성공(fork 셋 4.9·6.3·10.1분).
 
 ### 164. 리허설 셋을 백엔드 변경 PR의 필수 경로에서 빼는 정책
 
