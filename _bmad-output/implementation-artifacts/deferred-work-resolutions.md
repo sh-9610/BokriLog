@@ -18,9 +18,18 @@ decision_baseline: 'ERD-1.0.0'
 | 상태 | 건수 |
 |---|---|
 | 해소 | 32 |
-| 부분 해소 | 22 |
-| 미해소 | 113 |
+| 부분 해소 | 23 |
+| 미해소 | 114 |
 | 미판정 | 0 |
+
+**2026-11-03 갱신(CI 시험 fork 분할 chore).** `spec-ci-test-forks.md`(브랜치 `chore/ci-test-forks`, PR 번호는 열 때 채운다, 기준 `66d4938`, PR 전에 `develop` `c213b6c`(PR #130·#132 뒤) 위로 다시 얹음 — done 전환 PR이 없는 chore라 그 PR 자체가 판정 자리다)를 판정했다.
+
+- **append한 항목.** 1차 리뷰(blind-hunter·edge-case-hunter·verification-gap)가 낸 defer 둘 — **168**(fork 격리 불변식을 `src/test/java` 소스 스캔 시험으로 고정)·**169**(CI에서 fork 수를 기계가 판정 — `[test-forks]` executor 줄 집계와 `org.gradle.workers.max` 부재 단정) — 를 미해소로 판정했다. 둘 다 SPEC Always(시험 코드·`ci.yml`·`.github/scripts` 불변)가 이 chore에서 막은 범위이고 아래 절에 적었다.
+- **해소한 항목.** 없다.
+- **부분 해소로 올린 항목.** **163**(`backend-quality` 시험의 JVM 병렬화). `build.gradle.kts`의 `Test`에 `maxParallelForks = 3`을 더해 시험 클래스를 JVM(fork) 셋에 나눴고, fork마다 PostgreSQL 컨테이너 하나(`PostgresTestcontainersConfig`의 static 계약 그대로)다. 163이 첫 질문으로 둔 "JVM 여럿에서 안전한가"는 SPEC Intent가 답했다 — scheduler·virtual worker와 `resetStore`의 NOWAIT 전체 잠금은 자기 JVM의 컨테이너 안이고, 포트는 전부 임의(`RANDOM_PORT`·루프백 0), 파일은 `@TempDir` 하나뿐이라 fork 사이 공유 자원이 없다(아래 절). 두 SPEC(`spec-backend-test-speed.md`·`spec-ci-critical-path.md`)의 병렬화 경계는 이 SPEC Intent가 JVM 단위 fork 분할에 한해 다시 열었고, JVM 안 병렬·컨테이너 공유는 여전히 금지다. 로컬 `clean build`는 19분 42초 → 11분 44초(2026-11-03, Windows 11, 시험 1,610건)다. 해소가 아니라 부분 해소인 이유 — 지금은 로컬 실측만 있다. PR CI `backend-quality` 실측이 그 SPEC AC 1의 범위(≤ 10분)에 들면 PR에서 해소로 올리고, 10분 초과~14분 19초 미만이면 Ask First(fork 수 2·4 또는 suite 배치) 뒤 결정, 14분 19초 이상이면 실패다.
+- **결정 지점으로 지목된 항목.** **164**(리허설의 PR 경로 분리)·**165**(소비 job 넷의 내려받은 jar 대조)는 이 chore의 Never·범위 밖이라 미해소 그대로다. **159**(전체 빌드에서만 나는 간헐 실패)는 fork 수를 3으로 둔 근거(4 vCPU에서 코어 하나를 남긴다)에 쓰였을 뿐 판정을 바꾸지 않았다(부분 해소 그대로). 걸린 열린 회고 액션 `epic-3-retro-item-38`(SPEC [K] 선택·patch 건수 기록 규약)은 이 SPEC이 따르되 닫지 않았고, `epic-3-retro-item-37`(CI 임계 경로)은 done이며 이 chore는 그 둘째 후속이다.
+
+그래서 앞 표(167건)에서 미해소 −1+2·부분 해소 +1이다. 합은 169다.
 
 **2026-11-03 갱신(루트 컨트롤러 공통 부품 chore done 전환).** `spec-controller-commons.md`(PR #130, 머지 커밋 `0456622`, Epic 4 회고 AI-8 `epic-4-retro-item-47`의 ① 백엔드 묶음)를 판정했다.
 
@@ -1337,6 +1346,14 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **경계.** `spec-backend-test-speed.md` Never와 `spec-ci-critical-path.md` Ask First가 시험 병렬화·suite 배치를 막아 두었다. 이 chore의 Never도 같다.
 
 **미해소 잔여:** `maxParallelForks` 2~3(JVM마다 PostgreSQL 컨테이너 하나, 포트는 무작위)으로 15분을 8~10분으로 줄이는 변경과, 그 앞에 두 SPEC의 병렬화 경계를 새 SPEC Intent에서 다시 여는 결정. 순차 시험 중에도 scheduler·virtual worker가 돌고 DB 초기화가 public 전체 테이블을 NOWAIT로 잠그는 지금 구조(`CLAUDE.md` "시험·CI")가 JVM 여럿에서 안전한지가 그 SPEC의 첫 질문이다. 주인 없음 — 다음 CI 시간 chore가 이어받는다.
+→ 아래 2026-11-03 부분 해소 블록.
+
+**부분 해소(2026-11-03, CI 시험 fork 분할 chore, `spec-ci-test-forks.md`, 기준 `66d4938`).**
+- **경계를 다시 연 결정.** 그 SPEC의 Intent가 두 SPEC의 "백엔드 시험 병렬화" Never·Ask First를 **JVM 단위 fork 분할에 한해** 다시 열었다. JVM 안 병렬(JUnit `junit.jupiter.execution.parallel.*`)·Testcontainers `reuse`·컨테이너 공유는 여전히 금지다.
+- **첫 질문의 답.** JVM(fork)마다 `PostgresTestcontainersConfig`의 static 컨테이너가 하나씩 뜨므로 scheduler·virtual worker는 자기 JVM의 Spring 컨텍스트가 자기 컨테이너에만 닿고, `AuthFlowTestBase.resetStore`의 NOWAIT 전체 잠금도 그 컨테이너 안이라 fork 사이에 경합하지 않는다. 읽기 전용 조사에서 fork 공유 자원은 없었다 — `@SpringBootTest`는 `RANDOM_PORT` 2·`NONE` 8이고 `DEFINED_PORT` 없음, 루프백 서버 셋(`OidcStubConfiguration`·`BybitStubConfiguration`·`BybitAdapterTest`)은 모두 포트 0, 파일은 `RestoreRunnersTest`의 `@TempDir` 하나, `System.setProperty`·고정 포트 바인딩 없음. fork 사이에 남는 공유는 docker 데몬·이미지 캐시·`~/.testcontainers.properties`뿐이고 셋 다 동시 접근에 안전하다.
+- **바꾼 것.** `backend/build.gradle.kts`의 `Test`에 `maxParallelForks = 3`과 근거 주석(러너 4 vCPU·16 GB, Gradle의 class 단위 round-robin, 클래스 시간 수치, JVM당 컨테이너 하나), `gradle.properties`의 `org.gradle.parallel=false` 주석에 시험 fork는 별개라는 한 줄. 시험 코드·`ci.yml`·`.github/scripts/*`·timeout 20분은 그대로다. 3을 고른 근거는 2026-11-03 로컬 보고서(136 클래스, 합 20.3분)로 무작위 순서를 모의한 최장 fork p50/p90 — 2 fork 12.1/14.4분, 3 fork 9.3/11.5분, 4 fork 7.9/9.9분 — 과 4 vCPU에서 코어 하나를 남겨 부하 유발 간헐 실패(159)를 키우지 않는 것이다.
+- **실측.** 로컬 `clean build`(Windows 11, Temurin 25, Gradle 9.7.1) 19분 42초 → 11분 44초(시험 1,610건·137 클래스, 실패는 알려진 Windows 환경 문제인 `BybitAdapterTest` `Bad address: listen` 1건뿐). `build/test-results`의 `timestamp`·`time`으로 재구성한 타임라인은 클래스 시간 합 22.1분이 11.1분 구간에 들어가고 세 클래스가 동시에 돌던 구간이 4.6분이다(`docker ps`에 `postgres:18.6-alpine` 셋·ryuk 셋). CI `backend-quality`의 분할 뒤 실측(PR #129의 14분 19초 대비, 목표 8~10분)은 이 chore의 PR이 채운다.
+- **부분 해소인 이유와 역전 규칙.** 로컬 실측만 있다. PR CI `backend-quality` 실측이 AC 1의 범위(≤ 10분)에 들면 PR에서 해소로 올린다. 10분 초과~14분 19초 미만이면 fork 수 변경(2·4)이나 suite 배치는 그 SPEC Ask First의 결정이고, 14분 19초 이상이면 실패다.
 
 ### 164. 리허설 셋을 백엔드 변경 PR의 필수 경로에서 빼는 정책
 
@@ -1374,3 +1391,19 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **이 chore가 바꾼 것.** 없다. 운영 소스의 루트 컨트롤러만 다뤘다. engagement 컨트롤러 넷이 새 helper를 쓰게 됐지만 engagement 모듈의 의존은 바뀌지 않았다.
 
 **미해소 잔여:** 시험 helper 한 곳으로 모으기, 그리고 engagement의 허용 의존 목록을 `ModuleBoundaryTest`에 단정하기. 주인은 `epic-4-retro-item-47`(in-progress)의 다음 chore다.
+
+### 168. fork 격리 불변식의 소스 스캔 시험
+
+**미해소(2026-11-03, CI 시험 fork 분할 chore 판정, 기준 `66d4938`).** 이 chore의 1차 리뷰(blind-hunter·edge-case-hunter·verification-gap 셋 다)가 append했다.
+- **지금 값.** `maxParallelForks = 3` 뒤 시험 클래스 셋이 호스트의 루프백 포트·작업 디렉터리·docker 데몬을 공유하며 동시에 돈다. `CLAUDE.md` "시험·CI"가 고정 포트·`System.setProperty`·공유 파일 경로를 쓰는 시험을 들이지 않는다고 적었고 지금 묶음은 읽기 전용 조사로 그 규칙을 만족하지만(`RANDOM_PORT` 2·`NONE` 8, 루프백 서버 셋 모두 포트 0, 파일은 `@TempDir` 하나), 저장소의 소스 스캔 시험은 모두 `src/main/java`만 본다.
+- **이 chore가 지키는 것.** 규칙을 문서(`CLAUDE.md`·`build.gradle.kts` 주석)에 적었을 뿐 검사는 없다. SPEC Always가 시험 코드 변경을 막아 이 chore에서 더하지 않았다.
+
+**미해소 잔여:** `src/test/java`를 훑어 `DEFINED_PORT`·`withFixedExposedPort`·`withReuse`·`System.setProperty`·0이 아닌 리터럴 포트의 `InetSocketAddress(`를 거부하는 시험 하나(`ModuleBoundaryTest`·`OperatorAuditTest`의 소스 스캔 관용). 주인 없음 — 백엔드 시험을 다음에 고치는 작업이 이어받는다.
+
+### 169. CI에서 시험 fork 수의 기계 판정
+
+**미해소(2026-11-03, CI 시험 fork 분할 chore 판정, 기준 `66d4938`).** 이 chore의 1차 리뷰(verification-gap)가 append했다.
+- **지금 값.** `org.gradle.workers.max=1`이나 뒤에 오는 `maxParallelForks` 재설정이 fork를 1로 접어도 같은 시험이 통과하고 아홉 job이 green이라 임계 경로가 조용히 분할 전으로 돌아간다. `test-ci-scripts.sh`는 `backend-quality`의 명령 문자열만 고정한다.
+- **이 chore가 지키는 것.** `build.gradle.kts`의 `TestListener`가 fork(executor)마다 시험 수·길이와 전체 건수·executor 수를 `[test-forks]` 줄로 CI 로그에 남긴다 — 사람이 볼 수 있는 관측이지 판정이 아니다.
+
+**미해소 잔여:** `backend-quality` 로그의 `[test-forks]` executor 줄을 `.github/scripts/`의 스크립트가 세어 2개 미만이면 실패시키고, `gradle.properties`에 `org.gradle.workers.max`가 없음을 `test-ci-scripts.sh`가 단정하는 것(판정은 스크립트로, `ci.yml` 단계 목록 계약 갱신 포함). 주인 없음 — 다음 CI 계약 chore(165와 같은 자리)가 이어받는다.

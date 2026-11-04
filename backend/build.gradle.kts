@@ -159,10 +159,75 @@ tasks.withType<JavaCompile>().configureEach {
 
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
+    /*
+     * 시험 클래스를 JVM(fork) 셋에 나눈다(`spec-ci-test-forks.md`, deferred 163).
+     *
+     * CI `backend-quality`의 임계 경로는 이 시험 하나다(PR #129 실측 14분 19초, 그중 Gradle 시험 ≈14분).
+     * 시험 1,610건(137 클래스, 2026-11-03 실측)이 JVM 하나에서 순차로 돌아 클래스 시간의 합(2026-11-03 로컬 기준
+     * 보고서 136 클래스 ≈20분 — 상위 8개 파이프라인 클래스 12.6분 + 나머지 128개 7.7분)이 그대로 wall-clock이었다.
+     *
+     * 분배는 Gradle이 class 단위로 round-robin한다(Gradle 9.7.1 `MaxNParallelTestDefinitionProcessor`: 스캔 순서로
+     * i번째 클래스를 fork i mod N에 보내고, 빈 fork에 다음 클래스를 주지 않는다). 그래서 wall-clock은 가장 무거운
+     * fork의 합이고, 위 보고서로 무작위 순서를 모의한 최장 fork의 p50/p90은 2 fork 12.1/14.4분, 3 fork 9.3/11.5분,
+     * 4 fork 7.9/9.9분이다. 3을 고르는 이유 — 러너(`ubuntu-24.04`, 4 vCPU·16 GB)에서 worker JVM 셋 + PostgreSQL 셋 +
+     * Gradle 클라이언트 JVM(`ci.yml`은 `--no-daemon`이라 1회성)에 코어 하나를 남겨 부하가 유발하는 간헐 실패
+     * (deferred 159)를 키우지 않으면서 목표 8~10분의 중앙값에 든다. 메모리는 worker JVM당 heap 상한 512 MB +
+     * metaspace·off-heap 약 0.3 GB ≈ 0.8 GB의 추정으로 셋 ≈ 2.5 GB이고 PostgreSQL 셋·클라이언트 JVM을 더해도
+     * 16 GB 안이다. 2·4로 바꾸는 것은 CI 실측(분배·시간·간헐 실패)을 본 뒤의 결정이다(SPEC Ask First).
+     *
+     * JVM(fork)마다 PostgreSQL 컨테이너 하나다 — `PostgresTestcontainersConfig`의 static 컨테이너는 JVM 안에서만
+     * 공유되고, `AuthFlowTestBase.resetStore`의 NOWAIT 전체 잠금도 그 컨테이너 안이다. 서버 포트는 전부 임의
+     * (`RANDOM_PORT`·루프백 0)라 fork 사이에 DB·포트·파일을 공유하는 시험이 없다. JVM 안 병렬(JUnit 병렬)과
+     * 컨테이너 공유(`reuse`)는 여전히 쓰지 않는다. worker heap은 Gradle 기본값(512 MB) 그대로다 — fork 하나가
+     * 모든 Spring 컨텍스트를 담고 통과하던 값이라 fork마다 담는 컨텍스트가 줄어드는 쪽은 더 안전하다.
+     *
+     * `gradle.properties`의 `org.gradle.parallel=false`는 프로젝트 병렬이지 시험 fork가 아니라 그대로다.
+     * Gradle은 `maxParallelForks`를 `--max-workers`로 상한하므로 `--max-workers=1`이면 fork 1로 접힌다.
+     */
+    maxParallelForks = 3
     testLogging {
         events("failed")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
     }
+    /*
+     * fork 분배와 시험 수를 CI 로그에 남긴다 — 판정 없이 출력만이다.
+     *
+     * green 실행에서는 `ci.yml`이 `build/test-results`를 올리지 않고(실패·취소 때만 진단 artifact) 위 `events("failed")`는
+     * 성공 때 아무것도 찍지 않으므로, 이 두 줄이 CI 로그에서 "시험 몇 건이 fork 몇 개에 어떻게 나뉘었나"를 보는
+     * 유일한 자리다. fork가 `--max-workers`로 1에 접히면 executor 1개로 드러난다. executor 하나가 Gradle worker
+     * JVM(fork) 하나다.
+     */
+    addTestListener(object : TestListener {
+        private var rootStartMillis = 0L
+        private var executors = 0
+
+        override fun beforeSuite(suite: TestDescriptor) {
+            if (suite.parent == null) {
+                rootStartMillis = System.currentTimeMillis()
+            }
+        }
+
+        override fun afterSuite(suite: TestDescriptor, result: TestResult) {
+            if (suite.parent == null) {
+                println(
+                    "[test-forks] 전체 ${result.testCount}건(성공 ${result.successfulTestCount}·실패 ${result.failedTestCount}" +
+                        "·건너뜀 ${result.skippedTestCount}), executor ${executors}개",
+                )
+            } else if (suite.name.startsWith("Gradle Test Executor ")) {
+                executors += 1
+                val seconds = (result.endTime - result.startTime) / 1000.0
+                val offset = (result.startTime - rootStartMillis) / 1000.0
+                println(
+                    "[test-forks] ${suite.name}: 시험 ${result.testCount}건, 길이 ${"%.1f".format(seconds)}초" +
+                        "(시작 +${"%.1f".format(offset)}초)",
+                )
+            }
+        }
+
+        override fun beforeTest(testDescriptor: TestDescriptor) {}
+
+        override fun afterTest(testDescriptor: TestDescriptor, result: TestResult) {}
+    })
 }
 
 /*
