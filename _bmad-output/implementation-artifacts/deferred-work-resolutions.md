@@ -17,10 +17,18 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 33 |
+| 해소 | 34 |
 | 부분 해소 | 22 |
-| 미해소 | 114 |
+| 미해소 | 113 |
 | 미판정 | 0 |
+
+**2026-11-04 갱신(프런트엔드 POST·JSON 판독 공통 부품 chore done 전환).** `spec-frontend-request-commons.md`(PR #135, 머지 커밋 `afb08f0`, Epic 4 회고 AI-8 `epic-4-retro-item-47`의 ② 프런트엔드 묶음)를 판정했다.
+
+- **append한 항목.** 없다. 1차 리뷰(blind-hunter·edge-case-hunter·verification-gap)는 patch 6 · defer 0 · reject 10이었다.
+- **해소한 항목.** **166**(프런트엔드 동일 출처 JSON POST·JSON 판독 helper). 아래 절에 적었다.
+- **결정 지점으로 지목된 항목.** 없다. **167**(③ 시험·경계 묶음)은 이 chore의 Never라 미해소 그대로이고, 주인은 여전히 item-47의 다음 chore다. 그래서 item-47은 `in-progress`로 남는다.
+
+그래서 앞 표(169건)에서 미해소 −1·해소 +1이다. 합은 169 그대로다.
 
 **2026-11-04 갱신(CI 시험 fork 분할 chore 첫 CI 실측).** `spec-ci-test-forks.md`(PR #133, 머지 커밋 `7fad060`)의 CI 실측 뒤 판정을 마저 적었다. 그 PR이 163을 부분 해소로 두고 "PR CI `backend-quality`가 SPEC AC 1의 범위(≤ 10분)에 들면 해소로 올린다"는 역전 규칙을 남겼다.
 
@@ -1394,6 +1402,27 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **이 chore가 바꾼 것.** 없다. 백엔드 `ControllerSupport`·`IdempotencyKey.CONFLICT_CODE`만 다뤘고 `frontend/`는 건드리지 않았다.
 
 **미해소 잔여:** POST 한 벌과 판독 한 벌을 공통 부품으로 두고 호출자를 옮기는 일. `CLAUDE.md` 프런트엔드 공통 부품 문단과 사본 재발 방지 시험이 함께 필요하다. 주인은 `epic-4-retro-item-47`(in-progress)의 다음 chore다.
+→ 아래 2026-11-04 해소 블록.
+
+**해소(2026-11-04, 프런트엔드 POST·JSON 판독 공통 부품 chore, `spec-frontend-request-commons.md`, PR #135 머지 커밋 `afb08f0`).**
+- **바꾼 것.**
+  - `frontend/src/session/http.ts` 하나가 `postJson`·`postNoContent`·`readJson`·`objectOf`·`JsonObject`를 정의한다. 요청 init 규칙은 하나다: `POST`·`same-origin`·`no-store`·`Accept`·CSRF 헤더. `Content-Type`은 본문이 있을 때만, `Idempotency-Key`는 받았을 때만 붙는다.
+  - 운영 POST 21곳을 옮겼다(session 열 파일, components 네 파일). 204 묶음의 공유 전송 `unlinkProvider.post`도 `postNoContent`로 옮겼다.
+  - `readJson`·`jsonOf` 5벌, `objectOf`·`fieldsOf` 5벌, 인라인 판독 3곳, `'X-CSRF-TOKEN'` 리터럴 사본이 사라졌다.
+  - 그동안 `Accept`·`cache`가 없던 POST 11곳에는 그 둘이 생겼다. SPEC Always가 승인한 정규화다.
+- **재발 방지.** `session/http.test.ts`가 운영 소스를 훑어 다음을 단정한다.
+  - `method: 'POST'`(대소문자 무시)는 `http.ts`와 `telemetry/beacon.ts`에만 있다.
+  - `new Request(`·인라인 `.json().catch(`·판독 helper 정의가 `http.ts` 밖에 없다.
+  - CSRF 헤더 리터럴은 `content/auth.ts`에만 있다.
+  - `CSRF_HEADER` import는 `http.ts`·`beacon.ts`에만 있다.
+- **바꾸지 않은 것(Never).**
+  - `keepalive` 계측 `beacon.ts`와 배열을 받는 `useDashboard.record()`, 그리고 `codeIn`·`codeOf` 변형
+  - GET 16곳, 시한 구현
+  - 성공 경로의 `response.json()` 직접 호출(사본 helper가 아니다)
+- **검증.**
+  - 로컬: Vitest 1,570건 통과, 미리보기 Playwright 40건 통과.
+  - 로컬 `verify-same-origin.sh`는 Windows 소켓 오류로 끝나지 않았다(PR 본문에 기록).
+  - PR #135 CI(run 41781954434): `frontend-quality` 3분 44초, `same-origin-integration` 7분 33초로 주입 origin e2e를 포함해 통과했고 `ci-required`도 통과했다.
 
 ### 167. 광고 시험 공용 helper·engagement 바깥 의존 허용 목록(Epic 4 회고 AI-8 ③)
 
