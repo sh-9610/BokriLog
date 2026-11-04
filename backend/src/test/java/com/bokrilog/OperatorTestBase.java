@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -252,6 +253,28 @@ abstract class OperatorTestBase extends PlanSyncTestBase {
             release.countDown();
             holder.join(10_000);
         };
+    }
+
+    /** 동시에 보낼 요청 하나. */
+    protected interface Call {
+        HttpResponse<String> run() throws Exception;
+    }
+
+    /** 두 요청을 동시에 보낸다(가상 스레드 둘이 같은 출발선에서). 응답은 넘긴 순서다. */
+    protected static List<HttpResponse<String>> concurrently(Call first, Call second) throws Exception {
+        var start = new CountDownLatch(1);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var a = executor.submit(() -> {
+                start.await();
+                return first.run();
+            });
+            var b = executor.submit(() -> {
+                start.await();
+                return second.run();
+            });
+            start.countDown();
+            return List.of(a.get(), b.get());
+        }
     }
 
     /** 그 수만큼 advisory 잠금 대기자가 생길 때까지 기다린다. */

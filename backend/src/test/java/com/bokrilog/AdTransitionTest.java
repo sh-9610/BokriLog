@@ -5,28 +5,19 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.bokrilog.engagement.AdConsentApi;
 import com.bokrilog.engagement.AdTransitionApi;
-import com.bokrilog.engagement.EngagementDeletionApi;
 import com.bokrilog.engagement.internal.AdProviderTestHook;
 import com.bokrilog.operations.RestrictionFeature;
-import com.bokrilog.sync.SyncJobApi;
 import java.net.http.HttpResponse;
-import java.security.SecureRandom;
 import java.time.OffsetDateTime;
-import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
 import org.jspecify.annotations.Nullable;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
-import org.springframework.context.ApplicationContext;
 import org.springframework.dao.DataIntegrityViolationException;
 
 /**
@@ -37,30 +28,14 @@ import org.springframework.dao.DataIntegrityViolationException;
  * 시험 컨텍스트에서 켜져 있고(플래그와 형식에 맞는 단위 경로), 꺼짐은 {@link AdProviderTestHook}으로 잠시 끈다.
  */
 @ExtendWith(OutputCaptureExtension.class)
-class AdTransitionTest extends OperatorTestBase {
+class AdTransitionTest extends AdTestBase {
 
     private static final String PATH = AdTransitionController.AD_TRANSITION_PATH;
 
     private static final String ELIGIBILITY_PATH = AdEligibilityController.AD_ELIGIBILITY_PATH;
 
-    private static final SecureRandom RANDOM = new SecureRandom();
-
-    @Autowired
-    private AdConsentApi consents;
-
     @Autowired
     private AdTransitionApi transitions;
-
-    @Autowired
-    private EngagementDeletionApi deletion;
-
-    @Autowired
-    private ApplicationContext context;
-
-    @AfterEach
-    void providerBackOn() {
-        AdProviderTestHook.providerEnabled(this.context, true);
-    }
 
     // ------------------------------------------------------------------ 자격 → 소비
 
@@ -181,10 +156,7 @@ class AdTransitionTest extends OperatorTestBase {
         String transition = insertEligible(signed.user(), "statement_timestamp()");
         // 옛 정책 버전의 동의 행은 직접 넣는다 — 쓰기 경로(`AdConsentApi.decide`·`POST /ad-consent`)는 지금 정책 버전만 받으므로
         // (다르면 409 `AD_CONSENT_POLICY_CHANGED`) 정책 버전을 올린 뒤 남은 옛 행을 그 경로로는 만들 수 없다.
-        jdbc().sql("INSERT INTO engagement_ad_consent_decision (user_id, policy_version, choice, idempotency_key_digest, "
-                        + "request_digest) VALUES (:u, 'AD-CONSENT-0.9', 'GRANTED', :k, :r)")
-                .param("u", signed.user()).param("k", sha256(UUID.randomUUID().toString()))
-                .param("r", sha256(UUID.randomUUID().toString())).update();
+        insertConsent(signed.user(), "AD-CONSENT-0.9", "GRANTED");
 
         assertSkip(claim(signed, transition), "CONSENT_REQUIRED");
         assertThat(consumedAt(transition)).isNotNull();
@@ -240,11 +212,7 @@ class AdTransitionTest extends OperatorTestBase {
         jdbc().sql("ALTER TABLE engagement_ad_consent_decision DROP CONSTRAINT engagement_ad_consent_decision_choice_check")
                 .update();
         try {
-            jdbc().sql("INSERT INTO engagement_ad_consent_decision (user_id, policy_version, choice, "
-                            + "idempotency_key_digest, request_digest) VALUES (:u, :p, 'UNREADABLE', :k, :r)")
-                    .param("u", signed.user()).param("p", AdConsentApi.POLICY_VERSION)
-                    .param("k", sha256(UUID.randomUUID().toString())).param("r", sha256(UUID.randomUUID().toString()))
-                    .update();
+            insertConsent(signed.user(), AdConsentApi.POLICY_VERSION, "UNREADABLE");
             var failed = claim(signed, transition);
             assertThat(failed.statusCode()).as(failed.body()).isEqualTo(500);
             assertThat(failed.headers().firstValue("Cache-Control")).hasValueSatisfying(value -> assertThat(value)
@@ -311,21 +279,7 @@ class AdTransitionTest extends OperatorTestBase {
         Signed signed = signedIn("ad-transition-race");
         grant(signed.user());
         String transition = insertEligible(signed.user(), "statement_timestamp()");
-        var start = new CountDownLatch(1);
-        List<HttpResponse<String>> both = new ArrayList<>();
-        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            var a = executor.submit(() -> {
-                start.await();
-                return claim(signed, transition);
-            });
-            var b = executor.submit(() -> {
-                start.await();
-                return claim(signed, transition);
-            });
-            start.countDown();
-            both.add(a.get());
-            both.add(b.get());
-        }
+        var both = concurrently(() -> claim(signed, transition), () -> claim(signed, transition));
         assertThat(both).extracting(HttpResponse::statusCode).containsExactly(200, 200);
         assertThat(both).extracting(response -> topLevelFieldsOf(response.body()).get("outcome") + ":"
                 + topLevelFieldsOf(response.body()).get("reason")).containsExactlyInAnyOrder("SHOW:null",
@@ -375,41 +329,6 @@ class AdTransitionTest extends OperatorTestBase {
 
     // ------------------------------------------------------------------ 도구
 
-    /** 수동 동기화 하나를 접수하고 성공을 기다린다. */
-    private UUID admitManual(UUID user, String key) throws Exception {
-        var admission = sync.admitPlanSync(user, SyncJobApi.SyncTrigger.MANUAL, key);
-        assertThat(admission).isInstanceOf(SyncJobApi.SyncAdmission.Accepted.class);
-        UUID job = ((SyncJobApi.SyncAdmission.Accepted) admission).job().jobId();
-        assertThat(awaitSync(job)).isEqualTo("SUCCEEDED");
-        return job;
-    }
-
-    private void grant(UUID user) {
-        var decided = this.consents.decide(user, key("ad-transition-grant"), AdConsentApi.Choice.GRANTED,
-                AdConsentApi.POLICY_VERSION);
-        assertThat(decided).isInstanceOf(AdConsentApi.Decision.Saved.class);
-    }
-
-    private HttpResponse<String> claim(Signed signed, String transition) throws Exception {
-        return sendJson("POST", PATH, "{\"transition\":\"" + transition + "\"}", signed.cookie(),
-                headers(signed.csrf(), null));
-    }
-
-    /** 그 사용자의 자격 행 하나를 그 DB 시각 식으로 넣고 transition 참조를 돌려준다. */
-    private String insertEligible(UUID user, String decidedAt) {
-        String transition = newTransition();
-        jdbc().sql("INSERT INTO engagement_ad_attempt (user_id, sync_job_id, outcome, transition_ref, decided_at) "
-                        + "VALUES (:u, :j, 'ELIGIBLE', :t, " + decidedAt + ")")
-                .param("u", user).param("j", UUID.randomUUID()).param("t", transition).update();
-        return transition;
-    }
-
-    private static String newTransition() {
-        byte[] bytes = new byte[32];
-        RANDOM.nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-    }
-
     private @Nullable OffsetDateTime consumedAt(String transition) {
         return jdbc().sql("SELECT transition_consumed_at FROM engagement_ad_attempt WHERE transition_ref = :t")
                 .param("t", transition).query(OffsetDateTime.class).optional().orElse(null);
@@ -427,11 +346,5 @@ class AdTransitionTest extends OperatorTestBase {
                 .contains("no-store"));
         assertThat(topLevelFieldsOf(response.body())).as(response.body()).containsOnlyKeys("outcome", "reason")
                 .containsEntry("outcome", "SKIP").containsEntry("reason", reason);
-    }
-
-    private static void assertNotFound(HttpResponse<String> response, String code, String what) {
-        assertThat(response.statusCode()).as(what + ": " + response.body()).isEqualTo(404);
-        assertThat(topLevelFieldsOf(response.body())).as(what).containsOnlyKeys("code", "message", "correlationId")
-                .containsEntry("code", code);
     }
 }
