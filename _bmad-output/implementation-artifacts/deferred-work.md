@@ -512,3 +512,9 @@
 - source_spec: none
   summary: 광고 시험 공용 helper(`admitManual`·`grant`·자격 행 삽입·`assertNotFound`)를 한 곳으로 모으고 engagement 모듈의 바깥 의존 허용 목록을 `ModuleBoundaryTest`로 강제한다(Epic 4 회고 AI-8 `epic-4-retro-item-47`의 ③ 시험·경계 묶음, 회고 A-2).
   evidence: 2026-11-03 AI-8을 세 목표로 나눠([S]) 이번 작업은 백엔드 컨트롤러 helper만 한다. `AdEligibilityTest`·`AdTransitionTest`의 `admitManual`은 이미 갈라졌고(접수 시각을 당기는가), `engagement/package-info.java`가 적은 바깥 의존(sync·operations·identity)을 강제하는 시험이 없다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-ci-test-forks.md`
+  summary: 시험 fork 분할이 의존하는 fork 격리 불변식(`DEFINED_PORT`·고정 루프백 포트·`withFixedExposedPort`·`withReuse`·`System.setProperty`·공유 파일 경로 금지)을 `src/test/java`를 훑는 시험으로 고정한다 — 저장소의 소스 스캔 시험(`ModuleBoundaryTest`·`OperatorAuditTest` 류)은 모두 `src/main/java`만 본다.
+  evidence: 2026-11-03 fork 분할 리뷰(blind-hunter·edge-case-hunter·verification-gap 셋 다). 지금 시험 묶음은 조사로 규칙을 만족하지만(`RANDOM_PORT` 2·`NONE` 8, 루프백 서버 셋 모두 포트 0, 파일은 `@TempDir` 하나) 검사가 없어 첫 위반은 다른 fork와 겹칠 때만 나는 간헐 실패(deferred 159 모양)로 드러난다. SPEC Always가 시험 코드 변경을 막아 이 chore에서 더하지 않았다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-ci-test-forks.md`
+  summary: CI에서 시험 fork가 실제로 셋 떴는지를 기계가 판정하게 한다 — `backend-quality` 로그의 `[test-forks]` executor 줄을 `.github/scripts/`의 스크립트가 세어 2개 미만이면 실패시키고, `gradle.properties`에 `org.gradle.workers.max`가 생기지 않는지 `test-ci-scripts.sh`가 단정한다.
+  evidence: 2026-11-03 fork 분할 리뷰(verification-gap). `org.gradle.workers.max=1`이나 뒤에 오는 `maxParallelForks` 재설정이 fork를 1로 접어도 같은 1,610건이 통과하고 아홉 job이 green이라 임계 경로가 조용히 14분으로 돌아간다. 이 chore는 fork별 시험 수·길이를 로그로만 보이게 했고(관측), 판정 스크립트·`test-ci-scripts.sh` 변경은 SPEC Always 밖이다.
