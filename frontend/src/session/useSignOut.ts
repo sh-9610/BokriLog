@@ -14,6 +14,11 @@ import { signOut } from './signOut'
 export interface SignOutAccess {
   /** 요청이 도는 중인가. 버튼은 `aria-disabled`로, live region은 문장으로 이 값을 반영한다. */
   readonly pending: boolean
+  /**
+   * 마지막 로그아웃이 실패했는가. 새 요청을 시작하면 거짓으로 돌아간다. 실패해도 이동(`logoutFailed` 표지)은 그대로 일어나고, 이동이
+   * 막히는 환경에서 화면이 그 사실을 자기 live region으로 말할 때 쓴다(삭제 진행 화면, Story 5.1).
+   */
+  readonly failed: boolean
   /** 로그아웃을 시작한다. 이미 도는 중이면 아무 일도 하지 않는다. */
   readonly requestSignOut: () => void
 }
@@ -31,23 +36,28 @@ export interface SignOutAccess {
  */
 export function useSignOut(csrfToken: string | null): SignOutAccess {
   const [pending, setPending] = useState(false)
+  const [failed, setFailed] = useState(false)
 
   return {
     pending,
+    failed,
     requestSignOut: (): void => {
       if (pending) {
         // 중복 제출 차단. `aria-disabled`는 알려 주기만 하고 막지는 않으므로 이 가드가 필요하다.
         return
       }
       setPending(true)
+      setFailed(false)
       void signOut(csrfToken)
         .then((outcome) => {
           if (outcome === 'failed') {
             setPending(false)
+            setFailed(true)
           }
         })
         .catch(() => {
           setPending(false)
+          setFailed(true)
         })
     },
   }

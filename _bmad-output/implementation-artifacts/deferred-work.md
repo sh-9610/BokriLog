@@ -518,3 +518,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-ci-test-forks.md`
   summary: CI에서 시험 fork가 실제로 셋 떴는지를 기계가 판정하게 한다 — `backend-quality` 로그의 `[test-forks]` executor 줄을 `.github/scripts/`의 스크립트가 세어 2개 미만이면 실패시키고, `gradle.properties`에 `org.gradle.workers.max`가 생기지 않는지 `test-ci-scripts.sh`가 단정한다.
   evidence: 2026-11-03 fork 분할 리뷰(verification-gap). `org.gradle.workers.max=1`이나 뒤에 오는 `maxParallelForks` 재설정이 fork를 1로 접어도 같은 1,610건이 통과하고 아홉 job이 green이라 임계 경로가 조용히 14분으로 돌아간다. 이 chore는 fork별 시험 수·길이를 로그로만 보이게 했고(관측), 판정 스크립트·`test-ci-scripts.sh` 변경은 SPEC Always 밖이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-1-account-deletion-request.md`
+  summary: 삭제 진행 화면에 지원(문의) 경로가 없다 — 삭제 중 계정은 문의 접수(`POST /api/support/inquiries`)가 `DELETION_IN_PROGRESS` 거부로 막혀 있어, Epic 5 UX 패턴의 "진행 중 지원 경로를 함께 제공"을 5.1 화면이 지키지 못한다.
+  evidence: 2026-11-05 Story 5.1 1차 리뷰(blind-hunter). 진행 화면은 상태·다시 확인·로그아웃만 제공한다. 삭제 중 계정에 열 수 있는 지원 경로(무세션 연락처 고지, 삭제 중에도 허용되는 문의 접수 중 무엇인지)는 실패 범위·재시도를 실제로 만드는 5.2와 완료 안내의 5.4가 정할 결정이라 이 스토리에서 뗐다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-1-account-deletion-request.md`
+  summary: 삭제 요청(`identity_deletion_request`, 삭제 진행 상태)은 서비스 DB에만 있고 tombstone outbox·외부 사본에 남지 않아, 요청 뒤 실행(5.3) 전에 요청 이전 generation으로 복원하면 계정이 요청 기록 없이 `ACTIVE`로 돌아온다 — 복원 경로에서의 요청 내구성(외부 기록·복원 적용 시 재진입)을 5.2·5.3이 결정한다.
+  evidence: 2026-11-05 Story 5.1 2차 리뷰(blind-hunter). `restore-apply`는 tombstone(완료된 삭제)만 대조해 재삭제하고(3.10), 5.1의 요청 행은 tombstone outbox에 쓰이지 않는다. RPO 24시간 안에 접수된 요청은 그 사이 장애·복원에서 사라질 수 있고, 진행 화면은 그 사실을 알 수 없다. 완료된 삭제를 되살리지 않는다는 화면 문장 자체는 3.10 tombstone으로 성립한다.

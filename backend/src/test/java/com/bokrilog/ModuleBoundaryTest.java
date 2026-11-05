@@ -360,6 +360,16 @@ class ModuleBoundaryTest {
                         com.bokrilog.operations.DeletionTombstoneApi.Tombstone.class)
                 .because("외부 tombstone으로 다시 지우는 곳은 복원 적용뿐이다.");
         reapply.check(PRODUCTION_CLASSES);
+
+        // 사용자의 삭제 요청(Story 5.1)을 만드는 곳은 재인증·허가·문구 재입력을 지나는 루트 표면 하나다. 요청은 삭제를 시작만 하고
+        // 실제 삭제(위 erase)는 부르지 않는다.
+        ArchRule request = noClasses()
+                .that().resideOutsideOfPackage(IDENTITY + "..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.AccountDeletionRequestService")
+                .should().callMethod(com.bokrilog.identity.AccountDeletionApi.class, "requestDeletion",
+                        java.util.UUID.class, String.class, String.class, String.class)
+                .because("계정 삭제 요청은 민감 command 계약을 지나는 사용자 요청 표면 하나만 만든다.");
+        request.check(PRODUCTION_CLASSES);
     }
 
     /**

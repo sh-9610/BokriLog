@@ -125,15 +125,20 @@ class BybitConnectionController {
     /** Bybit 연결 해제(Story 2.16). 다섯 번째 무장이며 같은 설정 화면에서 시작된다. */
     private final BybitRevocationCommandService revocations;
 
+    /** 계정 삭제 요청(Story 5.1). 같은 설정 화면의 여섯 번째 무장이라 같은 규칙을 지난다. */
+    private final AccountDeletionRequestService accountDeletions;
+
     BybitConnectionController(
             BybitConnectionService connections,
             LinkService linkService,
             UnlinkService unlinkService,
-            BybitRevocationCommandService revocations) {
+            BybitRevocationCommandService revocations,
+            AccountDeletionRequestService accountDeletions) {
         this.connections = connections;
         this.linkService = linkService;
         this.unlinkService = unlinkService;
         this.revocations = revocations;
+        this.accountDeletions = accountDeletions;
     }
 
     /**
@@ -262,6 +267,7 @@ class BybitConnectionController {
         this.linkService.abandon(session);
         this.unlinkService.abandon(session);
         this.revocations.abandon(session);
+        this.accountDeletions.abandon(session);
         return ResponseEntity.ok()
                 // 확인 문구는 이 요청에만 유효하다. 캐시가 되살리면 다음 요청이 남의 문구를 본다.
                 .cacheControl(CacheControl.noStore())
@@ -426,6 +432,7 @@ class BybitConnectionController {
         this.connections.abandon(session);
         this.linkService.abandon(session);
         this.unlinkService.abandon(session);
+        this.accountDeletions.abandon(session);
         return revocationAnswer("prepare", ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(new RevocationChallenge(armed.connectionId(), armed.confirmation())), "PREPARED", started);
     }

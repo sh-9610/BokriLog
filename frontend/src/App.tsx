@@ -61,6 +61,9 @@ class ScreenLoadBoundary extends Component<
  *
  * 세션 확인은 로그인 상태 경로의 화면이 각자 한다. 진입 화면은 어떤 요청도 보내지 않으며 그
  * 사실을 E2E가 고정한다.
+ *
+ * 삭제 진행 화면(Story 5.1)은 경로가 아니다. 세션 확인이 삭제 진행을 말하면 각 인증 화면이 세션 게이트의
+ * `deletion-in-progress`에서 자기 자리에 그것만 그린다 — 이 맵·Nginx 허용 목록·복귀 목적지는 그대로다.
  */
 export function App(): ReactElement {
   const { pathname, search } = window.location

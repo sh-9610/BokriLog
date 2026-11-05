@@ -60,7 +60,9 @@ async function reauthenticate(page: Page, subject: string): Promise<void> {
   // 재인증은 세션의 목적지(착지 화면)로 돌아온다. 그 이동이 끝난 뒤에 설정 화면을 다시 연다.
   await waitForLanding(page)
   await page.goto('/settings')
-  await expect(page.getByRole('heading', { name: connectionContent.heading })).toBeVisible()
+  await expect(
+    page.getByRole('heading', { name: connectionContent.heading, exact: true }),
+  ).toBeVisible()
 }
 
 test.describe('해제한 Bybit 연결의 재연결', () => {

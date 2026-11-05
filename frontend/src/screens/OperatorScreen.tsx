@@ -90,6 +90,7 @@ import { useOperatorRestriction } from '../session/useOperatorRestriction'
 import { useReauthentication } from '../session/useReauthentication'
 import { liveRegionMessage, useSessionGate, type SessionGate } from '../session/useSessionState'
 import { useSignOut } from '../session/useSignOut'
+import { DeletionProgressScreen } from './DeletionProgressScreen'
 import { EntryScreen } from './EntryScreen'
 import styles from './OperatorScreen.module.css'
 
@@ -442,7 +443,7 @@ function download(operationId: string, rows: readonly AuditEntry[]): void {
  * 받지 못한 확정은 실행 여부를 단정하지 않고 operation 조회로 안내한다.
  */
 export function OperatorScreen(): ReactElement {
-  const { csrfToken, gate } = useSessionGate('operator')
+  const { csrfToken, deletionToken, gate } = useSessionGate('operator')
   const signOut = useSignOut(csrfToken)
   const reauthentication = useReauthentication(csrfToken)
   const ready = gate === 'ready'
@@ -631,6 +632,8 @@ export function OperatorScreen(): ReactElement {
     }
   }, [sessionEnded])
 
+  // 삭제가 요청된 계정(Story 5.1): 경로와 무관하게 진행 화면만 그린다. 이 화면의 조회는 게이트가 `ready`가 아니라 시작되지 않는다.
+  if (gate === 'deletion-in-progress') return <DeletionProgressScreen csrfToken={deletionToken} />
   if (gate === 'unauthenticated') {
     return <EntryScreen notice="signedOut" />
   }

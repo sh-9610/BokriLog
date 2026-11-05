@@ -199,7 +199,9 @@ function NeutralAdTransition({ transition }: { readonly transition: string }): R
    * 아무것도 주장하지 않고 그리로 간다. 소비 effect(passive)보다 먼저 떠나는 표시를 남기므로 소비 요청도 나가지 않는다.
    */
   useLayoutEffect(() => {
-    if (gate === 'unauthenticated' || gate === 'reauth-required') leave()
+    // 삭제가 요청된 계정(Story 5.1)도 결과 화면이 진행 화면으로 다룬다. 소비 요청을 보내지 않는다.
+    if (gate === 'unauthenticated' || gate === 'reauth-required' || gate === 'deletion-in-progress')
+      leave()
   }, [gate, leave])
 
   /*
