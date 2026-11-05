@@ -524,3 +524,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-1-account-deletion-request.md`
   summary: 삭제 요청(`identity_deletion_request`, 삭제 진행 상태)은 서비스 DB에만 있고 tombstone outbox·외부 사본에 남지 않아, 요청 뒤 실행(5.3) 전에 요청 이전 generation으로 복원하면 계정이 요청 기록 없이 `ACTIVE`로 돌아온다 — 복원 경로에서의 요청 내구성(외부 기록·복원 적용 시 재진입)을 5.2·5.3이 결정한다.
   evidence: 2026-11-05 Story 5.1 2차 리뷰(blind-hunter). `restore-apply`는 tombstone(완료된 삭제)만 대조해 재삭제하고(3.10), 5.1의 요청 행은 tombstone outbox에 쓰이지 않는다. RPO 24시간 안에 접수된 요청은 그 사이 장애·복원에서 사라질 수 있고, 진행 화면은 그 사실을 알 수 없다. 완료된 삭제를 되살리지 않는다는 화면 문장 자체는 3.10 tombstone으로 성립한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-2-account-data-erasure.md`
+  summary: 계정 삭제 실행의 운영 관측이 없다 — `재시도 필요`로 멈춘 실행 수, 대기·진행 실행의 나이, production·tombstone 키 없음으로 집히지 않는 요청을 운영자가 볼 메트릭(`TelemetryAllowlist` 행)과 경보 규칙(`deploy/observability/alerts.yml`)을 더한다.
+  evidence: 2026-11-05 Story 5.2 1차 리뷰(blind-hunter). 실행 로그는 단계 code·결과 code·예외 단순 이름만 남기고(사용자·요청 식별자 없음) 새 메트릭·경보가 없어, 부분 실패와 지연은 사용자 진행 화면에서만 보인다. SPEC은 관측을 범위에 넣지 않았다(새 계측은 표에 행을 먼저 더해야 하는 3.7 규칙).
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-2-account-data-erasure.md`
+  summary: 삭제 실행·단계 기록(`identity_deletion_run`·`identity_deletion_step`, V31)의 보존 기한과 정리 정책을 정한다 — 운영 완료 시각의 근거로 영구히 남는다.
+  evidence: 2026-11-05 Story 5.2 1차 리뷰(blind-hunter). 두 표는 생명주기 행을 FK로 가리키는 삭제 기록이라 계정 삭제 뒤에도 남고(identity 잔여에서 제외), 보존 기한·정리 주체가 SPEC과 정책 어디에도 없다. 백업 파기 추적(5.3)·완료 안내(5.4)가 이 기록을 읽을 수 있어 그 결정과 함께 볼 지점이다.

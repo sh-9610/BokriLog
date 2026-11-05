@@ -97,6 +97,11 @@ class DeletionTombstoneService implements DeletionTombstoneApi {
     }
 
     @Override
+    public boolean keyAvailable() {
+        return this.digest.getIfAvailable() != null;
+    }
+
+    @Override
     public Map<UUID, Tombstone> matching(Collection<UUID> userIds, Collection<Tombstone> tombstones) {
         TombstoneDigest keyed = keyed();
         Map<String, Tombstone> byDigest = new HashMap<>();

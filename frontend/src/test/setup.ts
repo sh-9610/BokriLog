@@ -36,6 +36,7 @@ import {
   ACCOUNT_DELETION_CANCEL_PATH,
   ACCOUNT_DELETION_CONFIRM_PATH,
   ACCOUNT_DELETION_PATH,
+  ACCOUNT_DELETION_RETRY_PATH,
 } from '../content/accountDeletion'
 import accountDeletionPolicy from '../content/accountDeletionPolicy.fixture.json'
 import { AD_CONSENT_PATH, AD_CONSENT_POLICY_VERSION } from '../content/adConsent'
@@ -499,6 +500,11 @@ export function stubAccountDeletionConfirm(responder: RequestResponder): void {
 /** 계정 삭제 취소(Story 5.1). */
 export function stubAccountDeletionCancel(responder: RequestResponder): void {
   responders.set(requestKey('POST', ACCOUNT_DELETION_CANCEL_PATH), responder)
+}
+
+/** 삭제 실행의 다시 시도(Story 5.2). 기본 응답이 없다 — 열지 않은 다시 시도는 전역 거부다. */
+export function stubAccountDeletionRetry(responder: RequestResponder): void {
+  responders.set(requestKey('POST', ACCOUNT_DELETION_RETRY_PATH), responder)
 }
 
 /** 문의 목록(Story 3.6, 운영자 화면). 상태 필터는 쿼리로 가므로 쿼리가 있는 요청도 같은 응답 함수가 받는다. */

@@ -200,6 +200,8 @@ class SupportInquiryController {
                         "같은 요청 키가 다른 문의에 이미 쓰였습니다. 화면을 새로 열어 다시 보내 주세요.", correlationId,
                         null, null));
             }
+            // 판정과 커밋 사이에 삭제가 시작됐다(Story 5.2). 앞의 잠금 없는 판정과 같은 404다.
+            case SupportInquiryApi.Submission.NotPermitted denied -> notFound("submit", response, started);
         };
     }
 

@@ -8,6 +8,8 @@ import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.identity.AccountDeletionApi;
 import com.bokrilog.identity.AccountDeletionApi.DeletionRequest;
 import com.bokrilog.identity.AccountDeletionApi.DeletionRequestOutcome;
+import com.bokrilog.identity.AccountDeletionRunApi;
+import com.bokrilog.identity.AccountDeletionRunApi.DeletionRun;
 import com.bokrilog.sync.IdempotencyKey;
 import jakarta.servlet.http.HttpSession;
 import java.io.Serial;
@@ -45,6 +47,10 @@ import org.springframework.stereotype.Service;
  * 커밋 뒤 세션 정리를 멱등하게 다시 돈다), 같은 키·다른 본문은 409 {@link IdempotencyKey#CONFLICT_CODE}로, 다른 키는 409
  * {@link #IN_PROGRESS}로 답한다.
  *
+ * <p><b>다시 시도(Story 5.2).</b> 실제 삭제는 Worker가 단계마다 커밋하고({@link AccountErasureRun}) 실패하면 재시도 필요로 멈춘다. 요청
+ * 세션은 {@link #retry}로 그 실행을 다시 대기열에 넣는다 — 재인증·허가가 없고(삭제 중 계정은 재인증할 수 없다) 멱등 키 digest가 같은
+ * 접수의 권위다({@code identity_deletion_run.retry_key_digest}).
+ *
  * <p><b>production에서는 열지 않는다.</b> 법정 분리 보존 정책(게이트 G-5)이 승인되기 전이다. {@code BOKRILOG_ENV=production}이면 준비·
  * 확정이 {@link #UNAVAILABLE}이고 아무 행도 만들지 않는다. servlet 웹 애플리케이션에서만 배선한다.
  */
@@ -78,6 +84,9 @@ class AccountDeletionRequestService {
     /** production — G-5 승인 전이라 삭제 요청을 열지 않는다. */
     static final String UNAVAILABLE = "ACCOUNT_DELETION_UNAVAILABLE";
 
+    /** 다시 시도할 수 없다 — 삭제 실행이 재시도 필요 상태가 아니다(Story 5.2). 아무것도 바꾸지 않는다. */
+    static final String NOT_RETRYABLE = "ACCOUNT_DELETION_NOT_RETRYABLE";
+
     /** 요청의 결과 상태. 생명주기 값 그대로다. */
     static final String STATE_IN_PROGRESS = "DELETION_IN_PROGRESS";
 
@@ -104,6 +113,15 @@ class AccountDeletionRequestService {
         record Refused(String code) implements Preparation {}
     }
 
+    /** 다시 시도의 결말(Story 5.2). */
+    sealed interface Retry {
+        /** 실행을 다시 대기열에 넣었다({@code replayed}면 같은 키의 앞선 접수 — 아무것도 쓰지 않았다). */
+        record Accepted(DeletionRequest request, boolean replayed) implements Retry {}
+
+        /** 받지 않았다. 아무것도 바꾸지 않았다. */
+        record Refused(String code) implements Retry {}
+    }
+
     sealed interface Outcome {
         /**
          * 삭제가 요청돼 있다 — 이번 확정이 만들었거나({@code created}), 같은 키의 앞선 확정이 만든 것의 재생이다.
@@ -122,11 +140,15 @@ class AccountDeletionRequestService {
 
     private final SessionGuard sessionGuard;
 
+    private final AccountDeletionRunApi runs;
+
     /** production인가. 기동 시각의 {@code bokrilog.telemetry.env}에서 정하고 시험만 {@link #reinterpret}으로 바꾼다. */
     private volatile boolean production;
 
     AccountDeletionRequestService(ActionGrantService grants, AccountAccessApi accounts, AccountDeletionApi deletions,
-            SessionGuard sessionGuard, @Value("${bokrilog.telemetry.env:development}") String env) {
+            SessionGuard sessionGuard, AccountDeletionRunApi runs,
+            @Value("${bokrilog.telemetry.env:development}") String env) {
+        this.runs = runs;
         this.grants = grants;
         this.accounts = accounts;
         this.deletions = deletions;
@@ -160,6 +182,42 @@ class AccountDeletionRequestService {
     /** 그 계정의 삭제 요청. 상태 조회와 세션 응답이 쓴다. */
     Optional<DeletionRequest> requestOf(UUID userId) {
         return this.deletions.deletionRequestOf(userId);
+    }
+
+    /** 그 계정의 삭제 실행(Story 5.2). 아직 Worker가 집기 전이면 빈 값이다. */
+    Optional<DeletionRun> runOf(UUID userId) {
+        return this.runs.runOf(userId);
+    }
+
+    /** 다시 시도 멱등 키의 digest. 키 원문은 저장하지 않는다. 확정 키와 다른 접두사라 같은 키가 서로 섞이지 않는다. */
+    static String retryKeyDigestOf(String idempotencyKey) {
+        return AccountDeletionPolicy.sha256("account-deletion-retry-key\n" + idempotencyKey);
+    }
+
+    /**
+     * 삭제 실행의 다시 시도(Story 5.2). 재인증·허가가 없다 — 삭제 중 계정은 재인증할 수 없고, 이 조작은 사용자가 이미 확정한 삭제의
+     * 실패한 단계를 다시 대기열에 넣을 뿐 새로 지우는 범위를 넓히지 않는다. 같은 키의 재전송은 같은 접수이고, 실행이 재시도 필요가 아니면
+     * {@link #NOT_RETRYABLE}이다. 요청이 없으면 {@link #NOT_PERMITTED}다(없는 경로와 같은 거부는 컨트롤러가 앞에서 한다).
+     */
+    Retry retry(UUID userId, String idempotencyKey) {
+        // 준비·확정과 같은 게이트다 — production(G-5 승인 전)에서는 아무것도 쓰지 않는다.
+        if (this.production) {
+            return new Retry.Refused(UNAVAILABLE);
+        }
+        DeletionRequest request = this.deletions.deletionRequestOf(userId).orElse(null);
+        if (request == null) {
+            return new Retry.Refused(NOT_PERMITTED);
+        }
+        return switch (this.runs.acceptRetry(userId, retryKeyDigestOf(idempotencyKey))) {
+            case AccountDeletionRunApi.RetryOutcome.Accepted accepted -> {
+                if (!accepted.replayed()) {
+                    LOG.info("account deletion retry accepted: state={}", STATE_IN_PROGRESS);
+                }
+                yield new Retry.Accepted(request, accepted.replayed());
+            }
+            case AccountDeletionRunApi.RetryOutcome.NotRetryable ignored -> new Retry.Refused(NOT_RETRYABLE);
+            case AccountDeletionRunApi.RetryOutcome.NotFound ignored -> new Retry.Refused(NOT_PERMITTED);
+        };
     }
 
     /**

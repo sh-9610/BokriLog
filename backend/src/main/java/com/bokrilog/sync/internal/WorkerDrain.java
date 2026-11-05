@@ -1,11 +1,16 @@
 package com.bokrilog.sync.internal;
 
+import com.bokrilog.sync.DrainParticipant;
 import com.bokrilog.sync.WorkerExit;
 import java.time.Duration;
+import java.util.List;
+import java.util.function.Supplier;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -41,6 +46,12 @@ class WorkerDrain implements ApplicationListener<ContextClosedEvent>, WorkerExit
     /** 단일 Worker 잠금을 잃었을 때의 로그 본문. */
     static final String LOCK_LOST_EVENT = "worker.lock.lost";
 
+    /** 함께 서는 작업자의 claim 멈춤이 실패했을 때의 warn code(Story 5.2). */
+    static final String PARTICIPANT_STOP_FAILED = "WORKER_DRAIN_PARTICIPANT_STOP_FAILED";
+
+    /** 함께 서는 작업자의 heartbeat가 실패했을 때의 warn code(Story 5.2). */
+    static final String PARTICIPANT_HEARTBEAT_FAILED = "WORKER_DRAIN_PARTICIPANT_HEARTBEAT_FAILED";
+
     /** drain 중 heartbeat 간격. {@code FirstSnapshotWorker}의 스케줄과 같다. */
     static final Duration HEARTBEAT = Duration.ofSeconds(5);
 
@@ -64,6 +75,9 @@ class WorkerDrain implements ApplicationListener<ContextClosedEvent>, WorkerExit
 
     private final Target target;
 
+    /** 함께 drain하는 sync 밖 작업자(Story 5.2). 닫기·잠금 상실 때 그 순간의 목록을 읽는다. */
+    private final Supplier<List<DrainParticipant>> participants;
+
     private final Duration timeout;
 
     private final ApplicationContext context;
@@ -72,13 +86,28 @@ class WorkerDrain implements ApplicationListener<ContextClosedEvent>, WorkerExit
 
     private final AtomicInteger exitCode = new AtomicInteger(DRAINED);
 
-    /** @param target 이 프로세스의 작업자({@code FirstSnapshotWorker}) */
-    WorkerDrain(Target target, @Value("${bokrilog.sync.worker.drain-timeout}") Duration timeout,
+    /**
+     * @param target 이 프로세스의 작업자({@code FirstSnapshotWorker})
+     * @param participants 같은 drain에 서는 sync 밖 작업자(계정 삭제 Worker, Story 5.2)
+     */
+    @Autowired
+    WorkerDrain(Target target, ObjectProvider<DrainParticipant> participants,
+            @Value("${bokrilog.sync.worker.drain-timeout}") Duration timeout, ApplicationContext context) {
+        this(target, () -> participants.orderedStream().toList(), timeout, context);
+    }
+
+    /** sync 밖 작업자가 없는 drain(시험). */
+    WorkerDrain(Target target, Duration timeout, ApplicationContext context) {
+        this(target, List::of, timeout, context);
+    }
+
+    WorkerDrain(Target target, Supplier<List<DrainParticipant>> participants, Duration timeout,
             ApplicationContext context) {
         if (timeout.isZero() || timeout.isNegative()) {
             throw new IllegalStateException("bokrilog.sync.worker.drain-timeout must be positive");
         }
         this.target = target;
+        this.participants = participants;
         this.timeout = timeout;
         this.context = context;
     }
@@ -89,7 +118,7 @@ class WorkerDrain implements ApplicationListener<ContextClosedEvent>, WorkerExit
         if (event.getApplicationContext() != this.context || !this.started.compareAndSet(false, true)) {
             return;
         }
-        if (!drain(this.target, this.timeout, HEARTBEAT, POLL)) {
+        if (!drain(combined(), this.timeout, HEARTBEAT, POLL)) {
             this.exitCode.compareAndSet(DRAINED, DRAIN_INCOMPLETE);
         }
     }
@@ -99,13 +128,66 @@ class WorkerDrain implements ApplicationListener<ContextClosedEvent>, WorkerExit
      * 시작하므로 부른 쪽을 막지 않고, 닫기는 위 drain을 그대로 지난다.
      */
     void lockLost() {
-        this.target.stopClaims();
+        try {
+            combined().stopClaims();
+        } catch (RuntimeException failure) {
+            // 이 프로세스의 작업자가 던져도 끝내기는 반드시 시작한다(함께 서는 작업자의 실패는 위 묶음이 이미 따로 삼킨다).
+            LOG.warn("worker drain stop failed: code={} failure={}", PARTICIPANT_STOP_FAILED,
+                    failure.getClass().getSimpleName());
+        }
         // 이미 닫는 중이면(drain 시작 뒤 연결을 닫은 것) 잃은 것이 아니다. 같은 일을 두 번 시작하지도 않는다.
         if (this.started.get() || this.exitCode.getAndSet(LOCK_LOST) == LOCK_LOST) {
             return;
         }
         LOG.error(LOCK_LOST_EVENT);
         this.terminator.accept(LOCK_LOST);
+    }
+
+    /**
+     * 이 프로세스의 작업자와 함께 서는 작업자를 하나의 drain 대상으로 묶는다 — claim 멈춤은 모두에게, 진행 중은 합, heartbeat는 각자
+     * 따로(하나의 실패가 다른 lease를 막지 않는다). 그래서 같은 {@code drain-timeout} 예산 하나가 모두를 기다리고, 함께 서는 작업자가 비지
+     * 않아도 {@link WorkerExit#DRAIN_INCOMPLETE}다.
+     */
+    Target combined() {
+        List<DrainParticipant> others = this.participants.get();
+        if (others.isEmpty()) {
+            return this.target;
+        }
+        Target own = this.target;
+        return new Target() {
+            @Override
+            public void stopClaims() {
+                own.stopClaims();
+                // 하나가 던져도 나머지와 그 뒤(잠금 상실의 종료)가 막히지 않는다.
+                for (DrainParticipant other : others) {
+                    try {
+                        other.stopClaims();
+                    } catch (RuntimeException failure) {
+                        LOG.warn("worker drain participant stop failed: code={} failure={}", PARTICIPANT_STOP_FAILED,
+                                failure.getClass().getSimpleName());
+                    }
+                }
+            }
+
+            @Override
+            public int inFlight() {
+                return own.inFlight() + others.stream().mapToInt(DrainParticipant::inFlight).sum();
+            }
+
+            @Override
+            public void heartbeat() {
+                own.heartbeat();
+                for (DrainParticipant other : others) {
+                    try {
+                        other.heartbeat();
+                    } catch (RuntimeException failure) {
+                        // lease 만료가 여전히 권위다. 식별자 없이 code와 예외 이름만 남긴다.
+                        LOG.warn("worker drain participant heartbeat failed: code={} failure={}",
+                                PARTICIPANT_HEARTBEAT_FAILED, failure.getClass().getSimpleName());
+                    }
+                }
+            }
+        };
     }
 
     /** 프로세스 끝내기. 시험만 바꾼다 — 시험 JVM을 끝내지 않게. */

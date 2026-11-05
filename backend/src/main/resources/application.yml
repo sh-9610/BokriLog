@@ -248,8 +248,10 @@ bokrilog:
     ad-provider-enabled: ${BOKRILOG_AD_PROVIDER_ENABLED:false}
     ad-unit-path: ${BOKRILOG_AD_UNIT_PATH:}
   # 계정 삭제 tombstone의 사용자 digest(HMAC-SHA256) 키(Story 3.10). base64 32바이트 이상이고 **감사 digest 키와 달라야 한다**(같으면
-  # 기동 거부). 삭제 표본·복원 적용 역할에서는 필수다 — 비면 그 역할이 뜨지 않는다. API·Worker는 지금 받지 않는다(사용자 삭제 경로가
-  # 없다, Epic 5). 키를 잃으면 외부 tombstone을 복원된 계정과 맞출 수 없으므로 운영 비밀 파일과 OCI 밖 복구 manifest(참조)에 둔다.
+  # 기동 거부). 삭제 표본·복원 적용 역할에서는 필수다 — 비면 그 역할이 뜨지 않는다. Worker·`all`은 값이 있을 때만 받는다 — 키가 있으면
+  # 사용자 계정 삭제 실행(Story 5.2, `AccountErasureWorker`)이 마지막 단계에서 tombstone을 기록하고, 키가 없거나 `BOKRILOG_ENV=production`
+  # (G-5 승인 전)이면 Worker가 삭제를 집지 않는다(요청은 진행 중으로 남는다). 받은 프로세스는 이 값을 로그 비밀 노출 감지 대상에 넣는다.
+  # 키를 잃으면 외부 tombstone을 복원된 계정과 맞출 수 없으므로 운영 비밀 파일과 OCI 밖 복구 manifest(참조)에 둔다.
   #   BOKRILOG_TOMBSTONE_DIGEST_KEY
   tombstone:
     digest-key: ${BOKRILOG_TOMBSTONE_DIGEST_KEY:}

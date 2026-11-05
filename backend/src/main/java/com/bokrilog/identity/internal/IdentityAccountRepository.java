@@ -354,9 +354,18 @@ public class IdentityAccountRepository {
         return jdbc.sql("DELETE FROM spring_session").update();
     }
 
+    /** 그 계정의 소셜 로그인 연결 행 수(Story 5.2 {@code CREDENTIALS} 단계의 잔여 검증). */
+    public long countSocialLinksOf(UUID userId) {
+        Long count = jdbc.sql("SELECT count(*) FROM identity_social_link WHERE user_id = :userId")
+                .param("userId", userId)
+                .query(Long.class)
+                .single();
+        return count == null ? 0L : count;
+    }
+
     /**
-     * 그 계정에 남은 payload·인증 매핑·세션·삭제 요청 행 수(Story 3.10 복원 검증, 삭제 요청은 Story 5.1). 생명주기 guard 행은 세지
-     * 않는다.
+     * 그 계정에 남은 payload·인증 매핑·세션·삭제 요청 행 수(Story 3.10 복원 검증, 삭제 요청은 Story 5.1). 생명주기 guard 행과 삭제
+     * 실행·단계 상태(Story 5.2 — 삭제 기록이다)는 세지 않는다.
      */
     public long countRemainingRowsOf(UUID userId) {
         Long count = jdbc.sql("SELECT (SELECT count(*) FROM identity_account WHERE user_id = :userId) "
@@ -368,5 +377,248 @@ public class IdentityAccountRepository {
                 .query(Long.class)
                 .single();
         return count == null ? 0L : count;
+    }
+
+    // ------------------------------------------------------------------ Story 5.2 삭제 실행·단계 상태
+
+    /** 실행 행 하나(SQL 결과). */
+    public record StoredRun(String status, @org.jspecify.annotations.Nullable OffsetDateTime operationalErasedAt,
+            long generation, @org.jspecify.annotations.Nullable String retryKeyDigest) {}
+
+    /** 단계 행 하나(SQL 결과). */
+    public record StoredStep(String step, String status, @org.jspecify.annotations.Nullable Long erasedRows,
+            @org.jspecify.annotations.Nullable String failureCode, int attempts) {}
+
+    /** 집은 실행(SQL 결과). */
+    public record ClaimedRun(UUID userId, long generation) {}
+
+    /**
+     * 기존 실행 하나를 집는다 — {@code QUEUED}이거나 lease가 끝난 {@code RUNNING}이고 계정이 {@code DELETION_IN_PROGRESS}이며 삭제 요청
+     * 행이 있는 것(요청 없는 실행은 집지 않는다). 다른
+     * 트랜잭션이 잡은 행은 건너뛴다. 세대를 올리고 lease를 새로 건다(문장 시각 + {@code leaseMillis}).
+     */
+    public Optional<ClaimedRun> claimExistingRun(long leaseMillis) {
+        return jdbc.sql("UPDATE identity_deletion_run SET status = 'RUNNING', "
+                        + "fencing_generation = fencing_generation + 1, "
+                        + "lease_until = statement_timestamp() + CAST(:leaseMillis AS double precision) * interval '1 millisecond', "
+                        + "heartbeat_at = statement_timestamp() "
+                        + "WHERE user_id = (SELECT run.user_id FROM identity_deletion_run AS run "
+                        + "JOIN identity_account_lifecycle AS lifecycle ON lifecycle.user_id = run.user_id "
+                        + "WHERE lifecycle.state = 'DELETION_IN_PROGRESS' AND EXISTS (SELECT 1 FROM identity_deletion_request "
+                        + "AS request WHERE request.user_id = run.user_id) AND (run.status = 'QUEUED' "
+                        + "OR (run.status = 'RUNNING' AND run.lease_until <= statement_timestamp())) "
+                        + "ORDER BY run.created_at, run.user_id LIMIT 1 FOR UPDATE OF run SKIP LOCKED) "
+                        + "RETURNING user_id, fencing_generation")
+                .param("leaseMillis", leaseMillis)
+                .query((row, index) -> new ClaimedRun(row.getObject("user_id", UUID.class),
+                        row.getLong("fencing_generation")))
+                .optional();
+    }
+
+    /**
+     * 실행이 없는 삭제 요청 계정 하나의 실행 행을 만든다(첫 claim, 세대 1). 요청 시각 순이다. 같은 계정을 다른 트랜잭션이 먼저 만들면 0행이다.
+     */
+    public Optional<ClaimedRun> claimNewRun(long leaseMillis) {
+        return jdbc.sql("INSERT INTO identity_deletion_run (user_id, status, fencing_generation, lease_until, heartbeat_at) "
+                        + "SELECT candidate.user_id, 'RUNNING', 1, "
+                        + "statement_timestamp() + CAST(:leaseMillis AS double precision) * interval '1 millisecond', statement_timestamp() "
+                        + "FROM (SELECT request.user_id FROM identity_deletion_request AS request "
+                        + "JOIN identity_account_lifecycle AS lifecycle ON lifecycle.user_id = request.user_id "
+                        + "WHERE lifecycle.state = 'DELETION_IN_PROGRESS' AND NOT EXISTS ("
+                        + "SELECT 1 FROM identity_deletion_run AS run WHERE run.user_id = request.user_id) "
+                        + "ORDER BY request.requested_at, request.user_id LIMIT 1 "
+                        + "FOR UPDATE OF request SKIP LOCKED) AS candidate "
+                        + "ON CONFLICT (user_id) DO NOTHING RETURNING user_id, fencing_generation")
+                .param("leaseMillis", leaseMillis)
+                .query((row, index) -> new ClaimedRun(row.getObject("user_id", UUID.class),
+                        row.getLong("fencing_generation")))
+                .optional();
+    }
+
+    /** 새 실행의 단계 행 하나({@code PENDING}). */
+    public void insertStep(UUID userId, String step, int position) {
+        jdbc.sql("INSERT INTO identity_deletion_step (user_id, step, position) VALUES (:userId, :step, :position)")
+                .param("userId", userId)
+                .param("step", step)
+                .param("position", position)
+                .update();
+    }
+
+    /**
+     * 이 트랜잭션의 잠금 대기 상한을 건다({@code SET LOCAL} — 트랜잭션이 끝나면 풀린다). heartbeat가 단계 트랜잭션이 쥔 실행 행에서 오래
+     * 기다리지 않게 한다 — 넘기면 그 갱신은 실패하고 다음 tick이 다시 민다.
+     */
+    public void limitLockWait(long millis) {
+        jdbc.sql("SELECT set_config('lock_timeout', :timeout, true)")
+                .param("timeout", millis + "ms")
+                .query(String.class)
+                .single();
+    }
+
+    /** lease를 민다. 그 세대의 실행 중 행이 아니면 0행이다. */
+    public int renewRun(UUID userId, long generation, long leaseMillis) {
+        return jdbc.sql("UPDATE identity_deletion_run "
+                        + "SET lease_until = statement_timestamp() + CAST(:leaseMillis AS double precision) * interval '1 millisecond', "
+                        + "heartbeat_at = statement_timestamp() "
+                        + "WHERE user_id = :userId AND fencing_generation = :generation AND status = 'RUNNING'")
+                .param("leaseMillis", leaseMillis)
+                .param("userId", userId)
+                .param("generation", generation)
+                .update();
+    }
+
+    /**
+     * 실행 행을 그 세대·{@code RUNNING}일 때만 잠그고 lease를 새로 민다(fencing + 갱신, 한 문장). UPDATE가 행 잠금을 호출자 트랜잭션이
+     * 끝날 때까지 붙든다. lease 만료 여부는 보지 않는다 — 긴 단계 동안 heartbeat가 이 잠금에 막혀 lease가 지났더라도, 그 사이 다른 claim이
+     * 세대를 올리지 않았다면 이 Worker가 여전히 주인이다. 정확성은 세대가 지킨다.
+     *
+     * @return 이 세대가 아직 실행을 쥐고 있는가
+     */
+    public boolean lockHeldRun(UUID userId, long generation, long leaseMillis) {
+        return jdbc.sql("UPDATE identity_deletion_run "
+                        + "SET lease_until = statement_timestamp() + CAST(:leaseMillis AS double precision) * interval '1 millisecond', "
+                        + "heartbeat_at = statement_timestamp() WHERE user_id = :userId "
+                        + "AND fencing_generation = :generation AND status = 'RUNNING' RETURNING 1")
+                .param("leaseMillis", leaseMillis)
+                .param("userId", userId)
+                .param("generation", generation)
+                .query(Integer.class)
+                .optional()
+                .isPresent();
+    }
+
+    /** 실행 행이 있으면 잠근다(단일 모드 삭제가 Worker 단계와 같은 순서 — 실행 행 → 생명주기 — 로 잠그게). */
+    public void lockRunIfPresent(UUID userId) {
+        jdbc.sql("SELECT 1 FROM identity_deletion_run WHERE user_id = :userId FOR UPDATE")
+                .param("userId", userId)
+                .query(Integer.class)
+                .optional();
+    }
+
+    /** 단계의 시도 횟수만 하나 올린다(상태는 그대로 — 마지막 단계가 앞 단계의 잔여를 보고 멈춘 경우). */
+    public int countStepAttempt(UUID userId, String step) {
+        return jdbc.sql("UPDATE identity_deletion_step SET attempts = attempts + 1, finished_at = statement_timestamp() "
+                        + "WHERE user_id = :userId AND step = :step")
+                .param("userId", userId)
+                .param("step", step)
+                .update();
+    }
+
+    /** 실행 행을 잠그고 읽는다(다시 시도 접수). */
+    public Optional<StoredRun> lockRun(UUID userId) {
+        return jdbc.sql("SELECT status, operational_erased_at, fencing_generation, retry_key_digest "
+                        + "FROM identity_deletion_run WHERE user_id = :userId FOR UPDATE")
+                .param("userId", userId)
+                .query(IdentityAccountRepository::storedRun)
+                .optional();
+    }
+
+    /** 실행 행을 잠그지 않고 읽는다. */
+    public Optional<StoredRun> findRun(UUID userId) {
+        return jdbc.sql("SELECT status, operational_erased_at, fencing_generation, retry_key_digest "
+                        + "FROM identity_deletion_run WHERE user_id = :userId")
+                .param("userId", userId)
+                .query(IdentityAccountRepository::storedRun)
+                .optional();
+    }
+
+    /** 그 실행의 단계 행(순서대로). */
+    public List<StoredStep> findSteps(UUID userId) {
+        return jdbc.sql("SELECT step, status, erased_rows, failure_code, attempts FROM identity_deletion_step "
+                        + "WHERE user_id = :userId ORDER BY position")
+                .param("userId", userId)
+                .query((row, index) -> new StoredStep(row.getString("step"), row.getString("status"),
+                        row.getObject("erased_rows", Long.class), row.getString("failure_code"), row.getInt("attempts")))
+                .list();
+    }
+
+    /** 단계를 성공으로 기록한다. */
+    public int markStepSucceeded(UUID userId, String step, long erasedRows) {
+        return jdbc.sql("UPDATE identity_deletion_step SET status = 'SUCCEEDED', erased_rows = :erasedRows, "
+                        + "failure_code = NULL, attempts = attempts + 1, finished_at = statement_timestamp() "
+                        + "WHERE user_id = :userId AND step = :step")
+                .param("erasedRows", erasedRows)
+                .param("userId", userId)
+                .param("step", step)
+                .update();
+    }
+
+    /**
+     * 단계를 재시도 필요로 기록한다. {@code countAttempt}가 참이면 이번 실행에서 돈 단계다(마지막 단계의 재검사가 되돌린 앞 단계는
+     * 이번에 돌지 않았으므로 세지 않는다).
+     */
+    public int markStepRetryNeeded(UUID userId, String step, String failureCode, boolean countAttempt) {
+        return jdbc.sql("UPDATE identity_deletion_step SET status = 'RETRY_NEEDED', erased_rows = NULL, "
+                        + "failure_code = :failureCode, attempts = attempts + :increment, "
+                        + "finished_at = statement_timestamp() WHERE user_id = :userId AND step = :step")
+                .param("failureCode", failureCode)
+                .param("increment", countAttempt ? 1 : 0)
+                .param("userId", userId)
+                .param("step", step)
+                .update();
+    }
+
+    /** 실행을 재시도 필요로 멈춘다(lease를 놓는다). */
+    public int markRunRetryNeeded(UUID userId, long generation) {
+        return jdbc.sql("UPDATE identity_deletion_run SET status = 'RETRY_NEEDED', lease_until = NULL "
+                        + "WHERE user_id = :userId AND fencing_generation = :generation AND status = 'RUNNING'")
+                .param("userId", userId)
+                .param("generation", generation)
+                .update();
+    }
+
+    /** 실행을 운영 데이터 삭제 완료로 끝낸다(문장 시각, lease를 놓는다). */
+    public int markRunErased(UUID userId, long generation) {
+        return jdbc.sql("UPDATE identity_deletion_run SET status = 'OPERATIONAL_DATA_ERASED', lease_until = NULL, "
+                        + "operational_erased_at = statement_timestamp() "
+                        + "WHERE user_id = :userId AND fencing_generation = :generation AND status = 'RUNNING'")
+                .param("userId", userId)
+                .param("generation", generation)
+                .update();
+    }
+
+    /** lease를 놓고 {@code QUEUED}로 되돌린다(Worker 종료 drain). */
+    public int releaseRun(UUID userId, long generation) {
+        return jdbc.sql("UPDATE identity_deletion_run SET status = 'QUEUED', lease_until = NULL "
+                        + "WHERE user_id = :userId AND fencing_generation = :generation AND status = 'RUNNING'")
+                .param("userId", userId)
+                .param("generation", generation)
+                .update();
+    }
+
+    /**
+     * 단일 모드 삭제(리허설 표본·복원 재삭제)가 그 계정을 이미 끝까지 지웠을 때 남은 단계 모드 실행을 마감한다 — 끝나지 않은 단계를 성공
+     * (건수 0: 이 실행이 지운 것이 아니라 단일 모드가 지웠다)으로, 실행을 운영 데이터 삭제 완료로 바꾸고 세대를 올려 늦은 Worker의 단계
+     * 커밋을 막는다. 실행 행이 없거나 이미 완료면 0행이다.
+     *
+     * @return 마감한 실행 수(0 또는 1)
+     */
+    public int finishRunBySingleErasure(UUID userId) {
+        jdbc.sql("UPDATE identity_deletion_step SET status = 'SUCCEEDED', erased_rows = 0, failure_code = NULL, "
+                        + "finished_at = statement_timestamp() WHERE user_id = :userId AND status <> 'SUCCEEDED' "
+                        + "AND EXISTS (SELECT 1 FROM identity_deletion_run AS run WHERE run.user_id = :userId "
+                        + "AND run.status <> 'OPERATIONAL_DATA_ERASED')")
+                .param("userId", userId)
+                .update();
+        return jdbc.sql("UPDATE identity_deletion_run SET status = 'OPERATIONAL_DATA_ERASED', lease_until = NULL, "
+                        + "operational_erased_at = statement_timestamp(), fencing_generation = fencing_generation + 1 "
+                        + "WHERE user_id = :userId AND status <> 'OPERATIONAL_DATA_ERASED'")
+                .param("userId", userId)
+                .update();
+    }
+
+    /** 재시도 필요 실행을 {@code QUEUED}로 되돌리고 그 키를 남긴다. */
+    public int requeueRun(UUID userId, String retryKeyDigest) {
+        return jdbc.sql("UPDATE identity_deletion_run SET status = 'QUEUED', retry_key_digest = :digest, "
+                        + "retry_requested_at = statement_timestamp() "
+                        + "WHERE user_id = :userId AND status = 'RETRY_NEEDED'")
+                .param("digest", retryKeyDigest)
+                .param("userId", userId)
+                .update();
+    }
+
+    private static StoredRun storedRun(java.sql.ResultSet row, int index) throws java.sql.SQLException {
+        return new StoredRun(row.getString("status"), row.getObject("operational_erased_at", OffsetDateTime.class),
+                row.getLong("fencing_generation"), row.getString("retry_key_digest"));
     }
 }

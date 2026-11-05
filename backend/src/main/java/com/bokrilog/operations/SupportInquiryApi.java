@@ -162,6 +162,12 @@ public interface SupportInquiryApi {
 
         /** 같은 키가 다른 입력에 이미 쓰였다. */
         record Conflict() implements Submission {}
+
+        /**
+         * 접수 트랜잭션의 생명주기 잠금 아래에서 본 계정이 쓰기 불가다(Story 5.2) — 삭제가 시작됐거나 끝났다. 아무것도 쓰지 않았다.
+         * 호출자는 없는 경로와 같은 404로 답한다.
+         */
+        record NotPermitted() implements Submission {}
     }
 
     /**

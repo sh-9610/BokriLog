@@ -2,6 +2,7 @@ import {
   ACCOUNT_DELETION_CANCEL_PATH,
   ACCOUNT_DELETION_CONFIRM_PATH,
   ACCOUNT_DELETION_PATH,
+  ACCOUNT_DELETION_RETRY_PATH,
 } from '../content/accountDeletion'
 import { objectOf, postJson, postNoContent, readJson } from './http'
 import { isInstant } from './instant'
@@ -29,12 +30,32 @@ export interface AccountDeletionPolicy {
   readonly legalRetention: readonly LegalRetentionItem[]
 }
 
+/** 삭제 실행의 진행 상태(Story 5.2). 닫힌 값이다. */
+export type AccountDeletionProgressStatus =
+  'IN_PROGRESS' | 'RETRY_NEEDED' | 'OPERATIONAL_DATA_ERASED'
+
+/** 삭제 실행의 진행. 실패한 단계 code만 있다 — 건수·원인 원문은 없다. */
+export interface AccountDeletionProgress {
+  readonly status: AccountDeletionProgressStatus
+  readonly failedSteps: readonly string[]
+}
+
+/** 서버가 내는 진행 상태 전부. 공유 표의 `progressStatuses`와 같은 집합이다. */
+export const ACCOUNT_DELETION_PROGRESS_STATUSES: readonly AccountDeletionProgressStatus[] = [
+  'IN_PROGRESS',
+  'RETRY_NEEDED',
+  'OPERATIONAL_DATA_ERASED',
+]
+
+const PROGRESS_STATUSES: ReadonlySet<string> = new Set(ACCOUNT_DELETION_PROGRESS_STATUSES)
+
 /** 이미 만든 삭제 요청. 사용자 식별자가 없다. */
 export interface AccountDeletionRequest {
   readonly requestId: string
   readonly requestedAt: string
   readonly state: 'DELETION_IN_PROGRESS'
   readonly policyVersion: string
+  readonly progress: AccountDeletionProgress
 }
 
 /** 정책·요청 상태 조회의 답. */
@@ -49,6 +70,13 @@ export type AccountDeletionFetch =
   | { readonly outcome: 'loaded'; readonly state: AccountDeletionState }
   | { readonly outcome: 'expired' }
   | { readonly outcome: 'failed' }
+
+/** 다시 시도(Story 5.2)의 결과. `expired`면 세션이 끝났다(삭제가 끝났을 수 있다). */
+export type AccountDeletionRetry =
+  | { readonly outcome: 'accepted' }
+  | { readonly outcome: 'unanswered' }
+  | { readonly outcome: 'expired' }
+  | { readonly outcome: 'failed'; readonly code: string | null }
 
 export type AccountDeletionPrepare =
   | { readonly outcome: 'armed'; readonly policyVersion: string; readonly confirmation: string }
@@ -90,6 +118,16 @@ function legalRetentionOf(value: unknown): readonly LegalRetentionItem[] | null 
   return items
 }
 
+/** 진행 하나. 서버는 언제나 싣는다 — 없거나 모르는 상태·문자열 배열이 아닌 실패 단계면 믿지 않는다(응답 전체를 읽지 못한 것으로). */
+function progressOf(value: unknown): AccountDeletionProgress | null {
+  const body = objectOf(value)
+  if (body === null || typeof body.status !== 'string' || !PROGRESS_STATUSES.has(body.status))
+    return null
+  const failedSteps = stringsOf(body.failedSteps)
+  if (failedSteps === null) return null
+  return { status: body.status as AccountDeletionProgressStatus, failedSteps }
+}
+
 /** 요청 하나. 모르는 모양은 믿지 않는다. */
 export function parseDeletionRequest(payload: unknown): AccountDeletionRequest | null {
   const body = objectOf(payload)
@@ -104,11 +142,14 @@ export function parseDeletionRequest(payload: unknown): AccountDeletionRequest |
   ) {
     return null
   }
+  const progress = progressOf(body.progress)
+  if (progress === null) return null
   return {
     requestId: body.requestId,
     requestedAt: body.requestedAt,
     state: 'DELETION_IN_PROGRESS',
     policyVersion: body.policyVersion,
+    progress,
   }
 }
 
@@ -275,20 +316,53 @@ export async function confirmDeletion(
    * 진입점이 백엔드에 닿지 못한 응답(502·503·504 — Nginx 공통 본문 `UPSTREAM_UNAVAILABLE` 등)과 공통 오류 본문이 없는 5xx(프록시가
    * 끊은 응답)는 커밋 여부를 단정하지 않고 같은 키 재시도로 둔다. `failed`는 백엔드가 직접 답한 거절뿐이다.
    */
-  if (UPSTREAM_STATUSES.has(result.status)) {
-    return { outcome: 'unanswered' }
-  }
-  const common = objectOf(result.payload)
-  if (
-    result.status >= 500 &&
-    (common === null || typeof common.code !== 'string' || typeof common.correlationId !== 'string')
-  ) {
+  if (backendDidNotAnswer(result)) {
     return { outcome: 'unanswered' }
   }
   return { outcome: 'failed', code: result.code }
 }
 
+/**
+ * 백엔드가 직접 답하지 않은 실패인가 — 진입점이 백엔드에 닿지 못한 응답(502·503·504)과 공통 오류 본문이 없는 5xx(프록시가 끊은 응답)다.
+ * 커밋 여부를 단정하지 않고 같은 키 재시도로 둔다. 확정과 다시 시도가 같은 판정을 쓴다.
+ */
+function backendDidNotAnswer(result: RequestResult): boolean {
+  if (UPSTREAM_STATUSES.has(result.status)) {
+    return true
+  }
+  const common = objectOf(result.payload)
+  return (
+    result.status >= 500 &&
+    (common === null || typeof common.code !== 'string' || typeof common.correlationId !== 'string')
+  )
+}
+
 /** 준비를 되돌린다. 최선 노력이며 결과를 돌려주지 않는다. */
 export async function cancelDeletion(csrfToken: string | null): Promise<void> {
   await postNoContent(ACCOUNT_DELETION_CANCEL_PATH, csrfToken)
+}
+
+/**
+ * 재시도 필요로 멈춘 삭제 실행을 다시 시도한다(Story 5.2). 본문이 없고 멱등 키만 실린다 — 응답을 받지 못한 요청을 같은 키로 다시
+ * 보내면 서버가 같은 접수로 답한다. 202만 접수다. 401은 세션이 끝난 것이다(삭제가 끝났으면 세션도 함께 지워진다). 자동으로 다시
+ * 보내지 않는다.
+ */
+export async function retryDeletion(
+  csrfToken: string | null,
+  idempotencyKey: string,
+): Promise<AccountDeletionRetry> {
+  const result = await request(ACCOUNT_DELETION_RETRY_PATH, csrfToken, null, idempotencyKey)
+  if (!result.received) {
+    return csrfToken === null ? { outcome: 'failed', code: null } : { outcome: 'unanswered' }
+  }
+  if (result.status === 202) {
+    return { outcome: 'accepted' }
+  }
+  if (result.status === 401) {
+    return { outcome: 'expired' }
+  }
+  if (backendDidNotAnswer(result)) {
+    return { outcome: 'unanswered' }
+  }
+  return { outcome: 'failed', code: result.code }
 }

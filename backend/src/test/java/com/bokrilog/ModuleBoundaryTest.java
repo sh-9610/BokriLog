@@ -347,12 +347,69 @@ class ModuleBoundaryTest {
                 .because("세션 전체 폐기는 서비스를 열기 전의 복원 적용에서만 한다.");
         sessions.check(PRODUCTION_CLASSES);
 
-        // orchestrator를 부르는 자리도 정해져 있다: 새 삭제는 검증용 표본 역할, 다시 지우기는 복원 적용. 사용자 삭제 경로(Epic 5)가 생기면
-        // 이 목록에 그 자리를 더한다.
+        // 첫 단계(Story 5.2 CREDENTIALS)의 두 port — 소셜 로그인 연결·Bybit 자격정보만 지우기 — 도 orchestrator만 부른다. 다른 자리가
+        // 부르면 삭제 전환·tombstone 없이 로그인 수단·자격정보가 사라진다.
+        ArchRule credentials = noClasses()
+                .that().resideOutsideOfPackages(IDENTITY + "..", "com.bokrilog.source..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.AccountErasure")
+                .should().callMethod(com.bokrilog.identity.AccountDeletionApi.class, "eraseSocialLinks",
+                        java.util.UUID.class)
+                .orShould().callMethod(com.bokrilog.source.SourceConnectionApi.class, "eraseCredentials",
+                        java.util.UUID.class)
+                // 단일 모드가 단계 실행을 마감하는 것도 orchestrator의 같은 커밋이다.
+                .orShould().callMethod(com.bokrilog.identity.AccountDeletionApi.class, "finishRunBySingleErasure",
+                        java.util.UUID.class)
+                .orShould().callMethod(com.bokrilog.identity.AccountDeletionApi.class, "lockRunIfPresent",
+                        java.util.UUID.class)
+                .because("계정 삭제의 단계는 단계 목록을 소유한 orchestrator(AccountErasure) 하나가 돈다.");
+        credentials.check(PRODUCTION_CLASSES);
+
+        // orchestrator를 부르는 자리도 정해져 있다: 새 삭제(단일 모드)는 검증용 표본 역할, 다시 지우기는 복원 적용, 사용자의 삭제 요청
+        // (Story 5.2 단계 모드)은 단계 실행자 하나이고 그 실행자를 모는 것은 삭제 Worker 하나다.
+        ArchRule steps = noClasses()
+                .that().doNotHaveFullyQualifiedName("com.bokrilog.AccountErasureRun")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.AccountErasure")
+                .should().callMethod(AccountErasure.class, "apply", com.bokrilog.identity.DeletionStep.class,
+                        java.util.UUID.class, Runnable.class)
+                .orShould().callMethod(AccountErasure.class, "recordRequestedTombstone", java.util.UUID.class)
+                .because("단계 모드의 삭제는 단계마다 fencing·잔여 검증을 하는 실행자(AccountErasureRun)만 한다.");
+        steps.check(PRODUCTION_CLASSES);
+        ArchRule runner = noClasses()
+                .that().doNotHaveFullyQualifiedName("com.bokrilog.AccountErasureWorker")
+                .should().callMethod(AccountErasureRun.class, "execute",
+                        com.bokrilog.identity.AccountDeletionRunApi.Lease.class,
+                        java.util.function.BooleanSupplier.class)
+                .because("삭제 실행은 lease로 집은 Worker만 돈다.");
+        runner.check(PRODUCTION_CLASSES);
+
+        // 삭제 실행·단계 상태(identity)를 바꾸는 운영 클래스: 집기·heartbeat·단계 기록·놓기는 Worker와 실행자, 다시 시도 접수는 요청 표면 하나다.
+        Class<?> runs = com.bokrilog.identity.AccountDeletionRunApi.class;
+        Class<?> lease = com.bokrilog.identity.AccountDeletionRunApi.Lease.class;
+        ArchRule runState = noClasses()
+                .that().resideOutsideOfPackage(IDENTITY + "..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.AccountErasureRun")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.AccountErasureWorker")
+                .should().callMethod(runs, "claim", java.time.Duration.class)
+                .orShould().callMethod(runs, "heartbeat", lease, java.time.Duration.class)
+                .orShould().callMethod(runs, "hold", lease, java.time.Duration.class)
+                .orShould().callMethod(runs, "stepSucceeded", lease, com.bokrilog.identity.DeletionStep.class, long.class)
+                .orShould().callMethod(runs, "stepsNeedRetry", lease, com.bokrilog.identity.DeletionStep.class,
+                        java.util.Map.class)
+                .orShould().callMethod(runs, "operationalDataErased", lease)
+                .orShould().callMethod(runs, "release", lease)
+                .because("삭제 실행의 상태는 lease를 쥔 Worker·실행자만 바꾼다.");
+        runState.check(PRODUCTION_CLASSES);
+        ArchRule retry = noClasses()
+                .that().resideOutsideOfPackage(IDENTITY + "..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.AccountDeletionRequestService")
+                .should().callMethod(runs, "acceptRetry", java.util.UUID.class, String.class)
+                .because("다시 시도는 요청 세션의 사용자 표면 하나만 받는다(자동 재시도·운영자 재시도 없음).");
+        retry.check(PRODUCTION_CLASSES);
+
         ArchRule erase = noClasses()
                 .that().doNotHaveFullyQualifiedName("com.bokrilog.DeletionSampleRunner")
                 .should().callMethod(AccountErasure.class, "erase", java.util.UUID.class, String.class)
-                .because("지금 새 계정 삭제를 시작하는 곳은 검증용 삭제 표본 역할뿐이다.");
+                .because("단일 모드로 새 계정 삭제를 시작하는 곳은 검증용 삭제 표본 역할뿐이다(사용자 삭제는 단계 모드다).");
         erase.check(PRODUCTION_CLASSES);
         ArchRule reapply = noClasses()
                 .that().doNotHaveFullyQualifiedName("com.bokrilog.RestoreApplication")

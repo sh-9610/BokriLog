@@ -21,5 +21,11 @@ public final class SyncLease {
      */
     public static final String SQL_INTERVAL = "interval '30 seconds'";
 
+    /**
+     * 같은 수명의 {@link java.time.Duration}(Story 5.2). SQL 조각과 한 쌍이고 {@code SyncLeaseTest}가 둘의 일치를 본다 — 공개 값은
+     * {@code com.bokrilog.sync.WorkerLease}가 낸다.
+     */
+    public static final java.time.Duration DURATION = java.time.Duration.ofSeconds(30);
+
     private SyncLease() {}
 }

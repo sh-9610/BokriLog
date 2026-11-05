@@ -259,6 +259,70 @@ class WorkerDrainTest {
         }
     }
 
+    /**
+     * Story 5.2: sync 밖 작업자(계정 삭제 Worker)는 {@link com.bokrilog.sync.DrainParticipant}로 같은 drain에 선다 — 같은 순간 claim을
+     * 멈추고, 같은 drain-timeout 예산 안에서 그 진행 중도 함께 기다리며 heartbeat를 민다. 비지 않으면 종료 코드 75, 비면 0이다. 단일 Worker
+     * 잠금을 잃어도 claim을 멈춘다.
+     */
+    @Test
+    void 함께_서는_작업자도_같은_예산으로_기다리고_비지_않으면_75다() {
+        try (GenericApplicationContext context = new GenericApplicationContext()) {
+            FakeTarget own = new FakeTarget(0);
+            FakeTarget stuckErasure = new FakeTarget(1);
+            WorkerDrain incomplete = new WorkerDrain(own, () -> java.util.List.of(stuckErasure),
+                    Duration.ofMillis(300), context);
+            long started = System.nanoTime();
+            incomplete.onApplicationEvent(new ContextClosedEvent(context));
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(5));
+            assertThat(own.stopped).isTrue();
+            assertThat(stuckErasure.stopped).isTrue();
+            assertThat(incomplete.exitCode()).isEqualTo(WorkerExit.DRAIN_INCOMPLETE).isEqualTo(75);
+
+            FakeTarget emptyErasure = new FakeTarget(0);
+            WorkerDrain drained = new WorkerDrain(new FakeTarget(0), () -> java.util.List.of(emptyErasure),
+                    Duration.ofSeconds(1), context);
+            drained.onApplicationEvent(new ContextClosedEvent(context));
+            assertThat(emptyErasure.stopped).isTrue();
+            assertThat(drained.exitCode()).isEqualTo(WorkerExit.DRAINED);
+
+            FakeTarget lockLostErasure = new FakeTarget(0);
+            WorkerDrain lost = new WorkerDrain(new FakeTarget(0), () -> java.util.List.of(lockLostErasure),
+                    Duration.ofSeconds(1), context);
+            lost.terminator = value -> {};
+            lost.lockLost();
+            assertThat(lockLostErasure.stopped).isTrue();
+        }
+    }
+
+    /** 함께 서는 작업자의 heartbeat는 drain 동안 밀리고, 하나의 실패가 다른 heartbeat를 막지 않는다. */
+    @Test
+    void 함께_서는_작업자의_heartbeat를_따로_민다() {
+        try (GenericApplicationContext context = new GenericApplicationContext()) {
+            FakeTarget own = new FakeTarget(1);
+            com.bokrilog.sync.DrainParticipant failing = new com.bokrilog.sync.DrainParticipant() {
+                @Override
+                public void stopClaims() {}
+
+                @Override
+                public int inFlight() {
+                    return 0;
+                }
+
+                @Override
+                public void heartbeat() {
+                    throw new IllegalStateException("blocked");
+                }
+            };
+            FakeTarget erasure = new FakeTarget(1);
+            WorkerDrain drain = new WorkerDrain(own, () -> java.util.List.of(failing, erasure), Duration.ofSeconds(1),
+                    context);
+            assertThat(WorkerDrain.drain(drain.combined(), Duration.ofMillis(300), Duration.ofMillis(50),
+                    Duration.ofMillis(10))).isFalse();
+            assertThat(own.heartbeats.get()).isPositive();
+            assertThat(erasure.heartbeats.get()).isPositive();
+        }
+    }
+
     @Test
     void drain_timeout은_양수여야_한다() {
         try (GenericApplicationContext context = new GenericApplicationContext()) {
@@ -279,7 +343,7 @@ class WorkerDrainTest {
     }
 
     /** 진행 중 수가 고정된 대역. */
-    private static final class FakeTarget implements WorkerDrain.Target {
+    private static final class FakeTarget implements WorkerDrain.Target, com.bokrilog.sync.DrainParticipant {
 
         private final int inFlight;
 

@@ -50,6 +50,9 @@ class ConfiguredSecrets implements SmartInitializingSingleton, DisposableBean {
             "bokrilog.auth.naver.client-secret",
             "bokrilog.auth.kakao.client-secret",
             "bokrilog.operations.audit-digest-key",
+            // 계정 삭제 실행(Story 5.2)이 Worker에서 tombstone digest 키를 받는다 — 받은 프로세스는 그 노출도 감지한다
+            // (Epic 3 회고 item-28 일부).
+            "bokrilog.tombstone.digest-key",
             "spring.datasource.password");
 
     private static final String KEY_RING_PROPERTY = "bokrilog.source.credential.keys";

@@ -3,6 +3,7 @@ package com.bokrilog.source.internal;
 import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
+import com.bokrilog.identity.AccountDeletionApi;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.source.SourceCredentials;
 import com.bokrilog.source.SourceProvider;
@@ -43,11 +44,15 @@ class SourceConnectionService implements SourceConnectionApi {
 
     private final AccountAccessApi accountAccess;
 
+    private final AccountDeletionApi accountDeletion;
+
     SourceConnectionService(
             SourceConnectionRepository repository,
             CredentialCipher cipher,
             BybitAdapter bybit,
-            AccountAccessApi accountAccess) {
+            AccountAccessApi accountAccess,
+            AccountDeletionApi accountDeletion) {
+        this.accountDeletion = accountDeletion;
         this.repository = repository;
         this.cipher = cipher;
         this.bybit = bybit;
@@ -316,6 +321,23 @@ class SourceConnectionService implements SourceConnectionApi {
             return;
         }
         this.repository.eraseOf(userId);
+    }
+
+    @Override
+    public int eraseCredentials(@Nullable UUID userId) {
+        if (userId == null) {
+            return 0;
+        }
+        // 삭제 전환을 지난 계정만 지운다 — 생명주기 상태를 잠금 아래에서 직접 본다(identity `eraseSocialLinks`와 같은 규칙).
+        if (!this.accountDeletion.lockDeletionStarted(userId)) {
+            return 0;
+        }
+        return this.repository.eraseCredentialsOf(userId);
+    }
+
+    @Override
+    public long remainingCredentialsOf(UUID userId) {
+        return this.repository.countCredentialsOf(userId);
     }
 
     private static StoreOutcome rejected(SourceRejectionReason reason) {

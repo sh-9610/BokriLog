@@ -317,6 +317,20 @@ public interface SourceConnectionApi {
      */
     void eraseSourceData(@Nullable UUID userId);
 
+    /**
+     * 이 사용자의 Bybit 자격정보(암호문·nonce·키 버전)만 지운다 — 계정 삭제의 첫 단계(Story 5.2 {@code CREDENTIALS}). 삭제 전환을 지난
+     * 계정만 지우고 {@code ACTIVE} 계정이면 아무것도 하지 않는다(0). 연결·제공자 계정·
+     * membership은 남기고 뒤 단계({@link #eraseSourceData})가 지운다. 자격정보가 사라지면 연결을 다시 읽는 모든 Worker 재검사
+     * ({@code snapshotConnection})가 빈 값이라 서명 호출이 더 일어나지 않는다. 다른 사용자 것은 남는다. 호출자 트랜잭션에 참여한다.
+     * 멱등이다.
+     *
+     * @return 이번에 지운 행 수. 0도 정상이다
+     */
+    int eraseCredentials(@Nullable UUID userId);
+
+    /** 그 사용자의 연결에 남은 자격정보 행 수({@code CREDENTIALS} 단계의 잔여 검증). */
+    long remainingCredentialsOf(UUID userId);
+
     // ------------------------------------------------------------------ Story 3.2
 
     /**
