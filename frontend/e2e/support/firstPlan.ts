@@ -38,7 +38,9 @@ export async function connectAndSavePlan(
   // 재인증은 세션의 목적지(로그인의 착지)로 돌아온다. 그 이동이 끝난 뒤에 설정 화면을 연다.
   await waitForScreen(page, landing)
   await page.goto('/settings')
-  await expect(page.getByRole('heading', { name: connectionContent.heading })).toBeVisible()
+  await expect(
+    page.getByRole('heading', { name: connectionContent.heading, exact: true }),
+  ).toBeVisible()
   await page.getByRole('button', { name: connectionContent.start }).click()
   // A random suffix: parallel local workers started in the same millisecond must not share a
   // Bybit UID (the second connection would be refused as an account another user already holds).

@@ -67,7 +67,9 @@ async function signInAndReauthenticate(page: Page): Promise<void> {
 /** 설정 화면을 열고 연결 구역이 그려질 때까지 기다린다. */
 async function openSettings(page: Page): Promise<void> {
   await page.goto('/settings')
-  await expect(page.getByRole('heading', { name: connectionContent.heading })).toBeVisible()
+  await expect(
+    page.getByRole('heading', { name: connectionContent.heading, exact: true }),
+  ).toBeVisible()
 }
 
 test.describe('Bybit 연결', () => {
