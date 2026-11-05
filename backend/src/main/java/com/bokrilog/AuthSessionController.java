@@ -79,17 +79,25 @@ class AuthSessionController {
     /** 운영자 판정(Story 3.1). 재인증 복귀 목적지 {@code /operator}를 운영자에게만 남긴다. */
     private final OperatorAccess operators;
 
+    /**
+     * 계정 삭제 요청(Story 5.1). 같은 설정 화면의 여섯 번째 무장이라 같은 규칙을 지나고, 세션 확인 응답의 삭제 진행 표지
+     * ({@code deletionInProgress})도 여기서 읽는다.
+     */
+    private final AccountDeletionRequestService accountDeletions;
+
     AuthSessionController(
             LinkService linkService,
             UnlinkService unlinkService,
             BybitConnectionService bybitConnectionService,
             BybitRevocationCommandService bybitRevocations,
-            OperatorAccess operators) {
+            OperatorAccess operators,
+            AccountDeletionRequestService accountDeletions) {
         this.linkService = linkService;
         this.unlinkService = unlinkService;
         this.bybitConnectionService = bybitConnectionService;
         this.bybitRevocations = bybitRevocations;
         this.operators = operators;
+        this.accountDeletions = accountDeletions;
     }
 
     /**
@@ -122,6 +130,8 @@ class AuthSessionController {
         // Story 2.1의 네 번째 무장. 같은 화면에서 시작되므로 같은 규칙을 지난다.
         this.bybitConnectionService.abandon(session);
         this.bybitRevocations.abandon(session);
+        // Story 5.1의 계정 삭제 무장. 같은 화면에서 시작되므로 같은 규칙을 지난다.
+        this.accountDeletions.abandon(session);
     }
 
     /**
@@ -152,13 +162,25 @@ class AuthSessionController {
      *     쿠키가 세션 하나로 유지된다. 이 값은 세션에 귀속하므로 다른 세션에서는 통하지 않고,
      *     응답의 {@code no-store}와 진입점의 {@code Referrer-Policy: no-referrer}가 유출 경로를
      *     닫는다
+     * @param deletionInProgress 이 계정의 삭제가 요청됐는가(Story 5.1). <b>요청이 있는 계정의 인증된 세션과 재인증을 요구받은 세션에만</b>
+     *     {@code true}로 실리고 그
+     *     밖에서는 {@code null}이라 나가지 않는다 — 다른 응답의 본문은 글자까지 그대로다. 화면은 이 값이 참이면 경로와 무관하게 삭제
+     *     진행 화면만 그린다
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record SessionState(
             boolean authenticated,
             String destination,
             @Nullable Boolean reauthRequired,
-            @Nullable String csrfToken) {}
+            @Nullable String csrfToken,
+            @Nullable Boolean deletionInProgress) {
+
+        /** 삭제 진행 표지가 없는 응답. Story 5.1 전의 네 필드 모양 그대로다. */
+        SessionState(boolean authenticated, String destination, @Nullable Boolean reauthRequired,
+                @Nullable String csrfToken) {
+            this(authenticated, destination, reauthRequired, csrfToken, null);
+        }
+    }
 
     @GetMapping(path = AuthSecurityConfig.SESSION_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<SessionState> session(HttpServletRequest request) {
@@ -190,6 +212,18 @@ class AuthSessionController {
                                 : this.operators.foldDestination(ControllerSupport.currentUserId(), settled))
                         : AuthFlowHandlers.destinationKind(null);
 
+        /*
+         * 삭제가 요청된 계정의 남은 요청 세션(Story 5.1). 화면이 어느 경로에서든 삭제 진행 화면만 그리게 하는 표지다. 읽기만 하며,
+         * 세션 guard는 생명주기를 보지 않으므로 이 세션은 인증된 채로 상태 조회·같은 요청 재전송·로그아웃만 할 수 있다.
+         *
+         * 재인증을 요구받은(표시된) 세션에도 싣는다 — 삭제 중 계정은 재인증이 성립하지 않으므로 화면이 회복 패널 대신 진행 화면을
+         * 그려야 한다. 표시된 세션은 thread-local 인증이 지워져 있어 주체를 세션 속성에서 읽는다(접근 판정에 쓰지 않는다).
+         */
+        UUID current = authenticated
+                ? ControllerSupport.currentUserId()
+                : reauthRequired ? ControllerSupport.storedSessionUserId(request.getSession(false)) : null;
+        boolean deletionInProgress = current != null && this.accountDeletions.requestOf(current).isPresent();
+
         return ResponseEntity.ok()
                 /*
                  * 보안 응답 헤더는 Nginx가 소유하지만 캐시 지시는 이 응답 하나의 성질이다.
@@ -203,7 +237,8 @@ class AuthSessionController {
                                 authenticated,
                                 destination,
                                 reauthRequired ? Boolean.TRUE : null,
-                                csrfToken(request, authenticated || reauthRequired)));
+                                csrfToken(request, authenticated || reauthRequired),
+                                deletionInProgress ? Boolean.TRUE : null));
     }
 
     /**
@@ -460,6 +495,7 @@ class AuthSessionController {
         this.unlinkService.abandon(session);
         this.bybitConnectionService.abandon(session);
         this.bybitRevocations.abandon(session);
+        this.accountDeletions.abandon(session);
         response.setStatus(HttpStatus.NO_CONTENT.value());
     }
 
@@ -507,6 +543,7 @@ class AuthSessionController {
         this.linkService.abandon(session);
         this.bybitConnectionService.abandon(session);
         this.bybitRevocations.abandon(session);
+        this.accountDeletions.abandon(session);
         response.setStatus(HttpStatus.NO_CONTENT.value());
     }
 

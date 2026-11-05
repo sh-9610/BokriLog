@@ -1,0 +1,33 @@
+{
+  "path": "/api/account/deletion",
+  "version": "ACCOUNT-DELETION-1.0",
+  "confirmation": "계정을 삭제합니다",
+  "backupDestroyDays": 30,
+  "targets": [
+    "ACCOUNT_AND_SIGN_IN",
+    "SESSIONS",
+    "BYBIT_CREDENTIALS",
+    "BYBIT_CONNECTIONS",
+    "SOURCE_EVENTS",
+    "CASHFLOWS",
+    "SNAPSHOTS",
+    "PLANS",
+    "CALCULATIONS",
+    "SYNC_JOBS",
+    "SUPPORT_INQUIRIES",
+    "AD_RECORDS",
+    "OPERATIONS_RECORDS"
+  ],
+  "legalRetention": [],
+  "refusalCodes": [
+    "ACCOUNT_DELETION_IN_PROGRESS",
+    "ACCOUNT_DELETION_NOT_CONFIRMED",
+    "ACCOUNT_DELETION_POLICY_CHANGED",
+    "ACCOUNT_DELETION_UNAVAILABLE",
+    "CONFIRMATION_MISMATCH",
+    "FORBIDDEN",
+    "IDEMPOTENCY_CONFLICT",
+    "IDEMPOTENCY_KEY_REQUIRED",
+    "REAUTHENTICATION_REQUIRED"
+  ]
+}

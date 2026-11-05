@@ -4,6 +4,7 @@ import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpSession;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.http.CacheControl;
@@ -12,7 +13,9 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 
 /**
  * 루트 패키지의 HTTP 표면(컨트롤러·{@code OperatorGate} 필터·{@code AuthFlowHandlers} 인증 처리기)이 함께 쓰는 판독·응답
@@ -51,6 +54,31 @@ final class ControllerSupport {
         }
         try {
             return UUID.fromString(authentication.getName());
+        } catch (IllegalArgumentException invalid) {
+            return null;
+        }
+    }
+
+    /**
+     * 세션에 저장된 인증 주체의 내부 {@code user_id}. {@link #currentUserId()}와 달리 요청의 thread-local 인증이 아니라 세션 속성을 읽는다 —
+     * 재인증을 요구받은(표시된) 세션은 guard 필터가 thread-local 인증을 지우므로 그 세션의 주체를 알 길이 이것뿐이다. 세션 확인 응답의
+     * 삭제 진행 표지(Story 5.1)만 쓴다 — 이 값으로 접근을 허용하지 않는다. 없거나 읽을 수 없거나 UUID가 아니면 {@code null}이다.
+     */
+    static @Nullable UUID storedSessionUserId(@Nullable HttpSession session) {
+        if (session == null) {
+            return null;
+        }
+        Object stored;
+        try {
+            stored = session.getAttribute(HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY);
+        } catch (IllegalStateException invalidated) {
+            return null;
+        }
+        if (!(stored instanceof SecurityContext context) || context.getAuthentication() == null) {
+            return null;
+        }
+        try {
+            return UUID.fromString(context.getAuthentication().getName());
         } catch (IllegalArgumentException invalid) {
             return null;
         }

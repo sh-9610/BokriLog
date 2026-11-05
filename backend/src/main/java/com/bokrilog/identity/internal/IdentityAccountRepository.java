@@ -1,5 +1,6 @@
 package com.bokrilog.identity.internal;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -275,6 +276,61 @@ public class IdentityAccountRepository {
                 .update();
     }
 
+    // ------------------------------------------------------------------ Story 5.1 삭제 요청
+
+    /** 삭제 요청 행 하나(SQL 결과). */
+    public record StoredDeletionRequest(String requestId, OffsetDateTime requestedAt, String policyVersion,
+            String noticeHash, String idempotencyKeyDigest) {}
+
+    /**
+     * 그 계정의 삭제 요청. 잠그지 않는다 — 판정이 필요한 쓰기 경로는 먼저 생명주기 행을 잠근 뒤 같은 트랜잭션에서 부른다.
+     *
+     * @return 없으면 빈 값
+     */
+    public Optional<StoredDeletionRequest> findDeletionRequest(UUID userId) {
+        return jdbc.sql("SELECT request_id, requested_at, policy_version, notice_hash, idempotency_key_digest "
+                        + "FROM identity_deletion_request WHERE user_id = :userId")
+                .param("userId", userId)
+                .query((row, index) -> new StoredDeletionRequest(row.getString("request_id"),
+                        row.getObject("requested_at", OffsetDateTime.class), row.getString("policy_version"),
+                        row.getString("notice_hash"), row.getString("idempotency_key_digest")))
+                .optional();
+    }
+
+    /**
+     * 삭제 요청 행을 만든다. 시각은 DB가 정한다(문장 시각). 사용자당 유일 제약이 동시 요청의 최종 방어다 — 호출자는 생명주기 행을
+     * 잠근 뒤 {@link #findDeletionRequest}로 먼저 본다.
+     *
+     * @return 만든 행
+     */
+    public StoredDeletionRequest insertDeletionRequest(String requestId, UUID userId, String policyVersion,
+            String noticeHash, String idempotencyKeyDigest) {
+        return jdbc.sql("INSERT INTO identity_deletion_request "
+                        + "(request_id, user_id, policy_version, notice_hash, idempotency_key_digest) "
+                        + "VALUES (:requestId, :userId, :policyVersion, :noticeHash, :keyDigest) "
+                        + "RETURNING request_id, requested_at, policy_version, notice_hash, idempotency_key_digest")
+                .param("requestId", requestId)
+                .param("userId", userId)
+                .param("policyVersion", policyVersion)
+                .param("noticeHash", noticeHash)
+                .param("keyDigest", idempotencyKeyDigest)
+                .query((row, index) -> new StoredDeletionRequest(row.getString("request_id"),
+                        row.getObject("requested_at", OffsetDateTime.class), row.getString("policy_version"),
+                        row.getString("notice_hash"), row.getString("idempotency_key_digest")))
+                .single();
+    }
+
+    /**
+     * 그 계정의 삭제 요청 행을 지운다. 삭제 완료(payload 삭제)만 부른다 — 요청 행은 payload와 같은 운명이다.
+     *
+     * @return 지운 행 수. 0행은 실패가 아니다.
+     */
+    public int deleteDeletionRequest(UUID userId) {
+        return jdbc.sql("DELETE FROM identity_deletion_request WHERE user_id = :userId")
+                .param("userId", userId)
+                .update();
+    }
+
     /** 생명주기 행이 있는 모든 계정(Story 3.10 복원 적용). */
     public List<UUID> findAllAccounts() {
         return jdbc.sql("SELECT user_id FROM identity_account_lifecycle ORDER BY user_id").query(UUID.class).list();
@@ -298,10 +354,14 @@ public class IdentityAccountRepository {
         return jdbc.sql("DELETE FROM spring_session").update();
     }
 
-    /** 그 계정에 남은 payload·인증 매핑·세션 행 수(Story 3.10 복원 검증). 생명주기 guard 행은 세지 않는다. */
+    /**
+     * 그 계정에 남은 payload·인증 매핑·세션·삭제 요청 행 수(Story 3.10 복원 검증, 삭제 요청은 Story 5.1). 생명주기 guard 행은 세지
+     * 않는다.
+     */
     public long countRemainingRowsOf(UUID userId) {
         Long count = jdbc.sql("SELECT (SELECT count(*) FROM identity_account WHERE user_id = :userId) "
                         + "+ (SELECT count(*) FROM identity_social_link WHERE user_id = :userId) "
+                        + "+ (SELECT count(*) FROM identity_deletion_request WHERE user_id = :userId) "
                         + "+ (SELECT count(*) FROM spring_session WHERE principal_name = :principalName)")
                 .param("userId", userId)
                 .param("principalName", userId.toString())

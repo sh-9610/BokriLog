@@ -20,6 +20,8 @@
  *    설정 화면의 광고 동의 조회(`GET /api/engagement/ad-consent`, Story 4.1)도 같은 근거로 기본 응답(미결정)이 있다
  *    (`defaultAdConsent`). 수동 동기화 성공 뒤의 광고 자격 판정(`POST /api/engagement/ad-eligibility`, Story 4.3)도
  *    기본 응답(공급자 꺼짐으로 건너뜀 — 기본 구성의 답)이 있다(`defaultAdEligibility`).
+ *    설정 화면의 계정 삭제 정책 조회(`GET /api/account/deletion`, Story 5.1)도 같은 근거로 기본 응답(삭제 가능·요청 없음)이 있다
+ *    (`defaultAccountDeletionState`).
  * 6. 계측 beacon(`POST /api/engagement/telemetry`, Story 4.5)도 기본 응답(204)이 있다. 네 화면이 숨김·떠남에서 보내므로 열지 않은
  *    시험에서 전역 거부로 기록되면 그 화면의 "요청 0건" 단정이 계측 때문에 깨진다. 본문·`keepalive`·CSRF 헤더는
  *    `getObservedTelemetryRequests`로 따로 센다 — 허용 기록에도 거부 기록에도 넣지 않는다. 계측 모듈의 문서 상태(큐·토큰·등록)는
@@ -30,6 +32,12 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach } from 'vitest'
 
+import {
+  ACCOUNT_DELETION_CANCEL_PATH,
+  ACCOUNT_DELETION_CONFIRM_PATH,
+  ACCOUNT_DELETION_PATH,
+} from '../content/accountDeletion'
+import accountDeletionPolicy from '../content/accountDeletionPolicy.fixture.json'
 import { AD_CONSENT_PATH, AD_CONSENT_POLICY_VERSION } from '../content/adConsent'
 import { DASHBOARD_ADJUSTMENTS_PATH } from '../content/adjustmentHistory'
 import { AD_ELIGIBILITY_PATH, AD_TRANSITION_CLAIM_PATH } from '../content/adTransition'
@@ -87,6 +95,8 @@ const observedSupportRequests: string[] = []
 const observedAdConsentRequests: string[] = []
 /** 기본 응답이 답한 광고 자격 판정(Story 4.3). 본문(`syncJobId`)도 함께 남긴다 — 어느 job을 물었는지가 계약이다. */
 const observedAdEligibilityRequests: string[] = []
+/** 기본 응답(삭제 가능·요청 없음)이 답한 계정 삭제 정책 조회(Story 5.1). 공지와 같은 근거로 허용 기록과 따로 센다. */
+const observedAccountDeletionRequests: string[] = []
 
 /** 계측 beacon 하나(Story 4.5). 본문, `keepalive`, 실은 CSRF 헤더 값. */
 export interface TelemetryRequest {
@@ -467,6 +477,30 @@ export function stubAdTransitionClaim(responder: RequestResponder): void {
   responders.set(requestKey('POST', AD_TRANSITION_CLAIM_PATH), responder)
 }
 
+/**
+ * 계정 삭제 정책·요청 상태 조회 하나를 이 시험 동안만 연다(Story 5.1). 연 응답이 기본 응답(삭제 가능·요청 없음)을 이기고 허용
+ * 기록에 남는다. 설정 화면은 세션이 준비되면 언제나 이 요청을 보내므로, 열지 않은 시험에는 기록에 남지 않는 기본 응답이 답한다 —
+ * 공지 조회와 같은 근거다.
+ */
+export function stubAccountDeletionState(responder: RequestResponder): void {
+  responders.set(requestKey('GET', ACCOUNT_DELETION_PATH), responder)
+}
+
+/** 계정 삭제 준비(Story 5.1). 기본 응답이 없다 — 열지 않은 준비는 전역 거부다. */
+export function stubAccountDeletionPrepare(responder: RequestResponder): void {
+  responders.set(requestKey('POST', ACCOUNT_DELETION_PATH), responder)
+}
+
+/** 계정 삭제 확정(Story 5.1). */
+export function stubAccountDeletionConfirm(responder: RequestResponder): void {
+  responders.set(requestKey('POST', ACCOUNT_DELETION_CONFIRM_PATH), responder)
+}
+
+/** 계정 삭제 취소(Story 5.1). */
+export function stubAccountDeletionCancel(responder: RequestResponder): void {
+  responders.set(requestKey('POST', ACCOUNT_DELETION_CANCEL_PATH), responder)
+}
+
 /** 문의 목록(Story 3.6, 운영자 화면). 상태 필터는 쿼리로 가므로 쿼리가 있는 요청도 같은 응답 함수가 받는다. */
 export function stubOperatorInquiries(responder: QueryResponder): void {
   queryResponders.set(requestKey('GET', OPERATOR_INQUIRIES_ENDPOINT), responder)
@@ -550,6 +584,11 @@ export function getObservedAdEligibilityRequests(): readonly string[] {
   return [...observedAdEligibilityRequests]
 }
 
+/** 기본 응답이 답한 계정 삭제 정책 조회의 기록(Story 5.1). */
+export function getObservedAccountDeletionRequests(): readonly string[] {
+  return [...observedAccountDeletionRequests]
+}
+
 /** 보낸 계측 beacon들(Story 4.5). 본문은 JSON으로 읽은 값이다. */
 export function getObservedTelemetryRequests(): readonly TelemetryRequest[] {
   return [...observedTelemetryRequests]
@@ -610,6 +649,23 @@ function defaultAdConsent(): Response {
       state: 'UNDECIDED',
       policyVersion: AD_CONSENT_POLICY_VERSION,
       decidedAt: null,
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )
+}
+
+/** 열지 않은 시험의 계정 삭제 정책 응답: 공유 표의 정책이고 삭제할 수 있으며 요청이 없다. 기록은 `observedAccountDeletionRequests`에 남긴다. */
+function defaultAccountDeletionState(): Response {
+  return new Response(
+    JSON.stringify({
+      available: true,
+      policy: {
+        version: accountDeletionPolicy.version,
+        targets: accountDeletionPolicy.targets,
+        backupDestroyDays: accountDeletionPolicy.backupDestroyDays,
+        legalRetention: accountDeletionPolicy.legalRetention,
+      },
+      request: null,
     }),
     { status: 200, headers: { 'Content-Type': 'application/json' } },
   )
@@ -697,6 +753,10 @@ globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Respo
     observedAdConsentRequests.push(requestKey(method, url))
     return Promise.resolve(defaultAdConsent())
   }
+  if (method === 'GET' && url === ACCOUNT_DELETION_PATH) {
+    observedAccountDeletionRequests.push(requestKey(method, url))
+    return Promise.resolve(defaultAccountDeletionState())
+  }
   if (method === 'POST' && url === AD_ELIGIBILITY_PATH) {
     observedAdEligibilityRequests.push(typeof init?.body === 'string' ? init.body : '')
     return Promise.resolve(defaultAdEligibility())
@@ -764,6 +824,7 @@ beforeEach(() => {
   observedSupportRequests.length = 0
   observedAdConsentRequests.length = 0
   observedAdEligibilityRequests.length = 0
+  observedAccountDeletionRequests.length = 0
   observedTelemetryRequests.length = 0
   telemetryResponder = null
   resetTelemetryForTests()
@@ -782,6 +843,7 @@ afterEach(() => {
   observedSupportRequests.length = 0
   observedAdConsentRequests.length = 0
   observedAdEligibilityRequests.length = 0
+  observedAccountDeletionRequests.length = 0
   observedTelemetryRequests.length = 0
   telemetryResponder = null
   resetTelemetryForTests()

@@ -71,6 +71,13 @@ export interface SessionSnapshot {
    * 멀쩡한 세션의 사용자를 인증 화면으로 밀어내고 "만료됐다"고 말한다.
    */
   readonly expired: boolean
+  /**
+   * 이 계정의 삭제가 요청됐는가(Story 5.1).
+   *
+   * 서버가 삭제가 요청된 계정의 인증된 세션에만 싣는 필드다(`GET /api/auth/session`의 `deletionInProgress`). 참이면 화면은
+   * 경로와 무관하게 삭제 진행 화면만 그린다 — 다른 화면의 조회·조작은 시작하지 않는다(`useSessionGate`가 `ready`를 주지 않는다).
+   */
+  readonly deletionInProgress: boolean
 }
 
 /**
@@ -80,7 +87,12 @@ export interface SessionSnapshot {
  * 사용자 데이터도 그리지 않고 서버가 고른 목적지로 문서를 다시 요청한다.
  */
 export type SessionGate =
-  'checking' | 'reauth-required' | 'ready' | 'redirecting' | 'unauthenticated'
+  | 'checking'
+  | 'deletion-in-progress'
+  | 'reauth-required'
+  | 'ready'
+  | 'redirecting'
+  | 'unauthenticated'
 
 /** 목적지 종류 → 그 목적지의 내부 경로. 서버 허용 목록·Nginx 허용 목록과 같은 집합이다. */
 const DESTINATION_PATHS = {
@@ -141,6 +153,7 @@ const CHECKING: SessionSnapshot = {
   csrfToken: null,
   reauthRequired: false,
   expired: false,
+  deletionInProgress: false,
 }
 
 const UNAUTHENTICATED: SessionSnapshot = {
@@ -149,6 +162,7 @@ const UNAUTHENTICATED: SessionSnapshot = {
   csrfToken: null,
   reauthRequired: false,
   expired: false,
+  deletionInProgress: false,
 }
 
 /** 서버가 준 목적지 종류. 아는 값이 아니면 `entry`다. */
@@ -168,6 +182,11 @@ function tokenOf(payload: object): string | null {
   }
   const value = payload.csrfToken
   return typeof value === 'string' && value !== '' ? value : null
+}
+
+/** 서버가 삭제 진행을 말했는가(Story 5.1). 필드가 없거나 `true`가 아니면 아니다. */
+function deletionOf(payload: object): boolean {
+  return 'deletionInProgress' in payload && payload.deletionInProgress === true
 }
 
 /** 서버가 표시한 세션인가. 필드가 없거나 `true`가 아니면 표시되지 않은 것과 같다. */
@@ -202,6 +221,8 @@ function snapshotOf(payload: unknown): SessionSnapshot | null {
         csrfToken: tokenOf(payload),
         reauthRequired: true,
         expired: false,
+        // 삭제가 요청된 계정의 표시된 세션도 진행 화면을 그려야 한다(삭제 중 계정은 재인증이 성립하지 않는다).
+        deletionInProgress: deletionOf(payload),
       }
     }
     return UNAUTHENTICATED
@@ -212,6 +233,7 @@ function snapshotOf(payload: unknown): SessionSnapshot | null {
     csrfToken: tokenOf(payload),
     reauthRequired: false,
     expired: false,
+    deletionInProgress: deletionOf(payload),
   }
 }
 
@@ -397,6 +419,11 @@ export interface SessionGateResult {
   readonly gate: SessionGate
   /** 로그아웃 요청에 실을 토큰. 게이트가 `ready`가 아니면 없다. */
   readonly csrfToken: string | null
+  /**
+   * 삭제 진행 세션의 토큰(Story 5.1). 게이트가 `deletion-in-progress`일 때만 있다. 삭제 진행 화면의 로그아웃 하나에만 쓴다 —
+   * `csrfToken`과 나눠 두어 다른 화면의 조회·조작·계측이 이 세션의 토큰을 받지 않게 한다.
+   */
+  readonly deletionToken: string | null
 }
 
 /**
@@ -463,7 +490,13 @@ export function liveRegionMessage(
  * `useSessionState`의 `recheck`를 부르는 유일한 제품 경로다.
  */
 export function useSessionGate(expected: ScreenDestination): SessionGateResult {
-  const { csrfToken, destination, expired, reauthRequired, recheck, state } = useSessionState()
+  const { csrfToken, deletionInProgress, destination, expired, reauthRequired, recheck, state } =
+    useSessionState()
+  /**
+   * 삭제가 요청된 계정의 남은 세션(Story 5.1). 목적지로 보내지 않고 어느 화면에서든 진행 화면만 그린다. 재인증 표시보다 앞선다 —
+   * 삭제 중 계정은 재인증이 성립하지 않으므로 회복 패널 대신 진행 화면이다.
+   */
+  const deleting = deletionInProgress && (state === 'authenticated' || reauthRequired)
 
   /*
    * 탭이 다시 보이게 되면 세션을 다시 확인한다.
@@ -500,7 +533,10 @@ export function useSessionGate(expected: ScreenDestination): SessionGateResult {
   }, [observing, recheck])
 
   const target =
-    state === 'authenticated' && destination !== 'entry' && !staysOn(expected, destination)
+    state === 'authenticated' &&
+    !deleting &&
+    destination !== 'entry' &&
+    !staysOn(expected, destination)
       ? DESTINATION_PATHS[destination]
       : null
 
@@ -525,7 +561,14 @@ export function useSessionGate(expected: ScreenDestination): SessionGateResult {
   }, [expiredTarget])
 
   if (state === 'checking') {
-    return { gate: 'checking', csrfToken: null }
+    return { gate: 'checking', csrfToken: null, deletionToken: null }
+  }
+  if (deleting) {
+    /*
+     * 삭제가 요청된 계정이다(Story 5.1). 경로와 무관하게 진행 화면만 그린다 — 이동하지 않는다(새 경로·복귀 목적지를 만들지
+     * 않는다). `csrfToken`은 주지 않아 다른 화면의 조회·조작·계측이 시작되지 않고, 로그아웃용 토큰은 따로 준다.
+     */
+    return { gate: 'deletion-in-progress', csrfToken: null, deletionToken: csrfToken }
   }
   if (reauthRequired) {
     /*
@@ -538,7 +581,7 @@ export function useSessionGate(expected: ScreenDestination): SessionGateResult {
      * 토큰을 보존한다. 재인증 시작과 로그아웃이 둘 다 그 값을 필요로 하고, 표시된 세션이 화면에서
      * 스스로 나갈 수 있게 되는 것도 이 한 줄이다.
      */
-    return { gate: 'reauth-required', csrfToken }
+    return { gate: 'reauth-required', csrfToken, deletionToken: null }
   }
   if (expiredTarget) {
     /*
@@ -550,15 +593,16 @@ export function useSessionGate(expected: ScreenDestination): SessionGateResult {
      * `noticeKindOf`(주소의 표지) 하나로 유지되고, 그 상태에서 새로고침해도 같은 화면이 나온다.
      * 그 사이 화면은 아무 상태도 주장하지 않는다(`redirecting`).
      */
-    return { gate: 'redirecting', csrfToken: null }
+    return { gate: 'redirecting', csrfToken: null, deletionToken: null }
   }
   if (state === 'unauthenticated' || destination === 'entry') {
     // 미인증과 "인증됐다는데 목적지가 인증 화면"은 화면이 할 일이 같다. 되돌린다.
-    return { gate: 'unauthenticated', csrfToken: null }
+    return { gate: 'unauthenticated', csrfToken: null, deletionToken: null }
   }
   const stays = staysOn(expected, destination)
   return {
     gate: stays ? 'ready' : 'redirecting',
     csrfToken: stays ? csrfToken : null,
+    deletionToken: null,
   }
 }

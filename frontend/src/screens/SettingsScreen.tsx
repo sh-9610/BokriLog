@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react'
 
+import { AccountDeletionDialog } from '../components/AccountDeletionDialog'
+import { AccountDeletionPanel } from '../components/AccountDeletionPanel'
 import { AdConsentPanel } from '../components/AdConsentPanel'
 import { BybitConnectionForm } from '../components/BybitConnectionForm'
 import { ConnectionRevokeDialog } from '../components/ConnectionRevokeDialog'
@@ -9,6 +11,7 @@ import { ServiceNotice } from '../components/ServiceNotice'
 import { SignOutButton } from '../components/SignOutButton'
 import { SupportInquiryPanel } from '../components/SupportInquiryPanel'
 import { UnlinkDialog } from '../components/UnlinkDialog'
+import { accountDeletionContent } from '../content/accountDeletion'
 import {
   authContent,
   linkNoticeKindOf,
@@ -26,6 +29,7 @@ import {
 } from '../content/connection'
 import { entryContent } from '../content/entry'
 import { fetchLinkedProviders } from '../session/linkProvider'
+import { accountDeletionSentence, useAccountDeletion } from '../session/useAccountDeletion'
 import { adConsentSentence, useAdConsent } from '../session/useAdConsent'
 import { useBybitConnection, type ConnectionNotice } from '../session/useBybitConnection'
 import { useLinking } from '../session/useLinking'
@@ -36,6 +40,7 @@ import { useSignOut } from '../session/useSignOut'
 import { supportSentence, useSupportInquiries } from '../session/useSupportInquiries'
 import { useUnlinking } from '../session/useUnlinking'
 import { useTelemetry } from '../telemetry/useTelemetry'
+import { DeletionProgressScreen } from './DeletionProgressScreen'
 import { EntryScreen } from './EntryScreen'
 import styles from './SettingsScreen.module.css'
 
@@ -141,7 +146,7 @@ type LinkStatus = 'checking' | 'loaded' | 'unavailable'
  * 같은 배치이며 같은 공유 컴포넌트다.
  */
 export function SettingsScreen(): ReactElement {
-  const { csrfToken, gate } = useSessionGate('settings')
+  const { csrfToken, deletionToken, gate } = useSessionGate('settings')
   // 이 문서의 Web Vitals(Story 4.5). 세션 토큰이 있을 때만 숨김·떠남에서 보낸다.
   useTelemetry(SETTINGS_PATH, csrfToken)
   const signOut = useSignOut(csrfToken)
@@ -170,7 +175,9 @@ export function SettingsScreen(): ReactElement {
    * 자기 표지를 비우는 순간 그 자리로 옛 문장이 올라온다. 마지막으로 만진 흐름이 그 자리를
    * 소유하게 하면 그 되살아남이 구조적으로 불가능해진다.
    */
-  const [lastFlow, setLastFlow] = useState<'auth' | 'connection' | 'adConsent' | 'support'>('auth')
+  const [lastFlow, setLastFlow] = useState<
+    'auth' | 'connection' | 'adConsent' | 'support' | 'deletion'
+  >('auth')
 
   const onUnlinked = useCallback((removed: SignInProvider): void => {
     /*
@@ -190,6 +197,8 @@ export function SettingsScreen(): ReactElement {
   const support = useSupportInquiries(gate === 'ready', csrfToken)
   // 광고 동의(Story 4.1). 세션이 확인된 뒤에만 읽고 값은 메모리에만 있다. 이 화면 밖의 어느 경로도 이 값을 읽지 않는다.
   const adConsent = useAdConsent(gate === 'ready', csrfToken)
+  // 계정 삭제 요청(Story 5.1). 세션이 확인된 뒤에만 정책을 읽고 값은 메모리에만 있다.
+  const deletion = useAccountDeletion(gate === 'ready', csrfToken)
 
   /**
    * 해제 결과 문장의 자리.
@@ -277,6 +286,8 @@ export function SettingsScreen(): ReactElement {
     }
   }, [connectionNotice])
 
+  // 삭제가 요청된 계정(Story 5.1): 경로와 무관하게 진행 화면만 그린다. 이 화면의 조회는 게이트가 `ready`가 아니라 시작되지 않는다.
+  if (gate === 'deletion-in-progress') return <DeletionProgressScreen csrfToken={deletionToken} />
   if (gate === 'unauthenticated') {
     /*
      * 냉시작 미인증이다. 이 자리에서 표지 없이 인증 화면을 그린다(두 인증 화면과 같은 동작).
@@ -300,7 +311,8 @@ export function SettingsScreen(): ReactElement {
    * 연결·본인 확인·로그아웃이 눌리면 안 된다 — 그 조작들은 열려 있는 해제 무장을 버리므로, 사용자가
    * 확인을 누르는 순간 이유 없이 실패한다.
    */
-  const dialogOpen = unlinking.confirming !== null || connection.revocation !== null
+  const dialogOpen =
+    unlinking.confirming !== null || connection.revocation !== null || deletion.dialog !== null
   /**
    * 연결 구역의 조작을 시작한다.
    *
@@ -324,6 +336,7 @@ export function SettingsScreen(): ReactElement {
     reauthentication.pending ||
     signOut.pending ||
     unlinking.pending ||
+    deletion.pending ||
     dialogOpen
   /**
    * 마지막 남은 접근 수단인가.
@@ -339,15 +352,17 @@ export function SettingsScreen(): ReactElement {
    * 화면당 polite live region은 하나여야 한다.
    */
   const resultMessage =
-    lastFlow === 'support'
-      ? supportSentence(support.notice)
-      : lastFlow === 'adConsent'
-        ? adConsentSentence(adConsent.notice)
-        : lastFlow === 'connection'
-          ? connectionNoticeText(connection.notice, connection.confirmation !== null)
-          : unlinking.notice === null
-            ? null
-            : authContent.notices[unlinking.notice]
+    lastFlow === 'deletion'
+      ? accountDeletionSentence(deletion.notice)
+      : lastFlow === 'support'
+        ? supportSentence(support.notice)
+        : lastFlow === 'adConsent'
+          ? adConsentSentence(adConsent.notice)
+          : lastFlow === 'connection'
+            ? connectionNoticeText(connection.notice, connection.confirmation !== null)
+            : unlinking.notice === null
+              ? null
+              : authContent.notices[unlinking.notice]
 
   return (
     <>
@@ -421,14 +436,17 @@ export function SettingsScreen(): ReactElement {
               )
             ) : (
               <p className={styles.noticeText}>
-                {liveRegionMessage(
-                  gate,
-                  signOut.pending,
-                  reauthentication.pending,
-                  linking.pending,
-                  unlinking.pending,
-                  connection.pending,
-                )}
+                {/* 계정 삭제 준비(Story 5.1)의 진행. 대화상자가 열린 뒤에는 대화상자의 status가 말한다. */}
+                {deletion.preparing
+                  ? accountDeletionContent.preparing
+                  : liveRegionMessage(
+                      gate,
+                      signOut.pending,
+                      reauthentication.pending,
+                      linking.pending,
+                      unlinking.pending,
+                      connection.pending,
+                    )}
               </p>
             )}
           </div>
@@ -814,6 +832,18 @@ export function SettingsScreen(): ReactElement {
                 }}
                 support={support}
               />
+
+              {/*
+                계정 삭제(Story 5.1). 화면의 마지막 영역이다 — 앞 영역들의 키보드 순서를 바꾸지 않는다. 정책을 서로 구분해 보이고,
+                실행은 확인 대화상자(아래 형제)가 고정 문구 재입력으로 받는다. 결과는 위 live region이 한 번 말한다.
+              */}
+              <AccountDeletionPanel
+                blocked={busy}
+                deletion={deletion}
+                onAction={() => {
+                  setLastFlow('deletion')
+                }}
+              />
             </>
           ) : null}
         </main>
@@ -834,6 +864,13 @@ export function SettingsScreen(): ReactElement {
           onCancel={connection.cancelRevocation}
           onConfirm={connection.confirmRevocation}
           restoreFocus={connection.notice?.kind !== 'revoked'}
+        />
+      )}
+      {deletion.dialog === null ? null : (
+        <AccountDeletionDialog
+          dialog={deletion.dialog}
+          onCancel={deletion.cancel}
+          onConfirm={deletion.confirm}
         />
       )}
       {unlinking.confirming === null ? null : (

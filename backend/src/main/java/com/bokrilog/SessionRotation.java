@@ -40,6 +40,18 @@ final class SessionRotation {
     }
 
     /**
+     * 커밋 뒤 세션 처리의 <b>회전 없는</b> 변형 — 재인증 시각만 지운다. 예외를 전파한다(호출자가 커밋 뒤 단계로 감싼다).
+     *
+     * <p>지금 쓰는 command는 계정 삭제 요청(Story 5.1) 하나다. 그 확정 뒤 남는 요청 세션은 상태 조회·같은 요청 재전송·로그아웃만
+     * 할 수 있고(나머지는 {@code DELETION_IN_PROGRESS} 거부), 회전하면 응답 유실 한 번에 재전송이 옛 ID로 나가 사용자가 접수 확인을
+     * 잃는다 — ERD §5 "성공 시 회전"의 이 command 한정 예외다(SPEC Design Notes). 본인 확인 1회가 command 1건이라는 규칙(재인증 시각
+     * 제거)은 그대로 지킨다. 다른 command가 이것을 쓰려면 같은 근거를 SPEC으로 먼저 승인받는다.
+     */
+    static void completeSensitiveCommandWithoutRotation(HttpSession session) {
+        ReauthenticationFlow.clearAuthentication(session);
+    }
+
+    /**
      * {@link #completeSensitiveCommand}의 본체. 예외를 전파하고 회전한 새 세션 id를 돌려준다.
      *
      * <p>연결 콜백({@code AuthFlowHandlers.rotateIfLinked})이 이 모양을 쓴다 — 거기서는 판정과 회전을 한 자리에 모아

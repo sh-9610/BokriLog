@@ -1,0 +1,112 @@
+/*
+ * 설정 화면의 `계정 삭제` 영역(Story 5.1).
+ *
+ * `DESIGN.md`가 소유하는 범주(색·타이포그래피·모서리·간격)는 tokens.css의 변수만 참조한다. 구조적 1px 테두리 두께만
+ * 리터럴이다(대응하는 토큰이 없다). 영역의 모양은 `AdConsentPanel.module.css`와 같고, 실행 버튼만 파괴적 조작의 테두리·글자색
+ * (`operator-control`의 파괴적 토큰)이다 — 채움은 확인 대화상자 안의 최종 확인에만 둔다(`SettingsScreen.module.css`의 해제
+ * 버튼과 같은 위계). 새 토큰을 만들지 않았다.
+ *
+ * 모든 줄이 감긴다 — 320px·400% 확대에서 가로 스크롤에 기대지 않는다. 조작 대상은 최소 44px이다(EXPERIENCE.md
+ * Accessibility Floor). 포커스 표시는 global.css의 전역 `:focus-visible`이 처리한다.
+ */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-inline-size: 0;
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-surface-raised);
+  overflow-wrap: anywhere;
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--color-border-default);
+}
+
+.heading {
+  font-family: var(--type-section-title-font-family);
+  font-size: var(--type-section-title-font-size);
+  font-weight: var(--type-section-title-font-weight);
+  line-height: var(--type-section-title-line-height);
+  letter-spacing: var(--type-section-title-letter-spacing);
+  color: var(--color-ink-primary);
+}
+
+.subheading {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  color: var(--color-ink-primary);
+}
+
+/* 정책 항목 하나(즉시 차단·삭제 대상·백업·법정 보존·연결 해제와의 차이). 위아래로 쌓는다. */
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-inline-size: 0;
+}
+
+.list {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding-inline-start: var(--space-5);
+}
+
+/* 사용자가 먼저 알아야 하는 문장. 색이 아니라 문장이 뜻을 말한다. */
+.emphasis {
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+  color: var(--color-ink-primary);
+}
+
+.muted {
+  color: var(--color-ink-secondary);
+}
+
+.secondary,
+.destructive {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: var(--space-target-min);
+  min-inline-size: var(--space-target-min);
+  padding-inline: var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--type-label-font-size);
+  font-weight: var(--type-label-font-weight);
+  line-height: var(--type-label-line-height);
+}
+
+.secondary {
+  background-color: var(--color-surface-base);
+  color: var(--color-primary);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--component-secure-input-form-border);
+}
+
+.destructive {
+  background-color: var(--component-operator-control-background);
+  color: var(--component-operator-control-destructive);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--component-operator-control-destructive);
+}
+
+/*
+ * 누를 수 없는 상태. `:disabled`가 아니라 `[aria-disabled='true']`다 — 포커스를 남긴다(`AdConsentPanel.module.css`와 같은
+ * 관용). 커서를 바꾸지 않는다.
+ */
+.secondary[aria-disabled='true'],
+.destructive[aria-disabled='true'] {
+  background-color: var(--color-surface-subtle);
+  color: var(--color-ink-secondary);
+
+  /* 두께 1px은 DESIGN.md Elevation & Depth가 문장으로 정한 값이며 대응하는 토큰이 없다. */
+  border: 1px solid var(--color-border-default);
+}

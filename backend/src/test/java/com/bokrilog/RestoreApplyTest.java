@@ -214,6 +214,41 @@ class RestoreApplyTest extends PlanSyncTestBase {
         assertThat(lifecycleState(user)).isEqualTo("DELETED");
     }
 
+    /**
+     * Story 5.1: 사용자의 삭제 요청 행이 있는 {@code DELETION_IN_PROGRESS}는 모듈 삭제(5.2)를 기다리는 정상 대기 상태다 — 위반으로 세지
+     * 않는다. 요청 행 없는 삭제 진행(위 시험)만 위반이다.
+     */
+    @Test
+    void 요청_행이_있는_삭제_진행은_불변식_위반이_아니다() throws Exception {
+        UUID user = connect(DevBybitStub.Scenario.UTA2);
+        var outcome = accountDeletion().requestDeletion(user, AccountDeletionPolicy.VERSION,
+                AccountDeletionPolicy.noticeHash(), sha256("restore-requested-" + UUID.randomUUID()));
+        assertThat(outcome).isInstanceOf(com.bokrilog.identity.AccountDeletionApi.DeletionRequestOutcome.Created.class);
+        assertThat(lifecycleState(user)).isEqualTo("DELETION_IN_PROGRESS");
+
+        RestoreApplication.Report report = restore.apply(copy());
+        assertThat(report.passed()).as(report.line()).isTrue();
+        assertThat(report.violations().unfinishedDeletions()).isZero();
+        // 요청은 삭제를 시작만 했다 — 복원 적용이 그 계정을 지우지 않는다.
+        assertThat(lifecycleState(user)).isEqualTo("DELETION_IN_PROGRESS");
+    }
+
+    /** Story 5.1: 삭제 요청 행이 있는데 생명주기가 {@code ACTIVE}인 계정(요청했는데 막히지 않았다)은 위반이다. */
+    @Test
+    void 요청_행이_있는데_ACTIVE인_계정은_불변식_위반이다() throws Exception {
+        UUID user = connect(DevBybitStub.Scenario.UTA2);
+        jdbc().sql("INSERT INTO identity_deletion_request (request_id, user_id, policy_version, notice_hash, "
+                + "idempotency_key_digest) VALUES ('del_restore_active', :u, :v, :n, :k)").param("u", user)
+                .param("v", AccountDeletionPolicy.VERSION).param("n", AccountDeletionPolicy.noticeHash())
+                .param("k", sha256("restore-active-" + UUID.randomUUID())).update();
+        assertThat(lifecycleState(user)).isEqualTo("ACTIVE");
+
+        RestoreApplication.Report report = restore.apply(copy());
+        assertThat(report.passed()).isFalse();
+        assertThat(report.violations().unfinishedDeletions()).isEqualTo(1);
+        assertThat(report.codes()).containsExactly(RestoreApplication.INVARIANT_VIOLATED);
+    }
+
     @Test
     void 공식_포인터가_계획에_속하지_않으면_판정이_실패한다() throws Exception {
         UUID user = connect(DevBybitStub.Scenario.UTA2);
@@ -348,7 +383,9 @@ class RestoreApplyTest extends PlanSyncTestBase {
             String name = column[1];
             if (table.equals("identity_account_lifecycle")) continue;
             List<String> modules = new ArrayList<>();
-            if ((table.equals("identity_account") || table.equals("identity_social_link")) && name.equals("user_id")
+            // 사용자의 삭제 요청(Story 5.1)도 identity가 센다(`countRemainingRowsOf`).
+            if ((table.equals("identity_account") || table.equals("identity_social_link")
+                    || table.equals("identity_deletion_request")) && name.equals("user_id")
                     || table.equals("spring_session") && name.equals("principal_name")) modules.add("identity");
             if (table.equals("action_grant") && name.equals("user_id")) modules.add("root");
             if ((table.equals("portfolio") || table.startsWith("portfolio_")) && name.equals("user_id")) modules.add("portfolio");
