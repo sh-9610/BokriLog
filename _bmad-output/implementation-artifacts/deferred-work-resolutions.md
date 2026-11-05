@@ -2,7 +2,7 @@
 title: 'Deferred Work 해소 원장'
 status: living
 created: '2026-09-02'
-updated: '2026-11-03'
+updated: '2026-11-05'
 applies_to: '_bmad-output/implementation-artifacts/deferred-work.md'
 decision_baseline: 'ERD-1.0.0'
 ---
@@ -19,8 +19,25 @@ decision_baseline: 'ERD-1.0.0'
 |---|---|
 | 해소 | 35 |
 | 부분 해소 | 22 |
-| 미해소 | 112 |
+| 미해소 | 114 |
 | 미판정 | 0 |
+
+**2026-11-05 갱신(Story 5.1 계정 삭제 요청 done 전환).** `spec-5-1-account-deletion-request.md`(PR #139, 머지 커밋 `822816b`)의 판정이다.
+
+- **append한 항목.** 둘이고, 둘 다 미해소다.
+  - **170** — 삭제 진행 화면의 지원(문의) 경로. 1차 리뷰가 append했다.
+  - **171** — 실행 전 복원에서의 삭제 요청 내구성. 2차 리뷰가 append했다.
+  - 리뷰 분류: 1차는 intent_gap 1 · patch 18 · defer 1 · reject 7, 2차는 patch 15 · defer 1 · reject 11이었다.
+- **해소한 항목.** 없다.
+- **결정 지점으로 지목된 항목.** 셋 다 미해소·부분 해소 그대로다. 이 스토리는 요청만 열고 데이터 삭제(erase)를 사용자 경로로 끌어오지 않았으므로, 주인을 erase를 사용자 경로에 잇는 Story 5.2로 옮긴다.
+  - **27** — `identity`의 `spring_session` raw DELETE 결합.
+  - **56** — 소비된 허가 행의 보존 상한.
+  - **67** — 삭제 참여자 목록의 수작업 나열.
+  - 판정은 아래 각 절에 적었다.
+- **확인만 한 항목.** **4**(삭제 범위·완료 시한)는 부분 해소 그대로다. 5.1이 G-5 전 production의 요청 준비·확정을 403 `ACCOUNT_DELETION_UNAVAILABLE`로 닫았지만, 잔여(법정 분리 보존의 대상·근거·기간)는 게이트 G-5가 소유한다.
+- **162**(삭제 커밋 뒤 운영자 거절·실패 행의 `actor_user_id`)는 결정 지점이 5.2·5.4라 이번에 판정하지 않는다.
+
+그래서 앞 표(169건)에서 미해소 +2다. 합은 171이다.
 
 **2026-11-04 갱신(광고 시험 공용 helper·engagement 바깥 의존 규칙 chore done 전환).** `spec-ad-test-commons.md`(PR #137, 머지 커밋 `51fd410`, Epic 4 회고 AI-8 `epic-4-retro-item-47`의 ③ 시험·경계 묶음)를 판정했다.
 
@@ -381,6 +398,13 @@ X-Frame-Options: DENY
 
 **미해소 잔여:** 2026-09-08 판정과 같다(세 선택지 중 하나를 택하는 결정). 주인 없음도 그대로다. 남은 지목 지점은 Epic 5의 삭제 화면이고, Story 1.7(카카오)이 같은 경로를 한 번 더 지난다 — 제공자를 더하는 것이 이 결정의 재료를 만들지 않는다는 사실은 이 라운드가 확인했다.
 
+**미해소(2026-11-05, Story 5.1 판정, 기준 `822816b`) — 결합은 넓어지지 않았다.** Epic 5의 첫 스토리가 왔지만 이 DELETE를 사용자 경로로 끌어오지 않았다.
+- **세션 폐기 경로.** 5.1은 삭제 요청을 접수하고 계정을 `DELETION_IN_PROGRESS`로 옮길 뿐 데이터를 지우지 않는다. 확정 뒤의 다른 세션 폐기는 1.11과 같은 `SessionGuard.revokeSessionsOfExcept`(Spring Session API 경로)다.
+- **변하지 않은 것.** `IdentityAccountRepository`의 `DELETE FROM spring_session WHERE principal_name = :principalName`은 무변경이다. 5.1이 그 파일에 더한 것은 `identity_deletion_request` 조회·삽입뿐이다.
+- **새로 생긴 판독 자리.** 세션 응답의 삭제 진행 판독을 위해 `ControllerSupport.storedSessionUserId`가 생겼다. 세션에 저장된 `SecurityContext`의 주체 이름을 user_id로 읽는 자리이며, 기존 `currentUserId`와 같은 helper 안에 있다 — 규약을 읽는 자리가 하나 늘었지만 공용 helper로 묶여 있다.
+
+**미해소 잔여:** 위 세 선택지 가운데 무엇을 택할지. 다음 결정 지점은 `AccountErasure`(identity의 세션 raw DELETE를 부른다)를 사용자 삭제 경로에 잇는 Story 5.2다.
+
 ### 28. `OnboardingScreen`·`SignedInScreen`을 세션 게이트 셸 하나로 합칠지
 
 **부분 해소(2026-09-08).** Story 1.4가 append했다(PR #14). 버튼 축의 중복은 Story 1.5가 실제로 만들지 않았다 — `frontend/src/components/SignOutButton.tsx`(52줄)와 `SignOutButton.test.tsx`(239줄)를 두 화면이 함께 쓴다. 이 라운드에 새로 생길 수 있었던 중복 한 축이 생기지 않았으므로 그만큼은 해소다.
@@ -616,6 +640,12 @@ Docker 없는 정적 리터럴 비교 시험은 이 저장소에 전례가 없�
 
 **미해소 잔여:** 보존 기간 값(재전송이 도착할 수 있는 최대 시간)과 sweep 술어 확대. 지목된 1.10이 지나가 주인 없음(`## 갱신 규칙` (나) 부류). 개인정보 보존 정책(Epic 5)과 함께 볼 지점이다.
 
+**미해소(2026-11-05, Story 5.1 판정, 기준 `822816b`).** Epic 5의 첫 스토리가 지나갔고 보존 기간 값을 정하지 않았다.
+- **늘어난 것.** 5.1이 결과를 남기는 발급 자리를 하나 더했다 — `delete-account` command(`AccountDeletionRequestService`).
+- **줄어든 것.** 삭제가 요청된 계정은 새 허가를 받지 못한다 — 쓰기 접근 거부, 요청 세션 하나만 상태 전용으로 남는다. 그래서 그 계정의 행은 erase의 `ON DELETE CASCADE`를 기다린다.
+
+**미해소 잔여:** 위와 같다. 개인정보 보존 정책을 실제 삭제·보존 기한과 함께 정하는 Story 5.2·5.3이 다음 결정 지점이다.
+
 ### 57. 허가 포트가 `MockHttpSession`으로만 구동되고 실제 Spring Session JDBC 세션으로 발급→소비 왕복을 지나는 층이 없다
 
 **해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 1.9가 append했고, 지목된 Story 1.10과 그 뒤 민감 command들이 HTTP 표면을 만들면서 그 층이 생겼다. 근거는 **현재 요청의 세션 id로 소비하는** 실경로다 — 연결 흐름은 OIDC 콜백이 세션을 회전시키므로 발급 때 기록한 id를 그대로 제시해 소비하고(`ActionGrantService.java:543`, `LinkService.java:215`) 실제 id와의 어긋남을 볼 수 없어 근거로 쓰지 않는다. 계획 종료는 준비 요청에서 그 요청의 실제 Spring Session JDBC 세션 id(`SessionFacts.of`의 `session.getId()`)로 발급하고, 별도 HTTP 요청인 확정에서 무장의 세션 id가 지금 세션과 같은지 보고(`PlanEndCommandService.java:156`, `armed.sessionId().equals(session.getId())`) 제시값 없이 지금 요청의 세션 id로 소비한다 — 소비 술어가 `session_id = :sessionId`를 포함하므로(`ActionGrantRepository.java:165`) `HttpSession#getId()`가 요청 사이에서 귀속 값과 다르면 소비가 실패한다. `PlanEndTest.anEarlyEndPreparesConfirmsAndLeavesAReadOnlyRecord`(`:59`)가 준비 뒤 미소비(`:82`)와 확정 뒤 소비(`:113`)를 단정한다. Bybit 해제(`BybitRevocationCommandService.java:202`)와 운영 command(`OperatorCommandService.java:296`)도 같은 모양이다. 서로 다른 두 실제 세션 사이의 귀속은 `AuthUnlinkProviderTest.java:598`의 `오래된_탭의_취소는_다른_세션의_허가를_지우지_않는다`가 지난다. 모두 `backend-quality`에서 돈다. 발급 행의 `session_id`를 `spring_session.session_id`와 직접 비교하는 단정은 없지만, 위 소비가 그 동일성을 관측한다.
@@ -692,6 +722,14 @@ Docker 없는 정적 리터럴 비교 시험은 이 저장소에 전례가 없�
 - **그대로인 것.** 삭제 참여자는 다시 손으로 더했다(`AccountErasure.java`의 `eraseAdAttempts`). 모듈 사이의 일반 검사도 여전히 없다.
 
 **미해소 잔여:** 위 잔여와 같다. 주인은 Epic 5다.
+
+**부분 해소(2026-11-05, Story 5.1 판정, 기준 `822816b`) — 재확인.** 사용자 삭제 경로의 **요청** 절반이 생겼고, 이번에도 참여자 목록을 손으로 고쳤다.
+- **요청 경로.** `POST /api/account/deletion`과 그 `/confirm`·`/cancel`이 생겼다. 확정은 요청 행 `identity_deletion_request`(V30)와 `DELETION_IN_PROGRESS` 전환을 허가 소비와 한 트랜잭션으로 커밋한다.
+- **아직 없는 것.** erase(`AccountErasure`)의 사용자 호출자는 여전히 없다. `ModuleBoundaryTest`가 `requestDeletion`의 호출자를 `AccountDeletionRequestService`로 고정한다.
+- **손으로 더한 자리.** 새 identity 표는 `erasePayload`가 지우고 `remainingRowsOf`가 세도록 손으로 더했다. `RestoreInvariants`의 삭제 불변식도 손으로 바꿨다 — 요청 없는 진행 중 계정, 요청이 있는 ACTIVE 계정이 위반이다.
+- **여전히 없는 검사.** 모듈 술어가 규칙의 표 전부를 덮는지 보는 일반 검사는 그대로 없다.
+
+**미해소 잔여:** 위와 같다. 다음 결정 지점은 erase를 사용자 경로에 잇는 Story 5.2다.
 
 ### 68. 5분 무장 수명이 화면에 보이지 않고 만료가 구분되지 않는 거부로 끝난다
 
@@ -1475,3 +1513,21 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **이 chore가 지키는 것.** `build.gradle.kts`의 `TestListener`가 fork(executor)마다 시험 수·길이와 전체 건수·executor 수를 `[test-forks]` 줄로 CI 로그에 남긴다 — 사람이 볼 수 있는 관측이지 판정이 아니다.
 
 **미해소 잔여:** `backend-quality` 로그의 `[test-forks]` executor 줄을 `.github/scripts/`의 스크립트가 세어 2개 미만이면 실패시키고, `gradle.properties`에 `org.gradle.workers.max`가 없음을 `test-ci-scripts.sh`가 단정하는 것(판정은 스크립트로, `ci.yml` 단계 목록 계약 갱신 포함). 주인 없음 — 다음 CI 계약 chore(165와 같은 자리)가 이어받는다.
+
+### 170. 삭제 진행 화면에 지원(문의) 경로가 없다
+
+**미해소(2026-11-05, Story 5.1 판정, 기준 `822816b`).** Story 5.1의 1차 리뷰(blind-hunter)가 append했다.
+- **지금 값.** 삭제 진행 화면(`DeletionProgressScreen`)은 상태·다시 확인·로그아웃만 제공한다.
+- **막히는 경로.** 삭제 중 계정의 문의 접수(`POST /api/support/inquiries`)는 3.6의 쓰기 접근 판정으로 `404 NOT_FOUND`다. `AccountDeletionRequestTest`가 이 거부를 고정한다.
+- **이 스토리가 지키는 것.** 기존 거부를 바꾸지 않고 시험으로 고정했다. 새 지원 경로는 만들지 않았다(SPEC Never — 새 경로·새 쓰기 금지).
+
+**미해소 잔여:** 삭제 중 계정에 열 지원 경로(무세션 연락처 안내 또는 상태 전용 세션의 문의 허용)를 정하는 일. 실행·부분 실패를 사용자에게 알리는 Story 5.2·5.4가 결정 지점이다.
+
+### 171. 실행 전 복원에서의 삭제 요청 내구성
+
+**미해소(2026-11-05, Story 5.1 판정, 기준 `822816b`).** Story 5.1의 2차 리뷰(blind-hunter)가 append했다.
+- **지금 값.** 삭제 요청(`identity_deletion_request`)은 서비스 DB에만 있다. tombstone outbox(`operations_deletion_tombstone`)는 완료된 삭제만 담고, `restore-apply`도 그것만 대조해 재삭제한다(3.10).
+- **결과.** 요청 뒤 실행 전에 요청 이전 generation으로 복원하면, 계정이 요청 기록 없이 `ACTIVE`로 돌아온다.
+- **이 스토리가 지키는 것.** 복원 불변식(`RestoreInvariants`)이 복원된 DB 안의 모순만 잡는다 — 요청 없는 진행 중 계정, 요청이 있는 ACTIVE 계정. DB 밖에 남은 요청은 볼 수 없다.
+
+**미해소 잔여:** 요청을 외부 기록(tombstone 계열 outbox 또는 별도 내보내기)에 남기고 복원 적용 때 다시 진입시킬지 정하는 일. 실행과 백업 파기를 여는 Story 5.2·5.3이 결정 지점이다.
