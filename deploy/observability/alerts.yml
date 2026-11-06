@@ -111,6 +111,55 @@ groups:
           group: backup
         annotations:
           summary: 백업 저장소 측정이 26시간 넘게 갱신되지 않았다(저장소를 읽지 못한다).
+      # 삭제된 계정이 든 백업의 파기 추적(Story 5.3). Worker가 백업 기록(V24)과 삭제 실행 기록(V31)을 대조해 삭제마다 영향 generation의 두
+      # 저장소 파기를 판정하고, 기한(요청 + 30일) 48시간 안의 미완료 수와 기한이 지난 미완료 수를 낸다. 감사 원장에는 초과 전환마다 SYSTEM
+      # 행(`BACKUP_OVERDUE`)이 한 번 있다. 값 자체가 기한 판정이라 `for: 0m`이다. 백업을 앞당겨 지우지 않는다 — 다음 백업 실행의 파기가
+      # 재시도이고, 이 경보는 그것이 기한 안에 끝나지 않는다는 사실을 알린다.
+      - alert: DeletionBackupDestructionDueSoon
+        expr: max(bokrilog_deletion_backup_destruction_due_soon{env="production"}) >= 1
+        for: 0m
+        labels:
+          severity: warning
+          group: backup
+        annotations:
+          summary: 삭제된 계정이 든 백업의 파기 기한(요청 + 30일)이 48시간 안인데 두 저장소 파기가 확인되지 않았다.
+      - alert: DeletionBackupDestructionOverdue
+        expr: max(bokrilog_deletion_backup_destruction_overdue{env="production"}) >= 1
+        for: 0m
+        labels:
+          severity: critical
+          group: backup
+        annotations:
+          summary: 삭제된 계정이 든 백업의 파기 기한(요청 + 30일)이 지났는데 두 저장소 파기가 확인되지 않았다.
+      # 두 gauge(기한 초과·기한 임박) 가운데 하나라도 없으면 미측정이다 — 한쪽만 사라져도 그 경보가 조용히 꺼지지 않게.
+      - alert: DeletionBackupDestructionUnmeasured
+        expr: >-
+          absent(bokrilog_deletion_backup_destruction_overdue{env="production"})
+          or absent(bokrilog_deletion_backup_destruction_due_soon{env="production"})
+        for: 1h
+        labels:
+          severity: info
+          group: unmeasured
+        annotations:
+          summary: 백업 파기 추적이 측정되지 않는다(Worker 판정 미연결 또는 중단).
+      # tombstone 외부 사본(Story 3.10)의 마지막 성공(업로드·원격 대조·latest 갱신 뒤의 기록, Story 5.3). 15분 주기라 1시간을 넘으면 멈춘
+      # 것이다 — 복원은 장애 시각보다 1시간 넘게 앞선 사본을 거부한다(`TOMBSTONES_STALE`). 값 자체가 나이라 `for: 0m`이다.
+      - alert: TombstoneExportStale
+        expr: time() - max(bokrilog_tombstone_export_last_success_timestamp_seconds{env="production"}) > 3600
+        for: 0m
+        labels:
+          severity: critical
+          group: backup
+        annotations:
+          summary: tombstone 외부 사본이 1시간 넘게 성공하지 않았다(복원이 그 사이의 삭제를 모른다).
+      - alert: TombstoneExportUnmeasured
+        expr: absent(bokrilog_tombstone_export_last_success_timestamp_seconds{env="production"})
+        for: 1h
+        labels:
+          severity: info
+          group: unmeasured
+        annotations:
+          summary: tombstone 외부 사본의 성공 시각이 측정되지 않는다(내보내기 미연결).
 
   - name: bokrilog-sync
     interval: 1m

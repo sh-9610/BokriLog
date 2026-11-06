@@ -279,6 +279,184 @@ tests:
         alertname: BackupStoreMeasurementStale
         exp_alerts: []
 
+  # ---------------------------------------------------------------- 삭제 백업 파기 기한 임박(Story 5.3)
+  # 0(0~5분) → 1(6~11분, 기한 48시간 안의 미완료 삭제가 있다) → 0(12분부터, 판정이 파기 완료를 확인했다). 기한 판정 자체라 즉시 발화한다.
+  # 개발 시계열의 1은 울리지 않는다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_deletion_backup_destruction_due_soon{env="production",role="worker"}'
+        values: '0x5 1x5 0x5'
+      - series: 'bokrilog_deletion_backup_destruction_due_soon{env="development",role="all"}'
+        values: '1x15'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DeletionBackupDestructionDueSoon
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: DeletionBackupDestructionDueSoon
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: backup
+            exp_annotations:
+              summary: 삭제된 계정이 든 백업의 파기 기한(요청 + 30일)이 48시간 안인데 두 저장소 파기가 확인되지 않았다.
+      - eval_time: 11m
+        alertname: DeletionBackupDestructionDueSoon
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              group: backup
+            exp_annotations:
+              summary: 삭제된 계정이 든 백업의 파기 기한(요청 + 30일)이 48시간 안인데 두 저장소 파기가 확인되지 않았다.
+      - eval_time: 12m
+        alertname: DeletionBackupDestructionDueSoon
+        exp_alerts: []
+
+  # ---------------------------------------------------------------- 삭제 백업 파기 기한 초과(Story 5.3)
+  # 0(0~5분) → 2(6~11분, 기한이 지난 미완료 삭제 둘 — 한쪽 저장소만 파기됐거나 파기 기록이 없다) → 0(12분부터, 다음 백업 실행의 파기가 두
+  # 저장소를 모두 지웠다). 기한 판정 자체라 즉시 발화한다. 개발 시계열의 값은 울리지 않는다. 측정이 있는 동안 미측정은 울리지 않는다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_deletion_backup_destruction_overdue{env="production",role="worker"}'
+        values: '0x5 2x5 0x5'
+      - series: 'bokrilog_deletion_backup_destruction_due_soon{env="production",role="worker"}'
+        values: '0x15'
+      - series: 'bokrilog_deletion_backup_destruction_overdue{env="development",role="all"}'
+        values: '3x15'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DeletionBackupDestructionOverdue
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: DeletionBackupDestructionOverdue
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              group: backup
+            exp_annotations:
+              summary: 삭제된 계정이 든 백업의 파기 기한(요청 + 30일)이 지났는데 두 저장소 파기가 확인되지 않았다.
+      - eval_time: 12m
+        alertname: DeletionBackupDestructionOverdue
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: DeletionBackupDestructionUnmeasured
+        exp_alerts: []
+
+  # ---------------------------------------------------------------- 삭제 백업 파기·tombstone 내보내기 미측정(Story 5.3)
+  # 운영 시계열이 없다(개발 시계열만 있다 — Worker 판정·내보내기 미연결). 조용히 통과하지 않고 1시간 뒤 미측정(info)으로 알린다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_deletion_backup_destruction_overdue{env="development",role="all"}'
+        values: '0x70'
+      - series: 'bokrilog_tombstone_export_last_success_timestamp_seconds{env="development",role="all"}'
+        values: '0x70'
+    alert_rule_test:
+      - eval_time: 59m
+        alertname: DeletionBackupDestructionUnmeasured
+        exp_alerts: []
+      - eval_time: 1h
+        alertname: DeletionBackupDestructionUnmeasured
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              group: unmeasured
+              env: production
+            exp_annotations:
+              summary: 백업 파기 추적이 측정되지 않는다(Worker 판정 미연결 또는 중단).
+      - eval_time: 59m
+        alertname: TombstoneExportUnmeasured
+        exp_alerts: []
+      - eval_time: 1h
+        alertname: TombstoneExportUnmeasured
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              group: unmeasured
+              env: production
+            exp_annotations:
+              summary: tombstone 외부 사본의 성공 시각이 측정되지 않는다(내보내기 미연결).
+      - eval_time: 1h
+        alertname: TombstoneExportStale
+        exp_alerts: []
+
+  # ---------------------------------------------------------------- 삭제 백업 파기 gauge 한쪽만 없음(Story 5.3)
+  # 기한 초과 gauge만 있고 기한 임박 gauge가 없다 — 한쪽만 사라져도 1시간 뒤 미측정(info)이다. 두 gauge가 함께 있는 동안은 울리지 않는다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_deletion_backup_destruction_overdue{env="production",role="worker"}'
+        values: '0x70'
+      - series: 'bokrilog_deletion_backup_destruction_due_soon{env="development",role="all"}'
+        values: '0x70'
+    alert_rule_test:
+      - eval_time: 59m
+        alertname: DeletionBackupDestructionUnmeasured
+        exp_alerts: []
+      - eval_time: 1h
+        alertname: DeletionBackupDestructionUnmeasured
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              group: unmeasured
+              env: production
+            exp_annotations:
+              summary: 백업 파기 추적이 측정되지 않는다(Worker 판정 미연결 또는 중단).
+
+  # 거울: 기한 임박 gauge만 있고 기한 초과 gauge가 없다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_deletion_backup_destruction_due_soon{env="production",role="worker"}'
+        values: '0x70'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: DeletionBackupDestructionUnmeasured
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              group: unmeasured
+              env: production
+            exp_annotations:
+              summary: 백업 파기 추적이 측정되지 않는다(Worker 판정 미연결 또는 중단).
+
+  # 두 gauge가 모두 있으면 미측정이 아니다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_deletion_backup_destruction_overdue{env="production",role="worker"}'
+        values: '0x70'
+      - series: 'bokrilog_deletion_backup_destruction_due_soon{env="production",role="worker"}'
+        values: '0x70'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: DeletionBackupDestructionUnmeasured
+        exp_alerts: []
+
+  # ---------------------------------------------------------------- tombstone 내보내기 정지(Story 5.3)
+  # 마지막 성공 시각이 0초(시험 시계의 시작)다. 정확히 1시간(60분)은 미발화(> 1시간이어야 한다), 61분에 발화, 71분의 새 성공(4200초)으로
+  # 해제한다. 같은 값의 개발 시계열은 울리지 않는다.
+  - interval: 1m
+    input_series:
+      - series: 'bokrilog_tombstone_export_last_success_timestamp_seconds{env="production",role="worker"}'
+        values: '0x70 4200x10'
+      - series: 'bokrilog_tombstone_export_last_success_timestamp_seconds{env="development",role="all"}'
+        values: '0x80'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: TombstoneExportStale
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: TombstoneExportStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              group: backup
+            exp_annotations:
+              summary: tombstone 외부 사본이 1시간 넘게 성공하지 않았다(복원이 그 사이의 삭제를 모른다).
+      - eval_time: 71m
+        alertname: TombstoneExportStale
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: TombstoneExportUnmeasured
+        exp_alerts: []
+
   # ---------------------------------------------------------------- 동기화 실패율
   # 정확히 20%(분당 실패 2·성공 8)는 발화한다. 제외(excluded)는 분모가 아니다 — 분당 100건이 더해져도 비율은 20%다.
   # 실패가 멈춘 뒤 15분 창이 지나면 해제한다.

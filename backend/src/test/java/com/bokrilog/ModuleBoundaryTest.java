@@ -327,8 +327,35 @@ class ModuleBoundaryTest {
                 .orShould().callMethod(com.bokrilog.identity.AccountDeletionApi.class, "erasePayload", java.util.UUID.class)
                 .orShould().callMethod(com.bokrilog.operations.DeletionTombstoneApi.class, "record", java.util.UUID.class,
                         String.class)
+                // Story 5.3: 첫 단계의 요청 시각 기록과 마지막 단계의 집합 닫기·보존 연장도 orchestrator만 부른다.
+                .orShould().callMethod(com.bokrilog.operations.DeletionTombstoneApi.class, "record", java.util.UUID.class,
+                        String.class, java.time.Instant.class)
+                .orShould().callMethod(com.bokrilog.operations.DeletionTombstoneApi.class, "close", String.class)
                 .because("계정 삭제는 한 트랜잭션의 orchestrator(AccountErasure) 하나가 tombstone과 함께 한다.");
         erasure.check(PRODUCTION_CLASSES);
+
+        // Story 5.3: 내보내기 성공 기록은 내보내기 역할, 복원 적용 감사는 복원 적용, 백업 파기 판정은 Worker의 판정자 하나만 부른다.
+        ArchRule tombstoneRecords = noClasses()
+                .that().resideOutsideOfPackage("com.bokrilog.operations..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.TombstoneExportRunner")
+                .should().callMethod(com.bokrilog.operations.DeletionTombstoneApi.class, "confirmExport", int.class, long.class)
+                .because("외부 사본의 성공은 업로드·대조 뒤 내보내기 역할의 기록 모드만 남긴다.");
+        tombstoneRecords.check(PRODUCTION_CLASSES);
+        ArchRule restoreAudit = noClasses()
+                .that().resideOutsideOfPackage("com.bokrilog.operations..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.RestoreApplication")
+                .should().callMethod(com.bokrilog.operations.DeletionTombstoneApi.class, "recordRestoreApplied",
+                        java.util.Map.class, boolean.class)
+                .orShould().callMethod(com.bokrilog.operations.DeletionTombstoneApi.class, "closeRestored",
+                        java.util.Collection.class)
+                .because("복원 적용의 감사 행과 옮긴 열린 집합의 닫기는 복원 적용만 한다.");
+        restoreAudit.check(PRODUCTION_CLASSES);
+        ArchRule judge = noClasses()
+                .that().resideOutsideOfPackage("com.bokrilog.operations..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.BackupDestructionJudge")
+                .should().callMethod(com.bokrilog.operations.BackupDestructionApi.class, "judge", java.util.Map.class)
+                .because("백업 파기 판정은 Worker·all의 주기 판정자 하나가 운영 완료 시각을 이어 부른다.");
+        judge.check(PRODUCTION_CLASSES);
 
         // 외부 사본을 outbox로 옮기는 일은 복원 적용의 것이다(재삭제와 함께 옮기는 AccountErasure, 남은 사본을 옮기는 RestoreApplication).
         ArchRule carry = noClasses()
@@ -372,6 +399,7 @@ class ModuleBoundaryTest {
                 .should().callMethod(AccountErasure.class, "apply", com.bokrilog.identity.DeletionStep.class,
                         java.util.UUID.class, Runnable.class)
                 .orShould().callMethod(AccountErasure.class, "recordRequestedTombstone", java.util.UUID.class)
+                .orShould().callMethod(AccountErasure.class, "closeRequestedTombstone", java.util.UUID.class)
                 .because("단계 모드의 삭제는 단계마다 fencing·잔여 검증을 하는 실행자(AccountErasureRun)만 한다.");
         steps.check(PRODUCTION_CLASSES);
         ArchRule runner = noClasses()

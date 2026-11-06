@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
+import com.bokrilog.identity.AccountDeletionApi;
 import com.bokrilog.operations.DeletionTombstoneApi;
 import com.bokrilog.operations.DeletionTombstoneApi.Tombstone;
 import com.bokrilog.operations.DeletionTombstoneApi.TombstoneFile;
@@ -25,6 +26,7 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Story 3.10 AC-2~AC-4: 복원 적용({@link RestoreApplication})을 실제 계획·발행 데이터 위에서 본다. 외부 tombstone이 가리키는 계정은 다시
@@ -124,6 +126,55 @@ class RestoreApplyTest extends PlanSyncTestBase {
         assertThat(again.carried()).isZero();
     }
 
+    /**
+     * Story 5.3 매트릭스 "실행 전 복원"(AC-2): 삭제를 요청했고 Worker가 첫 claim에서 tombstone을 남겼지만 운영 완료 전인 계정이 든
+     * 백업을 복원하면, 외부 사본의 그 tombstone(집합 열림)으로 복원 적용이 그 계정을 다시 지운다. 보고와 감사 행에는 수만 남는다.
+     */
+    @Test
+    void 운영_완료_전에_복원하면_첫_claim의_tombstone으로_그_계정을_다시_지운다() throws Exception {
+        UUID kept = connect(DevBybitStub.Scenario.UTA2);
+        UUID requested = signedInWithPlan("restore-before-run");
+        var outcome = accountDeletion().requestDeletion(requested, AccountDeletionPolicy.VERSION,
+                AccountDeletionPolicy.noticeHash(), sha256("restore-before-run-" + UUID.randomUUID()));
+        var request = ((AccountDeletionApi.DeletionRequestOutcome.Created) outcome).request();
+        // Worker의 첫 claim이 남기는 것과 같은 기록(요청 ID·요청 시각). 실행은 아직 끝나지 않았다.
+        new TransactionTemplate(this.manager)
+                .executeWithoutResult(status -> tombstones.record(requested, request.requestId(), request.requestedAt()));
+        assertThat(lifecycleState(requested)).isEqualTo("DELETION_IN_PROGRESS");
+        // 외부 사본(내보내기가 쓰는 것과 같다): 집합이 열린 PENDING tombstone 하나.
+        TombstoneFile external = copy(tombstones.export().live().toArray(Tombstone[]::new));
+        assertThat(external.tombstones()).singleElement().satisfies(tombstone -> {
+            assertThat(tombstone.set()).isEqualTo(DeletionTombstoneApi.GenerationSet.OPEN);
+            assertThat(tombstone.status()).isEqualTo(DeletionTombstoneApi.DestructionStatus.PENDING);
+            assertThat(tombstone.requestedAt()).isEqualTo(request.requestedAt().truncatedTo(ChronoUnit.MILLIS));
+        });
+        // 사본은 파일로 오간다 — 쓴 그대로 되읽는다.
+        external = DeletionTombstoneApi.read(DeletionTombstoneApi.render(external.keyId(), external.exportedAt(),
+                external.tombstones()).lines().toList());
+
+        RestoreApplication.Report report = restore.apply(external);
+        assertThat(report.passed()).as(report.line()).isTrue();
+        assertThat(report.matched()).isEqualTo(1);
+        assertThat(report.erased()).isEqualTo(1);
+        assertThat(lifecycleState(requested)).isEqualTo("DELETED");
+        assertThat(countOf("identity_deletion_request", requested)).isZero();
+        assertThat(countOf("plan_definition", requested)).isZero();
+        assertThat(lifecycleState(kept)).isEqualTo("ACTIVE");
+        // 이 DB에서 지금 지웠으므로 집합이 닫히고 보존이 늘었다.
+        assertThat(jdbc().sql("SELECT closed_at IS NOT NULL AND destroy_after >= closed_at + interval '840 hours' "
+                + "FROM operations_deletion_tombstone").query(Boolean.class).single()).isTrue();
+        // 보고와 감사 행은 수만 담는다.
+        assertThat(report.line()).doesNotContain(requested.toString()).doesNotContain(request.requestId());
+        var audit = jdbc().sql("SELECT reason, target, CAST(details AS text) FROM operations_audit_event "
+                        + "WHERE command = 'tombstone' AND reason LIKE 'RESTORE%'")
+                .query((rs, row) -> List.of(rs.getString(1), rs.getString(2), rs.getString(3))).single();
+        assertThat(audit.get(0)).isEqualTo("RESTORE_APPLIED");
+        assertThat(audit.get(1)).isEqualTo("deletion-tombstone");
+        assertThat(audit.get(2)).contains("\"erased\": 1").contains("\"matched\": 1")
+                .doesNotContain(requested.toString()).doesNotContain(request.requestId())
+                .doesNotContainPattern("[0-9a-f]{64}");
+    }
+
     @Test
     void 중간에_멈춘_적용은_같은_사본으로_다시_돌리면_이어진다() throws Exception {
         UUID first = connect(DevBybitStub.Scenario.UTA2);
@@ -164,7 +215,7 @@ class RestoreApplyTest extends PlanSyncTestBase {
         UUID gone = connect(DevBybitStub.Scenario.UTA2);
         assertThat(erasure.erase(gone, "restore-mismatch-gone")).isEqualTo(AccountErasure.Outcome.ERASED);
         jdbc().sql("UPDATE operations_deletion_tombstone SET requested_at = requested_at - interval '1 day', "
-                + "destroy_after = destroy_after - interval '1 day'").update();
+                + "closed_at = closed_at - interval '1 day', destroy_after = destroy_after - interval '1 day'").update();
         UUID sample = connect(DevBybitStub.Scenario.UTA2);
         // 다른 digest 키로 만든 사본: 키 ID는 맞게 적혔지만(손으로 고친 머리) digest가 어느 계정과도 맞지 않는다.
         Instant at = databaseNow().truncatedTo(ChronoUnit.MILLIS);
@@ -178,6 +229,56 @@ class RestoreApplyTest extends PlanSyncTestBase {
         assertThat(report.line()).contains("outbox_missing_from_copy=1").contains("codes=TOMBSTONE_KEY_MISMATCH");
         assertThat(lifecycleState(sample)).isEqualTo("ACTIVE");
         assertThat(jdbc().sql("SELECT count(*) FROM operations_deletion_tombstone").query(Integer.class).single()).isEqualTo(1);
+    }
+
+    /**
+     * Story 5.3: 백업 파기가 완료가 아닌(PENDING·OVERDUE) outbox 행은 보존 기한이 지났어도 사본에 실려야 한다 — 사본보다 먼저 요청됐는데
+     * 사본에 없으면 키가 어긋난 것으로 센다.
+     */
+    @Test
+    void 기한이_지난_미완료_outbox_행이_사본에_없으면_센다() throws Exception {
+        UUID pending = connect(DevBybitStub.Scenario.UTA2);
+        UUID overdue = connect(DevBybitStub.Scenario.UTA2);
+        assertThat(erasure.erase(pending, "restore-expired-pending")).isEqualTo(AccountErasure.Outcome.ERASED);
+        assertThat(erasure.erase(overdue, "restore-expired-overdue")).isEqualTo(AccountErasure.Outcome.ERASED);
+        backdate(40);
+        jdbc().sql("UPDATE operations_deletion_tombstone SET status = 'OVERDUE', overdue_at = requested_at + interval '720 hours' "
+                + "WHERE request_id = 'restore-expired-overdue'").update();
+
+        RestoreApplication.Report report = restore.apply(copy());
+        assertThat(report.passed()).isFalse();
+        assertThat(report.reconciliation().outboxMissingFromCopy()).isEqualTo(2);
+        assertThat(report.codes()).containsExactly(RestoreApplication.KEY_MISMATCH);
+        assertThat(jdbc().sql("SELECT count(*) FROM operations_deletion_tombstone").query(Integer.class).single()).isEqualTo(2);
+    }
+
+    /**
+     * 거울: 백업 파기가 완료됐고 보존 기한이 사본의 수명 창(사본 시각 + 24시간 + 시계 여유 1시간) 안인 행은 사본에서 빠질 수 있으므로 세지
+     * 않는다. 창 밖(기한이 한참 남은) 완료 행이 빠졌으면 센다.
+     */
+    @Test
+    void 창_안의_완료_outbox_행은_사본에_없어도_세지_않는다() throws Exception {
+        UUID expiring = connect(DevBybitStub.Scenario.UTA2);
+        assertThat(erasure.erase(expiring, "restore-destroyed-window")).isEqualTo(AccountErasure.Outcome.ERASED);
+        backdate(40);
+        UUID kept = connect(DevBybitStub.Scenario.UTA2);
+        assertThat(erasure.erase(kept, "restore-destroyed-live")).isEqualTo(AccountErasure.Outcome.ERASED);
+        jdbc().sql("UPDATE operations_deletion_tombstone SET requested_at = requested_at - interval '2 days', "
+                + "closed_at = closed_at - interval '2 days', destroy_after = destroy_after - interval '2 days' "
+                + "WHERE request_id = 'restore-destroyed-live'").update();
+        jdbc().sql("UPDATE operations_deletion_tombstone SET status = 'DESTROYED', destroyed_at = closed_at + interval '1 day'")
+                .update();
+
+        RestoreApplication.Report report = restore.apply(copy());
+        assertThat(report.reconciliation().outboxMissingFromCopy()).as("창 밖의 완료 행 하나만 센다").isEqualTo(1);
+        assertThat(report.codes()).containsExactly(RestoreApplication.KEY_MISMATCH);
+    }
+
+    /** outbox 행 전체의 요청·닫힘·보존 기한을 그 날수만큼 앞당긴다. */
+    private void backdate(int days) {
+        jdbc().sql("UPDATE operations_deletion_tombstone SET requested_at = requested_at - make_interval(days => :d), "
+                + "closed_at = closed_at - make_interval(days => :d), destroy_after = destroy_after - make_interval(days => :d)")
+                .param("d", days).update();
     }
 
     @Test
@@ -247,6 +348,10 @@ class RestoreApplyTest extends PlanSyncTestBase {
         assertThat(report.passed()).isFalse();
         assertThat(report.violations().unfinishedDeletions()).isEqualTo(1);
         assertThat(report.codes()).containsExactly(RestoreApplication.INVARIANT_VIOLATED);
+        // 통과하지 못한 적용도 감사 SYSTEM 행 하나(RESTORE_REFUSED, FAILED)를 수만 담아 남긴다(Story 5.3).
+        assertThat(jdbc().sql("SELECT reason || ':' || outcome || ':' || target || ':' || (details->>'tombstones') "
+                        + "FROM operations_audit_event WHERE command = 'tombstone'").query(String.class).list())
+                .containsExactly("RESTORE_REFUSED:FAILED:deletion-tombstone:0");
     }
 
     @Test

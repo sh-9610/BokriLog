@@ -5,6 +5,7 @@
 #   - DB는 비밀번호 없는 trust다(개발 compose와 같은 근거 — 포트를 게시하지 않는 네트워크 안이다). 리허설 비밀 파일의
 #     `POSTGRES_PASSWORD`는 그대로 있지만 쓰이지 않는다.
 #   - 백엔드의 `BOKRILOG_ENV`는 `ci`다. 리허설 수치가 운영 실적과 섞이지 않는다.
+#   - Worker의 백업 파기 판정 주기(Story 5.3)는 5분이 아니라 5초다 — 리허설이 판정을 기다리는 시간만 줄인다(판정 규칙은 같다).
 #   - 앱 이미지는 레지스트리 digest가 아니라 CI가 같은 jar로 만든 로컬 image ID(`sha256:<64hex>`)다. 그 값은 이 파일이 아니라
 #     리허설 release manifest가 정하고, gate는 리허설 모드에서만 그 모양을 받는다(아키텍처·서명 검사도 리허설에서만 건너뛴다).
 #     로컬에만 있는 이미지라 받으러 가지 않는다(`pull_policy: never`).
@@ -47,3 +48,5 @@ services:
     pull_policy: never
     environment:
       BOKRILOG_ENV: ${BOKRILOG_ENV:-ci}
+      # 백업 파기 판정(Story 5.3)의 주기. 운영은 5분이고 리허설은 판정을 기다리는 시간을 줄이려고 5초다.
+      BOKRILOG_BACKUP_DESTRUCTION_JUDGE_PERIOD: PT5S

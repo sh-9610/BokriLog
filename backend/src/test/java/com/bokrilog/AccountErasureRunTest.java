@@ -3,6 +3,7 @@ package com.bokrilog;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.bokrilog.engagement.EngagementDeletionApi;
+import com.bokrilog.identity.AccountDeletionApi;
 import com.bokrilog.identity.AccountDeletionApi.DeletionRequestOutcome;
 import com.bokrilog.identity.AccountDeletionRunApi;
 import com.bokrilog.identity.AccountDeletionRunApi.RunStatus;
@@ -16,12 +17,15 @@ import com.bokrilog.operations.RestrictionSubject;
 import com.bokrilog.operations.Signal;
 import com.bokrilog.operations.SignalType;
 import com.bokrilog.operations.SupportInquiryApi;
+import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.SyncJobApi;
 import com.bokrilog.sync.WorkerLease;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
@@ -36,6 +40,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.ApplicationContext;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -146,6 +151,164 @@ class AccountErasureRunTest extends PlanSyncTestBase {
                 .doesNotContain(requestId);
     }
 
+    // ------------------------------------------------------------------------------------------ tombstone(Story 5.3)
+
+    /**
+     * Story 5.3 매트릭스 "첫 claim"·"운영 완료": Worker가 실행을 처음 집으면 첫 단계 앞에서 tombstone 한 행이 요청 시각(V30)으로 생긴다 —
+     * 첫 단계가 실패해도 남는다. 두 번째 claim도 한 행이다. 실행 행은 요청 ID를 든다. 운영 완료(마지막 단계)가 영향 generation 집합을 닫고
+     * 보존을 {@code max(요청, 운영 완료) + 35일}로 늘린다(줄지 않는다). 감사 SYSTEM 행은 기록·연장 한 번씩이고 수와 code뿐이다.
+     */
+    @Test
+    void 첫_claim이_요청_시각으로_tombstone을_남기고_운영_완료가_집합을_닫는다() throws Exception {
+        Sample sample = sample("erasure-run-tombstone");
+        String requestId = requestDeletion(sample.user());
+        Instant requestedAt = jdbc().sql("SELECT date_trunc('milliseconds', requested_at) FROM "
+                + "identity_deletion_request WHERE user_id = :u").param("u", sample.user())
+                .query(OffsetDateTime.class).single().toInstant();
+        assertThat(jdbc().sql("SELECT count(*) FROM operations_deletion_tombstone").query(Integer.class).single())
+                .as("요청만으로는 tombstone이 없다(5.1 확정 경로는 그대로다)").isZero();
+
+        // 첫 claim: 첫 단계(CREDENTIALS)의 port가 실패해도 tombstone은 그 앞의 자기 트랜잭션에 남는다.
+        var credentialsFailing = (SourceConnectionApi) Proxy.newProxyInstance(
+                SourceConnectionApi.class.getClassLoader(),
+                new Class<?>[] {SourceConnectionApi.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("eraseCredentials")) {
+                        throw new IllegalStateException("injected");
+                    }
+                    return invoke(method, this.source, args);
+                });
+        AccountErasureRun failing = new AccountErasureRun(new AccountErasure(accountDeletion(), this.tombstones,
+                this.portfolio, this.sync, this.plans, credentialsFailing, this.operations, this.engagement, this.manager),
+                this.runs, this.manager);
+        var lease = this.runs.claim(WorkerLease.DURATION).orElseThrow();
+        assertThat(failing.execute(lease, () -> false)).isEqualTo(AccountErasureRun.Result.RETRY_NEEDED);
+        assertThat(statusesOf(this.runs.runOf(sample.user()).orElseThrow().steps()))
+                .startsWith("CREDENTIALS:RETRY_NEEDED:STEP_FAILED");
+        var stored = jdbc().sql("SELECT request_id, requested_at, destroy_after, status, closed_at IS NULL AS open, "
+                        + "policy_version FROM operations_deletion_tombstone")
+                .query((rs, row) -> List.of(rs.getString(1), rs.getObject(2, OffsetDateTime.class).toInstant(),
+                        rs.getObject(3, OffsetDateTime.class).toInstant(), rs.getString(4), rs.getBoolean(5),
+                        rs.getString(6)))
+                .list();
+        assertThat(stored).hasSize(1);
+        assertThat(stored.getFirst()).containsExactly(requestId, requestedAt,
+                requestedAt.plus(DeletionTombstoneApi.RETENTION), "PENDING", true, DeletionTombstoneApi.POLICY_VERSION);
+        assertThat(jdbc().sql("SELECT request_id FROM identity_deletion_run WHERE user_id = :u").param("u", sample.user())
+                .query(String.class).single()).isEqualTo(requestId);
+        assertThat(tombstoneAuditReasons()).containsExactly("RECORDED");
+
+        // 다시 시도 → 두 번째 claim: 여전히 한 행, 기록 감사도 한 번. 끝까지 돌면 운영 완료가 집합을 닫는다.
+        String csrf = csrfTokenOf(sample.cookie());
+        assertThat(retry(sample.cookie(), csrf, "erasure-tombstone-" + UUID.randomUUID()).statusCode()).isEqualTo(202);
+        assertThat(this.worker.runOnce()).isEqualTo(AccountErasureRun.Result.OPERATIONAL_DATA_ERASED);
+        assertThat(jdbc().sql("SELECT count(*) FROM operations_deletion_tombstone").query(Integer.class).single())
+                .isEqualTo(1);
+        var erasedAt = this.runs.runOf(sample.user()).orElseThrow().operationalErasedAt();
+        assertThat(erasedAt).isNotNull();
+        var closed = jdbc().sql("SELECT closed_at, destroy_after FROM operations_deletion_tombstone")
+                .query((rs, row) -> List.of(rs.getObject(1, OffsetDateTime.class).toInstant(),
+                        rs.getObject(2, OffsetDateTime.class).toInstant()))
+                .single();
+        Instant closedAt = closed.get(0);
+        assertThat(closedAt).isAfterOrEqualTo(requestedAt);
+        assertThat(Duration.between(closedAt, erasedAt).abs()).as("운영 완료와 같은 트랜잭션").isLessThan(Duration.ofSeconds(5));
+        assertThat(closed.get(1)).isEqualTo(closedAt.plus(DeletionTombstoneApi.RETENTION))
+                .isAfterOrEqualTo(requestedAt.plus(DeletionTombstoneApi.RETENTION));
+        assertThat(this.runs.operationalCompletions(List.of(requestId, "erasure-unknown-1")))
+                .containsOnlyKeys(requestId).containsEntry(requestId, erasedAt);
+        assertThat(tombstoneAuditReasons()).containsExactly("RECORDED", "RETENTION_EXTENDED");
+        // 감사 행에는 식별자가 없다 — target은 고정 값, details는 수뿐이다.
+        var audits = jdbc().sql("SELECT actor_user_id IS NULL, actor_kind, target, CAST(details AS text) FROM "
+                        + "operations_audit_event WHERE command = 'tombstone'")
+                .query((rs, row) -> List.<Object>of(rs.getBoolean(1), rs.getString(2), rs.getString(3), rs.getString(4)))
+                .list();
+        assertThat(audits).allSatisfy(row -> {
+            assertThat(row.get(0)).isEqualTo(true);
+            assertThat(row.get(1)).isEqualTo("SYSTEM");
+            assertThat(row.get(2)).isEqualTo("deletion-tombstone");
+            assertThat((String) row.get(3)).isEqualTo("{\"count\": 1}").doesNotContain(requestId)
+                    .doesNotContain(sample.user().toString());
+        });
+        // 다시 불러도 보존은 줄지 않고 집합도 다시 열리지 않는다.
+        var replay = new TransactionTemplate(this.manager);
+        assertThat(replay.<Boolean>execute(status -> this.tombstones.close(requestId))).isFalse();
+        assertThat(replay.<Boolean>execute(status -> this.tombstones.record(sample.user(), requestId, requestedAt))).isFalse();
+        assertThat(jdbc().sql("SELECT destroy_after FROM operations_deletion_tombstone")
+                .query(OffsetDateTime.class).single().toInstant()).isEqualTo(closed.get(1));
+    }
+
+    /**
+     * P16(a)·P11: 첫 단계 앞의 tombstone 기록이 실패하면 실행은 재시도 필요로 멈추고, 아직 성공하지 않은 첫 단계에 {@code TOMBSTONE_FAILED}가
+     * 붙는다(그 단계 자체의 실패 {@code STEP_FAILED}와 구분). 커밋된 단계도 tombstone 행도 없다. 화면의 실패 범위는 단계 code 그대로다.
+     */
+    @Test
+    void tombstone_기록이_실패하면_TOMBSTONE_FAILED로_멈추고_아무_단계도_커밋하지_않는다() throws Exception {
+        Sample sample = sample("erasure-run-tombstone-fail");
+        requestDeletion(sample.user());
+        DeletionTombstoneApi failingTombstones = (DeletionTombstoneApi) Proxy.newProxyInstance(
+                DeletionTombstoneApi.class.getClassLoader(), new Class<?>[] {DeletionTombstoneApi.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("record")) {
+                        throw new IllegalStateException("injected");
+                    }
+                    return invoke(method, this.tombstones, args);
+                });
+        AccountErasureRun failing = new AccountErasureRun(new AccountErasure(accountDeletion(), failingTombstones,
+                this.portfolio, this.sync, this.plans, this.source, this.operations, this.engagement, this.manager),
+                this.runs, this.manager);
+        var lease = this.runs.claim(WorkerLease.DURATION).orElseThrow();
+        assertThat(failing.execute(lease, () -> false)).isEqualTo(AccountErasureRun.Result.RETRY_NEEDED);
+        var stopped = this.runs.runOf(sample.user()).orElseThrow();
+        assertThat(stopped.status()).isEqualTo(RunStatus.RETRY_NEEDED);
+        assertThat(statusesOf(stopped.steps())).containsExactly("CREDENTIALS:RETRY_NEEDED:TOMBSTONE_FAILED",
+                "PORTFOLIO:PENDING", "SYNC:PENDING", "PLAN:PENDING", "SOURCE:PENDING", "OPERATIONS:PENDING",
+                "ENGAGEMENT:PENDING", "IDENTITY:PENDING");
+        assertThat(jdbc().sql("SELECT count(*) FROM operations_deletion_tombstone").query(Integer.class).single()).isZero();
+        assertThat(countOf("identity_social_link", sample.user())).isPositive();
+        assertThat(countOf("portfolio", sample.user())).isPositive();
+        JsonNode progress = json(get(DELETION_PATH, sample.cookie()).body()).get("request").get("progress");
+        assertThat(strings(progress.get("failedSteps"))).containsExactly("CREDENTIALS");
+    }
+
+    /** P16(b): 처음부터 종료 중이어도 tombstone 기록은 먼저 남기고(짧은 멱등 트랜잭션), 단계 앞에서 lease를 놓는다({@code QUEUED}). */
+    @Test
+    void 처음부터_종료_중이어도_tombstone은_남기고_lease를_놓는다() throws Exception {
+        Sample sample = sample("erasure-run-stopping");
+        String requestId = requestDeletion(sample.user());
+        var lease = this.runs.claim(WorkerLease.DURATION).orElseThrow();
+        assertThat(erasureRun().execute(lease, () -> true)).isEqualTo(AccountErasureRun.Result.RELEASED);
+        var released = this.runs.runOf(sample.user()).orElseThrow();
+        assertThat(released.status()).isEqualTo(RunStatus.QUEUED);
+        assertThat(statusesOf(released.steps())).allMatch(step -> step.endsWith(":PENDING"));
+        assertThat(jdbc().sql("SELECT request_id FROM operations_deletion_tombstone").query(String.class).list())
+                .containsExactly(requestId);
+    }
+
+    /**
+     * P10: 단계 모드의 마지막 단계는 payload 삭제(생명주기·세션 행 잠금)를 감사 원장 추가 잠금 없이 시작한다 — 집합 닫기·보존 연장의 감사 행은
+     * 그 트랜잭션의 마지막(커밋 직전)에 남는다(3.10 잠금 순서).
+     */
+    @Test
+    void 마지막_단계는_감사_잠금을_payload_삭제_뒤에_쥔다() throws Exception {
+        Sample sample = sample("erasure-run-lock-order");
+        requestDeletion(sample.user());
+        List<String> locks = new ArrayList<>();
+        AccountDeletionApi recording = (AccountDeletionApi) Proxy.newProxyInstance(
+                AccountDeletionApi.class.getClassLoader(),
+                new Class<?>[] {AccountDeletionApi.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("erasePayload")) {
+                        locks.add(holdsAppendLock() ? "locked" : "unlocked");
+                    }
+                    return invoke(method, accountDeletion(), args);
+                });
+        AccountErasureRun run = new AccountErasureRun(new AccountErasure(recording, this.tombstones, this.portfolio,
+                this.sync, this.plans, this.source, this.operations, this.engagement, this.manager), this.runs, this.manager);
+        assertThat(run.execute(this.runs.claim(WorkerLease.DURATION).orElseThrow(), () -> false))
+                .isEqualTo(AccountErasureRun.Result.OPERATIONAL_DATA_ERASED);
+        assertThat(locks).containsExactly("unlocked");
+        assertThat(tombstoneAuditReasons()).containsExactly("RECORDED", "RETENTION_EXTENDED");
+    }
+
     // ------------------------------------------------------------------------------------------ 부분 실패와 다시 시도
 
     /**
@@ -212,7 +375,8 @@ class AccountErasureRunTest extends PlanSyncTestBase {
 
     /**
      * 늦은 쓰기: OPERATIONS가 성공한 뒤 그 사용자의 운영 귀속 행이 다시 생기면 마지막 단계가 잔여를 보고 OPERATIONS를 재시도 필요
-     * (RESIDUAL_FOUND)로 되돌린다 — 계정은 {@code DELETED}로 가지 않고 tombstone도 없다. 다시 시도하면 OPERATIONS와 마지막 단계만 돈다.
+     * (RESIDUAL_FOUND)로 되돌린다 — 계정은 {@code DELETED}로 가지 않는다. tombstone은 첫 단계에 생겼고(Story 5.3) 영향 generation 집합은
+     * 열려 있다(운영 완료가 아니다). 다시 시도하면 OPERATIONS와 마지막 단계만 돌고 그때 집합이 닫힌다.
      */
     @Test
     void 늦은_쓰기가_남으면_마지막_단계가_그_단계를_되돌린다() throws Exception {
@@ -237,8 +401,7 @@ class AccountErasureRunTest extends PlanSyncTestBase {
                 "SYNC:SUCCEEDED", "PLAN:SUCCEEDED", "SOURCE:SUCCEEDED", "OPERATIONS:RETRY_NEEDED:RESIDUAL_FOUND",
                 "ENGAGEMENT:SUCCEEDED", "IDENTITY:PENDING");
         assertThat(lifecycleOf(sample.user())).isEqualTo("DELETION_IN_PROGRESS");
-        assertThat(jdbc().sql("SELECT count(*) FROM operations_deletion_tombstone").query(Integer.class).single())
-                .isZero();
+        assertThat(openTombstones()).isEqualTo(1);
         assertThat(countOf("identity_account", sample.user())).isEqualTo(1);
 
         String csrf = csrfTokenOf(sample.cookie());
@@ -291,8 +454,8 @@ class AccountErasureRunTest extends PlanSyncTestBase {
                 "ENGAGEMENT:SUCCEEDED", "IDENTITY:PENDING");
         assertThat(lifecycleOf(sample.user())).isEqualTo("DELETION_IN_PROGRESS");
         assertThat(countOf("identity_account", sample.user())).isEqualTo(1);
-        assertThat(jdbc().sql("SELECT count(*) FROM operations_deletion_tombstone").query(Integer.class).single())
-                .isZero();
+        // tombstone은 첫 단계에 생겼고(Story 5.3) 운영 완료 전이라 집합은 열려 있다.
+        assertThat(openTombstones()).isEqualTo(1);
         JsonNode progress = json(get(DELETION_PATH, sample.cookie()).body()).get("request").get("progress");
         assertThat(progress.get("status").asString()).isEqualTo("RETRY_NEEDED");
         assertThat(strings(progress.get("failedSteps"))).containsExactly("OPERATIONS");
@@ -546,7 +709,7 @@ class AccountErasureRunTest extends PlanSyncTestBase {
         java.util.concurrent.CountDownLatch inSync = new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.CountDownLatch releaseSync = new java.util.concurrent.CountDownLatch(1);
         int[] holds = {0};
-        // 첫 단계의 hold 직전(행 잠금 전)에 한 번, SYNC 단계 안(행 잠금 중)에서 한 번 멈춘다.
+        // 첫 hold(Story 5.3의 tombstone 기록) 직전(행 잠금 전)에 한 번, SYNC 단계 안(행 잠금 중)에서 한 번 멈춘다.
         AccountDeletionRunApi pausing = runsWith((method, args) -> {
             if (method.getName().equals("hold") && holds[0]++ == 0) {
                 atHold.countDown();
@@ -630,8 +793,8 @@ class AccountErasureRunTest extends PlanSyncTestBase {
         requestDeletion(sample.user());
         int[] holds = {0};
         AccountDeletionRunApi fenced = runsWith((method, args) -> {
-            if (method.getName().equals("hold") && ++holds[0] == 3) {
-                // SYNC 단계 앞: 다른 Worker가 그 사이 집었다(별도 트랜잭션으로 세대를 올린다).
+            if (method.getName().equals("hold") && ++holds[0] == 4) {
+                // SYNC 단계 앞(첫 hold는 Story 5.3의 tombstone 기록이다): 다른 Worker가 그 사이 집었다(별도 트랜잭션으로 세대를 올린다).
                 Thread bump = Thread.ofVirtual().start(() -> jdbc().sql("UPDATE identity_deletion_run SET "
                         + "fencing_generation = fencing_generation + 1 WHERE user_id = :u")
                         .param("u", sample.user()).update());
@@ -764,8 +927,9 @@ class AccountErasureRunTest extends PlanSyncTestBase {
         requestDeletion(sample.user());
         int[] holds = {0};
         AccountDeletionRunApi expiring = runsWith((method, args) -> {
-            if (method.getName().equals("hold") && ++holds[0] == 3) {
-                // SYNC 단계 앞: 앞 단계가 오래 걸려 lease가 이미 지났다(세대는 그대로).
+            if (method.getName().equals("hold") && ++holds[0] == 4) {
+                // SYNC 단계 앞(hold 1은 Story 5.3의 tombstone 기록, 2는 CREDENTIALS, 3은 PORTFOLIO): 앞 단계가 오래 걸려 lease가 이미
+                // 지났다(세대는 그대로).
                 Thread expire = Thread.ofVirtual().start(() -> jdbc().sql("UPDATE identity_deletion_run SET "
                         + "lease_until = statement_timestamp() - interval '1 second' WHERE user_id = :u")
                         .param("u", sample.user()).update());
@@ -995,6 +1159,26 @@ class AccountErasureRunTest extends PlanSyncTestBase {
     private static List<String> statusesOf(List<StepState> steps) {
         return steps.stream().map(step -> step.step().name() + ":" + step.status().name()
                 + (step.failureCode() == null ? "" : ":" + step.failureCode())).toList();
+    }
+
+    /** 이 스레드의 트랜잭션 backend가 감사 원장 추가 잠금을 쥐었는가. */
+    private boolean holdsAppendLock() {
+        return Boolean.TRUE.equals(jdbc().sql("SELECT count(*) > 0 FROM pg_locks WHERE locktype = 'advisory' AND granted "
+                        + "AND objsubid = 1 AND pid = pg_backend_pid() "
+                        + "AND ((classid::bigint << 32) | objid::bigint) = hashtextextended(:name, 0)")
+                .param("name", "bokrilog.operations_audit_event.append").query(Boolean.class).single());
+    }
+
+    /** 집합이 열린(운영 완료 전) tombstone 수. */
+    private int openTombstones() {
+        return jdbc().sql("SELECT count(*) FROM operations_deletion_tombstone WHERE closed_at IS NULL")
+                .query(Integer.class).single();
+    }
+
+    /** tombstone 감사 SYSTEM 행(Story 5.3)의 reason 목록(순서대로). */
+    private List<String> tombstoneAuditReasons() {
+        return jdbc().sql("SELECT reason FROM operations_audit_event WHERE command = 'tombstone' ORDER BY sequence")
+                .query(String.class).list();
     }
 
     private String lifecycleOf(UUID user) {

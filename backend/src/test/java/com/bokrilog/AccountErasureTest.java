@@ -76,7 +76,11 @@ class AccountErasureTest extends PlanSyncTestBase {
         var times = jdbc().sql("SELECT requested_at, destroy_after FROM operations_deletion_tombstone")
                 .query((rs, n) -> new OffsetDateTime[] {rs.getObject(1, OffsetDateTime.class),
                         rs.getObject(2, OffsetDateTime.class)}).single();
-        assertThat(Duration.between(times[0], times[1])).isEqualTo(Duration.ofDays(35));
+        // 보존은 요청 + 35일 이상이고(Story 5.3) 단일 모드는 같은 트랜잭션에서 집합을 닫으므로 닫힌 시각 + 35일이다.
+        assertThat(Duration.between(times[0], times[1])).isGreaterThanOrEqualTo(Duration.ofDays(35))
+                .isLessThan(Duration.ofDays(35).plusMinutes(1));
+        assertThat(jdbc().sql("SELECT destroy_after = closed_at + interval '840 hours' AND status = 'PENDING' "
+                + "FROM operations_deletion_tombstone").query(Boolean.class).single()).isTrue();
         assertThat(Duration.between(times[0].toInstant(), databaseNow()).abs()).isLessThan(Duration.ofMinutes(1));
         assertThat(times[0].toInstant().getNano() % 1_000_000).as("ms로 자른 시각").isZero();
 
@@ -214,16 +218,19 @@ class AccountErasureTest extends PlanSyncTestBase {
         insertTombstone("e".repeat(64), "erasure-expired-1", "40 days");
         insertTombstone("f".repeat(64), "erasure-nearly-1", "834 hours");
         insertTombstone("9".repeat(64), "erasure-margin-1", "815 hours");
+        // Story 5.3: 기한이 지났어도 백업 파기가 끝나지 않은 행은 지우지 않고 사본에 싣는다.
+        insertTombstone("8".repeat(64), "erasure-unfinished-1", "40 days", false);
 
         DeletionTombstoneApi.Export export = tombstones.export();
         assertThat(export.purged()).isEqualTo(1);
         assertThat(export.keyId()).isEqualTo(tombstones.keyId()).matches("[0-9a-f]{16}");
+        // erasure-live-1은 방금 지워 백업 파기가 끝나지 않았으므로 기한과 무관하게 실린다.
         assertThat(export.live()).extracting(DeletionTombstoneApi.Tombstone::requestId)
-                .containsExactlyInAnyOrder("erasure-live-1", "erasure-margin-1");
+                .containsExactlyInAnyOrder("erasure-live-1", "erasure-margin-1", "erasure-unfinished-1");
         assertThat(outbox()).extracting(row -> row.get("request_id"))
-                .containsExactlyInAnyOrder("erasure-live-1", "erasure-nearly-1", "erasure-margin-1");
+                .containsExactlyInAnyOrder("erasure-live-1", "erasure-nearly-1", "erasure-margin-1", "erasure-unfinished-1");
         assertThat(tombstones.outbox()).extracting(DeletionTombstoneApi.Tombstone::requestId)
-                .containsExactlyInAnyOrder("erasure-live-1", "erasure-nearly-1", "erasure-margin-1");
+                .containsExactlyInAnyOrder("erasure-live-1", "erasure-nearly-1", "erasure-margin-1", "erasure-unfinished-1");
         String file = DeletionTombstoneApi.render(export.keyId(), java.time.Instant.now(), export.live());
         assertThat(file).doesNotContain("erasure-expired-1").doesNotContain("erasure-nearly-1")
                 .doesNotContain(user.toString());
@@ -312,11 +319,25 @@ class AccountErasureTest extends PlanSyncTestBase {
                 .param("name", "bokrilog.operations_audit_event.append").query(Boolean.class).single());
     }
 
+    /**
+     * 백업 파기가 끝났고({@code DESTROYED}) 그 상태로 성공한 사본에 이미 실린 tombstone 하나 — 보존 기한으로 지워지는 것은 이 상태뿐이다
+     * (Story 5.3).
+     */
     private void insertTombstone(String digest, String request, String ago) {
-        jdbc().sql("INSERT INTO operations_deletion_tombstone (request_id, user_digest, requested_at, destroy_after, origin) "
-                        + "SELECT :r, :d, t.at, t.at + interval '840 hours', 'DELETION' FROM (SELECT date_trunc('milliseconds', now()) "
+        insertTombstone(digest, request, ago, true);
+    }
+
+    private void insertTombstone(String digest, String request, String ago, boolean destroyed) {
+        // 완료 행은 그 상태로 성공한 내보내기(V32 `destroyed_export`)에 실린 것으로 둔다.
+        Long exported = destroyed ? jdbc().sql("INSERT INTO operations_tombstone_export (exported_at, tombstones) "
+                + "VALUES (statement_timestamp(), 0) RETURNING sequence").query(Long.class).single() : null;
+        jdbc().sql("INSERT INTO operations_deletion_tombstone (request_id, user_digest, requested_at, destroy_after, origin, "
+                        + "status, closed_at, destroyed_at, destroyed_export) SELECT :r, :d, t.at, t.at + interval '840 hours', "
+                        + "'DELETION', CASE WHEN :destroyed THEN 'DESTROYED' ELSE 'PENDING' END, CASE WHEN :destroyed THEN t.at END, "
+                        + "CASE WHEN :destroyed THEN t.at END, CAST(:exported AS bigint) FROM (SELECT date_trunc('milliseconds', now()) "
                         + "- CAST(:ago AS interval) AS at) t")
-                .param("r", request).param("d", digest).param("ago", ago).update();
+                .param("r", request).param("d", digest).param("ago", ago).param("destroyed", destroyed)
+                .param("exported", exported).update();
     }
 
     private List<Map<String, Object>> outbox() {

@@ -26,7 +26,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  *       {@code ON DELETE RESTRICT}라 이 순서다).
  *   <li>{@link DeletionStep#OPERATIONS} — 감사 수행자·제한 target 비식별, 문의 삭제.
  *   <li>{@link DeletionStep#ENGAGEMENT} — 광고 동의 결정·광고 자격 결정 삭제.
- *   <li>{@link DeletionStep#IDENTITY} — tombstone outbox 행, payload·인증 매핑·세션·요청 행 삭제와 {@code DELETED} 전환. 마지막이다.
+ *   <li>{@link DeletionStep#IDENTITY} — tombstone 집합 닫기·보존 연장(단일 모드는 기록도), payload·인증 매핑·세션·요청 행 삭제와
+ *       {@code DELETED} 전환. 마지막이다.
  * </ol>
  *
  * <p><b>단일 모드({@link #erase}·{@link #reapply}).</b> 삭제 전환({@code DELETION_IN_PROGRESS})부터 마지막 단계까지 한 트랜잭션이다 —
@@ -34,7 +35,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * 부른다 — 복원 적용은 실패하면 전체를 되돌려야 안전하다.
  *
  * <p><b>단계 모드({@link AccountErasureRun}).</b> 사용자의 삭제 요청을 Worker가 집어 단계마다 따로 커밋하고 단계 상태를 identity에 남긴다.
- * 그 실행자는 이 클래스의 {@link #apply}·{@link #residueOf}·{@link #recordRequestedTombstone}만 부른다.
+ * 그 실행자는 이 클래스의 {@link #apply}·{@link #residueOf}·{@link #recordRequestedTombstone}·{@link #closeRequestedTombstone}만
+ * 부른다. tombstone은 첫 단계 앞에서 기록되고(Story 5.3) 마지막 단계가 영향 generation 집합을 닫는다.
  *
  * <p><b>operations 단계는 감사 원장 추가 잠금을 쥔다(Epic 3 회고 B-2).</b> 수행자·제한 target 비식별이 그 잠금을 그 트랜잭션의 커밋까지
  * 쥐므로, 같은 잠금 아래에서 사용자 귀속 제한을 쓰는 경로(제한 생성 command·강한 신호·해제 smoke 되돌림)와 한 줄로 선다 — 먼저 쥔
@@ -98,7 +100,11 @@ class AccountErasure {
      * @throws IllegalStateException 이 역할에 tombstone 키가 없거나 어느 단계가 실패했다(전부 롤백)
      */
     Outcome erase(UUID userId, String requestId) {
-        return run(userId, () -> this.tombstones.record(userId, requestId));
+        return run(userId, () -> {
+            this.tombstones.record(userId, requestId);
+            // 단일 모드는 이 트랜잭션이 곧 운영 데이터 삭제 완료다 — 영향 generation 집합을 닫고 보존을 늘린다(Story 5.3).
+            this.tombstones.close(requestId);
+        });
     }
 
     /**
@@ -106,7 +112,11 @@ class AccountErasure {
      * DB가 다음 내보내기에서 그 tombstone을 잃지 않게 한다.
      */
     Outcome reapply(UUID userId, DeletionTombstoneApi.Tombstone tombstone) {
-        return run(userId, () -> this.tombstones.carry(tombstone));
+        return run(userId, () -> {
+            this.tombstones.carry(tombstone);
+            // 이 DB에서는 지금 지웠다 — 열린 집합이면 지금 닫는다(이미 닫힌 사본은 그대로다).
+            this.tombstones.close(tombstone.requestId());
+        });
     }
 
     private Outcome run(UUID userId, Runnable recordTombstone) {
@@ -133,7 +143,7 @@ class AccountErasure {
      * 단계 하나의 삭제. <b>호출자 트랜잭션 안에서</b> 부른다(단일 모드는 한 트랜잭션, 단계 모드는 단계마다 한 트랜잭션). 모든 port가 그 사용자에
      * 멱등이라 성공한 단계를 다시 불러도 안전하다.
      *
-     * @param recordTombstone {@link DeletionStep#IDENTITY}에서 payload 삭제 앞에 부를 tombstone 기록. 다른 단계는 부르지 않는다
+     * @param recordTombstone {@link DeletionStep#IDENTITY}에서 payload 삭제 앞에 부를 tombstone 기록·닫기. 다른 단계는 부르지 않는다
      * @throws IllegalStateException 마지막 단계의 payload 삭제가 적용되지 않았다 — 부분 삭제를 완료로 보고하지 않는다
      */
     void apply(DeletionStep step, UUID userId, Runnable recordTombstone) {
@@ -185,14 +195,29 @@ class AccountErasure {
     }
 
     /**
-     * 단계 모드의 tombstone 기록: 그 사용자의 삭제 요청(Story 5.1)의 요청 ID로 남긴다. 마지막 단계 트랜잭션 안에서 payload 삭제(요청 행도
-     * 지운다) 앞에 부른다.
+     * 단계 모드의 tombstone 기록(Story 5.3): 그 사용자의 삭제 요청(Story 5.1)의 요청 ID와 요청 시각으로 남긴다. 실행자가 첫 단계 앞에서 그
+     * 단계와 같은 fencing 아래 자기 트랜잭션으로 부른다 — 첫 claim에 tombstone이 생겨 운영 완료 전 복원도 그 계정을 다시 지운다(deferred
+     * 171). 멱등이다(재시도·lease 만료 복구가 다시 불러도 한 행이다).
      *
      * @throws IllegalStateException 삭제 요청이 없다
      */
     void recordRequestedTombstone(UUID userId) {
         var request = this.accounts.deletionRequestOf(userId)
                 .orElseThrow(() -> new IllegalStateException("삭제 요청이 없는 계정의 단계 삭제다."));
-        this.tombstones.record(userId, request.requestId());
+        this.tombstones.record(userId, request.requestId(), request.requestedAt());
+    }
+
+    /**
+     * 단계 모드의 마지막 단계: 영향 generation 집합을 닫고 보존을 {@code max(요청, 지금) + 35일}로 늘린다(Story 5.3). 마지막 단계 트랜잭션
+     * 안에서 payload 삭제(요청 행도 지운다) 앞에 부른다. 첫 단계의 기록이 없던 실행(이 스토리 전에 시작한 실행)도 있으므로 먼저 기록을 다시
+     * 해 본다(멱등).
+     *
+     * @throws IllegalStateException 삭제 요청이 없다
+     */
+    void closeRequestedTombstone(UUID userId) {
+        var request = this.accounts.deletionRequestOf(userId)
+                .orElseThrow(() -> new IllegalStateException("삭제 요청이 없는 계정의 단계 삭제다."));
+        this.tombstones.record(userId, request.requestId(), request.requestedAt());
+        this.tombstones.close(request.requestId());
     }
 }

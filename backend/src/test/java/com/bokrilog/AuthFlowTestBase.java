@@ -242,11 +242,12 @@ abstract class AuthFlowTestBase {
         // 문의(Story 3.6)도 계정 표를 외래키로 가리키지 않는다. 영업일 달력(`support_business_calendar`·
         // `support_calendar_year`)은 migration seed라 비우지 않는다. 백업 기록(Story 3.9)은 사용자 식별자가 없는 순수 운영 데이터다.
         // 광고 동의 결정(Story 4.1)과 광고 자격 결정(Story 4.2)도 계정 표를 외래키로 가리키지 않는다. 광고 Vitals 표본(Story 4.5)은
-        // 사용자 열이 없는 집계라 계정 정리로는 비지 않는다.
+        // 사용자 열이 없는 집계라 계정 정리로는 비지 않는다. tombstone의 영향 generation(Story 5.3)은 tombstone을 외래키로 가리키므로
+        // 함께 적고, 내보내기 성공 기록은 어느 표도 가리키지 않는다.
         this.jdbc.sql("TRUNCATE TABLE operations_signal, operations_restriction, operations_audit_event, "
                 + "operations_notice_version, operations_notice_incident, support_inquiry, operations_backup_event, "
-                + "operations_deletion_tombstone, engagement_ad_consent_decision, engagement_ad_attempt, "
-                + "engagement_ad_vital_sample")
+                + "operations_deletion_backup_generation, operations_deletion_tombstone, operations_tombstone_export, "
+                + "engagement_ad_consent_decision, engagement_ad_attempt, engagement_ad_vital_sample")
                 .update();
     }
 

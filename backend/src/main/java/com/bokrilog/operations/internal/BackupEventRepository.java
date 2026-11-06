@@ -1,7 +1,10 @@
 package com.bokrilog.operations.internal;
 
+import com.bokrilog.operations.BackupRecordApi.Event;
 import com.bokrilog.operations.BackupRecordApi.Row;
 import com.bokrilog.operations.BackupRecordApi.Store;
+import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
@@ -95,6 +98,28 @@ class BackupEventRepository {
                                     rs.getDouble("measured_at")));
                 });
         return measured;
+    }
+
+    /**
+     * generation 하나의 사건 한 줄(Story 5.3 백업 파기 판정).
+     *
+     * @param store {@code PURGED}의 저장소(소문자 tag). 로컬 임시본·다른 사건이면 {@code null}
+     */
+    record GenerationEvent(long sequence, String generationId, Event event, @Nullable String store, @Nullable String code,
+            Instant recordedAt) {}
+
+    /**
+     * 모든 generation의 시작·성공·실패·파기 기록(추가 순, Story 5.3 백업 파기 판정). 하한이 없다 — 오래전에 시작했는데 두 저장소 파기 기록이
+     * 아직 없는 저장된 generation도 판정이 보아야 한다(거짓 완료 방지). 측정·기한 초과·파기 실패 행은 싣지 않는다 — 판정은 성공 기록 뒤의
+     * {@code PURGED}만 파기로 센다. 하루 몇 행이라 표가 작다.
+     */
+    List<GenerationEvent> generationEvents() {
+        return this.jdbc.sql("SELECT sequence, generation_id, event, store, code, recorded_at FROM operations_backup_event "
+                        + "WHERE event IN ('STARTED', 'SUCCEEDED', 'FAILED', 'PURGED') ORDER BY sequence")
+                .query((rs, row) -> new GenerationEvent(rs.getLong("sequence"), rs.getString("generation_id"),
+                        Event.valueOf(rs.getString("event")), rs.getString("store"), rs.getString("code"),
+                        rs.getObject("recorded_at", OffsetDateTime.class).toInstant()))
+                .list();
     }
 
     /** 그 generation에 성공 기록이 있는가. */

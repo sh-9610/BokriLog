@@ -28,7 +28,7 @@
 #   자원      compose의 `mem_limit`(API 768m·Worker 512m·PostgreSQL 3g·Nginx 128m, 일회성 역할 ≤ Worker), Alloy 256MiB 예약,
 #             blue/green peak(API×2 + 나머지) + OS 예약 ≤ 선언 메모리
 #   compose   앱 이미지는 변수, 인프라 이미지는 `@sha256:` 고정, `build`·`env_file` 없음, API·Worker에 migrate 프로필 없음, 역할 고정,
-#             일회성 역할(migrate·deploy-audit·backup-record·deletion-sample·tombstone-export·restore-apply) ≤ Worker 예산
+#             API 슬롯에 tombstone digest 키 없음(Story 5.3 — `TOMBSTONE_KEY_IN_API`, API 슬롯 가운데 Worker만 받는다), 일회성 역할(migrate·deploy-audit·backup-record·deletion-sample·tombstone-export·restore-apply) ≤ Worker 예산
 #   비밀      파일 권한 600, 필수 이름이 비지 않음, 로그인 제공자 하나 이상, 프로필·역할·환경·Worker 설정·배포 수행자를 덮는
 #             이름(`SPRING_PROFILES_*`·`SPRING_APPLICATION_JSON`·`BOKRILOG_ROLE`·`BOKRILOG_ENV`·`BOKRILOG_SYNC_WORKER_*`·
 #             `BOKRILOG_DEPLOY_ACTOR`) 없음, backup key(age identity) 모양의 값 없음(Story 3.9), tombstone digest 키가 있고 감사
@@ -455,9 +455,16 @@ $(compose_service_block "${compose_file}" api-blue | awk '/^    environment: &ap
     refuse ROLE_MISSING "${service}의 BOKRILOG_ROLE이 ${want_role}이 아니다."
     role_ok=false
   fi
+  # tombstone digest 키는 API 슬롯 가운데 Worker만 받는다(Story 5.3 — API는 tombstone을 쓰지 않는다. 앱도 api 역할에서는 그 키를 쓰지 않는다).
+  # 환경의 map 꼴(`KEY: 값`)·list 꼴(`- KEY=값`·`- KEY`)과 따옴표 친 이름을 모두 본다.
+  if [ "${service}" != worker ] \
+    && printf '%s\n' "${block}" | grep -E "^[[:space:]]+(-[[:space:]]*)?[\"']?BOKRILOG_TOMBSTONE_DIGEST_KEY([^A-Za-z0-9_]|\$)" >/dev/null; then
+    refuse TOMBSTONE_KEY_IN_API "${service}가 tombstone digest 키를 받는다(Worker만 받는다)."
+    role_ok=false
+  fi
 done
 if [ "${role_ok}" = true ]; then
-  pass 'API·Worker 역할 고정, migrate 프로필 없음'
+  pass 'API·Worker 역할 고정, migrate 프로필 없음, tombstone 키는 Worker만'
 fi
 
 # ---------------------------------------------------------------- 운영 비밀

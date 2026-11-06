@@ -36,6 +36,9 @@ final class OperatorTestProperties {
         // 계정 삭제 Worker(Story 5.2)의 주기 dispatch는 끈다 — 키가 있으므로 켜 두면 삭제 요청 시험(5.1)의 계정을 Worker가 지워
         // 그 시험의 단정이 경합한다. Worker의 시험은 `AccountErasureWorker.runOnce`로 한 번씩 몬다.
         registry.add("bokrilog.account-deletion.worker.scheduled", () -> "false");
+        // 백업 파기 판정(Story 5.3)의 주기 실행도 끈다 — 켜 두면 다른 시험의 tombstone 상태·감사 행을 바꿔 그 단정이 경합한다. 판정의
+        // 시험은 `BackupDestructionJudge.judgeNow`로 한 번씩 몬다.
+        registry.add("bokrilog.backup-destruction.judge.scheduled", () -> "false");
     }
 
     private static String newKey() {

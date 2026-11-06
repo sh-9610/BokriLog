@@ -2,6 +2,7 @@ package com.bokrilog.identity;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -51,10 +52,15 @@ public interface AccountDeletionRunApi {
     String RESIDUAL_FOUND = "RESIDUAL_FOUND";
 
     /**
+     * 첫 단계 앞의 tombstone 기록(Story 5.3)이 실패했다. 아직 성공하지 않은 첫 단계에 붙는다 — 그 단계 자체가 실패한 것이 아님을 구분한다.
+     */
+    String TOMBSTONE_FAILED = "TOMBSTONE_FAILED";
+
+    /**
      * 단계 하나의 상태.
      *
      * @param erasedRows 성공한 단계가 지운(비식별한) 행 수. 성공이 아니면 {@code null}
-     * @param failureCode {@link #STEP_FAILED}·{@link #RESIDUAL_FOUND}. 재시도 필요가 아니면 {@code null}
+     * @param failureCode {@link #STEP_FAILED}·{@link #RESIDUAL_FOUND}·{@link #TOMBSTONE_FAILED}. 재시도 필요가 아니면 {@code null}
      */
     record StepState(DeletionStep step, StepStatus status, @Nullable Long erasedRows, @Nullable String failureCode,
             int attempts) {}
@@ -135,7 +141,7 @@ public interface AccountDeletionRunApi {
      * @param ran 이번에 돌던 단계. 그 단계가 {@code failures}에 있을 때만 시도 횟수가 오른다 — 마지막 단계의 재검사가 되돌린 앞
      *     단계는 이번에 돌지 않았다. {@code failures}에 없으면(마지막 단계가 앞 단계의 잔여를 본 경우) 그 단계는 상태를
      *     그대로 두고 시도만 센다
-     * @param failures 단계 → {@link #STEP_FAILED}·{@link #RESIDUAL_FOUND}. 비어 있으면 안 된다
+     * @param failures 단계 → {@link #STEP_FAILED}·{@link #RESIDUAL_FOUND}·{@link #TOMBSTONE_FAILED}. 비어 있으면 안 된다
      */
     void stepsNeedRetry(Lease lease, DeletionStep ran, Map<DeletionStep, String> failures);
 
@@ -156,4 +162,11 @@ public interface AccountDeletionRunApi {
      * @param retryKeyDigest 멱등 키의 SHA-256(소문자 16진 64자)
      */
     RetryOutcome acceptRetry(@Nullable UUID userId, String retryKeyDigest);
+
+    /**
+     * 그 삭제 요청 ID들 가운데 운영 데이터 삭제가 끝난 실행의 완료 시각(Story 5.3). 읽기만 한다. 실행 행은 claim이 요청 ID를 채운다 —
+     * 요청 행(V30)은 운영 완료 때 지워지므로 백업 파기 판정이 요청 ID ↔ 운영 완료 시각을 이 값으로 잇는다. 끝나지 않은 실행·없는 요청 ID는
+     * 빠진다. 사용자 식별자를 돌려주지 않는다.
+     */
+    Map<String, Instant> operationalCompletions(Collection<String> requestIds);
 }
