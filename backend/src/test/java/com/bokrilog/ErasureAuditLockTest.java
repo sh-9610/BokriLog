@@ -218,9 +218,10 @@ class ErasureAuditLockTest extends OperatorTestBase {
         List<String> targets = jdbc().sql("SELECT target FROM operations_restriction").query(String.class).list();
         assertThat(targets).allMatch(target -> target.matches(DIGEST))
                 .doesNotContain(plan.toString(), portfolio.toString(), connection.toString());
-        // 감사 SYSTEM 행은 신호마다 하나이고, 그 target은 제한 행의 digest와 같다.
+        // 감사 SYSTEM 행은 신호마다 하나이고, 그 target은 제한 행의 digest와 같다(tombstone 기록·보존 연장의 SYSTEM 행 — Story 5.3 — 은
+        // 이 판정 밖이다).
         List<String> auditTargets = jdbc().sql("SELECT target FROM operations_audit_event WHERE actor_kind = 'SYSTEM' "
-                + "AND actor_user_id IS NULL").query(String.class).list();
+                + "AND actor_user_id IS NULL AND command <> 'tombstone'").query(String.class).list();
         assertThat(auditTargets).hasSize(4).containsExactlyInAnyOrderElementsOf(targets);
         assertThat(jdbc().sql("SELECT count(*) FROM operations_signal").query(Integer.class).single()).isEqualTo(4);
         assertThat(attributedSignals(user)).isZero();

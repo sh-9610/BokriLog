@@ -26,6 +26,9 @@
 #    8. 용량 상한       오래된 것부터 BYTES 파기, 마지막 성공은 남긴다
 #    9. 29일 경계       정확히 29일은 남기고 1초 뒤 파기(마지막 성공도 예외 없음) — 그 실행은 PostgreSQL 정지 중(파기는 돌고 행은 대기열)
 #   10. 30일 기한 초과  지우지 못한 30일 초과 → PURGE_FAILED·PURGE_OVERDUE·감사·gauge, `backup.sh purge`가 지운다
+#   10b. 삭제 백업 파기 판정(Story 5.3) 31일 전 요청의 tombstone + 운영 완료(V31) → Worker 판정이 집합을 닫고(보존 연장) 영향
+#                       generation(운영 완료 + 1시간 전 dump)을 기록, 한쪽만 PURGED면 OVERDUE·감사 한 번·gauge 1, 다음 파기로 두 저장소 PURGED가 되면
+#                       DESTROYED(운영 완료와 다른 시각)·gauge 0. MinIO 객체 파기의 기록 대조일 뿐 **실저장소 파기 증거가 아니다**
 #   11. 키 회전·확인    새 active key 뒤 과거 identity를 지우거나 짝이 아니거나 저장소를 읽지 못하면 `keys` 실패
 #   12. 큰 dump         수 MB(파이프 버퍼의 수십 배) — 복호화 stream을 끝까지 읽어 인증한다(리허설 전용 scratch 표)
 #   13. 누출            실행 출력·도구 기록·Worker 컨테이너 로그·object 이름·메트릭에 사용자 ID·이메일·key 값·저장소 비밀이 없다
@@ -722,6 +725,16 @@ show_log_on_failure "${failed_before}"
 
 day40="$(gen_of_day 40)"
 failed_before="${tests_failed}"
+# 삭제 백업 파기 판정(Story 5.3)의 표본: 31일 전(실제 시계)에 요청된 삭제의 tombstone 하나(영향 generation 집합 열림). digest는 실행마다
+# 만든 표지 값이다(사용자 원문 없음). 그 뒤 day40이 dump를 시작하고, 그다음에 운영 완료(V31)가 기록되므로 day40은 영향 generation이다.
+destruction_request="rehearsal-destruction-$(random_hex 4)"
+destruction_user="$(od -An -N 16 -tx1 /dev/urandom | tr -d ' \n' | awk '{ print substr($0,1,8) "-" substr($0,9,4) "-4" substr($0,14,3) "-a" substr($0,18,3) "-" substr($0,21,12) }')"
+psql_run() {
+  compose exec -T postgres psql --username=bokrilog --dbname=bokrilog --no-password --quiet --set=ON_ERROR_STOP=1 \
+    --command="$1" >>"${outputs}/psql.log" 2>&1
+}
+psql_run "INSERT INTO operations_deletion_tombstone (request_id, user_digest, requested_at, destroy_after, origin) SELECT '${destruction_request}', '$(random_hex 32)', t.at, t.at + interval '840 hours', 'DELETION' FROM (SELECT date_trunc('milliseconds', now()) - interval '31 days' AS at) t" \
+  || fail_setup '파기 판정 표본 tombstone을 넣지 못했다.' "$(tail -5 "${outputs}/psql.log")"
 run_backup "10. 기한 초과 준비(${day40}) — DB 정지 중의 대기열을 먼저 기록한다" "$(at_day 40)"
 assert_equals '기한 초과 준비 · 종료 0' "${run_status}" '0'
 assert_equals 'DB 정지 뒤 · 대기열이 비었다' "$(pending_count)" '0'
@@ -731,6 +744,11 @@ assert_equals 'DB 정지 뒤 · AGE 파기(두 저장소)가 기록됐다' \
 assert_equals 'DB 정지 뒤 · FAILED DB_UNAVAILABLE과 상한 건너뜀(LIST_FAILED)' \
   "$(psql_value "SELECT string_agg(event || ':' || code, ',' ORDER BY sequence) FROM operations_backup_event WHERE generation_id = '${day34}' AND event IN ('FAILED', 'PURGE_FAILED') AND store IS NULL AND code <> 'DUMP'")" \
   'FAILED:DB_UNAVAILABLE,PURGE_FAILED:LIST_FAILED'
+# 운영 데이터 삭제 완료(V31 실행 행, 요청 ID). Worker의 판정이 이 시각으로 표본의 집합을 닫는다. 기록 시각은 실제 DB 시각이라, 운영 완료를
+# day40의 dump 시작 기록 − 1시간 + 1초로 둔다 — day40은 커밋 여유(운영 완료 + 1시간, `BackupDestructionApi.CLOSURE_SLACK`) 경계 1초 안에
+# dump를 시작했으므로 영향 generation이고, 그 뒤 시작한 실행(day70 이후)은 아니며, 완료 판정이 여유를 기다리지 않는다.
+psql_run "INSERT INTO identity_account_lifecycle (user_id, state) VALUES ('${destruction_user}', 'DELETED'); INSERT INTO identity_deletion_run (user_id, status, operational_erased_at, request_id) SELECT '${destruction_user}', 'OPERATIONAL_DATA_ERASED', max(recorded_at) - interval '1 hour' + interval '1 second', '${destruction_request}' FROM operations_backup_event WHERE generation_id = '${day40}' AND event = 'STARTED'" \
+  || fail_setup '파기 판정 표본의 삭제 실행 행을 넣지 못했다.' "$(tail -5 "${outputs}/psql.log")"
 run_backup "10. 30일 뒤 OCI 밖 저장소의 삭제 실패" "$(at_day 70)" dump,purge-offsite
 assert_equals '기한 초과 · 종료 1' "${run_status}" '1'
 assert_equals '기한 초과 · oci는 지웠다' "$(listing oci generations)" ''
@@ -750,6 +768,46 @@ measured_gauge="$(series_value 'bokrilog_backup_store_measured_timestamp_seconds
 measured_epoch="$(psql_value "SELECT floor(extract(epoch FROM max(recorded_at))) FROM operations_backup_event WHERE event = 'MEASURED' AND store = 'offsite'")"
 assert_equals '기한 초과 · offsite 측정 시각 gauge = 최신 측정 기록' \
   "$(awk -v v="${measured_gauge:-0}" 'BEGIN { printf "%d", int(v) }')" "${measured_epoch}"
+
+# wait_value <SQL> <기대 값> <초>. 값이 기대와 같아질 때까지 기다린다(Worker 판정은 리허설에서 5초 주기다). 마지막 값을 낸다.
+wait_value() {
+  local waited=0 value=''
+  while [ "${waited}" -lt "$3" ]; do
+    value="$(psql_value "$1")"
+    [ "${value}" = "$2" ] && break
+    sleep 2
+    waited=$((waited + 2))
+  done
+  printf '%s' "${value}"
+}
+
+printf '\n10b. 삭제 백업 파기 판정(Story 5.3, 리허설 — MinIO 객체 파기이고 실저장소 파기의 증거가 아니다)\n'
+assert_equals '파기 판정 · 운영 완료(V31)가 집합을 닫았고, 한쪽만 파기돼 기한 초과다' \
+  "$(wait_value "SELECT status || ':' || (closed_at IS NOT NULL) || ':' || (destroy_after >= closed_at + interval '840 hours') FROM operations_deletion_tombstone WHERE request_id = '${destruction_request}'" 'OVERDUE:true:true' 60)" \
+  'OVERDUE:true:true'
+assert_equals '파기 판정 · day40은 영향 generation이고 oci만 파기됐다' \
+  "$(psql_value "SELECT (oci_purged_at IS NOT NULL) || ':' || (offsite_purged_at IS NOT NULL) FROM operations_deletion_backup_generation WHERE request_id = '${destruction_request}' AND generation_id = '${day40}'")" \
+  'true:false'
+assert_equals '파기 판정 · 남은 미파기는 day40의 offsite 하나다(앞선 generation은 두 저장소 모두 파기 기록이 있다)' \
+  "$(psql_value "SELECT count(*) FROM operations_deletion_backup_generation WHERE request_id = '${destruction_request}' AND (oci_purged_at IS NULL OR offsite_purged_at IS NULL)")" \
+  '1'
+assert_equals '파기 판정 · 운영 완료 뒤의 dump(day70, 실패)는 영향 generation이 아니다' \
+  "$(psql_value "SELECT count(*) FROM operations_deletion_backup_generation WHERE request_id = '${destruction_request}' AND generation_id = '$(gen_of_day 70)'")" \
+  '0'
+overdue_series="$(wait_series 'bokrilog_deletion_backup_destruction_overdue{env="ci",role="worker"}' 'v == 1' 60)"
+assert_equals '파기 판정 · 기한 초과 gauge 1' "$(awk -v v="${overdue_series:-0}" 'BEGIN { printf "%d", v }')" '1'
+# 경보 규칙(alerts.yml)이 읽는 노출 이름 그대로다. 기한 임박은 이 표본(이미 초과)에 해당하지 않아 0이다. 내보내기 성공 시각은 이 리허설에
+# 내보내기가 없어 등록되지 않는다(NaN 없음 — 미측정 경보가 운다).
+due_soon_series="$(wait_series 'bokrilog_deletion_backup_destruction_due_soon{env="ci",role="worker"}' 'v == 0' 60)"
+assert_equals '파기 판정 · 기한 임박 gauge 0(노출 이름 bokrilog_deletion_backup_destruction_due_soon)'   "$(awk -v v="${due_soon_series:-x}" 'BEGIN { if (v == "x") print "absent"; else printf "%d", v }')" '0'
+if scrape | grep -E '^bokrilog_tombstone_export_last_success_timestamp_seconds' >/dev/null; then
+  record_fail '파기 판정 · 내보내기 기록이 없으면 성공 시각 gauge가 없다' "$(scrape | grep -E '^bokrilog_tombstone_export_' | head -3)"
+else
+  record_pass '파기 판정 · 내보내기 기록이 없으면 성공 시각 gauge가 없다'
+fi
+assert_equals '파기 판정 · 감사 SYSTEM 행(연장·초과 한 번)은 수뿐이다' \
+  "$(psql_value "SELECT string_agg(reason || ':' || outcome || ':' || target || ':' || (details->>'count'), ',' ORDER BY reason) FROM operations_audit_event WHERE command = 'tombstone' AND actor_kind = 'SYSTEM' AND actor_user_id IS NULL")" \
+  'BACKUP_OVERDUE:FAILED:deletion-tombstone:1,RETENTION_EXTENDED:COMPLETED:deletion-tombstone:1'
 printf '\n10. 파기만 다시(backup.sh purge)\n'
 run_count=$((run_count + 1))
 run_log="${outputs}/run-${run_count}.log"
@@ -760,6 +818,19 @@ assert_equals '기한 초과 해소 · offsite도 비었다' "$(listing offsite 
 assert_equals '기한 초과 해소 · 측정의 표지가 없다' \
   "$(psql_value "SELECT COALESCE(code, 'NONE') FROM operations_backup_event WHERE event = 'MEASURED' AND store = 'offsite' ORDER BY sequence DESC LIMIT 1")" \
   'NONE'
+# 다음 파기가 OCI 밖도 지웠다 — 두 저장소 PURGED가 모두 있어야 백업 파기 완료다. 완료 시각은 운영 완료와 다르다. 이것은 MinIO 객체의
+# 파기를 기록으로 대조한 리허설이다 — 실저장소(OCI·OCI 밖)의 실제 파기·버전 보관 해제 증거가 아니며 출시 게이트가 따로 소유한다.
+assert_equals '파기 판정 · 두 저장소 파기가 모두 기록돼 백업 파기 완료다(초과 뒤에도 완료가 된다)' \
+  "$(wait_value "SELECT status || ':' || (destroyed_at IS NOT NULL) || ':' || (destroyed_at <> closed_at) || ':' || (overdue_at IS NOT NULL) FROM operations_deletion_tombstone WHERE request_id = '${destruction_request}'" 'DESTROYED:true:true:true' 60)" \
+  'DESTROYED:true:true:true'
+assert_equals '파기 판정 · 영향 generation이 모두 두 저장소에서 파기됐다' \
+  "$(psql_value "SELECT count(*) FROM operations_deletion_backup_generation WHERE request_id = '${destruction_request}' AND (oci_purged_at IS NULL OR offsite_purged_at IS NULL)")" \
+  '0'
+overdue_series="$(wait_series 'bokrilog_deletion_backup_destruction_overdue{env="ci",role="worker"}' 'v == 0' 60)"
+assert_equals '파기 판정 · 기한 초과 gauge 0' "$(awk -v v="${overdue_series:-1}" 'BEGIN { printf "%d", v }')" '0'
+assert_equals '파기 판정 · 완료 감사 행이 더해졌다' \
+  "$(psql_value "SELECT string_agg(reason || ':' || outcome, ',' ORDER BY reason) FROM operations_audit_event WHERE command = 'tombstone'")" \
+  'BACKUP_DESTROYED:COMPLETED,BACKUP_OVERDUE:FAILED,RETENTION_EXTENDED:COMPLETED'
 show_log_on_failure "${failed_before}"
 
 # ---------------------------------------------------------------- 11. 키 회전·key 확인

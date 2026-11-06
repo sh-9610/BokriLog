@@ -27,7 +27,8 @@ import org.springframework.stereotype.Component;
  * 대기 상한에서 건너뛴다 — 정확성은 fencing이 지킨다). {@code RETRY_NEEDED} 실행은 집지 않는다 — 자동 재시도가 없다.
  *
  * <p><b>집지 않는 프로세스.</b> {@code BOKRILOG_ENV=production}(법정 분리 보존 정책 G-5 승인 전)이거나 tombstone digest 키가 없으면 삭제를
- * 집지 않는다 — 요청은 진행 중으로 남는다. 마지막 단계가 tombstone 없이는 커밋될 수 없으므로 키 없는 프로세스는 시작하지 않는다.
+ * 집지 않는다 — 요청은 진행 중으로 남는다. 첫 단계 앞의 tombstone 기록(Story 5.3)이 키 없이는 될 수 없으므로 키 없는 프로세스는 시작하지
+ * 않는다.
  *
  * <p><b>drain.</b> Worker 역할의 종료 drain({@code sync.internal.WorkerDrain})에 {@link DrainParticipant}로 선다 — 종료 신호나 단일 Worker
  * 잠금 상실에서 {@link #stopClaims()}로 새 claim을 멈추고, 진행 중 실행은 다음 단계 앞에서 lease를 놓으며({@code QUEUED}), drain은 같은

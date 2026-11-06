@@ -131,6 +131,11 @@ public final class TelemetryAllowlist {
         meters.put("bokrilog.backup.store.usage.ratio", Map.of("store", Values.of(BACKUP_STORES)));
         meters.put("bokrilog.backup.purge.overdue", Map.of("store", Values.of(BACKUP_STORES)));
         meters.put("bokrilog.backup.store.measured.timestamp", Map.of("store", Values.of(BACKUP_STORES)));
+        // 삭제된 계정이 든 백업의 파기 추적과 tombstone 외부 사본(Story 5.3, BackupDestructionJudge). tag가 없다 — 수와 시각뿐이고
+        // 삭제·요청·generation 식별자는 값으로도 tag로도 없다. 측정이 없으면 등록되지 않는다(NaN 없음).
+        meters.put(BackupDestructionJudge.DUE_SOON, Map.of());
+        meters.put(BackupDestructionJudge.OVERDUE, Map.of());
+        meters.put(BackupDestructionJudge.EXPORT_LAST_SUCCESS, Map.of());
         // DB 연결(Hikari). 풀은 하나다.
         for (String name : new String[] {"hikaricp.connections", "hikaricp.connections.active",
                 "hikaricp.connections.idle", "hikaricp.connections.pending", "hikaricp.connections.max",

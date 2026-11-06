@@ -530,3 +530,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-2-account-data-erasure.md`
   summary: 삭제 실행·단계 기록(`identity_deletion_run`·`identity_deletion_step`, V31)의 보존 기한과 정리 정책을 정한다 — 운영 완료 시각의 근거로 영구히 남는다.
   evidence: 2026-11-05 Story 5.2 1차 리뷰(blind-hunter). 두 표는 생명주기 행을 FK로 가리키는 삭제 기록이라 계정 삭제 뒤에도 남고(identity 잔여에서 제외), 보존 기한·정리 주체가 SPEC과 정책 어디에도 없다. 백업 파기 추적(5.3)·완료 안내(5.4)가 이 기록을 읽을 수 있어 그 결정과 함께 볼 지점이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-3-backup-destruction-tracking.md`
+  summary: 결과 행 없이 끝난 백업 실행(SIGKILL·전원 상실)의 generation이 `generations/`에 실제로 올랐는지 V24 기록만으로는 알 수 없어, 뒤 실행이 기록된 뒤에는 그 generation을 백업 파기 판정에서 막지 않는다 — 저장소 목록 조회로 그런 generation의 존재·파기를 확인하는 판정 근거를 실저장소 게이트에서 정한다.
+  evidence: 2026-11-06 Story 5.3 1차 리뷰(edge-case-hunter). `backup.sh`는 SIGTERM이면 `FAILED INTERRUPTED`를 남기지만 SIGKILL은 결과도 대기열 행도 남기지 않는다. 이동 뒤·기록 전에 죽은 generation은 저장소에 남아 29일 파기가 `PURGED`를 쓰기 전까지 계정을 담을 수 있는데, 판정은 저장소를 조회하지 않는다(SPEC Ask First — 저장소 직접 조회).
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-3-backup-destruction-tracking.md`
+  summary: 백업 대기열(`pending/`)의 결과 행이 계속 기록되지 못한 채 다음 실행의 `STARTED`가 기록되면(`flush_pending` 실패는 경고뿐), 백업 파기 판정이 그 generation을 결과 없는 실행으로 보고 막지 않는다 — 대기열이 남으면 새 실행을 시작하지 않거나 판정이 대기열 상태를 알게 하는 규칙을 정한다.
+  evidence: 2026-11-06 Story 5.3 2차 리뷰(edge-case-hunter). 판정은 "결과 없는 STARTED는 그 뒤 STARTED가 기록될 때까지 막는다"를 대기열이 다음 실행의 STARTED보다 먼저 기록된다는 `backup.sh` 순서에 기대는데, 그 순서는 대기열 기록이 성공할 때만 성립한다. `backup.sh` 단계 순서를 바꾸는 것은 SPEC Ask First다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-3-backup-destruction-tracking.md`
+  summary: `PURGED` 기록이 끝내 생기지 않는 영향 generation(손으로 지운 generation, 복원 뒤 이미 저장소에서 사라진 generation)이 든 tombstone은 `OVERDUE`로 영구히 남고 critical 경보가 계속 운다 — 운영자가 저장소를 확인한 뒤 저장소별 파기를 표시하는 command나 runbook을 정한다.
+  evidence: 2026-11-06 Story 5.3 2차 리뷰(blind-hunter). 만료 삭제는 `DESTROYED` 행만 지우므로(1차 리뷰 patch) 그런 행은 DB와 외부 사본에 남고, 판정은 V24 기록만 보며 저장소를 조회하지 않는다(SPEC Ask First). 해소 경로는 운영 command(3.1 표면) 또는 실저장소 게이트의 절차다.

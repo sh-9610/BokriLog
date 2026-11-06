@@ -1,7 +1,11 @@
 package com.bokrilog.identity.internal;
 
+import java.sql.ResultSet;
 import java.time.OffsetDateTime;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -395,11 +399,14 @@ public class IdentityAccountRepository {
     /**
      * 기존 실행 하나를 집는다 — {@code QUEUED}이거나 lease가 끝난 {@code RUNNING}이고 계정이 {@code DELETION_IN_PROGRESS}이며 삭제 요청
      * 행이 있는 것(요청 없는 실행은 집지 않는다). 다른
-     * 트랜잭션이 잡은 행은 건너뛴다. 세대를 올리고 lease를 새로 건다(문장 시각 + {@code leaseMillis}).
+     * 트랜잭션이 잡은 행은 건너뛴다. 세대를 올리고 lease를 새로 건다(문장 시각 + {@code leaseMillis}). 요청 ID가 비었으면(Story 5.3
+     * 전에 만든 실행) 요청 행에서 채운다.
      */
     public Optional<ClaimedRun> claimExistingRun(long leaseMillis) {
         return jdbc.sql("UPDATE identity_deletion_run SET status = 'RUNNING', "
                         + "fencing_generation = fencing_generation + 1, "
+                        + "request_id = COALESCE(request_id, (SELECT request.request_id FROM identity_deletion_request "
+                        + "AS request WHERE request.user_id = identity_deletion_run.user_id)), "
                         + "lease_until = statement_timestamp() + CAST(:leaseMillis AS double precision) * interval '1 millisecond', "
                         + "heartbeat_at = statement_timestamp() "
                         + "WHERE user_id = (SELECT run.user_id FROM identity_deletion_run AS run "
@@ -417,12 +424,15 @@ public class IdentityAccountRepository {
 
     /**
      * 실행이 없는 삭제 요청 계정 하나의 실행 행을 만든다(첫 claim, 세대 1). 요청 시각 순이다. 같은 계정을 다른 트랜잭션이 먼저 만들면 0행이다.
+     * 실행 행은 요청 ID를 든다(Story 5.3 — 요청 행은 운영 완료 때 지워지므로 백업 파기 판정이 요청 ID ↔ 운영 완료 시각을 이 행으로 잇는다).
      */
     public Optional<ClaimedRun> claimNewRun(long leaseMillis) {
-        return jdbc.sql("INSERT INTO identity_deletion_run (user_id, status, fencing_generation, lease_until, heartbeat_at) "
+        return jdbc.sql("INSERT INTO identity_deletion_run (user_id, status, fencing_generation, lease_until, heartbeat_at, "
+                        + "request_id) "
                         + "SELECT candidate.user_id, 'RUNNING', 1, "
-                        + "statement_timestamp() + CAST(:leaseMillis AS double precision) * interval '1 millisecond', statement_timestamp() "
-                        + "FROM (SELECT request.user_id FROM identity_deletion_request AS request "
+                        + "statement_timestamp() + CAST(:leaseMillis AS double precision) * interval '1 millisecond', statement_timestamp(), "
+                        + "candidate.request_id "
+                        + "FROM (SELECT request.user_id, request.request_id FROM identity_deletion_request AS request "
                         + "JOIN identity_account_lifecycle AS lifecycle ON lifecycle.user_id = request.user_id "
                         + "WHERE lifecycle.state = 'DELETION_IN_PROGRESS' AND NOT EXISTS ("
                         + "SELECT 1 FROM identity_deletion_run AS run WHERE run.user_id = request.user_id) "
@@ -615,6 +625,24 @@ public class IdentityAccountRepository {
                 .param("digest", retryKeyDigest)
                 .param("userId", userId)
                 .update();
+    }
+
+    /**
+     * 그 요청 ID들 가운데 운영 데이터 삭제가 끝난 실행의 완료 시각(Story 5.3 백업 파기 판정). 끝나지 않았거나 요청 ID가 없는 실행은 빠진다.
+     */
+    public Map<String, OffsetDateTime> operationalCompletions(Collection<String> requestIds) {
+        Map<String, OffsetDateTime> completions = new LinkedHashMap<>();
+        if (requestIds.isEmpty()) {
+            return completions;
+        }
+        jdbc.sql("SELECT request_id, operational_erased_at FROM identity_deletion_run "
+                        + "WHERE request_id IN (:requestIds) AND status = 'OPERATIONAL_DATA_ERASED'")
+                .param("requestIds", List.copyOf(requestIds))
+                .query((ResultSet row) -> {
+                    completions.put(row.getString("request_id"),
+                            row.getObject("operational_erased_at", OffsetDateTime.class));
+                });
+        return completions;
     }
 
     private static StoredRun storedRun(java.sql.ResultSet row, int index) throws java.sql.SQLException {

@@ -489,6 +489,23 @@ expect_only 'API 슬롯에 migrate 프로필 → MIGRATE_PROFILE_IN_SERVICE' MIG
 write_compose "${c}" 's/^      BOKRILOG_ROLE: worker$/      BOKRILOG_ROLE: all/'
 run_gate --compose "${c}"
 expect_only 'Worker 역할이 all → ROLE_MISSING' ROLE_MISSING
+write_compose "${c}" 's/^      BOKRILOG_ROLE: api$/      BOKRILOG_ROLE: api\
+      BOKRILOG_TOMBSTONE_DIGEST_KEY: ${BOKRILOG_TOMBSTONE_DIGEST_KEY:-}/'
+run_gate --compose "${c}"
+expect_only 'API 슬롯에 tombstone digest 키 → TOMBSTONE_KEY_IN_API' TOMBSTONE_KEY_IN_API
+# 환경의 list 꼴(`- KEY=값`·따옴표·값 없는 전달)도 같다.
+write_compose "${c}" 's/^      BOKRILOG_ROLE: api$/      BOKRILOG_ROLE: api\
+      - BOKRILOG_TOMBSTONE_DIGEST_KEY=${BOKRILOG_TOMBSTONE_DIGEST_KEY:-}/'
+run_gate --compose "${c}"
+expect_only 'API 슬롯에 list 꼴 tombstone digest 키 → TOMBSTONE_KEY_IN_API' TOMBSTONE_KEY_IN_API
+write_compose "${c}" 's/^      BOKRILOG_ROLE: api$/      BOKRILOG_ROLE: api\
+      - "BOKRILOG_TOMBSTONE_DIGEST_KEY"/'
+run_gate --compose "${c}"
+expect_only 'API 슬롯에 따옴표 친 값 없는 tombstone digest 키 → TOMBSTONE_KEY_IN_API' TOMBSTONE_KEY_IN_API
+write_compose "${c}" 's/^      BOKRILOG_ROLE: api$/      BOKRILOG_ROLE: api\
+      BOKRILOG_TOMBSTONE_DIGEST_KEY_NOTE: unrelated/'
+run_gate --compose "${c}"
+expect '이름이 그 키로 시작할 뿐인 다른 변수 → 0' 0
 write_compose "${c}" 's/^  worker:$/  worker:\
     build: ..\/..\/backend/'
 run_gate --compose "${c}"

@@ -6,12 +6,17 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import java.net.InetAddress;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.boot.web.server.ConfigurableWebServerFactory;
 import org.springframework.boot.web.server.WebServerFactoryCustomizer;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.ResolvableType;
+import org.springframework.core.env.MapPropertySource;
 import org.springframework.scheduling.annotation.ScheduledAnnotationBeanPostProcessor;
 
 /**
@@ -86,6 +91,42 @@ class BokrilogRoleTest {
         assertThatThrownBy(() -> BokrilogRole.parse("ALL")).isInstanceOf(IllegalStateException.class);
         assertThat(BokrilogRole.parse(null)).isEqualTo(BokrilogRole.ALL);
         assertThat(BokrilogRole.parse("")).isEqualTo(BokrilogRole.ALL);
+    }
+
+    /**
+     * Story 5.3 Q8: tombstone digest bean의 조건은 모듈 안의 식({@code '${bokrilog.role:all}' != 'api'})이다 — 모듈이 루트 타입
+     * {@link BokrilogRole}을 참조하면 순환이라 같은 판정을 식으로 둔다. 그 식은 {@code API}·{@code " api "} 같은 값을 "api가 아님"으로 읽지만,
+     * 역할 해석({@link BokrilogRole#parse} — 대소문자·공백을 접지 않는다)이 그 값으로는 servlet 프로세스의 기동을 거부한다. 그래서 API
+     * 프로세스가 tombstone 키를 쥐고 뜨는 일은 없다. 정확한 {@code api}는 기동하고 tombstone bean이 없다.
+     */
+    @Test
+    void tombstone_조건이_api로_읽지_않는_역할_값은_역할_해석이_기동을_거부한다() throws Exception {
+        Class<?> operations = Class.forName("com.bokrilog.operations.internal.OperationsConfiguration");
+        WebApplicationContextRunner tombstone = new WebApplicationContextRunner()
+                .withUserConfiguration(BokrilogRoleConfig.class, operations)
+                .withPropertyValues("bokrilog.operations.audit-digest-key=" + key(), "bokrilog.tombstone.digest-key=" + key());
+        tombstone.withInitializer(context -> role(context, "api")).run(context ->
+                assertThat(context).hasNotFailed().doesNotHaveBean("operationsTombstoneDigest"));
+        tombstone.withInitializer(context -> role(context, "worker")).run(context ->
+                assertThat(context).hasNotFailed().hasBean("operationsTombstoneDigest"));
+        for (String value : new String[] {"API", " api ", "api ", " api", "Api"}) {
+            tombstone.withInitializer(context -> role(context, value)).run(context ->
+                    assertThat(context).as("'" + value + "'").hasFailed());
+            assertThatThrownBy(() -> BokrilogRole.parse(value)).as("'" + value + "'")
+                    .isInstanceOf(IllegalStateException.class);
+        }
+    }
+
+    /** 공백을 그대로 지키는 속성 출처(환경 변수처럼 — 시험 속성 쌍은 앞뒤 공백을 자른다). */
+    private static void role(ConfigurableApplicationContext context, String value) {
+        context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("role", Map.of("bokrilog.role", value)));
+    }
+
+    /** 32바이트 키(base64). 실행 시점에 만든다(gitleaks). */
+    private static String key() {
+        byte[] raw = new byte[32];
+        new SecureRandom().nextBytes(raw);
+        return Base64.getEncoder().encodeToString(raw);
     }
 
     @Test

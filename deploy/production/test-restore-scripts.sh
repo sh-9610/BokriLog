@@ -12,7 +12,8 @@
 #                               이름·운영 프로젝트와 같은 이름·tag 이미지·숫자 아닌 tombstone lag·운영 모드의 ci 환경·override 없는
 #                               리허설·알 수 없는 인자·설정 없음 → 2.
 #   tombstone-export.sh         알 수 없는 인자·운영 환경의 리허설·recipient 없음·backup key와 같은 recipient·identity 없음 → 2.
-#   backup-lib.sh               `epoch_of_iso`(UTC·시간대·소수·모양 밖·달의 길이·윤년·시간대 범위).
+#   backup-lib.sh               `epoch_of_iso`(UTC·시간대·소수·모양 밖·달의 길이·윤년·시간대 범위), `export_failures`(성공 기록·사본
+#                               파기 실패를 함께 싣는다 — Story 5.3).
 #
 # 실행: bash deploy/production/test-restore-scripts.sh
 #
@@ -295,6 +296,17 @@ export_run() {
 rehearsal_env=(BOKRILOG_ENV=ci "BOKRILOG_COMPOSE_OVERRIDE=${override}")
 export_run -- --now
 expect '알 수 없는 인자 → 2' 2 '알 수 없는 인자'
+export_run BOKRILOG_TOMBSTONE_FAULT=record --
+expect '운영 모드의 결함 주입 → 2' 2 '리허설에서만'
+# Story 5.3: 성공 기록 실패(RECORD_FAILED)는 24시간 지난 사본 파기를 건너뛰지 않는다 — 실패 보고(`export_failures`)는 파기 뒤에야 한다.
+record_fail_line="$(grep -n 'failures="$(export_failures ' "${script_dir}/tombstone-export.sh" | awk -F: 'NR == 1 { print $1 }')"
+purge_loop_line="$(grep -n 'deletefile "${offsite_remote}/tombstones/${name}"' "${script_dir}/tombstone-export.sh" | awk -F: 'NR == 1 { print $1 }')"
+if [ -n "${record_fail_line}" ] && [ -n "${purge_loop_line}" ] && [ "${record_fail_line}" -gt "${purge_loop_line}" ]; then
+  record_pass 'tombstone-export.sh · RECORD_FAILED는 사본 파기 뒤에 끝낸다'
+else
+  record_fail 'tombstone-export.sh · RECORD_FAILED는 사본 파기 뒤에 끝낸다' \
+    "RECORD_FAILED 줄 ${record_fail_line:-없음}, 파기 줄 ${purge_loop_line:-없음}"
+fi
 export_run BOKRILOG_ENV=production "BOKRILOG_COMPOSE_OVERRIDE=${override}" -- --rehearsal
 expect '운영 환경의 리허설 → 2' 2 '리허설은'
 export_run "${rehearsal_env[@]}" -- --rehearsal
@@ -313,6 +325,19 @@ printf 'fixture-identity-placeholder\n' >"${tkeys}/identity.key"
 chmod 600 "${tkeys}/identity.key"
 export_run "${rehearsal_env[@]}" -- --rehearsal
 expect '맞는 recipient·identity · 다음 준비(도구 없음) → 2' 2 'age·rclone이 고정 버전으로 설치돼 있지 않다'
+
+# ---------------------------------------------------------------- backup-lib.sh export_failures
+
+printf '\nbackup-lib.sh export_failures\n'
+assert_equals '실패 없음 → 빈 줄' "$(export_failures false false 0)" ''
+assert_equals '기록 실패만' "$(export_failures true false 0)" \
+  'RECORD_FAILED (내보내기 성공을 기록하지 못했다 — 사본 파기는 했다)'
+assert_equals '파기 실패만' "$(export_failures false false 2)" 'PURGE_FAILED (24시간을 넘긴 사본 2개를 지우지 못했다)'
+assert_equals '기록 실패와 파기 실패를 함께 싣는다' "$(export_failures true false 1)" \
+  'RECORD_FAILED (내보내기 성공을 기록하지 못했다 — 사본 파기는 했다); PURGE_FAILED (24시간을 넘긴 사본 1개를 지우지 못했다)'
+assert_equals '기록 실패와 목록 실패를 함께 싣는다' "$(export_failures true true 0)" \
+  'RECORD_FAILED (내보내기 성공을 기록하지 못했다 — 사본 파기는 했다); PURGE_FAILED (tombstones/를 읽지 못했다)'
+assert_equals '목록 실패만' "$(export_failures false true 0)" 'PURGE_FAILED (tombstones/를 읽지 못했다)'
 
 # ---------------------------------------------------------------- backup-lib.sh epoch_of_iso
 

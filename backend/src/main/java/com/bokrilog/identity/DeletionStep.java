@@ -11,8 +11,8 @@ package com.bokrilog.identity;
  *   <li>{@link #PORTFOLIO}·{@link #SYNC}·{@link #PLAN}·{@link #SOURCE} — 외래키가 {@code ON DELETE RESTRICT}라 이 순서다.
  *   <li>{@link #OPERATIONS} — 감사 수행자·제한 target 비식별과 문의 삭제. 감사 원장 추가 잠금을 쥐므로 sync 단계 뒤다.
  *   <li>{@link #ENGAGEMENT} — 광고 동의·광고 자격 결정.
- *   <li>{@link #IDENTITY} — 요청 행·세션·계정 payload 삭제, tombstone 기록, {@code DELETED} 전환. 모든 모듈이 {@code identity_account}를
- *       가리키므로 마지막이다.
+ *   <li>{@link #IDENTITY} — 요청 행·세션·계정 payload 삭제, tombstone 집합 닫기·보존 연장(단계 모드의 tombstone 기록은 첫 단계 앞이다 —
+ *       Story 5.3), {@code DELETED} 전환. 모든 모듈이 {@code identity_account}를 가리키므로 마지막이다.
  * </ul>
  */
 public enum DeletionStep {

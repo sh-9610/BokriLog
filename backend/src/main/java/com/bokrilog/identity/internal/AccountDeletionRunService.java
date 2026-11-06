@@ -3,6 +3,9 @@ package com.bokrilog.identity.internal;
 import com.bokrilog.identity.AccountDeletionRunApi;
 import com.bokrilog.identity.DeletionStep;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -95,7 +98,7 @@ class AccountDeletionRunService implements AccountDeletionRunApi {
         }
         for (var failure : failures.entrySet()) {
             String code = failure.getValue();
-            if (!STEP_FAILED.equals(code) && !RESIDUAL_FOUND.equals(code)) {
+            if (!STEP_FAILED.equals(code) && !RESIDUAL_FOUND.equals(code) && !TOMBSTONE_FAILED.equals(code)) {
                 throw new IllegalArgumentException("닫힌 실패 code가 아니다.");
             }
             if (repository.markStepRetryNeeded(lease.userId(), failure.getKey().name(), code,
@@ -163,6 +166,15 @@ class AccountDeletionRunService implements AccountDeletionRunApi {
             throw new IllegalStateException("재시도 필요 실행을 되돌리지 못했다.");
         }
         return new RetryOutcome.Accepted(false);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, Instant> operationalCompletions(Collection<String> requestIds) {
+        Map<String, Instant> completions = new LinkedHashMap<>();
+        repository.operationalCompletions(requestIds)
+                .forEach((requestId, erasedAt) -> completions.put(requestId, erasedAt.toInstant()));
+        return completions;
     }
 
     private List<StepState> stepsOf(UUID userId) {

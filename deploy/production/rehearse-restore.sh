@@ -18,10 +18,15 @@
 #    1. 백업 두 번      gen0(key k1) → key 회전 → gen1(key k2), checksum 둘째 줄의 dump 시작 시각, `latest`는 gen1/k2
 #    2. tombstone 없음  외부 `tombstones/latest` 없이 gen0 복원 → TOMBSTONES_UNAVAILABLE, 종료 1, 아무것도 띄우지 않음
 #    3. 삭제 표본       운영 대역에서 표본 계정 삭제(tombstone outbox 행 한 트랜잭션), 운영 환경·리허설 표지 없음이면 사유와 함께 거부
-#    4. 내보내기        기한 지난 outbox 행은 지워지고 파일에서 빠진다, 24시간 지난 사본 object는 지워지고 그 안의 것은 남는다, 머리의
-#                       키 ID·시각, latest 갱신 / 줄어든 내보내기는 TOMBSTONE_SHRANK·latest 불변 / 배포 중 내보내기는 건너뜀(0),
-#                       백업 중 복원은 BACKUP_IN_PROGRESS(1) — 둘 다 역할을 띄우지 않는다
-#    5. 정상 복원       삭제 **이전** gen0(과거 key k1)을 빈 격리 프로젝트에 → 표본 DELETED·잔여 0·세션 0, 유지 계정·자격정보 그대로,
+#    3b. 삭제 실행      (Story 5.3) 백업 전에 요청된 삭제를 운영 대역의 Worker가 집는다 — 첫 claim의 tombstone은 요청 시각(V30), 운영
+#                       완료가 집합을 닫고 보존을 늘린다, 감사 행은 수뿐
+#    4. 내보내기        기한 지난 미완료 outbox 행도 남고 실린다, 24시간 지난 사본 object는 지워지고 그 안의 것은 남는다, 머리의
+#                       키 ID·시각, latest 갱신 / (Story 5.3) 미완료로 실린 행이 백업 파기 완료가 되면 다음 성공한 내보내기에 DESTROYED로
+#                       한 번 실리고(줄어듦 없음) 그다음 내보내기가 지우고 뺀다 / 줄어든 내보내기(살아 있는 행·기한 지난 미완료 행이
+#                       빠졌다)는 TOMBSTONE_SHRANK·latest 불변 / 배포 중 내보내기는 건너뜀(0), 백업 중 복원은 BACKUP_IN_PROGRESS(1) —
+#                       둘 다 역할을 띄우지 않는다
+#    5. 정상 복원       삭제 **이전** gen0(과거 key k1)을 빈 격리 프로젝트에 → 표본 DELETED·잔여 0·세션 0, 실행 전(삭제 진행 중·요청
+#                       행)이던 요청 계정도 첫 claim의 tombstone으로 DELETED(Story 5.3), 유지 계정·자격정보 그대로,
 #                       키 ID 일치, 자격정보 표본 1/1, 불변식 통과, API·Worker 기동(OIDC·Bybit·공개 URL 값 없음, env restore),
 #                       nginx·공개 포트 없음, RPO 통과
 #    6. RPO 경계        dump 시작 + 24h → 통과(0), + 24h 1초 → RPO_EXCEEDED(1) / dump 시작이 없는 옛 generation은 날짜 00:00 UTC 기준
@@ -317,6 +322,14 @@ for pair in "${kept_user}:${kept_email}" "${sample_user}:${sample_email}"; do
   seed_sql="${seed_sql} INSERT INTO identity_social_link (link_id, user_id, provider, issuer, subject) VALUES (gen_random_uuid(), '${user}', 'google', 'https://issuer.rehearsal.test', '${email}');"
   seed_sql="${seed_sql} INSERT INTO spring_session (primary_id, session_id, creation_time, last_access_time, max_inactive_interval, expiry_time, principal_name) VALUES ('$(uuid_v4)', '$(uuid_v4)', 0, 0, 1800, 4102444800000, '${user}');"
 done
+# 삭제를 요청했지만 아직 실행되지 않은 계정(Story 5.3 "실행 전 복원"). 백업 gen0·gen1은 이 상태(삭제 진행 중·요청 행)를 담는다. 뒤에서
+# 운영 대역의 Worker가 이 요청을 집어 첫 단계에서 tombstone을 남기고 끝까지 지운다.
+pending_user="$(uuid_v4)"
+pending_email="rehearsal.pending.$(random_hex 5)@bokrilog.test"
+seed_sql="${seed_sql} INSERT INTO identity_account_lifecycle (user_id, state) VALUES ('${pending_user}', 'DELETION_IN_PROGRESS');"
+seed_sql="${seed_sql} INSERT INTO identity_account (user_id) VALUES ('${pending_user}');"
+seed_sql="${seed_sql} INSERT INTO identity_social_link (link_id, user_id, provider, issuer, subject) VALUES (gen_random_uuid(), '${pending_user}', 'google', 'https://issuer.rehearsal.test', '${pending_email}');"
+seed_sql="${seed_sql} INSERT INTO identity_deletion_request (request_id, user_id, policy_version, notice_hash, idempotency_key_digest) VALUES ('rehearsal-pending-1', '${pending_user}', 'ACCOUNT-DELETION-1.0', '$(random_hex 32)', '$(random_hex 32)');"
 compose exec -T postgres psql --username=bokrilog --dbname=bokrilog --no-password --quiet --set=ON_ERROR_STOP=1 \
   --command="${seed_sql}" >>"${outputs}/psql.log" 2>&1 || fail_setup '표지 데이터를 넣지 못했다.' "$(tail -5 "${outputs}/psql.log")"
 
@@ -502,10 +515,44 @@ assert_equals '삭제 표본 · 운영 대역에서 DELETED' \
   "$(psql_src "SELECT state FROM identity_account_lifecycle WHERE user_id = '${sample_user}'")" 'DELETED'
 assert_equals '삭제 표본 · outbox 행 하나(같은 트랜잭션)' \
   "$(psql_src "SELECT count(*) FROM operations_deletion_tombstone WHERE request_id = 'rehearsal-delete-1'")" '1'
-# 기한이 지난 outbox 행(40일 전 요청).
+# 기한이 지난 outbox 행(40일 전 요청). 집합이 열린 채 멈춘 실행이라 백업 파기가 완료가 아니고(Story 5.3) 기한이 지나도 남고 실린다 —
+# 복원이 옮긴 뒤 닫힐 길이 없으므로 restore-apply가 닫는다. (닫힌 집합의 미완료 행은 아래 4에서 Worker가 멈춘 뒤 넣는다 — 3b의 Worker
+# 판정이 그 행을 먼저 완료로 바꾸지 않게.)
 compose exec -T postgres psql --username=bokrilog --dbname=bokrilog --no-password --quiet --set=ON_ERROR_STOP=1 \
-  --command="INSERT INTO operations_deletion_tombstone (request_id, user_digest, requested_at, destroy_after, origin) SELECT 'rehearsal-expired-1', repeat('e', 64), t.at, t.at + interval '840 hours', 'DELETION' FROM (SELECT date_trunc('milliseconds', now()) - interval '40 days' AS at) t" \
+  --command="INSERT INTO operations_deletion_tombstone (request_id, user_digest, requested_at, destroy_after, origin) SELECT 'rehearsal-unfinished-1', repeat('f', 64), t.at, t.at + interval '840 hours', 'DELETION' FROM (SELECT date_trunc('milliseconds', now()) - interval '40 days' AS at) t" \
   >>"${outputs}/psql.log" 2>&1 || fail_setup '기한 지난 outbox 행을 넣지 못했다.'
+
+# ---------------------------------------------------------------- 3b. 삭제 실행(Story 5.3 — Worker 첫 claim의 tombstone)
+
+# 운영 대역의 Worker(운영 compose의 그 서비스, BOKRILOG_ENV=ci, tombstone 키를 받는다)가 삭제 요청을 집는다. 첫 단계 앞에서 요청 시각(V30)의
+# tombstone을 남기고, 끝까지 지우면 마지막 단계가 영향 generation 집합을 닫고 보존을 늘린다. 백업 gen0·gen1은 그 전의 상태(삭제 진행
+# 중·요청 행)를 담는다 — 아래 정상 복원이 그 상태를 복원하고 이 tombstone으로 그 계정을 다시 지운다("실행 전 복원").
+failed_before="${tests_failed}"
+printf '\n3b. 삭제 실행(Worker 첫 claim)\n'
+pending_requested="$(psql_src "SELECT to_char(date_trunc('milliseconds', requested_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS') FROM identity_deletion_request WHERE request_id = 'rehearsal-pending-1'")"
+compose up -d --no-deps --wait --wait-timeout 180 worker >>"${outputs}/stack.log" 2>&1 \
+  || fail_setup 'Worker가 준비되지 않았다.' "$(compose logs --no-color worker 2>&1 | tail -20)"
+waited=0
+while [ "${waited}" -lt 120 ]; do
+  [ "$(psql_src "SELECT state FROM identity_account_lifecycle WHERE user_id = '${pending_user}'")" = DELETED ] && break
+  sleep 2
+  waited=$((waited + 2))
+done
+compose logs --no-color worker >"${outputs}/source-worker.log" 2>&1
+compose stop worker >>"${outputs}/stack.log" 2>&1
+compose rm -f worker >>"${outputs}/stack.log" 2>&1
+assert_equals '삭제 실행 · Worker가 요청 계정을 끝까지 지웠다' \
+  "$(psql_src "SELECT state FROM identity_account_lifecycle WHERE user_id = '${pending_user}'")" 'DELETED'
+assert_equals '삭제 실행 · tombstone의 요청 시각은 삭제 요청(V30)의 시각이다(첫 claim)' \
+  "$(psql_src "SELECT to_char(requested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS') FROM operations_deletion_tombstone WHERE request_id = 'rehearsal-pending-1'")" \
+  "${pending_requested}"
+assert_equals '삭제 실행 · 운영 완료가 집합을 닫고 보존을 늘렸다(줄지 않는다)' \
+  "$(psql_src "SELECT origin || ':' || (closed_at IS NOT NULL) || ':' || (destroy_after >= closed_at + interval '840 hours') || ':' || (destroy_after >= requested_at + interval '840 hours') FROM operations_deletion_tombstone WHERE request_id = 'rehearsal-pending-1'")" \
+  'DELETION:true:true:true'
+assert_equals '삭제 실행 · 감사 SYSTEM 행은 기록·연장 한 번씩이고 수뿐이다' \
+  "$(psql_src "SELECT string_agg(reason || ':' || target || ':' || (details->>'count'), ',' ORDER BY reason) FROM operations_audit_event WHERE command = 'tombstone' AND reason IN ('RECORDED', 'RETENTION_EXTENDED') AND actor_kind = 'SYSTEM' AND actor_user_id IS NULL")" \
+  'RECORDED:deletion-tombstone:1,RECORDED:deletion-tombstone:1,RETENTION_EXTENDED:deletion-tombstone:1,RETENTION_EXTENDED:deletion-tombstone:1'
+show_log_on_failure "${failed_before}"
 
 # ---------------------------------------------------------------- 4. 내보내기
 
@@ -517,6 +564,10 @@ for fake in "${old_object}" "${recent_object}"; do
   printf 'older-tombstone-object\n' | store rcat "offsite:${offsite_bucket}/tombstones/${fake}" >>"${outputs}/stack.log" 2>&1 \
     || fail_setup '앞선 사본 object를 올리지 못했다.'
 done
+# 기한이 지난 닫힌 집합의 미완료 행(40일 전 요청, Story 5.3). 기한이 지나도 남고 실린다 — 아래에서 완료로 바꿔 지워지는 전이를 본다.
+compose exec -T postgres psql --username=bokrilog --dbname=bokrilog --no-password --quiet --set=ON_ERROR_STOP=1 \
+  --command="INSERT INTO operations_deletion_tombstone (request_id, user_digest, requested_at, destroy_after, origin, closed_at) SELECT 'rehearsal-expired-1', repeat('e', 64), t.at, t.at + interval '840 hours', 'DELETION', t.at FROM (SELECT date_trunc('milliseconds', now()) - interval '40 days' AS at) t" \
+  >>"${outputs}/psql.log" 2>&1 || fail_setup '기한 지난 닫힌 미완료 행을 넣지 못했다.'
 run_script '4. tombstone 내보내기' tombstone-export.sh --rehearsal
 assert_equals '내보내기 · 종료 0' "${run_status}" '0'
 latest="$(store cat "offsite:${offsite_bucket}/tombstones/latest" 2>/dev/null | tr -d '\r\n')"
@@ -530,8 +581,8 @@ assert_equals '내보내기 · 24시간 지난 사본 object는 지워졌다' \
   "$(printf '%s\n' "${tombstone_objects}" | grep -cxF "${old_object}" || true)" '0'
 assert_equals '내보내기 · 24시간 안의 사본 object는 남는다' \
   "$(printf '%s\n' "${tombstone_objects}" | grep -cxF "${recent_object}" || true)" '1'
-assert_equals '내보내기 · 기한 지난 outbox 행은 지워졌다' \
-  "$(psql_src "SELECT count(*) FROM operations_deletion_tombstone WHERE request_id = 'rehearsal-expired-1'")" '0'
+assert_equals '내보내기 · 기한이 지났어도 백업 파기가 끝나지 않은 행 둘은 남는다' \
+  "$(psql_src "SELECT count(*) FROM operations_deletion_tombstone WHERE request_id IN ('rehearsal-expired-1', 'rehearsal-unfinished-1')")" '2'
 peek="${work}/peek"
 mkdir -p "${peek}" && chmod 700 "${peek}"
 store copyto "offsite:${offsite_bucket}/tombstones/${latest}" "${peek}/latest.age" >>"${outputs}/stack.log" 2>&1
@@ -544,15 +595,74 @@ if matches "$(head -1 "${peek}/tombstones.txt" 2>/dev/null)" \
 else
   record_fail '내보내기 · 머리에 키 ID와 만든 시각이 있다' "$(head -1 "${peek}/tombstones.txt" 2>&1)"
 fi
-assert_equals '내보내기 · 사본은 머리와 살아 있는 행 하나' "$(awk 'NF' "${peek}/tombstones.txt" 2>/dev/null | wc -l | tr -d ' ')" '2'
+assert_equals '내보내기 · 사본은 머리와 살아 있는 행 넷(표본·삭제 실행·기한 지난 미완료 둘)' "$(awk 'NF' "${peek}/tombstones.txt" 2>/dev/null | wc -l | tr -d ' ')" '5'
+assert_contains '내보내기 · 기한이 지난 열린 미완료 행도 실렸다' "${peek}/tombstones.txt" ' rehearsal-unfinished-1 '
+assert_equals '내보내기 · 기한이 지난 닫힌 미완료 행은 PENDING으로 실렸다' \
+  "$(awk '$2 == "rehearsal-expired-1" { print $6 ":" $7 }' "${peek}/tombstones.txt")" 'PENDING:CLOSED'
 assert_contains '내보내기 · 표본의 요청 ID가 실렸다' "${peek}/tombstones.txt" ' rehearsal-delete-1 '
-if grep -F -e 'rehearsal-expired-1' -e "${sample_user}" -e "${kept_user}" "${peek}/tombstones.txt" >/dev/null; then
-  record_fail '내보내기 · 기한 지난 행·사용자 ID 원문이 없다' "$(cat "${peek}/tombstones.txt")"
+# Story 5.3: 줄은 digest·요청 ID·요청 시각·보존 기한·파기 기한·파기 상태·집합·영향 generation 여덟 칸이다(사용자 원문 없음).
+assert_equals '내보내기 · 삭제 실행의 줄은 여덟 칸이고 닫힌 집합·파기 미완료다' \
+  "$(awk '$2 == "rehearsal-pending-1" { print NF ":" $6 ":" $7 }' "${peek}/tombstones.txt")" '8:PENDING:CLOSED'
+if grep -F -e "${sample_user}" -e "${kept_user}" -e "${pending_user}" "${peek}/tombstones.txt" >/dev/null; then
+  record_fail '내보내기 · 사용자 ID 원문이 없다' "$(cat "${peek}/tombstones.txt")"
 else
-  record_pass '내보내기 · 기한 지난 행·사용자 ID 원문이 없다'
+  record_pass '내보내기 · 사용자 ID 원문이 없다'
 fi
 sample_digest="$(awk '$2 == "rehearsal-delete-1" { print $1 }' "${peek}/tombstones.txt")"
 matches "${sample_digest:-}" '[0-9a-f]{64}' || record_fail '내보내기 · 표본 digest가 64자 16진이다' "실제 '${sample_digest}'"
+rm -rf "${peek}"
+# 사본을 올리고 대조하고 latest를 바꾼 뒤에만 성공이 기록된다(Story 5.3 — Worker gauge·경보 TombstoneExportStale의 근거).
+assert_equals '내보내기 · 성공 기록 하나(실린 수)와 감사 SYSTEM 행' \
+  "$(psql_src "SELECT (SELECT string_agg(CAST(tombstones AS text), ',') FROM operations_tombstone_export WHERE exported_at IS NOT NULL) || '|' || (SELECT string_agg(details->>'count', ',' ORDER BY sequence) FROM operations_audit_event WHERE command = 'tombstone' AND reason = 'EXPORTED')")" \
+  '4|4'
+show_log_on_failure "${failed_before}"
+
+# Story 5.3 완료 전이: 미완료로 실렸던 행이 백업 파기 완료가 되면(판정을 흉내 낸다) 다음 내보내기는 그 행을 DESTROYED로 한 번 싣고
+# (기한이 지났어도 — 앞선 사본에 실린 행이 바로 빠지면 줄어듦 검사가 영원히 막힌다) 성공으로 기록된다. 그 성공 뒤의 내보내기가 비로소 그
+# 행을 지우고 뺀다 — 앞선 사본의 그 줄은 DESTROYED이고 기한이 지났으므로 줄어듦이 아니다.
+failed_before="${tests_failed}"
+compose exec -T postgres psql --username=bokrilog --dbname=bokrilog --no-password --quiet --set=ON_ERROR_STOP=1 \
+  --command="UPDATE operations_deletion_tombstone SET status = 'DESTROYED', destroyed_at = statement_timestamp() WHERE request_id = 'rehearsal-expired-1'" \
+  >>"${outputs}/psql.log" 2>&1 || fail_setup '기한 지난 행을 완료로 바꾸지 못했다.'
+sleep 1
+run_script '4. 완료 전이 뒤의 내보내기' tombstone-export.sh --rehearsal
+assert_equals '완료 전이 · 종료 0(줄어듦 아님)' "${run_status}" '0'
+if grep -F 'TOMBSTONE_SHRANK' "${run_log}" >/dev/null; then
+  record_fail '완료 전이 · TOMBSTONE_SHRANK가 없다' "$(tail -5 "${run_log}")"
+else
+  record_pass '완료 전이 · TOMBSTONE_SHRANK가 없다'
+fi
+latest="$(store cat "offsite:${offsite_bucket}/tombstones/latest" 2>/dev/null | tr -d '\r\n')"
+mkdir -p "${peek}" && chmod 700 "${peek}"
+store copyto "offsite:${offsite_bucket}/tombstones/${latest}" "${peek}/latest.age" >>"${outputs}/stack.log" 2>&1
+"${age_bin}" -d -i "${tombstone_keys_dir}/identity.key" -o "${peek}/tombstones.txt" "${peek}/latest.age" 2>>"${outputs}/keys.log"
+assert_equals '완료 전이 · 그 행은 DESTROYED로 한 번 실렸다' \
+  "$(awk '$2 == "rehearsal-expired-1" { print $6 ":" $7 }' "${peek}/tombstones.txt")" 'DESTROYED:CLOSED'
+rm -rf "${peek}"
+assert_equals '완료 전이 · 그 성공이 기록되기 전에는 지우지 않았다(행이 남고 성공 기록 둘)' \
+  "$(psql_src "SELECT (SELECT count(*) FROM operations_deletion_tombstone WHERE request_id = 'rehearsal-expired-1') || '|' || (SELECT count(*) FROM operations_tombstone_export WHERE exported_at IS NOT NULL)")" \
+  '1|2'
+sleep 1
+run_script '4. 완료 행이 실린 성공 뒤의 내보내기' tombstone-export.sh --rehearsal
+assert_equals '완료 행 제외 · 종료 0(줄어듦 아님)' "${run_status}" '0'
+if grep -F 'TOMBSTONE_SHRANK' "${run_log}" >/dev/null; then
+  record_fail '완료 행 제외 · TOMBSTONE_SHRANK가 없다' "$(tail -5 "${run_log}")"
+else
+  record_pass '완료 행 제외 · TOMBSTONE_SHRANK가 없다'
+fi
+assert_equals '완료 행 제외 · 그 행은 지워졌고 만료 삭제 감사 행이 남았다' \
+  "$(psql_src "SELECT (SELECT count(*) FROM operations_deletion_tombstone WHERE request_id = 'rehearsal-expired-1') || '|' || (SELECT string_agg(details->>'count', ',' ORDER BY sequence) FROM operations_audit_event WHERE command = 'tombstone' AND reason = 'EXPIRED_PURGED')")" \
+  '0|1'
+latest="$(store cat "offsite:${offsite_bucket}/tombstones/latest" 2>/dev/null | tr -d '\r\n')"
+mkdir -p "${peek}" && chmod 700 "${peek}"
+store copyto "offsite:${offsite_bucket}/tombstones/${latest}" "${peek}/latest.age" >>"${outputs}/stack.log" 2>&1
+"${age_bin}" -d -i "${tombstone_keys_dir}/identity.key" -o "${peek}/tombstones.txt" "${peek}/latest.age" 2>>"${outputs}/keys.log"
+if grep -F ' rehearsal-expired-1 ' "${peek}/tombstones.txt" >/dev/null; then
+  record_fail '완료 행 제외 · 새 사본에 그 행이 없다' "$(cat "${peek}/tombstones.txt")"
+else
+  record_pass '완료 행 제외 · 새 사본에 그 행이 없다'
+fi
+assert_contains '완료 행 제외 · 기한 지난 열린 미완료 행은 계속 실린다' "${peek}/tombstones.txt" ' rehearsal-unfinished-1 '
 rm -rf "${peek}"
 show_log_on_failure "${failed_before}"
 
@@ -567,12 +677,47 @@ run_script '4. 줄어든 내보내기' tombstone-export.sh --rehearsal
 assert_equals '줄어듦 · 종료 1' "${run_status}" '1'
 assert_contains '줄어듦 · TOMBSTONE_SHRANK' "${run_log}" 'TOMBSTONE_SHRANK'
 assert_equals '줄어듦 · latest는 그대로다' "$(store cat "offsite:${offsite_bucket}/tombstones/latest" 2>/dev/null | tr -d '\r\n')" "${latest}"
+assert_equals '줄어듦 · 성공으로 기록하지 않는다' \
+  "$(psql_src 'SELECT count(*) FROM operations_tombstone_export WHERE exported_at IS NOT NULL')" '3'
 compose exec -T postgres psql --username=bokrilog --dbname=bokrilog --no-password --quiet --set=ON_ERROR_STOP=1 \
   --command="INSERT INTO operations_deletion_tombstone SELECT * FROM rehearsal_saved_tombstone; DROP TABLE rehearsal_saved_tombstone" \
   >>"${outputs}/psql.log" 2>&1 || fail_setup 'outbox 행을 되돌리지 못했다.'
 assert_equals '줄어듦 · 되돌린 행이 같다' \
   "$(psql_src "SELECT request_id || ',' || user_digest || ',' || requested_at || ',' || destroy_after || ',' || origin FROM operations_deletion_tombstone WHERE request_id = 'rehearsal-delete-1'")" \
   "${saved_row}"
+# 기한이 지난 미완료 행(Story 5.3 — 그 계정이 든 백업이 남아 있을 수 있다)이 빠져도 줄어듦이다. 앞선 사본의 그 줄은 기한과 무관하게 본다.
+saved_unfinished="$(psql_src "SELECT request_id || ',' || user_digest || ',' || requested_at || ',' || destroy_after || ',' || origin FROM operations_deletion_tombstone WHERE request_id = 'rehearsal-unfinished-1'")"
+compose exec -T postgres psql --username=bokrilog --dbname=bokrilog --no-password --quiet --set=ON_ERROR_STOP=1 \
+  --command="CREATE TABLE rehearsal_saved_tombstone AS SELECT * FROM operations_deletion_tombstone WHERE request_id = 'rehearsal-unfinished-1'; DELETE FROM operations_deletion_tombstone WHERE request_id = 'rehearsal-unfinished-1'" \
+  >>"${outputs}/psql.log" 2>&1 || fail_setup '기한 지난 미완료 행을 잠시 빼지 못했다.'
+sleep 1
+run_script '4. 기한 지난 미완료 행이 빠진 내보내기' tombstone-export.sh --rehearsal
+assert_equals '줄어듦(미완료) · 종료 1' "${run_status}" '1'
+assert_contains '줄어듦(미완료) · TOMBSTONE_SHRANK' "${run_log}" 'TOMBSTONE_SHRANK'
+assert_equals '줄어듦(미완료) · latest는 그대로다' "$(store cat "offsite:${offsite_bucket}/tombstones/latest" 2>/dev/null | tr -d '\r\n')" "${latest}"
+compose exec -T postgres psql --username=bokrilog --dbname=bokrilog --no-password --quiet --set=ON_ERROR_STOP=1 \
+  --command="INSERT INTO operations_deletion_tombstone SELECT * FROM rehearsal_saved_tombstone; DROP TABLE rehearsal_saved_tombstone" \
+  >>"${outputs}/psql.log" 2>&1 || fail_setup '기한 지난 미완료 행을 되돌리지 못했다.'
+assert_equals '줄어듦(미완료) · 되돌린 행이 같다' \
+  "$(psql_src "SELECT request_id || ',' || user_digest || ',' || requested_at || ',' || destroy_after || ',' || origin FROM operations_deletion_tombstone WHERE request_id = 'rehearsal-unfinished-1'")" \
+  "${saved_unfinished}"
+show_log_on_failure "${failed_before}"
+
+# 성공 기록 실패(Story 5.3, 리허설 결함 주입 `record`): 사본은 올라가고 latest도 바뀌지만 기록은 없다 — 그래도 24시간 지난 사본 파기는 하고
+# 끝에서 RECORD_FAILED(1)로 알린다.
+failed_before="${tests_failed}"
+stale_object="$(stamp_of $(($(date -u +%s) - 26 * 3600))).age"
+printf 'older-tombstone-object\n' | store rcat "offsite:${offsite_bucket}/tombstones/${stale_object}" >>"${outputs}/stack.log" 2>&1 \
+  || fail_setup '앞선 사본 object를 올리지 못했다.'
+sleep 1
+BOKRILOG_TOMBSTONE_FAULT=record run_script '4. 성공 기록이 실패한 내보내기' tombstone-export.sh --rehearsal
+assert_equals '기록 실패 · 종료 1' "${run_status}" '1'
+assert_contains '기록 실패 · RECORD_FAILED' "${run_log}" 'RECORD_FAILED'
+assert_equals '기록 실패 · 그래도 24시간 지난 사본은 지웠다' \
+  "$(store lsf --files-only "offsite:${offsite_bucket}/tombstones" 2>/dev/null | grep -cxF "${stale_object}" || true)" '0'
+assert_equals '기록 실패 · 성공으로 기록하지 않았다' \
+  "$(psql_src 'SELECT count(*) FROM operations_tombstone_export WHERE exported_at IS NOT NULL')" '3'
+latest="$(store cat "offsite:${offsite_bucket}/tombstones/latest" 2>/dev/null | tr -d '\r\n')"
 show_log_on_failure "${failed_before}"
 
 # 배포·백업이 잠금을 쥐면 내보내기는 조용히 건너뛰고(종료 0, 역할 없음) 복원은 시작하지 않는다(종료 1, 역할 없음).
@@ -600,8 +745,16 @@ run_script "5. 정상 복원(r2 ← ${day0}, key k1, 장애 ${normal_failure_at}
   --failure-at "${normal_failure_at}" --project bokrilog-restore-r2 --rehearsal
 assert_equals '정상 복원 · 종료 0' "${run_status}" '0'
 assert_contains '정상 복원 · 검증 보고가 통과다' "${run_log}" 'result=PASSED'
-assert_contains '정상 복원 · tombstone 하나가 복원된 계정과 맞았다' "${run_log}" 'matched=1 erased=1'
+assert_contains '정상 복원 · tombstone 둘(표본·삭제 실행)이 복원된 계정과 맞았다' "${run_log}" 'matched=2 erased=2'
+# Story 5.3 "실행 전 복원": gen0은 삭제 요청 뒤·실행 전의 상태(삭제 진행 중·요청 행)를 담았다 — 첫 claim의 tombstone으로 다시 지웠다.
+assert_equals '실행 전 복원 · 요청 계정은 DELETED이고 요청 행·payload가 없다' \
+  "$(psql_restored bokrilog-restore-r2 "SELECT state || ':' || (SELECT count(*) FROM identity_deletion_request WHERE user_id = '${pending_user}') || ':' || (SELECT count(*) FROM identity_account WHERE user_id = '${pending_user}') FROM identity_account_lifecycle WHERE user_id = '${pending_user}'")" \
+  'DELETED:0:0'
+assert_equals '실행 전 복원 · 복원 적용의 감사 SYSTEM 행은 수뿐이다' \
+  "$(psql_restored bokrilog-restore-r2 "SELECT reason || ':' || target || ':' || (details->>'erased') || ':' || (details->>'matched') FROM operations_audit_event WHERE command = 'tombstone' AND reason LIKE 'RESTORE%'")" \
+  'RESTORE_APPLIED:deletion-tombstone:2:2'
 assert_contains '정상 복원 · 사본의 키 ID가 맞았다' "${run_log}" 'key_id=MATCHED'
+assert_equals '정상 복원 · 맞는 계정 없이 열린 채 옮긴 tombstone은 restore-apply가 닫았다'   "$(psql_restored bokrilog-restore-r2 "SELECT origin || ':' || (closed_at IS NOT NULL) || ':' || (destroy_after >= closed_at + interval '840 hours') FROM operations_deletion_tombstone WHERE request_id = 'rehearsal-unfinished-1'")"   'RESTORE:true:true'
 assert_contains '정상 복원 · 표본 자격정보가 지금 key ring으로 풀렸다' "${run_log}" 'credentials_opened=1/1 active_key=PRESENT'
 assert_contains '정상 복원 · RPO 통과' "${run_log}" 'RPO 통과'
 assert_equals '정상 복원 · 표본은 DELETED' \
@@ -762,13 +915,13 @@ show_log_on_failure "${failed_before}"
 
 printf '\n12. 누출 검사\n'
 restored bokrilog-restore-r2 logs --no-color >"${outputs}/restored-containers.log" 2>&1
-secret_values="${kept_user} ${sample_user} ${kept_email} ${sample_email} ${s3_secret} AGE-SECRET-KEY- ${sample_digest:-} ${api_secret}"
+secret_values="${kept_user} ${sample_user} ${pending_user} ${kept_email} ${sample_email} ${pending_email} ${s3_secret} AGE-SECRET-KEY- ${sample_digest:-} ${api_secret}"
 for value in $(awk -F= '/^BOKRILOG_(AUDIT|TOMBSTONE)_DIGEST_KEY=/ { print $2 } /^BOKRILOG_SOURCE_CREDENTIAL_KEYS=/ { sub(/^[^:]*:/, "", $2); print $2 }' "${secrets_file}"); do
   secret_values="${secret_values} ${value}"
 done
 leaks=''
 for value in ${secret_values}; do
-  for file in "${outputs}"/run-*.log "${outputs}"/deletion-*.log "${outputs}/restored-containers.log" \
+  for file in "${outputs}"/run-*.log "${outputs}"/deletion-*.log "${outputs}/restored-containers.log" "${outputs}/source-worker.log" \
     "${restore_dir}"/logs/*.log "${tombstone_dir}"/logs/*.log; do
     [ -f "${file}" ] || continue
     grep -F -- "${value}" "${file}" >/dev/null && leaks="${leaks} ${file##*/}"

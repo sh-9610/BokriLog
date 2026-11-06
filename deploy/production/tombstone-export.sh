@@ -6,20 +6,28 @@
 #   1. 배포·백업과 같은 잠금(`$BOKRILOG_STATE_DIR/.lock`, kind `tombstone`)을 쥔다. 배포·백업·복원이 쥐고 있으면 **조용히 건너뛴다**(종료 0과
 #      한 줄 — 다음 주기가 다시 돈다. 백업은 이 내보내기가 쥔 잠금을 5분까지 기다린다). 소유자가 죽은 잠금(`LOCK_STALE`)은 종료 1이다.
 #      앞선 실행의 임시본을 지운다.
-#   2. 일회성 `tombstone-export` 역할이 기한(+35일) 지난 outbox 행을 지우고, 파기 기한이 지금 + 24시간보다 뒤인 행 **전체**를 권한 700 임시
-#      디렉터리의 파일 하나로 쓴다(매번 전체 — "보냈다" 표시가 없어 재시도해도 결과가 같다). 파일 머리에 digest 키 ID와 만든 시각이 있다.
-#   3. **줄어듦 검사.** `latest`가 가리키는 앞선 사본을 받아 풀고, 그 사본에서 기한이 지금 + 25시간보다 뒤인 digest가 새 파일에 모두 있는지
-#      본다. 하나라도 없으면 `TOMBSTONE_SHRANK`이고 latest를 바꾸지 않는다(복원된 DB·잘못된 DB가 사본을 덮어 tombstone을 잃지 않게). 앞선
-#      사본을 풀 수 없거나(`PREVIOUS_UNREADABLE`) 키 ID가 다르면(`TOMBSTONE_KEY_CHANGED`) 역시 멈춘다.
+#   2. 일회성 `tombstone-export` 역할이 지워도 되는 outbox 행(아래 외부 수명)을 지우고, 실을 행 **전체**를 권한 700 임시 디렉터리의 파일
+#      하나로 쓴다(매번 전체 — 재시도해도 결과가 같다). 파일 머리에 digest 키 ID와 만든 시각이 있고, 옆 파일 `tombstones.txt.export-id`에
+#      이 내보내기의 번호(V32 `operations_tombstone_export`)가 있다 — 5의 성공 기록이 이 번호를 채운다.
+#   3. **줄어듦 검사.** `latest`가 가리키는 앞선 사본을 받아 풀고, 그 사본의 살아 있는 digest — 백업 파기가 완료(`DESTROYED`)가 아닌 줄은
+#      기한과 무관하게 전부, 완료된 줄과 네 칸 옛 줄은 기한이 지금 + 25시간보다 뒤인 것 — 가 새 파일에 모두 있는지 본다. 하나라도 없으면
+#      `TOMBSTONE_SHRANK`이고 latest를 바꾸지 않는다(복원된 DB·잘못된 DB가 사본을 덮어 tombstone을 잃지 않게). 앞선 사본을 풀 수
+#      없거나(`PREVIOUS_UNREADABLE`) 키 ID가 다르면(`TOMBSTONE_KEY_CHANGED`) 역시 멈춘다.
 #   4. 그 파일을 tombstone 전용 age recipient(`recipient.pub`, backup key와 다른 key)로 암호화하고 평문을 바로 지운다.
 #   5. OCI 밖 저장소(`backup.env`의 offsite_remote)의 `tombstones/<UTC YYYYMMDDTHHMMSSZ>.age`에 올리고 원격 SHA-256을 대조한 뒤에만
-#      `tombstones/latest`(그 object 이름 한 줄)를 갱신한다.
-#   6. 이름의 시각으로 24시간을 넘긴 사본 object를 지운다(새 사본은 남긴다).
+#      `tombstones/latest`(그 object 이름 한 줄)를 갱신한다. 그 뒤에만 같은 역할을 기록 모드(`BOKRILOG_TOMBSTONE_EXPORT_CONFIRM=<수>`,
+#      `BOKRILOG_TOMBSTONE_EXPORT_ID=<번호>`)로 띄워 성공을 기록한다(Story 5.3 — Worker gauge·경보 `TombstoneExportStale`). 기록하지 못해도
+#      6은 하고 끝에서 `RECORD_FAILED`다.
+#   6. 이름의 시각으로 24시간을 넘긴 사본 object를 지운다(새 사본은 남긴다). 끝의 실패 보고는 성공 기록·파기의 실패를 함께 싣는다
+#      (`export_failures`, 예 `RECORD_FAILED ...; PURGE_FAILED ...`).
 #
-# 외부 수명. 사본은 24시간만 남고 각 사본은 기한이 24시간보다 더 남은 행만 실으므로, 어느 tombstone도 외부에서 `requested_at + 35일`을
-# 넘겨 남지 않는다. tombstone은 요청 뒤 34일까지 사본에 실린다 — 복원은 30일을 넘긴 generation을 받지 않으므로 그 계정을 되살릴 수
-# 있는 복원은 언제나 그 tombstone을 본다(`DeletionTombstoneApi`). 남는 틈은 내보내기 주기(15분)다 — 그 사이의 삭제는 다음 실행이
-# 싣는다. 복원(`restore.sh`)은 `latest` 하나만 읽고, 그 사본이 장애 시각보다 1시간 넘게 앞서면 거부한다.
+# 외부 수명(Story 5.3). 보존 기한은 요청 + 35일이고 집합이 닫히면 `max(요청, 운영 완료) + 35일`로 늘어난다(줄지 않는다). 백업 파기가
+# 완료(`DESTROYED`)가 아닌 행은 기한과 무관하게 DB에 남고 매 사본에 실린다 — 그 계정이 든 백업이 남아 있을 수 있다. 완료된 행은 그
+# 상태로 **성공한** 사본(이 번호 이상의 내보내기가 성공으로 기록됐다)에 한 번 실린 뒤에만, 기한이 지나면 DB에서 지워지고 기한이 지금 +
+# 24시간보다 앞서면 사본에서 빠진다 — 앞선 사본에 미완료로 실린 행이 다음 사본에서 바로 빠져 줄어듦 검사가 영원히 막히지 않게. 사본은
+# 24시간만 남으므로 확인된 완료 행은 보존 기한을 넘겨 외부에 남지 않는다. 복원은 30일을 넘긴 generation을 받지 않으므로 그 계정을
+# 되살릴 수 있는 복원은 언제나 그 tombstone을 본다(`DeletionTombstoneApi`). 남는 틈은 내보내기 주기(15분)다 — 그 사이의 삭제는 다음
+# 실행이 싣는다. 복원(`restore.sh`)은 `latest` 하나만 읽고, 그 사본이 장애 시각보다 1시간 넘게 앞서면 거부한다.
 #
 # 설정(이름만 여기 있다)
 #   BOKRILOG_TOMBSTONE_KEYS_DIR  tombstone age key 디렉터리(기본 /etc/bokrilog/tombstone, 700): `recipient.pub`(공개 값, 첫 `age1…` 줄)과
@@ -33,7 +41,7 @@
 #
 # 종료 코드
 #   0 -- 내보내기·업로드·latest 갱신·파기 완료, 또는 다른 일이 잠금을 쥐어 건너뜀
-#   1 -- 단계 실패(역할·줄어듦·암호화·업로드·대조·파기)·죽은 잠금·중단
+#   1 -- 단계 실패(역할·줄어듦·암호화·업로드·대조·성공 기록·파기)·죽은 잠금·중단
 #   2 -- 준비 실패(인자·설정·도구·key 파일·권한·모드)
 
 set -uo pipefail
@@ -95,6 +103,18 @@ else
   [ -z "${override_file}" ] || prep_fail '운영 모드에 겹치는 compose 파일이 있다.'
 fi
 matches "${project}" 'bokrilog-[a-z][a-z0-9-]{0,39}' || prep_fail 'BOKRILOG_PROJECT는 bokrilog-<소문자·숫자·->여야 한다.'
+
+# 리허설 전용 결함 주입(쉼표 목록, Story 5.3): `record` — 성공 기록이 실패한다(사본 파기는 그대로 해야 한다). 운영에서는 거부한다.
+export_fault="${BOKRILOG_TOMBSTONE_FAULT:-}"
+if [ -n "${export_fault}" ] && [ "${rehearsal}" != true ]; then
+  prep_fail '결함 주입(BOKRILOG_TOMBSTONE_FAULT)은 리허설에서만 받는다.'
+fi
+has_export_fault() {
+  case ",${export_fault}," in
+    *",$1,"*) return 0 ;;
+  esac
+  return 1
+}
 
 [ -f "${config_file}" ] || prep_fail "설정 파일이 없다: ${config_file}"
 offsite_remote="$(kv_get "${config_file}" offsite_remote)"
@@ -232,6 +252,9 @@ esac
 key_id="$(printf '%s' "${header#"${tombstone_header}"}" | awk '{ print $1 }')"
 matches "${key_id}" '[0-9a-f]{16}' || fail 'EXPORT_FAILED (내보낸 파일 머리에 키 ID가 없다)'
 count="$(grep -cvE '^(#|[[:space:]]*$)' "${plain}" || true)"
+# 이 내보내기의 번호(성공 기록이 채운다). 역할이 사본 옆에 한 줄로 쓴다.
+export_id="$(head -1 "${io_dir}/tombstones.txt.export-id" 2>/dev/null | tr -d '\r\n')"
+matches "${export_id}" '[1-9][0-9]{0,17}' || fail 'EXPORT_FAILED (내보내기 번호가 없다)'
 
 # --------------------------------------------------------------------------
 # 3. 줄어듦 검사(앞선 사본의 살아 있는 digest가 새 파일에 모두 있어야 한다)
@@ -257,10 +280,14 @@ if [ -n "${previous}" ]; then
   fi
   required_after=$((now_epoch + retention_seconds + shrink_slack_seconds))
   lost=0
-  while read -r digest request requested destroy; do
+  # 줄의 앞 네 칸은 Story 3.10 모양 그대로다(digest·요청 ID·요청 시각·보존 기한). Story 5.3의 여섯째 칸은 파기 상태다 — 백업 파기가
+  # 완료(DESTROYED)가 아닌 행은 보존 기한과 무관하게 남아야 하고(DB도 지우지 않는다), 완료된 행과 네 칸 옛 줄은 기한이 남은 것만 본다.
+  while read -r digest request requested destroy deadline destruction _rest; do
     case "${digest}" in '#'* | '') continue ;; esac
-    destroy_epoch="$(epoch_of_iso "${destroy}")"
-    [ -n "${destroy_epoch}" ] && [ "${destroy_epoch}" -gt "${required_after}" ] || continue
+    if [ -z "${destruction}" ] || [ "${destruction}" = DESTROYED ]; then
+      destroy_epoch="$(epoch_of_iso "${destroy}")"
+      [ -n "${destroy_epoch}" ] && [ "${destroy_epoch}" -gt "${required_after}" ] || continue
+    fi
     awk -v d="${digest}" '$1 == d { found = 1 } END { exit !found }' "${plain}" || lost=$((lost + 1))
   done <"${work}/previous.txt"
   rm -f "${work}/previous.txt"
@@ -297,13 +324,33 @@ rclone_run copyto "${work}/latest" "${offsite_remote}/tombstones/latest" >>"${lo
   || fail 'LATEST_FAILED (latest가 새 사본을 가리키지 않는다)'
 say "  사본 ${object}, tombstone ${count}개, latest 갱신"
 
+# 성공 기록(Story 5.3). 사본을 올리고 대조하고 latest를 바꾼 뒤에만 같은 역할을 기록 모드로 한 번 더 띄운다 — Worker가 그 시각으로
+# 멈춘 내보내기를 경보한다(`TombstoneExportStale`). 기록하지 못해도 아래 사본 파기는 한다(외부 수명은 기록과 무관하다) — 실패는 끝에서
+# `RECORD_FAILED`로 알린다(사본은 이미 올라갔다 — 다음 주기가 다시 올리고 기록한다).
+record_failed=false
+if has_export_fault record; then
+  # 리허설 결함 주입: 성공 기록이 실패한다.
+  record_failed=true
+elif ! guarded "${role_limit}" compose --profile tombstone-export run --rm --no-deps -T --user "$(id -u):$(id -g)" \
+  -e "BOKRILOG_TOMBSTONE_EXPORT_CONFIRM=${count}" -e "BOKRILOG_TOMBSTONE_EXPORT_ID=${export_id}" tombstone-export \
+  </dev/null >>"${log_file}" 2>&1; then
+  record_failed=true
+fi
+if [ "${record_failed}" = true ]; then
+  say '  경고  성공을 기록하지 못했다(사본 파기는 계속한다)'
+else
+  say '  성공 기록'
+fi
+
 # --------------------------------------------------------------------------
 # 6. 24시간 지난 사본 파기
 # --------------------------------------------------------------------------
 
-listing="$(list_files offsite tombstones)" || fail 'PURGE_FAILED (tombstones/를 읽지 못했다)'
 purged=0
 purge_failed=0
+listing_failed=false
+listing="$(list_files offsite tombstones)" || listing_failed=true
+[ "${listing_failed}" = true ] && listing=''
 while IFS='|' read -r size name; do
   [ -n "${name}" ] || continue
   matches "${name}" '[0-9]{8}T[0-9]{6}Z\.age' || continue
@@ -321,6 +368,8 @@ done <<LIST
 ${listing}
 LIST
 say "  파기 ${purged}개(24시간 초과)"
-[ "${purge_failed}" -eq 0 ] || fail "PURGE_FAILED (24시간을 넘긴 사본 ${purge_failed}개를 지우지 못했다)"
+# 성공 기록·파기의 실패를 함께 알린다(하나가 다른 하나를 가리지 않게).
+failures="$(export_failures "${record_failed}" "${listing_failed}" "${purge_failed}")"
+[ -z "${failures}" ] || fail "${failures}"
 say "tombstone 내보내기 완료: ${object}"
 exit 0

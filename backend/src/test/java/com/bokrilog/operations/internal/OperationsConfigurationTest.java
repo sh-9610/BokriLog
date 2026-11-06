@@ -6,6 +6,7 @@ import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 
@@ -83,6 +84,8 @@ class OperationsConfigurationTest {
                 .withBean(DeletionTombstoneRepository.class, () -> org.mockito.Mockito.mock(DeletionTombstoneRepository.class))
                 .withBean(org.springframework.transaction.PlatformTransactionManager.class,
                         () -> org.mockito.Mockito.mock(org.springframework.transaction.PlatformTransactionManager.class))
+                .withBean(OperatorAuditRepository.class, () -> Mockito.mock(OperatorAuditRepository.class))
+                .withBean(TombstoneAudit.class)
                 .withBean(DeletionTombstoneService.class);
         tombstones.run(context -> {
             assertThat(context).hasNotFailed().doesNotHaveBean(TombstoneDigest.class);
@@ -92,6 +95,40 @@ class OperationsConfigurationTest {
             assertThat(context).hasNotFailed().hasSingleBean(TombstoneDigest.class);
             assertThat(context.getBean(DeletionTombstoneService.class).keyAvailable()).isTrue();
         });
+    }
+
+    /**
+     * Story 5.3: tombstone 키는 Worker·{@code all}·tombstone 역할(삭제 표본·내보내기·복원 적용)에만 생긴다. API 슬롯({@code bokrilog.role=api})은
+     * 키가 주어져도 그 bean을 만들지 않는다. 내보내기 역할은 감사 SYSTEM 행을 쓰므로 감사 digest 키도 있어야 뜬다.
+     */
+    @Test
+    void API_역할은_키가_있어도_tombstone_digest를_만들지_않는다() {
+        String tombstoneKey = key(32);
+        this.api.withPropertyValues("bokrilog.operations.audit-digest-key=" + KEY, "bokrilog.role=api",
+                "bokrilog.tombstone.digest-key=" + tombstoneKey)
+                .run(context -> assertThat(context).hasNotFailed().doesNotHaveBean(TombstoneDigest.class));
+        for (String role : new String[] {"worker", "all"}) {
+            this.api.withPropertyValues("bokrilog.operations.audit-digest-key=" + KEY, "bokrilog.role=" + role,
+                    "bokrilog.tombstone.digest-key=" + tombstoneKey)
+                    .run(context -> assertThat(context).hasNotFailed().hasSingleBean(TombstoneDigest.class));
+        }
+        this.api.withPropertyValues("bokrilog.operations.audit-digest-key=" + KEY, "bokrilog.role=worker")
+                .run(context -> assertThat(context).hasNotFailed().doesNotHaveBean(TombstoneDigest.class));
+    }
+
+    @Test
+    void tombstone_export_역할은_두_키가_있어야_뜬다() {
+        String tombstoneKey = key(32);
+        this.migrate.withPropertyValues("spring.profiles.active=tombstone-export",
+                "bokrilog.operations.audit-digest-key=" + KEY, "bokrilog.tombstone.digest-key=" + tombstoneKey)
+                .run(context -> assertThat(context).hasNotFailed().hasSingleBean(ActorDigest.class)
+                        .hasSingleBean(TombstoneDigest.class));
+        this.migrate.withPropertyValues("spring.profiles.active=tombstone-export",
+                "bokrilog.tombstone.digest-key=" + tombstoneKey)
+                .run(context -> assertThat(context).hasFailed());
+        this.migrate.withPropertyValues("spring.profiles.active=tombstone-export",
+                "bokrilog.operations.audit-digest-key=" + KEY)
+                .run(context -> assertThat(context).hasFailed());
     }
 
     @Test

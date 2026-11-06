@@ -248,13 +248,19 @@ bokrilog:
     ad-provider-enabled: ${BOKRILOG_AD_PROVIDER_ENABLED:false}
     ad-unit-path: ${BOKRILOG_AD_UNIT_PATH:}
   # 계정 삭제 tombstone의 사용자 digest(HMAC-SHA256) 키(Story 3.10). base64 32바이트 이상이고 **감사 digest 키와 달라야 한다**(같으면
-  # 기동 거부). 삭제 표본·복원 적용 역할에서는 필수다 — 비면 그 역할이 뜨지 않는다. Worker·`all`은 값이 있을 때만 받는다 — 키가 있으면
-  # 사용자 계정 삭제 실행(Story 5.2, `AccountErasureWorker`)이 마지막 단계에서 tombstone을 기록하고, 키가 없거나 `BOKRILOG_ENV=production`
-  # (G-5 승인 전)이면 Worker가 삭제를 집지 않는다(요청은 진행 중으로 남는다). 받은 프로세스는 이 값을 로그 비밀 노출 감지 대상에 넣는다.
+  # 기동 거부). 삭제 표본·내보내기·복원 적용 역할에서는 필수다 — 비면 그 역할이 뜨지 않는다. Worker·`all`은 값이 있을 때만 받는다 — 키가
+  # 있으면 사용자 계정 삭제 실행(Story 5.2, `AccountErasureWorker`)이 첫 단계에서 tombstone을 기록하고(Story 5.3), 키가 없거나
+  # `BOKRILOG_ENV=production`(G-5 승인 전)이면 Worker가 삭제를 집지 않는다(요청은 진행 중으로 남는다). API(`BOKRILOG_ROLE=api`)는 값이
+  # 있어도 쓰지 않는다(운영 구성은 API 슬롯에 주지 않는다). 받은 프로세스는 이 값을 로그 비밀 노출 감지 대상에 넣는다.
   # 키를 잃으면 외부 tombstone을 복원된 계정과 맞출 수 없으므로 운영 비밀 파일과 OCI 밖 복구 manifest(참조)에 둔다.
   #   BOKRILOG_TOMBSTONE_DIGEST_KEY
   tombstone:
     digest-key: ${BOKRILOG_TOMBSTONE_DIGEST_KEY:}
+  # 삭제된 계정이 든 백업의 파기 판정 주기(Story 5.3, `BackupDestructionJudge` — Worker·`all`). 기본 5분이다. 운영 값은 바꾸지 않고
+  # 리허설만 짧게 준다(`compose.rehearsal.yaml`).
+  backup-destruction:
+    judge:
+      period: ${BOKRILOG_BACKUP_DESTRUCTION_JUDGE_PERIOD:PT5M}
   telemetry:
     env: ${BOKRILOG_ENV:development}
   # 워커 dispatch 간격. `FirstSnapshotWorker`의 여섯 dispatch(첫 스냅샷·수집·판정·환산·발행·증분 동기화)가
@@ -474,10 +480,14 @@ bokrilog:
 ---
 # 일회성 tombstone 내보내기 역할(Story 3.10).
 #
-# 운영 호스트의 timer(`deploy/production/tombstone-export.sh`, 15분 주기)가 띄운다. 기한(+35일) 지난 outbox 행을 지우고 살아 있는 행
-# 전체를 마운트된 파일 하나에 쓴다(`TombstoneExportRunner`). 호스트가 그 파일을 tombstone 전용 age key로 암호화해 OCI 밖 저장소에 올린다
+# 운영 호스트의 timer(`deploy/production/tombstone-export.sh`, 15분 주기)가 띄운다. 백업 파기가 완료됐고 그 상태로 성공한 내보내기에
+# 이미 실렸고 보존 기한이 지난 outbox 행만 지우고(Story 5.3 — 완료가 아닌 행은 기한과 무관하게 남는다) 실을 행 전체를 마운트된 파일
+# 하나에 쓴다(`TombstoneExportRunner`). 호스트가 그 파일을 tombstone 전용 age key로 암호화해 OCI 밖 저장소에 올린다
 # — **그 age key는 이 역할에 오지 않는다.** 웹 서버를 띄우지 않고 Flyway는 검증만 한다. 파일 머리에 digest 키 ID를 싣기 위해
-# tombstone digest 키가 필요하다(감사 digest 키는 받지 않는다).
+# tombstone digest 키가, 만료 삭제·내보내기 성공의 감사 SYSTEM 행(Story 5.3)을 쓰기 위해 감사 digest 키가 필요하다.
+#   BOKRILOG_TOMBSTONE_EXPORT_CONFIRM -- 기록 모드(Story 5.3). 비어 있지 않으면 파일을 쓰지 않고 그 내보내기를 "사본을 올리고 대조했다"는
+#                                        성공(값 = 실린 tombstone 수)으로 채운다. 호스트가 업로드·대조·`latest` 갱신 뒤에만 준다.
+#   BOKRILOG_TOMBSTONE_EXPORT_ID      -- 기록 모드의 내보내기 번호. 내보내기 모드가 사본 옆 `<파일>.export-id`에 쓴 값이다.
 spring:
   config:
     activate:
@@ -488,6 +498,8 @@ bokrilog:
   tombstone:
     export:
       file: ${BOKRILOG_TOMBSTONE_EXPORT_FILE:/run/bokrilog/io/tombstones.txt}
+      confirm: ${BOKRILOG_TOMBSTONE_EXPORT_CONFIRM:}
+      id: ${BOKRILOG_TOMBSTONE_EXPORT_ID:}
 
 ---
 # 일회성 복원 적용 역할(Story 3.10).

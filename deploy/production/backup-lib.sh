@@ -200,3 +200,26 @@ epoch_of_iso() {
     printf "%.0f", (era * 146097 + doe - 719468) * 86400 + hh * 3600 + mi * 60 + ss + offset
   }'
 }
+
+# export_failures <기록 실패 true|false> <목록 실패 true|false> <지우지 못한 사본 수>. tombstone 내보내기 끝의 실패 code를 한 줄로
+# 낸다(`; `로 잇는다, 실패가 없으면 빈 줄). 성공 기록 실패(`RECORD_FAILED`)와 사본 파기 실패(`PURGE_FAILED`)를 함께 싣는다.
+export_failures() {
+  local out='' item
+  if [ "$1" = true ]; then
+    out='RECORD_FAILED (내보내기 성공을 기록하지 못했다 — 사본 파기는 했다)'
+  fi
+  item=''
+  if [ "$2" = true ]; then
+    item='PURGE_FAILED (tombstones/를 읽지 못했다)'
+  elif [ "${3:-0}" -gt 0 ] 2>/dev/null; then
+    item="PURGE_FAILED (24시간을 넘긴 사본 ${3}개를 지우지 못했다)"
+  fi
+  if [ -n "${item}" ]; then
+    if [ -n "${out}" ]; then
+      out="${out}; ${item}"
+    else
+      out="${item}"
+    fi
+  fi
+  printf '%s' "${out}"
+}

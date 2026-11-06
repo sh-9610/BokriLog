@@ -274,6 +274,25 @@ class TelemetryAllowlistTest extends OperatorTestBase {
         }
     }
 
+    /**
+     * Story 5.3: 백업 파기 추적 gauge 둘과 tombstone 외부 사본 성공 시각은 tag가 없다(공통 env·role만) — 삭제·요청·generation 식별자는
+     * tag로도 값으로도 없다.
+     */
+    @Test
+    void 백업_파기_추적_gauge는_tag가_없다() {
+        for (String name : new String[] {BackupDestructionJudge.DUE_SOON, BackupDestructionJudge.OVERDUE,
+                BackupDestructionJudge.EXPORT_LAST_SUCCESS}) {
+            assertThat(TelemetryAllowlist.tagKeys(name)).as(name).isEmpty();
+            assertThat(TelemetryAllowlist.allows(name, Map.of("env", "production", "role", "worker"), Set.of())).as(name)
+                    .isTrue();
+            assertThat(TelemetryAllowlist.allows(name, Map.of(), Set.of())).as(name).isTrue();
+            for (Map<String, String> tags : List.of(Map.of("request", "req-1"), Map.of("generation", "gen_20261012"),
+                    Map.of("store", "oci"), Map.of("status", "OVERDUE"))) {
+                assertThat(TelemetryAllowlist.allows(name, tags, Set.of())).as(name + " " + tags).isFalse();
+            }
+        }
+    }
+
     @Test
     void filter는_uri를_템플릿으로만_남기고_예외_tag를_걷으며_env를_붙인다() {
         var filter = new TelemetryConfig().telemetryMeterFilter("ci", "all");

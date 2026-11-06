@@ -23,8 +23,12 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <p><b>단계 트랜잭션 하나.</b> 실행 행 잠금 아래 fencing 재검사({@link AccountDeletionRunApi#hold}) → 이미 성공한 단계면 건너뜀 → 지우기
  * 전 잔여 수(기록할 건수) → 그 단계의 삭제 → 같은 트랜잭션의 잔여 0 확인 → 성공 기록. 마지막 단계({@link DeletionStep#IDENTITY})는
  * 지우기 전에 앞 단계 전부의 잔여를 다시 세고, 잔여가 있는 단계를 재시도 필요({@link AccountDeletionRunApi#RESIDUAL_FOUND})로 되돌린다 —
- * 늦은 쓰기를 완료로 숨기지 않는다. 잔여가 없으면 tombstone 기록 → 요청 행·세션·payload 삭제 → {@code DELETED} → 운영 데이터 삭제 완료
- * 시각이 한 커밋이다.
+ * 늦은 쓰기를 완료로 숨기지 않는다. 잔여가 없으면 tombstone 집합 닫기·보존 연장 → 요청 행·세션·payload 삭제 → {@code DELETED} → 운영 데이터 삭제
+ * 완료 시각이 한 커밋이다.
+ *
+ * <p><b>tombstone은 첫 단계 앞이다(Story 5.3).</b> 단계를 돌기 전에 같은 fencing 아래 자기 트랜잭션 하나로 요청 ID·요청 시각의 tombstone을
+ * 기록한다(멱등) — 운영 완료 전에 복원해도 그 계정을 다시 지운다. 마지막 단계는 tombstone 기록이 아니라 영향 generation 집합 닫기·보존
+ * 연장이다.
  *
  * <p><b>실패.</b> 단계가 예외로 끝나거나 잔여가 남거나 결과 없이 끝나면 그 트랜잭션을 통째로 되돌리고, 새 트랜잭션에서(다시 fencing을 본 뒤)
  * 그 단계를 재시도 필요로 기록하고 실행을 멈춘다. 기록은 {@link #RECORD_ATTEMPTS}번까지 새 트랜잭션으로 다시 해 본다. 자동 재시도는 없다 —
@@ -112,6 +116,23 @@ class AccountErasureRun {
      * @param stopping 참이면 다음 단계를 시작하지 않고 lease를 놓는다(Worker 종료 drain). 단계 사이에서만 본다
      */
     Result execute(Lease lease, BooleanSupplier stopping) {
+        // tombstone 기록은 종료 drain 중에도 한다 — 짧은 멱등 트랜잭션 하나이고, 놓기 전에 남겨 두면 다음 Worker가 이어 받기 전의 복원도 그
+        // 계정을 다시 지운다. drain 판정은 아래 단계 앞에서 그대로 한다.
+        switch (recordTombstone(lease)) {
+            case LOST -> {
+                log(Result.LEASE_LOST, null);
+                return Result.LEASE_LOST;
+            }
+            case FAILED -> {
+                return Result.RETRY_NEEDED;
+            }
+            case UNRECORDED -> {
+                return Result.UNRECORDED;
+            }
+            case SUCCEEDED, SKIPPED -> {
+                // 첫 단계로.
+            }
+        }
         for (DeletionStep step : DeletionStep.values()) {
             if (stopping.getAsBoolean()) {
                 Result released;
@@ -160,6 +181,32 @@ class AccountErasureRun {
         };
     }
 
+    /**
+     * 첫 단계 앞의 tombstone 기록(Story 5.3): 실행 행 잠금 아래 fencing 재검사({@link AccountDeletionRunApi#hold}) → 요청 ID·요청 시각으로
+     * 기록(멱등)을 자기 트랜잭션 하나로 커밋한다 — 뒤 단계가 실패해도 tombstone은 남는다. 실패하면 아직 성공하지 않은 첫 단계를 재시도 필요로
+     * 기록하되 code는 {@link AccountDeletionRunApi#TOMBSTONE_FAILED}다(그 단계 자체의 실패와 구분한다).
+     */
+    private StepResult recordTombstone(Lease lease) {
+        Boolean recorded;
+        try {
+            recorded = this.transaction.execute(status -> {
+                if (!this.runs.hold(lease, WorkerLease.DURATION)) {
+                    throw new LeaseLost();
+                }
+                this.erasure.recordRequestedTombstone(lease.userId());
+                return Boolean.TRUE;
+            });
+        } catch (LeaseLost lost) {
+            return StepResult.LOST;
+        } catch (RuntimeException failure) {
+            return recordFailure(lease, null, null, failure, AccountDeletionRunApi.TOMBSTONE_FAILED);
+        }
+        if (recorded == null) {
+            return recordFailure(lease, null, null, null, AccountDeletionRunApi.TOMBSTONE_FAILED);
+        }
+        return StepResult.SUCCEEDED;
+    }
+
     private StepResult runStep(Lease lease, DeletionStep step) {
         UUID userId = lease.userId();
         StepResult result;
@@ -185,7 +232,7 @@ class AccountErasureRun {
                     }
                 }
                 long before = this.erasure.residueOf(step, userId);
-                this.erasure.apply(step, userId, () -> this.erasure.recordRequestedTombstone(userId));
+                this.erasure.apply(step, userId, () -> this.erasure.closeRequestedTombstone(userId));
                 if (this.erasure.residueOf(step, userId) > 0) {
                     throw new Residual(Map.of(step, AccountDeletionRunApi.RESIDUAL_FOUND));
                 }
@@ -224,6 +271,15 @@ class AccountErasureRun {
      */
     private StepResult recordFailure(Lease lease, @Nullable DeletionStep step,
             @Nullable Map<DeletionStep, String> failures, @Nullable RuntimeException failure) {
+        return recordFailure(lease, step, failures, failure, AccountDeletionRunApi.STEP_FAILED);
+    }
+
+    /**
+     * {@link #recordFailure(Lease, DeletionStep, Map, RuntimeException)}과 같지만 {@code failures}가 없을 때의 code를 준다 — tombstone 기록
+     * 실패는 {@link AccountDeletionRunApi#TOMBSTONE_FAILED}로 남겨 그 단계 자체의 실패와 구분한다.
+     */
+    private StepResult recordFailure(Lease lease, @Nullable DeletionStep step,
+            @Nullable Map<DeletionStep, String> failures, @Nullable RuntimeException failure, String defaultCode) {
         String unrecordedBy = "-";
         for (int attempt = 1; attempt <= RECORD_ATTEMPTS; attempt++) {
             Recording recorded;
@@ -238,7 +294,7 @@ class AccountErasureRun {
                         return Recording.LOST;
                     }
                     this.runs.stepsNeedRetry(lease, failed,
-                            failures != null ? failures : Map.of(failed, AccountDeletionRunApi.STEP_FAILED));
+                            failures != null ? failures : Map.of(failed, defaultCode));
                     return Recording.RECORDED;
                 });
             } catch (RuntimeException unrecorded) {
@@ -258,7 +314,7 @@ class AccountErasureRun {
                         AccountDeletionRunApi.RESIDUAL_FOUND, failures.keySet().stream().map(Enum::name).toList());
             } else {
                 LOG.warn("account erasure step failed: step={} code={} failure={}", step == null ? "-" : step.name(),
-                        failures == null || step == null ? AccountDeletionRunApi.STEP_FAILED
+                        failures == null || step == null ? defaultCode
                                 : failures.getOrDefault(step, AccountDeletionRunApi.STEP_FAILED),
                         failure == null ? "-" : failure.getClass().getSimpleName());
             }

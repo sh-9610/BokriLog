@@ -8,6 +8,7 @@ import com.bokrilog.source.SourceConnectionApi;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -29,9 +30,12 @@ import org.springframework.transaction.support.TransactionTemplate;
  *       않아 적용이 조용히 "0건 일치"로 통과하기 때문이다. 어긋나면 아무것도 바꾸지 않고 실패한다.
  *   <li>복원된 모든 계정의 {@code user_id}를 tombstone 키로 digest해 사본과 맞추고, 맞은 계정 가운데 아직 {@code DELETED}가 아닌 것을
  *       {@link AccountErasure}로 다시 지운다(계정마다 한 트랜잭션). 이미 {@code DELETED}면 그대로다.
- *   <li>사본의 tombstone 전부를 이 DB의 outbox로 옮긴다 — 복원된 DB의 다음 내보내기가 그 tombstone을 잃지 않게.
+ *   <li>사본의 tombstone 전부를 이 DB의 outbox로 옮긴다 — 복원된 DB의 다음 내보내기가 그 tombstone을 잃지 않게. 같은 요청의 행이 이미
+ *       있으면 사본의 더 진전된 상태를 병합하고, 열린 집합 가운데 이 DB에서 닫힐 길이 없는 것은 지금 닫는다(Story 5.3).
  *   <li>인증 세션을 모두 지운다 — 백업 시점의 세션으로 아무도 들어오지 못하게.
  *   <li>불변식({@link RestoreInvariants})과 자격정보 표본 복호({@link SourceConnectionApi#probeCredentials})를 센다.
+ *   <li>감사 원장에 수만 담은 SYSTEM 행 하나를 남긴다(Story 5.3 — 통과면 {@code RESTORE_APPLIED}, 아니면 {@code RESTORE_REFUSED}).
+ *       대조가 실패해 적용하지 않았으면 남기지 않는다(아무것도 바꾸지 않는다).
  * </ol>
  *
  * <p><b>다시 돌려도 안전하다.</b> 모든 단계가 멈춘 자리에서 이어진다 — 다시 지우기는 이미 {@code DELETED}인 계정을 건너뛰고, 옮기기는 이미
@@ -174,6 +178,7 @@ class RestoreApplication {
         int alreadyDeleted = 0;
         int carried = 0;
         Set<String> before = requestIds(this.tombstones.outbox());
+        Set<String> reapplied = new HashSet<>();
         for (Map.Entry<UUID, Tombstone> entry : matched.entrySet()) {
             if (deleted.contains(entry.getKey())) {
                 alreadyDeleted++;
@@ -182,9 +187,21 @@ class RestoreApplication {
             if (this.erasure.reapply(entry.getKey(), entry.getValue()) != AccountErasure.Outcome.ERASED) {
                 throw new IllegalStateException("tombstone이 가리키는 계정을 다시 지우지 못했다.");
             }
+            reapplied.add(entry.getValue().requestId());
             erased++;
         }
         this.transaction.executeWithoutResult(status -> external.forEach(this.tombstones::carry));
+        // Story 5.3: 열린 집합으로 옮긴 tombstone 가운데 이 DB에서 닫힐 길이 없는 것(맞는 계정이 없거나 이미 DELETED라 다시 지우지 않았다)은
+        // 지금 닫는다 — 영향 generation은 지금까지의 상위 집합이다. 다시 지운 계정의 것은 reapply가 이미 닫았다.
+        List<String> unreachable = new ArrayList<>();
+        for (Tombstone tombstone : external) {
+            if (tombstone.set() == DeletionTombstoneApi.GenerationSet.OPEN && !reapplied.contains(tombstone.requestId())) {
+                unreachable.add(tombstone.requestId());
+            }
+        }
+        if (!unreachable.isEmpty()) {
+            this.tombstones.closeRestored(unreachable);
+        }
         // 다시 지울 때 옮긴 행도 "이번 적용이 새로 넣은 것"이다 — 적용 전 outbox에 없던 요청 ID가 지금 있으면 센다.
         Set<String> after = requestIds(this.tombstones.outbox());
         for (Tombstone tombstone : external) {
@@ -193,8 +210,18 @@ class RestoreApplication {
             }
         }
         int sessions = this.accounts.revokeAllSessions();
-        return new Report(external.size(), matched.size(), erased, alreadyDeleted, carried, sessions, reconciliation,
-                this.invariants.check(), this.sources.probeCredentials(CREDENTIAL_SAMPLE));
+        Report report = new Report(external.size(), matched.size(), erased, alreadyDeleted, carried, sessions,
+                reconciliation, this.invariants.check(), this.sources.probeCredentials(CREDENTIAL_SAMPLE));
+        // 감사 SYSTEM 행(Story 5.3): 수와 통과 여부만. 식별자·digest는 없다.
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        counts.put("tombstones", report.tombstones());
+        counts.put("matched", report.matched());
+        counts.put("erased", report.erased());
+        counts.put("alreadyDeleted", report.alreadyDeleted());
+        counts.put("carried", report.carried());
+        counts.put("sessions", report.sessions());
+        this.tombstones.recordRestoreApplied(counts, report.passed());
+        return report;
     }
 
     /** 아무것도 쓰기 전의 대조. */
@@ -212,7 +239,8 @@ class RestoreApplication {
         for (Tombstone row : outbox) {
             // 사본이 만들어지기 전에 요청됐고, 그 사본이 실을 만큼 기한이 남았다 — 그런데 사본에 없다.
             boolean beforeCopy = row.requestedAt().isBefore(copy.exportedAt().minus(CLOCK_SLACK));
-            boolean exportable = row.destroyAfter()
+            // 백업 파기가 완료되지 않은 행은 기한과 무관하게 사본에 실린다(Story 5.3).
+            boolean exportable = row.status() != DeletionTombstoneApi.DestructionStatus.DESTROYED || row.destroyAfter()
                     .isAfter(copy.exportedAt().plus(DeletionTombstoneApi.EXPORT_MARGIN).plus(CLOCK_SLACK));
             if (beforeCopy && exportable && !inCopy.contains(row.userDigest())) {
                 missing++;

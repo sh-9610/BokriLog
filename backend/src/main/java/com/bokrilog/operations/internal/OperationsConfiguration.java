@@ -17,7 +17,7 @@ import org.springframework.context.annotation.Profile;
  *
  * <p>allowlist는 모든 역할에서 바인딩한다 — 형식 오류는 어느 프로세스에서든 기동 거부다. digest 키는 감사 행을 쓰는 역할에서만
  * 요구한다: API·Worker(servlet)와 일회성 배포 감사 역할({@code deploy-audit}, Story 3.8)·백업 기록 역할({@code backup-record}, Story
- * 3.9 — 파기 실패·기한 초과를 감사 원장에 남긴다). 스키마만 바꾸는 migrate 역할은 감사 행을
+ * 3.9 — 파기 실패·기한 초과를 감사 원장에 남긴다)·tombstone 역할(Story 3.10·5.3). 스키마만 바꾸는 migrate 역할은 감사 행을
  * 쓰지 않으므로 그 키를 받을 이유가 없고, 받게 하면 운영 비밀이 필요 없는 프로세스로 퍼진다.
  */
 @Configuration(proxyBeanMethods = false)
@@ -33,8 +33,8 @@ class OperationsConfiguration {
 
     /**
      * 삭제 tombstone의 digest 키(Story 3.10). 삭제 표본·내보내기·복원 적용 역할에서는 필수다 — 비거나 짧으면 생성이 실패하고 그 역할의 기동이
-     * 거부된다. 그 밖의 역할은 값이 있을 때만 만든다 — Worker·{@code all}에 키가 있으면 계정 삭제 실행(Story 5.2)의 마지막 단계가
-     * 이 bean으로 tombstone을 기록하고, 키가 없는 프로세스는 삭제를 집지 않는다. <b>감사 digest 키와
+     * 거부된다. 그 밖의 역할은 값이 있을 때만 만든다 — Worker·{@code all}에 키가 있으면 계정 삭제 실행(Story 5.2)의 첫 단계(Story 5.3)가
+     * 이 bean으로 tombstone을 기록하고, 키가 없는 프로세스는 삭제를 집지 않는다. API 슬롯에는 운영 구성이 키를 주지 않는다. <b>감사 digest 키와
      * 같은 값이면 거부한다</b> — 외부에 35일 남는 tombstone 사본 하나로 원장의 digest와 대조할 길이 생긴다. 메시지에 값을 담지 않는다.
      */
     @Bean
@@ -59,9 +59,9 @@ class OperationsConfiguration {
     }
 
     /**
-     * 감사 행을 쓰는 역할: servlet 프로세스이거나 {@code deploy-audit}·{@code backup-record} 프로필, 그리고 계정을 지우는 두 일회성
-     * 역할({@code deletion-sample}·{@code restore-apply}, Story 3.10 — 제한 target 비식별에 digest가 필요하다)이다. 내보내기 역할
-     * ({@code tombstone-export})은 감사 행도 digest도 쓰지 않으므로 이 키를 받지 않는다.
+     * 감사 행을 쓰는 역할: servlet 프로세스이거나 {@code deploy-audit}·{@code backup-record} 프로필, 계정을 지우는 두 일회성 역할
+     * ({@code deletion-sample}·{@code restore-apply}, Story 3.10 — 제한 target 비식별에 digest가 필요하다), 그리고 내보내기 역할
+     * ({@code tombstone-export}, Story 5.3 — 만료 삭제·내보내기 성공을 감사 SYSTEM 행으로 남긴다)이다.
      */
     static final class AuditWritingRole extends AnyNestedCondition {
 
@@ -83,9 +83,15 @@ class OperationsConfiguration {
 
         @Profile("restore-apply")
         static final class RestoreApply {}
+
+        @Profile("tombstone-export")
+        static final class TombstoneExport {}
     }
 
-    /** tombstone digest를 만드는 역할: 삭제 표본·내보내기(파일 머리의 키 ID)·복원 적용 프로필이거나, 키가 주어졌다. */
+    /**
+     * tombstone digest를 만드는 역할: 삭제 표본·내보내기(파일 머리의 키 ID)·복원 적용 프로필이거나, 키가 주어진 API 아닌 프로세스(Worker·
+     * {@code all})다. API 슬롯({@code bokrilog.role=api})은 키가 주어져도 만들지 않는다 — API는 tombstone을 쓰지 않는다(Story 5.3).
+     */
     static final class TombstoneRole extends AnyNestedCondition {
 
         TombstoneRole() {
@@ -101,7 +107,7 @@ class OperationsConfiguration {
         @Profile("restore-apply")
         static final class RestoreApply {}
 
-        @ConditionalOnExpression("!'${bokrilog.tombstone.digest-key:}'.isBlank()")
+        @ConditionalOnExpression("!'${bokrilog.tombstone.digest-key:}'.isBlank() and '${bokrilog.role:all}' != 'api'")
         static final class Configured {}
     }
 }

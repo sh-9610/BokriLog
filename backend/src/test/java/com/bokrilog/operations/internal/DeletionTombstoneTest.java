@@ -4,12 +4,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.bokrilog.operations.DeletionTombstoneApi;
+import com.bokrilog.operations.DeletionTombstoneApi.AffectedGeneration;
+import com.bokrilog.operations.DeletionTombstoneApi.DestructionStatus;
+import com.bokrilog.operations.DeletionTombstoneApi.GenerationSet;
 import com.bokrilog.operations.DeletionTombstoneApi.Tombstone;
 import com.bokrilog.operations.OperatorProperties;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -42,6 +46,11 @@ class DeletionTombstoneTest {
     private static final Pattern SQL_NAMING =
             Pattern.compile("(?:INTO|FROM|JOIN)\\s+" + TABLE + "\\b", Pattern.CASE_INSENSITIVE);
 
+    /** V32의 영향 generation·내보내기 기록 표도 같은 repository 한 곳이 SQL로 안다. */
+    private static final Pattern OWNED_NAMING = Pattern.compile(
+            "(?:INTO|FROM|JOIN)\\s+(?:operations_deletion_backup_generation|operations_tombstone_export)\\b",
+            Pattern.CASE_INSENSITIVE);
+
     private static final Pattern UPDATE = Pattern.compile(
             "\\bUPDATE\\s+(?:ONLY\\s+)?" + TABLE + "\\b|\\bTRUNCATE\\b[^;\"]*\\b" + TABLE + "\\b", Pattern.CASE_INSENSITIVE);
 
@@ -52,7 +61,7 @@ class DeletionTombstoneTest {
         try (Stream<Path> files = Files.walk(MAIN_SOURCES)) {
             for (Path file : files.filter(path -> path.toString().endsWith(".java")).toList()) {
                 String source = Files.readString(file, StandardCharsets.UTF_8);
-                if (SQL_NAMING.matcher(source).find()) {
+                if (SQL_NAMING.matcher(source).find() || OWNED_NAMING.matcher(source).find()) {
                     naming.add(file.getFileName());
                 }
                 Matcher matcher = UPDATE.matcher(source);
@@ -62,12 +71,30 @@ class DeletionTombstoneTest {
             }
         }
         assertThat(naming).containsExactly(REPOSITORY.getFileName());
-        assertThat(updates).isEmpty();
+        // tombstone 행을 바꾸는 문장은 repository 안의 여섯뿐이다(Story 5.3): 집합 닫기 둘(지금·운영 완료 시각), 초과 전환, 파기 완료 전환,
+        // 복원의 외부 상태 병합, 처음 DESTROYED로 실리는 내보내기 번호.
+        assertThat(updates).containsOnly("DeletionTombstoneRepository.java:UPDATE " + TABLE).hasSize(6);
         String source = Files.readString(REPOSITORY, StandardCharsets.UTF_8);
-        assertThat(count(source, "UPDATE")).as("UPDATE 문장 수").isZero();
-        // 지우는 문장은 기한 지난 행 하나뿐이다.
-        assertThat(count(source, "DELETE")).as("DELETE 문장 수").isEqualTo(1);
-        assertThat(source).contains("DELETE FROM " + TABLE + " WHERE destroy_after <= statement_timestamp()");
+        // 보존 기한은 늘기만 한다 — 보존 기한을 쓰는 문장은 셋이고 모두 greatest(…destroy_after, …)다.
+        assertThat(Pattern.compile("destroy_after\\s*=\\s*greatest\\((?:x\\.)?destroy_after,").matcher(source).results()
+                .count()).as("보존 연장 문장").isEqualTo(3);
+        assertThat(Pattern.compile("destroy_after\\s*=").matcher(source).results().count())
+                .as("보존 기한을 쓰는 문장은 연장 셋뿐이다").isEqualTo(3);
+        // 집합은 열린 것만 닫는다(다시 열지 않는다). 파기 완료는 되돌리지 않는다. 초과는 미완료에서 한 번이다.
+        assertThat(source).contains("WHERE request_id = :request AND closed_at IS NULL")
+                .contains("status <> 'DESTROYED' AND closed_at IS NOT NULL")
+                .contains("status = 'PENDING' AND ");
+        // 지우는 문장은 백업 파기가 완료됐고 그 상태로 성공한 내보내기에 실렸고 보존 기한이 지난 tombstone(영향 generation은 외래키로 함께)과
+        // 35일 지난 내보내기 기록 둘뿐이다. 완료가 아닌 tombstone은 기한이 지나도 지우지 않는다.
+        assertThat(count(source, "DELETE")).as("DELETE 문장 수").isEqualTo(2);
+        assertThat(source).contains("\"DELETE FROM " + TABLE + " t WHERE t.status = 'DESTROYED' \"")
+                .contains("AND t.destroy_after <= statement_timestamp() AND \" + EXPORTED_AS_DESTROYED)")
+                .contains("e.exported_at IS NOT NULL AND e.sequence >= t.destroyed_export")
+                .contains("DELETE FROM operations_tombstone_export ");
+        // 내보내기 번호는 아직 번호가 없는 DESTROYED 행에만 붙인다(처음 DESTROYED로 실리는 내보내기 — 덮어쓰지 않는다).
+        assertThat(source).contains("WHERE status = 'DESTROYED' AND destroyed_export IS NULL");
+        // 영향 generation의 갱신은 채울 것이 있을 때만이다(같은 값으로 tuple을 쌓지 않는다).
+        assertThat(source).contains("DO UPDATE SET").contains("EXCLUDED.oci_purged_at IS NOT NULL)");
     }
 
     @Test
@@ -164,6 +191,83 @@ class DeletionTombstoneTest {
         // 원문 사용자 ID 모양(UUID)은 digest 칸에 들어갈 수 없다.
         assertThatThrownBy(() -> new Tombstone(UUID.randomUUID().toString(), "req-1", at,
                 at.plus(DeletionTombstoneApi.RETENTION))).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** Story 5.3: 줄은 파기 기한·상태·집합·영향 generation을 더 싣고 되읽힌다. Story 3.10의 네 칸 줄도 읽는다(요청 시각에 닫힌 집합). */
+    @Test
+    void 파기_상태와_영향_generation이_줄에_실리고_되읽힌다() {
+        Instant at = Instant.parse("2026-11-01T01:02:03.120Z");
+        Tombstone open = new Tombstone("a".repeat(64), "req-open", at, at.plus(DeletionTombstoneApi.RETENTION),
+                DestructionStatus.PENDING, GenerationSet.OPEN, List.of(new AffectedGeneration("gen_20261101", true, false),
+                        new AffectedGeneration("gen_20261031", true, true)));
+        Tombstone destroyed = new Tombstone("b".repeat(64), "req-done", at, at.plus(Duration.ofDays(40)),
+                DestructionStatus.DESTROYED, GenerationSet.CLOSED, List.of());
+        assertThat(open.generations()).as("ID 순").extracting(AffectedGeneration::id)
+                .containsExactly("gen_20261031", "gen_20261101");
+        assertThat(open.backupDeadline()).isEqualTo(at.plus(Duration.ofHours(720)));
+        // generation마다 저장소별 파기 확인(OCI·OCI 밖, P 또는 -)이 실린다(Story 5.3 — 복원이 옮긴다).
+        assertThat(open.line()).isEqualTo("a".repeat(64) + " req-open " + at + " " + at.plus(DeletionTombstoneApi.RETENTION)
+                + " " + at.plus(Duration.ofHours(720)) + " PENDING OPEN gen_20261031:PP,gen_20261101:P-");
+        assertThat(destroyed.line()).endsWith(" DESTROYED CLOSED -");
+        String text = DeletionTombstoneApi.render(KEY_ID, Instant.parse("2026-11-02T00:00:00Z"), List.of(open, destroyed));
+        assertThat(DeletionTombstoneApi.read(text.lines().toList()).tombstones()).containsExactly(open, destroyed);
+        // 줄에 원식별자 모양(UUID)·이메일이 없다.
+        assertThat(text).doesNotContainPattern("[0-9a-f]{8}-[0-9a-f]{4}-").doesNotContain("@");
+
+        // Story 3.10 모양(네 칸): 요청 시각에 닫힌 집합, 상태 PENDING, 영향 generation 없음.
+        Tombstone legacy = Tombstone.parse("c".repeat(64) + " req-old " + at + " " + at.plus(DeletionTombstoneApi.RETENTION));
+        assertThat(legacy.set()).isEqualTo(GenerationSet.CLOSED);
+        assertThat(legacy.status()).isEqualTo(DestructionStatus.PENDING);
+        assertThat(legacy.generations()).isEmpty();
+    }
+
+    @Test
+    void 파기_상태_줄의_모양_밖은_읽지_않는다() {
+        Instant at = Instant.parse("2026-11-01T00:00:00Z");
+        String head = "c".repeat(64) + " req-1 " + at + " " + at.plus(DeletionTombstoneApi.RETENTION) + " ";
+        String deadline = at.plus(Duration.ofHours(720)).toString();
+        for (String bad : List.of(head + at.plus(Duration.ofHours(719)) + " PENDING OPEN -",
+                head + deadline + " GONE OPEN -",
+                head + deadline + " PENDING HALF -",
+                head + deadline + " DESTROYED OPEN -",
+                head + deadline + " PENDING OPEN gen_2026110",
+                head + deadline + " PENDING OPEN gen_20261101",
+                head + deadline + " PENDING OPEN gen_20261101:PX",
+                head + deadline + " PENDING OPEN gen_20261101:P-,gen_20261101:PP",
+                head + deadline + " PENDING OPEN gen_20261101:--,../x",
+                // 백업 파기 완료는 모든 영향 generation이 두 저장소에서 파기됐다는 뜻이다(Q4) — 하나라도 P가 아니면 모양 밖이다.
+                head + deadline + " DESTROYED CLOSED gen_20261101:P-",
+                head + deadline + " DESTROYED CLOSED gen_20261031:PP,gen_20261101:-P",
+                head + deadline + " DESTROYED CLOSED gen_20261101:--",
+                head + deadline + " PENDING OPEN",
+                head + "yesterday PENDING OPEN -")) {
+            assertThatThrownBy(() -> DeletionTombstoneApi.read(List.of(HEADER, bad)))
+                    .as(bad).isInstanceOf(IllegalArgumentException.class);
+        }
+        // 보존 기한은 요청 + 35일보다 짧을 수 없다(늘어난 것은 받는다).
+        assertThatThrownBy(() -> new Tombstone("c".repeat(64), "req-1", at, at.plus(Duration.ofHours(839))))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(new Tombstone("c".repeat(64), "req-1", at, at.plus(Duration.ofDays(60))).destroyAfter())
+                .isEqualTo(at.plus(Duration.ofDays(60)));
+        // 영향 generation 목록이 없으면 NPE가 아니라 모양 밖이다.
+        assertThatThrownBy(() -> new Tombstone("c".repeat(64), "req-1", at, at.plus(DeletionTombstoneApi.RETENTION),
+                DestructionStatus.PENDING, GenerationSet.OPEN, null)).isInstanceOf(IllegalArgumentException.class);
+        // Q4: 생성자도 같다 — DESTROYED인데 파기되지 않은 저장소가 있는 generation은 거부하고, 모두 PP면 받는다(초과·미완료는 무관).
+        assertThatThrownBy(() -> new Tombstone("c".repeat(64), "req-1", at, at.plus(DeletionTombstoneApi.RETENTION),
+                DestructionStatus.DESTROYED, GenerationSet.CLOSED, List.of(new AffectedGeneration("gen_20261031", true, true),
+                        new AffectedGeneration("gen_20261101", true, false))))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(new Tombstone("c".repeat(64), "req-1", at, at.plus(DeletionTombstoneApi.RETENTION),
+                DestructionStatus.DESTROYED, GenerationSet.CLOSED, List.of(new AffectedGeneration("gen_20261101", true, true)))
+                .status()).isEqualTo(DestructionStatus.DESTROYED);
+        assertThat(new Tombstone("c".repeat(64), "req-1", at, at.plus(DeletionTombstoneApi.RETENTION),
+                DestructionStatus.OVERDUE, GenerationSet.CLOSED, List.of(new AffectedGeneration("gen_20261101", false, false)))
+                .status()).isEqualTo(DestructionStatus.OVERDUE);
+        // 기한이 이미 지난 미완료 tombstone(오래 멈춘 실행·초과)도 받는다 — 복원이 거부하면 그 계정을 지키지 못한다.
+        Instant old = Instant.parse("2025-01-01T00:00:00Z");
+        Tombstone stale = new Tombstone("c".repeat(64), "req-old", old, old.plus(DeletionTombstoneApi.RETENTION),
+                DestructionStatus.OVERDUE, GenerationSet.OPEN, List.of());
+        assertThat(Tombstone.parse(stale.line())).isEqualTo(stale);
     }
 
     private static final String KEY_ID = "0123456789abcdef";

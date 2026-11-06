@@ -5,10 +5,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.bokrilog.operations.DeletionTombstoneApi;
 import com.bokrilog.source.SourceConnectionApi;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -101,6 +103,63 @@ class RestoreRunnersTest {
         assertThatThrownBy(() -> new RestoreApplyRunner(restore, this.work.resolve("absent").toString(),
                 "bokrilog-restore-a").run(null)).isInstanceOf(java.io.UncheckedIOException.class);
         assertThat(restore.calls.get()).isZero();
+    }
+
+    /**
+     * Story 5.3: 내보내기 역할의 기록 모드는 파일을 쓰지 않고 실린 수와 내보내기 번호로 성공을 기록한다. 수는 0 이상의 정수, 번호는 1 이상의
+     * 정수만 받는다(값을 메시지에 담지 않는다).
+     */
+    @Test
+    void 내보내기_기록_모드는_파일을_쓰지_않고_성공만_기록한다() throws Exception {
+        List<String> confirmed = new ArrayList<>();
+        DeletionTombstoneApi tombstones = (DeletionTombstoneApi) Proxy.newProxyInstance(
+                DeletionTombstoneApi.class.getClassLoader(), new Class<?>[] {DeletionTombstoneApi.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("confirmExport")) {
+                        confirmed.add(args[0] + "@" + args[1]);
+                        return null;
+                    }
+                    throw new AssertionError("기록 모드가 " + method.getName() + "을 불렀다.");
+                });
+        Path file = this.work.resolve("never.txt");
+        new TombstoneExportRunner(tombstones, file.toString(), " 12 ", " 7 ").run(null);
+        assertThat(confirmed).containsExactly("12@7");
+        assertThat(file).doesNotExist();
+        assertThat(TombstoneExportRunner.exportIdFile(file)).doesNotExist();
+        // 번호 없는 기록 모드는 거부한다(어느 사본의 성공인지 모른다).
+        assertThatThrownBy(() -> new TombstoneExportRunner(tombstones, file.toString(), "12", "").run(null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(confirmed).hasSize(1);
+        assertThat(TombstoneExportRunner.exportIdOf("1")).isEqualTo(1L);
+        assertThat(TombstoneExportRunner.exportIdOf("123456789012345678")).as("18자리").isEqualTo(123_456_789_012_345_678L);
+        for (String bad : List.of("0", "-1", "01", "abc", "1234567890123456789", "")) {
+            assertThatThrownBy(() -> TombstoneExportRunner.exportIdOf(bad)).as(bad)
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageNotContaining(bad.isEmpty() ? "\u0000" : bad);
+        }
+        assertThat(TombstoneExportRunner.confirmedCount("0")).isZero();
+        assertThat(TombstoneExportRunner.confirmedCount("123456789")).as("int 범위 9자리").isEqualTo(123_456_789);
+        for (String bad : List.of("-1", "1.5", "abc", "1234567890", "")) {
+            assertThatThrownBy(() -> TombstoneExportRunner.confirmedCount(bad)).as(bad)
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageNotContaining(bad.isEmpty() ? "\u0000" : bad);
+        }
+    }
+
+    /** Story 5.3: 내보내기 모드는 사본 파일과 그 옆 {@code <파일>.export-id}(이 내보내기의 번호 한 줄)를 쓴다 — 기록 모드가 그 번호를 받는다. */
+    @Test
+    void 내보내기_모드는_사본과_내보내기_번호를_쓴다() throws Exception {
+        DeletionTombstoneApi tombstones = (DeletionTombstoneApi) Proxy.newProxyInstance(
+                DeletionTombstoneApi.class.getClassLoader(), new Class<?>[] {DeletionTombstoneApi.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("export")) {
+                        return new DeletionTombstoneApi.Export("0123456789abcdef", List.of(), 0, 42L);
+                    }
+                    throw new AssertionError("내보내기 모드가 " + method.getName() + "을 불렀다.");
+                });
+        Path file = this.work.resolve("tombstones.txt");
+        new TombstoneExportRunner(tombstones, file.toString(), "", "").run(null);
+        assertThat(Files.readString(file, StandardCharsets.UTF_8)).startsWith(DeletionTombstoneApi.FILE_HEADER);
+        assertThat(TombstoneExportRunner.exportIdFile(file)).hasFileName("tombstones.txt.export-id");
+        assertThat(Files.readString(TombstoneExportRunner.exportIdFile(file), StandardCharsets.UTF_8)).isEqualTo("42\n");
     }
 
     @Test

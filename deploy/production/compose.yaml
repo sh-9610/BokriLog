@@ -157,7 +157,8 @@ services:
   # 마운트된 디렉터리(`BOKRILOG_ROLE_IO_DIR`, 호스트의 권한 700 임시 디렉터리 — 스크립트가 실행마다 만들고 지운다)의 파일 하나로 쓴다.
   # 호스트가 그 파일을 바로 tombstone 전용 age key로 암호화한다 — **그 age key는 이 역할에 오지 않는다.** 스크립트가 `--user`로 호스트
   # 계정의 uid를 준다(700 디렉터리에 쓰려면). 디렉터리가 없으면 만들지 않고 실패한다(`create_host_path: false`). 파일 머리에 digest 키 ID를
-  # 싣으므로 tombstone digest 키를 받는다(감사 digest 키는 받지 않는다).
+  # 싣으므로 tombstone digest 키를, 만료 삭제·내보내기 성공의 감사 SYSTEM 행(Story 5.3)을 쓰므로 감사 digest 키를 받는다. 업로드·대조·
+  # `latest` 갱신 뒤 스크립트가 같은 역할을 `-e BOKRILOG_TOMBSTONE_EXPORT_CONFIRM=<수>`로 한 번 더 띄워 성공을 기록한다.
   tombstone-export:
     profiles:
       - tombstone-export
@@ -169,6 +170,7 @@ services:
       BOKRILOG_DB_URL: ${BOKRILOG_DB_URL:-}
       BOKRILOG_DB_USERNAME: ${BOKRILOG_DB_USERNAME:-}
       BOKRILOG_DB_PASSWORD: ${BOKRILOG_DB_PASSWORD:-}
+      BOKRILOG_AUDIT_DIGEST_KEY: ${BOKRILOG_AUDIT_DIGEST_KEY:-}
       BOKRILOG_TOMBSTONE_DIGEST_KEY: ${BOKRILOG_TOMBSTONE_DIGEST_KEY:-}
     volumes:
       - type: bind
@@ -281,7 +283,10 @@ services:
   # 단일 Worker. 공개 포트를 게시하지도 `expose`하지도 않고, 앱이 그 포트를 컨테이너 루프백에만 묶는다(`BokrilogRoleConfig`).
   # `edge` 망에 없어 Nginx가 닿지 못한다. 종료 신호가 곧 drain이다 — 진행 중 작업을 drain-timeout(120초)까지 기다리므로 유예가 그보다
   # 길어야 한다. 종료 코드 0이 drain 완료, 75가 timeout, 76이 잠금 상실이다(`WorkerExit`). 두 번째 Worker는 advisory lock을 잡지
-  # 못해 기동 실패로 끝난다. 로그인 제공자·운영자·지원 연락처는 받지 않는다(공개 표면이 없다).
+  # 못해 기동 실패로 끝난다. 로그인 제공자·운영자·지원 연락처는 받지 않는다(공개 표면이 없다). tombstone digest 키는 API 슬롯 가운데
+  # Worker만 받는다(그 밖에 일회성 tombstone-export·restore-apply·deletion-sample — Story 5.3, 계정 삭제 실행의 첫 단계가 tombstone을
+  # 기록한다). 운영(`BOKRILOG_ENV=production`)에서는 법정 분리
+  # 보존 승인(G-5) 전이라 키가 있어도 삭제를 집지 않고, 백업 파기 판정·gauge만 돈다.
   worker:
     image: ${BOKRILOG_WORKER_IMAGE:?BOKRILOG_WORKER_IMAGE}
     entrypoint: ['java', '-XX:MaxRAMPercentage=60', '-jar', '/app/app.jar']
@@ -297,6 +302,7 @@ services:
       BOKRILOG_BYBIT_BASE_URL: ${BOKRILOG_BYBIT_BASE_URL:-}
       BOKRILOG_BYBIT_RESERVED_IP: ${BOKRILOG_BYBIT_RESERVED_IP:-}
       BOKRILOG_AUDIT_DIGEST_KEY: ${BOKRILOG_AUDIT_DIGEST_KEY:-}
+      BOKRILOG_TOMBSTONE_DIGEST_KEY: ${BOKRILOG_TOMBSTONE_DIGEST_KEY:-}
     networks:
       - data
     healthcheck:
