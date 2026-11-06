@@ -18,9 +18,25 @@ decision_baseline: 'ERD-1.0.0'
 | 상태 | 건수 |
 |---|---|
 | 해소 | 35 |
-| 부분 해소 | 22 |
+| 부분 해소 | 25 |
 | 미해소 | 116 |
 | 미판정 | 0 |
+
+**2026-11-06 갱신(Story 5.3 외부 tombstone·백업 파기 추적 done 전환).** `spec-5-3-backup-destruction-tracking.md`(PR #143, 머지 커밋 `d578cc4`)의 판정이다.
+
+- **append한 항목.** 셋이고, 모두 미해소다. 셋 다 V24 기록만으로는 알 수 없어 저장소 조회나 `backup.sh` 순서 변경(SPEC Ask First)이 필요한 경우다.
+  - **174** — 결과 행 없이 끝난 백업 실행의 generation 판정 근거. 1차 리뷰가 append했다.
+  - **175** — 백업 대기열 기록 실패와 판정의 순서 가정. 2차 리뷰가 append했다.
+  - **176** — `PURGED`가 끝내 없는 영향 generation의 운영 해소 경로. 2차 리뷰가 append했다.
+  - 리뷰 분류: 1차는 patch 18 · defer 1 · reject 4, 2차는 patch 14 · defer 2 · reject 5였다. 두 번 다 intent_gap·bad_spec은 0이었다.
+- **부분 해소로 올린 항목.** 셋이다. 판정은 아래 각 절에 적었다.
+  - **171** — 실행 전 복원에서의 요청 내구성. 첫 claim에 tombstone을 남겨 실행 중 복원을 막았다. 요청 확정과 첫 claim 사이·첫 내보내기 전의 창이 남아 주인을 G-5로 옮긴다.
+  - **138** — tombstone 내보내기의 평시 관측. 성공 기록·gauge·`TombstoneExportStale` 경보를 더했다. systemd `OnFailure`와 운영 관측 연결이 남는다.
+  - **173** — 실행·단계 기록의 보존 기한. 실행 기록은 생명주기 행과 운명을 같이한다고 정했다. 생명주기 행 자체의 보존 기한이 G-5 보존 검토로 남는다.
+- **결정 지점으로 지목된 항목.** **139**(tombstone digest 키 회전)는 미해소 그대로다. 5.3이 키 회전을 SPEC Never로 두었고 주인이 없어졌다.
+- **확인만 한 항목.** **133**(대기열 행 단위 멱등)·**132**(저장소 사용률)·**140**(manifest 대조)은 5.3이 지나갔고 그대로다 — 판정은 중복 행에 영향받지 않는다(저장소별 가장 이른 파기 기록). **162**·**170**의 주인은 그대로 5.4다. 열린 회고 액션 `epic-3-retro-item-33`(운영 증거 항목)은 일부만 다뤘고(174~176이 실저장소 파기 판정 근거를 남겼다) 열려 있다.
+
+그래서 앞 표(173건)에서 미해소 +3 −3·부분 해소 +3이다. 합은 176이다.
 
 **2026-11-06 갱신(Story 5.2 계정 데이터 삭제 실행 done 전환).** `spec-5-2-account-data-erasure.md`(PR #141, 머지 커밋 `f95ebb5`)의 판정이다.
 
@@ -1203,11 +1219,21 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소 잔여:** 마지막 성공 시각 gauge(또는 외부 object 시각 측정)·정체 경보·systemd `OnFailure` 알림. 메트릭은 운영 관측 연결(항목 121·126) 뒤에야 쓸모가 있다. 명시된 주인은 없고, 같은 위험을 다루는 첫 스토리는 Story 5.3(AC-4 기한 임박·초과를 완료로 표시하지 않고 alert·감사)이다.
 
+**부분 해소(2026-11-06, Story 5.3 판정, 기준 `d578cc4`).**
+- **5.3이 더한 것.** 내보내기 성공을 기록한다(V32 `operations_tombstone_export`, 업로드·대조·`latest` 갱신 뒤 기록 모드). Worker·`all`의 `BackupDestructionJudge`가 마지막 성공 시각을 gauge `bokrilog_tombstone_export_last_success_timestamp_seconds`로 낸다. 경보는 `TombstoneExportStale`(1시간, critical — 복원 `TOMBSTONES_STALE`과 같은 기준)과 `TombstoneExportUnmeasured`(info)이고 promtool 시험이 고정한다. 노출 이름은 `BackupDestructionJudgeRoleTest`가 Prometheus 출력으로 단정한다.
+- **그대로인 것.** `bokrilog-tombstone-export.service`에 systemd `OnFailure=` 알림은 없다. 메트릭도 운영 관측 연결(항목 121·126) 전까지는 실제로 읽히지 않는다.
+
+**부분 해소 잔여:** systemd `OnFailure` 알림과 운영 관측 연결. 주인 없음(운영 연결 묶음과 함께).
+
 ### 139. tombstone digest 키의 회전 절차
 
 **미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 3.10이 append했다. 회전은 지원하지 않고 불일치를 거부만 한다 — `deploy/production/tombstone-export.sh:232-233`이 파일 머리의 키 ID를 읽고 `:254-256`이 앞선 사본과 다르면 `TOMBSTONE_KEY_CHANGED`로 latest를 바꾸지 않고 멈춘다. digest는 원문 ID 없이 다시 계산할 수 없어 회전에는 살아 있는 계정 전체를 두 키로 대조하는 겹침 절차가 필요하다는 원문 진단이 그대로다. 항목 110(감사 digest 키 회전)·126과 같은 뿌리다.
 
 **미해소 잔여:** 겹침 기간의 두 키 계산, outbox·외부 사본의 key id 전환, 이전 키 폐기 시점. 주인 없음 — 가장 가까운 결정 지점은 Story 5.3(tombstone 수명·권한)이다.
+
+**미해소(2026-11-06, Story 5.3 판정, 기준 `d578cc4`).** 5.3은 tombstone 수명·권한을 넓혔지만(보존 연장, 미완료 행 보존, API 키 금지) 키 회전은 SPEC Never로 두었다. 사본 줄 형식은 여덟 칸이 됐지만 파일 머리의 키 ID 대조(`TOMBSTONE_KEY_CHANGED`)는 그대로다. 미완료 tombstone이 기한 없이 남을 수 있어 회전 절차가 다뤄야 할 행의 수명은 더 길어졌다.
+
+**미해소 잔여:** 위와 같다. 다음 결정 지점이 없어 주인 없음.
 
 ### 140. 복구 manifest와 실제 저장소 상태의 정기 대조
 
@@ -1589,6 +1615,12 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소 잔여:** 위와 같다. tombstone 외부 기록과 백업 파기 추적을 넓히는 Story 5.3이 결정 지점이다.
 
+**부분 해소(2026-11-06, Story 5.3 판정, 기준 `d578cc4`).**
+- **5.3이 닫은 것.** Worker가 삭제 실행을 처음 집을 때 `CREDENTIALS` 앞 자기 트랜잭션에서 요청 시각(V30)으로 tombstone을 기록한다(`AccountErasureRun.recordTombstone` — 첫 단계가 실패해도, drain 중에도 남는다). 그래서 첫 claim 뒤·운영 완료 전에 복원하면 `restore-apply`가 그 tombstone으로 계정을 다시 지운다(`RestoreApplyTest.운영_완료_전에_복원하면_첫_claim의_tombstone으로_그_계정을_다시_지운다`, `rehearse-restore.sh` 3b — 기대 `matched=2 erased=2`). 열린 집합의 tombstone은 보존 기한과 무관하게 외부 사본에 실린다.
+- **남은 창.** 요청 확정과 Worker의 첫 claim 사이(평시엔 다음 dispatch 주기 안, Worker가 멈춰 있으면 그만큼)와 기록 뒤 첫 내보내기 전(≤15분 — 3.10의 완료 tombstone과 같은 창)에 장애가 나 요청 이전 generation으로 복원하면 요청은 여전히 사라진다.
+
+**부분 해소 잔여:** 요청 확정 트랜잭션에서 바로 외부 기록을 남길지(또는 Worker 가용성 경보로 창을 묶을지) 정하는 일. production 삭제를 여는 게이트 G-5가 결정 지점이다.
+
 ### 172. 계정 삭제 실행의 운영 관측(메트릭·경보)
 
 **미해소(2026-11-06, Story 5.2 판정, 기준 `f95ebb5`).** Story 5.2의 1차 리뷰(blind-hunter)가 append했다.
@@ -1604,3 +1636,33 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **정해지지 않은 것.** 보존 기한과 정리 주체.
 
 **미해소 잔여:** 기록의 보존 기한과 정리 경로. 백업 파기 추적(5.3)과 완료 안내(5.4)가 이 기록을 읽을 수 있으므로 그 결정과 함께 볼 지점이다. 결정 지점은 Story 5.3이다.
+
+**부분 해소(2026-11-06, Story 5.3 판정, 기준 `d578cc4`).**
+- **5.3이 정한 것.** 실행 기록은 생명주기 행과 운명을 같이한다 — 백업 파기 판정이 V31 실행의 `operational_erased_at`과 새 `request_id`(V32)로 영향 generation 집합을 닫으므로, 정리 경로를 두지 않고 계정의 생명주기 행(`DELETED`)과 함께 남긴다. 판정 근거가 필요 없어지는 시점(백업 파기 완료 뒤)에 지우는 경로는 만들지 않았다.
+- **정해지지 않은 것.** 생명주기 행 자체(삭제된 계정의 `DELETED` 행과 그 FK 기록)의 보존 기한.
+
+**부분 해소 잔여:** 삭제된 계정의 생명주기 행·실행 기록의 최종 보존 기한. G-5 보존 검토(항목 56과 같은 지점)가 결정 지점이다.
+
+### 174. 결과 행 없이 끝난 백업 실행의 generation 판정 근거
+
+**미해소(2026-11-06, Story 5.3 판정, 기준 `d578cc4`).** Story 5.3의 1차 리뷰(edge-case-hunter)가 append했다.
+- **지금 값.** 백업 파기 판정(`BackupDestructionService`)은 V24 기록만 보고 저장소를 조회하지 않는다(SPEC Ask First). 결과 행 없는 `STARTED`는 그보다 뒤 `STARTED`가 기록될 때까지 완료를 막고, 그 뒤에는 막지 않는다.
+- **위험.** SIGKILL·전원 상실로 이동 뒤·기록 전에 죽은 generation은 저장소에 남아 계정을 담을 수 있는데, 판정은 그것을 영향 generation으로 보지 않아 거짓 `DESTROYED`가 날 수 있다.
+
+**미해소 잔여:** 저장소 목록 조회로 그런 generation의 존재·파기를 확인하는 판정 근거. 실저장소 게이트(`epic-3-retro-item-34`)가 결정 지점이다.
+
+### 175. 백업 대기열 기록 실패와 판정의 순서 가정
+
+**미해소(2026-11-06, Story 5.3 판정, 기준 `d578cc4`).** Story 5.3의 2차 리뷰(edge-case-hunter)가 append했다.
+- **지금 값.** 판정은 "대기열(`pending/`)이 다음 실행의 `STARTED`보다 먼저 기록된다"는 `backup.sh` 순서에 기대는데, `flush_pending` 실패는 경고뿐이라 결과 행이 남은 채 다음 `STARTED`가 기록될 수 있다.
+- **위험.** 그 generation이 저장된 것이면 판정이 막지 않아 거짓 `DESTROYED`가 날 수 있다.
+
+**미해소 잔여:** 대기열이 남으면 새 실행을 시작하지 않거나 판정이 대기열 상태를 알게 하는 규칙. `backup.sh` 단계 순서를 바꾸는 일이라 SPEC 승인 대상이고 주인 없음(항목 133 대기열 멱등과 함께 볼 지점).
+
+### 176. `PURGED` 기록이 끝내 생기지 않는 영향 generation의 운영 해소 경로
+
+**미해소(2026-11-06, Story 5.3 판정, 기준 `d578cc4`).** Story 5.3의 2차 리뷰(blind-hunter)가 append했다.
+- **지금 값.** 만료 삭제는 `DESTROYED` 행만 지운다. 손으로 지운 generation이나 복원 뒤 이미 저장소에서 사라진 generation처럼 `PURGED`가 끝내 기록되지 않는 generation이 든 tombstone은 `OVERDUE`로 DB와 외부 사본에 남고 critical 경보가 계속 운다.
+- **없는 것.** 운영자가 저장소를 확인한 뒤 저장소별 파기를 표시하는 command나 runbook.
+
+**미해소 잔여:** 운영 command(3.1 표면) 또는 실저장소 게이트의 절차. 주인 없음.
