@@ -91,6 +91,50 @@ class AccountDeletionService implements AccountDeletionApi {
     }
 
     @Override
+    @Transactional
+    public int eraseSocialLinks(@Nullable UUID userId) {
+        if (userId == null) {
+            return 0;
+        }
+        AccountState state = repository.lockLifecycleForUpdate(userId).orElse(null);
+        // 전환을 건너뛴 삭제는 하지 않는다({@link #erasePayload}와 같은 근거).
+        if (state == null || state == AccountState.ACTIVE) {
+            return 0;
+        }
+        return repository.deleteSocialLinks(userId);
+    }
+
+    @Override
+    @Transactional
+    public boolean lockDeletionStarted(@Nullable UUID userId) {
+        if (userId == null) {
+            return false;
+        }
+        AccountState state = repository.lockLifecycleForUpdate(userId).orElse(null);
+        return state == AccountState.DELETION_IN_PROGRESS || state == AccountState.DELETED;
+    }
+
+    @Override
+    @Transactional
+    public void lockRunIfPresent(@Nullable UUID userId) {
+        if (userId != null) {
+            repository.lockRunIfPresent(userId);
+        }
+    }
+
+    @Override
+    @Transactional
+    public boolean finishRunBySingleErasure(@Nullable UUID userId) {
+        return userId != null && repository.finishRunBySingleErasure(userId) == 1;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public long remainingSocialLinksOf(UUID userId) {
+        return repository.countSocialLinksOf(userId);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public List<UUID> accounts() {
         return repository.findAllAccounts();

@@ -19,6 +19,9 @@ class SyncLeaseTest {
     @Test
     void lease_수명은_30초다() {
         assertThat(SyncLease.SQL_INTERVAL).isEqualTo("interval '30 seconds'");
+        // 공개 값(Story 5.2 계정 삭제 실행)도 같은 수명이다.
+        assertThat(SyncLease.DURATION).isEqualTo(java.time.Duration.ofSeconds(30));
+        assertThat(com.bokrilog.sync.WorkerLease.DURATION).isEqualTo(SyncLease.DURATION);
     }
 
     @Test

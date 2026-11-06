@@ -80,6 +80,35 @@ class ConfiguredSecretsTest {
     }
 
     /**
+     * Story 5.2: 계정 삭제 Worker가 받는 tombstone digest 키도 감지 집합이다 — 그 값이 로그에 나오면 줄은 가려지고 {@code SECRET_EXPOSED}가
+     * 올라간다(Epic 3 회고 item-28 일부).
+     */
+    @Test
+    void tombstone_digest_키는_감지_집합에_들고_로그에_나오면_가려지고_신호로_올라간다() throws Exception {
+        RenderingAppender lines = RenderingAppender.attach(PROBE.getName(), ConfiguredSecrets.class.getName());
+        String tombstoneKey = randomKey();
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("bokrilog.tombstone.digest-key", tombstoneKey);
+        OperationalSignalApi signals = mock(OperationalSignalApi.class);
+        ConfiguredSecrets secrets = new ConfiguredSecrets(environment,
+                new StaticListableBeanFactory().getBeanProvider(ClientRegistrationRepository.class), signals);
+        try {
+            secrets.afterSingletonsInstantiated();
+            assertThat(secrets.secrets()).contains(tombstoneKey);
+            assertThat(secrets.registeredCount()).isEqualTo(1);
+            PROBE.warn("probe tombstone key {}", tombstoneKey);
+            verify(signals, timeout(5_000).times(1)).raise(argThat(signal ->
+                    signal.type() == SignalType.SECRET_EXPOSED
+                            && LogSecretGuard.RULE_ID.equals(signal.evidence().get("ruleId"))));
+            assertThat(lines.text()).doesNotContain(tombstoneKey);
+            assertThat(LogLines.events(lines.text(), RedactingJsonEncoder.CONFIGURED_SECRET_MARK)).hasSize(1);
+        } finally {
+            secrets.destroy();
+            lines.detach();
+        }
+    }
+
+    /**
      * Story 3.8: 운영 DB 비밀번호의 이름은 {@code BOKRILOG_DB_PASSWORD}이고 {@code application.yml}이 그것을
      * {@code spring.datasource.password}로 잇는다. 실제 설정 파일을 읽은 환경에서 그 값이 감지 집합에 들어간다.
      */

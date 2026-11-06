@@ -49,6 +49,42 @@ public interface AccountDeletionApi {
      */
     DeletionOutcome erasePayload(@Nullable UUID userId);
 
+    /**
+     * 소셜 로그인 연결(인증 매핑)만 지운다 — 계정 삭제의 첫 단계({@link DeletionStep#CREDENTIALS}, Story 5.2). 생명주기 행을 잠근 뒤
+     * {@code DELETION_IN_PROGRESS}·{@code DELETED} 계정에만 지운다. {@code ACTIVE}면 아무것도 하지 않는다(전환 없는 삭제를 하지 않는다).
+     * 멱등이다. payload·세션·요청 행은 마지막 단계({@link #erasePayload})가 지운다.
+     *
+     * @return 이번에 지운 행 수. 0도 정상이다
+     */
+    int eraseSocialLinks(@Nullable UUID userId);
+
+    /**
+     * <b>호출자 트랜잭션 안에서</b> 생명주기 행을 잠그고 그 계정의 삭제가 시작됐는지 본다(Story 5.2) — 다른 모듈의 삭제 port가 "삭제 전환을
+     * 지난 계정만 지운다"를 생명주기 상태로 직접 판정하는 자리다({@link #eraseSocialLinks}와 같은 규칙).
+     *
+     * @return 상태가 {@code DELETION_IN_PROGRESS}거나 {@code DELETED}면 {@code true}. {@code ACTIVE}거나 계정이 없으면 {@code false}
+     */
+    boolean lockDeletionStarted(@Nullable UUID userId);
+
+    /**
+     * 그 계정의 단계 모드 실행 행(Story 5.2)이 있으면 <b>호출자 트랜잭션 안에서</b> 잠근다. 단일 모드 삭제가 삭제 전환보다 먼저 부른다 —
+     * Worker의 단계(실행 행 → 생명주기)와 같은 잠금 순서가 되게 한다. 행이 없으면 아무것도 하지 않는다.
+     */
+    void lockRunIfPresent(@Nullable UUID userId);
+
+    /** 그 계정에 남은 소셜 로그인 연결 행 수({@link DeletionStep#CREDENTIALS} 단계의 잔여 검증). */
+    long remainingSocialLinksOf(UUID userId);
+
+    /**
+     * 단일 모드 삭제(리허설 표본·복원 재삭제)가 그 계정을 끝까지 지웠을 때, 남아 있던 단계 모드 실행({@link AccountDeletionRunApi})을 운영
+     * 데이터 삭제 완료로 마감한다(Story 5.2) — {@code QUEUED}·{@code RETRY_NEEDED}로 남지 않게. 끝나지 않은 단계는 성공(건수 0 — 그
+     * 실행이 아니라 단일 모드가 지웠다)으로 바꾸고 fencing 세대를 올린다. <b>호출자 트랜잭션 안에서</b> payload 삭제와 같은 커밋으로 부른다.
+     * 실행이 없거나 이미 완료면 아무것도 하지 않는다.
+     *
+     * @return 실행을 마감했는가
+     */
+    boolean finishRunBySingleErasure(@Nullable UUID userId);
+
     // ------------------------------------------------------------------ Story 3.10 복원 적용
 
     /**
@@ -76,7 +112,8 @@ public interface AccountDeletionApi {
 
     /**
      * 그 계정에 아직 남은 identity 행 수 — payload·인증 매핑·세션·삭제 요청(Story 5.1). 생명주기 guard 행은 세지 않는다(삭제 뒤에도
-     * 남는 것이 계약이다). 삭제가 끝난 계정이면 0이어야 한다.
+     * 남는 것이 계약이다). 삭제 실행·단계 상태(Story 5.2, {@link AccountDeletionRunApi})도 세지 않는다 — 생명주기 행처럼 삭제 기록이고
+     * 완료 시각의 근거다. 삭제가 끝난 계정이면 0이어야 한다.
      */
     long remainingRowsOf(UUID userId);
 

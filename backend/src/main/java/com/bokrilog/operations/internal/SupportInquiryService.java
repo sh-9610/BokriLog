@@ -1,5 +1,6 @@
 package com.bokrilog.operations.internal;
 
+import com.bokrilog.operations.AccountWriteAccess;
 import com.bokrilog.operations.SupportInquiryApi;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -60,8 +61,12 @@ class SupportInquiryService implements SupportInquiryApi {
 
     private final SecureRandom random = new SecureRandom();
 
-    SupportInquiryService(SupportInquiryRepository inquiries, PlatformTransactionManager transactionManager) {
+    private final AccountWriteAccess writeAccess;
+
+    SupportInquiryService(SupportInquiryRepository inquiries, AccountWriteAccess writeAccess,
+            PlatformTransactionManager transactionManager) {
         this.inquiries = inquiries;
+        this.writeAccess = writeAccess;
         this.transactions = new TransactionTemplate(transactionManager);
     }
 
@@ -125,6 +130,12 @@ class SupportInquiryService implements SupportInquiryApi {
 
     private Submission submitLocked(UUID userId, Category category, String title, String description,
             Contact contact, @Nullable String replyEmail, String keyDigest, String requestDigest) {
+        // 생명주기 잠금 아래 쓰기 접근 재검사가 먼저다(Story 5.2) — 컨트롤러의 판정 뒤에 삭제가 시작됐으면 여기서 그 전환을 본다. 순서는
+        // 생명주기 → 문의 사용자 잠금이다. 계정 삭제의 OPERATIONS 단계(문의 삭제)는 생명주기 행을 잡지 않고 문의 사용자 잠금 하나만 쥐므로
+        // 두 경로 사이에 잠금 순환이 없다.
+        if (!this.writeAccess.lockWriteAccess(userId)) {
+            return new Submission.NotPermitted();
+        }
         this.inquiries.lockUser(userId);
         Instant now = this.inquiries.transactionTime();
         var existing = this.inquiries.byKey(userId, keyDigest).orElse(null);

@@ -19,9 +19,22 @@
     "OPERATIONS_RECORDS"
   ],
   "legalRetention": [],
+  "retryPath": "/api/account/deletion/retry",
+  "progressStatuses": ["IN_PROGRESS", "RETRY_NEEDED", "OPERATIONAL_DATA_ERASED"],
+  "erasureSteps": [
+    "CREDENTIALS",
+    "PORTFOLIO",
+    "SYNC",
+    "PLAN",
+    "SOURCE",
+    "OPERATIONS",
+    "ENGAGEMENT",
+    "IDENTITY"
+  ],
   "refusalCodes": [
     "ACCOUNT_DELETION_IN_PROGRESS",
     "ACCOUNT_DELETION_NOT_CONFIRMED",
+    "ACCOUNT_DELETION_NOT_RETRYABLE",
     "ACCOUNT_DELETION_POLICY_CHANGED",
     "ACCOUNT_DELETION_UNAVAILABLE",
     "CONFIRMATION_MISMATCH",

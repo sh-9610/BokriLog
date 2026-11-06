@@ -48,6 +48,10 @@ class AccountDeletionRequestTest extends PlanSyncTestBase {
 
     @Autowired AccountDeletionRequestService service;
 
+    @Autowired com.bokrilog.identity.AccountDeletionRunApi runs;
+
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactionManager;
+
     record Signed(UUID user, String subject, String cookie, String csrf) {}
 
     // ------------------------------------------------------------------------------------------ 정책과 요청
@@ -94,7 +98,8 @@ class AccountDeletionRequestTest extends PlanSyncTestBase {
         assertThat(confirmed.statusCode()).as(confirmed.body()).isEqualTo(200);
         assertThat(confirmed.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
         var result = topLevelFieldsOf(confirmed.body());
-        assertThat(result).containsOnlyKeys("requestId", "requestedAt", "state", "policyVersion")
+        // `progress`는 Story 5.2의 삭제 진행이다 — 막 만든 요청은 Worker가 집기 전이라 진행 중이다.
+        assertThat(result).containsOnlyKeys("requestId", "requestedAt", "state", "policyVersion", "progress")
                 .containsEntry("state", "DELETION_IN_PROGRESS").containsEntry("policyVersion", VERSION);
         String requestId = (String) result.get("requestId");
         assertThat(requestId).matches("[A-Za-z0-9_-]{1,64}");
@@ -141,8 +146,25 @@ class AccountDeletionRequestTest extends PlanSyncTestBase {
         var replay = confirm(remaining, VERSION, PHRASE, key);
         assertThat(replay.statusCode()).as(replay.body()).isEqualTo(200);
         assertThat(topLevelFieldsOf(replay.body())).isEqualTo(result);
+        assertThat(replay.body()).isEqualTo(confirmed.body());
         assertThat(sessionCookieOf(replay)).isEmpty();
         assertThat(requestCount(signed.user())).isEqualTo(1);
+
+        // Story 5.2: Worker가 실행을 집고 한 단계가 실패해 재시도 필요가 돼도 확정의 재전송은 처음과 바이트까지 같다 — 확정 응답은 지금의
+        // 진행을 싣지 않는다(지금의 진행은 조회만 싣는다).
+        var lease = this.runs.claim(com.bokrilog.sync.WorkerLease.DURATION).orElseThrow();
+        new org.springframework.transaction.support.TransactionTemplate(this.transactionManager)
+                .executeWithoutResult(status -> {
+                    assertThat(this.runs.hold(lease, com.bokrilog.sync.WorkerLease.DURATION)).isTrue();
+                    this.runs.stepsNeedRetry(lease, com.bokrilog.identity.DeletionStep.CREDENTIALS,
+                            Map.of(com.bokrilog.identity.DeletionStep.CREDENTIALS,
+                                    com.bokrilog.identity.AccountDeletionRunApi.STEP_FAILED));
+                });
+        var afterWorker = confirm(remaining, VERSION, PHRASE, key);
+        assertThat(afterWorker.statusCode()).as(afterWorker.body()).isEqualTo(200);
+        assertThat(afterWorker.body()).isEqualTo(confirmed.body());
+        assertThat(json(get(DELETION_PATH, kept).body()).get("request").get("progress").get("status").asString())
+                .isEqualTo("RETRY_NEEDED");
 
         // 다른 키의 두 번째 요청과 삭제 중 준비는 같은 409다.
         var second = confirm(remaining, VERSION, PHRASE, key("delete-main-second"));
@@ -445,6 +467,17 @@ class AccountDeletionRequestTest extends PlanSyncTestBase {
         assertThat(AccountDeletionPolicy.LEGAL_RETENTION).isEmpty();
         assertThat(strings(table.get("refusalCodes"))).containsExactlyInAnyOrderElementsOf(
                 AccountDeletionController.emittedCodes());
+        // 삭제 단계 code(Story 5.2) — 화면의 실패 범위 문장 맵과 같은 집합·순서다.
+        assertThat(strings(table.get("erasureSteps"))).containsExactlyElementsOf(
+                java.util.Arrays.stream(com.bokrilog.identity.DeletionStep.values()).map(Enum::name).toList());
+        assertThat(table.get("retryPath").asString()).isEqualTo(AccountDeletionController.RETRY_PATH);
+        // 진행 상태 값 — 화면의 닫힌 집합과 같다.
+        assertThat(strings(table.get("progressStatuses"))).containsExactly(AccountDeletionController.PROGRESS_IN_PROGRESS,
+                AccountDeletionController.PROGRESS_RETRY_NEEDED, AccountDeletionController.PROGRESS_ERASED);
+        assertThat(java.util.Arrays.stream(com.bokrilog.identity.AccountDeletionRunApi.RunStatus.values())
+                .map(status -> AccountDeletionController.progressViewOf(new com.bokrilog.identity.AccountDeletionRunApi
+                        .DeletionRun(status, null, List.of())).status()).distinct().toList())
+                .containsExactlyInAnyOrderElementsOf(strings(table.get("progressStatuses")));
     }
 
     // ------------------------------------------------------------------------------------------ 리뷰 보강

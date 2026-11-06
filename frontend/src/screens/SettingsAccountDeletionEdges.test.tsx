@@ -77,6 +77,7 @@ const REQUEST = {
   requestedAt: '2026-11-05T01:02:03.456Z',
   state: 'DELETION_IN_PROGRESS',
   policyVersion: ACCOUNT_DELETION_POLICY_VERSION,
+  progress: { status: 'IN_PROGRESS', failedSteps: [] },
 }
 
 beforeEach(() => {

@@ -165,6 +165,12 @@ public interface DeletionTombstoneApi {
     String keyId();
 
     /**
+     * 이 역할에 tombstone digest 키가 있는가(Story 5.2). 계정 삭제 Worker는 키가 없으면 삭제를 집지 않는다 — 마지막 단계의 {@link #record}가
+     * 실패할 실행을 시작하지 않는다.
+     */
+    boolean keyAvailable();
+
+    /**
      * 그 사용자 ID들 가운데 tombstone과 맞는 것. digest는 이 역할의 tombstone 키로 계산한다(사본은 원문 ID를 담지 않는다).
      *
      * @throws IllegalStateException 이 역할에 tombstone digest 키가 없다

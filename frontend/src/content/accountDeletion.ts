@@ -18,6 +18,8 @@ import { formatVerifiedAt } from './connection'
 export const ACCOUNT_DELETION_PATH = '/api/account/deletion'
 export const ACCOUNT_DELETION_CONFIRM_PATH = `${ACCOUNT_DELETION_PATH}/confirm`
 export const ACCOUNT_DELETION_CANCEL_PATH = `${ACCOUNT_DELETION_PATH}/cancel`
+/** 재시도 필요로 멈춘 삭제 실행의 다시 시도(Story 5.2). 백엔드 `AccountDeletionController.RETRY_PATH`와 같은 값이다. */
+export const ACCOUNT_DELETION_RETRY_PATH = `${ACCOUNT_DELETION_PATH}/retry`
 
 /** 이 화면의 설명이 묘사하는 정책 버전. 서버 `AccountDeletionPolicy.VERSION`과 같아야 확정이 저장된다. */
 export const ACCOUNT_DELETION_POLICY_VERSION = 'ACCOUNT-DELETION-1.0'
@@ -145,8 +147,52 @@ export const accountDeletionContent = {
     /** 사용자가 누르는 다시 확인. 자동 재시도는 없다. */
     retry: '삭제 진행 상태 다시 확인',
     signOutFailed: '로그아웃하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+    /** 삭제 실행(Story 5.2)이 한 단계에서 멈췄다. 자동으로 다시 하지 않는다. */
+    stateRetryNeeded: '재시도 필요',
+    retryNeededBody:
+      '일부 데이터를 삭제하지 못해 삭제가 멈췄습니다. 다시 시도하면 멈춘 범위와 아직 남은 범위만 다시 처리합니다. 끝난 범위는 남은 데이터가 새로 발견된 경우에만 다시 처리합니다. 계정 삭제는 계속 진행 중이며, 이 화면의 다시 시도와 로그아웃 말고 다른 조작은 막혀 있습니다.',
+    failedScopeHeading: '삭제하지 못한 범위',
+    failedScopeHeadingId: 'deletion-progress-failed-heading',
+    /** 사용자가 누르는 다시 시도. 누를 때만 요청한다. */
+    retryErasure: '삭제 다시 시도',
+    retryingErasure: '삭제를 다시 시도하도록 요청하고 있습니다.',
+    retryAccepted: '다시 시도를 요청했습니다. 잠시 뒤 진행 상태를 다시 확인해 주세요.',
+    retryUnanswered:
+      '다시 시도 요청의 응답을 받지 못했습니다. 같은 요청으로 다시 누르거나 진행 상태를 다시 확인해 주세요.',
+    /** 모든 운영 데이터를 지웠다. 백업 사본 파기와는 별개다. 보통 이 시점에는 세션도 끝나 이 문장을 볼 일이 드물다. */
+    stateErased: '운영 데이터 삭제 완료(백업 사본은 기한 안에 따로 파기)',
   },
 } as const
+
+/**
+ * 삭제 단계 code → 실패 범위 문장(Story 5.2). 백엔드 `DeletionStep`과 같은 닫힌 집합·순서이고 공유 표의 `erasureSteps`가 대조한다.
+ * 금융 상세·건수·원인 원문은 없다 — 무엇을 지우지 못했는가만 말한다.
+ */
+const STEP_SCOPES = {
+  CREDENTIALS: '로그인 수단 연결과 Bybit 자격정보',
+  PORTFOLIO: '현재가치 스냅샷과 구성 내역',
+  SYNC: '수집·동기화·정밀 검증 작업 기록과 계산 결과',
+  PLAN: '복리 계획과 그 조건·종료·완료 기록',
+  SOURCE: 'Bybit 연결과 원 사건·원천 기록',
+  OPERATIONS: '문의 내역과 운영 기록 속 나를 알아볼 수 있는 정보',
+  ENGAGEMENT: '광고 동의와 광고 시도·빈도 기록',
+  IDENTITY: '계정·로그인 세션과 삭제 요청 기록',
+} as const
+
+export type AccountDeletionStep = keyof typeof STEP_SCOPES
+
+/** 화면이 아는 삭제 단계 code(실행 순서). */
+export const ACCOUNT_DELETION_STEPS = Object.keys(STEP_SCOPES) as readonly AccountDeletionStep[]
+
+/** 모르는 단계 code의 문장. 범위를 지어내지 않는다. */
+const UNKNOWN_STEP_SCOPE = '일부 삭제 단계'
+
+/** 그 단계 code의 실패 범위 문장. 모르는 code는 하나로 접힌다. */
+export function accountDeletionStepScope(code: string): string {
+  return Object.hasOwn(STEP_SCOPES, code)
+    ? STEP_SCOPES[code as AccountDeletionStep]
+    : UNKNOWN_STEP_SCOPE
+}
 
 /** 거절 code → 화면 문장. 백엔드 `AccountDeletionController.REFUSALS`와 같은 code 집합이다(공유 표가 대조한다). */
 const REFUSALS: Readonly<Record<string, string>> = {
@@ -158,6 +204,8 @@ const REFUSALS: Readonly<Record<string, string>> = {
   CONFIRMATION_MISMATCH: '입력한 문구가 확인 문구와 다릅니다. 다시 입력해 주세요.',
   ACCOUNT_DELETION_POLICY_CHANGED: accountDeletionContent.outdated,
   ACCOUNT_DELETION_IN_PROGRESS: '이미 계정 삭제가 요청돼 진행 중입니다.',
+  ACCOUNT_DELETION_NOT_RETRYABLE:
+    '지금은 다시 시도할 삭제 단계가 없습니다. 진행 상태를 다시 확인해 주세요.',
   ACCOUNT_DELETION_UNAVAILABLE: accountDeletionContent.closed,
   IDEMPOTENCY_KEY_REQUIRED: '요청을 처리하지 못했습니다. 화면을 새로 열어 다시 시도해 주세요.',
   /** 같은 키가 다른 본문으로 이미 커밋된 요청에 쓰였다 — 그 계정의 삭제는 이미 진행 중이다. */

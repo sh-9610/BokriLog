@@ -70,6 +70,8 @@ function requested(): Promise<Response> {
       requestedAt: REQUESTED_AT,
       state: 'DELETION_IN_PROGRESS',
       policyVersion: ACCOUNT_DELETION_POLICY_VERSION,
+      // 확정 응답은 언제나 이 고정 진행을 싣는다(Story 5.2).
+      progress: { status: 'IN_PROGRESS', failedSteps: [] },
     }),
   )
 }

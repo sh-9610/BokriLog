@@ -274,7 +274,9 @@ class AccountErasureTest extends PlanSyncTestBase {
                 recording(OperationsDeletionApi.class, operations, calls), engagement, transactionManager);
 
         assertThat(recorded.erase(user, "erasure-order-1")).isEqualTo(AccountErasure.Outcome.ERASED);
+        // 단계 목록(Story 5.2)의 첫 단계가 Bybit 자격정보를 먼저 지운다(소셜 로그인 연결은 identity — 감싸지 않았다).
         assertThat(calls).containsExactly(
+                "SourceConnectionApi.eraseCredentials|unlocked",
                 "PortfolioMembershipApi.erasePortfolioData|unlocked",
                 "SyncJobApi.eraseSyncData|unlocked",
                 "PlanConditionApi.erasePlanData|unlocked",

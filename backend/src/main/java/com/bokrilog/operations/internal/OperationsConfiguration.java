@@ -33,7 +33,8 @@ class OperationsConfiguration {
 
     /**
      * 삭제 tombstone의 digest 키(Story 3.10). 삭제 표본·내보내기·복원 적용 역할에서는 필수다 — 비거나 짧으면 생성이 실패하고 그 역할의 기동이
-     * 거부된다. 그 밖의 역할은 값이 있을 때만 만든다(지금 사용자 삭제 경로가 없어 API·Worker는 이 키를 받지 않는다). <b>감사 digest 키와
+     * 거부된다. 그 밖의 역할은 값이 있을 때만 만든다 — Worker·{@code all}에 키가 있으면 계정 삭제 실행(Story 5.2)의 마지막 단계가
+     * 이 bean으로 tombstone을 기록하고, 키가 없는 프로세스는 삭제를 집지 않는다. <b>감사 digest 키와
      * 같은 값이면 거부한다</b> — 외부에 35일 남는 tombstone 사본 하나로 원장의 digest와 대조할 길이 생긴다. 메시지에 값을 담지 않는다.
      */
     @Bean

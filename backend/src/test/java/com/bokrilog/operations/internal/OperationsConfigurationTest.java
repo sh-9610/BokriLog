@@ -73,6 +73,27 @@ class OperationsConfigurationTest {
                 .run(context -> assertThat(context).hasFailed());
     }
 
+    /**
+     * Story 5.2: 계정 삭제 Worker는 tombstone 키가 없는 프로세스에서 삭제를 집지 않는다 — 그 판정인 실제 {@link DeletionTombstoneService#keyAvailable}은
+     * 키가 없는 컨텍스트(그 bean이 생기지 않는다)에서 거짓, 키가 주어진 컨텍스트에서 참이다.
+     */
+    @Test
+    void tombstone_키가_없는_컨텍스트에서_keyAvailable은_거짓이다() {
+        ApplicationContextRunner tombstones = this.migrate
+                .withBean(DeletionTombstoneRepository.class, () -> org.mockito.Mockito.mock(DeletionTombstoneRepository.class))
+                .withBean(org.springframework.transaction.PlatformTransactionManager.class,
+                        () -> org.mockito.Mockito.mock(org.springframework.transaction.PlatformTransactionManager.class))
+                .withBean(DeletionTombstoneService.class);
+        tombstones.run(context -> {
+            assertThat(context).hasNotFailed().doesNotHaveBean(TombstoneDigest.class);
+            assertThat(context.getBean(DeletionTombstoneService.class).keyAvailable()).isFalse();
+        });
+        tombstones.withPropertyValues("bokrilog.tombstone.digest-key=" + KEY).run(context -> {
+            assertThat(context).hasNotFailed().hasSingleBean(TombstoneDigest.class);
+            assertThat(context.getBean(DeletionTombstoneService.class).keyAvailable()).isTrue();
+        });
+    }
+
     @Test
     void 백업_수행자_digest는_다른_digest와_겹치지_않는다() {
         ActorDigest digest = new ActorDigest(KEY);

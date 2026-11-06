@@ -264,6 +264,21 @@ class SourceConnectionRepository {
         return connections;
     }
 
+    /** 이 사용자의 연결에 딸린 자격정보만 지운다(Story 5.2 계정 삭제의 첫 단계). 연결 행은 남는다. */
+    int eraseCredentialsOf(UUID userId) {
+        return this.jdbc.sql("DELETE FROM source_credential WHERE connection_id IN ("
+                + "SELECT connection_id FROM source_connection WHERE user_id = :userId)")
+            .param("userId", userId).update();
+    }
+
+    /** 이 사용자의 연결에 남은 자격정보 행 수. */
+    long countCredentialsOf(UUID userId) {
+        Long count = this.jdbc.sql("SELECT count(*) FROM source_credential k JOIN source_connection c "
+                + "ON c.connection_id = k.connection_id WHERE c.user_id = :userId")
+            .param("userId", userId).query(Long.class).single();
+        return count == null ? 0L : count;
+    }
+
     /** 운영 제한의 대상 확인(Story 3.2): id로 찾은 연결과 그 소유자, 해제 여부. */
     Optional<com.bokrilog.source.SourceConnectionApi.ConnectionTarget> connectionTarget(UUID connectionId) {
         return this.jdbc.sql("SELECT connection_id, user_id, status = 'REVOKED' FROM source_connection "

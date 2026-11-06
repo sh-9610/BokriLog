@@ -381,7 +381,9 @@ class RestoreApplyTest extends PlanSyncTestBase {
                 .query((rs, n) -> new String[] {rs.getString(1), rs.getString(2)}).list()) {
             String table = column[0];
             String name = column[1];
-            if (table.equals("identity_account_lifecycle")) continue;
+            // 삭제 실행·단계 상태(Story 5.2)도 생명주기 행처럼 삭제 기록이다 — 삭제 뒤에도 남는 것이 계약이라 어느 모듈도 세지 않는다.
+            if (table.equals("identity_account_lifecycle") || table.equals("identity_deletion_run")
+                    || table.equals("identity_deletion_step")) continue;
             List<String> modules = new ArrayList<>();
             // 사용자의 삭제 요청(Story 5.1)도 identity가 센다(`countRemainingRowsOf`).
             if ((table.equals("identity_account") || table.equals("identity_social_link")
