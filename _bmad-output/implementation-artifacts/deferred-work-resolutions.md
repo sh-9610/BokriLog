@@ -2,7 +2,7 @@
 title: 'Deferred Work 해소 원장'
 status: living
 created: '2026-09-02'
-updated: '2026-11-05'
+updated: '2026-11-06'
 applies_to: '_bmad-output/implementation-artifacts/deferred-work.md'
 decision_baseline: 'ERD-1.0.0'
 ---
@@ -19,8 +19,25 @@ decision_baseline: 'ERD-1.0.0'
 |---|---|
 | 해소 | 35 |
 | 부분 해소 | 22 |
-| 미해소 | 114 |
+| 미해소 | 116 |
 | 미판정 | 0 |
+
+**2026-11-06 갱신(Story 5.2 계정 데이터 삭제 실행 done 전환).** `spec-5-2-account-data-erasure.md`(PR #141, 머지 커밋 `f95ebb5`)의 판정이다.
+
+- **append한 항목.** 둘이고, 둘 다 1차 리뷰가 append했으며 미해소다.
+  - **172** — 삭제 실행의 운영 관측(메트릭·경보).
+  - **173** — 실행·단계 기록의 보존 기한.
+  - 리뷰 분류: 1차는 patch 21 · defer 2 · reject 5, 2차는 patch 22 · reject 3이었다. 두 번 다 intent_gap·bad_spec은 0이었다.
+- **해소한 항목.** 없다.
+- **결정 지점으로 지목된 항목.** 여섯 모두 미해소·부분 해소 그대로다. 판정은 아래 각 절에 적었다.
+  - **27** — `identity`의 `spring_session` 결합. 이번에 주인이 없어졌다.
+  - **56** — 소비된 허가 행의 보존 상한. 다음 결정 지점을 G-5 보존 검토로 옮긴다.
+  - **67** — 삭제 참여자 목록의 수작업 나열. 단계 목록 하나와 단계별 잔여 검증으로 한 걸음 더 줄었다.
+  - **162** — 삭제 커밋 뒤 운영자 거절·실패 행의 `actor_user_id`. 주인을 5.4로 옮긴다.
+  - **170** — 삭제 진행 화면의 지원 경로. 주인을 5.4로 옮긴다.
+  - **171** — 실행 전 복원에서의 요청 내구성. 주인을 5.3으로 옮긴다.
+
+그래서 앞 표(171건)에서 미해소 +2다. 합은 173이다.
 
 **2026-11-05 갱신(Story 5.1 계정 삭제 요청 done 전환).** `spec-5-1-account-deletion-request.md`(PR #139, 머지 커밋 `822816b`)의 판정이다.
 
@@ -405,6 +422,13 @@ X-Frame-Options: DENY
 
 **미해소 잔여:** 위 세 선택지 가운데 무엇을 택할지. 다음 결정 지점은 `AccountErasure`(identity의 세션 raw DELETE를 부른다)를 사용자 삭제 경로에 잇는 Story 5.2다.
 
+**미해소(2026-11-06, Story 5.2 판정, 기준 `f95ebb5`) — 사용자 경로로 끌려왔고 결합은 그대로다.**
+- **이제 사용자 경로다.** 5.2가 erase를 사용자 경로에 이었다. Worker 단계 모드의 `IDENTITY` 단계가 `erasePayload`를 부르고, 그 안의 `DELETE FROM spring_session WHERE principal_name = :principalName`(`IdentityAccountRepository.java:263`)이 요청 세션까지 지운다.
+- **결합은 넓어지지 않았다.** 세 선택지 가운데 어느 것도 택하지 않았다. 규약을 읽는 자리도 늘지 않았다.
+- **안전망.** 정상 실행 시험(`AccountErasureRunTest`)이 진짜 로그인 세션을 만든 뒤 삭제 완료 뒤의 401을 단정한다. 규약이 갈라지면 이 시험이 깨진다.
+
+**미해소 잔여:** 세 선택지 가운데 무엇을 택할지. 남은 Epic 5 스토리(5.3 tombstone·백업 파기, 5.4 복원 통합 검증)는 세션 저장 경로를 바꾸지 않는다. 그래서 지명된 결정 지점이 없어 주인이 없다(`## 갱신 규칙` (나) 부류).
+
 ### 28. `OnboardingScreen`·`SignedInScreen`을 세션 게이트 셸 하나로 합칠지
 
 **부분 해소(2026-09-08).** Story 1.4가 append했다(PR #14). 버튼 축의 중복은 Story 1.5가 실제로 만들지 않았다 — `frontend/src/components/SignOutButton.tsx`(52줄)와 `SignOutButton.test.tsx`(239줄)를 두 화면이 함께 쓴다. 이 라운드에 새로 생길 수 있었던 중복 한 축이 생기지 않았으므로 그만큼은 해소다.
@@ -646,6 +670,12 @@ Docker 없는 정적 리터럴 비교 시험은 이 저장소에 전례가 없�
 
 **미해소 잔여:** 위와 같다. 개인정보 보존 정책을 실제 삭제·보존 기한과 함께 정하는 Story 5.2·5.3이 다음 결정 지점이다.
 
+**미해소(2026-11-06, Story 5.2 판정, 기준 `f95ebb5`).** 5.2는 보존 기간을 정하지 않았다.
+- **삭제되는 계정은 문제가 아니다.** 소비된 허가 행은 `IDENTITY` 단계의 `identity_account` 삭제와 함께 `ON DELETE CASCADE`로 사라진다. 잔여 검증은 `action_grant`도 센다(`RestoreInvariants`).
+- **남은 문제.** 삭제하지 않는 계정의 무기한 누적은 그대로다.
+
+**미해소 잔여:** 보존 기간 값과 sweep 술어 확대. 개인정보 보존 정책 값을 정하는 G-5(법정 분리 보존 승인) 검토가 다음 결정 지점이다. Epic 5의 남은 스토리는 이 값을 정하지 않는다.
+
 ### 57. 허가 포트가 `MockHttpSession`으로만 구동되고 실제 Spring Session JDBC 세션으로 발급→소비 왕복을 지나는 층이 없다
 
 **해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 1.9가 append했고, 지목된 Story 1.10과 그 뒤 민감 command들이 HTTP 표면을 만들면서 그 층이 생겼다. 근거는 **현재 요청의 세션 id로 소비하는** 실경로다 — 연결 흐름은 OIDC 콜백이 세션을 회전시키므로 발급 때 기록한 id를 그대로 제시해 소비하고(`ActionGrantService.java:543`, `LinkService.java:215`) 실제 id와의 어긋남을 볼 수 없어 근거로 쓰지 않는다. 계획 종료는 준비 요청에서 그 요청의 실제 Spring Session JDBC 세션 id(`SessionFacts.of`의 `session.getId()`)로 발급하고, 별도 HTTP 요청인 확정에서 무장의 세션 id가 지금 세션과 같은지 보고(`PlanEndCommandService.java:156`, `armed.sessionId().equals(session.getId())`) 제시값 없이 지금 요청의 세션 id로 소비한다 — 소비 술어가 `session_id = :sessionId`를 포함하므로(`ActionGrantRepository.java:165`) `HttpSession#getId()`가 요청 사이에서 귀속 값과 다르면 소비가 실패한다. `PlanEndTest.anEarlyEndPreparesConfirmsAndLeavesAReadOnlyRecord`(`:59`)가 준비 뒤 미소비(`:82`)와 확정 뒤 소비(`:113`)를 단정한다. Bybit 해제(`BybitRevocationCommandService.java:202`)와 운영 command(`OperatorCommandService.java:296`)도 같은 모양이다. 서로 다른 두 실제 세션 사이의 귀속은 `AuthUnlinkProviderTest.java:598`의 `오래된_탭의_취소는_다른_세션의_허가를_지우지_않는다`가 지난다. 모두 `backend-quality`에서 돈다. 발급 행의 `session_id`를 `spring_session.session_id`와 직접 비교하는 단정은 없지만, 위 소비가 그 동일성을 관측한다.
@@ -730,6 +760,14 @@ Docker 없는 정적 리터럴 비교 시험은 이 저장소에 전례가 없�
 - **여전히 없는 검사.** 모듈 술어가 규칙의 표 전부를 덮는지 보는 일반 검사는 그대로 없다.
 
 **미해소 잔여:** 위와 같다. 다음 결정 지점은 erase를 사용자 경로에 잇는 Story 5.2다.
+
+**부분 해소(2026-11-06, Story 5.2 판정, 기준 `f95ebb5`) — 참여자 나열이 한 곳 더 줄었다.**
+- **단계 목록 하나.** 삭제 참여자와 순서는 이제 `identity` `DeletionStep` 하나가 소유한다. 단일 모드(리허설 표본·복원 적용)와 단계 모드(Worker)가 같은 목록을 돈다(`AccountErasure.apply`·`residueOf`).
+- **단계별 잔여 검증.** 각 단계는 그 모듈의 `remainingRowsOf` 0을 확인해야 성공이다. 마지막 단계는 앞 단계 전부를 다시 센다. 모듈 SQL이나 erase가 빠뜨린 행은 실행 중에 `RESIDUAL_FOUND`로 드러난다.
+- **아직 손으로 나열하는 곳.** `RestoreInvariants` 합산(`RestoreInvariants.java:86-89`)은 여전히 모듈을 손으로 나열한다.
+- **여전히 없는 검사.** 모듈 술어가 규칙의 표 전부를 덮는지 보는 일반 검사(`epic-2-retro-item-24`)는 그대로 없다.
+
+**미해소 잔여:** 잔여 합산을 같은 목록으로 돌리는 것과 일반 덮음 검사. 주인은 `epic-2-retro-item-24`(in-progress)다.
 
 ### 68. 5분 무장 수명이 화면에 보이지 않고 만료가 구분되지 않는 거부로 끝난다
 
@@ -1400,6 +1438,12 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소 잔여:** 거절·실패 행을 쓸 때 계정 상태를 보고 수행자 귀속을 비울지, 또는 Epic 5 삭제 완료 검사(5.2·5.4)가 잡게 할지 정하는 일. 주인 — Epic 5에서 사용자 삭제 경로를 여는 스토리(5.2·5.4)가 결정 지점이다.
 
+**미해소(2026-11-06, Story 5.2 판정, 기준 `f95ebb5`).**
+- **삭제 전에 생긴 행은 잡는다.** 5.2의 `IDENTITY` 단계는 `DELETED` 전환 앞에서 operations 잔여를 다시 센다. 그래서 삭제 실행 중에 붙은 수행자 귀속은 `RESIDUAL_FOUND`로 잡혀 다시 지워진다.
+- **삭제 뒤에 생긴 행은 못 잡는다.** `DELETED` 커밋 **뒤** 잠금을 얻어 append되는 운영자 거절·실패 행은 그 검사 밖이다. 그런 행에 계정 상태 판정을 더하지도 않았다.
+
+**미해소 잔여:** 위와 같다. 삭제 완료 뒤 잔여를 통합 검증하는 Story 5.4가 결정 지점이다.
+
 ### 163. `backend-quality` 시험의 JVM 병렬화(`maxParallelForks`)
 
 **미해소(2026-11-03, CI backend jar 생성 job chore 판정, 기준 `6b16acb`).** 2026-11-03 CI 시간 분석이 append했다(source_spec 없음 — jar 생성 job 분리와 독립적으로 머지 가능해 단일 목표 규칙으로 뗐다).
@@ -1523,6 +1567,13 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소 잔여:** 삭제 중 계정에 열 지원 경로(무세션 연락처 안내 또는 상태 전용 세션의 문의 허용)를 정하는 일. 실행·부분 실패를 사용자에게 알리는 Story 5.2·5.4가 결정 지점이다.
 
+
+**미해소(2026-11-06, Story 5.2 판정, 기준 `f95ebb5`).**
+- **늘어난 것.** 5.2는 진행 화면에 `재시도 필요`·실패 범위·`삭제 다시 시도`를 더했다.
+- **그대로인 것.** 지원(문의) 경로는 더하지 않았다. 삭제 중 계정의 문의 접수는 이제 생명주기 잠금 아래에서도 거부된다(404).
+- **영향.** 재시도가 거듭 실패하는 사용자가 운영자에게 닿을 길은 여전히 없다.
+
+**미해소 잔여:** 위와 같다. 완료 안내와 사용자 안내를 정하는 Story 5.4가 결정 지점이다.
 ### 171. 실행 전 복원에서의 삭제 요청 내구성
 
 **미해소(2026-11-05, Story 5.1 판정, 기준 `822816b`).** Story 5.1의 2차 리뷰(blind-hunter)가 append했다.
@@ -1531,3 +1582,25 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **이 스토리가 지키는 것.** 복원 불변식(`RestoreInvariants`)이 복원된 DB 안의 모순만 잡는다 — 요청 없는 진행 중 계정, 요청이 있는 ACTIVE 계정. DB 밖에 남은 요청은 볼 수 없다.
 
 **미해소 잔여:** 요청을 외부 기록(tombstone 계열 outbox 또는 별도 내보내기)에 남기고 복원 적용 때 다시 진입시킬지 정하는 일. 실행과 백업 파기를 여는 Story 5.2·5.3이 결정 지점이다.
+
+**미해소(2026-11-06, Story 5.2 판정, 기준 `f95ebb5`).**
+- **5.2가 더한 것.** 삭제 **실행** 기록(V31 `identity_deletion_run`·`identity_deletion_step`)과 완료 뒤의 tombstone이다. 실행이 끝나기 전 요청의 외부 기록은 여전히 없다.
+- **그대로인 것.** 요청 이전 generation으로 복원하면 요청이 사라지는 것은 그대로다.
+
+**미해소 잔여:** 위와 같다. tombstone 외부 기록과 백업 파기 추적을 넓히는 Story 5.3이 결정 지점이다.
+
+### 172. 계정 삭제 실행의 운영 관측(메트릭·경보)
+
+**미해소(2026-11-06, Story 5.2 판정, 기준 `f95ebb5`).** Story 5.2의 1차 리뷰(blind-hunter)가 append했다.
+- **지금 남는 것.** 실행 로그(단계 code·결과 code·예외 단순 이름)와 heartbeat 실패 경고뿐이다. 사용자·요청 식별자는 남기지 않는다.
+- **없는 것.** 새 메트릭·경보가 없다. 그래서 `재시도 필요`로 멈춘 실행 수, 대기 실행의 나이, production·키 없음 때문에 집히지 않는 요청을 운영자가 볼 수 없다.
+
+**미해소 잔여:** `TelemetryAllowlist` 행과 gauge(재시도 필요 수·가장 오래된 대기 나이), 그리고 `deploy/observability/alerts.yml` 경보 규칙. 운영 경보 묶음을 여는 작업이 결정 지점이고, 지명된 스토리는 없다.
+
+### 173. 삭제 실행·단계 기록의 보존 기한
+
+**미해소(2026-11-06, Story 5.2 판정, 기준 `f95ebb5`).** Story 5.2의 1차 리뷰(blind-hunter)가 append했다.
+- **지금 값.** V31 두 표는 생명주기 행을 FK로 가리키는 삭제 기록이다. 운영 완료 시각의 근거라서 계정 삭제 뒤에도 영구히 남는다. identity 잔여 수에서도 뺀다.
+- **정해지지 않은 것.** 보존 기한과 정리 주체.
+
+**미해소 잔여:** 기록의 보존 기한과 정리 경로. 백업 파기 추적(5.3)과 완료 안내(5.4)가 이 기록을 읽을 수 있으므로 그 결정과 함께 볼 지점이다. 결정 지점은 Story 5.3이다.
