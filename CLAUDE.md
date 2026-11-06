@@ -225,6 +225,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 5.1 삭제 범위·보존 정책 확인과 계정 삭제 요청 | done | `spec-5-1-account-deletion-request.md`, PR #139 머지 커밋 `822816b` |
 | 5.2 모듈별 사용자 데이터 삭제·부분 실패 추적 | done | `spec-5-2-account-data-erasure.md`, PR #141 머지 커밋 `f95ebb5` |
 | 5.3 외부 tombstone·30일 백업 파기 추적 | done | `spec-5-3-backup-destruction-tracking.md`, PR #143 머지 커밋 `d578cc4` |
+| 마지막 점검 재획득 시험 경합(잠금 문) fix | done | `spec-plan-verification-final-sweep-race.md`, PR #146 |
 
 ## 스토리가 고정한 계약
 
