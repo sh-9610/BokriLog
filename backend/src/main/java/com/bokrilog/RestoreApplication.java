@@ -126,6 +126,9 @@ class RestoreApplication {
                         .append(" portfolio_pointer_violations=").append(this.violations.portfolioPointers())
                         .append(" unfinished_deletions=").append(this.violations.unfinishedDeletions())
                         .append(" residual_rows=").append(this.violations.residualRows());
+                // 모듈별 잔여(Story 5.4). 리허설이 각 값을 0으로 단정한다 — 합 하나로는 어느 모듈이 남겼는지 보이지 않는다.
+                this.violations.residuals().forEach((module, count) ->
+                        line.append(" residual_").append(module).append('=').append(count));
             }
             if (this.credentials != null) {
                 line.append(" credentials_opened=").append(this.credentials.opened()).append('/')

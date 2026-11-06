@@ -7,7 +7,12 @@ import com.bokrilog.plan.PlanConditionApi;
 import com.bokrilog.portfolio.PortfolioMembershipApi;
 import com.bokrilog.source.SourceConnectionApi;
 import com.bokrilog.sync.SyncJobApi;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
@@ -24,7 +29,8 @@ import org.springframework.stereotype.Component;
  *       ({@link AccountDeletionApi#deletionRequestOf}, Story 5.1)이 없는 것. 요청이 있는 {@code DELETION_IN_PROGRESS}는 모듈 삭제를
  *       기다리는 정상 대기 상태다
  *   <li>요청했는데 막히지 않은 계정 없음 — 삭제 요청 행이 있는데 생명주기가 {@code ACTIVE}인 계정(위와 같은 수에 센다)
- *   <li>삭제가 끝난 계정의 잔여 행 0 — 모듈마다 {@code remainingRowsOf}
+ *   <li>삭제가 끝난 계정의 잔여 행 0 — 모듈마다 {@code remainingRowsOf}. 보고는 합과 함께 모듈별 내역({@link #RESIDUAL_KEYS})을 싣는다
+ *       (Story 5.4)
  * </ul>
  */
 @Component
@@ -38,16 +44,48 @@ class RestoreInvariants {
      * @param portfolioPointers 현재 포인터를 어긴 portfolio
      * @param unfinishedDeletions 외부 tombstone이 다시 지우지 않았고 사용자의 삭제 요청(Story 5.1)도 없는 {@code DELETION_IN_PROGRESS}
      *     계정(요청 없는 삭제는 한 트랜잭션이라 정상이면 없다), 그리고 삭제 요청 행이 있는데 {@code ACTIVE}인 계정
-     * @param residualRows 삭제가 끝난 계정에 남은 행
+     * @param residuals 삭제가 끝난 계정에 남은 행의 모듈별 내역(Story 5.4) — 키 순서가 보고 줄의 순서다({@link #RESIDUAL_KEYS}). 합은
+     *     {@link #residualRows}가 이 내역에서 낸다(합과 내역이 따로 들어와 어긋날 수 없다)
      */
     record Violations(long activePlans, long officialBundles, long portfolioPointers, long unfinishedDeletions,
-            long residualRows) {
+            Map<String, Long> residuals) {
+
+        Violations {
+            residuals = Collections.unmodifiableMap(new LinkedHashMap<>(residuals));
+        }
+
+        /** 삭제가 끝난 계정에 남은 행의 합(모듈별 내역의 합). */
+        long residualRows() {
+            return this.residuals.values().stream().mapToLong(Long::longValue).sum();
+        }
 
         long total() {
             return this.activePlans + this.officialBundles + this.portfolioPointers + this.unfinishedDeletions
-                    + this.residualRows;
+                    + residualRows();
         }
     }
+
+    /**
+     * 모듈별 잔여의 키(Story 5.4). 보고 줄에 {@code residual_<키>=<수>}로 이 순서대로 실린다 — 복원 리허설이 각 값을 0으로 단정한다.
+     * <ul>
+     *   <li>{@code identity} — identity 모듈의 잔여({@code remainingRowsOf} — payload·매핑·세션·삭제 요청 행)에서 매핑·세션 칸을 뺀 것
+     *       (payload·삭제 요청 행). 모듈 집계가 권위라 identity가 새 표를 세게 되면 이 칸에 나타난다. 뺄셈이 음수면 두 집계가 어긋난
+     *       것이라 그 절댓값을 위반으로 센다({@code source}와 같은 규칙)
+     *   <li>{@code sign_in} — 소셜 로그인 매핑(직접 센다)
+     *   <li>{@code sessions} — 인증 세션(직접 센다)
+     *   <li>{@code credentials} — Bybit 자격정보(직접 센다)
+     *   <li>{@code source} — source 모듈에서 자격정보를 뺀 것(연결·provider account·원 사건). 뺄셈이 음수면 두 집계가 어긋난 것이라 그 절댓값을
+     *       위반으로 센다 — 합에서 상쇄되지 않게
+     *   <li>{@code portfolio} — portfolio·snapshot·구성 내역
+     *   <li>{@code sync} — 수집·동기화 작업과 계산 결과
+     *   <li>{@code plan} — 계획과 그 조건·종료·완료 기록
+     *   <li>{@code operations} — 문의와 운영 기록(감사·제한)의 사용자 귀속
+     *   <li>{@code engagement} — 광고 동의·광고 자격 결정
+     *   <li>{@code grants} — 일회성 허가(루트 {@code action_grant})
+     * </ul>
+     */
+    static final List<String> RESIDUAL_KEYS = List.of("identity", "sign_in", "sessions", "credentials", "source", "portfolio",
+            "sync", "plan", "operations", "engagement", "grants");
 
     private final AccountDeletionApi accounts;
 
@@ -81,15 +119,28 @@ class RestoreInvariants {
     /** 지금 DB의 불변식을 센다. 읽기만 한다. */
     Violations check() {
         List<UUID> all = this.accounts.accounts();
-        long residual = 0;
+        Map<String, Long> residuals = new LinkedHashMap<>();
+        RESIDUAL_KEYS.forEach(key -> residuals.put(key, 0L));
         for (UUID deleted : this.accounts.deletedAccounts()) {
-            residual += this.accounts.remainingRowsOf(deleted) + this.portfolios.remainingRowsOf(deleted)
-                    + this.syncs.remainingRowsOf(deleted) + this.plans.remainingRowsOf(deleted)
-                    + this.sources.remainingRowsOf(deleted) + this.operations.remainingRowsOf(deleted)
-                    + this.engagement.remainingRowsOf(deleted) + actionGrantsOf(deleted);
+            long signIn = this.accounts.remainingSocialLinksOf(deleted);
+            long sessions = this.accounts.remainingSessionsOf(deleted);
+            long credentials = this.sources.remainingCredentialsOf(deleted);
+            // identity 모듈은 매핑·세션을 함께 센다. 그것을 뺀 칸이 음수면 두 집계가 어긋난 것 — 절댓값을 위반으로 센다.
+            residuals.merge("identity", Math.abs(this.accounts.remainingRowsOf(deleted) - signIn - sessions), Long::sum);
+            residuals.merge("sign_in", signIn, Long::sum);
+            residuals.merge("sessions", sessions, Long::sum);
+            residuals.merge("credentials", credentials, Long::sum);
+            // source 모듈은 자격정보를 함께 센다(연결을 거쳐). 그것을 뺀 칸이 음수면 두 집계가 어긋난 것 — 절댓값을 위반으로 센다.
+            residuals.merge("source", Math.abs(this.sources.remainingRowsOf(deleted) - credentials), Long::sum);
+            residuals.merge("portfolio", this.portfolios.remainingRowsOf(deleted), Long::sum);
+            residuals.merge("sync", this.syncs.remainingRowsOf(deleted), Long::sum);
+            residuals.merge("plan", this.plans.remainingRowsOf(deleted), Long::sum);
+            residuals.merge("operations", this.operations.remainingRowsOf(deleted), Long::sum);
+            residuals.merge("engagement", this.engagement.remainingRowsOf(deleted), Long::sum);
+            residuals.merge("grants", actionGrantsOf(deleted), Long::sum);
         }
         return new Violations(this.plans.activePlanViolations(), this.syncs.officialBundleViolations(all),
-                this.portfolios.currentPointerViolations(), unrequestedDeletions(), residual);
+                this.portfolios.currentPointerViolations(), unrequestedDeletions(), residuals);
     }
 
     /**
@@ -107,7 +158,7 @@ class RestoreInvariants {
         long withoutRequest = inProgress.stream()
                 .filter(user -> this.accounts.deletionRequestOf(user).isEmpty())
                 .count();
-        java.util.Set<UUID> notActive = new java.util.HashSet<>(inProgress);
+        Set<UUID> notActive = new HashSet<>(inProgress);
         notActive.addAll(this.accounts.deletedAccounts());
         long activeWithRequest = this.accounts.accounts().stream()
                 .filter(user -> !notActive.contains(user))

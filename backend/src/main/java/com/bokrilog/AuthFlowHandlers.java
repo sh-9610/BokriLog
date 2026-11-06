@@ -138,9 +138,19 @@ class AuthFlowHandlers {
      *
      * <p>제공자 오류, 토큰 엔드포인트 장애, {@code state} 불일치·재사용·만료, ID Token 검증 실패,
      * 삭제가 시작된 계정의 세션 거부가 모두 이 하나로 접힌다. 값을 나누는 순간 그 표지가 계정의
-     * 존재나 상태를 알려 주는 신호가 된다.
+     * 존재나 상태를 알려 주는 신호가 된다. 삭제가 <b>끝난</b> 계정의 식별자 하나만 {@link #FAILURE_MARKER_DELETED}로 갈린다.
      */
     static final String FAILURE_MARKER_FAILED = "failed";
+
+    /**
+     * 삭제가 <b>끝난</b>({@code DELETED}) 계정의 로그인 수단이다(Story 5.4 재가입 차단).
+     *
+     * <p>이 표지만 계정의 상태를 말한다 — 의도한 예외다. 보는 사람은 제공자 검증을 방금 통과한 그 identity의 본인뿐이고(콜백 직후의 같은
+     * 브라우저), 재가입이 막힌 이유를 숨기면 사용자는 같은 수단으로 계속 시도한다. 다른 사용자·대상의 접근 거부는 여전히 하나의 값이다.
+     * 계정·세션은 만들지 않는다. 삭제가 시작됐지만 끝나지 않은 계정(로그인 매핑을 지운 뒤 뒤 단계가 재시도 필요로 멈춘 계정 포함)은 그대로
+     * {@link #FAILURE_MARKER_FAILED}이고 그때도 계정을 만들지 않는다.
+     */
+    static final String FAILURE_MARKER_DELETED = "deleted";
 
     /**
      * 사용자가 재인증을 취소했거나 동의를 거부했다.
@@ -252,12 +262,17 @@ class AuthFlowHandlers {
     /** 운영자 판정(Story 3.1). 복귀 목적지 {@link #OPERATOR_PATH}를 운영자에게만 허용하는 데 쓴다. */
     private final OperatorAccess operators;
 
+    /** 완료 확인 세션의 연결(Story 5.4). 인증 성공이 그 세션의 연결을 지운다. */
+    private final DeletionCompletionSessions completions;
+
     AuthFlowHandlers(
             AuthSessionService authSessionService,
             SessionRepository<? extends Session> sessions,
             SessionGuard guard,
             LinkService linkService,
-            OperatorAccess operators) {
+            OperatorAccess operators,
+            DeletionCompletionSessions completions) {
+        this.completions = completions;
         this.authSessionService = authSessionService;
         this.sessions = sessions;
         this.guard = guard;
@@ -589,10 +604,10 @@ class AuthFlowHandlers {
         Optional<AuthSessionService.AuthSession> session = establish(authentication);
         if (session.isEmpty()) {
             /*
-             * 검증은 통과했지만 세션을 만들 수 없다. 삭제가 시작된·끝난 계정, 경합에서 진 흐름이
-             * 여기로 온다. 어느 쪽인지 구분되지 않는 하나의 실패로 수렴한다.
+             * 검증은 통과했지만 세션을 만들 수 없다. 삭제가 시작된 계정, 경합에서 진 흐름이 여기로 온다. 어느 쪽인지 구분되지 않는 하나의
+             * 실패로 수렴한다. 삭제가 끝난 계정의 식별자(재가입 차단, Story 5.4)만 그 사실을 말하는 표지로 갈린다 — 계정은 만들지 않았다.
              */
-            converge(request, response, FAILURE_MARKER_FAILED);
+            converge(request, response, failureMarkerOf(identity));
             return;
         }
 
@@ -855,6 +870,9 @@ class AuthFlowHandlers {
      */
     private void writeEstablishedPrincipal(
             HttpServletRequest request, HttpServletResponse response, UUID userId) {
+        // 완료 확인 세션(Story 5.4)에서 로그인했으면 그 완료 연결을 지운다 — 회전은 세션 행 키를 보존한다. 판독은 미인증 세션만 하므로
+        // 지우지 못해도 새 인증 세션이 완료 조회를 받지는 않는다(최선 노력).
+        this.completions.forget(request);
         SecurityContext minimal = SecurityContextHolder.createEmptyContext();
         minimal.setAuthentication(
                 new PreAuthenticatedAuthenticationToken(
@@ -1108,6 +1126,22 @@ class AuthFlowHandlers {
     private void deleteStoredSession(@Nullable String sessionId) {
         if (sessionId != null && !sessionId.isBlank()) {
             this.sessions.deleteById(sessionId);
+        }
+    }
+
+    /**
+     * 세션을 개설하지 못한 로그인의 표지(Story 5.4). 삭제가 <b>끝난</b> 계정의 식별자만 {@link #FAILURE_MARKER_DELETED}이고 그 밖은
+     * {@link #FAILURE_MARKER_FAILED}다. 판정이 예외로 끝나도 {@code failed}로 접어 실패 수렴(세션 정리·이동)에 닿게 한다.
+     */
+    private String failureMarkerOf(@Nullable VerifiedIdentity identity) {
+        if (identity == null) {
+            return FAILURE_MARKER_FAILED;
+        }
+        try {
+            return this.authSessionService.isDeletedIdentity(identity.issuer(), identity.subject())
+                    ? FAILURE_MARKER_DELETED : FAILURE_MARKER_FAILED;
+        } catch (RuntimeException unreadable) {
+            return FAILURE_MARKER_FAILED;
         }
     }
 

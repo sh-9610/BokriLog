@@ -17,7 +17,9 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
@@ -73,6 +75,10 @@ class RestoreApplyTest extends PlanSyncTestBase {
         TombstoneFile external = copy(tombstoneOf(sample, "restore-sample-1", at),
                 tombstoneOf(gone, "restore-gone-1", outboxRequestedAt("restore-gone-1")),
                 new Tombstone("d".repeat(64), "restore-unknown-1", at, at.plus(DeletionTombstoneApi.RETENTION)));
+        // 복원 전(백업 시점)의 표본 로그인 매핑. 재가입 차단 digest는 아직 없다 — 다시 지울 때 이 매핑에서 만들어진다(Story 5.4).
+        var sampleIdentity = jdbc().sql("SELECT issuer, subject FROM identity_social_link WHERE user_id = :u")
+                .param("u", sample).query((rs, n) -> List.of(rs.getString(1), rs.getString(2))).single();
+        assertThat(accountLifecycle().isDeletedIdentity(sampleIdentity.get(0), sampleIdentity.get(1))).isFalse();
 
         RestoreApplication.Report report = restore.apply(external);
 
@@ -86,6 +92,14 @@ class RestoreApplyTest extends PlanSyncTestBase {
         // 표본의 세션은 다시 지울 때(payload 삭제) 이미 사라졌다. 남은 것은 유지 계정의 세션이고 그것도 모두 폐기한다.
         assertThat(report.sessions()).isPositive();
         assertThat(report.violations().total()).isZero();
+        // 모듈별 잔여(Story 5.4): 키마다 0이고 보고 줄에 따로 실린다.
+        assertThat(report.violations().residuals()).containsOnlyKeys(RestoreInvariants.RESIDUAL_KEYS)
+                .allSatisfy((module, rows) -> assertThat(rows).as(module).isZero());
+        assertThat(report.line()).contains("residual_identity=0 residual_sign_in=0 residual_sessions=0 "
+                + "residual_credentials=0 residual_source=0 residual_portfolio=0 residual_sync=0 residual_plan=0 "
+                + "residual_operations=0 residual_engagement=0 residual_grants=0");
+        // 다시 지운 표본의 로그인 매핑에서 재가입 차단 digest가 다시 만들어졌다 — 같은 identity의 재가입이 막힌다.
+        assertThat(accountLifecycle().isDeletedIdentity(sampleIdentity.get(0), sampleIdentity.get(1))).isTrue();
         assertThat(report.credentials().sampled()).as("유지 계정의 자격정보").isEqualTo(1);
         assertThat(report.credentials().opened()).isEqualTo(1);
         assertThat(report.credentials().activeKey()).isTrue();
@@ -447,14 +461,37 @@ class RestoreApplyTest extends PlanSyncTestBase {
         assertThat(invariants.check().residualRows())
                 .isEqualTo(identity + portfolioRows + syncRows + planRows + sourceRows + operationRows + engagementRows
                         + grants);
+        // 모듈별 내역(Story 5.4): 칸마다 그 모듈의 수다. identity는 payload·요청·매핑·세션 넷으로, source는 자격정보와 나머지로 갈린다.
+        long links = countOf("identity_social_link", user);
+        long sessionRows = sessionCountOf(user);
+        long credentialRows = source.remainingCredentialsOf(user);
+        assertThat(links).isPositive();
+        assertThat(credentialRows).isPositive();
+        Map<String, Long> expected = new LinkedHashMap<>();
+        expected.put("identity", identity - links - sessionRows);
+        expected.put("sign_in", links);
+        expected.put("sessions", sessionRows);
+        expected.put("credentials", credentialRows);
+        expected.put("source", sourceRows - credentialRows);
+        expected.put("portfolio", portfolioRows);
+        expected.put("sync", syncRows);
+        expected.put("plan", planRows);
+        expected.put("operations", operationRows);
+        expected.put("engagement", engagementRows);
+        expected.put("grants", grants);
+        assertThat(invariants.check().residuals()).containsExactlyEntriesOf(expected);
+        assertThat(expected.get("identity")).as("payload 행").isPositive();
 
         // 하나씩 늘리면 그만큼 는다: 세션 하나, 허가 하나.
         long before = invariants.check().residualRows();
+        long sessionsBefore = invariants.check().residuals().get("sessions");
         jdbc().sql("INSERT INTO spring_session (primary_id, session_id, creation_time, last_access_time, max_inactive_interval, "
                 + "expiry_time, principal_name) VALUES (:p, :s, 0, 0, 1800, 4102444800000, :u)")
                 .param("p", UUID.randomUUID().toString()).param("s", UUID.randomUUID().toString())
                 .param("u", user.toString()).update();
         assertThat(invariants.check().residualRows()).isEqualTo(before + 1);
+        // 모듈별 내역은 그 세션을 세션 칸에 센다(Story 5.4).
+        assertThat(invariants.check().residuals().get("sessions")).isEqualTo(sessionsBefore + 1);
         jdbc().sql("INSERT INTO action_grant (grant_id, user_id, session_id, command, target, confirmation_hash, expires_at) "
                 + "VALUES (:g, :u, 'residue-session', 'residue', 'residue-2', :h, now() + interval '5 minutes')")
                 .param("g", "h".repeat(40)).param("u", user).param("h", "0".repeat(64)).update();

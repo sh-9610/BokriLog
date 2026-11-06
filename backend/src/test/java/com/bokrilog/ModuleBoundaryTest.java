@@ -356,6 +356,36 @@ class ModuleBoundaryTest {
                 .should().callMethod(com.bokrilog.operations.BackupDestructionApi.class, "judge", java.util.Map.class)
                 .because("백업 파기 판정은 Worker·all의 주기 판정자 하나가 운영 완료 시각을 이어 부른다.");
         judge.check(PRODUCTION_CLASSES);
+        // Story 5.4: 전체 삭제 완료는 백업 파기 완료와 법정 분리 보존 처리를 함께 확인한 판정자 하나만 기록한다.
+        ArchRule completion = noClasses()
+                .that().resideOutsideOfPackage(IDENTITY + "..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.BackupDestructionJudge")
+                .should().callMethod(com.bokrilog.identity.AccountDeletionRunApi.class, "recordDeletionCompleted",
+                        java.util.Collection.class)
+                .because("전체 삭제 완료는 백업 파기 완료(DESTROYED)와 법정 분리 보존 처리를 확인한 판정자만 기록한다.");
+        completion.check(PRODUCTION_CLASSES);
+        // Story 5.4: 완료 확인 세션의 판독·연결 정리는 루트 판독기 하나, 그 정리 sweep은 판정자 하나, 재가입 차단 digest의 operations API는
+        // identity port를 구현하는 루트 어댑터 하나만 부른다.
+        Class<?> deletions = com.bokrilog.identity.AccountDeletionApi.class;
+        ArchRule completionSessions = noClasses()
+                .that().resideOutsideOfPackage(IDENTITY + "..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.DeletionCompletionSessions")
+                .should().callMethod(deletions, "completionRequestOfSession", String.class)
+                .orShould().callMethod(deletions, "forgetCompletionOfSessions", java.util.Collection.class)
+                .because("완료 확인 세션의 판독(미인증 세션만)과 연결 정리는 루트 판독기 한 곳이 한다.");
+        completionSessions.check(PRODUCTION_CLASSES);
+        ArchRule scrub = noClasses()
+                .that().resideOutsideOfPackage(IDENTITY + "..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.BackupDestructionJudge")
+                .should().callMethod(deletions, "scrubCompletionSessions")
+                .because("완료 확인 세션의 정리 sweep은 주기 판정자 하나가 돈다.");
+        scrub.check(PRODUCTION_CLASSES);
+        ArchRule deletedIdentityDigest = noClasses()
+                .that().resideOutsideOfPackage("com.bokrilog.operations..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.DeletedIdentityDigestPort")
+                .should().dependOnClassesThat().belongToAnyOf(com.bokrilog.operations.DeletedIdentityDigestApi.class)
+                .because("재가입 차단 digest는 identity port를 구현하는 루트 어댑터 하나가 operations에서 받는다.");
+        deletedIdentityDigest.check(PRODUCTION_CLASSES);
 
         // 외부 사본을 outbox로 옮기는 일은 복원 적용의 것이다(재삭제와 함께 옮기는 AccountErasure, 남은 사본을 옮기는 RestoreApplication).
         ArchRule carry = noClasses()
@@ -453,6 +483,8 @@ class ModuleBoundaryTest {
                 .and().doNotHaveFullyQualifiedName("com.bokrilog.AccountDeletionRequestService")
                 .should().callMethod(com.bokrilog.identity.AccountDeletionApi.class, "requestDeletion",
                         java.util.UUID.class, String.class, String.class, String.class)
+                .orShould().callMethod(com.bokrilog.identity.AccountDeletionApi.class, "requestDeletion",
+                        java.util.UUID.class, String.class, String.class, String.class, String.class)
                 .because("계정 삭제 요청은 민감 command 계약을 지나는 사용자 요청 표면 하나만 만든다.");
         request.check(PRODUCTION_CLASSES);
     }

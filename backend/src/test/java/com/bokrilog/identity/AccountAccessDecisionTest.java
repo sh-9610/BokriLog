@@ -2,13 +2,10 @@ package com.bokrilog.identity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.bokrilog.PostgresTestcontainersConfig;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -21,9 +18,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <p>모든 시험이 자기 계정을 새로 만들어 쓴다. 그래서 시험 간 정리가 필요 없고 실행 순서에도
  * 의존하지 않는다.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
-@Import(PostgresTestcontainersConfig.class)
-class AccountAccessDecisionTest {
+class AccountAccessDecisionTest extends IdentityKeyedTestBase {
 
     @Autowired private AccountLifecycleApi lifecycle;
 

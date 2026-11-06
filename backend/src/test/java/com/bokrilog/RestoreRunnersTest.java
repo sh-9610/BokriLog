@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -53,7 +54,7 @@ class RestoreRunnersTest {
 
     private static RestoreApplication.Report report(long residual, boolean credentialsOpened) {
         return new RestoreApplication.Report(0, 0, 0, 0, 0, 0, new RestoreApplication.Reconciliation(true, 0, 0),
-                new RestoreInvariants.Violations(0, 0, 0, 0, residual),
+                new RestoreInvariants.Violations(0, 0, 0, 0, Map.of("identity", residual)),
                 new SourceConnectionApi.CredentialProbe(1, credentialsOpened ? 1 : 0, true));
     }
 

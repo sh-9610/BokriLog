@@ -18,6 +18,7 @@ import {
 import { objectOf, postJson, readJson, type JsonObject } from './http'
 import { isInstant } from './instant'
 import { replaceLocation } from './navigation'
+import { isSupportContact } from './supportContact'
 import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
 
 /** 내 문의 하나(Story 3.6). 본문·회신 이메일·사용자 식별자가 없다. */
@@ -109,8 +110,6 @@ export interface SupportInquiries {
   readonly reportInvalid: () => void
 }
 
-const CONTACT = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/
-
 const REFERENCE = /^Q-[A-Z2-7]{10}$/
 
 const FIELDS: readonly InquiryField[] = [
@@ -183,7 +182,7 @@ export function parseInquiryList(
   if (body === null || !Array.isArray(body.items)) return null
   const contact = body.supportContact
   // 연락처 하나가 모양이 어긋나도 목록을 버리지 않는다 — 그 필드만 없는 것으로 본다(허위 링크를 만들지 않는다).
-  const supportContact = typeof contact === 'string' && CONTACT.test(contact) ? contact : null
+  const supportContact = isSupportContact(contact) ? contact : null
   const items: UserInquiry[] = []
   for (const value of body.items as unknown[]) {
     const item = inquiryOf(value)

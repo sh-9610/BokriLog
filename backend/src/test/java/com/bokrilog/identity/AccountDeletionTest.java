@@ -3,15 +3,13 @@ package com.bokrilog.identity;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 
-import com.bokrilog.PostgresTestcontainersConfig;
 import com.bokrilog.identity.internal.IdentityAccountRepository;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
@@ -26,9 +24,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
  * 않는다"는 문장은 코드가 아니라 의도로만 남는다. 주입 지점은 저장소 한 곳이고, 그래서 이 시험
  * 클래스만 {@link MockitoSpyBean}으로 컨텍스트가 갈라진다. 컨테이너는 여전히 하나다.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
-@Import(PostgresTestcontainersConfig.class)
-class AccountDeletionTest {
+class AccountDeletionTest extends IdentityKeyedTestBase {
 
     @Autowired private AccountLifecycleApi lifecycle;
 
@@ -182,5 +178,29 @@ class AccountDeletionTest {
         assertThat(storedState(userId)).isEqualTo("DELETED");
         assertThat(countPayload(userId)).isZero();
         assertThat(countLinks(userId)).isZero();
+    }
+
+    /**
+     * Story 5.4 2차 리뷰: 매핑 INSERT의 {@code NOT EXISTS}는 그 문장의 스냅숏으로 본다 — 같은 식별자의 삭제가 digest를 쓰고 옛 매핑을 지우는
+     * 커밋을 INSERT가 유일 색인에서 기다리면, INSERT는 성공하지만 술어는 그 digest를 보지 못한다. 그 창을 대역으로 재현한다: 실제 INSERT 직후
+     * 차단 기록을 넣고, 재확인 문장이 그것을 보면 방금 만든 매핑을 지우고 거부해야 한다(예외 없이 — 호출자의 롤백 표시를 세우지 않는다).
+     */
+    @Test
+    void 매핑_INSERT_뒤_재확인이_차단_기록을_보면_매핑을_지우고_거부한다() {
+        UUID userId = lifecycle.createAccount();
+        String issuer = "https://accounts.example/" + UUID.randomUUID();
+        String subject = UUID.randomUUID().toString();
+        doAnswer(invocation -> {
+            Object inserted = invocation.callRealMethod();
+            jdbc.sql("INSERT INTO identity_deleted_identity (identity_digest) VALUES (:digest)")
+                    .param("digest", invocation.getArgument(4, String.class))
+                    .update();
+            return inserted;
+        }).when(repository).insertSocialLinkIfActive(any(), any(), any(), any(), any());
+
+        assertThat(lifecycle.linkSocialIdentity(userId, "google", issuer, subject)).isEqualTo(AccessDecision.DENIED);
+        assertThat(countLinks(userId)).as("방금 만든 매핑을 지웠다").isZero();
+        assertThat(lifecycle.deletedIdentityStateOf(issuer, subject))
+                .isEqualTo(AccountLifecycleApi.DeletedIdentityState.DELETED);
     }
 }

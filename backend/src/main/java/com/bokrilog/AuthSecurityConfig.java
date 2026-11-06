@@ -20,6 +20,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.authorization.AuthorizationDecision;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.oauth2.client.CommonOAuth2Provider;
@@ -1038,7 +1040,8 @@ class AuthSecurityConfig {
             AuthProperties properties,
             AuthFlowHandlers handlers,
             OperatorAccess operators,
-            OperatorCommandService operatorCommands)
+            OperatorCommandService operatorCommands,
+            DeletionCompletionSessions completions)
             throws Exception {
 
         http.authorizeHttpRequests(
@@ -1062,6 +1065,15 @@ class AuthSecurityConfig {
                                  * 좁아지는 날 그 검사가 마지막 말을 한다(이중 방어).
                                  */
                                 requests
+                                        /*
+                                         * 완료 확인 전용 세션(Story 5.4)은 인증 주체가 없는 세션이다. 그 세션이 닿는 경로는 둘뿐이다 —
+                                         * 완료 조회(`GET /api/account/deletion`)와 확정 재전송의 거부(`POST …/confirm`). 나머지
+                                         * 보호 경로는 아래 규칙대로 미인증과 같다. 판정은 요청의 세션 ID 하나로 identity에 묻는다.
+                                         */
+                                        .requestMatchers(AuthSecurityConfig::isDeletionCompletionRequest)
+                                        .access((authentication, context) -> new AuthorizationDecision(
+                                                isAuthenticatedUser(authentication.get())
+                                                        || completions.requestIdOf(context.getRequest()).isPresent()))
                                         .requestMatchers(AuthSecurityConfig::requiresAuthentication)
                                         .authenticated()
                                         .anyRequest()
@@ -1267,6 +1279,24 @@ class AuthSecurityConfig {
         return isConnectionsPath(uri) || isSnapshotPath(uri) || isPlanConditionsPath(uri)
                 || isDashboardPath(uri) || isOperatorPath(uri) || isNoticesPath(uri) || isSupportPath(uri)
                 || isEngagementPath(uri) || isAccountPath(uri);
+    }
+
+    /**
+     * 완료 확인 전용 세션(Story 5.4)이 닿을 수 있는 계정 삭제 요청인가 — 완료 조회({@code GET /api/account/deletion})와 확정
+     * ({@code POST /api/account/deletion/confirm}, 완료 뒤 재전송은 거부 code 하나로 답한다) 둘이다. 인증된 세션에는 아무 차이도 없다 —
+     * 이 둘도 {@link #requiresAuthentication}에 들고, 완료 세션이 아니면 같은 401이다.
+     */
+    static boolean isDeletionCompletionRequest(HttpServletRequest request) {
+        String uri = applicationPath(request);
+        String deletion = ACCOUNT_PATH + "/deletion";
+        return "GET".equals(request.getMethod()) && uri.equals(deletion)
+                || "POST".equals(request.getMethod()) && uri.equals(deletion + "/confirm");
+    }
+
+    /** 익명이 아닌 인증 주체인가({@code authenticated()}와 같은 판정). */
+    private static boolean isAuthenticatedUser(@Nullable Authentication authentication) {
+        return authentication != null && authentication.isAuthenticated()
+                && !(authentication instanceof AnonymousAuthenticationToken);
     }
 
     /**

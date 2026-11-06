@@ -222,7 +222,9 @@ abstract class AuthFlowTestBase {
     }
 
     private void truncateStore() {
-        this.jdbc.sql("TRUNCATE TABLE spring_session, spring_session_attributes").update();
+        // 완료 확인 전용 세션(Story 5.4)은 세션 행을 외래키로 가리키므로 함께 적는다.
+        this.jdbc.sql("TRUNCATE TABLE spring_session, spring_session_attributes, identity_deletion_completion_session")
+                .update();
         // `action_grant`를 이름으로 적는다. `identity_account`를 참조하므로 CASCADE가 어차피
         // 비우지만, 이름이 없으면 그 정리가 외래키 설정에 딸린 부수 효과로만 성립한다.
         //
@@ -247,7 +249,9 @@ abstract class AuthFlowTestBase {
         this.jdbc.sql("TRUNCATE TABLE operations_signal, operations_restriction, operations_audit_event, "
                 + "operations_notice_version, operations_notice_incident, support_inquiry, operations_backup_event, "
                 + "operations_deletion_backup_generation, operations_deletion_tombstone, operations_tombstone_export, "
-                + "engagement_ad_consent_decision, engagement_ad_attempt, engagement_ad_vital_sample")
+                + "engagement_ad_consent_decision, engagement_ad_attempt, engagement_ad_vital_sample, "
+                // 재가입 차단 digest(Story 5.4)도 어느 표도 가리키지 않는다(사용자 열이 없다).
+                + "identity_deleted_identity")
                 .update();
     }
 

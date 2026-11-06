@@ -85,13 +85,18 @@ class AuthSessionController {
      */
     private final AccountDeletionRequestService accountDeletions;
 
+    /** 완료 확인 전용 세션의 판독(Story 5.4). 세션 확인 응답의 완료 표지({@code deletionCompleted})를 여기서 읽는다. */
+    private final DeletionCompletionSessions completions;
+
     AuthSessionController(
             LinkService linkService,
             UnlinkService unlinkService,
             BybitConnectionService bybitConnectionService,
             BybitRevocationCommandService bybitRevocations,
             OperatorAccess operators,
-            AccountDeletionRequestService accountDeletions) {
+            AccountDeletionRequestService accountDeletions,
+            DeletionCompletionSessions completions) {
+        this.completions = completions;
         this.linkService = linkService;
         this.unlinkService = unlinkService;
         this.bybitConnectionService = bybitConnectionService;
@@ -166,6 +171,10 @@ class AuthSessionController {
      *     {@code true}로 실리고 그
      *     밖에서는 {@code null}이라 나가지 않는다 — 다른 응답의 본문은 글자까지 그대로다. 화면은 이 값이 참이면 경로와 무관하게 삭제
      *     진행 화면만 그린다
+     * @param deletionCompleted 이 세션이 완료 확인 전용 세션인가(Story 5.4). 삭제가 끝나는 커밋에서 요청 세션이 사용자 ID·인증 문맥 없이
+     *     삭제 요청 ID 하나로만 이어진 세션이 된다. <b>그 세션에만</b> {@code true}로 실리고(미인증 응답이다 — {@code authenticated}는
+     *     거짓), 로그아웃에 쓸 CSRF 토큰이 함께 실린다. 그 밖의 응답에서는 {@code null}이라 나가지 않는다 — 일반 미인증 응답의 본문은
+     *     글자까지 그대로다. 화면은 이 값이 참이면 경로와 무관하게 완료 화면만 그린다
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record SessionState(
@@ -173,12 +182,19 @@ class AuthSessionController {
             String destination,
             @Nullable Boolean reauthRequired,
             @Nullable String csrfToken,
-            @Nullable Boolean deletionInProgress) {
+            @Nullable Boolean deletionInProgress,
+            @Nullable Boolean deletionCompleted) {
 
         /** 삭제 진행 표지가 없는 응답. Story 5.1 전의 네 필드 모양 그대로다. */
         SessionState(boolean authenticated, String destination, @Nullable Boolean reauthRequired,
                 @Nullable String csrfToken) {
-            this(authenticated, destination, reauthRequired, csrfToken, null);
+            this(authenticated, destination, reauthRequired, csrfToken, null, null);
+        }
+
+        /** 완료 표지가 없는 응답. Story 5.4 전의 다섯 필드 모양 그대로다. */
+        SessionState(boolean authenticated, String destination, @Nullable Boolean reauthRequired,
+                @Nullable String csrfToken, @Nullable Boolean deletionInProgress) {
+            this(authenticated, destination, reauthRequired, csrfToken, deletionInProgress, null);
         }
     }
 
@@ -224,6 +240,13 @@ class AuthSessionController {
                 : reauthRequired ? ControllerSupport.storedSessionUserId(request.getSession(false)) : null;
         boolean deletionInProgress = current != null && this.accountDeletions.requestOf(current).isPresent();
 
+        /*
+         * 완료 확인 전용 세션(Story 5.4). 인증 주체가 없는 세션이라 위 두 판정 어디에도 들지 않는다. 미인증 응답이지만 완료 표지와 로그아웃용
+         * CSRF 토큰을 싣는다 — 세션이 있는 미인증 요청에서만 묻고, 일반 미인증 응답은 그대로다.
+         */
+        boolean deletionCompleted = !authenticated && !reauthRequired
+                && this.completions.requestIdOf(request).isPresent();
+
         return ResponseEntity.ok()
                 /*
                  * 보안 응답 헤더는 Nginx가 소유하지만 캐시 지시는 이 응답 하나의 성질이다.
@@ -237,8 +260,9 @@ class AuthSessionController {
                                 authenticated,
                                 destination,
                                 reauthRequired ? Boolean.TRUE : null,
-                                csrfToken(request, authenticated || reauthRequired),
-                                deletionInProgress ? Boolean.TRUE : null));
+                                csrfToken(request, authenticated || reauthRequired || deletionCompleted),
+                                deletionInProgress ? Boolean.TRUE : null,
+                                deletionCompleted ? Boolean.TRUE : null));
     }
 
     /**

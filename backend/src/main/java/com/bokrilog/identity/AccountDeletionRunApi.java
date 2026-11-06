@@ -35,7 +35,12 @@ public interface AccountDeletionRunApi {
         /** 한 단계가 실패해 멈췄다. 다시 시도를 받기 전까지 집지 않는다. */
         RETRY_NEEDED,
         /** 모든 단계가 성공했다 — 운영 데이터 삭제 완료. 백업 파기 완료가 아니다(Story 5.3). */
-        OPERATIONAL_DATA_ERASED
+        OPERATIONAL_DATA_ERASED,
+        /**
+         * 전체 삭제 완료(Story 5.4) — 운영 데이터 삭제 완료에 그 요청의 백업 파기 완료(tombstone {@code DESTROYED})와 법정 분리 보존 처리가
+         * 더해졌다. 루트 판정자({@code BackupDestructionJudge})만 기록한다({@link #recordDeletionCompleted}).
+         */
+        DELETION_COMPLETED
     }
 
     /** 단계 상태. */
@@ -169,4 +174,30 @@ public interface AccountDeletionRunApi {
      * 빠진다. 사용자 식별자를 돌려주지 않는다.
      */
     Map<String, Instant> operationalCompletions(Collection<String> requestIds);
+
+    // ------------------------------------------------------------------ Story 5.4 전체 삭제 완료
+
+    /**
+     * 운영 데이터 삭제가 끝났고 아직 전체 삭제 완료가 아닌 실행의 요청 ID. 읽기만 한다 — 판정자가 그 가운데 백업 파기가 완료된 요청을 고른다
+     * (복원으로 옮긴 tombstone의 요청도 여기서 다시 잡힌다).
+     */
+    List<String> awaitingDeletionCompletion();
+
+    /**
+     * 그 요청 ID들의 실행을 전체 삭제 완료로 기록한다(트랜잭션 하나, 시각은 DB 문장 시각). <b>호출자가 완료 조건을 확인한 요청만 넘긴다</b> —
+     * 그 요청의 백업 파기 완료와 법정 분리 보존 처리. 운영 데이터 삭제 완료인 실행만 바뀐다(단조, 이미 완료면 아무것도 하지 않는다).
+     *
+     * @return 이번에 바꾼 실행 수
+     */
+    int recordDeletionCompleted(Collection<String> requestIds);
+
+    /**
+     * 끝난 삭제 실행의 시각들.
+     *
+     * @param deletionCompletedAt 전체 삭제 완료 시각. 아직이면 {@code null}
+     */
+    record CompletedDeletion(Instant operationalErasedAt, @Nullable Instant deletionCompletedAt) {}
+
+    /** 그 요청 ID의 실행이 운영 데이터 삭제를 끝냈으면 그 시각들(완료 조회, Story 5.4). 아니면 빈 값. 사용자 식별자를 돌려주지 않는다. */
+    Optional<CompletedDeletion> completedDeletionOf(@Nullable String requestId);
 }

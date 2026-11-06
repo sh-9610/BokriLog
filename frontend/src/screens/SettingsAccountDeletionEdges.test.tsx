@@ -225,6 +225,16 @@ describe('설정 화면 계정 삭제의 경계', () => {
     })
   })
 
+  it('삭제가 이미 끝났다는 거절(409 ACCOUNT_DELETION_COMPLETED)은 문서를 다시 열어 완료 화면으로 간다', async () => {
+    const dialog = await openWith()
+    stubAccountDeletionConfirm(() => refusal('ACCOUNT_DELETION_COMPLETED', 409))
+    typeAndConfirm(dialog, PHRASE)
+    await waitFor(() => {
+      expect(vi.mocked(replaceLocation)).toHaveBeenCalledWith(SETTINGS_PATH)
+    })
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
   it('같은 키·다른 본문의 충돌(409 IDEMPOTENCY_CONFLICT)도 이미 진행 중이므로 진행 화면으로 간다', async () => {
     const dialog = await openWith()
     stubAccountDeletionConfirm(() => refusal('IDEMPOTENCY_CONFLICT', 409))

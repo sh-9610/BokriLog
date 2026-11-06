@@ -6,6 +6,7 @@ import com.bokrilog.operations.DeletionTombstoneApi;
 import com.bokrilog.operations.internal.BackupEventRepository.GenerationEvent;
 import com.bokrilog.operations.internal.DeletionTombstoneRepository.Candidate;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -207,6 +208,28 @@ class BackupDestructionService implements BackupDestructionApi {
         }
         return closedAt != null && !now.isBefore(cutoff) && !inFlight
                 && this.tombstones.unpurgedGenerations(candidate.requestId()) == 0;
+    }
+
+    @Override
+    public Set<String> destroyedAmong(Collection<String> requestIds) {
+        List<String> valid = requestIds.stream()
+                .filter(id -> id != null && DeletionTombstoneApi.REQUEST_ID.matcher(id).matches()).distinct().toList();
+        if (valid.isEmpty()) {
+            return Set.of();
+        }
+        List<String> destroyed = this.reads.execute(status -> this.tombstones.destroyedAmong(valid));
+        return destroyed == null ? Set.of() : Set.copyOf(destroyed);
+    }
+
+    @Override
+    public Optional<Destruction> destructionOf(String requestId) {
+        if (requestId == null || !DeletionTombstoneApi.REQUEST_ID.matcher(requestId).matches()) {
+            return Optional.empty();
+        }
+        Optional<DeletionTombstoneRepository.DestructionRow> row =
+                this.reads.execute(status -> this.tombstones.destructionOf(requestId));
+        return row == null ? Optional.empty() : row.map(found -> new Destruction(found.requestedAt(),
+                found.backupDeadline(), found.status(), found.destroyedAt()));
     }
 
     @Override

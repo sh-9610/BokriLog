@@ -230,7 +230,7 @@ export function authorizeHref(provider: SignInProvider, pathname: string): strin
  * 결과는 같은 문서의 상태 하나로 남는다 — `signedOut`이 URL 집합에서 빠진 것과 같은 자리이며
  * 아래 `URL_NOTICE_KINDS`가 그 사실을 소유한다.
  *
- * 열네 값 중 어느 것도 계정의 존재·상태를 알려 주지 않는다. 재인증 실패 표지 하나에 타 사용자
+ * `deleted`(Story 5.4)를 뺀 열네 값 중 어느 것도 계정의 존재·상태를 알려 주지 않는다. 재인증 실패 표지 하나에 타 사용자
  * 식별자·미연결 식별자·증거 부재·삭제 전환이 접혀 있고, 연결 실패 표지 하나에 이미 연결됨·다른
  * 계정에 연결됨·허가 만료·세션 불일치·삭제 상태가 접혀 있고, 해제 실패 표지 하나에 마지막 수단·
  * 미연결·허가 만료·세션 불일치·삭제 상태가 접혀 있으며, 두 성공 표지는 무엇을 연결·해제했는지
@@ -238,6 +238,7 @@ export function authorizeHref(provider: SignInProvider, pathname: string): strin
  */
 export type AuthNoticeKind =
   | 'cancelled'
+  | 'deleted'
   | 'expired'
   | 'failed'
   | 'linkCancelled'
@@ -306,7 +307,7 @@ export type UnlinkNoticeKind = 'unlinkCancelled' | 'unlinkFailed' | 'unlinkSucce
  * 화면을 좁힌다.
  */
 export type EntryNoticeKind =
-  'cancelled' | 'expired' | 'failed' | 'loggedOut' | 'logoutFailed' | 'signedOut'
+  'cancelled' | 'deleted' | 'expired' | 'failed' | 'loggedOut' | 'logoutFailed' | 'signedOut'
 
 /**
  * URL 표지로 인정하는 값 전부. 목록에 없는 값은 무시한다.
@@ -322,6 +323,7 @@ export type EntryNoticeKind =
  */
 const URL_NOTICE_KINDS: readonly AuthNoticeKind[] = [
   'cancelled',
+  'deleted',
   'expired',
   'failed',
   'linkCancelled',
@@ -342,6 +344,7 @@ const URL_NOTICE_KINDS: readonly AuthNoticeKind[] = [
  */
 const ENTRY_NOTICE_KINDS: readonly EntryNoticeKind[] = [
   'cancelled',
+  'deleted',
   'expired',
   'failed',
   'loggedOut',
@@ -456,6 +459,15 @@ export function linkNoticePath(): string {
 
 const NOTICES: Readonly<Record<AuthNoticeKind, string>> = {
   cancelled: '로그인을 끝내지 않았습니다. 아래 버튼으로 다시 시도할 수 있습니다.',
+  /**
+   * 삭제가 끝난 계정의 로그인 수단이다(Story 5.4 재가입 차단, 서버만 만든다).
+   *
+   * 이 표지만 계정의 상태를 말한다 — 의도한 예외다. 보는 사람은 제공자 검증을 방금 통과한 그 로그인 수단의 본인뿐이고, 재가입이
+   * 막힌 이유를 숨기면 같은 수단으로 계속 시도하게 된다. 새 계정은 만들어지지 않았다. 다른 로그인 수단의 가입 가능 여부는 말하지
+   * 않는다(그 수단이 같은 계정의 것이었는지 이 화면은 모른다).
+   */
+  deleted:
+    '삭제가 끝난 계정의 로그인 수단입니다. 삭제한 계정은 되살릴 수 없고, 이 로그인 수단으로는 새로 가입할 수 없습니다.',
   expired: '로그인 상태가 만료되어 화면을 닫았습니다. 아래 버튼으로 다시 로그인해 주세요.',
   failed: '로그인을 끝내지 못했습니다. 아래 버튼으로 다시 시도해 주세요.',
   /**

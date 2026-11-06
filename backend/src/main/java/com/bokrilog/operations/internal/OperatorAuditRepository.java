@@ -45,10 +45,31 @@ class OperatorAuditRepository {
         this.jdbc = jdbc;
     }
 
-    /** 추가할 행 하나. {@code requestedAt}이 {@code null}이면 이 문장의 DB 시각이 요청 시각이다. */
+    /**
+     * 추가할 행 하나. {@code requestedAt}이 {@code null}이면 이 문장의 DB 시각이 요청 시각이다.
+     *
+     * @param actorErased 수행자 계정의 삭제가 이미 시작돼 귀속 없이 쓰는 운영자 행이다(deferred 162, Story 5.4) — {@code actorUserId}는
+     *     {@code null}이고 비식별 시각({@code actor_erased_at})이 이 문장의 DB 시각이다. 삭제 port의 비식별과 같은 모양이 된다
+     */
     record NewRow(String operationId, @Nullable UUID actorUserId, String actorDigest, String actorKind,
             String command, String scope, String target, String reason, String outcome, String policyVersion,
-            @Nullable Instant requestedAt, boolean decided, String correlationId, String detailsJson) {}
+            @Nullable Instant requestedAt, boolean decided, String correlationId, String detailsJson,
+            boolean actorErased) {
+
+        NewRow {
+            if (actorErased && actorUserId != null) {
+                throw new IllegalArgumentException("비식별한 수행자 행에는 사용자 귀속이 없다.");
+            }
+        }
+
+        /** 귀속이 그대로인 행. */
+        NewRow(String operationId, @Nullable UUID actorUserId, String actorDigest, String actorKind, String command,
+                String scope, String target, String reason, String outcome, String policyVersion,
+                @Nullable Instant requestedAt, boolean decided, String correlationId, String detailsJson) {
+            this(operationId, actorUserId, actorDigest, actorKind, command, scope, target, reason, outcome, policyVersion,
+                    requestedAt, decided, correlationId, detailsJson, false);
+        }
+    }
 
     /** 호출자 트랜잭션 끝까지 추가를 직렬화한다. 트랜잭션 밖에서 부르면 아무것도 지키지 않는다. */
     void lockAppends() {
@@ -66,11 +87,12 @@ class OperatorAuditRepository {
     Instant append(NewRow row) {
         return this.jdbc.sql("INSERT INTO operations_audit_event (audit_id, operation_id, actor_user_id, actor_digest, "
                         + "actor_kind, command, scope, target, reason, outcome, policy_version, requested_at, "
-                        + "decided_at, correlation_id, details) VALUES (:auditId, :operationId, :actorUserId, "
+                        + "decided_at, correlation_id, details, actor_erased_at) VALUES (:auditId, :operationId, :actorUserId, "
                         + ":actorDigest, :actorKind, :command, :scope, :target, :reason, :outcome, :policyVersion, "
                         + "COALESCE(CAST(:requestedAt AS timestamptz), statement_timestamp()), "
                         + "CASE WHEN :decided THEN statement_timestamp() END, :correlationId, "
-                        + "CAST(:details AS jsonb)) RETURNING requested_at")
+                        + "CAST(:details AS jsonb), CASE WHEN :actorErased THEN statement_timestamp() END) "
+                        + "RETURNING requested_at")
                 .param("auditId", UUID.randomUUID())
                 .param("operationId", row.operationId())
                 .param("actorUserId", row.actorUserId())
@@ -87,6 +109,7 @@ class OperatorAuditRepository {
                 .param("decided", row.decided())
                 .param("correlationId", row.correlationId())
                 .param("details", row.detailsJson())
+                .param("actorErased", row.actorErased())
                 .query((rs, index) -> instant(rs, "requested_at"))
                 .single();
     }

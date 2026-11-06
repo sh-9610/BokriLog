@@ -1,9 +1,11 @@
 package com.bokrilog.identity.internal;
 
 import com.bokrilog.identity.AccountDeletionApi;
+import com.bokrilog.identity.DeletedIdentityDigests;
 import com.bokrilog.identity.DeletionOutcome;
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -24,10 +26,38 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 class AccountDeletionService implements AccountDeletionApi {
 
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AccountDeletionService.class);
+
     private final IdentityAccountRepository repository;
 
-    AccountDeletionService(IdentityAccountRepository repository) {
+    /** 삭제한 identity의 digest(Story 5.4). 키는 루트가 가진다. */
+    private final DeletedIdentityDigests deletedIdentities;
+
+    AccountDeletionService(IdentityAccountRepository repository, DeletedIdentityDigests deletedIdentities) {
         this.repository = repository;
+        this.deletedIdentities = deletedIdentities;
+    }
+
+    /**
+     * 그 계정의 인증 매핑을 지운다 — 지우기 전에 매핑마다 재가입 차단 digest를 같은 트랜잭션에 남긴다(Story 5.4). 원 식별자는 남기지
+     * 않는다. 키가 없어 digest를 만들 수 없으면 아무것도 지우지 않고 예외로 끝난다(차단 기록 없는 삭제를 하지 않는다). 호출자가 생명주기
+     * 행을 잠근 트랜잭션에서 부른다.
+     *
+     * @return 지운 매핑 수
+     */
+    private int recordAndDeleteSocialLinks(UUID userId) {
+        var identities = repository.findSocialIdentitiesOf(userId);
+        if (identities.isEmpty()) {
+            return 0;
+        }
+        // 단계 모드 실행의 요청 ID — 로그인 표지 `deleted`가 그 계정의 삭제 완료를 볼 근거다. 단일 모드·실행 없는 삭제는 비어 있다.
+        String requestId = repository.findRunRequestId(userId).orElse(null);
+        for (var identity : identities) {
+            String digest = this.deletedIdentities.digestOf(identity.issuer(), identity.subject())
+                    .orElseThrow(() -> new IllegalStateException("재가입 차단 digest를 만들 수 없다(키 없음)."));
+            repository.recordDeletedIdentity(digest, requestId);
+        }
+        return repository.deleteSocialLinks(userId);
     }
 
     @Override
@@ -65,8 +95,21 @@ class AccountDeletionService implements AccountDeletionApi {
             // 하는데, 전환 없이 지우면 그 창이 통째로 사라진다.
             case ACTIVE -> DeletionOutcome.NOT_APPLICABLE;
             case DELETION_IN_PROGRESS, DELETED -> {
-                // 0행은 실패가 아니다. 이미 payload가 없는 계정에 다시 불러도 같은 결과다.
-                repository.deleteSocialLinks(userId);
+                // 0행은 실패가 아니다. 이미 payload가 없는 계정에 다시 불러도 같은 결과다. 남은 매핑이 있으면 차단 digest부터 남긴다.
+                recordAndDeleteSocialLinks(userId);
+                /*
+                 * 요청 세션을 완료 확인 전용 세션으로 바꾼다(Story 5.4) — 요청 행이 지워지기 전에 그 세션의 행 키·요청 ID를 읽는다. 바뀐
+                 * 세션은 주체가 비어 아래 세션 삭제의 대상이 아니고, 그 밖의 세션(옛 쿠키)은 모두 지워진다. 같은 트랜잭션이다. 요청 세션이
+                 * 기록돼 있는데 바꿀 세션 행이 없으면(로그아웃·만료) 사실 한 줄만 남긴다(사용자·세션 식별자 없음).
+                 */
+                repository.findRequestSession(userId).ifPresent(found -> {
+                    String primaryId = found.sessionPrimaryId();
+                    if (primaryId != null
+                            && repository.convertToCompletionSession(userId, primaryId, found.requestId()) == 0) {
+                        LOG.atInfo().addKeyValue("code", "REQUEST_SESSION_GONE")
+                                .log("account deletion completion session absent");
+                    }
+                });
                 // 사용자의 삭제 요청 행(Story 5.1)도 payload와 같은 운명이다. 남기면 잔여 행 수가 0이 되지 않는다.
                 repository.deleteDeletionRequest(userId);
                 /*
@@ -101,7 +144,7 @@ class AccountDeletionService implements AccountDeletionApi {
         if (state == null || state == AccountState.ACTIVE) {
             return 0;
         }
-        return repository.deleteSocialLinks(userId);
+        return recordAndDeleteSocialLinks(userId);
     }
 
     @Override
@@ -164,6 +207,38 @@ class AccountDeletionService implements AccountDeletionApi {
         return repository.countRemainingRowsOf(userId);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public long remainingSessionsOf(UUID userId) {
+        return repository.countSessionsOf(userId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<String> completionRequestOfSession(@Nullable String sessionId) {
+        if (sessionId == null || sessionId.isBlank() || sessionId.length() > MAX_SESSION_ID_CHARS) {
+            return Optional.empty();
+        }
+        return repository.completionRequestOfSession(sessionId);
+    }
+
+    /** 세션 ID 길이 상한. Spring Session의 ID는 UUID 36자이고 저장 열은 {@code CHAR(36)}이다. */
+    private static final int MAX_SESSION_ID_CHARS = 36;
+
+    @Override
+    @Transactional
+    public int forgetCompletionOfSessions(Collection<String> sessionIds) {
+        List<String> valid = sessionIds.stream()
+                .filter(id -> id != null && !id.isBlank() && id.length() <= MAX_SESSION_ID_CHARS).distinct().toList();
+        return repository.forgetCompletionOfSessions(valid);
+    }
+
+    @Override
+    @Transactional
+    public int scrubCompletionSessions() {
+        return repository.scrubCompletionSessions();
+    }
+
     // ------------------------------------------------------------------ Story 5.1 삭제 요청
 
     /** 요청 ID의 난수 길이(바이트). base64url로 22자이고 접두사와 합쳐 tombstone 요청 ID 문자 집합 안이다. */
@@ -187,7 +262,7 @@ class AccountDeletionService implements AccountDeletionApi {
     @Override
     @Transactional
     public DeletionRequestOutcome requestDeletion(@Nullable UUID userId, @Nullable String policyVersion,
-            @Nullable String noticeHash, @Nullable String idempotencyKeyDigest) {
+            @Nullable String noticeHash, @Nullable String idempotencyKeyDigest, @Nullable String sessionId) {
         if (userId == null || policyVersion == null || noticeHash == null || idempotencyKeyDigest == null
                 || !POLICY_VERSION.matcher(policyVersion).matches() || !HEX_DIGEST.matcher(noticeHash).matches()
                 || !HEX_DIGEST.matcher(idempotencyKeyDigest).matches()) {
@@ -208,13 +283,25 @@ class AccountDeletionService implements AccountDeletionApi {
             // 요청 없이 삭제가 시작됐거나(리허설 표본·복원 재삭제) 이미 끝났다. 새 요청을 만들지 않는다.
             return new DeletionRequestOutcome.Denied();
         }
+        // 요청 세션(Story 5.4)은 그 세션 행의 키(primary_id)로 남긴다(저장소가 세션 ID로 찾는다). 모양이 맞지 않는 값은 기록하지 않는다
+        // (그 계정은 세션을 모두 지운다).
+        String requestSession = sessionId == null || sessionId.isBlank() || sessionId.length() > MAX_SESSION_ID_CHARS
+                ? null : sessionId;
         var stored = repository.insertDeletionRequest(newRequestId(), userId, policyVersion, noticeHash,
-                idempotencyKeyDigest);
+                idempotencyKeyDigest, requestSession);
         if (repository.markDeletionInProgress(userId) != 1) {
             // 잠금 아래에서 ACTIVE를 봤으므로 구조상 오지 않는다. 오면 요청 행만 남는 부분 상태를 커밋하지 않는다.
             throw new IllegalStateException("삭제 진행 전환이 한 행이 아니다.");
         }
         return new DeletionRequestOutcome.Created(requestOf(stored));
+    }
+
+    /** 요청 세션을 기록하지 않는 요청. 같은 트랜잭션 경계 안에서 다섯 인자 판을 부른다(그 판의 트랜잭션에 참여한다). */
+    @Override
+    @Transactional
+    public DeletionRequestOutcome requestDeletion(@Nullable UUID userId, @Nullable String policyVersion,
+            @Nullable String noticeHash, @Nullable String idempotencyKeyDigest) {
+        return requestDeletion(userId, policyVersion, noticeHash, idempotencyKeyDigest, null);
     }
 
     @Override

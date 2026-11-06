@@ -1,5 +1,6 @@
 package com.bokrilog;
 
+import com.bokrilog.identity.AccountDeletionApi;
 import com.bokrilog.identity.AccountDeletionRunApi;
 import com.bokrilog.operations.BackupDestructionApi;
 import io.micrometer.core.instrument.Gauge;
@@ -7,8 +8,11 @@ import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.context.annotation.Conditional;
@@ -21,8 +25,9 @@ import org.springframework.stereotype.Component;
  *
  * <p><b>한 번의 판정.</b> (1) 집합이 열린 tombstone의 요청 ID를 operations에서 읽고, (2) 그 요청의 운영 데이터 삭제 완료 시각을 identity 공개
  * API({@link AccountDeletionRunApi#operationalCompletions})에서 읽어, (3) operations의 {@link BackupDestructionApi#judge}에 넘긴다 — 열린
- * 집합 닫기·영향 generation 기록·완료·초과 전환·감사 행은 tombstone마다 짧은 트랜잭션 하나다(잠금 대기·문장 상한, 잠긴 행은 다음 주기). operations는 identity에 닿지 않고 루트가 잇는다. (4) gauge 값을
- * 다시 읽는다.
+ * 집합 닫기·영향 generation 기록·완료·초과 전환·감사 행은 tombstone마다 짧은 트랜잭션 하나다(잠금 대기·문장 상한, 잠긴 행은 다음 주기). operations는 identity에 닿지 않고 루트가 잇는다. (4) 백업
+ * 파기가 완료된 요청을 identity의 전체 삭제 완료로 옮기고({@link #completeNow}) 완료 확인 세션을 정리한다({@link #scrubNow}, Story 5.4).
+ * (5) gauge 값을 다시 읽는다.
  *
  * <p><b>gauge.</b> 이름·tag는 {@link TelemetryAllowlist}의 표와 같다.
  * <ul>
@@ -59,11 +64,14 @@ class BackupDestructionJudge {
      */
     static final String PERIOD = "${bokrilog.backup-destruction.judge.period:PT5M}";
 
-    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(BackupDestructionJudge.class);
+    private static final Logger LOG = LoggerFactory.getLogger(BackupDestructionJudge.class);
 
     private final BackupDestructionApi destruction;
 
     private final AccountDeletionRunApi runs;
+
+    /** 완료 확인 세션의 정리(Story 5.4). */
+    private final AccountDeletionApi accounts;
 
     private final MeterRegistry registry;
 
@@ -82,8 +90,13 @@ class BackupDestructionJudge {
 
     private final AtomicBoolean lastExportRegistered = new AtomicBoolean();
 
-    BackupDestructionJudge(BackupDestructionApi destruction, AccountDeletionRunApi runs, MeterRegistry registry,
+    /** 법정 분리 보존 항목(Story 5.4). 서버 정책 상수이고 시험만 {@link #reinterpretLegalRetention}으로 바꾼다. */
+    private volatile List<AccountDeletionPolicy.LegalRetention> legalRetention = AccountDeletionPolicy.LEGAL_RETENTION;
+
+    BackupDestructionJudge(BackupDestructionApi destruction, AccountDeletionRunApi runs,
+            AccountDeletionApi accounts, MeterRegistry registry,
             @Value("${bokrilog.backup-destruction.judge.scheduled:true}") boolean scheduled) {
+        this.accounts = accounts;
         this.destruction = destruction;
         this.runs = runs;
         this.registry = registry;
@@ -122,10 +135,74 @@ class BackupDestructionJudge {
             logTransition("RETENTION_EXTENDED", judgement.closed());
             logTransition("BACKUP_DESTROYED", judgement.destroyed());
             logTransition("BACKUP_OVERDUE", judgement.overdue());
+            logTransition("DELETION_COMPLETED", completeSafely());
             return judgement;
         } finally {
+            // 완료 세션 정리는 파기 판정·전체 완료 기록과 무관하다 — 앞 단계가 실패해도 돈다(자기 실패는 스스로 접는다).
+            logTransition("COMPLETION_SESSION_SCRUBBED", scrubNow());
             measureNow();
         }
+    }
+
+    /** {@link #completeNow}의 실패를 접는다 — WARN 한 줄(예외의 단순 이름, 식별자 없음)이고 다음 주기가 다시 맞춰 본다. */
+    private int completeSafely() {
+        try {
+            return completeNow();
+        } catch (RuntimeException failed) {
+            LOG.atWarn().addKeyValue("exception", failed.getClass().getSimpleName())
+                    .log("deletion completion record failed");
+            return 0;
+        }
+    }
+
+    /**
+     * 전체 삭제 완료의 기록(Story 5.4). identity의 실행 가운데 운영 데이터 삭제가 끝났고 아직 전체 완료가 아닌 요청을 읽어, 그 요청의 백업
+     * 파기가 완료({@code DESTROYED})됐고 법정 분리 보존이 처리됐을 때만 identity에 완료를 넘긴다. 이번 판정이 막 {@code DESTROYED}로 바꾼
+     * 요청과 앞선 판정·복원이 이미 {@code DESTROYED}로 둔 요청을 함께 잡는다(매번 다시 맞춰 보는 sweep). 단조이고 멱등이다 — identity가 운영
+     * 완료인 실행만 바꾼다.
+     *
+     * <p><b>법정 분리 보존.</b> 승인된 보존 항목이 없으면(지금 — G-5 전 기본값) 처리할 것이 없으므로 충족이다. 항목이 하나라도 있으면 그
+     * 분리 이동의 증거를 기록하는 곳이 아직 없으므로 충족이 아니고 완료를 기록하지 않는다 — 증거 없이 전체 완료로 쓰지 않는다.
+     *
+     * @return 이번에 전체 삭제 완료로 바꾼 실행 수
+     */
+    int completeNow() {
+        if (!this.legalRetention.isEmpty()) {
+            return 0;
+        }
+        List<String> awaiting = this.runs.awaitingDeletionCompletion();
+        if (awaiting.isEmpty()) {
+            return 0;
+        }
+        Set<String> destroyed = this.destruction.destroyedAmong(awaiting);
+        return destroyed.isEmpty() ? 0 : this.runs.recordDeletionCompleted(destroyed);
+    }
+
+    /**
+     * 완료 확인 세션의 정리(Story 5.4). 삭제 커밋과 겹친 같은 세션의 요청이 그 뒤 저장하면 옛 주체 이름이 한 번 되살아날 수 있다 — 판정
+     * 주기마다 완료 연결이 있는 세션의 되살아난 주체 이름과 남기는 속성(CSRF 토큰·진행 중인 OAuth2 인가 요청) 밖의 속성을 비운다 — 원래
+     * 사용자의 것만이고, 다른 사용자로 인증된 세션은 완료 연결만 지운다(identity 공개 API, 멱등, 짧은 트랜잭션, 잠긴 세션은 건너뛴다).
+     * 실패는 판정을 막지 않는다 — WARN 한 줄(예외의 단순 이름)이고 다음 주기가 다시 한다.
+     *
+     * @return 이번에 비운 세션 수
+     */
+    int scrubNow() {
+        try {
+            return this.accounts.scrubCompletionSessions();
+        } catch (RuntimeException failed) {
+            LOG.atWarn().addKeyValue("exception", failed.getClass().getSimpleName())
+                    .log("completion session scrub failed");
+            return 0;
+        }
+    }
+
+    /**
+     * 법정 분리 보존 항목을 다시 해석한다 — <b>시험 훅</b>이다({@code SupportContact.reinterpret}와 같은 관용). 운영 값은 서버 정책 상수
+     * ({@link AccountDeletionPolicy#LEGAL_RETENTION}) 하나이고 제품 경로에서 부르는 곳이 없다. 시험이 "보존 항목이 있으면 전체 완료를
+     * 기록하지 않는다"를 같은 컨텍스트에서 본다.
+     */
+    void reinterpretLegalRetention(List<AccountDeletionPolicy.LegalRetention> items) {
+        this.legalRetention = List.copyOf(items);
     }
 
     private static void logTransition(String outcome, int count) {

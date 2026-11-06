@@ -539,3 +539,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-3-backup-destruction-tracking.md`
   summary: `PURGED` 기록이 끝내 생기지 않는 영향 generation(손으로 지운 generation, 복원 뒤 이미 저장소에서 사라진 generation)이 든 tombstone은 `OVERDUE`로 영구히 남고 critical 경보가 계속 운다 — 운영자가 저장소를 확인한 뒤 저장소별 파기를 표시하는 command나 runbook을 정한다.
   evidence: 2026-11-06 Story 5.3 2차 리뷰(blind-hunter). 만료 삭제는 `DESTROYED` 행만 지우므로(1차 리뷰 patch) 그런 행은 DB와 외부 사본에 남고, 판정은 V24 기록만 보며 저장소를 조회하지 않는다(SPEC Ask First). 해소 경로는 운영 command(3.1 표면) 또는 실저장소 게이트의 절차다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-4-deletion-completion-verification.md`
+  summary: 전체 삭제 완료 판정자의 sweep(`awaitingDeletionCompletion`·`destroyedAmong`)이 운영 완료 실행 전부를 상한 없이 읽고 `IN (:list)`로 넘기며, `DESTROYED` tombstone이 판정 전에 만료 삭제되면 그 실행은 `OPERATIONAL_DATA_ERASED`에 영구히 남는다 — 묶음 상한과 고착 실행의 메트릭·경보를 정한다.
+  evidence: 2026-11-06 Story 5.4 1차 리뷰(blind-hunter·edge-case-hunter). 파기가 끝나지 않는 generation(176)이나 법정 보존 항목이 있는 동안 목록이 커지고 바인드 수 상한에 닿을 수 있다. 판정자가 보존 기한(운영 완료 + 35일) 넘게 멈추면 근거 행이 사라진다. 삭제 실행 메트릭·경보(172)와 같은 주인이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-4-deletion-completion-verification.md`
+  summary: 복원 리허설의 삭제 표본 seed가 plan의 계획 정의·종료·완료 행과 sync의 공식 계산 결과(`sync_plan_calculation` 계열)를 넣지 않아, `residual_plan=0`·sync 잔여 0 단정이 그 표들의 재삭제를 증명하지 못한다 — 실제 흐름(첫 스냅샷→발행)으로 표본을 만들거나 seed를 넓힌다.
+  evidence: 2026-11-06 Story 5.4 1차 리뷰(blind-hunter). 잔여 세기는 카탈로그로 모듈 표 전부를 보지만 행이 없던 표는 재삭제가 검증되지 않는다. 손으로 쓴 열 목록 SQL은 스키마 변경에 약해 로컬 리허설 없이 넓히면 CI 위험이 크다.

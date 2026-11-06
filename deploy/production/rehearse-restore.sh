@@ -358,10 +358,46 @@ SEAL
 ring_key="$(kv_get "${secrets_file}" BOKRILOG_SOURCE_CREDENTIAL_KEYS)"
 sealed="$(node "${work}/seal.js" "${ring_key#*:}" "${kept_user}" "${connection_id}" "${credential_id}" rehearsal \
   "${api_key}" "${api_secret}")" || fail_setup '표본 자격정보를 봉하지 못했다.'
+# 삭제 표본(Story 5.4)도 같은 형식의 자격정보 하나를 갖는다 — 자격정보 잔여 0을 단정하려면 지울 행이 있어야 한다. 같은 key ring으로 봉해
+# 복원의 자격정보 표본 복호가 그 행을 만나도(다시 지우기 전) 실패하지 않는다.
+sample_connection_id="$(uuid_v4)"
+sample_credential_id="$(uuid_v4)"
+sample_provider_account_id="$(uuid_v4)"
+sample_sealed="$(node "${work}/seal.js" "${ring_key#*:}" "${sample_user}" "${sample_connection_id}" "${sample_credential_id}" \
+  rehearsal "rehearsalkey$(random_hex 8)" "rehearsalsecret$(random_hex 12)")" || fail_setup '삭제 표본 자격정보를 봉하지 못했다.'
 rm -f "${work}/seal.js"
 compose exec -T postgres psql --username=bokrilog --dbname=bokrilog --no-password --quiet --set=ON_ERROR_STOP=1 \
   --command="INSERT INTO source_provider_account (provider_account_id, user_id, provider, provider_account_ref) VALUES ('${provider_account_id}', '${kept_user}', 'BYBIT', 'rehearsal-$(random_hex 4)'); INSERT INTO source_connection (connection_id, user_id, provider_account_id, provider, status, verified_at, policy_version) VALUES ('${connection_id}', '${kept_user}', '${provider_account_id}', 'BYBIT', 'ACTIVE', now(), 'bybit-readonly-uta-1.0'); INSERT INTO source_credential (credential_id, connection_id, key_version, algorithm_version, nonce, ciphertext) VALUES ('${credential_id}', '${connection_id}', 'rehearsal', 'AES256GCM-1', decode('${sealed%% *}', 'hex'), decode('${sealed#* }', 'hex'))" \
   >>"${outputs}/psql.log" 2>&1 || fail_setup '표본 자격정보 행을 넣지 못했다.' "$(tail -5 "${outputs}/psql.log")"
+
+# 삭제 표본의 모듈 데이터(Story 5.4) — 복원 보고의 모듈별 잔여(로그인 매핑·세션·자격정보·source·portfolio·sync·plan·operations(문의)·engagement(동의))를
+# 각각 0으로 단정하려면 그 모듈마다 지울 행이 있어야 한다. 백업 gen0은 이 행들을 담고, 복원이 tombstone으로 다시 지운다. 금융 값은 리허설
+# 표지일 뿐이다(값이 무엇이든 지워진다).
+sample_portfolio_id="$(uuid_v4)"
+sample_membership_id="$(uuid_v4)"
+sample_job_id="$(uuid_v4)"
+sample_source_snapshot_id="$(uuid_v4)"
+sample_portfolio_snapshot_id="$(uuid_v4)"
+sample_seed="INSERT INTO source_provider_account (provider_account_id, user_id, provider, provider_account_ref) VALUES ('${sample_provider_account_id}', '${sample_user}', 'BYBIT', 'rehearsal-sample-$(random_hex 4)');"
+sample_seed="${sample_seed} INSERT INTO source_connection (connection_id, user_id, provider_account_id, provider, status, verified_at, policy_version) VALUES ('${sample_connection_id}', '${sample_user}', '${sample_provider_account_id}', 'BYBIT', 'ACTIVE', now(), 'bybit-readonly-uta-1.0');"
+sample_seed="${sample_seed} INSERT INTO source_credential (credential_id, connection_id, key_version, algorithm_version, nonce, ciphertext) VALUES ('${sample_credential_id}', '${sample_connection_id}', 'rehearsal', 'AES256GCM-1', decode('${sample_sealed%% *}', 'hex'), decode('${sample_sealed#* }', 'hex'));"
+sample_seed="${sample_seed} INSERT INTO portfolio (portfolio_id, user_id, base_currency) VALUES ('${sample_portfolio_id}', '${sample_user}', 'USD');"
+sample_seed="${sample_seed} INSERT INTO portfolio_source_membership (membership_id, portfolio_id, connection_id, provider_account_id, started_at) VALUES ('${sample_membership_id}', '${sample_portfolio_id}', '${sample_connection_id}', '${sample_provider_account_id}', now());"
+sample_seed="${sample_seed} INSERT INTO sync_job (job_id, user_id, connection_id, provider_account_id, idempotency_key, status, finished_at) VALUES ('${sample_job_id}', '${sample_user}', '${sample_connection_id}', '${sample_provider_account_id}', 'rehearsal-sample-job', 'SUCCEEDED', now());"
+sample_seed="${sample_seed} INSERT INTO sync_source_snapshot (source_snapshot_id, user_id, connection_id, provider_account_id, job_id, provider, equity_decimal, measured_at, received_at, input_status, policy_version) VALUES ('${sample_source_snapshot_id}', '${sample_user}', '${sample_connection_id}', '${sample_provider_account_id}', '${sample_job_id}', 'BYBIT', '1000', now(), now(), 'VERIFIED', 'bybit-readonly-uta-1.0');"
+sample_seed="${sample_seed} INSERT INTO portfolio_snapshot (portfolio_snapshot_id, portfolio_id, user_id, amount_decimal, base_currency, measured_at, publication_sequence) VALUES ('${sample_portfolio_snapshot_id}', '${sample_portfolio_id}', '${sample_user}', '1000', 'USD', now(), 1);"
+sample_seed="${sample_seed} INSERT INTO portfolio_snapshot_component (portfolio_snapshot_id, membership_id, source_snapshot_id, portfolio_id, user_id, connection_id, provider_account_id, amount_decimal, policy_version) VALUES ('${sample_portfolio_snapshot_id}', '${sample_membership_id}', '${sample_source_snapshot_id}', '${sample_portfolio_id}', '${sample_user}', '${sample_connection_id}', '${sample_provider_account_id}', '1000', 'bybit-readonly-uta-1.0');"
+sample_seed="${sample_seed} INSERT INTO portfolio_current_snapshot (portfolio_id, portfolio_snapshot_id, publication_sequence) VALUES ('${sample_portfolio_id}', '${sample_portfolio_snapshot_id}', 1);"
+sample_seed="${sample_seed} INSERT INTO plan_condition_confirmation (confirmation_hash, user_id, session_hash, expires_at, canonical_hash, portfolio_id, portfolio_snapshot_id, membership_id, connection_id, provider_account_id, source_snapshot_id, p0_decimal, t0, end_at, period, target_rate, source_policy_version, portfolio_policy_version, calendar_policy, calculation_policy) VALUES ('$(random_hex 32)', '${sample_user}', '$(random_hex 32)', now() + interval '5 minutes', '$(random_hex 32)', '${sample_portfolio_id}', '${sample_portfolio_snapshot_id}', '${sample_membership_id}', '${sample_connection_id}', '${sample_provider_account_id}', '${sample_source_snapshot_id}', '1000', now(), now() + interval '30 days', 'MONTHLY', '1', 'bybit-readonly-uta-1.0', 'rehearsal', 'rehearsal', 'rehearsal');"
+sample_seed="${sample_seed} INSERT INTO support_inquiry (inquiry_id, user_id, reference, category, title, description, contact, idempotency_key_digest, request_digest, received_at, target_state, calendar_version, timezone, status) VALUES ('$(uuid_v4)', '${sample_user}', 'Q-SAMPLEAAAA', 'ACCOUNT', 'rehearsal inquiry', 'rehearsal inquiry body', 'IN_APP', '$(random_hex 32)', '$(random_hex 32)', now(), 'CALENDAR_PENDING', 'KR-HOLIDAY-2026.1', 'Asia/Seoul', 'RECEIVED');"
+sample_seed="${sample_seed} INSERT INTO engagement_ad_consent_decision (user_id, policy_version, choice, idempotency_key_digest, request_digest) VALUES ('${sample_user}', 'AD-CONSENT-1.0', 'GRANTED', '$(random_hex 32)', '$(random_hex 32)');"
+compose exec -T postgres psql --username=bokrilog --dbname=bokrilog --no-password --quiet --set=ON_ERROR_STOP=1 \
+  --command="${sample_seed}" >>"${outputs}/psql.log" 2>&1 \
+  || fail_setup '삭제 표본의 모듈 데이터를 넣지 못했다.' "$(tail -5 "${outputs}/psql.log")"
+# 표본이 실제로 모듈마다 행을 가졌다(잔여 0 단정이 빈 표를 세어 조용히 통과하지 않게).
+assert_equals '삭제 표본 seed · 로그인 매핑·세션·자격정보·source·portfolio·sync·plan·operations(문의)·engagement(동의) 행이 있다' \
+  "$(psql_src "SELECT (SELECT count(*) FROM identity_social_link WHERE user_id = '${sample_user}') || ':' || (SELECT count(*) FROM spring_session WHERE principal_name = '${sample_user}') || ':' || (SELECT count(*) FROM source_credential WHERE connection_id = '${sample_connection_id}') || ':' || (SELECT count(*) FROM source_connection WHERE user_id = '${sample_user}') || ':' || (SELECT count(*) FROM portfolio_snapshot WHERE user_id = '${sample_user}') || ':' || (SELECT count(*) FROM sync_source_snapshot WHERE user_id = '${sample_user}') || ':' || (SELECT count(*) FROM plan_condition_confirmation WHERE user_id = '${sample_user}') || ':' || (SELECT count(*) FROM support_inquiry WHERE user_id = '${sample_user}') || ':' || (SELECT count(*) FROM engagement_ad_consent_decision WHERE user_id = '${sample_user}')")" \
+  '1:1:1:1:1:1:1:1:1'
 
 export BOKRILOG_BACKUP_KEYS_DIR="${keys_dir}"
 export BOKRILOG_BACKUP_DIR="${backup_dir}"
@@ -515,6 +551,11 @@ assert_equals '삭제 표본 · 운영 대역에서 DELETED' \
   "$(psql_src "SELECT state FROM identity_account_lifecycle WHERE user_id = '${sample_user}'")" 'DELETED'
 assert_equals '삭제 표본 · outbox 행 하나(같은 트랜잭션)' \
   "$(psql_src "SELECT count(*) FROM operations_deletion_tombstone WHERE request_id = 'rehearsal-delete-1'")" '1'
+assert_equals '삭제 표본 · 운영 대역에서 모듈 데이터 0(source·portfolio·sync·plan·operations(문의)·engagement(동의))' \
+  "$(psql_src "SELECT (SELECT count(*) FROM source_connection WHERE user_id = '${sample_user}') + (SELECT count(*) FROM portfolio_snapshot WHERE user_id = '${sample_user}') + (SELECT count(*) FROM sync_source_snapshot WHERE user_id = '${sample_user}') + (SELECT count(*) FROM plan_condition_confirmation WHERE user_id = '${sample_user}') + (SELECT count(*) FROM support_inquiry WHERE user_id = '${sample_user}') + (SELECT count(*) FROM engagement_ad_consent_decision WHERE user_id = '${sample_user}')")" '0'
+# 재가입 차단 digest(Story 5.4): 지운 로그인 매핑마다 digest 하나. 원 식별자(이메일 모양 표지)는 남지 않는다.
+assert_equals '삭제 표본 · 재가입 차단 digest 하나(원 식별자 없음)' \
+  "$(psql_src "SELECT count(*) || ':' || bool_and(identity_digest ~ '^[0-9a-f]{64}\$') FROM identity_deleted_identity")" '1:true'
 # 기한이 지난 outbox 행(40일 전 요청). 집합이 열린 채 멈춘 실행이라 백업 파기가 완료가 아니고(Story 5.3) 기한이 지나도 남고 실린다 —
 # 복원이 옮긴 뒤 닫힐 길이 없으므로 restore-apply가 닫는다. (닫힌 집합의 미완료 행은 아래 4에서 Worker가 멈춘 뒤 넣는다 — 3b의 Worker
 # 판정이 그 행을 먼저 완료로 바꾸지 않게.)
@@ -746,6 +787,14 @@ run_script "5. 정상 복원(r2 ← ${day0}, key k1, 장애 ${normal_failure_at}
 assert_equals '정상 복원 · 종료 0' "${run_status}" '0'
 assert_contains '정상 복원 · 검증 보고가 통과다' "${run_log}" 'result=PASSED'
 assert_contains '정상 복원 · tombstone 둘(표본·삭제 실행)이 복원된 계정과 맞았다' "${run_log}" 'matched=2 erased=2'
+# 모듈별 잔여(Story 5.4) — 다시 지운 표본·삭제 실행 계정의 로그인 매핑·세션·자격정보·plan·source·portfolio·sync·operations(문의)·engagement(동의)가 각각 0이다.
+assert_contains '정상 복원 · 보고가 모듈별 잔여 0을 따로 싣는다' "${run_log}" \
+  'residual_identity=0 residual_sign_in=0 residual_sessions=0 residual_credentials=0 residual_source=0 residual_portfolio=0 residual_sync=0 residual_plan=0 residual_operations=0 residual_engagement=0 residual_grants=0'
+assert_equals '정상 복원 · 표본의 모듈 데이터 0(복원된 gen0에는 있었다)' \
+  "$(psql_restored bokrilog-restore-r2 "SELECT (SELECT count(*) FROM source_connection WHERE user_id = '${sample_user}') + (SELECT count(*) FROM source_credential WHERE connection_id = '${sample_connection_id}') + (SELECT count(*) FROM portfolio_snapshot WHERE user_id = '${sample_user}') + (SELECT count(*) FROM sync_source_snapshot WHERE user_id = '${sample_user}') + (SELECT count(*) FROM plan_condition_confirmation WHERE user_id = '${sample_user}') + (SELECT count(*) FROM support_inquiry WHERE user_id = '${sample_user}') + (SELECT count(*) FROM engagement_ad_consent_decision WHERE user_id = '${sample_user}')")" '0'
+# 재가입 차단 digest(Story 5.4)는 gen0의 매핑에서 다시 만들어진다 — gen0은 두 계정의 삭제 전이라 digest가 없었다.
+assert_equals '정상 복원 · 재가입 차단 digest를 gen0의 매핑에서 다시 만들었다(표본·삭제 실행 둘)' \
+  "$(psql_restored bokrilog-restore-r2 "SELECT count(*) FROM identity_deleted_identity")" '2'
 # Story 5.3 "실행 전 복원": gen0은 삭제 요청 뒤·실행 전의 상태(삭제 진행 중·요청 행)를 담았다 — 첫 claim의 tombstone으로 다시 지웠다.
 assert_equals '실행 전 복원 · 요청 계정은 DELETED이고 요청 행·payload가 없다' \
   "$(psql_restored bokrilog-restore-r2 "SELECT state || ':' || (SELECT count(*) FROM identity_deletion_request WHERE user_id = '${pending_user}') || ':' || (SELECT count(*) FROM identity_account WHERE user_id = '${pending_user}') FROM identity_account_lifecycle WHERE user_id = '${pending_user}'")" \

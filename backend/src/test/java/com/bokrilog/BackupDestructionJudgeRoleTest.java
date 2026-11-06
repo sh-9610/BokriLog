@@ -8,6 +8,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.bokrilog.identity.AccountDeletionApi;
 import com.bokrilog.identity.AccountDeletionRunApi;
 import com.bokrilog.operations.BackupDestructionApi;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -39,11 +40,18 @@ class BackupDestructionJudgeRoleTest {
 
     private final AccountDeletionRunApi runs = mock(AccountDeletionRunApi.class);
 
+    private final AccountDeletionApi accounts = mock(AccountDeletionApi.class);
+
+    private BackupDestructionJudge judge(BackupDestructionApi destruction, AccountDeletionRunApi runs, MeterRegistry registry) {
+        return new BackupDestructionJudge(destruction, runs, this.accounts, registry, false);
+    }
+
     private WebApplicationContextRunner web() {
         return new WebApplicationContextRunner()
                 .withUserConfiguration(BackupDestructionJudge.class)
                 .withBean(BackupDestructionApi.class, () -> this.destruction)
                 .withBean(AccountDeletionRunApi.class, () -> this.runs)
+                .withBean(AccountDeletionApi.class, () -> this.accounts)
                 .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
                 .withPropertyValues("bokrilog.backup-destruction.judge.scheduled=false");
     }
@@ -65,7 +73,7 @@ class BackupDestructionJudgeRoleTest {
         when(this.runs.operationalCompletions(List.of("req-a", "req-b"))).thenReturn(Map.of("req-a", erased));
         when(this.destruction.judge(Map.of("req-a", erased))).thenReturn(new BackupDestructionApi.Judgement(1, 0, 0));
         when(this.destruction.measure()).thenReturn(new BackupDestructionApi.Measurement(0, 0, Optional.empty()));
-        BackupDestructionJudge judge = new BackupDestructionJudge(this.destruction, this.runs, new SimpleMeterRegistry(), false);
+        BackupDestructionJudge judge = judge(this.destruction, this.runs, new SimpleMeterRegistry());
         assertThat(judge.judgeNow()).isEqualTo(new BackupDestructionApi.Judgement(1, 0, 0));
 
         // 열린 집합이 없으면 identity에 묻지 않는다.
@@ -74,7 +82,7 @@ class BackupDestructionJudgeRoleTest {
         when(idle.openRequestIds()).thenReturn(List.of());
         when(idle.judge(Map.of())).thenReturn(new BackupDestructionApi.Judgement(0, 0, 0));
         when(idle.measure()).thenReturn(new BackupDestructionApi.Measurement(0, 0, Optional.empty()));
-        new BackupDestructionJudge(idle, untouched, new SimpleMeterRegistry(), false).judgeNow();
+        judge(idle, untouched, new SimpleMeterRegistry()).judgeNow();
         verify(untouched, never()).operationalCompletions(any());
     }
 
@@ -82,7 +90,7 @@ class BackupDestructionJudgeRoleTest {
     void gauge는_첫_읽기_뒤에_등록하고_읽지_못하면_값을_유지한다() {
         MeterRegistry registry = new SimpleMeterRegistry();
         when(this.destruction.measure()).thenThrow(new QueryTimeoutException("timeout"));
-        BackupDestructionJudge judge = new BackupDestructionJudge(this.destruction, this.runs, registry, false);
+        BackupDestructionJudge judge = judge(this.destruction, this.runs, registry);
         judge.measureNow();
         assertThat(registry.find(BackupDestructionJudge.OVERDUE).gauges()).as("읽지 못한 첫 측정은 등록하지 않는다").isEmpty();
 
@@ -110,10 +118,10 @@ class BackupDestructionJudgeRoleTest {
     /** 새 gauge 셋의 Prometheus 노출 이름은 경보 규칙(alerts.yml)이 읽는 그 이름이다. */
     @Test
     void gauge의_노출_이름은_경보_규칙이_읽는_이름이다() {
-        PrometheusMeterRegistry registry = new PrometheusMeterRegistry(
-                PrometheusConfig.DEFAULT);
-        when(this.destruction.measure()).thenReturn(new BackupDestructionApi.Measurement(1, 2, Optional.of(1_762_000_000.0)));
-        new BackupDestructionJudge(this.destruction, this.runs, registry, false).measureNow();
+        PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+        when(this.destruction.measure())
+                .thenReturn(new BackupDestructionApi.Measurement(1, 2, Optional.of(1_762_000_000.0)));
+        judge(this.destruction, this.runs, registry).measureNow();
         Map<String, Double> series = new HashMap<>();
         for (String line : registry.scrape().split("\n")) {
             if (!line.startsWith("#") && !line.isBlank()) {
@@ -132,8 +140,34 @@ class BackupDestructionJudgeRoleTest {
         when(this.destruction.openRequestIds()).thenReturn(List.of());
         when(this.destruction.judge(any())).thenThrow(new QueryTimeoutException("timeout"));
         when(this.destruction.measure()).thenReturn(new BackupDestructionApi.Measurement(0, 1, Optional.empty()));
-        BackupDestructionJudge judge = new BackupDestructionJudge(this.destruction, this.runs, registry, false);
+        BackupDestructionJudge judge = judge(this.destruction, this.runs, registry);
         assertThatThrownBy(judge::judgeNow).isInstanceOf(QueryTimeoutException.class);
         assertThat(registry.get(BackupDestructionJudge.OVERDUE).gauge().value()).isEqualTo(1.0);
+    }
+
+    /**
+     * Story 5.4 2차 리뷰: 전체 삭제 완료 기록이 실패해도 완료 세션 정리와 gauge는 돈다. 파기 판정 자체가 실패해도 정리는 돈다(판정 예외는
+     * 그대로 올라간다).
+     */
+    @Test
+    void 전체_완료_기록이_실패해도_완료_세션_정리는_돈다() {
+        when(this.destruction.openRequestIds()).thenReturn(List.of());
+        when(this.destruction.judge(Map.of())).thenReturn(new BackupDestructionApi.Judgement(0, 0, 0));
+        when(this.destruction.measure()).thenReturn(new BackupDestructionApi.Measurement(0, 0, Optional.empty()));
+        when(this.runs.awaitingDeletionCompletion()).thenThrow(new QueryTimeoutException("timeout"));
+        when(this.accounts.scrubCompletionSessions()).thenReturn(1);
+        BackupDestructionJudge judge = judge(this.destruction, this.runs, new SimpleMeterRegistry());
+
+        assertThat(judge.judgeNow()).as("완료 기록 실패는 판정을 실패로 바꾸지 않는다")
+                .isEqualTo(new BackupDestructionApi.Judgement(0, 0, 0));
+        verify(this.accounts).scrubCompletionSessions();
+        verify(this.destruction).measure();
+
+        Mockito.reset(this.destruction, this.accounts);
+        when(this.destruction.openRequestIds()).thenReturn(List.of());
+        when(this.destruction.judge(any())).thenThrow(new QueryTimeoutException("timeout"));
+        when(this.destruction.measure()).thenReturn(new BackupDestructionApi.Measurement(0, 0, Optional.empty()));
+        assertThatThrownBy(judge::judgeNow).isInstanceOf(QueryTimeoutException.class);
+        verify(this.accounts).scrubCompletionSessions();
     }
 }

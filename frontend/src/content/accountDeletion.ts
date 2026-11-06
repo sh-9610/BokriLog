@@ -79,6 +79,7 @@ export const accountDeletionContent = {
     '사용자를 알아볼 수 없는 공개 시장 가격 기록과 다른 사용자의 데이터',
     '삭제 사실 기록 — 서비스 밖에 요청 ID와 나를 되짚을 수 없는 암호화 값(keyed digest)만 보관하고, 삭제가 끝난 날부터 35일이 지나고 백업 사본 파기가 확인되면 지웁니다. 이 기록으로는 나를 알아볼 수 없습니다.',
     '운영 감사 기록 — 기록은 남기되 나를 알아볼 수 있는 정보는 알아볼 수 없는 값(digest)으로 바꿉니다.',
+    '재가입 차단 기록 — 삭제한 계정의 로그인 수단으로 다시 가입하지 못하게, 그 로그인 수단을 되짚을 수 없는 암호화 값(keyed digest)만 남깁니다. 로그인 식별자 원문과 계정 정보는 남기지 않습니다.',
     '사용자 정보가 없는 이용 측정 표본(화면 성능 측정값)',
   ],
   backupHeading: '백업 사본',
@@ -137,6 +138,8 @@ export const accountDeletionContent = {
     title: '계정 삭제가 진행 중입니다',
     body: '계정 삭제 요청을 받았습니다. 이 계정의 다른 기기 로그인은 끝났고 모든 조작이 막혀 있습니다.',
     requestedAtLabel: '요청 시각',
+    /** 삭제 요청 ID(불투명 참조 — 계정 식별자가 아니다). 문의할 때 알려 줄 값이다. */
+    requestIdLabel: '요청 ID',
     policyVersionLabel: '적용 정책 버전',
     stateLabel: '상태',
     state: '삭제 진행 중',
@@ -159,8 +162,59 @@ export const accountDeletionContent = {
     retryAccepted: '다시 시도를 요청했습니다. 잠시 뒤 진행 상태를 다시 확인해 주세요.',
     retryUnanswered:
       '다시 시도 요청의 응답을 받지 못했습니다. 같은 요청으로 다시 누르거나 진행 상태를 다시 확인해 주세요.',
-    /** 모든 운영 데이터를 지웠다. 백업 사본 파기와는 별개다. 보통 이 시점에는 세션도 끝나 이 문장을 볼 일이 드물다. */
+    /** 모든 운영 데이터를 지웠다. 백업 사본 파기와는 별개다. */
     stateErased: '운영 데이터 삭제 완료(백업 사본은 기한 안에 따로 파기)',
+    /** 운영 삭제·백업 파기·법정 분리 보존 처리가 모두 끝났다(Story 5.4). */
+    stateCompleted: '전체 삭제 완료',
+    /** 지원 경로(deferred 170). 서버에 설정된 연락처가 있을 때만 그린다. */
+    supportHeading: '문의',
+    supportHeadingId: 'deletion-progress-support-heading',
+    supportBody:
+      '계정 삭제 진행이나 완료에 대해 문의가 필요하면 아래 연락처로 알려 주세요. 문의할 때 이 요청 ID를 알려 주세요.',
+    supportBodyId: 'deletion-progress-support-body',
+    supportLabel: '문의 연락처',
+  },
+  /**
+   * 삭제가 끝난 뒤의 완료 안내(Story 5.4). 요청한 세션은 계정 정보 없이 완료 확인용으로만 남아 있고, 모든 값은 서버가 준 사실이다. 운영
+   * 데이터 삭제·백업 사본 파기·법정 분리 보존을 서로 다른 상태로 말하고, 기한 초과를 숨기지 않는다.
+   */
+  completion: {
+    /** 운영 데이터는 지웠고 백업 사본 파기를 기다린다. */
+    title: '계정의 운영 데이터를 모두 지웠습니다',
+    /** 백업 사본 파기·법정 분리 보존 처리까지 모두 끝났다. */
+    titleCompleted: '계정 삭제가 모두 끝났습니다',
+    body: '이 계정과 연결된 운영 데이터를 모두 지웠습니다. 이 화면은 삭제 결과 확인과 로그아웃만 할 수 있고, 삭제한 계정은 되살릴 수 없습니다.',
+    operationalErasedAtLabel: '운영 데이터 삭제 시각',
+    backupDeadlineLabel: '백업 사본 파기 기한',
+    backupStateLabel: '백업 사본 파기',
+    backupPending: '기한 안에서 파기를 기다리는 중',
+    backupOverdue: '기한이 지났지만 아직 파기를 확인하지 못함',
+    backupDestroyed: '파기 완료',
+    /** 서버가 백업 사본 상태를 읽지 못했다. 완료로 말하지 않는다. */
+    backupUnknown: '확인하지 못함',
+    backupDestroyedAtLabel: '백업 사본 파기 완료 시각',
+    /** 기한 초과는 숨기지 않는다. 다음 백업 실행의 파기가 다시 시도한다(앞당겨 지우지 않는다). */
+    overdueNotice:
+      '백업 사본 파기가 기한을 넘겼습니다. 완료로 표시하지 않으며, 다음 백업 실행에서 파기를 다시 시도합니다. 백업으로 복원하더라도 삭제한 계정은 되살리지 않습니다.',
+    completionLabel: '전체 삭제',
+    completionDone: '완료',
+    completionPending: '백업 사본 파기를 확인한 뒤 완료',
+    completedAtLabel: '전체 삭제 완료 시각',
+    legalLabel: '법정 분리 보존',
+    /** 승인된 법정 분리 보존 항목이 없다(개발·CI 기본값). */
+    legalNone: '따로 보존하는 항목 없음',
+    signOutHint:
+      '확인을 마쳤으면 로그아웃해 주세요. 로그아웃하거나, 30분 동안 쓰지 않거나, 이 기기에서 처음 로그인한 때부터 12시간이 지나면 이 화면을 다시 열 수 없습니다.',
+    /** 화면 수명(세션 수명)이 백업 사본 파기(최대 30일)보다 짧다는 한계. 영수증은 없다. */
+    limitNotice:
+      '백업 사본 파기에는 요청일부터 최대 30일이 걸려 이 화면이 닫히기 전에 전체 삭제 완료를 보지 못할 수 있습니다. 그 뒤의 결과는 문의 연락처로 확인해 주세요. 삭제 확인서는 따로 드리지 않습니다.',
+    /** 상태 줄 — 백업 사본 파기 상태에 따라 고른다(초과를 "기한 안"으로 말하지 않는다). 기한 안(`PENDING`)은 진행 화면의 `stateErased`다. */
+    stateErasedOverdue: '운영 데이터 삭제 완료(백업 사본 파기는 기한을 넘김)',
+    stateErasedDestroyed: '운영 데이터 삭제 완료(백업 사본 파기 완료, 전체 삭제는 아직)',
+    stateErasedUnknown: '운영 데이터 삭제 완료(백업 사본 파기 상태 확인하지 못함)',
+    retry: '삭제 결과 다시 확인',
+    checking: '계정 삭제 결과를 확인하고 있습니다.',
+    unavailable: '삭제 결과를 지금 불러오지 못했습니다. 운영 데이터 삭제는 이미 끝났습니다.',
   },
 } as const
 
@@ -204,6 +258,8 @@ const REFUSALS: Readonly<Record<string, string>> = {
   CONFIRMATION_MISMATCH: '입력한 문구가 확인 문구와 다릅니다. 다시 입력해 주세요.',
   ACCOUNT_DELETION_POLICY_CHANGED: accountDeletionContent.outdated,
   ACCOUNT_DELETION_IN_PROGRESS: '이미 계정 삭제가 요청돼 진행 중입니다.',
+  /** 삭제가 이미 끝났다 — 완료 확인 세션의 확정 재전송(Story 5.4). 아무것도 새로 만들지 않았다. */
+  ACCOUNT_DELETION_COMPLETED: '계정 삭제가 이미 끝났습니다. 새로 요청할 것이 없습니다.',
   ACCOUNT_DELETION_NOT_RETRYABLE:
     '지금은 다시 시도할 삭제 단계가 없습니다. 진행 상태를 다시 확인해 주세요.',
   ACCOUNT_DELETION_UNAVAILABLE: accountDeletionContent.closed,
@@ -225,6 +281,45 @@ export function accountDeletionRefusalMessage(code: string | null): string {
     return UNKNOWN_REFUSAL
   }
   return REFUSALS[code] ?? UNKNOWN_REFUSAL
+}
+
+/**
+ * 완료 화면의 상태 줄(Story 5.4). 전체 삭제 완료가 아니면 백업 사본 파기 상태에 따라 고른다 — 기한 초과를 "기한 안"으로 말하지 않고, 상태를
+ * 읽지 못했으면 완료로 말하지 않는다.
+ */
+export function completionStateText(
+  deletionCompleted: boolean,
+  status: 'PENDING' | 'OVERDUE' | 'DESTROYED' | null,
+): string {
+  const copy = accountDeletionContent.completion
+  if (deletionCompleted) {
+    return accountDeletionContent.progress.stateCompleted
+  }
+  switch (status) {
+    case 'PENDING':
+      return accountDeletionContent.progress.stateErased
+    case 'OVERDUE':
+      return copy.stateErasedOverdue
+    case 'DESTROYED':
+      return copy.stateErasedDestroyed
+    case null:
+      return copy.stateErasedUnknown
+  }
+}
+
+/** 백업 사본 파기 상태의 문장(Story 5.4). 서버가 상태를 읽지 못했으면(`null`) 완료로 말하지 않는다. */
+export function backupDestructionText(status: 'PENDING' | 'OVERDUE' | 'DESTROYED' | null): string {
+  const copy = accountDeletionContent.completion
+  switch (status) {
+    case 'PENDING':
+      return copy.backupPending
+    case 'OVERDUE':
+      return copy.backupOverdue
+    case 'DESTROYED':
+      return copy.backupDestroyed
+    case null:
+      return copy.backupUnknown
+  }
 }
 
 /** 시각 표시. 연결 검증 시각과 같은 형식(Asia/Seoul)이다. */

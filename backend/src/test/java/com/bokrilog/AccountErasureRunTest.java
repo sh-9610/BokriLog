@@ -142,7 +142,8 @@ class AccountErasureRunTest extends PlanSyncTestBase {
         // tombstone: 요청 ID로 한 행. 원식별자가 없다.
         assertThat(jdbc().sql("SELECT request_id FROM operations_deletion_tombstone").query(String.class).list())
                 .containsExactly(requestId);
-        // 요청 세션도 끝났다 — 진행 화면의 다음 확인은 401이고 진입 화면으로 간다.
+        // 이 요청은 요청 세션을 기록하지 않았다(identity API 직접 — Story 5.4의 완료 확인 세션은 HTTP 확정만 남긴다,
+        // `DeletionCompletionTest`). 그래서 세션은 모두 끝났고 진행 화면의 다음 확인은 401이다.
         assertThat(get(DELETION_PATH, erased.cookie()).statusCode()).isEqualTo(401);
         // 다시 집을 것이 없다.
         assertThat(this.worker.runOnce()).isNull();

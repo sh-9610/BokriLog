@@ -9,6 +9,7 @@ import {
 } from '../content/serviceNotice'
 import { objectOf } from './http'
 import { isInstant } from './instant'
+import { isSupportContact } from './supportContact'
 import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
 
 /** 공지 하나(Story 3.5). 사용자 식별자·금융값이 없다. */
@@ -66,9 +67,6 @@ export const NOTICE_REFRESH_FLOOR_MS = 15_000
 /** 확인하지 못한 상태의 다시 읽기 간격. */
 export const NOTICE_RETRY_MS = 30_000
 
-/** 지원 연락처의 모양. `mailto:`에 그대로 싣는 값이라 공백·꺾쇠·따옴표·쿼리가 없어야 한다. */
-const CONTACT = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/
-
 function featuresOf(value: unknown): readonly NoticeFeature[] | null {
   if (!Array.isArray(value)) return null
   const features: NoticeFeature[] = []
@@ -82,7 +80,7 @@ function featuresOf(value: unknown): readonly NoticeFeature[] | null {
 
 function contactOf(value: unknown): string | null | undefined {
   if (value === undefined || value === null) return null
-  return typeof value === 'string' && value.length <= 254 && CONTACT.test(value) ? value : undefined
+  return isSupportContact(value) ? value : undefined
 }
 
 function itemOf(value: unknown): ServiceNoticeItem | null {

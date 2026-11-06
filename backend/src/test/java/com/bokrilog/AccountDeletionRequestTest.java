@@ -3,6 +3,10 @@ package com.bokrilog;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.bokrilog.identity.AccountDeletionApi.DeletionRequestOutcome;
+import com.bokrilog.identity.AccountDeletionRunApi.DeletionRun;
+import com.bokrilog.identity.AccountDeletionRunApi.RunStatus;
+import com.bokrilog.identity.DeletionStep;
+import com.bokrilog.operations.DeletionTombstoneApi.DestructionStatus;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -10,6 +14,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -469,14 +474,18 @@ class AccountDeletionRequestTest extends PlanSyncTestBase {
                 AccountDeletionController.emittedCodes());
         // 삭제 단계 code(Story 5.2) — 화면의 실패 범위 문장 맵과 같은 집합·순서다.
         assertThat(strings(table.get("erasureSteps"))).containsExactlyElementsOf(
-                java.util.Arrays.stream(com.bokrilog.identity.DeletionStep.values()).map(Enum::name).toList());
+                Arrays.stream(DeletionStep.values()).map(Enum::name).toList());
         assertThat(table.get("retryPath").asString()).isEqualTo(AccountDeletionController.RETRY_PATH);
         // 진행 상태 값 — 화면의 닫힌 집합과 같다.
         assertThat(strings(table.get("progressStatuses"))).containsExactly(AccountDeletionController.PROGRESS_IN_PROGRESS,
-                AccountDeletionController.PROGRESS_RETRY_NEEDED, AccountDeletionController.PROGRESS_ERASED);
-        assertThat(java.util.Arrays.stream(com.bokrilog.identity.AccountDeletionRunApi.RunStatus.values())
-                .map(status -> AccountDeletionController.progressViewOf(new com.bokrilog.identity.AccountDeletionRunApi
-                        .DeletionRun(status, null, List.of())).status()).distinct().toList())
+                AccountDeletionController.PROGRESS_RETRY_NEEDED, AccountDeletionController.PROGRESS_ERASED,
+                AccountDeletionController.PROGRESS_COMPLETED);
+        // 완료 조회의 백업 파기 상태(Story 5.4) — tombstone 상태 그대로다.
+        assertThat(strings(table.get("backupDestructionStatuses"))).containsExactlyElementsOf(
+                Arrays.stream(DestructionStatus.values()).map(Enum::name).toList());
+        assertThat(Arrays.stream(RunStatus.values())
+                .map(status -> AccountDeletionController.progressViewOf(new DeletionRun(status, null, List.of())).status())
+                .distinct().toList())
                 .containsExactlyInAnyOrderElementsOf(strings(table.get("progressStatuses")));
     }
 

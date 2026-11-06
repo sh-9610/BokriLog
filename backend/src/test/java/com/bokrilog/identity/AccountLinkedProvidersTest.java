@@ -2,12 +2,9 @@ package com.bokrilog.identity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.bokrilog.PostgresTestcontainersConfig;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 
 /**
  * 연결된 제공자 조회.
@@ -19,9 +16,7 @@ import org.springframework.context.annotation.Import;
  * 루트 패키지가 {@code identity_social_link}를 직접 읽는 길은 {@code ModuleBoundaryTest}가 막기
  * 때문이다. 그래서 여는 표면을 <b>제공자 이름 집합</b> 하나로 좁혔고, 이 파일이 그 좁음을 고정한다.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
-@Import(PostgresTestcontainersConfig.class)
-class AccountLinkedProvidersTest {
+class AccountLinkedProvidersTest extends IdentityKeyedTestBase {
 
     @Autowired private AccountLifecycleApi lifecycle;
 

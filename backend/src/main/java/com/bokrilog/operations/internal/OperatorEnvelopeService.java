@@ -345,6 +345,7 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         Map<String, Object> details = new LinkedHashMap<>();
         details.put("code", code);
         details.put("keyDigest", envelope.idempotencyKeyDigest());
+        // 거절·실패·취소 행은 롤백 뒤 따로 쓴다 — 그 사이 수행자의 계정 삭제가 커밋됐을 수 있다(deferred 162). 잠금 뒤에 본다.
         append(envelope, outcome, true, correlationId, details);
     }
 
@@ -575,15 +576,30 @@ class OperatorEnvelopeService implements OperatorCommandApi {
         return JSON.createObjectNode();
     }
 
-    /** 잠금 → INSERT를 한 트랜잭션에서. 열린 트랜잭션이 있으면 거기 참여한다. */
+    /**
+     * 잠금 → 수행자 계정 판정 → INSERT를 한 트랜잭션에서. 열린 트랜잭션이 있으면 거기 참여한다.
+     *
+     * <p>모든 운영자 행이 원장 추가 잠금 <b>뒤에</b> 수행자 계정의 삭제 시작을 보고, 시작됐으면 수행자 귀속({@code actor_user_id}) 없이 쓴다
+     * (deferred 162, Story 5.4) — 거절·실패·취소 행과 커밋 뒤 별도 트랜잭션의 행(smoke 결과·요청 행)은 앞선 커밋과 별개로 쓰여 그 사이 삭제가
+     * 커밋됐을 수 있다. 확정의 완료 행도 같다(그 트랜잭션도 같은 잠금을 쥔다). 삭제의 비식별({@code eraseActor})도 같은 잠금을 쥐고
+     * 커밋하므로, 여기서 보이는 삭제는 이미 그 비식별을 지났고 이 행을 다시 비식별할 단계가 없다. 강한 신호의 늦은 귀속 비식별과 같은
+     * 규칙이다. 수행자 digest는 그대로 남는다.
+     *
+     * <p>판정({@code accountUsable})은 생명주기 행을 <b>잠그지 않는</b> 읽기다(identity {@code AccountAccessApi}의 판정 — 커밋된 상태를 읽는다).
+     * 잠금이 필요 없는 것은 순서를 원장 잠금이 정하기 때문이다: 삭제의 비식별이 이 잠금보다 먼저 커밋됐으면 이 읽기가 그 삭제 시작을 보고,
+     * 나중이면 그 비식별이 이 행을 지운다.
+     */
     private Instant append(Envelope envelope, AuditOutcome outcome, boolean decided, String correlationId,
             Map<String, Object> details) {
-        var row = new OperatorAuditRepository.NewRow(envelope.operationId(), envelope.actorUserId(),
-                this.digest.of(envelope.actorUserId()), ACTOR_OPERATOR, envelope.command(), envelope.scope(),
-                envelope.target(), envelope.reason(), outcome.name(), envelope.policyVersion(),
-                envelope.requestedAt(), decided, correlationId, JSON.writeValueAsString(details));
+        String detailsJson = JSON.writeValueAsString(details);
+        String actorDigest = this.digest.of(envelope.actorUserId());
         Instant requestedAt = this.transactions.execute(status -> {
             this.repository.lockAppends();
+            boolean erased = !this.environment.accountUsable(envelope.actorUserId());
+            var row = new OperatorAuditRepository.NewRow(envelope.operationId(), erased ? null : envelope.actorUserId(),
+                    actorDigest, ACTOR_OPERATOR, envelope.command(), envelope.scope(), envelope.target(),
+                    envelope.reason(), outcome.name(), envelope.policyVersion(), envelope.requestedAt(), decided,
+                    correlationId, detailsJson, erased);
             return this.repository.append(row);
         });
         if (requestedAt == null) {

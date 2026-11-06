@@ -20,7 +20,13 @@
   ],
   "legalRetention": [],
   "retryPath": "/api/account/deletion/retry",
-  "progressStatuses": ["IN_PROGRESS", "RETRY_NEEDED", "OPERATIONAL_DATA_ERASED"],
+  "progressStatuses": [
+    "IN_PROGRESS",
+    "RETRY_NEEDED",
+    "OPERATIONAL_DATA_ERASED",
+    "DELETION_COMPLETED"
+  ],
+  "backupDestructionStatuses": ["PENDING", "OVERDUE", "DESTROYED"],
   "erasureSteps": [
     "CREDENTIALS",
     "PORTFOLIO",
@@ -32,6 +38,7 @@
     "IDENTITY"
   ],
   "refusalCodes": [
+    "ACCOUNT_DELETION_COMPLETED",
     "ACCOUNT_DELETION_IN_PROGRESS",
     "ACCOUNT_DELETION_NOT_CONFIRMED",
     "ACCOUNT_DELETION_NOT_RETRYABLE",

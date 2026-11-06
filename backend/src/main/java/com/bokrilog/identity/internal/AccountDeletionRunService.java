@@ -177,6 +177,34 @@ class AccountDeletionRunService implements AccountDeletionRunApi {
         return completions;
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public List<String> awaitingDeletionCompletion() {
+        return List.copyOf(repository.awaitingDeletionCompletion());
+    }
+
+    @Override
+    @Transactional
+    public int recordDeletionCompleted(Collection<String> requestIds) {
+        List<String> valid = requestIds.stream().filter(id -> id != null && REQUEST_ID.matcher(id).matches())
+                .distinct().toList();
+        return repository.markDeletionCompleted(valid);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<CompletedDeletion> completedDeletionOf(@Nullable String requestId) {
+        if (requestId == null || !REQUEST_ID.matcher(requestId).matches()) {
+            return Optional.empty();
+        }
+        return repository.findCompletion(requestId).map(found -> new CompletedDeletion(
+                found.operationalErasedAt().toInstant(),
+                found.deletionCompletedAt() == null ? null : found.deletionCompletedAt().toInstant()));
+    }
+
+    /** 삭제 요청 ID의 모양. V30의 CHECK와 한 쌍이다. */
+    private static final Pattern REQUEST_ID = Pattern.compile("[A-Za-z0-9_-]{1,64}");
+
     private List<StepState> stepsOf(UUID userId) {
         return repository.findSteps(userId).stream()
                 .map(step -> new StepState(DeletionStep.valueOf(step.step()), StepStatus.valueOf(step.status()),
