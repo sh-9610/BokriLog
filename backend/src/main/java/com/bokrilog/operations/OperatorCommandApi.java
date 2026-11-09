@@ -19,7 +19,8 @@ import tools.jackson.databind.JsonNode;
  * Epic 1의 부품으로 하고, 여기서는 envelope의 검증(빈 사유·미지원 command·미지원 scope·클라이언트 actor·길이), 서버가
  * 정하는 확인 문구, 감사 행의 추가, 그리고 command의 실행을 한다 — 3.1의 {@value #AUDIT_EXPORT}, 3.2의 제한 생성 넷
  * ({@code restrict-<기능>}, {@link #restrictionFeatureOf}), 3.4의 제한 해제 {@value #LIFT_RESTRICTION}, 3.5의 서비스 공지
- * 발행 {@value #PUBLISH_NOTICE}, 3.6의 문의 처리 {@value #UPDATE_INQUIRY}.
+ * 발행 {@value #PUBLISH_NOTICE}, 3.6의 문의 처리 {@value #UPDATE_INQUIRY}, Epic 5 회고 AI-1의 삭제 재대기열
+ * {@value #REQUEUE_DELETION}.
  *
  * <p><b>command마다 전략 하나다(Epic 3 회고 AI-5).</b> 이 인터페이스의 메서드는 command 이름으로 등록표를 찾아 그 전략에
  * 맡긴다 — 루트는 command를 가르지 않는다. 준비 본문 해석·검증·준비 뒤 거절·미리보기·확정 본문·커밋 뒤 처리·재전송·응답
@@ -90,11 +91,22 @@ public interface OperatorCommandApi {
     String INQUIRY_SCOPE_PREFIX = "INQUIRY:";
 
     /**
+     * 재시도 필요로 멈춘 계정 삭제 실행의 재대기열(Epic 5 회고 AI-1). target은 삭제 요청 ID({@code del_…}) 하나이고 scope는 받지
+     * 않는다(원장 scope는 {@value #DELETION_SCOPE}). 그 실행 하나를 {@code RETRY_NEEDED → QUEUED}로 되돌릴 뿐 단계 상태를 바꾸지
+     * 않는다 — 실패·미실행 단계만 다시 도는 사용자 재시도와 같은 의미다. 원장 target은 요청 ID의 keyed digest다(요청 ID는 사용자
+     * 귀속 삭제 요청을 가리킨다). 요청 세션을 잃은 실행을 다시 대기열에 넣는 운영 경로는 이 command 하나다.
+     */
+    String REQUEUE_DELETION = "requeue-deletion";
+
+    /** 재대기열의 원장 scope. */
+    String DELETION_SCOPE = "ACCOUNT_DELETION";
+
+    /**
      * 운영 command 이름 전부. 새 command는 이름 상수와 함께 여기 더하고 그 전략을 등록표에 한 줄 더한다 —
      * {@code OperatorCommandRegistryTest}가 등록표가 이 목록과 정확히 같은지 본다.
      */
     List<String> COMMANDS = List.of(AUDIT_EXPORT, RESTRICT_NEW_CONNECTION, RESTRICT_SYNC, RESTRICT_CALCULATION_DISPLAY,
-            RESTRICT_ADVERTISING, LIFT_RESTRICTION, PUBLISH_NOTICE, UPDATE_INQUIRY);
+            RESTRICT_ADVERTISING, LIFT_RESTRICTION, PUBLISH_NOTICE, UPDATE_INQUIRY, REQUEUE_DELETION);
 
     /** 배포 버전의 최대 길이(문자). 모양은 {@code [A-Za-z0-9._+-]}다. */
     int MAX_DEPLOY_VERSION_CHARS = 64;
@@ -119,9 +131,11 @@ public interface OperatorCommandApi {
      * 연락처가 비면 거절(멱등 키·재인증 판정 뒤), 복구 공지는 덮는 제한이 모두 닫혀 있어야 함, 사건·범위를 담은 확인 문구,
      * 확정 순간의 버전 연속·사건 닫힘·덮는 제한·다음 안내 시각 재검사와 지원 연락처의 버전 고정. 1.4(Story 3.6): 문의 처리
      * command {@value #UPDATE_INQUIRY}, 상태 전이 단조({@code ANSWERED} 건너뛰기 금지)와 답변 필수·민감값 규칙, 원장 target·
-     * {@code details}의 reference digest, 확정 순간의 행 잠금·전이 재검사.
+     * {@code details}의 reference digest, 확정 순간의 행 잠금·전이 재검사. 1.5(Epic 5 회고 AI-1): 삭제 재대기열 command
+     * {@value #REQUEUE_DELETION}, 원장 target·{@code details}의 요청 ID digest, production(G-5 전) 거절, 확정 순간 앞서 잠그지 않는
+     * 조건부 UPDATE({@code SKIP LOCKED})와 그 0행의 거절, 운영자 전용 접두사의 재대기열 키 digest.
      */
-    String POLICY_VERSION = "OPERATOR-COMMAND-1.4";
+    String POLICY_VERSION = "OPERATOR-COMMAND-1.5";
 
     /** 추출 한 번의 행 상한. 넘으면 앞쪽(오래된 순) 상한만큼이고 결과가 잘렸다고 말한다. */
     int MAX_EXPORT_ROWS = 10_000;
@@ -202,6 +216,14 @@ public interface OperatorCommandApi {
 
     /** 답변에 민감값 모양이 있다(Story 3.6). 사용자 접수의 거절과 같은 code다. */
     String INQUIRY_SENSITIVE_CONTENT = "INQUIRY_SENSITIVE_CONTENT";
+
+    /**
+     * 그 삭제 실행이 재시도 필요가 아니다 — 대기·실행 중·완료이거나, 준비 뒤 사용자 재시도·Worker가 먼저 옮겼다(Epic 5 회고 AI-1).
+     */
+    String DELETION_NOT_RETRYABLE = "DELETION_NOT_RETRYABLE";
+
+    /** 삭제 재대기열을 열지 않는 환경이다 — production(법정 분리 보존 게이트 G-5 승인 전)(Epic 5 회고 AI-1). */
+    String DELETION_REQUEUE_UNAVAILABLE = "DELETION_REQUEUE_UNAVAILABLE";
 
     /** 요청 본문이 수행자를 주장했다. 수행자는 언제나 서버 세션이 정한다. */
     String ACTOR_NOT_ACCEPTED = "ACTOR_NOT_ACCEPTED";

@@ -7,6 +7,7 @@ import com.bokrilog.operations.OperatorCommandApi.Restriction;
 import com.bokrilog.operations.OperatorCommandApi.TargetCheck;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 
@@ -71,4 +72,66 @@ public interface OperatorCommandEnvironment {
 
     /** 그 계정을 지금 쓸 수 있는가(Story 3.6) — 삭제가 시작된 계정의 문의에는 답변을 쓰지 않는다. */
     boolean accountUsable(UUID userId);
+
+    // ------------------------------------------------------------------ Epic 5 회고 AI-1 삭제 재대기열
+
+    /** 재시도 필요 단계 하나. 단계 code·실패 code·시도 수뿐이다. */
+    record FailedDeletionStep(String step, String failureCode, int attempts) {}
+
+    /**
+     * 요청 ID로 본 계정 삭제 실행. 사용자 식별자·소셜 식별자를 담지 않는다.
+     *
+     * @param requestedAt 삭제 요청 시각. 요청 행이 이미 지워졌으면(끝난 실행) {@code null}. 목록의 실행은 언제나 있다
+     * @param retryNeeded 실행이 지금 재시도 필요로 멈춰 있는가
+     * @param stoppedAt 재시도 필요 단계의 마지막 결과 시각. 없으면 {@code null}
+     */
+    record DeletionRunFacts(String requestId, @Nullable Instant requestedAt, boolean retryNeeded,
+            @Nullable Instant stoppedAt, List<FailedDeletionStep> failedSteps) {
+
+        public DeletionRunFacts {
+            failedSteps = List.copyOf(failedSteps);
+        }
+    }
+
+    /**
+     * 재시도 필요 실행 목록 한 번.
+     *
+     * @param truncated 상한을 넘는 실행이 더 있어 앞쪽(오래된 순)만 담았다
+     */
+    record DeletionRunList(List<DeletionRunFacts> runs, boolean truncated) {
+
+        public DeletionRunList {
+            runs = List.copyOf(runs);
+        }
+    }
+
+    /** 재대기열의 결과. */
+    sealed interface DeletionRequeue {
+
+        /** {@code QUEUED}로 되돌렸다. {@code retrySteps}는 다시 돌 재시도 필요 단계 수다. */
+        record Requeued(Instant requeuedAt, int retrySteps) implements DeletionRequeue {}
+
+        /** 재시도 필요가 아니다. 아무것도 쓰지 않았다. */
+        record NotRetryable() implements DeletionRequeue {}
+
+        /** 그 요청 ID의 실행이 없다. 아무것도 쓰지 않았다. */
+        record NotFound() implements DeletionRequeue {}
+    }
+
+    /** 삭제 재대기열을 열 수 있는 환경인가 — production(G-5 전)이 아니다. 사용자 삭제 요청의 게이트와 같은 판정이다. */
+    boolean deletionRequeueAvailable();
+
+    /** 재시도 필요로 멈춘 실행(요청 시각 순, 상한까지)과 잘림 여부. 읽기만 한다. */
+    DeletionRunList retryNeededDeletions();
+
+    /** 그 요청 ID의 실행(상태 무관). 없으면 빈 값. 읽기만 한다. */
+    Optional<DeletionRunFacts> deletionRun(String requestId);
+
+    /**
+     * 그 요청 ID의 재시도 필요 실행을 다시 대기열에 넣는다. <b>호출자 트랜잭션 안에서</b> — 엔진의 원장 잠금·최종 권한 뒤 — 앞서
+     * 잠그지 않는 조건부 UPDATE 한 문장으로 쓴다.
+     *
+     * @param retryKeyDigest 운영자 전용 접두사의 재대기열 키 SHA-256
+     */
+    DeletionRequeue requeueDeletion(String requestId, String retryKeyDigest);
 }

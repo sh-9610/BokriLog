@@ -3,6 +3,7 @@ package com.bokrilog;
 import com.bokrilog.operations.OperationalRestrictionApi;
 import com.bokrilog.operations.OperatorAuditApi;
 import com.bokrilog.operations.OperatorCommandApi;
+import com.bokrilog.operations.OperatorCommandEnvironment;
 import com.bokrilog.operations.OperatorPermission;
 import com.bokrilog.operations.RestrictionFeature;
 import com.bokrilog.operations.ServiceNoticeApi;
@@ -79,6 +80,12 @@ import org.springframework.web.bind.annotation.RestController;
  *       {@code GET /api/operator/inquiries/{reference}}에서만 보인다.
  *       {@code GET /api/operator/inquiries/metrics?from&to}는 그 기간(KST 날짜, 양 끝 포함)의 답변 목표 달성 수·처리 영업시간을
  *       돌려준다. 읽을 수 없는 기간은 400이다.
+ *   <li>Epic 5 회고 AI-1의 삭제 재대기열 command {@code requeue-deletion}도 같은 세 경로다. 준비 본문은 {@code {target: <삭제 요청
+ *       ID>, reason}}이고 응답 {@code impact}는 {@code {requestId, requestedAt, stoppedAt, failedSteps[{step, failureCode,
+ *       attempts}]}}다. 확정 응답은 {@code {operationId, outcome, command, status: "QUEUED", requeuedAt, retrySteps}}다.
+ *       {@code GET /api/operator/deletions}(command 권한)는 재시도 필요로 멈춘 실행 목록이고 production이면
+ *       {@code {available: false, items: []}}다. 사용자 식별자는 어디에도 없다. 거절은 409 {@code DELETION_NOT_RETRYABLE}·403
+ *       {@code DELETION_REQUEUE_UNAVAILABLE}이 더해진다.
  * </ul>
  *
  * <p>거절은 공통 오류 모양이다: 400 본문 모양, 403 {@code REAUTHENTICATION_REQUIRED}(준비)·
@@ -105,6 +112,9 @@ class OperatorController {
 
     /** 문의 목록·상세·집계(Story 3.6). command 권한이다. */
     static final String INQUIRIES_PATH = AuthSecurityConfig.OPERATOR_API_PATH + "/inquiries";
+
+    /** 재시도 필요로 멈춘 계정 삭제 실행의 목록(Epic 5 회고 AI-1). command 권한이다. */
+    static final String DELETIONS_PATH = AuthSecurityConfig.OPERATOR_API_PATH + "/deletions";
 
     /** 문의 집계의 하위 경로. reference 모양({@code Q-…})과 겹치지 않는다. */
     static final String INQUIRY_METRICS_PATH = INQUIRIES_PATH + "/metrics";
@@ -194,11 +204,30 @@ class OperatorController {
             Map.entry(OperatorCommandApi.INQUIRY_ANSWER_INVALID, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
                     "답변은 1000자 이내여야 하고 답변 완료로 옮길 때만 실을 수 있습니다.")),
             Map.entry(OperatorCommandApi.INQUIRY_SENSITIVE_CONTENT, new Refusal(HttpStatus.UNPROCESSABLE_CONTENT,
-                    "답변에 자격정보·지갑 주소·금융값·이메일처럼 보이는 값이 있어 받지 않았습니다. 그 값을 빼고 다시 입력해 주세요.")));
+                    "답변에 자격정보·지갑 주소·금융값·이메일처럼 보이는 값이 있어 받지 않았습니다. 그 값을 빼고 다시 입력해 주세요.")),
+            // 다른 트랜잭션이 그 행을 쥐어 건너뛴 경우(아직 재시도 필요일 수 있다)와 상태가 다른 경우 모두에 참인 문장이다.
+            Map.entry(OperatorCommandApi.DELETION_NOT_RETRYABLE, new Refusal(HttpStatus.CONFLICT,
+                    OperatorController.DELETION_NOT_RETRYABLE_MESSAGE)),
+            Map.entry(OperatorCommandApi.DELETION_REQUEUE_UNAVAILABLE, new Refusal(HttpStatus.FORBIDDEN,
+                    OperatorController.DELETION_REQUEUE_UNAVAILABLE_MESSAGE)));
 
     /** 문의 처리의 {@code TARGET_INVALID} 문장. 대상이 문의 reference다(Story 3.6). */
     static final String INQUIRY_TARGET_INVALID = "문의를 찾지 못했습니다. 보존 기간이 지났거나 삭제된 문의일 수 있습니다. 문의 "
             + "목록을 다시 조회해 주세요.";
+
+    /**
+     * 삭제 재대기열의 {@code DELETION_NOT_RETRYABLE} 문장. 화면({@code content/operator.ts})과 글자까지 같다 —
+     * {@code OperatorControllerRefusalsTest}가 대조한다.
+     */
+    static final String DELETION_NOT_RETRYABLE_MESSAGE = "이 삭제 실행은 지금 다시 대기열에 넣을 수 있는 상태가 아닙니다. 다른 작업이 처리 "
+            + "중이거나 더 이상 재시도 필요 상태가 아닐 수 있습니다. 재시도 필요 목록을 다시 불러와 확인해 주세요.";
+
+    /** 삭제 재대기열의 {@code DELETION_REQUEUE_UNAVAILABLE} 문장. 화면과 글자까지 같다. */
+    static final String DELETION_REQUEUE_UNAVAILABLE_MESSAGE = "이 환경에서는 계정 삭제를 실행하지 않아 다시 대기열에 넣을 수 없습니다.";
+
+    /** 삭제 재대기열의 {@code TARGET_INVALID} 문장. 대상이 삭제 요청 ID다(Epic 5 회고 AI-1). */
+    static final String DELETION_TARGET_INVALID = "삭제 요청을 찾지 못했습니다. 삭제 요청 ID를 확인하고 재시도 필요 목록을 다시 "
+            + "조회해 주세요.";
 
     /** 공지 발행의 {@code REASON_INVALID} 문장. 메시지 규칙이 사유 규칙보다 좁다(Story 3.5). */
     static final String NOTICE_MESSAGE_INVALID = "공지 메시지는 200자 이내의 한 줄 문장이어야 하고 이메일 주소·숫자 6자리 이상 "
@@ -225,6 +254,8 @@ class OperatorController {
             Map.entry(OperatorCommandApi.AUDIT_EXPORT + "|" + OperatorCommandApi.TARGET_INVALID, EXPORT_TARGET_INVALID),
             Map.entry(OperatorCommandApi.UPDATE_INQUIRY + "|" + OperatorCommandApi.TARGET_INVALID,
                     INQUIRY_TARGET_INVALID),
+            Map.entry(OperatorCommandApi.REQUEUE_DELETION + "|" + OperatorCommandApi.TARGET_INVALID,
+                    DELETION_TARGET_INVALID),
             Map.entry(OperatorCommandApi.PUBLISH_NOTICE + "|" + OperatorCommandApi.TARGET_INVALID + "|RECOVERED",
                     NOTICE_RECOVERY_TARGET_INVALID),
             Map.entry(OperatorCommandApi.PUBLISH_NOTICE + "|" + OperatorCommandApi.TARGET_INVALID,
@@ -349,6 +380,32 @@ class OperatorController {
 
     record RestrictionListView(List<RestrictionView> items) {}
 
+    /** 재시도 필요 단계 하나(Epic 5 회고 AI-1). 단계 code·실패 code·시도 수뿐이다. */
+    record FailedStepView(String step, String failureCode, int attempts) {}
+
+    /**
+     * 재시도 필요로 멈춘 삭제 실행 하나(Epic 5 회고 AI-1). 요청 ID·요청 시각·멈춘 시각·실패 단계뿐이고 사용자 식별자·소셜 식별자는 없다.
+     * 요청 시각은 언제나 있다(목록은 요청 행과 내부 결합한다). 멈춘 시각이 없으면 {@code null} 그대로 싣는다.
+     */
+    @JsonInclude(JsonInclude.Include.ALWAYS)
+    record DeletionRunView(String requestId, String requestedAt, @Nullable String stoppedAt,
+            List<FailedStepView> failedSteps) {
+
+        static DeletionRunView of(OperatorCommandEnvironment.DeletionRunFacts run) {
+            java.time.Instant requestedAt = java.util.Objects.requireNonNull(run.requestedAt(),
+                    "재시도 필요 목록의 실행은 요청 시각을 가진다.");
+            return new DeletionRunView(run.requestId(), requestedAt.toString(), text(run.stoppedAt()),
+                    run.failedSteps().stream()
+                            .map(step -> new FailedStepView(step.step(), step.failureCode(), step.attempts())).toList());
+        }
+    }
+
+    /**
+     * 삭제 재대기열 목록. {@code available}이 거짓이면(production, G-5 전) 목록을 읽지 않고 비운다. {@code truncated}는 상한
+     * ({@code AccountDeletionRunApi.MAX_RETRY_NEEDED_RUNS})을 넘어 오래된 순 앞쪽만 실었다는 뜻이다.
+     */
+    record DeletionRunListView(boolean available, boolean truncated, List<DeletionRunView> items) {}
+
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record OperatorError(String code, String message, String correlationId) {}
 
@@ -367,6 +424,9 @@ class OperatorController {
     /** 문의 목록·상세·집계(Story 3.6). */
     private final SupportInquiryApi inquiries;
 
+    /** 재시도 필요 삭제 실행의 목록과 환경 게이트(Epic 5 회고 AI-1). 운영 command와 같은 루트 port 구현을 지난다. */
+    private final OperatorCommandEnvironment environment;
+
     /**
      * 핸들러 안의 이중 검사. 게이트({@link OperatorGate})가 먼저 판정하지만 경로 판정이 어긋나는 날(인코딩·매핑 변경)
      * 그 검사 하나에 기대지 않는다 — 여기서도 같은 권한을 보고 같은 404를 낸다.
@@ -375,8 +435,9 @@ class OperatorController {
 
     OperatorController(OperatorCommandService commands, OperatorAuditApi audit, OperationalRestrictionApi restrictions,
             ServiceNoticeApi notices, SupportContact supportContact, SupportInquiryApi inquiries,
-            OperatorAccess access) {
+            OperatorCommandEnvironment environment, OperatorAccess access) {
         this.commands = commands;
+        this.environment = environment;
         this.inquiries = inquiries;
         this.audit = audit;
         this.restrictions = restrictions;
@@ -551,6 +612,31 @@ class OperatorController {
         return answer("inquiry", ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(new InquiryDetailView(InquirySummaryView.of(detail.summary()), detail.description(),
                         detail.answer(), detail.replyEmail())), "OK", started);
+    }
+
+    // ------------------------------------------------------------------ 삭제 재대기열(Epic 5 회고 AI-1)
+
+    @GetMapping(path = DELETIONS_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
+    @Nullable ResponseEntity<?> deletions(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        long started = System.nanoTime();
+        String correlationId = ControllerSupport.correlationIdOf(request);
+        if (!this.access.permits(ControllerSupport.currentUserId(), Set.of(OperatorPermission.COMMAND))) {
+            return notFound("deletions", response, started);
+        }
+        DeletionRunListView view;
+        try {
+            // production(G-5 전)은 목록도 읽지 않는다 — 재대기열이 열리지 않는 환경에서 삭제 실행을 보일 까닭이 없다.
+            if (this.environment.deletionRequeueAvailable()) {
+                OperatorCommandEnvironment.DeletionRunList found = this.environment.retryNeededDeletions();
+                view = new DeletionRunListView(true, found.truncated(),
+                        found.runs().stream().map(DeletionRunView::of).toList());
+            } else {
+                view = new DeletionRunListView(false, false, List.of());
+            }
+        } catch (RuntimeException failure) {
+            return answer("deletions", internal(failure, correlationId), "ERROR", started);
+        }
+        return answer("deletions", ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(view), "OK", started);
     }
 
     // ------------------------------------------------------------------ 운영 command

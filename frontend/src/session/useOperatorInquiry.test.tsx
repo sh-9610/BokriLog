@@ -31,7 +31,7 @@ function prepared(): Response {
     target: REFERENCE,
     reason: '답변 등록',
     confirmationPhrase: `문의 답변 완료 ${REFERENCE}`,
-    policyVersion: 'OPERATOR-COMMAND-1.4',
+    policyVersion: 'OPERATOR-COMMAND-1.5',
     requestedAt: '2026-10-13T00:00:00Z',
     impact: { reference: REFERENCE, nextStatus: 'ANSWERED', answerProvided: true },
   })

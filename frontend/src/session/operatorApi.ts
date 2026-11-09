@@ -2,12 +2,14 @@ import {
   LIFT_RESTRICTION_COMMAND,
   OPERATOR_AUDIT_ENDPOINT,
   OPERATOR_COMMANDS_ENDPOINT,
+  OPERATOR_DELETIONS_ENDPOINT,
   OPERATOR_INQUIRIES_ENDPOINT,
   OPERATOR_INQUIRY_METRICS_ENDPOINT,
   OPERATOR_NOTICES_ENDPOINT,
   OPERATOR_OPERATIONS_ENDPOINT,
   OPERATOR_RESTRICTIONS_ENDPOINT,
   PUBLISH_NOTICE_COMMAND,
+  REQUEUE_DELETION_COMMAND,
   UPDATE_INQUIRY_COMMAND,
   type RecoveryCondition,
   type RestrictionCommand,
@@ -892,6 +894,214 @@ export function completedInquiryUpdateOf(
     return null
   }
   return { operationId, status: body.status, transitionedAt: body.transitionedAt }
+}
+
+// ------------------------------------------------------------------ 삭제 실행 재대기열(Epic 5 회고 AI-1)
+
+/** 실패 단계 하나. 단계·실패 code·시도 수뿐이다. */
+export interface DeletionFailedStep {
+  readonly step: string
+  readonly failureCode: string
+  readonly attempts: number
+}
+
+/** 재시도 필요로 멈춘 삭제 실행 하나. 사용자 식별자가 없다 — 대상은 삭제 요청 ID다. */
+export interface RetryNeededDeletion {
+  readonly requestId: string
+  readonly requestedAt: string
+  /** 실패 단계의 마지막 결과 시각. 기록이 없으면 `null`이다. */
+  readonly stoppedAt: string | null
+  readonly failedSteps: readonly DeletionFailedStep[]
+}
+
+/** 재시도 필요 목록. `available`이 거짓이면 이 환경(production, G-5 전)이 삭제를 실행하지 않는다 — 목록도 동작도 없다. */
+export interface RetryNeededDeletionList {
+  readonly available: boolean
+  /** 서버가 목록을 상한에서 잘랐다 — 오래된 순 앞쪽만 실렸다. */
+  readonly truncated: boolean
+  readonly items: readonly RetryNeededDeletion[]
+}
+
+/** 재대기열 준비의 입력. */
+export interface DeletionRequeueInput {
+  readonly requestId: string
+  readonly reason: string
+}
+
+/** 재대기열의 미리보기. 요청 시각·멈춘 시각은 서버가 읽지 못했으면 `null`이다. */
+export interface DeletionRequeueImpact {
+  readonly requestId: string
+  readonly requestedAt: string | null
+  readonly stoppedAt: string | null
+  readonly failedSteps: readonly DeletionFailedStep[]
+}
+
+export interface PreparedDeletionRequeue {
+  readonly operationId: string
+  readonly scope: string
+  /** 삭제 요청 ID. */
+  readonly target: string
+  readonly reason: string
+  readonly confirmationPhrase: string
+  readonly impact: DeletionRequeueImpact
+}
+
+export interface CompletedDeletionRequeue {
+  readonly operationId: string
+  /** 실행 상태(`QUEUED`). 모르는 값은 그대로 둔다. */
+  readonly status: string
+  readonly requeuedAt: string
+  /** 다시 실행할 실패 단계의 수. */
+  readonly retrySteps: number
+}
+
+/** 삭제 요청 ID의 모양. 서버가 만드는 `del_` 접두사의 불투명 값이다. */
+const DELETION_REQUEST_ID = /^del_[A-Za-z0-9_-]{1,60}$/
+
+/**
+ * 재시도 필요 목록. 하나라도 모양이 어긋나면 목록 전체를 믿지 않는다. 이 환경이 삭제를 실행하지 않으면(`available: false`) 항목을
+ * 보지 않고 빈 목록이다.
+ */
+export async function fetchRetryNeededDeletions(
+  signal: AbortSignal,
+): Promise<ReadResult<RetryNeededDeletionList>> {
+  const result = await read(OPERATOR_DELETIONS_ENDPOINT, signal)
+  if (result.status !== 'loaded') {
+    return result
+  }
+  const body = result.value
+  if (
+    typeof body.available !== 'boolean' ||
+    typeof body.truncated !== 'boolean' ||
+    !Array.isArray(body.items)
+  ) {
+    return { status: 'failed', code: null }
+  }
+  if (!body.available) {
+    return { status: 'loaded', value: { available: false, truncated: false, items: [] } }
+  }
+  const items: RetryNeededDeletion[] = []
+  for (const item of body.items as unknown[]) {
+    const deletion = retryNeededDeletionOf(item)
+    if (deletion === null) {
+      return { status: 'failed', code: null }
+    }
+    items.push(deletion)
+  }
+  return { status: 'loaded', value: { available: true, truncated: body.truncated, items } }
+}
+
+/** 재대기열 준비의 본문. 범위는 싣지 않는다 — 서버가 정한다. */
+export function deletionRequeueBodyOf(input: DeletionRequeueInput): object {
+  return { target: input.requestId, reason: input.reason }
+}
+
+/** 재대기열 준비의 응답. 미리보기가 있고 대상이 고른 삭제 요청이어야 한다. */
+export function preparedDeletionRequeueOf(
+  body: JsonObject,
+  requestId: string,
+): PreparedDeletionRequeue | null {
+  const head = preparedHeadOf(body)
+  const impact = deletionImpactOf(body.impact)
+  if (
+    head === null ||
+    impact === null ||
+    body.command !== REQUEUE_DELETION_COMMAND ||
+    head.target !== requestId ||
+    impact.requestId !== requestId
+  ) {
+    return null
+  }
+  return { ...head, impact }
+}
+
+/** 재대기열 확정의 응답. */
+export function completedDeletionRequeueOf(
+  body: JsonObject,
+  operationId: string,
+): CompletedDeletionRequeue | null {
+  if (
+    typeof body.status !== 'string' ||
+    !isInstant(body.requeuedAt) ||
+    !nonNegativeInteger(body.retrySteps)
+  ) {
+    return null
+  }
+  return {
+    operationId,
+    status: body.status,
+    requeuedAt: body.requeuedAt,
+    retrySteps: body.retrySteps,
+  }
+}
+
+function nonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+}
+
+function failedStepsOf(value: unknown): readonly DeletionFailedStep[] | null {
+  if (!Array.isArray(value)) {
+    return null
+  }
+  const steps: DeletionFailedStep[] = []
+  for (const item of value as unknown[]) {
+    const step = objectOf(item)
+    if (
+      step === null ||
+      typeof step.step !== 'string' ||
+      typeof step.failureCode !== 'string' ||
+      !nonNegativeInteger(step.attempts)
+    ) {
+      return null
+    }
+    steps.push({ step: step.step, failureCode: step.failureCode, attempts: step.attempts })
+  }
+  return steps
+}
+
+function retryNeededDeletionOf(value: unknown): RetryNeededDeletion | null {
+  const body = objectOf(value)
+  if (
+    body === null ||
+    typeof body.requestId !== 'string' ||
+    !DELETION_REQUEST_ID.test(body.requestId) ||
+    !isInstant(body.requestedAt) ||
+    !nullableInstant(body.stoppedAt)
+  ) {
+    return null
+  }
+  const failedSteps = failedStepsOf(body.failedSteps)
+  if (failedSteps === null) {
+    return null
+  }
+  return {
+    requestId: body.requestId,
+    requestedAt: body.requestedAt,
+    stoppedAt: typeof body.stoppedAt === 'string' ? body.stoppedAt : null,
+    failedSteps,
+  }
+}
+
+function deletionImpactOf(value: unknown): DeletionRequeueImpact | null {
+  const body = objectOf(value)
+  if (
+    body === null ||
+    typeof body.requestId !== 'string' ||
+    !nullableInstant(body.requestedAt) ||
+    !nullableInstant(body.stoppedAt)
+  ) {
+    return null
+  }
+  const failedSteps = failedStepsOf(body.failedSteps)
+  if (failedSteps === null) {
+    return null
+  }
+  return {
+    requestId: body.requestId,
+    requestedAt: typeof body.requestedAt === 'string' ? body.requestedAt : null,
+    stoppedAt: typeof body.stoppedAt === 'string' ? body.stoppedAt : null,
+    failedSteps,
+  }
 }
 
 function nullableInstant(value: unknown): value is string | null | undefined {

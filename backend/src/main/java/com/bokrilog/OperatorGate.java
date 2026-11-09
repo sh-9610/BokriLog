@@ -22,7 +22,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * 경로의 존재를 비운영자에게 알려 준다.
  *
  * <p>경로별 권한: {@code /api/operator/commands/**}·{@code /api/operator/restrictions}(Story 3.2)·
- * {@code /api/operator/notices}(Story 3.5)·{@code /api/operator/inquiries}(Story 3.6)는 {@code command},
+ * {@code /api/operator/notices}(Story 3.5)·{@code /api/operator/inquiries}(Story 3.6)·{@code /api/operator/deletions}(Epic 5
+ * 회고 AI-1)는 {@code command},
  * {@code /api/operator/audit}는 {@code audit}, 그 밖
  * (operation 조회)은 운영자이기만 하면 된다. command마다 더 요구하는 권한(감사 내보내기의 {@code audit})은 서비스가 다시
  * 본다. 판정은 요청마다 allowlist를 다시 푼다({@link OperatorAccess}) — 회수가 다음 요청에 바로 반영된다.
@@ -99,6 +100,11 @@ final class OperatorGate extends OncePerRequestFilter {
         }
         if (uri.equals(OperatorController.INQUIRIES_PATH)
                 || uri.startsWith(OperatorController.INQUIRIES_PATH + "/")) {
+            return Set.of(OperatorPermission.COMMAND);
+        }
+        // 삭제 재대기열 목록(Epic 5 회고 AI-1). 모르는 경로는 권한 없이 통과하므로 여기 없으면 운영자이기만 하면 읽힌다.
+        if (uri.equals(OperatorController.DELETIONS_PATH)
+                || uri.startsWith(OperatorController.DELETIONS_PATH + "/")) {
             return Set.of(OperatorPermission.COMMAND);
         }
         if (uri.equals(AUDIT_PATH) || uri.startsWith(AUDIT_PATH + "/")) {

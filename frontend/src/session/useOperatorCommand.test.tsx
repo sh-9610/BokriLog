@@ -56,7 +56,7 @@ function preparedBody(operationId = 'op_one'): Record<string, unknown> {
     target: INPUT.target,
     reason: INPUT.reason,
     confirmationPhrase: '시험 문구',
-    policyVersion: 'OPERATOR-COMMAND-1.4',
+    policyVersion: 'OPERATOR-COMMAND-1.5',
     requestedAt: '2026-10-13T00:00:00Z',
   }
 }

@@ -22,7 +22,8 @@ import org.jspecify.annotations.Nullable;
  * {@link #operationalDataErased})은 같은 트랜잭션의 {@link #hold} 뒤에만 부른다.
  *
  * <p><b>다시 시도.</b> {@link #acceptRetry}가 {@code RETRY_NEEDED} 실행을 {@code QUEUED}로 되돌린다. 실패·미실행 단계만 다시 돌고 성공한
- * 단계는 건너뛴다(모듈 port는 멱등이다).
+ * 단계는 건너뛴다(모듈 port는 멱등이다). 요청 세션을 잃은 실행은 운영 command {@code requeue-deletion}이 {@link #requeueByOperator}로
+ * 같은 의미로 되돌린다(Epic 5 회고 AI-1) — 단계 상태는 바꾸지 않는다.
  */
 public interface AccountDeletionRunApi {
 
@@ -167,6 +168,82 @@ public interface AccountDeletionRunApi {
      * @param retryKeyDigest 멱등 키의 SHA-256(소문자 16진 64자)
      */
     RetryOutcome acceptRetry(@Nullable UUID userId, String retryKeyDigest);
+
+    // ------------------------------------------------------------------ Epic 5 회고 AI-1 운영자 재대기열
+
+    /** 운영자 화면이 한 번에 받는 재시도 필요 실행의 상한. */
+    int MAX_RETRY_NEEDED_RUNS = 200;
+
+    /**
+     * 요청 ID로 본 실행 하나(운영자 목록·미리보기). 사용자 식별자·소셜 식별자를 담지 않는다.
+     *
+     * @param requestedAt 삭제 요청 시각. 요청 행이 이미 지워졌으면(운영 완료 뒤 — {@link #runByRequest}의 끝난 실행) {@code null}.
+     *     재시도 필요 목록({@link #retryNeededRuns})의 실행은 요청 행을 언제나 가져 비지 않는다
+     * @param stoppedAt 멈춘 시각 — 재시도 필요 단계의 마지막 결과 시각의 최댓값. 재시도 필요 단계가 없으면 {@code null}
+     * @param failedSteps 재시도 필요인 단계(순서대로). 각 단계의 실패 code와 시도 횟수를 든다
+     */
+    record RequestRun(String requestId, @Nullable Instant requestedAt, RunStatus status, @Nullable Instant stoppedAt,
+            List<StepState> failedSteps) {
+
+        public RequestRun {
+            failedSteps = List.copyOf(failedSteps);
+        }
+    }
+
+    /** 운영자 재대기열의 결과. */
+    sealed interface OperatorRequeue {
+
+        /**
+         * 실행을 {@code QUEUED}로 되돌렸다.
+         *
+         * @param requeuedAt 접수 시각(DB 문장 시각)
+         * @param retrySteps 다시 돌 재시도 필요 단계 수(단계 상태는 그대로다)
+         */
+        record Requeued(Instant requeuedAt, int retrySteps) implements OperatorRequeue {}
+
+        /** 실행이 재시도 필요가 아니다(대기·실행 중·완료이거나 다른 트랜잭션이 그 행을 쥐었다). 아무것도 쓰지 않았다. */
+        record NotRetryable() implements OperatorRequeue {}
+
+        /** 그 요청 ID의 실행이 없다(요청이 없거나 아직 집기 전). 아무것도 쓰지 않았다. */
+        record NotFound() implements OperatorRequeue {}
+    }
+
+    /**
+     * 재시도 필요 실행 목록 한 번.
+     *
+     * @param runs 요청 시각 순, 많아야 {@link #MAX_RETRY_NEEDED_RUNS}
+     * @param truncated 상한을 넘는 실행이 더 있어 앞쪽(오래된 순)만 담았다
+     */
+    record RetryNeededRuns(List<RequestRun> runs, boolean truncated) {
+
+        public RetryNeededRuns {
+            runs = List.copyOf(runs);
+        }
+    }
+
+    /**
+     * 재시도 필요로 멈춘 실행(요청 시각 순, 상한 {@link #MAX_RETRY_NEEDED_RUNS}과 잘림 여부). 읽기만 한다 — 실행 행과 실패 단계를 한
+     * 스냅숏({@code REPEATABLE READ} 읽기 전용 트랜잭션)에서 읽어, 재시도 필요 실행이 빈 실패 단계로 보이는 일이 없다. 운영 command 화면이
+     * 쓴다.
+     */
+    RetryNeededRuns retryNeededRuns();
+
+    /**
+     * 그 요청 ID의 실행 — <b>상태 무관</b>이다(재시도 필요가 아니면 {@link RequestRun#status}가 가른다). 없으면 빈 값. 읽기만 한다(목록과
+     * 같은 한 스냅숏).
+     */
+    Optional<RequestRun> runByRequest(@Nullable String requestId);
+
+    /**
+     * 운영자 재대기열(호출자 트랜잭션에 참여한다). 그 요청 ID의 실행이 {@code RETRY_NEEDED}면 {@code QUEUED}로 되돌리고 운영자 키
+     * digest를 남긴다 — 앞서 잠그지 않는 조건부 UPDATE 한 문장이고 다른 트랜잭션이 쥔 행은 건너뛴다({@code SKIP LOCKED}). 그래서
+     * 단계 트랜잭션(실행 행 → 원장 순서)과 교착하지 않는다. 0행이면 잠그지 않는 읽기로 {@link OperatorRequeue.NotFound}(실행이 없거나, 끝나지
+     * 않았는데 요청 행이 없다 — Worker가 집지 못한다)와 {@link OperatorRequeue.NotRetryable}(다른 상태이거나 다른 트랜잭션이 그 행을 쥐었다)을
+     * 가른다. 단계 상태는 바꾸지 않는다. 키 digest를 덮어쓰므로 그 전 사용자 재시도 키의 재전송은 재시도 필요가 아님(409)이 된다.
+     *
+     * @param retryKeyDigest 운영자 재대기열 키의 SHA-256(소문자 16진 64자)
+     */
+    OperatorRequeue requeueByOperator(@Nullable String requestId, String retryKeyDigest);
 
     /**
      * 그 삭제 요청 ID들 가운데 운영 데이터 삭제가 끝난 실행의 완료 시각(Story 5.3). 읽기만 한다. 실행 행은 claim이 요청 ID를 채운다 —

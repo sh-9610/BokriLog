@@ -67,6 +67,7 @@ import { FIRST_SNAPSHOT_PATH } from '../content/firstSnapshot'
 import {
   OPERATOR_AUDIT_ENDPOINT,
   OPERATOR_COMMANDS_ENDPOINT,
+  OPERATOR_DELETIONS_ENDPOINT,
   OPERATOR_EXPORT_CANCEL_ENDPOINT,
   OPERATOR_EXPORT_CONFIRM_ENDPOINT,
   OPERATOR_EXPORT_ENDPOINT,
@@ -528,6 +529,11 @@ export function stubOperatorInquiryMetrics(responder: QueryResponder): void {
 /** 공지 사건 목록(Story 3.5, 운영자 화면). */
 export function stubOperatorNotices(responder: RequestResponder): void {
   responders.set(requestKey('GET', OPERATOR_NOTICES_ENDPOINT), responder)
+}
+
+/** 재시도 필요 삭제 실행 목록(Epic 5 회고 AI-1, 운영자 화면). */
+export function stubOperatorDeletions(responder: RequestResponder): void {
+  responders.set(requestKey('GET', OPERATOR_DELETIONS_ENDPOINT), responder)
 }
 
 /** 활성 제한 목록(Story 3.2). */

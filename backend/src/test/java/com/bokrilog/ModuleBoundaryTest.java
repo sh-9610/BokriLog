@@ -461,8 +461,19 @@ class ModuleBoundaryTest {
                 .that().resideOutsideOfPackage(IDENTITY + "..")
                 .and().doNotHaveFullyQualifiedName("com.bokrilog.AccountDeletionRequestService")
                 .should().callMethod(runs, "acceptRetry", java.util.UUID.class, String.class)
-                .because("다시 시도는 요청 세션의 사용자 표면 하나만 받는다(자동 재시도·운영자 재시도 없음).");
+                .because("사용자의 다시 시도는 요청 세션의 사용자 표면 하나만 받는다(자동 재시도 없음 — 운영자 재대기열은 아래 "
+                        + "규칙의 별도 메서드다).");
         retry.check(PRODUCTION_CLASSES);
+        // 요청 세션을 잃은 실행의 재대기열(Epic 5 회고 AI-1, 사용자 결정 2026-11-09)은 운영 command requeue-deletion 하나다 — 그 목록·
+        // 단건·재대기열에 닿는 운영 호출자는 운영 command의 루트 port 구현 하나다. 자동 재대기열·주기 작업은 없다.
+        ArchRule operatorRequeue = noClasses()
+                .that().resideOutsideOfPackage(IDENTITY + "..")
+                .and().doNotHaveFullyQualifiedName("com.bokrilog.OperatorCommandFacts")
+                .should().callMethod(runs, "requeueByOperator", String.class, String.class)
+                .orShould().callMethod(runs, "retryNeededRuns")
+                .orShould().callMethod(runs, "runByRequest", String.class)
+                .because("운영자 재대기열은 감사 원장·재인증을 지나는 운영 command 하나(OperatorCommandFacts)만 부른다.");
+        operatorRequeue.check(PRODUCTION_CLASSES);
 
         ArchRule erase = noClasses()
                 .that().doNotHaveFullyQualifiedName("com.bokrilog.DeletionSampleRunner")

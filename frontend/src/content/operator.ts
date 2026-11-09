@@ -8,6 +8,7 @@
  * 금지 표현(실시간·정확 보장, 수익 축하, 손실 공포)을 쓰지 않는다. 감사 데이터는 사실이지 평가가 아니다.
  */
 
+import { accountDeletionStepScope } from './accountDeletion'
 import { OPERATOR_PATH } from './auth'
 import { noticeFeatureCodesText, noticeTimeText } from './serviceNotice'
 import {
@@ -40,6 +41,9 @@ export const OPERATOR_INQUIRIES_ENDPOINT = '/api/operator/inquiries'
 
 /** 문의 기간 집계(Story 3.6). */
 export const OPERATOR_INQUIRY_METRICS_ENDPOINT = `${OPERATOR_INQUIRIES_ENDPOINT}/metrics`
+
+/** 재시도 필요로 멈춘 계정 삭제 실행의 목록(Epic 5 회고 AI-1). command 권한이다. */
+export const OPERATOR_DELETIONS_ENDPOINT = '/api/operator/deletions'
 
 export const OPERATOR_EXPORT_CONFIRM_ENDPOINT = `${OPERATOR_EXPORT_ENDPOINT}/confirm`
 
@@ -238,6 +242,48 @@ export function inquiryTargetMetText(targetMet: boolean | null): string {
   return targetMet ? '목표 안' : '목표 넘김'
 }
 
+// ------------------------------------------------------------------ 삭제 실행 재대기열(Epic 5 회고 AI-1)
+
+/**
+ * 재시도 필요로 멈춘 계정 삭제 실행을 다시 대기열에 넣는 command. 백엔드 `OperatorCommandApi.REQUEUE_DELETION`과 같은 값이다.
+ * 요청 세션을 잃은 계정의 삭제가 멈춘 채 남지 않게 하는 운영자 경로이고, 대상은 삭제 요청 ID 하나다.
+ */
+export const REQUEUE_DELETION_COMMAND = 'requeue-deletion'
+
+/**
+ * 삭제 단계의 실패 code → 화면 문장. 백엔드 `AccountDeletionRunApi`의 닫힌 code(`STEP_FAILED`·`RESIDUAL_FOUND`·`TOMBSTONE_FAILED`)와
+ * 같은 집합이다. 모르는 code는 그대로 보인다 — 운영자 표면이라 원 code가 단서다.
+ */
+const DELETION_FAILURE_LABELS: Readonly<Record<string, string>> = {
+  STEP_FAILED: '단계 실행 실패',
+  RESIDUAL_FOUND: '지운 뒤 남은 행 발견',
+  TOMBSTONE_FAILED: '첫 단계 앞의 삭제 기록 실패',
+}
+
+export function deletionFailureLabel(code: string): string {
+  // 원형의 키(`constructor`·`toString`)를 문장으로 잘못 읽지 않는다 — 자기 키만 문장이고 나머지는 원 code다.
+  return Object.hasOwn(DELETION_FAILURE_LABELS, code)
+    ? (DELETION_FAILURE_LABELS[code] ?? code)
+    : code
+}
+
+/**
+ * 삭제 단계 code → 화면 문장. 사용자 진행 화면과 같은 범위 문장(`content/accountDeletion`)에 원 code를 붙인다 — 운영자가 원장·로그의
+ * code와 바로 맞춰 볼 수 있다.
+ */
+export function deletionStepLabel(step: string): string {
+  return `${accountDeletionStepScope(step)}(${step})`
+}
+
+/** 실패 단계 하나의 문장: 단계·실패 code·시도 수. */
+export function deletionFailedStepText(
+  step: string,
+  failureCode: string,
+  attempts: number,
+): string {
+  return `${deletionStepLabel(step)} · ${deletionFailureLabel(failureCode)} · 시도 ${String(attempts)}회`
+}
+
 /** 영업 분 → 시간 문장(소수 첫째 자리까지). */
 export function businessMinutesText(minutes: number | null): string {
   if (minutes === null) return '해당 없음'
@@ -429,6 +475,10 @@ const REFUSALS: Readonly<Record<string, string>> = {
   INQUIRY_ANSWER_INVALID: '답변은 1000자 이내여야 하고 답변 완료로 옮길 때만 실을 수 있습니다.',
   INQUIRY_SENSITIVE_CONTENT:
     '답변에 자격정보·지갑 주소·금융값·이메일처럼 보이는 값이 있어 받지 않았습니다. 그 값을 빼고 다시 입력해 주세요.',
+  DELETION_NOT_RETRYABLE:
+    '이 삭제 실행은 지금 다시 대기열에 넣을 수 있는 상태가 아닙니다. 다른 작업이 처리 중이거나 더 이상 재시도 필요 상태가 아닐 수 있습니다. 재시도 필요 목록을 다시 불러와 확인해 주세요.',
+  DELETION_REQUEUE_UNAVAILABLE:
+    '이 환경에서는 계정 삭제를 실행하지 않아 다시 대기열에 넣을 수 없습니다.',
   UNAUTHENTICATED: '로그인이 필요합니다. 다시 로그인해 주세요.',
   NOT_FOUND: '요청한 운영 명령을 찾지 못했습니다.',
 }
@@ -453,6 +503,10 @@ const NOTICE_REFUSALS: Readonly<Record<string, string>> = {
 const INQUIRY_TARGET_INVALID =
   '문의를 찾지 못했습니다. 보존 기간이 지났거나 삭제된 문의일 수 있습니다. 문의 목록을 다시 조회해 주세요.'
 
+/** 삭제 재대기열의 `TARGET_INVALID` 문장(서버의 같은 command 문장과 같다). 대상이 삭제 요청 ID다. */
+const DELETION_TARGET_INVALID =
+  '삭제 요청을 찾지 못했습니다. 삭제 요청 ID를 확인하고 재시도 필요 목록을 다시 조회해 주세요.'
+
 /** 복구 공지의 `TARGET_INVALID` 문장(서버 `OperatorController.NOTICE_RECOVERY_TARGET_INVALID`와 같다). */
 const NOTICE_RECOVERY_TARGET_INVALID =
   '사건이 없거나 아직 효력 중인 제한이 있어 복구 공지를 낼 수 없습니다. 제한을 먼저 복구하고 사건 목록을 확인해 주세요.'
@@ -474,6 +528,9 @@ export function operatorRefusalMessage(
   }
   if (code === 'TARGET_INVALID' && command === UPDATE_INQUIRY_COMMAND) {
     return INQUIRY_TARGET_INVALID
+  }
+  if (code === 'TARGET_INVALID' && command === REQUEUE_DELETION_COMMAND) {
+    return DELETION_TARGET_INVALID
   }
   if (command === PUBLISH_NOTICE_COMMAND) {
     if (code === 'TARGET_INVALID' && noticeStatus === 'RECOVERED') {
@@ -516,6 +573,8 @@ const LEDGER_CODES: Readonly<Record<string, string>> = {
   INQUIRY_ANSWER_REQUIRED: '답변 없음',
   INQUIRY_ANSWER_INVALID: '답변 형식 오류',
   INQUIRY_SENSITIVE_CONTENT: '답변 민감값',
+  DELETION_NOT_RETRYABLE: '재시도 필요가 아닌 삭제 실행',
+  DELETION_REQUEUE_UNAVAILABLE: '삭제 재대기열 불가 환경',
 }
 
 export function ledgerCodeLabel(code: string): string {
@@ -584,6 +643,12 @@ export const operatorContent = {
     inquiryCompleted: (status: string): string =>
       `문의를 ${status}(으)로 기록했습니다. 사용자 화면의 문의 목록에 보입니다.`,
     inquiryCancelled: '문의 처리를 취소했습니다. 바뀐 것은 없습니다.',
+    deletionPreparing: '삭제 실행의 재대기열을 준비하고 있습니다.',
+    deletionPrepared: '삭제 재대기열 확인 대화상자를 열었습니다.',
+    deletionConfirming: '삭제 실행을 다시 대기열에 넣고 있습니다.',
+    deletionCompleted: (steps: number): string =>
+      `삭제 실행을 다시 대기열에 넣었습니다. 재시도 필요 단계 ${String(steps)}개와 아직 실행하지 않은 남은 단계를 Worker가 실행합니다.`,
+    deletionCancelled: '삭제 재대기열을 취소했습니다. 바뀐 것은 없습니다.',
   },
   audit: {
     id: 'operator-audit',
@@ -986,6 +1051,71 @@ export const operatorContent = {
     confirm: '문의 처리 기록',
     confirming: '문의 처리를 기록하고 있습니다.',
   },
+  /** 재시도 필요로 멈춘 계정 삭제 실행의 재대기열(Epic 5 회고 AI-1). 사용자 식별자는 어디에도 보이지 않는다 — 대상은 삭제 요청 ID다. */
+  deletion: {
+    id: 'operator-deletion',
+    /** 준비 버튼의 id. 대화상자가 호출점을 모를 때 포커스를 돌려줄 자리다. */
+    startId: 'operator-deletion-start',
+    heading: '재시도 필요 삭제 실행',
+    body: '계정 삭제 실행이 한 단계에서 멈춰 재시도 필요로 남은 요청입니다. 요청한 사용자가 진행 화면을 닫았거나 세션이 끝나면 스스로 다시 시도할 수 없습니다. 실패 원인을 확인한 뒤 그 실행을 다시 대기열에 넣으면 Worker가 재시도 필요 단계와 아직 실행하지 않은 남은 단계를 실행하고, 이미 끝난 단계는 다시 실행하지 않습니다. 최근 본인 확인과 확인 문구 재입력이 필요하고 모든 처리가 감사 원장에 남습니다.',
+    /** 이 환경(production, 게이트 G-5 전)에서는 계정 삭제를 실행하지 않는다. 목록도 동작도 없다. */
+    unavailable:
+      '이 환경에서는 계정 삭제를 실행하지 않습니다. 법정 분리 보존 정책 승인(게이트 G-5) 전이라 재시도 필요 목록과 재대기열을 열지 않습니다.',
+    empty: '재시도 필요로 멈춘 삭제 실행이 없습니다.',
+    /** 서버가 목록을 상한(200건)에서 잘랐다. 오래된 순 앞쪽만 보인다. */
+    truncated: '재시도 필요 실행이 많아 오래된 순으로 200건만 보입니다.',
+    failed: '재시도 필요 목록을 불러오지 못했습니다. 잠시 후 다시 조회해 주세요.',
+    reload: '재시도 필요 목록 다시 조회',
+    /** 행마다의 동작. 보이는 글자로 시작하고 요청 ID를 붙여 행끼리 가른다. */
+    choose: (requestId: string): string => `다시 대기열에 넣기: ${requestId}`,
+    columns: {
+      requestId: '삭제 요청 ID',
+      requestedAt: '요청 시각',
+      stoppedAt: '멈춘 시각',
+      failedSteps: '실패 단계',
+    },
+    unknownTime: '기록 없음',
+    noFailedSteps: '기록된 실패 단계 없음',
+    selected: '다시 대기열에 넣을 삭제 요청',
+    reasonLabel: '재대기열 사유(필수)',
+    reasonHelp: '500자 이내 한 줄. 감사 원장에 남습니다. 이메일 주소·금융 정보를 적지 않습니다.',
+    start: '재대기열 준비',
+    close: '재대기열 닫기',
+    reauthLabel: '본인 확인 필요',
+    result: {
+      id: 'operator-deletion-result',
+      heading: '재대기열 결과',
+      operation: 'operation ID',
+      status: '실행 상태',
+      queued: '대기열에 들어감',
+      requeuedAt: '재대기열 시각',
+      retrySteps: '재시도 필요 단계 수',
+    },
+    uncertainClosed:
+      '응답을 받지 못한 재대기열은 실행됐을 수 있습니다. 아래 operation 조회와 재시도 필요 목록으로 상태를 확인해 주세요.',
+    uncertain:
+      '응답을 받지 못해 실행 여부를 알 수 없습니다. 자동으로 다시 실행하지 않습니다. 같은 문구로 다시 실행하면 같은 요청으로 처리되며, 대화상자를 닫은 뒤 operation 조회로 상태를 확인할 수도 있습니다.',
+  },
+  deletionDialog: {
+    titleId: 'operator-deletion-title',
+    descriptionId: 'operator-deletion-description',
+    progressId: 'operator-deletion-progress',
+    inputId: 'operator-deletion-phrase',
+    title: '이 삭제 실행을 다시 대기열에 넣을까요?',
+    requestId: '삭제 요청 ID',
+    reason: '사유',
+    impactHeading: '재대기열 미리보기',
+    requestedAt: '요청 시각',
+    stoppedAt: '멈춘 시각',
+    failedSteps: '재시도 필요 단계',
+    effect:
+      '확정하면 이 삭제 실행이 바로 대기열에 들어가고 Worker가 재시도 필요 단계와 아직 실행하지 않은 남은 단계를 실행합니다. 지운 데이터는 되돌릴 수 없고 그 사실이 감사 원장에 남습니다.',
+    kept: '이미 끝난 단계는 다시 실행하지 않습니다. 감사 원장에는 삭제 요청 ID가 아니라 그 digest만 남습니다.',
+    phraseLabel: '확인 문구를 그대로 입력하세요',
+    cancel: '취소',
+    confirm: '재대기열 실행',
+    confirming: '삭제 실행을 다시 대기열에 넣고 있습니다.',
+  },
   operation: {
     id: 'operator-operation',
     heading: 'operation 조회',
@@ -1026,4 +1156,10 @@ export const operatorCopyStrings: readonly string[] = [
   operatorContent.inquiry.metrics.body,
   operatorContent.inquiryDialog.effect,
   operatorContent.inquiryDialog.kept,
+  operatorContent.deletion.body,
+  operatorContent.deletion.unavailable,
+  operatorContent.deletion.truncated,
+  operatorContent.deletion.reasonHelp,
+  operatorContent.deletionDialog.effect,
+  operatorContent.deletionDialog.kept,
 ]

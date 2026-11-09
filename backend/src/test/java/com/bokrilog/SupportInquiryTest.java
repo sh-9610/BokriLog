@@ -364,7 +364,7 @@ class SupportInquiryTest extends OperatorTestBase {
         assertThat(prepared.statusCode()).as(prepared.body()).isEqualTo(200);
         Map<String, Object> fields = topLevelFieldsOf(prepared.body());
         assertThat(fields).containsEntry("command", UPDATE).containsEntry("scope", "INQUIRY:IN_PROGRESS")
-                .containsEntry("target", reference).containsEntry("policyVersion", "OPERATOR-COMMAND-1.4")
+                .containsEntry("target", reference).containsEntry("policyVersion", "OPERATOR-COMMAND-1.5")
                 .containsEntry("confirmationPhrase", "문의 처리 중 " + reference);
         assertThat(mapOf(fields.get("impact"))).containsEntry("reference", reference)
                 .containsEntry("currentStatus", "RECEIVED").containsEntry("nextStatus", "IN_PROGRESS")
