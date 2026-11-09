@@ -539,6 +539,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-3-backup-destruction-tracking.md`
   summary: `PURGED` 기록이 끝내 생기지 않는 영향 generation(손으로 지운 generation, 복원 뒤 이미 저장소에서 사라진 generation)이 든 tombstone은 `OVERDUE`로 영구히 남고 critical 경보가 계속 운다 — 운영자가 저장소를 확인한 뒤 저장소별 파기를 표시하는 command나 runbook을 정한다.
   evidence: 2026-11-06 Story 5.3 2차 리뷰(blind-hunter). 만료 삭제는 `DESTROYED` 행만 지우므로(1차 리뷰 patch) 그런 행은 DB와 외부 사본에 남고, 판정은 V24 기록만 보며 저장소를 조회하지 않는다(SPEC Ask First). 해소 경로는 운영 command(3.1 표면) 또는 실저장소 게이트의 절차다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-plan-verification-final-sweep-race.md`
+  summary: `pg_sleep` 지연 trigger(`slowPageStores`) + 진행 대기 + `expireLease`의 시간 기반 순서로 "수집 중 lease 상실"을 만드는 백엔드 시험들이 남아 있다 — `PlanVerificationTest`의 `aReclaimedContinuationGoesOnFromItsCompleteWindows`·`theThirdInterruptionEndsTheAttemptAsInterrupted`·`aVerificationReclaimedWhileCollectingPublishesTheNextVersion`, `BybitConnectionRevocationTest`·`BybitReconnectionTest`·`PlanEndTest`의 `slowPageStores` 사용 시험. 만료 전에 holder가 그 단계를 벗어나면 같은 모양으로 간헐 실패할 수 있으니, 같은 잠금 문 방식(`FinalSweepDoor`)으로 옮길지 정한다.
+  evidence: 2026-11-06 fix 1차·2차 리뷰(blind-hunter). 이 fix는 SPEC Never로 다른 시험을 바꾸지 않았다. `aContinuationReclaimedInItsFinalSweepPublishesOnceAtItsTcFinal`이 바로 이 구조로 CI(run 42197758258 2차 시도)에서 실패했다. `PlanEndTest`는 159(전체 빌드에서만 나는 계획 종단 시험 간헐 실패, 원인 미확정)의 대상이라 이 구조가 159의 원인 후보인지 함께 본다.
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-4-deletion-completion-verification.md`
   summary: 전체 삭제 완료 판정자의 sweep(`awaitingDeletionCompletion`·`destroyedAmong`)이 운영 완료 실행 전부를 상한 없이 읽고 `IN (:list)`로 넘기며, `DESTROYED` tombstone이 판정 전에 만료 삭제되면 그 실행은 `OPERATIONAL_DATA_ERASED`에 영구히 남는다 — 묶음 상한과 고착 실행의 메트릭·경보를 정한다.
   evidence: 2026-11-06 Story 5.4 1차 리뷰(blind-hunter·edge-case-hunter). 파기가 끝나지 않는 generation(176)이나 법정 보존 항목이 있는 동안 목록이 커지고 바인드 수 상한에 닿을 수 있다. 판정자가 보존 기한(운영 완료 + 35일) 넘게 멈추면 근거 행이 사라진다. 삭제 실행 메트릭·경보(172)와 같은 주인이다.

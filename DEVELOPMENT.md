@@ -112,6 +112,8 @@ Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패
 
 `stress-test.sh`는 부하에서만 드러나는 Vitest 결함을 로컬에서 재현한다. CI 러너는 로컬 8코어보다 붐비고, effect 시점 결함은 React Scheduler가 프레임을 넘겨 양보할 때만 붉게 나온다 — `_bmad-output/implementation-artifacts/spec-frontend-effect-timing.md`의 기준선은 `yes` 16개 아래 전체 Vitest 12회 중 2회 실패였고 부하 없이는 거의 재현되지 않았다. 스크립트는 Node major를 `frontend/.nvmrc`와 대조한 뒤에만 돌고(Node 25의 실패를 부하 탓으로 읽지 않게), 머리에 커밋과 미커밋 변경 여부를 적고, 실패한 회차의 시험 이름을 모아 보이고 그 로그를 남긴다. 정상 종료·실패·Ctrl-C·TERM·HUP에서는 도는 중인 Vitest와 부하 프로세스를 끝내고 바로 나온다. SIGKILL은 트랩을 거치지 않아 부하가 남으므로 그때는 `pkill -x yes`로 지운다. 횟수는 기준선의 실패율에 맞춘다 — 기본 12회는 최소이고, 12회 중 1~2회 실패하던 결함이라면 깨끗한 12회만으로는 약한 근거다. 더 돌리거나 아래 `시험의 대기`의 첫 관측 가드처럼 결정적으로 잡는 시험과 함께 쓴다. CI에는 넣지 않았다 — 넣는다면 판정은 `.github/scripts`가 소유하고 `test-ci-scripts.sh`를 함께 고친다.
 
+- **백엔드 lease 경합 시험은 시간이 아니라 잠금으로 순서를 고정한다.** 작업이 특정 단계에 머무는 동안 lease를 잃게 하려면 `pg_sleep` trigger로 늦추고 그 사이에 만료를 거는 대신, 시험이 두 정수 advisory 키(운영 코드는 bigint 하나만 쓴다)를 쥐고 그 단계의 INSERT trigger가 그 키를 기다리게 한다 — holder가 막힌 것을 `pg_locks`의 그 키 미승인 대기로 확인한 뒤 문을 연다. 만료가 필요하면 trigger가 holder 자신의 트랜잭션 안에서 건다(다른 세션의 만료는 행 잠금 대기 순서에 기대게 되어 결정적이지 않다). 예: `PlanVerificationTest`의 `FinalSweepDoor`(`spec-plan-verification-final-sweep-race.md`).
+
 ### 구조와 규칙
 
 | 경로 | 역할 |
