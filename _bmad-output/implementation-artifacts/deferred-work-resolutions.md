@@ -19,8 +19,15 @@ decision_baseline: 'ERD-1.0.0'
 |---|---|
 | 해소 | 35 |
 | 부분 해소 | 25 |
-| 미해소 | 116 |
+| 미해소 | 117 |
 | 미판정 | 0 |
+
+**2026-11-06 갱신(마지막 점검 재획득 시험 경합 fix).** `spec-plan-verification-final-sweep-race.md`의 판정이다. 이 fix는 sprint-status 스토리가 아니어서 done 전환 PR이 없으므로 이 PR 자체가 판정한다.
+
+- **append한 항목.** 하나이고 미해소다.
+  - **177** — `pg_sleep` 지연 + 진행 대기 + `expireLease`의 시간 기반 순서로 lease 상실을 만드는 시험들. 1·2차 리뷰가 append했다.
+  - 리뷰 분류: 1차는 bad_spec 1(문을 연 뒤 만료가 행 잠금 대기 순서에 기댄다 — trigger 안 만료로 다시 구현) · defer 2 · reject 2, 2차는 patch 6 · defer 0 · reject 4였다. 1차가 append한 defer 하나(첫 holder `tc` 미대조)는 커밋 전에 2차 patch가 닫아 원장에 남기지 않았다.
+- **해소한 항목·결정 지점으로 지목된 항목.** 없다. 같은 계열의 159(계획 종단 시험 간헐 실패)는 177이 원인 후보로 연결했고 판정은 바꾸지 않았다.
 
 **2026-11-06 갱신(Story 5.3 외부 tombstone·백업 파기 추적 done 전환).** `spec-5-3-backup-destruction-tracking.md`(PR #143, 머지 커밋 `d578cc4`)의 판정이다.
 
@@ -1666,3 +1673,12 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **없는 것.** 운영자가 저장소를 확인한 뒤 저장소별 파기를 표시하는 command나 runbook.
 
 **미해소 잔여:** 운영 command(3.1 표면) 또는 실저장소 게이트의 절차. 주인 없음.
+
+### 177. 시간 기반 순서로 lease 상실을 만드는 백엔드 시험들
+
+**미해소(2026-11-06, 마지막 점검 재획득 시험 경합 fix 판정, 기준 `5e4e61d`).** 이 fix의 1·2차 리뷰(blind-hunter)가 append했다.
+- **지금 값.** `PlanVerificationTest`의 수집 중 재획득 시험 셋과 `BybitConnectionRevocationTest`·`BybitReconnectionTest`·`PlanEndTest`의 `slowPageStores` 사용 시험이 `pg_sleep` trigger로 늦춘 사이에 `expireLease`를 건다.
+- **위험.** 만료 전에 holder가 그 단계를 벗어나면 같은 모양으로 간헐 실패한다 — `aContinuationReclaimedInItsFinalSweepPublishesOnceAtItsTcFinal`이 바로 이 구조로 CI(run 42197758258 2차 시도)에서 실패했다. 지금까지 이 시험들의 CI 실패 기록은 없다.
+- **연결.** `PlanEndTest`는 159의 대상이라 이 구조가 159의 원인 후보다.
+
+**미해소 잔여:** 같은 잠금 문 방식(`FinalSweepDoor`, `DEVELOPMENT.md` `### 간헐 실패`)으로 옮길지. 주인 없음 — 그 시험이 실패하거나 159를 조사할 때가 결정 지점이다.
