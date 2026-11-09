@@ -2,7 +2,7 @@
 title: 'Deferred Work 해소 원장'
 status: living
 created: '2026-09-02'
-updated: '2026-11-06'
+updated: '2026-11-09'
 applies_to: '_bmad-output/implementation-artifacts/deferred-work.md'
 decision_baseline: 'ERD-1.0.0'
 ---
@@ -17,10 +17,28 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 35 |
+| 해소 | 37 |
 | 부분 해소 | 25 |
 | 미해소 | 117 |
 | 미판정 | 0 |
+
+**2026-11-09 갱신(Story 5.4 삭제 완료 검증·안내 done 전환).** `spec-5-4-deletion-completion-verification.md`(PR #145, 머지 커밋 `f259096`)의 판정이다. 이 스토리로 Epic 5의 네 스토리가 모두 닫혔다.
+
+- **append한 항목.** 둘이고, 둘 다 1차 리뷰가 append했으며 미해소다.
+  - **178** — 전체 삭제 완료 판정자의 sweep 상한과 고착 실행의 관측.
+  - **179** — 복원 리허설의 삭제 표본 seed가 plan·sync 계산 표를 넣지 않는다.
+  - 리뷰 분류: 1차는 patch 21(P1~P11·T1~T6·D1~D4) · defer 2, 2차는 patch 17(Q1~Q17) · defer 0이었다. 두 번 다 intent_gap·bad_spec은 0이었고, reject 수는 SPEC에 남지 않았다.
+- **해소한 항목.** 둘이다. 둘 다 SPEC Intent가 사용자 결정으로 이 스토리에서 닫기로 정했다. 판정은 아래 각 절에 적었다.
+  - **162** — 삭제 커밋 뒤 운영자 거절·실패 행의 `actor_user_id`.
+  - **170** — 삭제 진행 화면의 지원 경로.
+- **결정 지점으로 지목된 항목.** **27**(`identity`의 `spring_session` 결합)은 SPEC Code Map이 다시 판정하라고 지목했다. 미해소이고, 완료 세션 처리로 결합이 넓어졌다.
+- **확인만 한 항목.**
+  - **171**(첫 claim 전·첫 내보내기 전 창, 주인 G-5)·**174~176**(백업 파기 판정 근거)은 5.4가 지나갔고 그대로다.
+  - **139**(tombstone 키 회전)·**110**(감사 digest 키 회전)은 미해소 그대로다. 5.4의 재가입 차단 digest가 감사 digest 키에 묶여, 그 키를 회전하면 차단 기록이 대조되지 않는다(SPEC Design Notes). 회전 절차의 주인이 다뤄야 할 기록이 하나 늘었다.
+  - **173**(삭제 기록의 보존 기한)은 부분 해소 그대로다. 새 V33 차단 기록의 보존도 같은 G-5 지점에 얹혔다(아래 절).
+  - 열린 회고 액션 `epic-2-retro-item-24`(erase 완전성)·`epic-3-retro-item-33`·`item-34`(운영·격리 복원 증거)는 일부만 다뤘고 열려 있다. 5.4는 복원 보고에 모듈별 잔여를 싣고, 실환경 격리 시험의 기록 자리를 상태 `미수행`으로 두었다.
+
+그래서 앞 표(177건)에서 미해소 +2 −2·해소 +2다. 합은 179다.
 
 **2026-11-06 갱신(마지막 점검 재획득 시험 경합 fix).** `spec-plan-verification-final-sweep-race.md`의 판정이다. 이 fix는 sprint-status 스토리가 아니어서 done 전환 PR이 없으므로 이 PR 자체가 판정한다.
 
@@ -451,6 +469,13 @@ X-Frame-Options: DENY
 - **안전망.** 정상 실행 시험(`AccountErasureRunTest`)이 진짜 로그인 세션을 만든 뒤 삭제 완료 뒤의 401을 단정한다. 규약이 갈라지면 이 시험이 깨진다.
 
 **미해소 잔여:** 세 선택지 가운데 무엇을 택할지. 남은 Epic 5 스토리(5.3 tombstone·백업 파기, 5.4 복원 통합 검증)는 세션 저장 경로를 바꾸지 않는다. 그래서 지명된 결정 지점이 없어 주인이 없다(`## 갱신 규칙` (나) 부류).
+
+**미해소(2026-11-09, Story 5.4 판정, 기준 `f259096`) — 결합이 넓어졌다.** 5.4 SPEC Code Map이 "완료 세션 처리로 결합이 늘 수 있어 다시 판정한다"고 지목했고, 실제로 늘었다.
+- **새로 생긴 raw SQL.** 완료 세션 전환과 정리가 `identity` 안에서 `spring_session`·`spring_session_attributes`를 직접 다룬다. 요청 세션 찾기(`IdentityAccountRepository.java:218`), 속성 삭제(`:239`), 주체 이름 비우기(`:244`), 되살아난 주체 정리 조회(`:265-269`), 완료 연결 조회(`:298`·`:321`)다. 완료 연결 표 `identity_deletion_completion_session`은 `spring_session` 행 키에 cascade FK로 묶였다(V33).
+- **규약을 읽는 자리.** `principal_name == user_id` 규약을 읽는 raw SQL이 늘었다(`:218`·`:341`·`:500`·`:615`). 남기는 속성 이름은 Spring 저장소 클래스 이름에서 만들어 사본 리터럴은 없다(`KEPT_SESSION_ATTRIBUTES`).
+- **안전망.** `DeletionCompletionTest`가 진짜 로그인 세션으로 완료 전환·정리·다른 사용자 세션 보존·인가 요청 보존을 단정한다. 규약이 갈라지면 이 시험이 깨진다.
+
+**미해소 잔여:** 세 선택지 가운데 무엇을 택할지. 결합 면적이 커져 셋째 선택지(세션 소유를 루트로 이전)의 비용이 늘었다. Epic 5가 닫혀 지명된 결정 지점이 없고 주인이 없다(`## 갱신 규칙` (나) 부류).
 
 ### 28. `OnboardingScreen`·`SignedInScreen`을 세션 게이트 셸 하나로 합칠지
 
@@ -1477,6 +1502,10 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소 잔여:** 위와 같다. 삭제 완료 뒤 잔여를 통합 검증하는 Story 5.4가 결정 지점이다.
 
+**해소(2026-11-09, Story 5.4 판정, 기준 `f259096`).** 5.4 SPEC Intent가 사용자 결정으로 "쓸 때 계정 상태를 본다"를 골랐다(3.10의 늦은 강한 신호와 같은 규칙).
+- **고친 자리.** 운영자 감사 행의 append 하나(`OperatorEnvelopeService.java:598`)가 원장 append 잠금 뒤 `accountUsable`로 수행자 계정을 본다. 삭제가 시작됐으면 `actor_user_id` 없이 `actor_erased_at`을 채워 쓴다. 거절·실패 행과 요청 행이 모두 이 경로를 지난다(2차 리뷰가 선택 인자를 없애 예외 경로를 남기지 않았다).
+- **검사.** `DeletionCompletionTest`의 `삭제가_시작된_수행자의_요청_행도_귀속_없이_쓰인다`(`:435`)·`삭제가_시작된_수행자의_거절_행은_귀속_없이_쓰인다`(`:556`)가 PR #145 CI(run 42550320435)에서 통과했다.
+
 ### 163. `backend-quality` 시험의 JVM 병렬화(`maxParallelForks`)
 
 **미해소(2026-11-03, CI backend jar 생성 job chore 판정, 기준 `6b16acb`).** 2026-11-03 CI 시간 분석이 append했다(source_spec 없음 — jar 생성 job 분리와 독립적으로 머지 가능해 단일 목표 규칙으로 뗐다).
@@ -1607,6 +1636,12 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **영향.** 재시도가 거듭 실패하는 사용자가 운영자에게 닿을 길은 여전히 없다.
 
 **미해소 잔여:** 위와 같다. 완료 안내와 사용자 안내를 정하는 Story 5.4가 결정 지점이다.
+
+**해소(2026-11-09, Story 5.4 판정, 기준 `f259096`).** 두 선택지 가운데 "무세션 연락처 안내" 쪽을 상태 전용 세션에 얹었다. 문의 접수의 거부(404)는 그대로 두고 쓰기 경로를 새로 열지 않았다.
+- **고친 자리.** 삭제 조회 응답이 요청이 있거나 완료 조회일 때 지원 연락처 `supportContact`를 싣는다. 값은 3.5 `BOKRILOG_SUPPORT_CONTACT`이고 비면 생략한다(`AccountDeletionController.java:186`). 진행·완료 화면이 그 값을 보여 준다(`DeletionProgressScreen.tsx:430`). 연락처 모양 판정은 `session/supportContact.ts` 하나로 세 화면이 함께 쓴다. 문의할 때 알려 줄 요청 ID도 함께 보인다.
+- **검사.** `DeletionCompletionTest.지원_연락처는_요청이_있을_때만_진행_조회에_실린다`(`:424`)와 `DeletionProgressScreen.completion.test.tsx`의 진행 중 연락처 시험(`:306`)이 PR #145 CI에서 통과했다.
+- **남는 한계.** 연락처를 구성하지 않은 배포에서는 여전히 닿을 길이 없다. 그것은 배포 구성의 몫이고, 3.5 공지 발행도 같은 값이 비면 422로 막는다.
+
 ### 171. 실행 전 복원에서의 삭제 요청 내구성
 
 **미해소(2026-11-05, Story 5.1 판정, 기준 `822816b`).** Story 5.1의 2차 리뷰(blind-hunter)가 append했다.
@@ -1650,6 +1685,10 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **부분 해소 잔여:** 삭제된 계정의 생명주기 행·실행 기록의 최종 보존 기한. G-5 보존 검토(항목 56과 같은 지점)가 결정 지점이다.
 
+**부분 해소(2026-11-09, Story 5.4 판정, 기준 `f259096`) — 같은 지점에 기록이 하나 늘었다.** 5.4는 실행 기록에 전체 삭제 완료 상태·시각(`DELETION_COMPLETED`)을 더했다. 또 재가입 차단 기록 V33 `identity_deleted_identity`를 만들었다. 이 기록은 사용자 열이 없지만 `request_id`가 실행 행(`user_id`)을 거쳐 계정에 닿는다. SPEC Design Notes가 그 보존·해제를 G-5로 미뤘고 해제 경로는 SPEC Never다. 판정은 바꾸지 않는다.
+
+**부분 해소 잔여:** 위와 같고, G-5가 함께 볼 기록에 재가입 차단 digest가 더해졌다.
+
 ### 174. 결과 행 없이 끝난 백업 실행의 generation 판정 근거
 
 **미해소(2026-11-06, Story 5.3 판정, 기준 `d578cc4`).** Story 5.3의 1차 리뷰(edge-case-hunter)가 append했다.
@@ -1682,3 +1721,19 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **연결.** `PlanEndTest`는 159의 대상이라 이 구조가 159의 원인 후보다.
 
 **미해소 잔여:** 같은 잠금 문 방식(`FinalSweepDoor`, `DEVELOPMENT.md` `### 간헐 실패`)으로 옮길지. 주인 없음 — 그 시험이 실패하거나 159를 조사할 때가 결정 지점이다.
+
+### 178. 전체 삭제 완료 판정자의 sweep 상한과 고착 실행의 관측
+
+**미해소(2026-11-09, Story 5.4 판정, 기준 `f259096`).** Story 5.4의 1차 리뷰(blind-hunter·edge-case-hunter)가 append했다.
+- **지금 값.** `BackupDestructionJudge`가 판정마다 운영 완료 실행 전부(`awaitingDeletionCompletion`, `BackupDestructionJudge.java:173`)를 상한 없이 읽고 `destroyedAmong`(`:177`)에 `IN (:list)`로 넘긴다.
+- **위험.** 파기가 끝나지 않는 generation(176)이나 법정 보존 항목이 있는 동안 목록이 자라 바인드 수 상한에 닿을 수 있다. 판정자가 보존 기한(운영 완료 + 35일)보다 오래 멈추면 `DESTROYED` tombstone이 만료 삭제돼 그 실행은 `OPERATIONAL_DATA_ERASED`에 영구히 남는다. 그 고착을 알리는 메트릭·경보가 없다.
+
+**미해소 잔여:** sweep의 묶음 상한과 고착 실행의 gauge·경보. 삭제 실행 메트릭·경보(172)와 같은 주인이고, 지명된 스토리는 없다.
+
+### 179. 복원 리허설의 삭제 표본 seed가 plan·sync 계산 표를 넣지 않는다
+
+**미해소(2026-11-09, Story 5.4 판정, 기준 `f259096`).** Story 5.4의 1차 리뷰(blind-hunter)가 append했다.
+- **지금 값.** `rehearse-restore.sh`의 삭제 표본 seed(`:316` 이하)는 5.4가 source·자격정보·snapshot·sync 작업·plan 확인·문의·동의로 넓혔다. 하지만 plan의 계획 정의·종료·완료 행과 sync의 공식 계산 결과(`sync_plan_calculation` 계열)는 넣지 않는다.
+- **위험.** 잔여 세기는 카탈로그로 모듈 표 전부를 보지만, 행이 없던 표는 `residual_plan=0`·sync 잔여 0 단정이 그 표의 재삭제를 증명하지 못한다. 손으로 쓴 열 목록 SQL은 스키마 변경에 약해, 로컬 리허설 없이 넓히면 CI 위험이 크다.
+
+**미해소 잔여:** 실제 흐름(첫 스냅샷 → 발행)으로 표본을 만들지, seed를 그 표들로 넓힐지. `epic-2-retro-item-24`(erase 완전성)와 같은 지점이고, 지명된 스토리는 없다.
