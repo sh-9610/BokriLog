@@ -2,7 +2,6 @@ package com.bokrilog.identity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.bokrilog.PostgresTestcontainersConfig;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
@@ -16,8 +15,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -40,8 +37,6 @@ import org.springframework.transaction.support.TransactionTemplate;
  * ACTIVE로 돌아가지 않는다"를 매 회차에서 확인한다. 더해서 라운드 전체에서 허용과 거부가 <b>모두</b>
  * 관측됐음을 단정한다. 한쪽 갈래만 계속 도는 시험은 반대편을 검증한 적이 없기 때문이다.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
-@Import(PostgresTestcontainersConfig.class)
 /*
  * 연결 풀 크기를 시험 구성에 적어 둔다.
  *
@@ -52,7 +47,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * 늘리면 이 값도 함께 올린다.
  */
 @TestPropertySource(properties = "spring.datasource.hikari.maximum-pool-size=10")
-class AccountConcurrencyTest {
+class AccountConcurrencyTest extends IdentityKeyedTestBase {
 
     /** 경합을 여러 번 반복한다. 절반은 매핑 연결이, 절반은 삭제 전환이 먼저 줄을 선다. */
     private static final int ROUNDS = 12;

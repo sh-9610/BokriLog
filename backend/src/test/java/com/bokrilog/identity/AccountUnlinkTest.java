@@ -2,12 +2,9 @@ package com.bokrilog.identity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.bokrilog.PostgresTestcontainersConfig;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
@@ -25,9 +22,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * 삭제 완료·미존재 계정·받아들일 수 없는 값이 모두 같은 {@link AccessDecision#DENIED}이며, 호출자는
  * 그 값에서 대상 계정이 어떤 수단을 몇 개 갖고 있었는지 복원할 수 없다.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
-@Import(PostgresTestcontainersConfig.class)
-class AccountUnlinkTest {
+class AccountUnlinkTest extends IdentityKeyedTestBase {
 
     @Autowired private AccountLifecycleApi lifecycle;
 

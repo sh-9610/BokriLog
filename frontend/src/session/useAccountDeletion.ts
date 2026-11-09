@@ -26,6 +26,12 @@ const IN_PROGRESS = 'ACCOUNT_DELETION_IN_PROGRESS'
  */
 const IDEMPOTENCY_CONFLICT = 'IDEMPOTENCY_CONFLICT'
 
+/**
+ * 삭제가 이미 끝났다(Story 5.4) — 응답을 잃은 확정을 같은 키로 다시 보냈을 때 그 사이 삭제가 끝나 세션이 완료 확인 세션이 된 경우다. 진행
+ * 중 거절과 같이 문서를 다시 요청한다(세션 확인이 완료를 말하면 그 자리에서 완료 화면이 그려진다).
+ */
+const COMPLETED = 'ACCOUNT_DELETION_COMPLETED'
+
 /** 정책 조회의 표시 상태. 실패를 "정책 없음"으로 접지 않는다. */
 export type AccountDeletionView =
   | { readonly kind: 'checking' }
@@ -212,7 +218,11 @@ export function useAccountDeletion(
             replaceLocation(noticePath('expired'))
             return
           }
-          if (result.code === IN_PROGRESS || result.code === IDEMPOTENCY_CONFLICT) {
+          if (
+            result.code === IN_PROGRESS ||
+            result.code === IDEMPOTENCY_CONFLICT ||
+            result.code === COMPLETED
+          ) {
             replaceLocation(SETTINGS_PATH)
             return
           }

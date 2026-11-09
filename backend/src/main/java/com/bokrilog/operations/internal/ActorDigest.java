@@ -97,6 +97,14 @@ final class ActorDigest {
         return digest("backup:" + name);
     }
 
+    /**
+     * 삭제한 소셜 identity의 digest(Story 5.4 재가입 차단). 소문자 16진 64자. 다른 digest와 접두사가 달라 겹치지 않는다. issuer 길이를 앞에
+     * 붙여 {@code (issuer, subject)}의 경계가 모호하지 않다 — {@code ("a:b", "c")}와 {@code ("a", "b:c")}가 같은 값이 되지 않는다.
+     */
+    String ofDeletedIdentity(String issuer, String subject) {
+        return digest("deleted-identity:" + issuer.length() + ":" + issuer + ":" + subject);
+    }
+
     private String digest(String value) {
         try {
             Mac mac = Mac.getInstance(ALGORITHM);

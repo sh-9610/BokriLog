@@ -299,7 +299,8 @@ class AccountDeletionRequestService {
             return new Outcome.Refused(CONFIRMATION_MISMATCH);
         }
 
-        String sessionIdBefore = session.getId();
+        // 요청 세션의 ID — 이 command는 세션을 회전하지 않으므로 확정 전후 같은 값이다(커밋 뒤 다른 세션 폐기가 이 하나만 남긴다).
+        String requestSessionId = session.getId();
         AtomicReference<@Nullable DeletionRequest> created = new AtomicReference<>();
         Consumption consumption;
         try {
@@ -309,8 +310,11 @@ class AccountDeletionRequestService {
                             // 사용자가 입력한 값: 다섯 번째 귀속이 화면에서 실제로 입력된 문구다.
                             typed, idempotencyKey),
                     () -> {
+                        // 요청 세션을 함께 남긴다 — identity가 같은 트랜잭션에서 이 세션 ID의 행 키(`spring_session.primary_id`, 회전에도
+                        // 바뀌지 않는 내부 키)를 요청 행에 쓴다. 쿠키의 세션 ID(bearer)는 요청 행에 남지 않는다. 삭제가 끝나면 마지막
+                        // 단계가 그 세션을 완료 확인 전용 세션으로 바꾼다(Story 5.4).
                         var outcome = this.deletions.requestDeletion(userId, policyVersion,
-                                AccountDeletionPolicy.noticeHash(), keyDigest);
+                                AccountDeletionPolicy.noticeHash(), keyDigest, requestSessionId);
                         return switch (outcome) {
                             case DeletionRequestOutcome.Created made -> {
                                 created.set(made.request());
@@ -338,7 +342,7 @@ class AccountDeletionRequestService {
          * command는 그 이름과 달리 세션 ID를 일부러 회전하지 않는다 — 재인증 시각만 지운다(settleSessions).
          */
         if (consumption instanceof Consumption.ConsumedRequiringSessionRotation && request != null) {
-            settleSessions(session, userId, sessionIdBefore);
+            settleSessions(session, userId, requestSessionId);
             LOG.info("account deletion requested: state={}", STATE_IN_PROGRESS);
             return new Outcome.Done(request, true);
         }

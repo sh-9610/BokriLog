@@ -118,7 +118,8 @@ class AuthProviderIndependenceTest extends AuthFlowTestBase {
             // 세션 개설 판정이 곧 거부다. 이 스토리가 새 판정을 만들지 않았다는 것이 이 한 줄이다.
             assertThat(accountLifecycle().decideSessionCreation(userId))
                     .isEqualTo(AccessDecision.DENIED);
-            jdbc().sql("TRUNCATE TABLE spring_session, spring_session_attributes").update();
+            jdbc().sql("TRUNCATE TABLE spring_session, spring_session_attributes, identity_deletion_completion_session")
+                    .update();
 
             HttpResponse<String> retry = signIn(provider, subject);
 

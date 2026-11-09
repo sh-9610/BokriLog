@@ -1,6 +1,7 @@
 package com.bokrilog.identity;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -38,6 +39,10 @@ public interface AccountDeletionApi {
      * <p>{@link #beginDeletion(UUID)}를 거치지 않은 계정에는 아무것도 하지 않는다. 삭제는 전환을
      * 먼저 거쳐야 하며, 그래야 삭제가 시작된 순간부터 새 세션·쓰기가 막힌다.
      *
+     * <p>남은 인증 매핑을 지우기 전에 재가입 차단 digest를 남긴다({@link #eraseSocialLinks}와 같다). 삭제 요청의 요청 세션이 기록돼 있으면
+     * (Story 5.4) 그 세션 하나는 지우지 않고 완료 확인 전용 세션으로 바꾼다 — 사용자 ID·인증 문맥을 걷어내고 요청 ID로만 잇는다. 그 밖의
+     * 세션은 모두 지운다.
+     *
      * <p>멱등하다. payload가 이미 없는 계정에 다시 요청해도 실패가 아니다.
      *
      * <p>저장이 실패하면 이 호출은 예외로 끝난다. 트랜잭션이 통째로 롤백되어 상태는
@@ -53,6 +58,10 @@ public interface AccountDeletionApi {
      * 소셜 로그인 연결(인증 매핑)만 지운다 — 계정 삭제의 첫 단계({@link DeletionStep#CREDENTIALS}, Story 5.2). 생명주기 행을 잠근 뒤
      * {@code DELETION_IN_PROGRESS}·{@code DELETED} 계정에만 지운다. {@code ACTIVE}면 아무것도 하지 않는다(전환 없는 삭제를 하지 않는다).
      * 멱등이다. payload·세션·요청 행은 마지막 단계({@link #erasePayload})가 지운다.
+     *
+     * <p><b>지우기 전에 재가입 차단 digest를 같은 트랜잭션에 남긴다</b>(Story 5.4) — 연결마다 {@link DeletedIdentityDigests}의 digest 하나,
+     * 원 식별자는 남기지 않는다. 지울 연결이 있는데 이 프로세스에 키가 없으면 예외로 끝난다(아무것도 지우지 않는다 — 차단 기록 없는
+     * 삭제를 하지 않는다).
      *
      * @return 이번에 지운 행 수. 0도 정상이다
      */
@@ -160,9 +169,48 @@ public interface AccountDeletionApi {
      * @param policyVersion 사용자가 확인한 정책 버전
      * @param noticeHash 고지의 SHA-256(소문자 16진 64자)
      * @param idempotencyKeyDigest 멱등 키의 SHA-256(소문자 16진 64자)
+     * @param sessionId 요청을 확정한 세션의 ID(Story 5.4). 세션 ID(쿠키 값) 원문이 아니라 그 세션 행의 키(primary_id — 회전에도 그대로다)를
+     *     요청 행에 남기고, 마지막 단계가 그 세션을 완료 확인 전용 세션으로 바꾼다. {@code null}이거나 세션 행이 없으면 기록하지 않는다
+     */
+    DeletionRequestOutcome requestDeletion(@Nullable UUID userId, @Nullable String policyVersion,
+            @Nullable String noticeHash, @Nullable String idempotencyKeyDigest, @Nullable String sessionId);
+
+    /**
+     * 요청 세션을 기록하지 않는 요청 — {@link #requestDeletion(UUID, String, String, String, String)}에 세션 ID 없이 부른 것과 같다. 그
+     * 계정의 마지막 단계는 완료 확인 전용 세션을 남기지 않고 세션을 모두 지운다(Story 5.4 전의 동작). 기본 메서드로 두지 않는다 — 기본
+     * 메서드가 다섯 인자 판을 부르면 프록시를 지나지 않아 트랜잭션·생명주기 잠금 없이 판정하게 된다. 구현이 같은 트랜잭션 경계로 연다.
      */
     DeletionRequestOutcome requestDeletion(@Nullable UUID userId, @Nullable String policyVersion,
             @Nullable String noticeHash, @Nullable String idempotencyKeyDigest);
+
+    // ------------------------------------------------------------------ Story 5.4 완료 확인 전용 세션
+
+    /**
+     * 그 세션 ID가 완료 확인 전용 세션이면 그 삭제 요청 ID. 아니면 빈 값(세션 없음·일반 세션). 읽기만 한다. 요청 세션({@code requestDeletion}의
+     * {@code sessionId})은 마지막 단계({@link #erasePayload})에서 사용자 ID·인증 문맥 없이 요청 ID 하나만 잇는 이 세션이 된다 — 완료 조회와
+     * 로그아웃만 한다. HTTP로 노출되지 않는다(루트 인증 표면이 부른다).
+     */
+    Optional<String> completionRequestOfSession(@Nullable String sessionId);
+
+    /** 그 계정에 남은 인증 세션 수(복원 보고의 모듈별 잔여, Story 5.4). {@link #remainingRowsOf}에 이미 든 수다. */
+    long remainingSessionsOf(UUID userId);
+
+    /**
+     * 그 세션 ID들(회전 전·후)의 세션에서 완료 확인 연결을 지운다(Story 5.4). 완료 세션에서 다른 identity로 로그인하면 세션 ID 회전이 행 키를
+     * 보존하므로 연결이 새 인증 세션에 남는다 — 인증 성공이 이것을 부른다. 멱등이다.
+     *
+     * @return 지운 연결 수
+     */
+    int forgetCompletionOfSessions(Collection<String> sessionIds);
+
+    /**
+     * 완료 연결이 있는 세션 가운데 원래 사용자의 주체 이름이나 남기는 속성(CSRF 토큰·진행 중인 OAuth2 인가 요청) 밖의 속성이 다시 생긴
+     * 것을 비우고, 다른 사용자로 인증된 세션은 완료 연결만 지운다(Story 5.4). 삭제 커밋과 겹친 같은 세션의 요청이 그
+     * 뒤 저장하면 옛 주체 이름이 한 번 되살아날 수 있다 — 주기 판정자가 부른다. 멱등이고 잠긴 세션은 건너뛴다.
+     *
+     * @return 비운 세션 수
+     */
+    int scrubCompletionSessions();
 
     /**
      * 그 계정의 삭제 요청. 없거나 계정이 없으면 빈 값이다. 읽기만 한다 — 세션 확인 응답의 삭제 진행 표지와 요청 상태 조회, 그리고

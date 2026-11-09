@@ -180,7 +180,7 @@ class BackupDestructionJudgeTest extends PlanSyncTestBase {
     @Test
     void 내보내기_성공_시각이_gauge가_된다() {
         MeterRegistry registry = new SimpleMeterRegistry();
-        BackupDestructionJudge fresh = new BackupDestructionJudge(this.destruction, this.runs, registry, false);
+        BackupDestructionJudge fresh = new BackupDestructionJudge(this.destruction, this.runs, accountDeletion(), registry, false);
         fresh.measureNow();
         assertThat(registry.find(BackupDestructionJudge.EXPORT_LAST_SUCCESS).gauges())
                 .as("기록이 없으면 등록하지 않는다(NaN 없음)").isEmpty();

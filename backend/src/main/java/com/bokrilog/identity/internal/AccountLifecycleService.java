@@ -2,6 +2,8 @@ package com.bokrilog.identity.internal;
 
 import com.bokrilog.identity.AccessDecision;
 import com.bokrilog.identity.AccountLifecycleApi;
+import com.bokrilog.identity.AccountLifecycleApi.DeletedIdentityState;
+import com.bokrilog.identity.DeletedIdentityDigests;
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.Set;
@@ -38,8 +40,12 @@ class AccountLifecycleService implements AccountLifecycleApi {
 
     private final IdentityAccountRepository repository;
 
-    AccountLifecycleService(IdentityAccountRepository repository) {
+    /** 삭제한 identity의 digest(Story 5.4). 키는 루트가 가진다 — identity는 계산을 맡기기만 한다. */
+    private final DeletedIdentityDigests deletedIdentities;
+
+    AccountLifecycleService(IdentityAccountRepository repository, DeletedIdentityDigests deletedIdentities) {
         this.repository = repository;
+        this.deletedIdentities = deletedIdentities;
     }
 
     @Override
@@ -101,8 +107,55 @@ class AccountLifecycleService implements AccountLifecycleApi {
          * 끝나므로 이 지점의 무결성 위반은 계약이 깨졌다는 뜻이고(예: ACTIVE인데 payload 행이
          * 없어 외래키가 걸리는 경우), 그것은 조용히 거부로 접을 것이 아니라 드러나야 한다.
          */
-        int inserted = repository.insertSocialLinkIfActive(userId, provider, issuer, subject);
-        return inserted == 1 ? AccessDecision.ALLOWED : AccessDecision.DENIED;
+        /*
+         * Story 5.4: 삭제가 끝난 계정의 식별자면 같은 문장의 술어가 0행으로 만든다(재가입 차단). digest가 없는 프로세스(키 없는 역할)는
+         * 그 술어를 걸 수 없다 — 그런 역할은 로그인·연결을 하지 않고, API는 키 없이 뜨지 않는다.
+         */
+        String deletedDigest = this.deletedIdentities.digestOf(issuer, subject).orElse(null);
+        if (deletedDigest == null) {
+            // fail-closed: 차단 기록을 대조할 수 없으면 새 매핑을 만들지 않는다(가입·연결 모두 거부). 아직 아무것도 쓰지 않았다.
+            return AccessDecision.DENIED;
+        }
+        int inserted = repository.insertSocialLinkIfActive(userId, provider, issuer, subject, deletedDigest);
+        if (inserted != 1) {
+            return AccessDecision.DENIED;
+        }
+        /*
+         * 재확인(Story 5.4 2차 리뷰). INSERT의 `NOT EXISTS`는 그 문장의 스냅숏으로 본다 — 같은 식별자의 삭제 트랜잭션이 digest를 쓰고 옛
+         * 매핑을 지우는 중이면, 이 INSERT는 유일 색인에서 그 커밋을 기다린 뒤 성공하지만 술어는 커밋 전 스냅숏이라 digest를 보지 못한다.
+         * READ COMMITTED의 새 문장은 그 커밋을 보므로 여기서 다시 묻고, 기록이 있으면 방금 만든 매핑을 지우고 거부한다. 예외를 던지지 않는
+         * 것은 위 긴 주석과 같은 근거다(호출자 트랜잭션의 롤백 표시를 세우지 않는다) — 두 호출자는 거부를 받으면 자기 트랜잭션을 되돌리므로
+         * 지우기는 그 롤백과 같은 결과를 이 트랜잭션 안에서 먼저 만드는 방어다.
+         */
+        if (repository.deletedIdentityRecorded(deletedDigest)) {
+            repository.deleteSocialLink(userId, issuer, subject);
+            return AccessDecision.DENIED;
+        }
+        return AccessDecision.ALLOWED;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public DeletedIdentityState deletedIdentityStateOf(@Nullable String issuer, @Nullable String subject) {
+        if (!isAcceptable(issuer, MAX_IDENTIFIER_BYTES) || !isAcceptable(subject, MAX_IDENTIFIER_BYTES)) {
+            return DeletedIdentityState.NONE;
+        }
+        String digest = this.deletedIdentities.digestOf(issuer, subject).orElse(null);
+        if (digest == null) {
+            // 대조할 수 없다 — 새 매핑을 만들지 않는 쪽으로 닫는다(호출자는 계정을 만들지 않는다).
+            return DeletedIdentityState.UNVERIFIABLE;
+        }
+        return switch (repository.deletedIdentityRow(digest)) {
+            case NONE -> DeletedIdentityState.NONE;
+            case UNFINISHED -> DeletedIdentityState.DELETION_UNFINISHED;
+            case DELETED -> DeletedIdentityState.DELETED;
+        };
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean isDeletedIdentity(@Nullable String issuer, @Nullable String subject) {
+        return deletedIdentityStateOf(issuer, subject) == DeletedIdentityState.DELETED;
     }
 
     @Override

@@ -3,13 +3,10 @@ package com.bokrilog.identity;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.bokrilog.PostgresTestcontainersConfig;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -31,9 +28,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * 매핑으로 로그인하지 못한다. 지나치게 긴 값은 다른 방식으로 위험하다. 유일 인덱스의 btree 한계에
  * 걸리는 오류는 거부 값이 아니라 트랜잭션을 abort시키는 예외라, 위의 첫째 문제를 그대로 되살린다.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
-@Import(PostgresTestcontainersConfig.class)
-class AccountLinkDenialTest {
+class AccountLinkDenialTest extends IdentityKeyedTestBase {
 
     /** 스키마 CHECK와 `AccountLifecycleService`가 함께 정한 상한을 한 바이트 넘는 값. */
     private static final String TOO_LONG_IDENTIFIER = "x".repeat(513);

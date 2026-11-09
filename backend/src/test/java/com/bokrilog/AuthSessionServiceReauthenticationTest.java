@@ -173,6 +173,16 @@ class AuthSessionServiceReauthenticationTest {
         public Set<String> findLinkedProviders(@Nullable UUID userId) {
             throw new AssertionError("재인증은 연결된 제공자 목록을 보지 않는다.");
         }
+
+        @Override
+        public boolean isDeletedIdentity(@Nullable String issuer, @Nullable String subject) {
+            throw new AssertionError("재인증은 재가입 차단 기록을 보지 않는다.");
+        }
+
+        @Override
+        public DeletedIdentityState deletedIdentityStateOf(@Nullable String issuer, @Nullable String subject) {
+            throw new AssertionError("재인증은 재가입 차단 기록을 보지 않는다.");
+        }
     }
 
     /** 아무것도 하지 않는 트랜잭션 관리자. 이 경로는 트랜잭션을 열지 않는다. */

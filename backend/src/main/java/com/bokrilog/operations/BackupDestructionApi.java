@@ -2,9 +2,12 @@ package com.bokrilog.operations;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import org.jspecify.annotations.Nullable;
 
 /**
  * 삭제된 계정이 든 백업의 파기 판정(Story 5.3, {@code DELETION-TOMBSTONE-1.0}).
@@ -65,6 +68,28 @@ public interface BackupDestructionApi {
      * @param overdue 이번에 초과가 된 tombstone
      */
     record Judgement(int closed, int destroyed, int overdue) {}
+
+    /**
+     * 그 요청 ID들 가운데 백업 파기가 완료({@code DESTROYED})된 것(Story 5.4). 읽기만 한다. 루트 판정자가 identity의 전체 삭제 완료 후보와
+     * 맞춰 본다 — {@code DESTROYED} 행은 그 상태로 성공한 사본에 실린 뒤 보존 기한에 지워지므로 그 전에 판정이 잡는다.
+     */
+    Set<String> destroyedAmong(Collection<String> requestIds);
+
+    /**
+     * 그 요청의 백업 파기 상태(완료 조회, Story 5.4). 읽기만 한다. 사용자 식별자·digest를 돌려주지 않는다.
+     *
+     * @return tombstone이 없으면 빈 값
+     */
+    Optional<Destruction> destructionOf(String requestId);
+
+    /**
+     * 요청 하나의 백업 파기 상태.
+     *
+     * @param backupDeadline 백업 파기 기한(요청 + 30일)
+     * @param destroyedAt 백업 파기 완료를 판정한 시각. 완료가 아니면 {@code null}
+     */
+    record Destruction(Instant requestedAt, Instant backupDeadline, DeletionTombstoneApi.DestructionStatus status,
+            @Nullable Instant destroyedAt) {}
 
     /** gauge의 값을 읽는다(읽기 트랜잭션 하나). */
     Measurement measure();

@@ -7,8 +7,8 @@ import com.bokrilog.identity.AccountLifecycleApi;
 import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication.Type;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
@@ -22,7 +22,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * 세션을 개설해도 되는지는 {@link AccountLifecycleApi#decideSessionCreation(UUID)} 하나가 답한다.
  *
  * <p>거부는 하나의 값이다. 삭제가 시작된 계정, 삭제가 끝난 계정, 경합에서 두 번 진 흐름이 모두
- * 빈 {@link Optional}로 접힌다. 호출자는 이 값에서 계정의 존재 여부를 복원할 수 없다.
+ * 빈 {@link Optional}로 접힌다. 호출자는 이 값에서 계정의 존재 여부를 복원할 수 없다. 예외 하나는 삭제가 끝난 계정의 식별자 자체다
+ * (Story 5.4) — 계정을 만들지 않고, 호출자가 {@link #isDeletedIdentity}로 그 사실을 표지 {@code deleted}로 옮긴다.
  *
  * <p>트랜잭션을 {@link TransactionTemplate}로 다룬다. {@code @Transactional} 메서드를 같은 빈에서
  * 다시 부르면 프록시를 지나지 않아 새 트랜잭션이 열리지 않는다. 아래 재시도는 정확히 그 "새
@@ -133,6 +134,15 @@ class AuthSessionService {
     }
 
     /**
+     * 이 인증 매핑이 삭제가 <b>끝난</b>({@code DELETED}) 계정의 것이었는가(Story 5.4). 세션을 개설하지 못한 로그인의 표지를 고르는 데만 쓴다 —
+     * 참이면 그 로그인은 다른 실패와 갈라 {@code deleted}로 닫는다. 그 identity를 방금 검증한 본인에게만 보이는 구분이다. 삭제가 시작됐지만
+     * 끝나지 않은 계정은 거짓이다(표지는 {@code failed}).
+     */
+    boolean isDeletedIdentity(String issuer, String subject) {
+        return this.accountLifecycle.isDeletedIdentity(issuer, subject);
+    }
+
+    /**
      * 한 트랜잭션 안의 시도.
      *
      * @param contended 같은 인증 매핑을 다른 흐름이 먼저 가져갔다. 이 트랜잭션은 롤백되어
@@ -150,6 +160,16 @@ class AuthSessionService {
             return this.accountLifecycle.decideSessionCreation(userId) == AccessDecision.ALLOWED
                     ? new Attempt(new AuthSession(userId, false), false)
                     : new Attempt(null, false);
+        }
+
+        /*
+         * 삭제한 계정의 식별자(삭제가 끝났든 진행 중이든)이거나 차단 기록을 대조할 수 없으면 계정을 만들지 않는다(Story 5.4 재가입 차단,
+         * fail-closed). 아래 매핑 INSERT의 술어도 같은 기록을 보지만, 여기서 먼저 닫아 빈 계정을 만들었다 되돌리는 시도를 하지 않는다.
+         * 표지(`deleted`)는 호출자가 {@link #isDeletedIdentity}로 고른다 — 삭제가 끝난 계정일 때만이다.
+         */
+        if (this.accountLifecycle.deletedIdentityStateOf(issuer, subject)
+                != AccountLifecycleApi.DeletedIdentityState.NONE) {
+            return new Attempt(null, false);
         }
 
         // 미연결 식별자는 신규 가입으로만 처리한다. 이메일 일치로 기존 계정에 붙이는 경로가 없다.

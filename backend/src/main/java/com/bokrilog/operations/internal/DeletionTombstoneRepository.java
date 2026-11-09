@@ -10,6 +10,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
@@ -273,6 +274,32 @@ class DeletionTombstoneRepository {
                         nullableInstant(rs, "closed_at"), instant(rs, "backup_deadline"),
                         DestructionStatus.valueOf(rs.getString("status"))))
                 .optional();
+    }
+
+    /** 요청 ID로 읽은 tombstone의 파기 상태(완료 조회, Story 5.4). */
+    record DestructionRow(Instant requestedAt, Instant backupDeadline, DestructionStatus status,
+            @Nullable Instant destroyedAt) {}
+
+    /** 그 요청 ID의 tombstone의 파기 상태. 없으면 비어 있다. 읽기만 한다. */
+    Optional<DestructionRow> destructionOf(String requestId) {
+        return this.jdbc.sql("SELECT requested_at, " + BACKUP_DEADLINE + " AS backup_deadline, status, destroyed_at "
+                        + "FROM operations_deletion_tombstone WHERE request_id = :request")
+                .param("request", requestId)
+                .query((rs, row) -> new DestructionRow(instant(rs, "requested_at"), instant(rs, "backup_deadline"),
+                        DestructionStatus.valueOf(rs.getString("status")), nullableInstant(rs, "destroyed_at")))
+                .optional();
+    }
+
+    /** 그 요청 ID들 가운데 백업 파기가 완료(DESTROYED)된 것. 읽기만 한다. */
+    List<String> destroyedAmong(Collection<String> requestIds) {
+        if (requestIds.isEmpty()) {
+            return List.of();
+        }
+        return this.jdbc.sql("SELECT request_id FROM operations_deletion_tombstone WHERE status = 'DESTROYED' "
+                        + "AND request_id IN (:requests) ORDER BY request_id")
+                .param("requests", List.copyOf(requestIds))
+                .query(String.class)
+                .list();
     }
 
     /** 그 요청 ID의 행의 상태. 없으면 비어 있다. */

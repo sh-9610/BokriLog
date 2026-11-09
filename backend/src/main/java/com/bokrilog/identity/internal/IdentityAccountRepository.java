@@ -8,7 +8,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.security.oauth2.client.web.HttpSessionOAuth2AuthorizationRequestRepository;
+import org.springframework.security.web.csrf.HttpSessionCsrfTokenRepository;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -97,19 +100,249 @@ public class IdentityAccountRepository {
      * @return 1이면 매핑이 생겼고, 0이면 상태가 {@code ACTIVE}가 아니거나 이미 그 식별자가 있다.
      *     어느 쪽인지는 호출자에게 구분되지 않으며 그것이 거부 계약이다.
      */
-    public int insertSocialLinkIfActive(UUID userId, String provider, String issuer, String subject) {
+    public int insertSocialLinkIfActive(UUID userId, String provider, String issuer, String subject,
+            String deletedDigest) {
         return jdbc.sql(
                         "INSERT INTO identity_social_link (link_id, user_id, provider, issuer, subject) "
                                 + "SELECT :linkId, :userId, :provider, :issuer, :subject "
                                 + "FROM identity_account_lifecycle "
                                 + "WHERE user_id = :userId AND state = 'ACTIVE' "
+                                // Story 5.4: 삭제한 identity의 digest가 있으면 0행이다(로그인의 신규 가입·다른 계정의 연결 모두).
+                                + "AND NOT EXISTS (SELECT 1 FROM identity_deleted_identity WHERE identity_digest = :digest) "
                                 + "ON CONFLICT DO NOTHING")
                 .param("linkId", UUID.randomUUID())
                 .param("userId", userId)
                 .param("provider", provider)
                 .param("issuer", issuer)
                 .param("subject", subject)
+                .param("digest", deletedDigest)
                 .update();
+    }
+
+    // ------------------------------------------------------------------ Story 5.4 재가입 차단 digest
+
+    /** 그 계정의 소셜 identity 하나(SQL 결과). 삭제 직전에 digest를 남기는 데만 쓴다 — 밖으로 내보내지 않는다. */
+    public record SocialIdentity(String issuer, String subject) {}
+
+    /** 그 계정에 연결된 소셜 identity 전부. 호출자는 생명주기 행을 잠근 트랜잭션에서 부른다. */
+    public List<SocialIdentity> findSocialIdentitiesOf(UUID userId) {
+        return jdbc.sql("SELECT issuer, subject FROM identity_social_link WHERE user_id = :userId ORDER BY link_id")
+                .param("userId", userId)
+                .query((row, index) -> new SocialIdentity(row.getString("issuer"), row.getString("subject")))
+                .list();
+    }
+
+    /** 그 계정의 단계 모드 삭제 실행의 요청 ID. 실행이 없거나 요청 ID가 비었으면 빈 값. */
+    public Optional<String> findRunRequestId(UUID userId) {
+        return jdbc.sql("SELECT request_id FROM identity_deletion_run WHERE user_id = :userId AND request_id IS NOT NULL")
+                .param("userId", userId)
+                .query(String.class)
+                .optional();
+    }
+
+    /**
+     * 삭제한 identity의 digest를 남긴다. 이미 있으면 그대로다(멱등 — 한 identity는 한 계정의 것이다).
+     *
+     * @param requestId 그 매핑을 지우는 단계 모드 실행의 요청 ID. 단일 모드·실행 없는 삭제는 {@code null}
+     */
+    public void recordDeletedIdentity(String digest, @Nullable String requestId) {
+        jdbc.sql("INSERT INTO identity_deleted_identity (identity_digest, request_id) VALUES (:digest, :requestId) "
+                        + "ON CONFLICT DO NOTHING")
+                .param("digest", digest)
+                .param("requestId", requestId)
+                .update();
+    }
+
+    /** 재가입 차단 기록의 상태(SQL 결과). */
+    public enum DeletedIdentityRow {
+        /** 기록이 없다. */
+        NONE,
+        /** 기록은 있지만 그 실행의 계정이 아직 {@code DELETED}가 아니다(뒤 단계가 남았다). */
+        UNFINISHED,
+        /** 기록이 있고 그 계정의 삭제가 끝났다(실행 없는 단일 모드 기록 포함 — 한 트랜잭션이라 커밋되면 끝났다). */
+        DELETED
+    }
+
+    /**
+     * 그 digest의 재가입 차단 기록과 그 계정의 삭제가 끝났는가. 기록의 요청 ID에 해당하는 실행이 있고 그 계정이 아직 {@code DELETED}가 아닐
+     * 때만 {@link DeletedIdentityRow#UNFINISHED}다 — 요청 ID가 없거나(단일 모드 — 한 트랜잭션이라 커밋되면 끝났다) 그 실행 행이 없으면
+     * {@link DeletedIdentityRow#DELETED}다. 진행 중인 계정에는 언제나 실행 행이 있다: 요청 ID는 그 실행 행에서 읽어 기록하고(삭제 단계는 실행이
+     * 집은 뒤에만 돈다) 실행 행을 지우는 문장은 없다. 그래서 실행 행이 없다는 것은 보존 정리(deferred 173)나 다른 세대의 복원 뒤라는 뜻이고
+     * 그 계정은 끝난 삭제다.
+     */
+    public DeletedIdentityRow deletedIdentityRow(String digest) {
+        return jdbc.sql("SELECT CASE WHEN EXISTS (SELECT 1 FROM identity_deletion_run AS run "
+                        + "JOIN identity_account_lifecycle AS lifecycle ON lifecycle.user_id = run.user_id "
+                        + "WHERE run.request_id = record.request_id AND lifecycle.state <> 'DELETED') "
+                        + "THEN 'UNFINISHED' ELSE 'DELETED' END FROM identity_deleted_identity AS record "
+                        + "WHERE record.identity_digest = :digest")
+                .param("digest", digest)
+                .query(String.class)
+                .optional()
+                .map(DeletedIdentityRow::valueOf)
+                .orElse(DeletedIdentityRow.NONE);
+    }
+
+    /**
+     * 그 digest의 재가입 차단 기록이 <b>이 문장 시점에</b> 있는가(매핑 INSERT 뒤의 재확인). READ COMMITTED의 새 문장이라 앞선 INSERT의
+     * 스냅숏 뒤에 커밋된 기록도 본다.
+     */
+    public boolean deletedIdentityRecorded(String digest) {
+        Boolean exists = jdbc.sql("SELECT EXISTS (SELECT 1 FROM identity_deleted_identity WHERE identity_digest = :digest)")
+                .param("digest", digest)
+                .query(Boolean.class)
+                .single();
+        return Boolean.TRUE.equals(exists);
+    }
+
+    /** 방금 만든 매핑 하나를 지운다(재확인이 차단 기록을 본 경우 — {@code AccountLifecycleService.linkSocialIdentity}). */
+    public int deleteSocialLink(UUID userId, String issuer, String subject) {
+        return jdbc.sql("DELETE FROM identity_social_link WHERE user_id = :userId AND issuer = :issuer AND subject = :subject")
+                .param("userId", userId)
+                .param("issuer", issuer)
+                .param("subject", subject)
+                .update();
+    }
+
+    // ------------------------------------------------------------------ Story 5.4 완료 확인 전용 세션
+
+    /**
+     * 그 계정의 요청 세션을 완료 확인 전용 세션으로 바꾼다 — 행 키(primary_id)가 {@code sessionPrimaryId}이고 주체가 그 계정인 세션 하나다.
+     * {@code principal_name}을 비우고 남기는 속성({@link #KEPT_SESSION_ATTRIBUTES}) 말고 모든 속성(인증 문맥·흐름 무장·재인증 시각)을 지운
+     * 뒤 삭제 요청 ID로 잇는다. CSRF 토큰은 사용자를 가리키지 않고, 남겨야 화면이 들고 있는 토큰으로 로그아웃할 수 있다. 세션 행이
+     * 없으면(로그아웃·만료) 아무것도 하지 않는다.
+     *
+     * @return 바꾼 세션 수(0 또는 1)
+     */
+    public int convertToCompletionSession(UUID userId, String sessionPrimaryId, String requestId) {
+        String primaryId = jdbc.sql("SELECT primary_id FROM spring_session WHERE principal_name = :principal "
+                        + "AND primary_id = :primary FOR UPDATE")
+                .param("principal", userId.toString())
+                .param("primary", sessionPrimaryId)
+                .query(String.class)
+                .optional()
+                .orElse(null);
+        if (primaryId == null) {
+            return 0;
+        }
+        scrubSession(primaryId);
+        jdbc.sql("INSERT INTO identity_deletion_completion_session (session_primary_id, request_id) "
+                        + "VALUES (:primary, :requestId) ON CONFLICT (session_primary_id) DO NOTHING")
+                .param("primary", primaryId)
+                .param("requestId", requestId)
+                .update();
+        return 1;
+    }
+
+    /** 세션 하나의 주체 이름을 비우고 남기는 속성 말고 모든 속성을 지운다. */
+    private void scrubSession(String primaryId) {
+        jdbc.sql("DELETE FROM spring_session_attributes WHERE session_primary_id = :primary "
+                        + "AND attribute_name NOT IN (:kept)")
+                .param("primary", primaryId)
+                .param("kept", KEPT_SESSION_ATTRIBUTES)
+                .update();
+        jdbc.sql("UPDATE spring_session SET principal_name = NULL WHERE primary_id = :primary AND principal_name IS NOT NULL")
+                .param("primary", primaryId)
+                .update();
+    }
+
+    /**
+     * 완료 연결이 있는 세션의 정리 — 멱등이고 잠긴 세션은 건너뛴다.
+     *
+     * <ul>
+     *   <li><b>되살아남</b>: 주체 이름이 그 요청 실행의 원래 사용자 ID다(삭제 커밋과 겹친 같은 세션의 요청이 그 뒤 저장했다). 주체 이름을
+     *       비우고 남기는 속성 말고 모두 지운다.
+     *   <li><b>다른 사용자로 인증된 세션</b>: 주체 이름이 원래 사용자도 비어 있음도 아니다(완료 세션에서 다른 identity로 로그인했는데 인증
+     *       성공의 연결 정리가 실패했다). 인증 세션에는 완료 연결이 있으면 안 되므로 <b>그 연결 행만</b> 지운다 — 세션의 주체·속성은 그대로다.
+     *   <li>주체 이름이 비어 있는데 남기는 속성 밖의 속성이 있는 세션: 그 속성을 지운다(주체 없는 세션이라 사용자 판정이 필요 없다).
+     *   <li>주체 이름이 비어 있고 남기는 속성만 있는 세션(정상 완료 세션, 로그인 시작 중인 세션)은 건드리지 않는다.
+     * </ul>
+     *
+     * @return 정리한 세션 수(비운 것 + 연결을 지운 것)
+     */
+    public int scrubCompletionSessions() {
+        record Linked(String primaryId, @Nullable String principal, @Nullable String original) {}
+        List<Linked> linked = jdbc.sql("SELECT completion.session_primary_id, session.principal_name, "
+                        + "CAST(run.user_id AS text) AS original FROM identity_deletion_completion_session AS completion "
+                        + "JOIN spring_session AS session ON session.primary_id = completion.session_primary_id "
+                        + "LEFT JOIN identity_deletion_run AS run ON run.request_id = completion.request_id "
+                        + "WHERE session.principal_name IS NOT NULL OR EXISTS (SELECT 1 FROM spring_session_attributes AS attribute "
+                        + "WHERE attribute.session_primary_id = session.primary_id AND attribute.attribute_name NOT IN (:kept)) "
+                        + "ORDER BY completion.session_primary_id FOR UPDATE OF session SKIP LOCKED")
+                .param("kept", KEPT_SESSION_ATTRIBUTES)
+                .query((row, index) -> new Linked(row.getString(1), row.getString(2), row.getString(3)))
+                .list();
+        for (Linked session : linked) {
+            if (session.principal() == null || session.principal().equals(session.original())) {
+                scrubSession(session.primaryId());
+            } else {
+                jdbc.sql("DELETE FROM identity_deletion_completion_session WHERE session_primary_id = :primary")
+                        .param("primary", session.primaryId())
+                        .update();
+            }
+        }
+        return linked.size();
+    }
+
+    /**
+     * 그 세션 ID들(회전 전·후)의 세션에서 완료 연결을 지운다 — 완료 세션에서 다른 identity로 로그인하면 세션 ID 회전이 행 키를 보존하므로 그
+     * 연결이 새 인증 세션에 남는다.
+     *
+     * @return 지운 연결 수
+     */
+    public int forgetCompletionOfSessions(Collection<String> sessionIds) {
+        if (sessionIds.isEmpty()) {
+            return 0;
+        }
+        return jdbc.sql("DELETE FROM identity_deletion_completion_session WHERE session_primary_id IN "
+                        + "(SELECT primary_id FROM spring_session WHERE session_id IN (:sessionIds))")
+                .param("sessionIds", List.copyOf(sessionIds))
+                .update();
+    }
+
+    /**
+     * 완료 확인 전용 세션에서 남기는 속성 — 둘 다 사용자를 가리키지 않는다. 이름은 Spring Security 저장소가 쓰는 기본 이름이고 그
+     * 저장소들의 상수는 공개되지 않아 같은 식(클래스 이름 + 접미사)으로 만든다(사본 리터럴을 두지 않는다).
+     *
+     * <ul>
+     *   <li>CSRF 토큰({@code HttpSessionCsrfTokenRepository}) — 인증 표면이 그 저장소를 기본 이름으로 쓴다
+     *       ({@code AuthSecurityConfig.SessionBoundCsrfTokenRepository}). 남겨야 화면이 들고 있는 토큰으로 로그아웃할 수 있다
+     *       ({@code DeletionCompletionTest}가 그 왕복을 확인한다).
+     *   <li>OAuth2 인가 요청({@code HttpSessionOAuth2AuthorizationRequestRepository}) — 로그인 시작 중인 세션의 진행 흐름이다.
+     * </ul>
+     */
+    static final List<String> KEPT_SESSION_ATTRIBUTES = List.of(
+            HttpSessionCsrfTokenRepository.class.getName() + ".CSRF_TOKEN",
+            HttpSessionOAuth2AuthorizationRequestRepository.class.getName() + ".AUTHORIZATION_REQUEST");
+
+    /** 그 세션 ID가 완료 확인 전용 세션이면 그 삭제 요청 ID. 아니면 빈 값. */
+    public Optional<String> completionRequestOfSession(String sessionId) {
+        return jdbc.sql("SELECT completion.request_id FROM identity_deletion_completion_session AS completion "
+                        + "JOIN spring_session AS session ON session.primary_id = completion.session_primary_id "
+                        + "WHERE session.session_id = :sessionId")
+                .param("sessionId", sessionId)
+                .query(String.class)
+                .optional();
+    }
+
+    /** 그 계정의 삭제 요청의 요청 ID와 요청 세션의 행 키. 행 키는 Story 5.4 전 요청이거나 세션 행이 없었으면 비어 있다. */
+    public record RequestSession(String requestId, @Nullable String sessionPrimaryId) {}
+
+    /** 그 계정의 삭제 요청의 요청 세션. 요청이 없으면 빈 값. */
+    public Optional<RequestSession> findRequestSession(UUID userId) {
+        return jdbc.sql("SELECT request_id, session_primary_id FROM identity_deletion_request WHERE user_id = :userId")
+                .param("userId", userId)
+                .query((row, index) -> new RequestSession(row.getString("request_id"), row.getString("session_primary_id")))
+                .optional();
+    }
+
+    /** 그 계정의 인증 세션 수({@code principal_name}이 그 사용자 ID). */
+    public long countSessionsOf(UUID userId) {
+        Long count = jdbc.sql("SELECT count(*) FROM spring_session WHERE principal_name = :principalName")
+                .param("principalName", userId.toString())
+                .query(Long.class)
+                .single();
+        return count == null ? 0L : count;
     }
 
     /**
@@ -308,16 +541,20 @@ public class IdentityAccountRepository {
      * @return 만든 행
      */
     public StoredDeletionRequest insertDeletionRequest(String requestId, UUID userId, String policyVersion,
-            String noticeHash, String idempotencyKeyDigest) {
+            String noticeHash, String idempotencyKeyDigest, @Nullable String sessionId) {
+        // 요청 세션(Story 5.4)은 쿠키의 세션 ID가 아니라 그 세션 행의 키(primary_id)로 남긴다 — 회전에 강하고 bearer가 아니다. 세션 행이
+        // 없으면(저장 전) 비어 있다.
         return jdbc.sql("INSERT INTO identity_deletion_request "
-                        + "(request_id, user_id, policy_version, notice_hash, idempotency_key_digest) "
-                        + "VALUES (:requestId, :userId, :policyVersion, :noticeHash, :keyDigest) "
+                        + "(request_id, user_id, policy_version, notice_hash, idempotency_key_digest, session_primary_id) "
+                        + "VALUES (:requestId, :userId, :policyVersion, :noticeHash, :keyDigest, "
+                        + "(SELECT CAST(primary_id AS text) FROM spring_session WHERE session_id = CAST(:sessionId AS text))) "
                         + "RETURNING request_id, requested_at, policy_version, notice_hash, idempotency_key_digest")
                 .param("requestId", requestId)
                 .param("userId", userId)
                 .param("policyVersion", policyVersion)
                 .param("noticeHash", noticeHash)
                 .param("keyDigest", idempotencyKeyDigest)
+                .param("sessionId", sessionId)
                 .query((row, index) -> new StoredDeletionRequest(row.getString("request_id"),
                         row.getObject("requested_at", OffsetDateTime.class), row.getString("policy_version"),
                         row.getString("notice_hash"), row.getString("idempotency_key_digest")))
@@ -386,12 +623,12 @@ public class IdentityAccountRepository {
     // ------------------------------------------------------------------ Story 5.2 삭제 실행·단계 상태
 
     /** 실행 행 하나(SQL 결과). */
-    public record StoredRun(String status, @org.jspecify.annotations.Nullable OffsetDateTime operationalErasedAt,
-            long generation, @org.jspecify.annotations.Nullable String retryKeyDigest) {}
+    public record StoredRun(String status, @Nullable OffsetDateTime operationalErasedAt,
+            long generation, @Nullable String retryKeyDigest) {}
 
     /** 단계 행 하나(SQL 결과). */
-    public record StoredStep(String step, String status, @org.jspecify.annotations.Nullable Long erasedRows,
-            @org.jspecify.annotations.Nullable String failureCode, int attempts) {}
+    public record StoredStep(String step, String status, @Nullable Long erasedRows,
+            @Nullable String failureCode, int attempts) {}
 
     /** 집은 실행(SQL 결과). */
     public record ClaimedRun(UUID userId, long generation) {}
@@ -604,15 +841,16 @@ public class IdentityAccountRepository {
      * @return 마감한 실행 수(0 또는 1)
      */
     public int finishRunBySingleErasure(UUID userId) {
+        // 끝난 실행(운영 완료·전체 완료 — Story 5.4)은 건드리지 않는다. 완료는 되돌리지 않는다.
         jdbc.sql("UPDATE identity_deletion_step SET status = 'SUCCEEDED', erased_rows = 0, failure_code = NULL, "
                         + "finished_at = statement_timestamp() WHERE user_id = :userId AND status <> 'SUCCEEDED' "
                         + "AND EXISTS (SELECT 1 FROM identity_deletion_run AS run WHERE run.user_id = :userId "
-                        + "AND run.status <> 'OPERATIONAL_DATA_ERASED')")
+                        + "AND run.status NOT IN ('OPERATIONAL_DATA_ERASED', 'DELETION_COMPLETED'))")
                 .param("userId", userId)
                 .update();
         return jdbc.sql("UPDATE identity_deletion_run SET status = 'OPERATIONAL_DATA_ERASED', lease_until = NULL, "
                         + "operational_erased_at = statement_timestamp(), fencing_generation = fencing_generation + 1 "
-                        + "WHERE user_id = :userId AND status <> 'OPERATIONAL_DATA_ERASED'")
+                        + "WHERE user_id = :userId AND status NOT IN ('OPERATIONAL_DATA_ERASED', 'DELETION_COMPLETED')")
                 .param("userId", userId)
                 .update();
     }
@@ -636,13 +874,54 @@ public class IdentityAccountRepository {
             return completions;
         }
         jdbc.sql("SELECT request_id, operational_erased_at FROM identity_deletion_run "
-                        + "WHERE request_id IN (:requestIds) AND status = 'OPERATIONAL_DATA_ERASED'")
+                        + "WHERE request_id IN (:requestIds) AND status IN ('OPERATIONAL_DATA_ERASED', 'DELETION_COMPLETED')")
                 .param("requestIds", List.copyOf(requestIds))
                 .query((ResultSet row) -> {
                     completions.put(row.getString("request_id"),
                             row.getObject("operational_erased_at", OffsetDateTime.class));
                 });
         return completions;
+    }
+
+    // ------------------------------------------------------------------ Story 5.4 전체 삭제 완료
+
+    /** 운영 데이터 삭제가 끝났고 전체 삭제 완료가 아직 아닌 실행의 요청 ID(요청 ID가 있는 것만). */
+    public List<String> awaitingDeletionCompletion() {
+        return jdbc.sql("SELECT request_id FROM identity_deletion_run WHERE status = 'OPERATIONAL_DATA_ERASED' "
+                        + "AND request_id IS NOT NULL ORDER BY operational_erased_at, request_id")
+                .query(String.class)
+                .list();
+    }
+
+    /**
+     * 그 요청 ID들의 실행을 전체 삭제 완료로 바꾼다(문장 시각). 운영 데이터 삭제 완료인 실행만 바뀐다 — 이미 완료면 0행(멱등)이고 운영 완료
+     * 전 실행은 바뀌지 않는다(단조).
+     *
+     * @return 바꾼 실행 수
+     */
+    public int markDeletionCompleted(Collection<String> requestIds) {
+        if (requestIds.isEmpty()) {
+            return 0;
+        }
+        return jdbc.sql("UPDATE identity_deletion_run SET status = 'DELETION_COMPLETED', "
+                        + "deletion_completed_at = greatest(statement_timestamp(), operational_erased_at) "
+                        + "WHERE request_id IN (:requestIds) AND status = 'OPERATIONAL_DATA_ERASED'")
+                .param("requestIds", List.copyOf(requestIds))
+                .update();
+    }
+
+    /** 요청 ID로 읽은 끝난 실행(SQL 결과). */
+    public record StoredCompletion(OffsetDateTime operationalErasedAt,
+            @Nullable OffsetDateTime deletionCompletedAt) {}
+
+    /** 그 요청 ID의 실행이 운영 데이터 삭제를 끝냈으면 그 시각들. 아니면 빈 값. */
+    public Optional<StoredCompletion> findCompletion(String requestId) {
+        return jdbc.sql("SELECT operational_erased_at, deletion_completed_at FROM identity_deletion_run "
+                        + "WHERE request_id = :requestId AND status IN ('OPERATIONAL_DATA_ERASED', 'DELETION_COMPLETED')")
+                .param("requestId", requestId)
+                .query((row, index) -> new StoredCompletion(row.getObject("operational_erased_at", OffsetDateTime.class),
+                        row.getObject("deletion_completed_at", OffsetDateTime.class)))
+                .optional();
     }
 
     private static StoredRun storedRun(java.sql.ResultSet row, int index) throws java.sql.SQLException {

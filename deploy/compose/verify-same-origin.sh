@@ -2711,7 +2711,7 @@ assert_rows '세 로그아웃 뒤 세션 속성 행도 0개다' \
 printf '\n스텁 제공자 성공 왕복 정리\n'
 
 # 스택을 원래 상태로 되돌린다. 뒤 단계와 Playwright 회귀가 빈 저장소를 전제한다.
-psql_exec '왕복이 만든 세션을 지운다' 'TRUNCATE TABLE spring_session, spring_session_attributes'
+psql_exec '왕복이 만든 세션을 지운다' 'TRUNCATE TABLE spring_session, spring_session_attributes, identity_deletion_completion_session'
 # `action_grant`를 이름으로 적는다. `identity_account`를 참조하므로 CASCADE가 어차피 비우지만,
 # 이름이 없으면 그 정리가 외래키 설정에 딸린 부수 효과로만 성립한다(`AuthFlowTestBase`와 같은 규율).
 psql_exec '왕복이 만든 계정과 매핑을 지운다' \
@@ -2819,7 +2819,7 @@ assert_rows '원장 행에 subject·멱등 키가 없다' \
   "SELECT count(*) FROM operations_audit_event e WHERE row_to_json(e)::text LIKE '%${operator_subject}%' OR row_to_json(e)::text LIKE '%${operator_key}%'" \
   '0'
 
-psql_exec '운영자 왕복이 만든 세션을 지운다' 'TRUNCATE TABLE spring_session, spring_session_attributes'
+psql_exec '운영자 왕복이 만든 세션을 지운다' 'TRUNCATE TABLE spring_session, spring_session_attributes, identity_deletion_completion_session'
 psql_exec '운영자 왕복이 만든 계정·허가·감사 행을 지운다' \
   'TRUNCATE TABLE action_grant, identity_social_link, identity_account, identity_account_lifecycle, operations_audit_event CASCADE'
 assert_rows '되돌린 뒤 감사 행이 0개다' 'SELECT count(*) FROM operations_audit_event' '0'

@@ -5,6 +5,7 @@ import com.bokrilog.identity.AccountAccessApi;
 import com.bokrilog.identity.AccountAccessKind;
 import com.bokrilog.identity.AccountDeletionApi.DeletionRequest;
 import com.bokrilog.identity.AccountDeletionRunApi;
+import com.bokrilog.operations.BackupDestructionApi;
 import com.bokrilog.sync.IdempotencyKey;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.servlet.http.HttpServletRequest;
@@ -34,8 +35,10 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <ul>
  *   <li>{@code GET /api/account/deletion}: 200 {@code {available, policy, request}} — 삭제 정책(버전·대상 code·백업 파기 기한·법정 분리
- *       보존)과, 이미 요청했으면 그 요청(ID·시각·상태·정책 버전). production이면 {@code available:false}다. 삭제가 시작된 계정의 남은
- *       세션도 읽는다(READ).
+ *       보존)과, 이미 요청했으면 그 요청(ID·시각·상태·정책 버전)과 설정된 지원 연락처. production이면 {@code available:false}다. 삭제가
+ *       시작된 계정의 남은 세션도 읽는다(READ). 삭제가 끝난 뒤의 완료 확인 전용 세션(Story 5.4)은 {@code request} 대신
+ *       {@code completion}(운영 삭제 시각·백업 파기 기한·상태·전체 완료)을 받는다 — 인증 주체가 없는 그 세션이 닿는 경로는 이 조회와 확정
+ *       재전송의 거부(409 {@code ACCOUNT_DELETION_COMPLETED}) 둘뿐이다.
  *   <li>{@code POST /api/account/deletion}: 준비 — 본문 {@code {"policyVersion":<화면이 본 정책 버전>}}, 200 {@code {policyVersion, confirmation}}.
  *       허가를 발급하고 무장할 뿐 아무것도 바꾸지 않는다. 정책 버전이 지금과 다르면 409 {@code ACCOUNT_DELETION_POLICY_CHANGED}다.
  *   <li>{@code POST /api/account/deletion/confirm}: {@code {"policyVersion":…,"confirmation":<입력한 문구>}}과
@@ -75,8 +78,17 @@ class AccountDeletionController {
     /** 진행 상태: 한 단계가 실패해 멈췄다 — 다시 시도를 받는다. */
     static final String PROGRESS_RETRY_NEEDED = "RETRY_NEEDED";
 
-    /** 진행 상태: 운영 데이터 삭제 완료(백업 파기 완료가 아니다). 그 시점에 세션도 지워지므로 화면이 이 값을 받을 일은 드물다. */
+    /**
+     * 진행 상태: 운영 데이터 삭제 완료(백업 파기 완료가 아니다). 그 커밋에서 요청 세션은 완료 확인 전용 세션이 되므로(Story 5.4) 인증된
+     * 화면이 이 값을 받을 일은 드물다 — 완료 뒤의 사실은 완료 조회({@link CompletionView})가 싣는다.
+     */
     static final String PROGRESS_ERASED = "OPERATIONAL_DATA_ERASED";
+
+    /** 진행 상태: 전체 삭제 완료(Story 5.4 — 운영 삭제 + 백업 파기 + 법정 분리 보존 처리). 인증된 화면이 이 값을 받을 일은 없다. */
+    static final String PROGRESS_COMPLETED = "DELETION_COMPLETED";
+
+    /** 삭제가 이미 끝났다 — 완료 확인 전용 세션의 확정 재전송(Story 5.4). 아무것도 만들지 않는다. */
+    static final String COMPLETED = "ACCOUNT_DELETION_COMPLETED";
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AccountDeletionController.class);
 
@@ -118,6 +130,8 @@ class AccountDeletionController {
                     AccountDeletionRequestService.UNAVAILABLE, "지금은 계정 삭제를 요청할 수 없습니다.")),
             Map.entry(AccountDeletionRequestService.NOT_RETRYABLE, new Refusal(HttpStatus.CONFLICT,
                     AccountDeletionRequestService.NOT_RETRYABLE, "지금은 다시 시도할 삭제 단계가 없습니다. 진행 상태를 다시 확인해 주세요.")),
+            Map.entry(COMPLETED, new Refusal(HttpStatus.CONFLICT, COMPLETED,
+                    "계정 삭제가 이미 끝났습니다. 새로 요청할 것이 없습니다.")),
             Map.entry(IdempotencyKey.CONFLICT_CODE, new Refusal(HttpStatus.CONFLICT, IdempotencyKey.CONFLICT_CODE,
                     "같은 요청 키가 다른 삭제 요청에 이미 쓰였습니다. 화면을 새로 열어 상태를 확인해 주세요.")));
 
@@ -143,9 +157,33 @@ class AccountDeletionController {
     record RequestView(String requestId, String requestedAt, String state, String policyVersion,
             ProgressView progress) {}
 
-    /** 조회 응답. 요청이 없으면 {@code request}가 {@code null}로 실린다. */
+    /**
+     * 완료 조회(Story 5.4) — 완료 확인 전용 세션만 받는다. 사용자 식별자·금융 상세가 없다. 모든 값이 서버 값이다.
+     *
+     * @param requestId 삭제 요청 ID
+     * @param requestedAt 요청 시각(tombstone의 요청 시각). tombstone을 읽지 못했으면 {@code null}
+     * @param operationalErasedAt 운영 데이터 삭제 완료 시각
+     * @param backupDeadline 백업 사본 파기 기한(요청 + 30일). tombstone을 읽지 못했으면 {@code null}
+     * @param backupDestruction 백업 파기 상태 {@code PENDING}·{@code OVERDUE}·{@code DESTROYED}. tombstone을 읽지 못했으면 {@code null}
+     *     — 완료로 말하지 않는다
+     * @param backupDestroyedAt 백업 파기 완료 시각. 완료가 아니면 {@code null}
+     * @param deletionCompleted 전체 삭제 완료(운영 삭제 + 백업 파기 + 법정 분리 보존 처리)인가
+     * @param deletionCompletedAt 전체 삭제 완료 시각. 아니면 {@code null}
+     */
     @JsonInclude(JsonInclude.Include.ALWAYS)
-    record DeletionView(boolean available, PolicyView policy, @Nullable RequestView request) {}
+    record CompletionView(String requestId, @Nullable String requestedAt, String operationalErasedAt,
+            @Nullable String backupDeadline, @Nullable String backupDestruction, @Nullable String backupDestroyedAt,
+            boolean deletionCompleted, @Nullable String deletionCompletedAt) {}
+
+    /**
+     * 조회 응답. 요청이 없으면 {@code request}가 {@code null}로 실린다. 완료 확인 전용 세션이면 {@code request}는 {@code null}이고
+     * {@code completion}이 실린다(Story 5.4 — 그 밖에서는 나가지 않는다). 지원 연락처는 요청이 있거나 완료 조회일 때 설정돼 있으면 실린다
+     * (deferred 170 — 진행·완료 화면의 지원 경로).
+     */
+    @JsonInclude(JsonInclude.Include.ALWAYS)
+    record DeletionView(boolean available, PolicyView policy, @Nullable RequestView request,
+            @JsonInclude(JsonInclude.Include.NON_NULL) @Nullable CompletionView completion,
+            @JsonInclude(JsonInclude.Include.NON_NULL) @Nullable String supportContact) {}
 
     /** 준비 응답. 허가 참조는 없다. */
     record Challenge(String policyVersion, String confirmation) {}
@@ -165,9 +203,26 @@ class AccountDeletionController {
 
     private final BybitRevocationCommandService revocations;
 
+    /** 완료 확인 전용 세션의 판독(Story 5.4). */
+    private final DeletionCompletionSessions completions;
+
+    /** 완료 조회의 실행 상태(identity, Story 5.4). */
+    private final AccountDeletionRunApi runs;
+
+    /** 완료 조회의 백업 파기 상태(operations, Story 5.4). */
+    private final BackupDestructionApi destruction;
+
+    /** 진행·완료 화면의 지원 연락처(deferred 170). 비면 싣지 않는다. */
+    private final SupportContact supportContact;
+
     AccountDeletionController(AccountDeletionRequestService deletions, AccountAccessApi accounts,
             LinkService linkService, UnlinkService unlinkService, BybitConnectionService connections,
-            BybitRevocationCommandService revocations) {
+            BybitRevocationCommandService revocations, DeletionCompletionSessions completions,
+            AccountDeletionRunApi runs, BackupDestructionApi destruction, SupportContact supportContact) {
+        this.completions = completions;
+        this.runs = runs;
+        this.destruction = destruction;
+        this.supportContact = supportContact;
         this.deletions = deletions;
         this.accounts = accounts;
         this.linkService = linkService;
@@ -184,7 +239,11 @@ class AccountDeletionController {
     ResponseEntity<?> state(HttpServletRequest request) {
         long started = System.nanoTime();
         UUID userId = ControllerSupport.currentUserId();
-        if (userId == null || this.accounts.decide(userId, userId, AccountAccessKind.READ) != AccessDecision.ALLOWED) {
+        if (userId == null) {
+            // 인증 주체가 없다. 완료 확인 전용 세션(Story 5.4)만 인가 규칙을 지나 여기까지 온다 — 그 세션의 완료 조회다.
+            return completion(request, started);
+        }
+        if (this.accounts.decide(userId, userId, AccountAccessKind.READ) != AccessDecision.ALLOWED) {
             return answer("state", ControllerSupport.error(HttpStatus.NOT_FOUND, ApiErrorHandler.CODE_NOT_FOUND,
                     ApiErrorHandler.MESSAGE_NOT_FOUND, request), ApiErrorHandler.CODE_NOT_FOUND, started);
         }
@@ -196,9 +255,46 @@ class AccountDeletionController {
             return answer("state", internal(failure, request), "ERROR", started);
         }
         return answer("state", ControllerSupport.noStoreJson(HttpStatus.OK, new DeletionView(this.deletions.available(),
-                new PolicyView(AccountDeletionPolicy.VERSION, AccountDeletionPolicy.TARGETS,
-                        AccountDeletionPolicy.BACKUP_DESTROY_DAYS, AccountDeletionPolicy.LEGAL_RETENTION),
-                existing)), existing == null ? "NONE" : AccountDeletionRequestService.STATE_IN_PROGRESS, started);
+                policyView(), existing, null, existing == null ? null : this.supportContact.value())),
+                existing == null ? "NONE" : AccountDeletionRequestService.STATE_IN_PROGRESS, started);
+    }
+
+    private static PolicyView policyView() {
+        return new PolicyView(AccountDeletionPolicy.VERSION, AccountDeletionPolicy.TARGETS,
+                AccountDeletionPolicy.BACKUP_DESTROY_DAYS, AccountDeletionPolicy.LEGAL_RETENTION);
+    }
+
+    /**
+     * 완료 확인 전용 세션의 완료 조회(Story 5.4). 세션이 든 삭제 요청 ID로 identity의 실행(운영 완료·전체 완료)과 operations의 tombstone
+     * (백업 파기 기한·상태)을 읽는다 — 모두 서버 값이다. 완료 세션이 아니거나 그 요청의 끝난 실행이 없으면 없는 경로와 같은 404다. 기한
+     * 초과·파기 미완료를 완료로 말하지 않는다 — tombstone을 읽지 못하면 그 칸은 비어 있다.
+     */
+    private ResponseEntity<?> completion(HttpServletRequest request, long started) {
+        CompletionView view;
+        try {
+            String requestId = this.completions.requestIdOf(request).orElse(null);
+            AccountDeletionRunApi.CompletedDeletion finished =
+                    requestId == null ? null : this.runs.completedDeletionOf(requestId).orElse(null);
+            if (requestId == null || finished == null) {
+                return answer("completion", ControllerSupport.error(HttpStatus.NOT_FOUND, ApiErrorHandler.CODE_NOT_FOUND,
+                        ApiErrorHandler.MESSAGE_NOT_FOUND, request), ApiErrorHandler.CODE_NOT_FOUND, started);
+            }
+            BackupDestructionApi.Destruction backup = this.destruction.destructionOf(requestId).orElse(null);
+            java.time.Instant completedAt = finished.deletionCompletedAt();
+            view = new CompletionView(requestId,
+                    backup == null ? null : TIMESTAMP.format(backup.requestedAt()),
+                    TIMESTAMP.format(finished.operationalErasedAt()),
+                    backup == null ? null : TIMESTAMP.format(backup.backupDeadline()),
+                    backup == null ? null : backup.status().name(),
+                    backup == null || backup.destroyedAt() == null ? null : TIMESTAMP.format(backup.destroyedAt()),
+                    completedAt != null,
+                    completedAt == null ? null : TIMESTAMP.format(completedAt));
+        } catch (RuntimeException failure) {
+            return answer("completion", internal(failure, request), "ERROR", started);
+        }
+        return answer("completion", ControllerSupport.noStoreJson(HttpStatus.OK, new DeletionView(this.deletions.available(),
+                policyView(), null, view, this.supportContact.value())),
+                view.deletionCompleted() ? PROGRESS_COMPLETED : PROGRESS_ERASED, started);
     }
 
     /** 준비. 허가를 발급하고 무장할 뿐 아무것도 바꾸지 않는다. 본문은 화면이 본 정책 버전 하나다. */
@@ -259,6 +355,13 @@ class AccountDeletionController {
         }
         UUID userId = ControllerSupport.currentUserId();
         HttpSession session = request.getSession(false);
+        if (userId == null && this.completions.requestIdOf(request).isPresent()) {
+            /*
+             * 삭제가 끝난 뒤의 확정 재전송(Story 5.4) — 완료 확인 전용 세션만 인가 규칙을 지나 여기 온다. 계정·요청·세션 어느 것도 다시
+             * 만들지 않고 거부 code 하나로 답한다(응답 유실 뒤의 재전송이 "이미 끝났다"를 알게 한다).
+             */
+            return answer("confirm", refused(COMPLETED, request), COMPLETED, started);
+        }
         if (userId == null || session == null) {
             return answer("confirm", refused(AccountDeletionRequestService.NOT_PERMITTED, request),
                     AccountDeletionRequestService.NOT_PERMITTED, started);
@@ -414,6 +517,7 @@ class AccountDeletionController {
             case QUEUED, RUNNING -> PROGRESS_IN_PROGRESS;
             case RETRY_NEEDED -> PROGRESS_RETRY_NEEDED;
             case OPERATIONAL_DATA_ERASED -> PROGRESS_ERASED;
+            case DELETION_COMPLETED -> PROGRESS_COMPLETED;
         };
         // 실패 범위는 재시도 필요일 때만 싣는다 — 다시 시도를 받아 대기·실행 중이면 지난 실패는 지금의 사실이 아니다.
         return new ProgressView(status, run.status() == AccountDeletionRunApi.RunStatus.RETRY_NEEDED

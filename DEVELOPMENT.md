@@ -720,6 +720,42 @@ Worker(와 `all`)가 그 표를 60초마다 읽어 `bokrilog_backup_last_success
 
 RPO = `--failure-at` − generation 생성 시각. 생성 시각은 checksum 파일 둘째 줄의 dump 시작 시각(`dump_started_at=<epoch>`, `backup.sh`가 실제 시계로 적는다)이고, 그 줄이 없는 옛 generation은 generation 날짜의 00:00 UTC다(보수적). 저장소 object 시각은 쓰지 않는다 — dump보다 늦다. 24시간 이하면 통과, 넘으면 `RPO_EXCEEDED`이고 종료 1이다(복원은 끝났고 프로젝트는 남는다). `--rpo-only`는 저장소 목록과 checksum 파일만 보고 RPO만 잰다(내려받지 않는다). 장애 시각은 시간대가 붙은 실제 ISO-8601 시각이어야 한다(달의 길이·윤년·±14:00 안).
 
+### 삭제 완료와 재가입 차단(Story 5.4)
+
+- **재가입 차단.** 삭제 실행이 소셜 로그인 연결을 지우는 트랜잭션(`CREDENTIALS` 단계 — 단계 모드·단일 모드·복원 재삭제 모두, 마지막 단계에 남은 매핑도)이 지우기 전에 `(issuer, subject)`의 keyed digest를 identity 소유 V33 `identity_deleted_identity`(digest·단계 모드 실행의 요청 ID·기록 시각뿐, 사용자 열 없음)에 남긴다. digest는 감사 digest 키(`BOKRILOG_AUDIT_DIGEST_KEY`)의 HMAC-SHA256이고 입력은 `deleted-identity:<issuer 길이>:<issuer>:<subject>`다(접두사로 다른 digest와 겹치지 않고 issuer 길이로 경계가 모호하지 않다). identity는 키를 갖지 않고 루트 port(`DeletedIdentityDigestPort` → operations `DeletedIdentityDigestApi`)가 계산한다. tombstone 키가 아니다. 그 identity의 로그인은 계정·매핑·세션을 만들지 않는다 — 표지는 그 계정의 삭제가 **끝났으면**(`DELETED`) 진입 화면 `?auth=deleted`, 매핑을 지운 뒤 뒤 단계가 남은 진행 중 계정이면 그대로 `failed`다. 다른 계정의 연결(`/api/auth/link`)도 매핑 INSERT 술어가 거부한다(기존 연결 실패 표지). INSERT 술어는 그 문장의 스냅숏으로 보므로 같은 식별자의 삭제 커밋을 유일 색인에서 기다린 INSERT가 성공할 수 있다 — 매핑을 만든 직후 새 문장으로 차단 기록을 다시 보고, 있으면 그 매핑을 지우고 거부한다(예외 없이 — 호출자는 거부를 받으면 자기 트랜잭션을 되돌린다). 해제 경로는 없다 — 신규 가입 허용 여부는 G-5가 정한다.
+  - **요청 ID의 간접 연결.** 차단 기록의 `request_id`는 사용자 열이 아니지만 V31 실행 행(`identity_deletion_run.user_id`)을 거쳐 그 계정의 생명주기 행에 닿는다 — 차단 기록이 가리키는 사용자는 실행 행이 남아 있는 동안만 되짚을 수 있고, 그 보존 기한은 실행·단계 기록의 보존 기한(deferred 173, G-5)과 같은 주인이다. 실행 행이 없는 기록(요청 ID가 없는 단일 모드 기록 포함)은 끝난 삭제로 판정한다 — 진행 중인 계정에는 언제나 실행 행이 있다(요청 ID는 그 실행 행에서 읽어 기록하고 실행 행을 지우는 문장은 없다).
+  - **fail-closed.** digest를 만들 수 없는 프로세스(감사 digest 키가 없거나 읽을 수 없다 — API·Worker·삭제 표본·복원 적용은 그때 이미 기동을 거부한다)는 새 매핑(가입·연결)을 만들지 않고, 지울 매핑이 있는 삭제는 아무것도 지우지 않고 실패한다(단계 모드는 재시도 필요).
+  - **범위.** 차단 대상은 삭제 시점에 그 계정에 연결돼 있던 매핑뿐이다 — 그 전에 해제(unlink)한 로그인 수단은 그 계정의 매핑이 아니므로 차단되지 않는다.
+  - **키 회전 한계.** 차단 기록은 감사 digest 키에 묶인다 — 키를 바꾸면 기존 기록이 새 키의 digest와 대조되지 않아 차단이 풀린다. 키 회전 절차는 tombstone digest 키 회전과 같은 주인(deferred 139)이 함께 정한다(지금은 회전하지 않는다).
+- **완료 확인 전용 세션.** 확정은 요청 세션의 행 키(`spring_session.primary_id` — 쿠키의 세션 ID가 아니라 bearer가 아니고, 세션 ID 회전에도 그대로다)를 요청 행(V33 `session_primary_id`)에 남긴다. 마지막 단계(`IDENTITY`)는 그 세션을 지우지 않고 같은 커밋에서 `principal_name`을 비우고 CSRF 토큰과 진행 중인 OAuth2 인가 요청(둘 다 사용자를 가리키지 않는다 — 속성 이름은 Spring Security 저장소의 기본 이름과 같은 식으로 만든다) 말고 모든 속성(인증 문맥·흐름 무장)을 지운 뒤 `identity_deletion_completion_session`(세션 행 외래키, cascade)에 삭제 요청 ID 하나로 잇는다 — 그 뒤 어떤 세션 행도 그 사용자 ID를 담지 않는다(잔여 0). 그 세션이 이미 없으면(로그아웃·만료) 사실 한 줄(`REQUEST_SESSION_GONE`, 식별자 없음)만 남는다. 그 세션은 인증 주체가 없어 모든 보호 경로가 미인증과 같고, 여는 것은 세션 확인의 완료 표지(`deletionCompleted: true`와 로그아웃용 CSRF 토큰 — 일반 미인증 본문은 그대로), 완료 조회(`GET /api/account/deletion`의 `completion`), 확정 재전송의 거부(409 `ACCOUNT_DELETION_COMPLETED`)와 로그아웃뿐이다. 판독은 미인증 세션에서만 한다 — 완료 세션에서 다른 identity로 로그인하면 인증 성공이 완료 연결을 지우고(회전은 행 키를 보존한다), 새 인증 세션은 완료 표지·옛 완료 조회를 받지 않는다. 완료 세션에서 **삭제한 identity로** 다시 로그인하면 표지 `deleted`로 닫히고 그 실패 수렴이 세션을 폐기하므로 완료 세션도 함께 사라진다 — 세션 정책은 바꾸지 않는다(완료 안내는 그 세션의 수명 동안만이다). 수명은 그 세션 행의 수명(유휴 30분·처음 로그인 기준 절대 12시간)이다. 다른 세션·옛 쿠키는 일반 미인증이다. 삭제가 끝나는 커밋과 겹친 같은 세션의 요청이 저장되면 `principal_name`이 한 번 되살아날 수 있다(인증 문맥 속성은 이미 없다) — 판정 주기(`BackupDestructionJudge`, 기본 5분)의 정리가 다시 비운다. 정리는 주체 이름이 그 요청 실행의 원래 사용자 ID인 세션만 비우고, 완료 연결이 남은 채 **다른 사용자로** 인증된 세션(인증 성공의 연결 정리가 실패한 경우)은 주체·속성을 건드리지 않고 연결 행만 지운다. 판정 주기의 다른 일(전체 완료 기록)이 실패해도 정리는 돈다.
+- **완료 조회.** 운영 데이터 삭제 시각(V31 실행), 백업 사본 파기 기한(요청 + 30일)·상태(`PENDING`·`OVERDUE`·`DESTROYED`)·완료 시각(V32 tombstone), 전체 삭제 완료 여부·시각, 법정 분리 보존(정책 상수 — 지금 없음), 설정된 지원 연락처(`BOKRILOG_SUPPORT_CONTACT`, 비거나 이메일 모양이 아니면 싣지 않는다 — 요청이 있는 진행 중 조회에도 싣는다). 진행 화면이 그 자리에서 완료 화면이 되고 기한 초과를 숨기지 않는다.
+- **완료 화면의 한계.** 완료 확인 세션의 수명(유휴 30분·절대 12시간)은 백업 파기(요청부터 최대 30일)보다 훨씬 짧다 — 사용자는 대개 이 화면에서 전체 삭제 완료를 보지 못한다. 화면이 그 사실과 나중 확인 경로(지원 연락처)를 말하고, 삭제 확인서(영수증)는 없다 — 세션 없는 영수증 조회는 만들지 않는다.
+- **전체 삭제 완료.** Worker·`all`의 `BackupDestructionJudge`가 판정마다 identity의 운영 완료 실행 가운데 tombstone이 `DESTROYED`인 요청을 골라(복원으로 옮긴 것 포함 — 매번 맞춰 보는 sweep) 실행을 `DELETION_COMPLETED`(V33 `deletion_completed_at`)로 바꾼다. 법정 분리 보존 항목이 하나라도 있으면 그 처리 증거를 둘 곳이 아직 없으므로 기록하지 않는다. 단조이고 멱등이다. 운영 완료 시각은 그대로 남는다.
+- **복원 보고의 모듈별 잔여.** `restore-apply` 보고 줄은 `residual_rows=` 합과 함께 `residual_identity`(identity 모듈 잔여 `remainingRowsOf`에서 매핑·세션 칸을 뺀 것 — payload·요청)·`residual_sign_in`·`residual_sessions`·`residual_credentials`·`residual_source`(자격정보를 뺀 source)·`residual_portfolio`·`residual_sync`·`residual_plan`·`residual_operations`·`residual_engagement`·`residual_grants`를 싣고(칸마다 직접 세고, 뺄셈 칸이 음수면 그 절댓값을 위반으로 센다), 복원 리허설이 각 값을 0으로 단정한다(삭제 표본 seed가 그 모듈마다 행을 넣는다). 복원 재삭제는 재가입 차단 digest를 복원된 generation의 매핑에서 다시 만든다.
+- **삭제 뒤의 운영자 감사 행(deferred 162).** 운영 command의 감사 행은 모두 원장 추가 잠금 뒤 수행자 계정의 삭제 시작을 보고, 시작됐으면 `actor_user_id` 없이(`actor_erased_at`과 함께) 쓴다 — 거절·실패·취소 행과 커밋 뒤 별도 트랜잭션의 행(smoke 결과·요청 행)이 앞선 커밋과 별개로 쓰여 그 사이 삭제가 커밋됐을 수 있다. 강한 신호의 늦은 귀속 비식별과 같은 규칙이다.
+
+### 실환경 격리 삭제·복원 통합시험(Story 5.4 AC-5, NFR-18)
+
+**상태: 미수행.** 이 시험은 자동시험·CI 리허설(`restore-rehearsal` — 같은 호스트의 MinIO·가상 시계·리허설 key)과 **다른 상태**다. CI 리허설·백엔드 시험의 통과를 이 시험의 통과로 기록하지 않고, 이 시험 없이 출시 게이트(G-5 이후의 공개 베타)를 통과시키지 않는다. 수행은 G-5 승인 뒤 production과 분리된 실제 격리 환경(실제 OCI·OCI 밖 저장소, 실제 tombstone·backup key, 실제 manifest)에서 한다.
+
+**삭제 표본 계정은 전용 시험 계정으로만 만든다.** 실제 쓰는 소셜 계정을 삭제 표본으로 쓰면 그 identity가 그 환경에서 재가입 차단으로 영구히 막힌다(해제 경로가 없다). 훈련마다 새 전용 시험 identity를 쓰고, 그 환경을 지울 때 함께 버린다.
+
+절차(한 번의 훈련):
+
+1. 격리 환경에 운영과 같은 이미지·manifest로 스택을 세우고 표본 계정 둘(유지·삭제 — 둘 다 전용 시험 identity)을 실제 로그인·Bybit 시험 계정 연결·계획 발행·문의·광고 동의까지 채운다.
+2. 실제 `backup.sh`로 generation 하나를 두 저장소에 저장한다(삭제 전 generation).
+3. 삭제 표본으로 화면에서 계정 삭제를 요청하고 Worker가 끝까지 지운 것을 완료 화면(운영 삭제 시각·백업 파기 기한·상태)으로 확인한다. 같은 로그인 수단의 재로그인이 `?auth=deleted`로 닫히는지 본다.
+4. `tombstone-export.sh`가 사본을 올리고 성공으로 기록했는지 본다.
+5. 2의 generation을 `restore.sh`로 격리 프로젝트에 복원하고, 보고 줄의 `matched`·`erased`와 `residual_*` 열한 값이 모두 0인지, 삭제 표본이 `DELETED`이고 재가입 차단 digest가 있는지, 유지 계정이 그대로인지 본다.
+6. 복원된 DB에 완료 확인 세션이 남지 않았는지 본다 — 복원 적용이 세션을 모두 폐기하므로 `spring_session`과 `identity_deletion_completion_session`이 모두 0행이어야 한다.
+7. 복원된 API에서 삭제 표본의 같은 로그인 수단이 계정을 만들지 못하는지 본다(옛 세션 쿠키도 미인증).
+8. 30일 안에 실제 저장소에서 그 generation이 파기되고 판정이 `DESTROYED`·전체 삭제 완료를 기록하는지 본다(3.9·5.3 실저장소 증거와 함께).
+
+결과 기록(훈련마다 한 줄 — 비우지 않는다. 미수행인 동안 이 표가 비어 있는 것이 그 사실이다). 통과 판정은 사용자 본인이 한다:
+
+| 일시(UTC) | 환경·이미지 digest | manifest 버전 | 감사 digest 키 ID | generation | 수행자 | 결과(통과·실패와 code) | 통과 판정자 | 발견 결함·후속 |
+|---|---|---|---|---|---|---|---|---|
+
 ### 설치
 
 1. `install -d -o bokrilog -g bokrilog -m 700 /etc/bokrilog/tombstone /var/lib/bokrilog/tombstone /var/lib/bokrilog/restore`.

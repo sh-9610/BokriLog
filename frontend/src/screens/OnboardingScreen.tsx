@@ -52,7 +52,7 @@ const MAIN_ID = 'onboarding-main'
  * 대화상자는 본문을 감싼 `inert` 래퍼의 형제로 연다(대시보드 화면과 같은 배치).
  */
 export function OnboardingScreen(): ReactElement {
-  const { csrfToken, deletionToken, gate } = useSessionGate('onboarding')
+  const { csrfToken, deletionCompleted, deletionToken, gate } = useSessionGate('onboarding')
   const signOut = useSignOut(csrfToken)
   const reauthentication = useReauthentication(csrfToken)
   const [selected, setSelected] = useState<string | null>(null)
@@ -80,7 +80,14 @@ export function OnboardingScreen(): ReactElement {
   const presence = planPresenceOf(dashboard.view)
 
   // 삭제가 요청된 계정(Story 5.1): 경로와 무관하게 진행 화면만 그린다. 이 화면의 조회는 게이트가 `ready`가 아니라 시작되지 않는다.
-  if (gate === 'deletion-in-progress') return <DeletionProgressScreen csrfToken={deletionToken} />
+  if (gate === 'deletion-in-progress')
+    return (
+      <DeletionProgressScreen
+        completed={deletionCompleted}
+        csrfToken={deletionToken}
+        key={deletionCompleted ? 'completed' : 'progress'}
+      />
+    )
   if (gate === 'unauthenticated') {
     /*
      * 세션 확인 없이 로그인 상태를 주장하지 않는다. 냉시작 미인증이 이 경로를 지난다.

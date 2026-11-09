@@ -6,6 +6,7 @@ import {
 } from '../content/accountDeletion'
 import { objectOf, postJson, postNoContent, readJson } from './http'
 import { isInstant } from './instant'
+import { isSupportContact } from './supportContact'
 import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
 
 /*
@@ -30,9 +31,9 @@ export interface AccountDeletionPolicy {
   readonly legalRetention: readonly LegalRetentionItem[]
 }
 
-/** 삭제 실행의 진행 상태(Story 5.2). 닫힌 값이다. */
+/** 삭제 실행의 진행 상태(Story 5.2·5.4). 닫힌 값이다. */
 export type AccountDeletionProgressStatus =
-  'IN_PROGRESS' | 'RETRY_NEEDED' | 'OPERATIONAL_DATA_ERASED'
+  'IN_PROGRESS' | 'RETRY_NEEDED' | 'OPERATIONAL_DATA_ERASED' | 'DELETION_COMPLETED'
 
 /** 삭제 실행의 진행. 실패한 단계 code만 있다 — 건수·원인 원문은 없다. */
 export interface AccountDeletionProgress {
@@ -45,6 +46,7 @@ export const ACCOUNT_DELETION_PROGRESS_STATUSES: readonly AccountDeletionProgres
   'IN_PROGRESS',
   'RETRY_NEEDED',
   'OPERATIONAL_DATA_ERASED',
+  'DELETION_COMPLETED',
 ]
 
 const PROGRESS_STATUSES: ReadonlySet<string> = new Set(ACCOUNT_DELETION_PROGRESS_STATUSES)
@@ -58,12 +60,45 @@ export interface AccountDeletionRequest {
   readonly progress: AccountDeletionProgress
 }
 
+/** 백업 사본 파기 상태(Story 5.3). 서버 tombstone 상태 그대로이고 공유 표의 `backupDestructionStatuses`와 같은 집합이다. */
+export type BackupDestructionStatus = 'PENDING' | 'OVERDUE' | 'DESTROYED'
+
+export const BACKUP_DESTRUCTION_STATUSES: readonly BackupDestructionStatus[] = [
+  'PENDING',
+  'OVERDUE',
+  'DESTROYED',
+]
+
+const DESTRUCTION_STATUSES: ReadonlySet<string> = new Set(BACKUP_DESTRUCTION_STATUSES)
+
+/**
+ * 삭제가 끝난 뒤의 완료 조회(Story 5.4). 완료 확인 전용 세션만 받는다. 모든 값이 서버 값이다 — 화면은 계산하지 않는다. 백업 사본 칸이
+ * `null`이면 서버가 그 상태를 읽지 못한 것이고 화면은 완료로 말하지 않는다.
+ */
+export interface AccountDeletionCompletion {
+  readonly requestId: string
+  readonly requestedAt: string | null
+  /** 운영 데이터 삭제 완료 시각. */
+  readonly operationalErasedAt: string
+  /** 백업 사본 파기 기한(요청 + 30일). */
+  readonly backupDeadline: string | null
+  readonly backupDestruction: BackupDestructionStatus | null
+  readonly backupDestroyedAt: string | null
+  /** 전체 삭제 완료(운영 삭제 + 백업 파기 + 법정 분리 보존 처리)인가. */
+  readonly deletionCompleted: boolean
+  readonly deletionCompletedAt: string | null
+}
+
 /** 정책·요청 상태 조회의 답. */
 export interface AccountDeletionState {
   /** 삭제 요청을 열 수 있는 환경인가(production이면 거짓). */
   readonly available: boolean
   readonly policy: AccountDeletionPolicy
   readonly request: AccountDeletionRequest | null
+  /** 삭제가 끝난 뒤의 완료 조회(Story 5.4). 완료 확인 전용 세션에서만 있다. */
+  readonly completion: AccountDeletionCompletion | null
+  /** 서버에 설정된 지원 연락처(deferred 170). 없으면 `null`이고 화면은 지원 경로를 지어내지 않는다. */
+  readonly supportContact: string | null
 }
 
 export type AccountDeletionFetch =
@@ -128,6 +163,51 @@ function progressOf(value: unknown): AccountDeletionProgress | null {
   return { status: body.status as AccountDeletionProgressStatus, failedSteps }
 }
 
+/** 시각이거나 `null`. 그 밖의 값이면 `undefined`(모양이 틀렸다). */
+function optionalInstant(value: unknown): string | null | undefined {
+  if (value === null) return null
+  return isInstant(value) ? value : undefined
+}
+
+/** 완료 조회 하나(Story 5.4). 모르는 모양은 믿지 않는다 — 완료를 지어내지 않는다. */
+export function parseDeletionCompletion(payload: unknown): AccountDeletionCompletion | null {
+  const body = objectOf(payload)
+  if (body === null) return null
+  const requestedAt = optionalInstant(body.requestedAt)
+  const backupDeadline = optionalInstant(body.backupDeadline)
+  const backupDestroyedAt = optionalInstant(body.backupDestroyedAt)
+  const deletionCompletedAt = optionalInstant(body.deletionCompletedAt)
+  const destruction = body.backupDestruction
+  if (
+    typeof body.requestId !== 'string' ||
+    body.requestId === '' ||
+    !isInstant(body.operationalErasedAt) ||
+    requestedAt === undefined ||
+    backupDeadline === undefined ||
+    backupDestroyedAt === undefined ||
+    deletionCompletedAt === undefined ||
+    !(
+      destruction === null ||
+      (typeof destruction === 'string' && DESTRUCTION_STATUSES.has(destruction))
+    ) ||
+    typeof body.deletionCompleted !== 'boolean' ||
+    // 전체 완료와 그 시각은 한 쌍이다. 어긋나면 완료를 믿지 않는다.
+    body.deletionCompleted !== (deletionCompletedAt !== null)
+  ) {
+    return null
+  }
+  return {
+    requestId: body.requestId,
+    requestedAt,
+    operationalErasedAt: body.operationalErasedAt,
+    backupDeadline,
+    backupDestruction: destruction as BackupDestructionStatus | null,
+    backupDestroyedAt,
+    deletionCompleted: body.deletionCompleted,
+    deletionCompletedAt,
+  }
+}
+
 /** 요청 하나. 모르는 모양은 믿지 않는다. */
 export function parseDeletionRequest(payload: unknown): AccountDeletionRequest | null {
   const body = objectOf(payload)
@@ -177,6 +257,13 @@ export function parseDeletionState(payload: unknown): AccountDeletionState | nul
     request = parseDeletionRequest(body.request)
     if (request === null) return null
   }
+  // 완료 조회(Story 5.4)는 완료 확인 전용 세션에만 실린다. 있는데 모양이 틀리면 응답 전체를 믿지 않는다.
+  let completion: AccountDeletionCompletion | null = null
+  if (body.completion !== undefined && body.completion !== null) {
+    completion = parseDeletionCompletion(body.completion)
+    if (completion === null) return null
+  }
+  const contact = body.supportContact
   return {
     available: body.available,
     policy: {
@@ -186,6 +273,9 @@ export function parseDeletionState(payload: unknown): AccountDeletionState | nul
       legalRetention,
     },
     request,
+    completion,
+    // 지원 연락처는 서비스 공지·문의와 같은 모양 판정을 지난 값만 받는다. 그 밖은 없는 것으로 접는다(경로를 지어내지 않는다).
+    supportContact: isSupportContact(contact) ? contact : null,
   }
 }
 

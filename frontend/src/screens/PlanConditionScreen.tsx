@@ -19,14 +19,21 @@ const MAIN_ID = 'plan-condition-main'
 /** 로그인 세션 안에서 첫 공식 스냅샷을 기준으로 계획 조건을 검토하는 화면. */
 export function PlanConditionScreen(): ReactElement {
   const [preparationMessage, setPreparationMessage] = useState('')
-  const { csrfToken, deletionToken, gate } = useSessionGate('settings')
+  const { csrfToken, deletionCompleted, deletionToken, gate } = useSessionGate('settings')
   const signOut = useSignOut(csrfToken)
   const reauthentication = useReauthentication(csrfToken)
   // 이 문서의 Web Vitals(Story 4.5). 세션 토큰이 있을 때만 숨김·떠남에서 보낸다.
   useTelemetry(planConditionContent.path, csrfToken)
 
   // 삭제가 요청된 계정(Story 5.1): 경로와 무관하게 진행 화면만 그린다. 이 화면의 조회는 게이트가 `ready`가 아니라 시작되지 않는다.
-  if (gate === 'deletion-in-progress') return <DeletionProgressScreen csrfToken={deletionToken} />
+  if (gate === 'deletion-in-progress')
+    return (
+      <DeletionProgressScreen
+        completed={deletionCompleted}
+        csrfToken={deletionToken}
+        key={deletionCompleted ? 'completed' : 'progress'}
+      />
+    )
   if (gate === 'unauthenticated') return <EntryScreen notice="signedOut" />
   const ready = gate === 'ready'
   const reauthRequired = gate === 'reauth-required'

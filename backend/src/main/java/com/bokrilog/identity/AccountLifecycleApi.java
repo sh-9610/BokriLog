@@ -31,8 +31,8 @@ public interface AccountLifecycleApi {
      *
      * <p>{@code (issuer, subject)}는 전역 유일이고 {@code (userId, provider)}도 유일하다. 이미 다른
      * 계정에 연결된 식별자, 이미 같은 제공자를 가진 계정, 삭제가 시작됐거나 끝난 계정, 존재하지
-     * 않는 계정은 모두 {@link AccessDecision#DENIED} 하나로 거부한다. 어느 계정에 연결돼 있었는지
-     * 밝히지 않는다.
+     * 않는 계정, 그리고 삭제가 끝난 계정의 식별자(Story 5.4 재가입 차단 — {@link #isDeletedIdentity})는 모두
+     * {@link AccessDecision#DENIED} 하나로 거부한다. 어느 계정에 연결돼 있었는지 밝히지 않는다.
      *
      * <p>비어 있거나 공백뿐인 값, 지나치게 긴 값도 같은 값으로 거부한다. 뜻 없는 값이 전역 유일
      * 슬롯을 영구히 점유하지 못하게 한다.
@@ -71,7 +71,8 @@ public interface AccountLifecycleApi {
      * ({@link #linkSocialIdentity}와 같은 근거) — 삭제 0행은 값이지 예외가 아니다.
      *
      * <p>떼어 낸 매핑을 되살리는 경로는 없다. 같은 {@code (issuer, subject)}로 다시 로그인하면 그
-     * 식별자는 어느 계정에도 연결돼 있지 않으므로 신규 가입 경로를 지난다.
+     * 식별자는 어느 계정에도 연결돼 있지 않으므로 신규 가입 경로를 지난다. 해제는 재가입 차단 기록을 남기지 않는다 — 그 기록은
+     * 계정 삭제만 남긴다(Story 5.4).
      *
      * @param userId 대상 계정
      * @param provider 떼어 낼 제공자 이름
@@ -110,6 +111,38 @@ public interface AccountLifecycleApi {
      * @return 연결된 활성 계정의 내부 {@code user_id}, 없으면 빈 값
      */
     Optional<UUID> findUserIdBySocialIdentity(@Nullable String issuer, @Nullable String subject);
+
+    /** 재가입 차단 기록에서 본 이 인증 매핑의 상태(Story 5.4). 계정 ID를 담지 않는다. */
+    enum DeletedIdentityState {
+        /** 기록이 없다 — 새 매핑을 만들 수 있다. */
+        NONE,
+        /** 기록이 있지만 그 계정의 삭제가 아직 끝나지 않았다(뒤 단계가 남았다). 새 매핑을 만들지 않는다. 로그인 표지는 {@code failed}다. */
+        DELETION_UNFINISHED,
+        /** 기록이 있고 그 계정의 삭제가 끝났다({@code DELETED}). 새 매핑을 만들지 않는다. 로그인 표지는 {@code deleted}다. */
+        DELETED,
+        /** 이 프로세스가 기록을 대조할 수 없다(digest를 만들 수 없다). fail-closed — 새 매핑을 만들지 않는다. 표지는 {@code failed}다. */
+        UNVERIFIABLE
+    }
+
+    /**
+     * 이 인증 매핑의 재가입 차단 상태(Story 5.4).
+     *
+     * <p>계정 삭제는 소셜 로그인 연결을 지우기 전에 그 {@code (issuer, subject)}의 keyed digest를 남긴다({@link DeletedIdentityDigests}). 이
+     * 판정은 그 기록과, 기록을 남긴 삭제 실행의 계정이 {@code DELETED}인가만 본다 — 계정 ID를 돌려주지 않는다. {@link DeletedIdentityState#NONE}
+     * 이 아니면 로그인은 계정을 만들지 않는다. 매핑 연결({@link #linkSocialIdentity})도 같은 기록을 INSERT 술어로 본다(상태와 무관하게).
+     *
+     * <p>해제 경로는 없다. 신규 가입 허용 여부는 G-5가 정한다. 받아들일 수 없는 입력은 {@link DeletedIdentityState#NONE}이다(그 값은 어차피
+     * 매핑이 될 수 없다).
+     */
+    DeletedIdentityState deletedIdentityStateOf(@Nullable String issuer, @Nullable String subject);
+
+    /**
+     * 이 인증 매핑이 삭제가 <b>끝난</b> 계정의 것이었는가 — {@link #deletedIdentityStateOf}가 {@link DeletedIdentityState#DELETED}인가.
+     * 참이면 로그인은 표지 {@code deleted}로 닫힌다. 그 identity를 가진 본인에게만 보이는 구분이다(검증을 통과한 로그인 직후의 같은
+     * 브라우저) — 다른 계정·대상의 접근 거부는 여전히 {@link AccessDecision#DENIED} 하나이고, 삭제가 시작됐지만 끝나지 않은 계정은 그대로
+     * {@code failed}다.
+     */
+    boolean isDeletedIdentity(@Nullable String issuer, @Nullable String subject);
 
     /**
      * 이 계정에 연결된 제공자 이름.
