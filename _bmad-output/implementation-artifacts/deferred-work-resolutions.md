@@ -19,8 +19,17 @@ decision_baseline: 'ERD-1.0.0'
 |---|---|
 | 해소 | 37 |
 | 부분 해소 | 25 |
-| 미해소 | 118 |
+| 미해소 | 120 |
 | 미판정 | 0 |
+
+**2026-11-10 갱신(Epic 5 회고 AI-4 CI 설치 단계 시한·비-green 실행 판정 원장 chore done 전환).** `spec-ci-flaky-run-verdicts.md`(PR #153, 머지 커밋 `a3dd2ff`)의 판정이다.
+- **이 chore가 append한 defer:** 181(develop push e2e `first-snapshot` 실패)·182(백업 리허설 `catalog` 단계 정지) 둘이다. 1차 리뷰가 아니라 SPEC이 소급 기록하며 append했다(리뷰는 defer 0건). 둘 다 미해소로 판정했다.
+- **이 chore가 해소한 항목:** 없다. 회고 P-2·P-3(설치 단계 시한·재실행 기록·간헐 실패 계열의 주인)은 원장 항목이 아니라 회고 action item `epic-5-retro-item-51`이 소유했고, 이 PR이 그것을 done으로 바꾼다.
+- **이 chore를 결정 지점으로 지목한 항목:**
+  - **159·177** — 회고 P-3이 AI-4를 주인 결정 자리로 지목했다. 주인을 다음 fix chore(가칭 `spec-lease-loss-test-doors.md`)로 정했고, 각 절의 "주인 지정" 단락에 적었다. 상태는 그대로다(159 부분 해소, 177 미해소).
+  - **180** — 미해소 잔여가 `epic-5-retro-item-51`과 함께 볼 수 있다고 적었다. 이 chore는 로그 누출 판정을 바꾸지 않고 지나갔으므로 미해소 그대로다.
+- **지나간 항목:** 20(통합 job의 설치 중복)은 같은 설치 단계에 시한만 두고 중복은 없애지 않았다. 미해소 그대로이고, 원장의 `환경` 행이 쌓이면 함께 다룬다(`DEVELOPMENT.md` `### 간헐 실패`).
+- **표:** 182건이다(해소 37·부분 해소 25·미해소 120·미판정 0).
 
 **2026-11-10 갱신(Epic 5 회고 AI-2·AI-3 문서·경계 정합과 삭제 경로 동일 출처 검증 chore done 전환).** `spec-epic-5-retro-docs-and-verification.md`(PR #151, 머지 커밋 `9774e4c`)의 판정이다.
 - **이 chore가 append한 defer:** 180(삭제 왕복 뒤 로그의 tombstone 키 누출 판정) 한 건이다. 미해소로 판정했다.
@@ -1774,3 +1783,23 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **빈틈.** `ci.yml`의 e2e 단계 뒤에는 compose 정리·진단 업로드만 있다. 삭제 왕복을 지난 로그를 같은 누출 판정으로 다시 보는 검사가 없다. 앱 쪽 `ConfiguredSecrets`·`LogSecretGuard`가 이 키를 감지하므로 로그 encoder 경로는 덮이지만, encoder를 거치지 않는 출력은 보지 않는다.
 
 **미해소 잔여:** e2e 뒤 compose 로그의 누출 판정을 `.github/scripts`에 둘지, 스크립트 안에 짧은 삭제 왕복을 둘지(한글 문구의 curl은 CP949 문제 246). 지명된 작업은 없다. CI 판정을 바꾸는 일이라 `epic-5-retro-item-51`(CI 시한·간헐 실패)과 함께 볼 수 있다.
+
+**미해소 — 재확인(2026-11-10, Epic 5 회고 AI-4 chore 판정, 기준 `a3dd2ff`).** `epic-5-retro-item-51`을 닫은 `spec-ci-flaky-run-verdicts.md`(PR #153)는 설치 단계 시한과 판정 원장만 다뤘고, e2e 뒤 로그의 누출 판정은 바꾸지 않았다. 지명된 작업은 여전히 없다.
+
+### 181. develop push e2e `first-snapshot` 비-USDT 추정 환산 시험의 실패
+
+**미해소(2026-11-10, Epic 5 회고 AI-4 chore 판정, 기준 `a3dd2ff`).** 그 chore가 `ci-run-verdicts.md`에 소급 기록하며 append했다(판정 `미조사`).
+- **관측.** develop push run 42134981077(PR #141 머지 `f95ebb5`)의 `same-origin-integration` → `Story 1.1 회귀 (Nginx origin)`에서 1건이 실패했고 72건은 통과했다. 실패한 것은 `first-snapshot.spec.ts:657`이다 — `connectAndSavePlan`(`support/firstPlan.ts:60`)이 첫 확인 성공 문구를 본 뒤 첫 값 `1,234.56 USD`를 기본 5초 안에 찾지 못했다.
+- **재현되지 않는 조건.** 같은 커밋의 PR #141 run과 다음 develop push(42142542381)는 green이었다. 재실행하지 않았다.
+- **증거의 수명.** 진단 artifact `same-origin-diagnostics-42134981077-1`(trace·스크린샷·compose 로그)은 2026-11-13T00:23:43Z에 만료된다. 그 뒤에는 job 로그(90일)만 남는다.
+
+**미해소 잔여:** 값 표시가 늦은 것인지(새 스택·직렬 suite의 앞 시험 부하), 다른 사용자의 값이 섞인 것인지 가른다. 그 결과로 대기 방식이나 fixture를 고칠지 정한다. 지명된 작업은 없다. 같은 실패가 다시 나면 `ci-run-verdicts.md`에 새 행(후속 181)을 쓰고 그때 조사한다.
+
+### 182. develop push 백업 리허설 `catalog` 결함 주입 단계의 정지
+
+**미해소(2026-11-10, Epic 5 회고 AI-4 chore 판정, 기준 `a3dd2ff`).** 그 chore가 `ci-run-verdicts.md`에 소급 기록하며 append했다(판정 `미조사`).
+- **관측.** develop push run 42549803177(PR #146 머지 `2441364`)의 `backup-rehearsal` → `백업 리허설`이 `3. 단계 실패 catalog(gen_20260102)` 머리를 낸 뒤 37분 동안 출력 없이 멈췄고, 단계 상한 40분에 끊겼다. 앞선 dump·encrypt·tamper-oci 결함 주입은 각 20초 안에 통과했다.
+- **재현되지 않는 조건.** 다음 develop push(42563422690)의 같은 job은 green이었다. 재실행하지 않았다.
+- **증거의 공백.** 단계가 상한에 끊겨 진단 디렉터리가 비었고, `backup-rehearsal-diagnostics-42549803177-1`은 올라가지 않았다(`No files were found`). 남은 증거는 job 로그(90일, 2027-02-07 무렵까지)뿐이다.
+
+**미해소 잔여:** catalog 결함 주입 경로(`age -d | pg_restore --list` 실패)에서 무엇이 기다리는지 가른다(배경 실행 + `wait`, 파이프 한쪽의 정지). 단계 상한에 끊길 때도 진단이 남게 할지도 정한다. 지명된 작업은 없다. 리허설의 PR 경로 분리(164)와 같은 지점에서 볼 수 있다.
