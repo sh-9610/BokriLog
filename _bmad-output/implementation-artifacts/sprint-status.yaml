@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 11-10-2026 11:26
+last_updated: 11-10-2026 14:35
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -447,14 +447,14 @@ action_items:
       Javadoc·AuthSecurityConfig 경로 리터럴·영어 주석, 5.2 로그 구조화 키, identity의 org.springframework.security
       의존을 ModuleBoundaryTest가 막거나 루트가 속성 이름을 주입(회고 A-2·D-4·D-5·B-3)"
     owner: "chore"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-11-09.md"
   - id: "epic-5-retro-item-50-계정-삭제를-동일-출처-스택에서-검증한다-개발-ci-compose가-to"
     epic: 5
     action: "계정 삭제를 동일 출처 스택에서 검증한다 — 개발·CI compose가 tombstone digest 키를 백엔드에 넘기게
       하고 요청→진행→완료→재가입 거부 경로를 동일 출처 검증 또는 주입 origin e2e에 더한다(회고 B-5)"
     owner: "chore(AI-2와 같거나 시험 chore)"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-11-09.md"
   - id: "epic-5-retro-item-51-ci-간헐-실패-정리-chromium-headless-shell-설치-두"
     epic: 5
