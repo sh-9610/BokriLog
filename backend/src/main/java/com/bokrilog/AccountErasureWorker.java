@@ -109,7 +109,8 @@ class AccountErasureWorker implements DrainParticipant {
             claim().ifPresent(this::start);
         } catch (RuntimeException failure) {
             // 한 번의 claim 실패로 스케줄을 멈추지 않는다. 다음 tick이 다시 본다.
-            LOG.warn("account erasure claim failed: failure={}", failure.getClass().getSimpleName());
+            LOG.atWarn().addKeyValue("exception", failure.getClass().getSimpleName())
+                    .log("account erasure claim failed");
         }
     }
 
@@ -125,8 +126,9 @@ class AccountErasureWorker implements DrainParticipant {
             try {
                 this.runs.release(lease);
             } catch (RuntimeException unreleased) {
-                LOG.warn("account erasure release failed: code={} failure={}", AccountErasureRun.RELEASE_FAILED,
-                        unreleased.getClass().getSimpleName());
+                LOG.atWarn().addKeyValue("code", AccountErasureRun.RELEASE_FAILED)
+                        .addKeyValue("exception", unreleased.getClass().getSimpleName())
+                        .log("account erasure release failed");
             }
             throw failure;
         }
@@ -156,8 +158,9 @@ class AccountErasureWorker implements DrainParticipant {
                 this.runs.heartbeat(lease, WorkerLease.DURATION);
             } catch (RuntimeException failure) {
                 // lease 만료와 fencing이 여전히 권위다. 다음 tick이 다시 민다. 식별자 없이 code와 예외 이름만 남긴다.
-                LOG.warn("account erasure heartbeat failed: code={} failure={}", HEARTBEAT_FAILED,
-                        failure.getClass().getSimpleName());
+                LOG.atWarn().addKeyValue("code", HEARTBEAT_FAILED)
+                        .addKeyValue("exception", failure.getClass().getSimpleName())
+                        .log("account erasure heartbeat failed");
             }
         }
     }
@@ -193,7 +196,8 @@ class AccountErasureWorker implements DrainParticipant {
             return this.runner.execute(lease, this.stopping::get);
         } catch (RuntimeException failure) {
             // 실행자는 단계 실패를 값으로 돌려준다. 여기 온 것은 단계 처리 밖의 결함이다 — 재시도 필요로 기록해 둔다.
-            LOG.warn("account erasure run failed: failure={}", failure.getClass().getSimpleName());
+            LOG.atWarn().addKeyValue("exception", failure.getClass().getSimpleName())
+                    .log("account erasure run failed");
             return this.runner.failUnexpected(lease, failure);
         } finally {
             this.inFlight.remove(lease.userId(), lease);

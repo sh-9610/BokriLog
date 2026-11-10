@@ -101,6 +101,20 @@ class AccountErasureWorkerRoleTest {
         verify(this.runs, times(0)).claim(any());
     }
 
+    /**
+     * tombstone 키가 없는 프로세스는 집지 않는다(Epic 5 회고 AI-3) — 개발·CI compose가 키를 넘기지 않으면 그 스택의 삭제는 진행 중으로
+     * 남는다. 키를 공급하게 바꾼 뒤에도 키 없는 구성의 이 동작은 그대로여야 한다.
+     */
+    @Test
+    void tombstone_키가_없으면_집지_않는다() {
+        when(this.tombstones.keyAvailable()).thenReturn(false);
+        AccountErasureWorker keyless = new AccountErasureWorker(this.runner, this.runs, this.tombstones, "development",
+                false);
+        assertThat(keyless.claimsAllowed()).isFalse();
+        assertThat(keyless.runOnce()).isNull();
+        verify(this.runs, times(0)).claim(any());
+    }
+
     @Test
     void 동시_실행은_상한까지만_집는다() throws Exception {
         when(this.tombstones.keyAvailable()).thenReturn(true);

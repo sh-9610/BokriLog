@@ -967,7 +967,7 @@ class AccountDeletionRequestTest extends PlanSyncTestBase {
         return countOf("identity_deletion_request", user);
     }
 
-    /** A key unique to the call, made at run time: no key-shaped literal sits in the source. */
+    /** 호출마다 실행 시점에 만드는 고유 키다 — 소스에 키 모양 리터럴을 두지 않는다. */
     private static String key(String prefix) {
         return prefix + "-" + UUID.randomUUID();
     }

@@ -76,6 +76,11 @@ class AccountErasureRunTest extends PlanSyncTestBase {
 
     @Autowired AccountDeletionRequestService requests;
 
+    /** 로그 한 줄이 가질 수 있는 키 — encoder가 채우는 넷과 구조 인자의 허용 키뿐이다. */
+    private static final List<String> LOG_KEYS = java.util.stream.Stream.concat(
+            java.util.stream.Stream.of("ts", "level", "logger", "event"),
+            RedactingJsonEncoder.PASS_THROUGH_KEYS.stream()).toList();
+
     /** 로그인(세션·소셜 연결)·Bybit 연결·첫 공식 발행·문의·광고·감사 귀속·제한 target까지 채운 계정. */
     record Sample(UUID user, String cookie) {}
 
@@ -147,9 +152,15 @@ class AccountErasureRunTest extends PlanSyncTestBase {
         assertThat(get(DELETION_PATH, erased.cookie()).statusCode()).isEqualTo(401);
         // 다시 집을 것이 없다.
         assertThat(this.worker.runOnce()).isNull();
+        // 로그(Epic 5 회고 D-4): 결말 한 줄은 고정 문장과 허용 키뿐이다 — 끝까지 돈 실행은 결과 `outcome`만 있고 멈춘 단계(`kind`)가 없다.
+        assertThat(LogLines.records(output.getAll())).anySatisfy(record -> {
+            assertThat(record).containsEntry("event", "account erasure run")
+                    .containsEntry("outcome", AccountErasureRun.Result.OPERATIONAL_DATA_ERASED.name())
+                    .doesNotContainKey("kind");
+            assertThat(record.keySet()).isSubsetOf(LOG_KEYS);
+        });
         // 로그에 사용자·요청 ID가 없다.
-        assertThat(output.getAll()).contains("account erasure run").doesNotContain(erased.user().toString())
-                .doesNotContain(requestId);
+        assertThat(output.getAll()).doesNotContain(erased.user().toString()).doesNotContain(requestId);
     }
 
     // ------------------------------------------------------------------------------------------ tombstone(Story 5.3)
@@ -318,7 +329,8 @@ class AccountErasureRunTest extends PlanSyncTestBase {
      * 들어간 뒤 다른 키는 409다. 다시 돌면 실패·미실행 단계만 돌고 성공 단계는 건너뛴다.
      */
     @Test
-    void 단계가_실패하면_멈추고_다시_시도는_실패한_단계부터_돈다() throws Exception {
+    @ExtendWith(OutputCaptureExtension.class)
+    void 단계가_실패하면_멈추고_다시_시도는_실패한_단계부터_돈다(CapturedOutput output) throws Exception {
         Sample sample = sample("erasure-run-failing");
         requestDeletion(sample.user());
         String csrf = csrfTokenOf(sample.cookie());
@@ -338,6 +350,14 @@ class AccountErasureRunTest extends PlanSyncTestBase {
                 "ENGAGEMENT:PENDING", "IDENTITY:PENDING");
         assertThat(jdbc().sql("SELECT lease_until IS NULL FROM identity_deletion_run WHERE user_id = :u")
                 .param("u", sample.user()).query(Boolean.class).single()).isTrue();
+        // 로그(Epic 5 회고 D-4): 본문은 고정 문장이고 단계·code·예외는 허용 키로만 나온다 — 식별자가 없다.
+        assertThat(LogLines.records(output.getAll())).anySatisfy(record -> {
+            assertThat(record).containsEntry("event", "account erasure step failed")
+                    .containsEntry("code", AccountDeletionRunApi.STEP_FAILED)
+                    .containsEntry("kind", "SYNC").containsKey("exception");
+            assertThat(record.keySet()).isSubsetOf(LOG_KEYS);
+        });
+        assertThat(output.getAll()).doesNotContain(sample.user().toString());
 
         // 화면: 재시도 필요와 실패 범위.
         JsonNode progress = json(get(DELETION_PATH, sample.cookie()).body()).get("request").get("progress");
@@ -380,7 +400,8 @@ class AccountErasureRunTest extends PlanSyncTestBase {
      * 열려 있다(운영 완료가 아니다). 다시 시도하면 OPERATIONS와 마지막 단계만 돌고 그때 집합이 닫힌다.
      */
     @Test
-    void 늦은_쓰기가_남으면_마지막_단계가_그_단계를_되돌린다() throws Exception {
+    @ExtendWith(OutputCaptureExtension.class)
+    void 늦은_쓰기가_남으면_마지막_단계가_그_단계를_되돌린다(CapturedOutput output) throws Exception {
         Sample sample = sample("erasure-run-late");
         requestDeletion(sample.user());
         // ENGAGEMENT 단계(OPERATIONS 다음) 안에서 운영 귀속 행 하나가 늦게 생긴다.
@@ -402,6 +423,13 @@ class AccountErasureRunTest extends PlanSyncTestBase {
                 "SYNC:SUCCEEDED", "PLAN:SUCCEEDED", "SOURCE:SUCCEEDED", "OPERATIONS:RETRY_NEEDED:RESIDUAL_FOUND",
                 "ENGAGEMENT:SUCCEEDED", "IDENTITY:PENDING");
         assertThat(lifecycleOf(sample.user())).isEqualTo("DELETION_IN_PROGRESS");
+        // 로그(Epic 5 회고 D-4): 잔여를 본 단계는 `kind`, 잔여 단계 목록은 `.`로 이은 `reason`이다.
+        assertThat(LogLines.records(output.getAll())).anySatisfy(record -> {
+            assertThat(record).containsEntry("event", "account erasure residue found")
+                    .containsEntry("code", AccountDeletionRunApi.RESIDUAL_FOUND)
+                    .containsEntry("kind", "IDENTITY").containsEntry("reason", "OPERATIONS");
+            assertThat(record.keySet()).isSubsetOf(LOG_KEYS);
+        });
         assertThat(openTombstones()).isEqualTo(1);
         assertThat(countOf("identity_account", sample.user())).isEqualTo(1);
 
@@ -413,6 +441,43 @@ class AccountErasureRunTest extends PlanSyncTestBase {
                 .extracting(step -> step.step().name() + ":" + step.attempts()).containsExactly("CREDENTIALS:1",
                         "PORTFOLIO:1", "SYNC:1", "PLAN:1", "SOURCE:1", "OPERATIONS:2", "ENGAGEMENT:1", "IDENTITY:2");
         assertThat(lifecycleOf(sample.user())).isEqualTo("DELETED");
+    }
+
+    /**
+     * 늦은 쓰기가 두 모듈에 남으면(ENGAGEMENT가 커밋된 뒤 마지막 단계 앞에서 운영 귀속 행과 광고 동의 행이 하나씩 생긴다) 마지막 단계가
+     * 두 단계를 함께 재시도 필요(RESIDUAL_FOUND)로 되돌린다. 로그의 `reason`은 두 단계 이름을 단계 순서대로 `.`로 이은 값이고 encoder가
+     * 그 값을 버리지 않는다(Epic 5 회고 D-4).
+     */
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void 두_모듈의_늦은_쓰기는_잔여_단계를_순서대로_이은_reason으로_남는다(CapturedOutput output) throws Exception {
+        Sample sample = sample("erasure-run-late-two");
+        requestDeletion(sample.user());
+        boolean[] written = {false};
+        // 실행자는 단계 사이에서만 종료 판정을 본다 — ENGAGEMENT가 성공한 뒤의 첫 판정(마지막 단계 앞)에서 두 행을 넣는다.
+        java.util.function.BooleanSupplier lateWrites = () -> {
+            if (!written[0] && this.runs.runOf(sample.user()).orElseThrow().steps().stream().anyMatch(
+                    state -> state.step() == DeletionStep.ENGAGEMENT && state.status() == StepStatus.SUCCEEDED)) {
+                written[0] = true;
+                insertAuditRowOf(sample.user());
+                insertConsentOf(sample.user());
+            }
+            return false;
+        };
+        var lease = this.runs.claim(WorkerLease.DURATION).orElseThrow();
+        assertThat(runnerWith(this.sync, this.operations, this.engagement).execute(lease, lateWrites))
+                .isEqualTo(AccountErasureRun.Result.RETRY_NEEDED);
+        assertThat(written[0]).isTrue();
+        assertThat(statusesOf(this.runs.runOf(sample.user()).orElseThrow().steps())).containsExactly(
+                "CREDENTIALS:SUCCEEDED", "PORTFOLIO:SUCCEEDED", "SYNC:SUCCEEDED", "PLAN:SUCCEEDED", "SOURCE:SUCCEEDED",
+                "OPERATIONS:RETRY_NEEDED:RESIDUAL_FOUND", "ENGAGEMENT:RETRY_NEEDED:RESIDUAL_FOUND", "IDENTITY:PENDING");
+        assertThat(lifecycleOf(sample.user())).isEqualTo("DELETION_IN_PROGRESS");
+        assertThat(LogLines.records(output.getAll())).anySatisfy(record -> {
+            assertThat(record).containsEntry("event", "account erasure residue found")
+                    .containsEntry("code", AccountDeletionRunApi.RESIDUAL_FOUND)
+                    .containsEntry("kind", "IDENTITY").containsEntry("reason", "OPERATIONS.ENGAGEMENT");
+            assertThat(record.keySet()).isSubsetOf(LOG_KEYS);
+        });
     }
 
     /**
@@ -656,7 +721,10 @@ class AccountErasureRunTest extends PlanSyncTestBase {
         assertThat(statusesOf(this.runs.runOf(sample.user()).orElseThrow().steps())).contains("SYNC:PENDING");
         assertThat(LogLines.records(output.getAll())).anySatisfy(record -> {
             assertThat(String.valueOf(record.get("level"))).isEqualTo("ERROR");
-            assertThat(String.valueOf(record.get("event"))).contains(AccountErasureRun.FAILURE_UNRECORDED);
+            assertThat(record).containsEntry("event", "account erasure failure unrecorded")
+                    .containsEntry("code", AccountErasureRun.FAILURE_UNRECORDED).containsEntry("kind", "SYNC")
+                    .containsEntry("exception", "IllegalStateException");
+            assertThat(record.keySet()).isSubsetOf(LOG_KEYS);
         });
     }
 
@@ -789,7 +857,8 @@ class AccountErasureRunTest extends PlanSyncTestBase {
 
     /** 실행 도중(단계 사이) fencing을 잃으면 거기서 멈추고 뒤 단계는 커밋하지 않는다. */
     @Test
-    void 실행_도중_fencing을_잃으면_뒤_단계를_커밋하지_않는다() throws Exception {
+    @ExtendWith(OutputCaptureExtension.class)
+    void 실행_도중_fencing을_잃으면_뒤_단계를_커밋하지_않는다(CapturedOutput output) throws Exception {
         Sample sample = sample("erasure-run-midfence");
         requestDeletion(sample.user());
         int[] holds = {0};
@@ -813,6 +882,12 @@ class AccountErasureRunTest extends PlanSyncTestBase {
         assertThat(this.sync.remainingRowsOf(sample.user())).isPositive();
         assertThat(countOf("plan_definition", sample.user())).isPositive();
         assertThat(lifecycleOf(sample.user())).isEqualTo("DELETION_IN_PROGRESS");
+        // 로그: 결말 `outcome`과 멈춘 단계 `kind`가 허용 키로 나온다.
+        assertThat(LogLines.records(output.getAll())).anySatisfy(record -> {
+            assertThat(record).containsEntry("event", "account erasure run")
+                    .containsEntry("outcome", AccountErasureRun.Result.LEASE_LOST.name()).containsEntry("kind", "SYNC");
+            assertThat(record.keySet()).isSubsetOf(LOG_KEYS);
+        });
     }
 
     /** 삭제 요청이 없으면 다시 시도는 없는 경로와 같은 404이고, Worker가 집기 전이면 409·아무것도 쓰지 않으며 조회는 진행 중이다. */
@@ -1070,10 +1145,7 @@ class AccountErasureRunTest extends PlanSyncTestBase {
         publishedPlan(user, prefix, null);
         assertThat(this.inquiries.submit(user, prefix + "-inquiry-" + UUID.randomUUID(), draft()))
                 .isInstanceOf(SupportInquiryApi.Submission.Received.class);
-        jdbc().sql("INSERT INTO engagement_ad_consent_decision (user_id, policy_version, choice, idempotency_key_digest, "
-                        + "request_digest) VALUES (:u, 'AD-CONSENT-1.0', 'GRANTED', :k, :r)")
-                .param("u", user).param("k", sha256("consent-key-" + UUID.randomUUID()))
-                .param("r", sha256("consent-request-" + UUID.randomUUID())).update();
+        insertConsentOf(user);
         jdbc().sql("INSERT INTO engagement_ad_attempt (user_id, sync_job_id, outcome, skip_reason) "
                         + "VALUES (:u, :j, 'SKIPPED', 'CONSENT_REQUIRED')")
                 .param("u", user).param("j", UUID.randomUUID()).update();
@@ -1088,6 +1160,14 @@ class AccountErasureRunTest extends PlanSyncTestBase {
     private static SupportInquiryApi.Draft draft() {
         return new SupportInquiryApi.Draft("ACCOUNT", "계정 삭제 시험 문의", "계정 삭제 실행 시험에서 남기는 문의 본문입니다.",
                 "IN_APP", null);
+    }
+
+    /** 그 사용자의 광고 동의 결정 행 하나(ENGAGEMENT 단계가 지우는 행). */
+    private void insertConsentOf(UUID user) {
+        jdbc().sql("INSERT INTO engagement_ad_consent_decision (user_id, policy_version, choice, idempotency_key_digest, "
+                        + "request_digest) VALUES (:u, 'AD-CONSENT-1.0', 'GRANTED', :k, :r)")
+                .param("u", user).param("k", sha256("consent-key-" + UUID.randomUUID()))
+                .param("r", sha256("consent-request-" + UUID.randomUUID())).update();
     }
 
     private void insertAuditRowOf(UUID user) {

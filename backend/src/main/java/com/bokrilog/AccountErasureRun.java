@@ -10,6 +10,7 @@ import java.util.EnumMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
+import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -140,8 +141,9 @@ class AccountErasureRun {
                     released = this.runs.release(lease) ? Result.RELEASED : Result.LEASE_LOST;
                 } catch (RuntimeException unreleased) {
                     // 놓지 못했다. 단계 실패가 아니므로 재시도 필요로 적지 않는다 — lease 만료 뒤 다음 claim이 이어 받는다.
-                    LOG.warn("account erasure release failed: code={} failure={}", RELEASE_FAILED,
-                            unreleased.getClass().getSimpleName());
+                    LOG.atWarn().addKeyValue("code", RELEASE_FAILED)
+                            .addKeyValue("exception", unreleased.getClass().getSimpleName())
+                            .log("account erasure release failed");
                     return Result.UNRECORDED;
                 }
                 log(released, null);
@@ -280,7 +282,9 @@ class AccountErasureRun {
      */
     private StepResult recordFailure(Lease lease, @Nullable DeletionStep step,
             @Nullable Map<DeletionStep, String> failures, @Nullable RuntimeException failure, String defaultCode) {
-        String unrecordedBy = "-";
+        // 기록하지 못한 까닭: 예외면 그 단순 이름, 결과 없이 끝난 트랜잭션이면 닫힌 값 하나다.
+        @Nullable String unrecordedException = null;
+        @Nullable String unrecordedReason = null;
         for (int attempt = 1; attempt <= RECORD_ATTEMPTS; attempt++) {
             Recording recorded;
             try {
@@ -298,11 +302,13 @@ class AccountErasureRun {
                     return Recording.RECORDED;
                 });
             } catch (RuntimeException unrecorded) {
-                unrecordedBy = unrecorded.getClass().getSimpleName();
+                unrecordedException = unrecorded.getClass().getSimpleName();
+                unrecordedReason = null;
                 continue;
             }
             if (recorded == null) {
-                unrecordedBy = "NO_RESULT";
+                unrecordedException = null;
+                unrecordedReason = "NO_RESULT";
                 continue;
             }
             if (recorded == Recording.LOST) {
@@ -310,19 +316,27 @@ class AccountErasureRun {
             }
             if (step != null && failures != null && !failures.containsKey(step)) {
                 // 이 단계(마지막 단계)가 앞 단계들의 잔여를 보고 멈췄다 — 잔여가 있는 것은 그 앞 단계들이다.
-                LOG.warn("account erasure residue found: step={} code={} residualSteps={}", step.name(),
-                        AccountDeletionRunApi.RESIDUAL_FOUND, failures.keySet().stream().map(Enum::name).toList());
+                // 잔여 단계 목록은 단계 순서대로 `.`로 잇는다 — 값이 닫힌 code 모양이어야 encoder가 싣는다.
+                LOG.atWarn().addKeyValue("code", AccountDeletionRunApi.RESIDUAL_FOUND)
+                        .addKeyValue("kind", step.name())
+                        .addKeyValue("reason", failures.keySet().stream().sorted().map(Enum::name)
+                                .collect(Collectors.joining(".")))
+                        .log("account erasure residue found");
             } else {
-                LOG.warn("account erasure step failed: step={} code={} failure={}", step == null ? "-" : step.name(),
-                        failures == null || step == null ? defaultCode
-                                : failures.getOrDefault(step, AccountDeletionRunApi.STEP_FAILED),
-                        failure == null ? "-" : failure.getClass().getSimpleName());
+                LOG.atWarn().addKeyValue("code", failures == null || step == null ? defaultCode
+                                : failures.getOrDefault(step, AccountDeletionRunApi.STEP_FAILED))
+                        .addKeyValue("kind", step == null ? null : step.name())
+                        .addKeyValue("exception", failure == null ? null : failure.getClass().getSimpleName())
+                        .log("account erasure step failed");
             }
             return StepResult.FAILED;
         }
         // 기록할 수 없었다. 실행은 RUNNING으로 남고 lease 만료 뒤 장애 복구로 다시 집힌다 — 기록됐다고 보고하지 않는다.
-        LOG.error("account erasure failure unrecorded: code={} step={} failure={}", FAILURE_UNRECORDED,
-                step == null ? "-" : step.name(), unrecordedBy);
+        LOG.atError().addKeyValue("code", FAILURE_UNRECORDED)
+                .addKeyValue("kind", step == null ? null : step.name())
+                .addKeyValue("exception", unrecordedException)
+                .addKeyValue("reason", unrecordedReason)
+                .log("account erasure failure unrecorded");
         return StepResult.UNRECORDED;
     }
 
@@ -335,6 +349,8 @@ class AccountErasureRun {
     }
 
     private static void log(Result result, @Nullable DeletionStep step) {
-        LOG.info("account erasure run: result={} step={}", result.name(), step == null ? "-" : step.name());
+        LOG.atInfo().addKeyValue("outcome", result.name())
+                .addKeyValue("kind", step == null ? null : step.name())
+                .log("account erasure run");
     }
 }
