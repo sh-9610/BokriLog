@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 11-10-2026 14:35
+last_updated: 11-10-2026 07:55
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -461,7 +461,7 @@ action_items:
     action: "CI·간헐 실패 정리 — Chromium headless shell 설치 두 단계에 시한을 두고 cancelled 재실행을
       판정 기록으로 남기며, deferred 159·177(시간 기반 lease 상실 시험 계열)의 주인을 정한다(회고 P-2·P-3)"
     owner: "시험·CI chore"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-11-09.md"
   - id: "epic-5-retro-item-52-epic-5를-as-built-새-버전-범위에-더한다-erd-5-비회전"
     epic: 5
