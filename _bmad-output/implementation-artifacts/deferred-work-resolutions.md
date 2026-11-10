@@ -22,6 +22,8 @@ decision_baseline: 'ERD-1.0.0'
 | 미해소 | 120 |
 | 미판정 | 0 |
 
+**2026-11-10 갱신(181 원인 확정).** 진단 artifact가 만료되기 전에 181의 trace를 조사했다. 원인은 간헐 시험이 아니라 제품 결함이었다 — `GET /api/snapshots/first`가 공식값과 작업 상태를 트랜잭션 없이 따로 읽어, 작업이 `SUCCEEDED`인데 값이 없는 응답을 낼 수 있다. 상태는 미해소 그대로(제품 fix 필요)이고, 표는 182건 그대로다.
+
 **2026-11-10 갱신(Epic 5 회고 AI-4 CI 설치 단계 시한·비-green 실행 판정 원장 chore done 전환).** `spec-ci-flaky-run-verdicts.md`(PR #153, 머지 커밋 `a3dd2ff`)의 판정이다.
 - **이 chore가 append한 defer:** 181(develop push e2e `first-snapshot` 실패)·182(백업 리허설 `catalog` 단계 정지) 둘이다. 1차 리뷰가 아니라 SPEC이 소급 기록하며 append했다(리뷰는 defer 0건). 둘 다 미해소로 판정했다.
 - **이 chore가 해소한 항목:** 없다. 회고 P-2·P-3(설치 단계 시한·재실행 기록·간헐 실패 계열의 주인)은 원장 항목이 아니라 회고 action item `epic-5-retro-item-51`이 소유했고, 이 PR이 그것을 done으로 바꾼다.
@@ -1794,6 +1796,14 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **증거의 수명.** 진단 artifact `same-origin-diagnostics-42134981077-1`(trace·스크린샷·compose 로그)은 2026-11-13T00:23:43Z에 만료된다. 그 뒤에는 job 로그(90일)만 남는다.
 
 **미해소 잔여:** 값 표시가 늦은 것인지(새 스택·직렬 suite의 앞 시험 부하), 다른 사용자의 값이 섞인 것인지 가른다. 그 결과로 대기 방식이나 fixture를 고칠지 정한다. 지명된 작업은 없다. 같은 실패가 다시 나면 `ci-run-verdicts.md`에 새 행(후속 181)을 쓰고 그때 조사한다.
+
+**미해소 — 원인 확정(2026-11-10, 진단 artifact 조사, 기준 `d504d39`).** 원인은 시험이 아니라 제품의 비원자 읽기 결함이다. artifact가 만료되기 전에 trace를 열어 확인했다.
+- **trace의 응답.** `POST /api/snapshots/first`가 202 `QUEUED`로 접수됐다(00:22:05.006). 1초 뒤 상태 조회 `GET /api/snapshots/first`(00:22:06.034)는 200을 냈는데, 본문이 `{"connected":true,"restricted":false,"job":{"jobId":"30ce9b5b-…","status":"SUCCEEDED"}}`였다. 작업은 `SUCCEEDED`인데 공식값 필드(`decimal`·`currency`·`measuredAt`·`snapshotId` …)가 하나도 없었다.
+- **화면.** 실패 시점의 스크린샷과 접근성 트리 모두 같다. "첫 공식 현재가치를 확인했습니다."만 보이고 금액·측정 시각·세 신뢰 축·계획 조건 링크가 없다. 세 번째 가설(값이 아예 오지 않음)에 해당하고, 늦은 표시나 다른 사용자 값의 혼입이 아니다.
+- **서버 원인.** `SyncJobService.state`(`backend/src/main/java/com/bokrilog/sync/internal/SyncJobService.java:263-266`)는 트랜잭션 없이 두 번 읽는다 — 먼저 `portfolios.officialValue(userId)`, 다음에 `jobs.latestOf(…)`다. 발행(`publish`, 같은 파일 `:768` 이하)은 `publishFirst`와 작업 `SUCCEEDED`를 한 트랜잭션으로 커밋한다. 그래서 첫 읽기가 커밋 전(공식값 없음)이고 둘째 읽기가 커밋 뒤(`SUCCEEDED`)이면, 커밋된 적 없는 조합이 응답에 실린다.
+- **화면이 굳는 이유.** `useFirstSnapshot`은 작업이 `QUEUED`·`RUNNING`일 때만 다시 조회한다(`frontend/src/session/useFirstSnapshot.ts:104`). `SUCCEEDED`를 받으면 멈추므로, 사용자는 새로 고칠 때까지 값 없는 성공 문구에 머물고 계획 조건으로 가는 링크도 받지 못한다(`FirstSnapshotPanel`의 `canPlan`이 값에 기댄다). CI에서는 발행 커밋이 두 읽기 사이에 끼는 드문 창에서만 나서 한 번만 실패했다.
+
+**미해소 잔여:** 제품 fix가 필요하다. `state` 읽기를 읽기 전용 트랜잭션 하나(대시보드처럼 `REPEATABLE READ`)로 묶거나, 작업을 먼저 읽고 공식값을 나중에 읽어 `SUCCEEDED`이면 값이 반드시 보이게 한다. 이 경합을 결정적으로 재현하는 시험도 함께 둔다. 같은 "두 번 읽는" 모양이 같은 메서드의 해제 분기(`:244-246`)와 다른 상태 조회에 있는지도 그 fix가 확인한다. 지명된 작업은 없다. `ci-run-verdicts.md`의 42134981077/1 행은 추가 전용이라 `미조사`로 남고, 판정 변경은 이 절이 소유한다.
 
 ### 182. develop push 백업 리허설 `catalog` 결함 주입 단계의 정지
 
