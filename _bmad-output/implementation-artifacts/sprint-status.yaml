@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 11-09-2026 16:40
+last_updated: 11-10-2026 11:26
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -439,7 +439,7 @@ action_items:
     action: "재시도 필요 실행의 재대기열 주체를 정하고 구현한다 — 요청 세션을 잃은 RETRY_NEEDED 계정이 영구 고착되지 않게
       운영 command requeue-deletion(감사 원장·재인증) 또는 runbook과 그 시험 중 하나. G-5 전 필수(회고 B-1)"
     owner: "다음 fix(bmad-build)"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-11-09.md"
   - id: "epic-5-retro-item-49-문서-주석-경계-정합-묶음-development-md-tombstone"
     epic: 5
