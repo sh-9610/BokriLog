@@ -1,6 +1,7 @@
 package com.bokrilog.identity.internal;
 
 import com.bokrilog.identity.AccountDeletionApi;
+import com.bokrilog.identity.CompletionSessionAttributes;
 import com.bokrilog.identity.DeletedIdentityDigests;
 import com.bokrilog.identity.DeletionOutcome;
 import java.security.SecureRandom;
@@ -33,9 +34,14 @@ class AccountDeletionService implements AccountDeletionApi {
     /** 삭제한 identity의 digest(Story 5.4). 키는 루트가 가진다. */
     private final DeletedIdentityDigests deletedIdentities;
 
-    AccountDeletionService(IdentityAccountRepository repository, DeletedIdentityDigests deletedIdentities) {
+    /** 완료 확인 전용 세션이 남기는 속성 이름(Story 5.4). 이름은 인증 표면이 정하므로 루트가 준다(Epic 5 회고 A-2). */
+    private final CompletionSessionAttributes completionSessionAttributes;
+
+    AccountDeletionService(IdentityAccountRepository repository, DeletedIdentityDigests deletedIdentities,
+            CompletionSessionAttributes completionSessionAttributes) {
         this.repository = repository;
         this.deletedIdentities = deletedIdentities;
+        this.completionSessionAttributes = completionSessionAttributes;
     }
 
     /**
@@ -105,7 +111,8 @@ class AccountDeletionService implements AccountDeletionApi {
                 repository.findRequestSession(userId).ifPresent(found -> {
                     String primaryId = found.sessionPrimaryId();
                     if (primaryId != null
-                            && repository.convertToCompletionSession(userId, primaryId, found.requestId()) == 0) {
+                            && repository.convertToCompletionSession(userId, primaryId, found.requestId(),
+                                    this.completionSessionAttributes.keptAttributeNames()) == 0) {
                         LOG.atInfo().addKeyValue("code", "REQUEST_SESSION_GONE")
                                 .log("account deletion completion session absent");
                     }
@@ -236,7 +243,7 @@ class AccountDeletionService implements AccountDeletionApi {
     @Override
     @Transactional
     public int scrubCompletionSessions() {
-        return repository.scrubCompletionSessions();
+        return repository.scrubCompletionSessions(this.completionSessionAttributes.keptAttributeNames());
     }
 
     // ------------------------------------------------------------------ Story 5.1 삭제 요청

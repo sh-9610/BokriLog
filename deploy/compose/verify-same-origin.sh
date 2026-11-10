@@ -147,6 +147,8 @@ forbidden_fragments=(
   # Story 3.1의 운영자 allowlist와 감사 digest 키.
   'BOKRILOG_OPERATORS'
   'BOKRILOG_AUDIT_DIGEST_KEY'
+  # Story 5.3의 tombstone digest 키 이름(Epic 5 회고 AI-3 — 이 스택이 그 값을 받는다).
+  'BOKRILOG_TOMBSTONE_DIGEST_KEY'
   # Story 3.5의 지원 연락처 설정 이름.
   'BOKRILOG_SUPPORT_CONTACT'
   # Story 3.7의 관리 포트·관측 환경 설정 이름.
@@ -271,6 +273,15 @@ operator_subject="operator-verify-$$"
 BOKRILOG_OPERATORS="${operator_issuer}|${operator_subject}|command,audit;${operator_issuer}|e2e-operator|command,audit"
 BOKRILOG_AUDIT_DIGEST_KEY="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
 export BOKRILOG_OPERATORS BOKRILOG_AUDIT_DIGEST_KEY
+
+# 계정 삭제의 tombstone digest 키(Story 5.3, Epic 5 회고 AI-3)도 실행 시점에 만든다. 감사 키와 따로 만든다 — 두 키가 같으면
+# 백엔드가 기동을 거부한다. 이 스택의 백엔드(역할 `all`)는 Worker를 겸하고, 이 값이 없으면 사용자 삭제를 집지 않아 이어 도는
+# Playwright 회귀(`e2e/account-deletion.spec.ts`)의 삭제가 진행 중에서 끝나지 않는다. `--keep-stack`으로 남긴 스택에도 남는다.
+BOKRILOG_TOMBSTONE_DIGEST_KEY="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+if [ "${BOKRILOG_TOMBSTONE_DIGEST_KEY}" = "${BOKRILOG_AUDIT_DIGEST_KEY}" ]; then
+  fail_setup 'tombstone digest 키가 감사 digest 키와 같게 만들어졌다' '다시 실행한다.'
+fi
+export BOKRILOG_TOMBSTONE_DIGEST_KEY
 
 # 서비스 공지(Story 3.5)의 지원 연락처. compose 기본값은 비어 있어(공지 발행 거절) 이 스크립트가 개발용 주소를 넣는다 —
 # 이어 도는 Playwright 회귀(`e2e/operator.spec.ts`)가 공지를 발행하고 사용자 화면의 연락처 링크를 본다. `.test`는
@@ -3173,7 +3184,8 @@ if [ "${log_ready}" = true ]; then
   for leaked_label in 'google code' 'google state' 'naver code' 'naver state' \
     'kakao code' 'kakao state' 'reauth code' 'reauth state' 'link code' 'link state' \
     'link 허가 참조' 'unlink 허가 참조' 'Bybit API Secret' 'Bybit API Key' \
-    'Bybit 암호화 키' '운영자 멱등 키' '운영자 subject' '감사 digest 키'; do
+    'Bybit 암호화 키' '운영자 멱등 키' '운영자 subject' '감사 digest 키' \
+    'tombstone digest 키'; do
     case "${leaked_label}" in
       'google code') leaked_value="${google_round_trip_code}" ;;
       'google state') leaked_value="${google_round_trip_state}" ;;
@@ -3203,6 +3215,9 @@ if [ "${log_ready}" = true ]; then
       '운영자 멱등 키') leaked_value="${operator_key}" ;;
       '운영자 subject') leaked_value="${operator_subject}" ;;
       '감사 digest 키') leaked_value="${BOKRILOG_AUDIT_DIGEST_KEY}" ;;
+      # 계정 삭제(Epic 5 회고 AI-3)의 tombstone digest 키도 환경으로만 들어간다. 그 키를 받는 Worker(역할 `all`)가 로그 비밀
+      # 노출 감지에 넣지만 감지는 줄을 가릴 뿐이라, 값 자체가 로그에 없다는 것은 여기서 따로 본다.
+      'tombstone digest 키') leaked_value="${BOKRILOG_TOMBSTONE_DIGEST_KEY}" ;;
       # 마지막 이름도 자기 분기를 갖는다. `*)`가 그것을 겸하면 오타 하나나 새 이름 하나가
       # 마지막 값을 다른 이름으로 다시 검사하며 통과한다 — 위 왕복 `case`가 이미 쓰는 형태다.
       *)

@@ -548,3 +548,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-4-deletion-completion-verification.md`
   summary: 복원 리허설의 삭제 표본 seed가 plan의 계획 정의·종료·완료 행과 sync의 공식 계산 결과(`sync_plan_calculation` 계열)를 넣지 않아, `residual_plan=0`·sync 잔여 0 단정이 그 표들의 재삭제를 증명하지 못한다 — 실제 흐름(첫 스냅샷→발행)으로 표본을 만들거나 seed를 넓힌다.
   evidence: 2026-11-06 Story 5.4 1차 리뷰(blind-hunter). 잔여 세기는 카탈로그로 모듈 표 전부를 보지만 행이 없던 표는 재삭제가 검증되지 않는다. 손으로 쓴 열 목록 SQL은 스키마 변경에 약해 로컬 리허설 없이 넓히면 CI 위험이 크다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-epic-5-retro-docs-and-verification.md`
+  summary: `verify-same-origin.sh`가 tombstone digest 키 값의 로그 누출을 보지만, 그 키를 실제로 쓰는 삭제 실행(tombstone 기록·digest 계산)은 스크립트가 끝난 뒤의 주입 origin e2e(`account-deletion.spec.ts`)에서 처음 돈다. 그래서 삭제 왕복 뒤의 백엔드·Nginx 로그를 같은 누출 판정으로 다시 보는 검사가 없다. e2e 뒤 compose 로그 누출 판정을 `.github/scripts`로 둘지, 스크립트 안에 짧은 삭제 왕복을 둘지 정한다.
+  evidence: 2026-11-10 Epic 5 회고 AI-2·AI-3 chore 1차 리뷰(verification-gap). 스크립트 안에는 계정 삭제를 실행하는 단계가 없고, `ci.yml`의 e2e 단계 뒤에는 compose 정리·진단 업로드만 있다. 앱의 `ConfiguredSecrets`·`LogSecretGuard`는 이 키를 감지하지만, 동일 출처 스택에서 그 경로를 지난 로그를 보는 판정은 없다. 한글 문구의 curl 왕복은 CP949 문제(246)로 스크립트에 두지 않기로 했다.

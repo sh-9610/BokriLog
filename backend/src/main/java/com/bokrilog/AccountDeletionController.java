@@ -35,15 +35,15 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <ul>
  *   <li>{@code GET /api/account/deletion}: 200 {@code {available, policy, request}} — 삭제 정책(버전·대상 code·백업 파기 기한·법정 분리
- *       보존)과, 이미 요청했으면 그 요청(ID·시각·상태·정책 버전)과 설정된 지원 연락처. production이면 {@code available:false}다. 삭제가
- *       시작된 계정의 남은 세션도 읽는다(READ). 삭제가 끝난 뒤의 완료 확인 전용 세션(Story 5.4)은 {@code request} 대신
- *       {@code completion}(운영 삭제 시각·백업 파기 기한·상태·전체 완료)을 받는다 — 인증 주체가 없는 그 세션이 닿는 경로는 이 조회와 확정
- *       재전송의 거부(409 {@code ACCOUNT_DELETION_COMPLETED}) 둘뿐이다.
+ *       보존)과, 이미 요청했으면 그 요청(ID·시각·상태·정책 버전·진행 {@code progress} — 지금 값, Story 5.2)과 설정된 지원 연락처.
+ *       production이면 {@code available:false}다. 삭제가 시작된 계정의 남은 세션도 읽는다(READ). 삭제가 끝난 뒤의 완료 확인
+ *       전용 세션(Story 5.4)은 {@code request} 대신 {@code completion}(운영 삭제 시각·백업 파기 기한·상태·전체 완료)을 받는다 —
+ *       인증 주체가 없는 그 세션이 닿는 경로는 이 조회와 확정 재전송의 거부(409 {@code ACCOUNT_DELETION_COMPLETED}) 둘뿐이다.
  *   <li>{@code POST /api/account/deletion}: 준비 — 본문 {@code {"policyVersion":<화면이 본 정책 버전>}}, 200 {@code {policyVersion, confirmation}}.
  *       허가를 발급하고 무장할 뿐 아무것도 바꾸지 않는다. 정책 버전이 지금과 다르면 409 {@code ACCOUNT_DELETION_POLICY_CHANGED}다.
  *   <li>{@code POST /api/account/deletion/confirm}: {@code {"policyVersion":…,"confirmation":<입력한 문구>}}과
- *       {@code Idempotency-Key}. 200 {@code {requestId, requestedAt, state, policyVersion}} — 처음 요청과 같은 키의 재전송이 같은
- *       본문이다.
+ *       {@code Idempotency-Key}. 200 {@code {requestId, requestedAt, state, policyVersion, progress}} — 처음 요청과 같은 키의
+ *       재전송이 같은 본문이다. {@code progress}는 지금 값이 아니라 고정 {@link #CONFIRMED_PROGRESS}다(Story 5.2).
  *   <li>{@code POST /api/account/deletion/cancel}: 204 — 무장과 그 허가를 버린다. 인증된 요청에는 언제나 204다.
  *   <li>{@code POST /api/account/deletion/retry}(Story 5.2): 본문 없음, CSRF 헤더·동일 출처 {@code Origin}·{@code Idempotency-Key}
  *       필수(재인증 없음). 202 {@code RequestView} — 재시도 필요로 멈춘 삭제 실행을 다시 대기열에 넣었다(같은 키의 재전송도 202). 키가
@@ -142,7 +142,8 @@ class AccountDeletionController {
     /**
      * 삭제 실행의 진행(Story 5.2). 금융 상세·건수·실패 원인 원문이 없다 — 상태와 실패한 단계 code(순서대로)뿐이다.
      *
-     * @param status {@link #PROGRESS_IN_PROGRESS}·{@link #PROGRESS_RETRY_NEEDED}·{@link #PROGRESS_ERASED}
+     * @param status {@link #PROGRESS_IN_PROGRESS}·{@link #PROGRESS_RETRY_NEEDED}·{@link #PROGRESS_ERASED}·
+     *     {@link #PROGRESS_COMPLETED}(Story 5.4)
      * @param failedSteps 재시도 필요인 단계 code
      */
     record ProgressView(String status, List<String> failedSteps) {}
@@ -499,7 +500,8 @@ class AccountDeletionController {
     }
 
     /**
-     * 확정 응답의 진행. 요청은 이미 커밋됐으므로 진행을 읽지 못해도 오류로 바꾸지 않는다(Story 5.1의 커밋 뒤 규칙) — 그때는 진행 중이다.
+     * 다시 시도 응답의 진행(지금 값). 재대기열은 이미 커밋됐으므로 진행을 읽지 못해도 오류로 바꾸지 않는다(Story 5.1의 커밋 뒤
+     * 규칙과 같다) — 그때는 진행 중이다. 확정 응답은 이것이 아니라 고정 {@link #CONFIRMED_PROGRESS}다.
      */
     private ProgressView settledProgressOf(UUID userId) {
         try {

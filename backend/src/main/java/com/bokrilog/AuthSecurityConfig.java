@@ -289,9 +289,10 @@ class AuthSecurityConfig {
 
     /**
      * 사용자의 계정 삭제 요청(Story 5.1). 삭제 정책·요청 상태 조회({@code GET /api/account/deletion})와 준비·확정·취소
-     * ({@code POST /api/account/deletion}·{@code /confirm}·{@code /cancel})가 이 접두사 아래에 있다.
+     * ({@code POST /api/account/deletion}·{@code /confirm}·{@code /cancel}), 삭제 진행 세션의 다시 시도
+     * ({@code POST /api/account/deletion/retry}, Story 5.2)가 이 접두사 아래에 있다.
      *
-     * <p>인가와 CSRF·{@code Origin}이 같은 판정 함수({@link #isAccountPath})를 본다. 준비·확정·취소는 상태 변경이라 세션 귀속 CSRF
+     * <p>인가와 CSRF·{@code Origin}이 같은 판정 함수({@link #isAccountPath})를 본다. 준비·확정·취소·다시 시도는 상태 변경이라 세션 귀속 CSRF
      * 토큰과 동일 출처 {@code Origin}을 요구한다. 하위 경로도 같은 판정에 걸려 인증 없이는 401, 인증되면 없는 경로와 같은 404다.
      * 복수형 {@code /api/accounts}는 이 접두사가 아니다(identity 미노출 탐침이 그 404를 고정한다).
      */
@@ -1288,9 +1289,8 @@ class AuthSecurityConfig {
      */
     static boolean isDeletionCompletionRequest(HttpServletRequest request) {
         String uri = applicationPath(request);
-        String deletion = ACCOUNT_PATH + "/deletion";
-        return "GET".equals(request.getMethod()) && uri.equals(deletion)
-                || "POST".equals(request.getMethod()) && uri.equals(deletion + "/confirm");
+        return "GET".equals(request.getMethod()) && uri.equals(AccountDeletionController.DELETION_PATH)
+                || "POST".equals(request.getMethod()) && uri.equals(AccountDeletionController.CONFIRM_PATH);
     }
 
     /** 익명이 아닌 인증 주체인가({@code authenticated()}와 같은 판정). */

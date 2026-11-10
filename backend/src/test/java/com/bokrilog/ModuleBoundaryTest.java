@@ -105,6 +105,9 @@ class ModuleBoundaryTest {
         // "컨트롤러도 엔드포인트도 Actuator도 없다"를 계약으로 적는데, `@Endpoint` 하나면 MVC
         // 애노테이션 없이도 identity 상태가 HTTP로 나간다. Story 3.7부터 Actuator가 운영 classpath에 있으므로
         // (관리 포트의 Prometheus 하나, 루트 `TelemetryConfig`만 닿는다) 이 줄은 이제 실제로 막는 검사다.
+        //
+        // Spring Security도 막는다(Epic 5 회고 A-2) — 완료 확인 전용 세션이 남기는 속성 이름은 인증 표면의 것이라 루트가 port
+        // `CompletionSessionAttributes`로 준다(아래 모든 모듈 규칙에도 같은 줄이 있다).
         ArchRule rule =
                 noClasses()
                         .that()
@@ -117,10 +120,13 @@ class ModuleBoundaryTest {
                                 "org.springframework.boot.webmvc..",
                                 "org.springframework.boot.actuate..",
                                 "org.springframework.boot.web..",
-                                "jakarta.servlet..")
+                                "jakarta.servlet..",
+                                "org.springframework.security..")
                         .because(
                                 "계정 생성·상태 변경·삭제에 HTTP로 닿는 경로를 만들지 않는다. "
-                                        + "identity 기능은 모듈 공개 API로만 호출한다.");
+                                        + "identity 기능은 모듈 공개 API로만 호출한다. "
+                                        + "Spring Security 타입(인증·CSRF·세션 저장소)은 루트 인증 표면의 것이라 "
+                                        + "identity가 의존하지 않는다 — 필요한 사실은 루트가 port로 준다.");
 
         rule.check(PRODUCTION_CLASSES);
     }
@@ -153,6 +159,9 @@ class ModuleBoundaryTest {
      * 것은 "밖에서 이 모듈에 닿는 경로"이지 "이 모듈이 밖으로 나가는 경로"가 아니다 — 컨트롤러·
      * 엔드포인트·서블릿 의존이 그 판정의 대상이고, 연결 표면·재인증·허가·세션 회전은 전부 루트
      * 패키지가 소유한다({@code BybitConnectionController}).
+     *
+     * <p>Spring Security도 막는다(Epic 5 회고 A-2). 인증·CSRF·세션 정책은 루트 인증 표면이 소유하고, 모듈이 그 저장소의 이름 같은 사실이
+     * 필요하면 모듈이 소유한 port를 루트가 구현한다({@code CompletionSessionAttributes}).
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("modules")
@@ -167,10 +176,12 @@ class ModuleBoundaryTest {
                                 "org.springframework.web..",
                                 "org.springframework.boot.webmvc..",
                                 "org.springframework.boot.actuate..",
-                                "jakarta.servlet..")
+                                "jakarta.servlet..",
+                                "org.springframework.security..")
                         .because(
                                 "모듈에는 컨트롤러도 엔드포인트도 없다. HTTP 표면과 세션 정책은 "
-                                        + "루트 패키지가 소유한다.");
+                                        + "루트 패키지가 소유한다. 모듈은 Spring Security 타입(인증·CSRF·세션 저장소)에도 "
+                                        + "의존하지 않는다 — 그것은 루트 인증 표면의 것이다.");
 
         rule.check(PRODUCTION_CLASSES);
     }

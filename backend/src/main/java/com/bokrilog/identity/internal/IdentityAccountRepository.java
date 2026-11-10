@@ -11,8 +11,6 @@ import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
-import org.springframework.security.oauth2.client.web.HttpSessionOAuth2AuthorizationRequestRepository;
-import org.springframework.security.web.csrf.HttpSessionCsrfTokenRepository;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -209,13 +207,16 @@ public class IdentityAccountRepository {
 
     /**
      * 그 계정의 요청 세션을 완료 확인 전용 세션으로 바꾼다 — 행 키(primary_id)가 {@code sessionPrimaryId}이고 주체가 그 계정인 세션 하나다.
-     * {@code principal_name}을 비우고 남기는 속성({@link #KEPT_SESSION_ATTRIBUTES}) 말고 모든 속성(인증 문맥·흐름 무장·재인증 시각)을 지운
-     * 뒤 삭제 요청 ID로 잇는다. CSRF 토큰은 사용자를 가리키지 않고, 남겨야 화면이 들고 있는 토큰으로 로그아웃할 수 있다. 세션 행이
-     * 없으면(로그아웃·만료) 아무것도 하지 않는다.
+     * {@code principal_name}을 비우고 남기는 속성({@code kept} — 이름은 루트가 identity port {@code CompletionSessionAttributes}로
+     * 준다) 말고 모든 속성(인증 문맥·흐름 무장·재인증 시각)을 지운 뒤 삭제 요청 ID로 잇는다. CSRF 토큰은 사용자를 가리키지 않고, 남겨야
+     * 화면이 들고 있는 토큰으로 로그아웃할 수 있다. 세션 행이 없으면(로그아웃·만료) 아무것도 하지 않는다.
      *
+     * @param kept 남기는 속성 이름(비어 있지 않다)
      * @return 바꾼 세션 수(0 또는 1)
      */
-    public int convertToCompletionSession(UUID userId, String sessionPrimaryId, String requestId) {
+    public int convertToCompletionSession(UUID userId, String sessionPrimaryId, String requestId,
+            Collection<String> kept) {
+        List<String> keptNames = keptNamesOf(kept);
         String primaryId = jdbc.sql("SELECT primary_id FROM spring_session WHERE principal_name = :principal "
                         + "AND primary_id = :primary FOR UPDATE")
                 .param("principal", userId.toString())
@@ -226,7 +227,7 @@ public class IdentityAccountRepository {
         if (primaryId == null) {
             return 0;
         }
-        scrubSession(primaryId);
+        scrubSession(primaryId, keptNames);
         jdbc.sql("INSERT INTO identity_deletion_completion_session (session_primary_id, request_id) "
                         + "VALUES (:primary, :requestId) ON CONFLICT (session_primary_id) DO NOTHING")
                 .param("primary", primaryId)
@@ -236,11 +237,11 @@ public class IdentityAccountRepository {
     }
 
     /** 세션 하나의 주체 이름을 비우고 남기는 속성 말고 모든 속성을 지운다. */
-    private void scrubSession(String primaryId) {
+    private void scrubSession(String primaryId, List<String> kept) {
         jdbc.sql("DELETE FROM spring_session_attributes WHERE session_primary_id = :primary "
                         + "AND attribute_name NOT IN (:kept)")
                 .param("primary", primaryId)
-                .param("kept", KEPT_SESSION_ATTRIBUTES)
+                .param("kept", kept)
                 .update();
         jdbc.sql("UPDATE spring_session SET principal_name = NULL WHERE primary_id = :primary AND principal_name IS NOT NULL")
                 .param("primary", primaryId)
@@ -259,9 +260,11 @@ public class IdentityAccountRepository {
      *   <li>주체 이름이 비어 있고 남기는 속성만 있는 세션(정상 완료 세션, 로그인 시작 중인 세션)은 건드리지 않는다.
      * </ul>
      *
+     * @param kept 남기는 속성 이름(비어 있지 않다)
      * @return 정리한 세션 수(비운 것 + 연결을 지운 것)
      */
-    public int scrubCompletionSessions() {
+    public int scrubCompletionSessions(Collection<String> kept) {
+        List<String> keptNames = keptNamesOf(kept);
         record Linked(String primaryId, @Nullable String principal, @Nullable String original) {}
         List<Linked> linked = jdbc.sql("SELECT completion.session_primary_id, session.principal_name, "
                         + "CAST(run.user_id AS text) AS original FROM identity_deletion_completion_session AS completion "
@@ -270,12 +273,12 @@ public class IdentityAccountRepository {
                         + "WHERE session.principal_name IS NOT NULL OR EXISTS (SELECT 1 FROM spring_session_attributes AS attribute "
                         + "WHERE attribute.session_primary_id = session.primary_id AND attribute.attribute_name NOT IN (:kept)) "
                         + "ORDER BY completion.session_primary_id FOR UPDATE OF session SKIP LOCKED")
-                .param("kept", KEPT_SESSION_ATTRIBUTES)
+                .param("kept", keptNames)
                 .query((row, index) -> new Linked(row.getString(1), row.getString(2), row.getString(3)))
                 .list();
         for (Linked session : linked) {
             if (session.principal() == null || session.principal().equals(session.original())) {
-                scrubSession(session.primaryId());
+                scrubSession(session.primaryId(), keptNames);
             } else {
                 jdbc.sql("DELETE FROM identity_deletion_completion_session WHERE session_primary_id = :primary")
                         .param("primary", session.primaryId())
@@ -283,6 +286,20 @@ public class IdentityAccountRepository {
             }
         }
         return linked.size();
+    }
+
+    /**
+     * 남기는 속성 이름의 방어 복사. 비어 있으면 {@code NOT IN (:kept)}를 만들기 전에 실패한다 — 빈 목록은 SQL 오류이거나(빈 {@code IN}) 모든
+     * 속성을 지우는 정리가 되어 화면이 들고 있는 CSRF 토큰으로 로그아웃할 수 없게 된다. 이름은 루트 port가 주는 고정 목록이라 정상
+     * 배치에서는 오지 않는다.
+     *
+     * @throws IllegalStateException 이름이 없다
+     */
+    private static List<String> keptNamesOf(@Nullable Collection<String> kept) {
+        if (kept == null || kept.isEmpty()) {
+            throw new IllegalStateException("COMPLETION_SESSION_ATTRIBUTES_EMPTY: 완료 세션이 남길 속성 이름이 없다.");
+        }
+        return List.copyOf(kept);
     }
 
     /**
@@ -300,21 +317,6 @@ public class IdentityAccountRepository {
                 .param("sessionIds", List.copyOf(sessionIds))
                 .update();
     }
-
-    /**
-     * 완료 확인 전용 세션에서 남기는 속성 — 둘 다 사용자를 가리키지 않는다. 이름은 Spring Security 저장소가 쓰는 기본 이름이고 그
-     * 저장소들의 상수는 공개되지 않아 같은 식(클래스 이름 + 접미사)으로 만든다(사본 리터럴을 두지 않는다).
-     *
-     * <ul>
-     *   <li>CSRF 토큰({@code HttpSessionCsrfTokenRepository}) — 인증 표면이 그 저장소를 기본 이름으로 쓴다
-     *       ({@code AuthSecurityConfig.SessionBoundCsrfTokenRepository}). 남겨야 화면이 들고 있는 토큰으로 로그아웃할 수 있다
-     *       ({@code DeletionCompletionTest}가 그 왕복을 확인한다).
-     *   <li>OAuth2 인가 요청({@code HttpSessionOAuth2AuthorizationRequestRepository}) — 로그인 시작 중인 세션의 진행 흐름이다.
-     * </ul>
-     */
-    static final List<String> KEPT_SESSION_ATTRIBUTES = List.of(
-            HttpSessionCsrfTokenRepository.class.getName() + ".CSRF_TOKEN",
-            HttpSessionOAuth2AuthorizationRequestRepository.class.getName() + ".AUTHORIZATION_REQUEST");
 
     /** 그 세션 ID가 완료 확인 전용 세션이면 그 삭제 요청 ID. 아니면 빈 값. */
     public Optional<String> completionRequestOfSession(String sessionId) {
