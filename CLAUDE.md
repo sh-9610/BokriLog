@@ -232,7 +232,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 회고 AI-1 삭제 실행 운영자 재대기열 fix | done | `spec-deletion-run-requeue.md`, PR #149 머지 커밋 `107407d` |
 | 회고 AI-2·AI-3 삭제 문서·경계 정합과 동일 출처 삭제 검증 chore | done | `spec-epic-5-retro-docs-and-verification.md`, PR #151 머지 커밋 `9774e4c` |
 | 회고 AI-4 CI 설치 단계 시한·비-green 실행 판정 원장 chore | done | `spec-ci-flaky-run-verdicts.md`, PR #153 머지 커밋 `a3dd2ff` |
-| 첫 스냅샷 상태 조회 원자 읽기 fix(deferred 181) | done | `spec-first-snapshot-state-atomic-read.md` |
+| 첫 스냅샷 상태 조회 원자 읽기 fix(deferred 181) | done | `spec-first-snapshot-state-atomic-read.md`, PR #156 |
 
 ## 스토리가 고정한 계약
 

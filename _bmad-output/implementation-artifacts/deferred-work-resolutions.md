@@ -22,7 +22,7 @@ decision_baseline: 'ERD-1.0.0'
 | 미해소 | 119 |
 | 미판정 | 0 |
 
-**2026-11-10 갱신(첫 스냅샷 상태 조회 원자 읽기 fix).** `spec-first-snapshot-state-atomic-read.md`(기준 `d6c6872`)의 판정이다. done 전환 PR이 없는 fix라 이 PR이 판정한다.
+**2026-11-10 갱신(첫 스냅샷 상태 조회 원자 읽기 fix).** `spec-first-snapshot-state-atomic-read.md`(PR #156, 기준 `d6c6872`)의 판정이다. done 전환 PR이 없는 fix라 이 PR이 판정한다.
 - **이 fix가 해소한 항목:** 181(develop push e2e `first-snapshot` 실패)이다. `SyncJobService.state`를 읽기 전용 `REPEATABLE READ` 트랜잭션 하나로 읽게 했고, 두 읽기 사이에 발행 커밋을 끼우는 결정적 시험이 옛 코드에서 실패하고 새 코드에서 통과함을 확인했다. 해소로 판정했다.
 - **이 fix가 append한 defer:** 없다.
 - **이 fix를 결정 지점으로 지목한 항목:** 181뿐이다.
