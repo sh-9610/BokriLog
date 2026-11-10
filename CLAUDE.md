@@ -8,7 +8,7 @@ Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개�
 
 ## 세션 시작 시 확인 순서
 
-1. `git status`와 `git log --oneline -5`로 현재 브랜치가 `develop`이고 깨끗한지 본다. 사용자 체크아웃은 항상 `develop`에 둔다.
+1. `git status`와 `git log --oneline -5`로 현재 브랜치가 `develop`이고 깨끗한지 본다. 사용자 체크아웃은 항상 `develop`에 둔다. `gh run list --workflow ci.yml --branch develop --event push --limit 3`으로 최근 develop push가 green인지 보고, 아니면 `ci-run-verdicts.md`에 그 행이 있는지 확인한다.
 2. `_bmad-output/implementation-artifacts/sprint-status.yaml`에서 `in-progress`·`review` 스토리가 있는지 본다. 있으면 그 스토리의 `spec-<n>-<m>-<slug>.md` frontmatter `status`를 함께 확인한다.
 3. 아래 `## 현재 진행 지점`과 `_bmad-output/implementation-artifacts/epic-<n>-context.md`(Epic 1~5는 모두 닫혔다)로 다음 착수 스토리를 확정한다. 남은 회고 액션은 `sprint-status.yaml`의 `action_items` 중 `open`인 것으로 확인한다.
 4. 스토리를 시작하거나 코드를 바꾸는 요청이면 `bmad-build` 스킬로 진행한다. 질문·조사·문서 읽기는 스킬 없이 답한다.
@@ -126,8 +126,8 @@ docker compose --file deploy/compose/compose.yaml --profile migrate run --rm --b
 
 - 첫 GitHub 실측(2026-09-06, PR #9): wall-clock 4분 3초. 문서-only 경로(`_bmad-output/**`, 최상위 `*.md`)는 `changes`와 `ci-required`만 돌아 1분 안에 끝난다.
 - 백업·복원 리허설은 두 번째 분류 `backup-restore`를 따른다. PR의 변경이 전부 `frontend/**`·`_bmad-output/**`·최상위 `*.md`일 때만 `false`로 두 job을 승인된 비적용으로 건너뛰고, 그 밖(목록 밖 경로·비교 기준 없음·빈 diff·push·dispatch)은 `true`다. 게이트는 `!= 'false'`이고 집계는 빈 값(옛 분류기)을 `success` 기대로 읽는다(`spec-ci-critical-path.md`).
-- artifact 이름에 `run_attempt`가 들어가 `Re-run failed jobs`는 쓸 수 없다. 재실행은 `Re-run all jobs`다.
-- 통합 job timeout 19분은 CI-PLAN §8의 시작값 5분과 다르다. `backend-quality`도 Story 1.3에서 10분 → 15분으로 올렸다(Testcontainers 콜드 실행). Story 2.11이 다시 `backend-quality`를 15 → 20분, 통합 job을 15 → 17분(회귀 단계 4 → 6분, 주입 origin Playwright `globalTimeout` 3 → 5분)으로 올렸다 — PR #49 실측이 백엔드 11분 5초·회귀 2분 30초였고 PR #52의 백엔드가 13분 0초였다. Story 2.17이 통합 job을 17 → 19분(회귀 단계 6 → 8분, `globalTimeout` 5 → 7분)으로 올렸다 — 로컬 CI 모드 회귀 실측이 4분 36초였다. 로컬 백엔드 `clean build`는 시험 fork 분할 전 18분 36초(2026-10-15, Windows 11, 시험 1,496건)·19분 42초(2026-11-03, 분할 전 같은 날)였고, `maxParallelForks = 3`(`spec-ci-test-forks.md`) 뒤 같은 Windows 11에서 11분 44초(2026-11-03, 시험 1,610건·137 클래스, 클래스 시간 합 22.1분을 fork 셋이 11.1분 구간에 겹쳐 돌렸다)다. CI `backend-quality`는 분할 전 13~15분(PR #129 14분 19초)이었고 분할 뒤 PR #133에서 10분 14초(fork 2, 시험 1,625건)다(상세는 `DEVELOPMENT.md`). `deploy-rehearsal`은 백업 리허설을 떼며 70 → 30분, 새 `backup-rehearsal`은 50분이다. 두 값 모두 실측이 몇 회 더 쌓인 뒤 CI-PLAN 새 버전으로 보정하기로 했고 아직 발행 전이다.
+- artifact 이름에 `run_attempt`가 들어가 `Re-run failed jobs`는 쓸 수 없다. 재실행은 `Re-run all jobs`다. green이 아닌 시도는 재실행 전에 `ci-run-verdicts.md`에 한 행을 쓴다(PR은 그 행의 커밋이 재실행을 대신한다).
+- 통합 job timeout 20분은 CI-PLAN §8의 시작값 5분과 다르다. `backend-quality`도 Story 1.3에서 10분 → 15분으로 올렸다(Testcontainers 콜드 실행). Story 2.11이 다시 `backend-quality`를 15 → 20분, 통합 job을 15 → 17분(회귀 단계 4 → 6분, 주입 origin Playwright `globalTimeout` 3 → 5분)으로 올렸다 — PR #49 실측이 백엔드 11분 5초·회귀 2분 30초였고 PR #52의 백엔드가 13분 0초였다. Story 2.17이 통합 job을 17 → 19분(회귀 단계 6 → 8분, `globalTimeout` 5 → 7분)으로 올렸다 — 로컬 CI 모드 회귀 실측이 4분 36초였다. Epic 5 회고 AI-4(`spec-ci-flaky-run-verdicts.md`)가 두 `Chromium headless shell 설치` 단계에 상한 3분을 두며(느린 apt 미러가 job 상한에 걸려 `cancelled`로 끝나던 것을 이름 있는 단계 실패로) 통합 job을 20분으로 올렸다. 로컬 백엔드 `clean build`는 시험 fork 분할 전 18분 36초(2026-10-15, Windows 11, 시험 1,496건)·19분 42초(2026-11-03, 분할 전 같은 날)였고, `maxParallelForks = 3`(`spec-ci-test-forks.md`) 뒤 같은 Windows 11에서 11분 44초(2026-11-03, 시험 1,610건·137 클래스, 클래스 시간 합 22.1분을 fork 셋이 11.1분 구간에 겹쳐 돌렸다)다. CI `backend-quality`는 분할 전 13~15분(PR #129 14분 19초)이었고 분할 뒤 PR #133에서 10분 14초(fork 2, 시험 1,625건)다(상세는 `DEVELOPMENT.md`). `deploy-rehearsal`은 백업 리허설을 떼며 70 → 30분, 새 `backup-rehearsal`은 50분이다. 두 값 모두 실측이 몇 회 더 쌓인 뒤 CI-PLAN 새 버전으로 보정하기로 했고 아직 발행 전이다.
 - Testcontainers는 러너의 docker 데몬을 그대로 쓴다. `backend-quality`에 서비스 컨테이너도, docker를 설치하는 action도 더하지 않았다. 시험은 기존 `Gradle 빌드` 단계 안에서 돈다.
 - 로컬에서 CI 계약을 미리 확인하는 명령은 `bash .github/scripts/test-ci-scripts.sh`다.
 
@@ -142,7 +142,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 ## 산출물 위치와 권위
 
 - `_bmad-output/planning-artifacts/` — `epics.md`(5 에픽·45 스토리 승인), `EPIC-IMPLEMENTATION-READINESS.md`(`ERD-1.0.0`), `architecture/architecture-BokriLog-2026-08-24/`(`ARCHITECTURE-SPINE.md`, `PORTFOLIO-SOLUTION-DESIGN.md`, `CI-PLAN.md`), `prds/prd-BokriLog-2026-08-23/prd.md`, `ux-designs/ux-BokriLog-2026-08-23/`(`DESIGN.md`, `EXPERIENCE.md`), `briefs/`
-- `_bmad-output/implementation-artifacts/` — `sprint-status.yaml`, `epic-<n>-context.md`(1~5), `epic-<n>-retro-<날짜>.md`, `spec-*.md`, `deferred-work.md`, `deferred-work-resolutions.md`
+- `_bmad-output/implementation-artifacts/` — `sprint-status.yaml`, `epic-<n>-context.md`(1~5), `epic-<n>-retro-<날짜>.md`, `spec-*.md`, `deferred-work.md`, `deferred-work-resolutions.md`, `ci-run-verdicts.md`(CI 비-green 실행 판정 원장)
 - `_bmad/render/` — 스킬 렌더링 스냅샷. 생성물이며 커밋하지 않는다.
 
 충돌 시 우선순위는 PRD의 제품 범위 → 아키텍처의 불변식 → `ERD-1.0.0`의 하위 구현 계약 순이다. 결정을 바꿀 때는 기존 문서를 덮어쓰지 않고 새 버전으로 발행한다. `sprint-status.yaml`의 스토리 키 앞부분(`1-3`)이 브랜치 번호이고, 스토리 본문은 `epics.md`의 해당 `### Story` 절이다.

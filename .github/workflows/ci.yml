@@ -247,6 +247,14 @@ jobs:
         # 어느 project도 `channel`을 지정하지 않으므로 Playwright는 headless Chromium을
         # `chromium-headless-shell`로 해석한다. channel을 추가하거나 headed 실행을
         # 필수 경로에 넣으면 `--only-shell` 설치와 어긋나므로 그때 전체 Chromium을 설치한다.
+        #
+        # 단계 상한 3분(Epic 5 회고 AI-4, `spec-ci-flaky-run-verdicts.md`). 정상 설치는 14~89초인데(PR #139~#152
+        # 기간 green run 8회의 두 job 16건) `--with-deps`의 apt 미러가 느렸던 두 번(run 42197758258 att1 6분 23초 ·
+        # run 42231959937 att1 5분 44초, 글꼴 패키지를 분당 약 2MB로 받았다)은 job 상한 8분에 걸려 job 전체가
+        # `cancelled`로 끝났다. 3분은 관측 최대의 두 배를 넘고 그 두 번보다 짧아, 느린 미러가 이 단계 이름의
+        # 실패로 드러난다. 재시도는 두지 않는다 — 실패하면 `ci-run-verdicts.md`에 한 행을 쓴다
+        # (`DEVELOPMENT.md` `### 간헐 실패`).
+        timeout-minutes: 3
         run: npm --prefix frontend exec -- playwright install chromium --with-deps --only-shell
 
       - name: Chromium E2E
@@ -297,7 +305,7 @@ jobs:
     # 기다린다. 10분은 그 둘이 겹친 실행을 끊어 버릴 수 있는 값이라 올린다.
     #
     # CI-PLAN §4·§10의 backend 예산 8분은 이 상한과 별개로 계속 측정한다. 이 값은 목표가 아니라
-    # 멈춘 job을 끊는 상한이며, `same-origin-integration`이 19분(단계 상한 합)을 쓰는 것과 같은 이유다.
+    # 멈춘 job을 끊는 상한이며, `same-origin-integration`이 20분(단계 상한 합)을 쓰는 것과 같은 이유다.
     # 실측이 몇 회 쌓이면 두 값을 CI-PLAN 새 버전이 함께 보정한다.
     #
     # Story 2.11이 15분에서 20분으로 올렸다. PR #49의 이 job은 11분 5초였고, 같은 시험의 로컬
@@ -451,22 +459,24 @@ jobs:
     #   경보 규칙 시험(promtool 내려받기·대조 + 단위시험, 수 초)          위 1분 안
     #   동일 출처 검증(docker build + `up --wait` 180s + I/O 표 단언)      5분
     #   Node 준비 + `npm ci`                                               2분
-    #   Chromium headless shell 설치(`--with-deps` apt)                    2분
+    #   Chromium headless shell 설치(`--with-deps` apt)                    3분 (단계 timeout)
     #   Story 1.1 회귀                                                     8분 (단계 timeout)
     #   compose 정리 + 실패 진단 업로드                                    1분
     #                                                                    ---------
-    #                                                                     19분
+    #                                                                     20분
     #
     # 회귀 단계는 Story 2.11이 4분에서 6분으로 올렸다(playwright `globalTimeout` 5분). PR #49에서
     # 이미 2분 30초(59건)였고, 2.11이 실제 스택의 동기화 왕복을 더했다.
     # Story 2.17이 다시 6분에서 8분으로 올렸다(`globalTimeout` 5분 → 7분) — 재연결 왕복을 더한 로컬 CI 모드 실측이 69건
     # 4분 36초로 5분 상한에 붙었다. job 상한도 단계 합에 맞춰 17분에서 19분으로 올렸다.
+    # Epic 5 회고 AI-4가 Chromium 설치에 단계 상한 3분을 두면서(위 예산 2분 → 3분) job 상한도 단계 합에 맞춰
+    # 20분으로 올렸다 — 느린 apt 미러가 job 상한에 걸려 `cancelled`로 끝나지 않고 이름 있는 단계의 실패로 끝난다.
     #
     # `npm ci`와 Chromium 설치는 `frontend-quality`가 이미 한 일을 되풀이한다. 그 중복을 없애는
     # 편이 예산을 늘리는 것보다 낫지만 이 스토리 범위 밖이라 `deferred-work.md`에 남겼다.
     # CI-PLAN §10의 PR wall-clock p95 8분은 이 상한과 별개로 계속 측정한다. 이 값은 목표가
     # 아니라 멈춘 job을 끊는 상한이다.
-    timeout-minutes: 19
+    timeout-minutes: 20
     permissions:
       contents: read
 
@@ -521,6 +531,10 @@ jobs:
         run: npm --prefix frontend ci --prefer-offline --no-audit --fund=false
 
       - name: Chromium headless shell 설치
+        # 단계 상한 3분은 `frontend-quality`의 같은 단계와 같은 근거다 — 정상 14~89초(PR #139~#152 green run 8회의
+        # 두 job 16건)를 넘는 느린 apt 미러를 이름 있는 실패로 끊는다.
+        # 위 예산 표의 3분이 이 값이고, job 상한 20분이 그것을 담는다.
+        timeout-minutes: 3
         run: npm --prefix frontend exec -- playwright install chromium --with-deps --only-shell
 
       - name: Story 1.1 회귀 (Nginx origin)

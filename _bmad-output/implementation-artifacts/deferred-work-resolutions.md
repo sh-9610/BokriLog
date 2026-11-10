@@ -2,7 +2,7 @@
 title: 'Deferred Work 해소 원장'
 status: living
 created: '2026-09-02'
-updated: '2026-11-09'
+updated: '2026-11-10'
 applies_to: '_bmad-output/implementation-artifacts/deferred-work.md'
 decision_baseline: 'ERD-1.0.0'
 ---
@@ -1495,6 +1495,11 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **부분 해소인 이유:** 원인은 확정하지 않았다. 다음 발생 때 시험 보고서의 `[test-clock]` 줄을 읽어 가른다 — 시계 차이가 크면 VM 재동기화로 끝난다. 차이가 작은데도 나면 1초 미만의 어긋남이나 순차 시험 중 Worker 경합이 남는다.
 
+**주인 지정(2026-11-10, Epic 5 회고 AI-4 chore, 기준 `721c3e6`).** `spec-ci-flaky-run-verdicts.md`가 이 항목과 177(같은 간헐 실패 계열)의 주인을 정했다. 상태와 건수는 바꾸지 않는다.
+- **주인.** 다음 fix chore(가칭 `spec-lease-loss-test-doors.md`)다. 그 fix는 177의 `slowPageStores`·`expireLease` 시험을 `FinalSweepDoor`식 잠금 문(PR #146의 advisory lock 문)으로 옮기고, 그 대상에 `PlanEndTest`가 든다.
+- **재판정 조건.** 그 fix가 `PlanEndTest`를 잠금 문으로 옮긴 뒤 이 항목을 다시 판정한다. 옮긴 뒤에도 전체 빌드에서 같은 실패가 나면 원인은 시간 기반 순서가 아니므로 `[test-clock]` 줄로 시계 차이 가설을 가른다.
+- **기록.** 그 사이 CI에서 이 계열의 실패가 나면 재실행 전에 `ci-run-verdicts.md`에 행을 쓰고 후속 칸에 이 번호(159, 시간 기반 lease 상실 시험이면 177)를 단다(`DEVELOPMENT.md` `### 간헐 실패`). 판정은 원인이 확정되기 전에는 `미조사`이고, 시험 구조가 원인으로 확인됐을 때만 `간헐 시험`이다.
+
 ### 160. 세션 행이 먼저 지워진 뒤 속성 저장의 FK 위반
 
 **미해소(2026-10-17, 세션 속성 upsert fix가 append).** upsert는 같은 속성 첫 INSERT의 기본 키 충돌만 닫는다. 같은 세션의 다른 요청이 동시 로그아웃·만료 정리로 세션 행이 지워진 뒤 속성을 저장하면 `SPRING_SESSION_ATTRIBUTES` FK에서 500이 날 수 있고, 동시 삭제 뒤 UPDATE는 0행이 된다. 재현 시험은 없다.
@@ -1740,6 +1745,11 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **연결.** `PlanEndTest`는 159의 대상이라 이 구조가 159의 원인 후보다.
 
 **미해소 잔여:** 같은 잠금 문 방식(`FinalSweepDoor`, `DEVELOPMENT.md` `### 간헐 실패`)으로 옮길지. 주인 없음 — 그 시험이 실패하거나 159를 조사할 때가 결정 지점이다.
+
+**주인 지정(2026-11-10, Epic 5 회고 AI-4 chore, 기준 `721c3e6`).** `spec-ci-flaky-run-verdicts.md`가 이 항목과 159의 주인을 정했다. 상태(미해소)와 건수는 바꾸지 않는다.
+- **주인.** 다음 fix chore(가칭 `spec-lease-loss-test-doors.md`)다. 위 "지금 값"의 시험들 — `PlanVerificationTest`의 수집 중 재획득 셋과 `BybitConnectionRevocationTest`·`BybitReconnectionTest`·`PlanEndTest`의 `slowPageStores` 사용 시험 — 을 `pg_sleep` + `expireLease`의 시간 기반 순서에서 `FinalSweepDoor`식 잠금 문으로 옮긴다. 이 chore는 SPEC Never에 따라 시험 코드를 바꾸지 않았다.
+- **159와의 관계.** 그 fix가 `PlanEndTest`를 옮긴 뒤 159를 다시 판정한다.
+- **기록 근거.** 이 계열의 CI 실패(run 42197758258 2차 시도)는 시험 구조가 원인으로 확인돼(fix #146) `ci-run-verdicts.md`에 `간헐 시험` 행으로 소급 기록했다. 앞으로 위 "지금 값"의 시험이 CI에서 실패하면 원인이 확정되기 전에는 `미조사`(후속 177)로 쓰고, 시험 구조가 원인으로 확인됐을 때만 `간헐 시험`으로 쓴다.
 
 ### 178. 전체 삭제 완료 판정자의 sweep 상한과 고착 실행의 관측
 
