@@ -72,6 +72,15 @@ final class ActorDigest {
     }
 
     /**
+     * 계정 삭제 요청 ID의 digest(Epic 5 회고 AI-1 삭제 재대기열). 소문자 16진 64자. 재대기열의 원장 target과 {@code details}가 이 값만
+     * 담는다 — 요청 ID는 사용자 귀속 삭제 요청(과 그 tombstone)을 가리키므로 원장에 원문을 남기지 않는다. 다른 digest와 접두사가 달라
+     * 겹치지 않는다(tombstone digest는 다른 키다).
+     */
+    String ofDeletionRequest(String requestId) {
+        return digest("deletion-request:" + requestId);
+    }
+
+    /**
      * 사람이 아닌 SYSTEM 수행자의 digest(Story 3.3). 소문자 16진 64자. 감사 원장은 모든 행에 수행자 digest를 요구하므로
      * 자동 정지 경로의 이름을 묶는다 — 운영자·target digest와 접두사가 달라 겹치지 않는다.
      */

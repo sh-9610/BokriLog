@@ -13,6 +13,7 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -166,6 +167,67 @@ class AccountDeletionRunService implements AccountDeletionRunApi {
             throw new IllegalStateException("재시도 필요 실행을 되돌리지 못했다.");
         }
         return new RetryOutcome.Accepted(false);
+    }
+
+    /*
+     * 두 읽기(실행 행·실패 단계)는 한 스냅숏이다(REPEATABLE READ) — 그 사이 재대기열·재실행이 커밋돼도 재시도 필요 실행이 빈 실패 단계로
+     * 보이지 않는다.
+     */
+    @Override
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public RetryNeededRuns retryNeededRuns() {
+        // 상한보다 하나 더 읽어 잘림을 안다.
+        var found = repository.findRetryNeededRuns(MAX_RETRY_NEEDED_RUNS + 1);
+        boolean truncated = found.size() > MAX_RETRY_NEEDED_RUNS;
+        var runs = truncated ? found.subList(0, MAX_RETRY_NEEDED_RUNS) : found;
+        var failed = repository.findFailedStepsByRequest(
+                runs.stream().map(IdentityAccountRepository.StoredRequestRun::requestId).toList());
+        return new RetryNeededRuns(runs.stream()
+                .map(run -> requestRunOf(run, failed.getOrDefault(run.requestId(), List.of()))).toList(), truncated);
+    }
+
+    @Override
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public Optional<RequestRun> runByRequest(@Nullable String requestId) {
+        if (requestId == null || !REQUEST_ID.matcher(requestId).matches()) {
+            return Optional.empty();
+        }
+        return repository.findRunByRequest(requestId).map(run -> requestRunOf(run,
+                repository.findFailedStepsByRequest(List.of(requestId)).getOrDefault(requestId, List.of())));
+    }
+
+    @Override
+    @Transactional
+    public OperatorRequeue requeueByOperator(@Nullable String requestId, String retryKeyDigest) {
+        if (retryKeyDigest == null || !HEX_DIGEST.matcher(retryKeyDigest).matches()) {
+            // 호출자가 만든 digest다. 모양이 틀리면 배선 실수라 쓰지 않는다.
+            throw new IllegalArgumentException("재대기열 키 digest의 모양이 아니다.");
+        }
+        if (requestId == null || !REQUEST_ID.matcher(requestId).matches()) {
+            return new OperatorRequeue.NotFound();
+        }
+        var requeued = repository.requeueRunByRequest(requestId, retryKeyDigest).orElse(null);
+        if (requeued != null) {
+            return new OperatorRequeue.Requeued(requeued.requeuedAt().toInstant(), requeued.retrySteps());
+        }
+        /*
+         * 0행: 잠그지 않는 읽기로 거절을 가른다. 실행이 없거나, 재시도 필요인데 요청 행이 없으면(Worker가 집지 못한다) 없는 대상이다. 그 밖
+         * (다른 상태이거나, 재시도 필요지만 다른 트랜잭션이 그 행을 쥐어 건너뛰었다)은 지금 다시 대기열에 넣을 수 없는 상태다.
+         */
+        var run = repository.findRunByRequest(requestId).orElse(null);
+        if (run == null || (RunStatus.RETRY_NEEDED.name().equals(run.status()) && run.requestedAt() == null)) {
+            return new OperatorRequeue.NotFound();
+        }
+        return new OperatorRequeue.NotRetryable();
+    }
+
+    private static RequestRun requestRunOf(IdentityAccountRepository.StoredRequestRun run,
+            List<IdentityAccountRepository.StoredStep> failed) {
+        return new RequestRun(run.requestId(), run.requestedAt() == null ? null : run.requestedAt().toInstant(),
+                RunStatus.valueOf(run.status()), run.stoppedAt() == null ? null : run.stoppedAt().toInstant(),
+                failed.stream().map(step -> new StepState(DeletionStep.valueOf(step.step()),
+                        StepStatus.valueOf(step.status()), step.erasedRows(), step.failureCode(), step.attempts()))
+                        .toList());
     }
 
     @Override

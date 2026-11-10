@@ -129,7 +129,8 @@ class OperatorEnvelopeService implements OperatorCommandApi {
                 new RestrictCommand(restrictions, digest, environment),
                 new LiftRestrictionCommand(restrictions, evaluator, environment),
                 new PublishNoticeCommand(notices, restrictions, environment),
-                new UpdateInquiryCommand(inquiries, digest, supportMetrics, environment)));
+                new UpdateInquiryCommand(inquiries, digest, supportMetrics, environment),
+                new RequeueDeletionCommand(digest, environment)));
     }
 
     /** 등록표(시험이 완전성을 본다). */
@@ -227,6 +228,13 @@ class OperatorEnvelopeService implements OperatorCommandApi {
      */
     static String inquiryPhrase(SupportInquiryApi.Status to, String reference) {
         return "문의 " + inquiryStatusWord(to) + " " + reference;
+    }
+
+    /**
+     * 삭제 재대기열의 확인 문구: {@code 삭제 재시도 <요청 ID>}(Epic 5 회고 AI-1). 요청 ID를 담아 문구가 그 실행 하나를 가리킨다(item-7).
+     */
+    static String deletionRequeuePhrase(String requestId) {
+        return "삭제 재시도 " + requestId;
     }
 
     /**

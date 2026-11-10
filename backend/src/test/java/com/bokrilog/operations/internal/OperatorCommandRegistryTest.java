@@ -57,12 +57,12 @@ class OperatorCommandRegistryTest {
     }
 
     @Test
-    void 등록표는_공개_command_이름_일곱을_정확히_덮는다() {
+    void 등록표는_공개_command_이름_전부를_정확히_덮는다() {
         assertThat(declaredCommandNames()).containsExactlyInAnyOrder(OperatorCommandApi.AUDIT_EXPORT,
                 OperatorCommandApi.RESTRICT_NEW_CONNECTION, OperatorCommandApi.RESTRICT_SYNC,
                 OperatorCommandApi.RESTRICT_CALCULATION_DISPLAY, OperatorCommandApi.RESTRICT_ADVERTISING,
                 OperatorCommandApi.LIFT_RESTRICTION, OperatorCommandApi.PUBLISH_NOTICE,
-                OperatorCommandApi.UPDATE_INQUIRY);
+                OperatorCommandApi.UPDATE_INQUIRY, OperatorCommandApi.REQUEUE_DELETION);
         OperatorEnvelopeService engine = engine();
         assertThat(engine.registry().names()).containsExactlyInAnyOrderElementsOf(declaredCommandNames());
         for (String name : declaredCommandNames()) {

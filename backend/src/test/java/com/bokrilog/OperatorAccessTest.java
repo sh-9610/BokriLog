@@ -198,6 +198,9 @@ class OperatorAccessTest extends OperatorTestBase {
                 .containsExactly(OperatorPermission.COMMAND);
         assertThat(OperatorGate.requiredFor("/api/operator/audit")).containsExactly(OperatorPermission.AUDIT);
         assertThat(OperatorGate.requiredFor("/api/operator/auditx")).isEmpty();
+        // 삭제 재대기열 목록(Epic 5 회고 AI-1)은 command 권한이다. 접두사 경계 밖은 걸리지 않는다.
+        assertThat(OperatorGate.requiredFor("/api/operator/deletions")).containsExactly(OperatorPermission.COMMAND);
+        assertThat(OperatorGate.requiredFor("/api/operator/deletionsx")).isEmpty();
         assertThat(OperatorGate.requiredFor("/api/operator/operations/op_x")).isEmpty();
         assertThat(AuthSecurityConfig.isOperatorPath("/api/operatorx")).isFalse();
         assertThat(AuthSecurityConfig.isOperatorPath("/api/operator")).isTrue();

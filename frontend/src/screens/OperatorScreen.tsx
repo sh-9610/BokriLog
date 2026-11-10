@@ -6,8 +6,10 @@ import type {
   NoticeIncident,
   NoticeVersionEntry,
   OperatorInquiry,
+  RetryNeededDeletion,
 } from '../session/operatorApi'
 
+import { OperatorDeletionRequeueDialog } from '../components/OperatorDeletionRequeueDialog'
 import { OperatorExportDialog } from '../components/OperatorExportDialog'
 import { OperatorInquiryDialog } from '../components/OperatorInquiryDialog'
 import { OperatorNoticeDialog } from '../components/OperatorNoticeDialog'
@@ -31,6 +33,7 @@ import { entryContent } from '../content/entry'
 import {
   businessMinutesText,
   CALCULATION_POLICY_TARGET,
+  deletionFailedStepText,
   DEPLOY_VERSION_MAX_LENGTH,
   featureLabel,
   featuresText,
@@ -60,6 +63,7 @@ import {
   recoverButtonLabel,
   RECOVERY_CONDITION_LABELS,
   RECOVERY_CONDITIONS,
+  REQUEUE_DELETION_COMMAND,
   RESTRICTION_COMMANDS,
   RESTRICTION_FEATURES,
   RESTRICTION_SCOPES,
@@ -82,6 +86,7 @@ import {
   useOperatorAudit,
   type AuditFilter,
 } from '../session/useOperatorAudit'
+import { useOperatorDeletion } from '../session/useOperatorDeletion'
 import { useOperatorExport } from '../session/useOperatorExport'
 import { useOperatorInquiry } from '../session/useOperatorInquiry'
 import { useOperatorNotice } from '../session/useOperatorNotice'
@@ -370,6 +375,60 @@ function InquiryRow({
   )
 }
 
+/**
+ * 재시도 필요로 멈춘 삭제 실행 하나(Epic 5 회고 AI-1). 사용자 식별자가 없다 — 삭제 요청 ID·요청 시각·멈춘 시각·실패 단계(단계·실패
+ * code·시도 수)뿐이다. 행마다 그 실행 하나를 고르는 동작이 있다.
+ */
+function DeletionRow({
+  deletion,
+  disabled,
+  onChoose,
+}: {
+  readonly deletion: RetryNeededDeletion
+  readonly disabled: boolean
+  readonly onChoose: () => void
+}): ReactElement {
+  const columns = copy.deletion.columns
+  return (
+    <li className={styles.entry}>
+      <div className={styles.entryRow}>
+        <span className={styles.term}>{columns.requestId}</span>
+        <span className={styles.value}>{deletion.requestId}</span>
+      </div>
+      <div className={styles.entryRow}>
+        <span className={styles.term}>{columns.requestedAt}</span>
+        <span className={styles.value}>{formatOperatorTime(deletion.requestedAt)}</span>
+        <span className={styles.term}>{columns.stoppedAt}</span>
+        <span className={styles.value}>
+          {deletion.stoppedAt === null
+            ? copy.deletion.unknownTime
+            : formatOperatorTime(deletion.stoppedAt)}
+        </span>
+      </div>
+      <div className={styles.entryRow}>
+        <span className={styles.term}>{columns.failedSteps}</span>
+        <span className={styles.value}>
+          {deletion.failedSteps.length === 0
+            ? copy.deletion.noFailedSteps
+            : deletion.failedSteps
+                .map((step) => deletionFailedStepText(step.step, step.failureCode, step.attempts))
+                .join(', ')}
+        </span>
+      </div>
+      <button
+        aria-disabled={disabled}
+        className={styles.button}
+        onClick={() => {
+          if (!disabled) onChoose()
+        }}
+        type="button"
+      >
+        {copy.deletion.choose(deletion.requestId)}
+      </button>
+    </li>
+  )
+}
+
 /** 오늘(KST)의 `YYYY-MM-DD`. 집계 기간의 기본값이다. */
 function kstToday(offsetDays = 0): string {
   const shifted = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000)
@@ -472,7 +531,7 @@ export function OperatorScreen(): ReactElement {
   const [restrictionReason, setRestrictionReason] = useState('')
   /** 화면의 단일 status가 말할 마지막 조작. 네 명령의 끝난 상태가 함께 남아도 사용자가 마지막에 누른 쪽을 말한다. */
   const [lastCommand, setLastCommand] = useState<
-    'export' | 'inquiry' | 'notice' | 'recovery' | 'restriction'
+    'deletion' | 'export' | 'inquiry' | 'notice' | 'recovery' | 'restriction'
   >('export')
   // 제한 복구(Story 3.4): 활성 목록에서 고른 제한 하나와 그 증거 입력. 값은 메모리에만 있다.
   const recovering = useOperatorRecovery(csrfToken, restricting.reloadList)
@@ -560,6 +619,28 @@ export function OperatorScreen(): ReactElement {
     chosenInquiryStatus !== null && nextInquiryStatuses.includes(chosenInquiryStatus)
       ? chosenInquiryStatus
       : (nextInquiryStatuses[0] ?? null)
+  /*
+   * 삭제 실행 재대기열(Epic 5 회고 AI-1): 재시도 필요 목록은 command 권한이 제한 목록으로 확인된 뒤에만 읽는다. 목록에서 고른 실행
+   * 하나는 지금 목록에 있을 때만 폼을 연다. 입력은 메모리에만 있다.
+   */
+  const deleting = useOperatorDeletion(ready && restricting.list.everLoaded, csrfToken)
+  const [chosenDeletion, setDeletionTarget] = useState<string | null>(null)
+  const [deletionReason, setDeletionReason] = useState('')
+  /** 사용자가 행을 연 횟수. 초점 이동은 이 값이 바뀔 때만이다 — 목록 갱신이 저절로 초점을 옮기지 않는다. */
+  const [deletionOpened, setDeletionOpened] = useState(0)
+  const chosenListed =
+    chosenDeletion !== null &&
+    deleting.list.available === true &&
+    deleting.list.items.some((item) => item.requestId === chosenDeletion)
+  if (chosenDeletion !== null && !chosenListed) {
+    /*
+     * 고른 실행이 목록에서 빠졌다(재대기열이 끝났거나 다른 경로가 처리했다) — 선택과 사유를 닫는다. 그 요청 ID가 나중에 다시 나타나도
+     * 폼이 저절로 열리거나 초점이 옮겨 가지 않는다. 렌더 중 자기 상태 조정이고 다음 렌더에서 조건이 거짓이 되어 멈춘다.
+     */
+    setDeletionTarget(null)
+    setDeletionReason('')
+  }
+  const deletionTarget = chosenListed ? chosenDeletion : null
 
   const resultRef = useRef<HTMLHeadingElement>(null)
   const noticeResultRef = useRef<HTMLHeadingElement>(null)
@@ -568,6 +649,8 @@ export function OperatorScreen(): ReactElement {
   const recoveryResultRef = useRef<HTMLHeadingElement>(null)
   const inquiryDetailRef = useRef<HTMLHeadingElement>(null)
   const inquiryResultRef = useRef<HTMLHeadingElement>(null)
+  const deletionHeadingRef = useRef<HTMLHeadingElement>(null)
+  const deletionResultRef = useRef<HTMLHeadingElement>(null)
 
   // 완료의 결과는 사용자가 누른 조작의 결과다 — 그 제목으로 초점을 옮긴다(커밋과 함께, layout effect).
   const completed = exporting.phase === 'completed'
@@ -613,6 +696,18 @@ export function OperatorScreen(): ReactElement {
       inquiryResultRef.current?.focus()
     }
   }, [inquiryRecorded])
+  // 행의 `다시 대기열에 넣기`를 누른 결과는 재대기열 영역이다 — 그 제목으로 초점을 옮긴다(누를 때마다, 같은 행을 다시 열어도).
+  useLayoutEffect(() => {
+    if (deletionOpened > 0) {
+      deletionHeadingRef.current?.focus()
+    }
+  }, [deletionOpened])
+  const requeued = deleting.phase === 'completed'
+  useLayoutEffect(() => {
+    if (requeued) {
+      deletionResultRef.current?.focus()
+    }
+  }, [requeued])
 
   // 서버가 세션이 끝났다고 답했다. 만료의 결과는 이동 하나다(`useSessionGate`와 같은 규칙).
   const sessionEnded =
@@ -622,9 +717,11 @@ export function OperatorScreen(): ReactElement {
     recovering.sessionEnded ||
     noticing.sessionEnded ||
     inquiring.sessionEnded ||
+    deleting.sessionEnded ||
     restricting.list.status === 'unauthenticated' ||
     noticing.list.status === 'unauthenticated' ||
     inquiring.list.status === 'unauthenticated' ||
+    deleting.list.status === 'unauthenticated' ||
     lookup.lookup.status === 'unauthenticated'
   useLayoutEffect(() => {
     if (sessionEnded) {
@@ -675,18 +772,22 @@ export function OperatorScreen(): ReactElement {
     noticing.prepared !== null && (noticing.phase === 'armed' || noticing.phase === 'confirming')
   const inquiryDialogOpen =
     inquiring.prepared !== null && (inquiring.phase === 'armed' || inquiring.phase === 'confirming')
+  const deletionDialogOpen =
+    deleting.prepared !== null && (deleting.phase === 'armed' || deleting.phase === 'confirming')
   const dialogOpen =
     exportDialogOpen ||
     restrictionDialogOpen ||
     recoveryDialogOpen ||
     noticeDialogOpen ||
-    inquiryDialogOpen
+    inquiryDialogOpen ||
+    deletionDialogOpen
   const busy =
     exporting.busy ||
     restricting.busy ||
     recovering.busy ||
     noticing.busy ||
     inquiring.busy ||
+    deleting.busy ||
     reauthentication.pending ||
     signOut.pending ||
     dialogOpen
@@ -711,6 +812,7 @@ export function OperatorScreen(): ReactElement {
     inquiryStatus !== null &&
     inquiryReason.trim() !== '' &&
     (inquiryStatus !== 'ANSWERED' || inquiryAnswer.trim() !== '')
+  const canRequeue = deletionTarget !== null && deletionReason.trim() !== ''
 
   // 운영자 제어는 운영자임이 한 번 확인된 뒤에만 그린다. 첫 조회의 실패는 fail-closed다.
   /*
@@ -730,6 +832,10 @@ export function OperatorScreen(): ReactElement {
   const inquiryVisible =
     restrictionVisible &&
     (inquiring.list.everLoaded || (listLoaded && inquiring.list.status === 'failed'))
+  // 삭제 재대기열 영역(Epic 5 회고 AI-1)도 제한 영역이 보인 뒤, 목록을 한 번이라도 읽었거나 그 읽기만 실패했을 때 그린다.
+  const deletionVisible =
+    restrictionVisible &&
+    (deleting.list.everLoaded || (listLoaded && deleting.list.status === 'failed'))
   const operatorVisible = auditVisible || restrictionVisible
   const settled = audit.view.status !== 'checking' && restricting.list.status !== 'checking'
   const loadFailed =
@@ -748,7 +854,9 @@ export function OperatorScreen(): ReactElement {
           ? noticing.uncertainOperationId
           : lastCommand === 'inquiry'
             ? inquiring.uncertainOperationId
-            : exporting.uncertainOperationId
+            : lastCommand === 'deletion'
+              ? deleting.uncertainOperationId
+              : exporting.uncertainOperationId
   const operationValue =
     !operationEdited && uncertainOperationId !== null ? uncertainOperationId : operationInput
   const canPrepare = filter.from !== '' && filter.to !== '' && reason.trim() !== ''
@@ -795,7 +903,8 @@ export function OperatorScreen(): ReactElement {
               restricting.busy ||
               recovering.busy ||
               noticing.busy ||
-              inquiring.busy
+              inquiring.busy ||
+              deleting.busy
             }
             aria-live="polite"
             className={styles.notice}
@@ -815,7 +924,9 @@ export function OperatorScreen(): ReactElement {
                       ? noticeSentence(noticing)
                       : lastCommand === 'inquiry'
                         ? inquirySentence(inquiring)
-                        : exportSentence(exporting),
+                        : lastCommand === 'deletion'
+                          ? deletionSentence(deleting)
+                          : exportSentence(exporting),
                 lookup.lookup.status === 'loading',
                 audit.view,
                 auditVisible,
@@ -2183,6 +2294,209 @@ export function OperatorScreen(): ReactElement {
                 </section>
               ) : null}
 
+              {deletionVisible ? (
+                <section aria-labelledby={copy.deletion.id} className={styles.section}>
+                  <h2 className={styles.sectionHeading} id={copy.deletion.id}>
+                    {copy.deletion.heading}
+                  </h2>
+                  {deleting.list.available === true ? (
+                    <>
+                      <p>{copy.deletion.body}</p>
+                      {deleting.list.truncated ? (
+                        <p className={styles.help}>{copy.deletion.truncated}</p>
+                      ) : null}
+                      {deleting.list.status === 'failed' ? (
+                        <p className={styles.empty}>{copy.deletion.failed}</p>
+                      ) : null}
+                      {/* 실패와 "없음"을 함께 말하지 않는다 — 비었다는 것은 목록을 읽었을 때만 참이다. */}
+                      {deleting.list.items.length === 0 ? (
+                        deleting.list.status === 'loaded' ? (
+                          <p className={styles.empty}>{copy.deletion.empty}</p>
+                        ) : null
+                      ) : (
+                        <ol aria-labelledby={copy.deletion.id} className={styles.list}>
+                          {deleting.list.items.map((deletion) => (
+                            <DeletionRow
+                              deletion={deletion}
+                              disabled={busy}
+                              key={deletion.requestId}
+                              onChoose={() => {
+                                /*
+                                 * 행을 열 때마다 깨끗한 상태에서 시작한다 — 같은 행을 닫았다 다시 열어도 앞의 사유·거절·결과·키가
+                                 * 남지 않는다.
+                                 */
+                                setDeletionReason('')
+                                deleting.reset()
+                                setDeletionTarget(deletion.requestId)
+                                setDeletionOpened((count) => count + 1)
+                              }}
+                            />
+                          ))}
+                        </ol>
+                      )}
+                      <button
+                        aria-disabled={deleting.list.loading}
+                        className={styles.button}
+                        onClick={() => {
+                          if (!deleting.list.loading) deleting.reloadList()
+                        }}
+                        type="button"
+                      >
+                        {copy.deletion.reload}
+                      </button>
+
+                      {deletionTarget === null ? null : (
+                        <div
+                          aria-labelledby="operator-deletion-selected"
+                          className={styles.result}
+                          role="group"
+                        >
+                          <h3
+                            className={styles.label}
+                            id="operator-deletion-selected"
+                            ref={deletionHeadingRef}
+                            tabIndex={-1}
+                          >
+                            {copy.deletion.selected}: {deletionTarget}
+                          </h3>
+                          <form
+                            className={styles.form}
+                            onSubmit={(event) => {
+                              // 폼은 fetch로만 보낸다. `form-action 'none'` CSP를 유지한다.
+                              event.preventDefault()
+                            }}
+                          >
+                            <div className={styles.wideField}>
+                              <label className={styles.label} htmlFor="operator-deletion-reason">
+                                {copy.deletion.reasonLabel}
+                              </label>
+                              <input
+                                aria-describedby="operator-deletion-reason-help"
+                                autoComplete="off"
+                                className={styles.input}
+                                id="operator-deletion-reason"
+                                maxLength={REASON_MAX_LENGTH}
+                                onChange={(event) => {
+                                  setDeletionReason(event.target.value)
+                                }}
+                                type="text"
+                                value={deletionReason}
+                              />
+                              <p className={styles.help} id="operator-deletion-reason-help">
+                                {copy.deletion.reasonHelp}
+                              </p>
+                            </div>
+                          </form>
+                          <button
+                            aria-disabled={busy || !canRequeue}
+                            className={styles.dangerButton}
+                            id={copy.deletion.startId}
+                            onClick={() => {
+                              if (busy || !canRequeue) {
+                                return
+                              }
+                              setLastCommand('deletion')
+                              deleting.prepare({
+                                requestId: deletionTarget,
+                                reason: deletionReason.trim(),
+                              })
+                            }}
+                            type="button"
+                          >
+                            {copy.deletion.start}
+                          </button>
+                          <button
+                            aria-disabled={busy}
+                            className={styles.button}
+                            onClick={() => {
+                              if (!busy) setDeletionTarget(null)
+                            }}
+                            type="button"
+                          >
+                            {copy.deletion.close}
+                          </button>
+
+                          {deleting.reauthRequired && lastCommand === 'deletion' ? (
+                            <div className={styles.result}>
+                              <p className={styles.label}>{copy.deletion.reauthLabel}</p>
+                              <div className={reauthStyles.providerList}>
+                                {SIGN_IN_PROVIDERS.map((provider) => (
+                                  <button
+                                    aria-disabled={busy}
+                                    className={PROVIDER_BUTTON_CLASS[provider]}
+                                    key={provider}
+                                    onClick={() => {
+                                      if (busy) return
+                                      reauthentication.requestReauthentication(provider)
+                                    }}
+                                    type="button"
+                                  >
+                                    <ProviderMark provider={provider} />
+                                    <span>{authContent.settings.reauth.labels[provider]}</span>
+                                  </button>
+                                ))}
+                              </div>
+                              <p className={styles.help}>{authContent.reauth.boundary}</p>
+                            </div>
+                          ) : null}
+                        </div>
+                      )}
+                    </>
+                  ) : deleting.list.available === false ? (
+                    // 이 환경(production, G-5 전)은 삭제를 실행하지 않는다. 목록도 동작도 그리지 않는다.
+                    <p className={styles.empty}>{copy.deletion.unavailable}</p>
+                  ) : (
+                    // 아직 한 번도 읽지 못했다 — 이 환경이 삭제를 실행하는지 모르므로 설명도 불가 안내도 그리지 않는다.
+                    <>
+                      <p className={styles.empty}>{copy.deletion.failed}</p>
+                      <button
+                        aria-disabled={deleting.list.loading}
+                        className={styles.button}
+                        onClick={() => {
+                          if (!deleting.list.loading) deleting.reloadList()
+                        }}
+                        type="button"
+                      >
+                        {copy.deletion.reload}
+                      </button>
+                    </>
+                  )}
+
+                  {deleting.completed === null ? null : (
+                    <div
+                      aria-labelledby={copy.deletion.result.id}
+                      className={styles.result}
+                      role="group"
+                    >
+                      <h3
+                        className={styles.label}
+                        id={copy.deletion.result.id}
+                        ref={deletionResultRef}
+                        tabIndex={-1}
+                      >
+                        {copy.deletion.result.heading}
+                      </h3>
+                      <p>
+                        {copy.deletion.result.status}:{' '}
+                        {deleting.completed.status === 'QUEUED'
+                          ? copy.deletion.result.queued
+                          : deleting.completed.status}
+                      </p>
+                      <p>
+                        {copy.deletion.result.retrySteps}: {String(deleting.completed.retrySteps)}
+                      </p>
+                      <p>
+                        {copy.deletion.result.operation}: {deleting.completed.operationId}
+                      </p>
+                      <p>
+                        {copy.deletion.result.requeuedAt}:{' '}
+                        {formatOperatorTime(deleting.completed.requeuedAt)}
+                      </p>
+                    </div>
+                  )}
+                </section>
+              ) : null}
+
               <section aria-labelledby={copy.operation.id} className={styles.section}>
                 <h2 className={styles.sectionHeading} id={copy.operation.id}>
                   {copy.operation.heading}
@@ -2272,6 +2586,16 @@ export function OperatorScreen(): ReactElement {
           onConfirm={inquiring.confirm}
           prepared={inquiring.prepared}
           uncertain={inquiring.uncertain}
+        />
+      ) : null}
+      {deletionDialogOpen ? (
+        <OperatorDeletionRequeueDialog
+          code={deleting.code}
+          confirming={deleting.phase === 'confirming'}
+          onCancel={deleting.cancel}
+          onConfirm={deleting.confirm}
+          prepared={deleting.prepared}
+          uncertain={deleting.uncertain}
         />
       ) : null}
       {recoveryDialogOpen ? (
@@ -2442,6 +2766,32 @@ function inquirySentence(inquiring: ReturnType<typeof useOperatorInquiry>): stri
         : copy.inquiry.uncertainClosed
     case 'refused':
       return operatorRefusalMessage(inquiring.code, UPDATE_INQUIRY_COMMAND)
+    case 'idle':
+      return null
+  }
+}
+
+/** 삭제 실행 재대기열의 진행·결과 문장(Epic 5 회고 AI-1). 말할 것이 없으면 `null`. */
+function deletionSentence(deleting: ReturnType<typeof useOperatorDeletion>): string | null {
+  switch (deleting.phase) {
+    case 'preparing':
+      return copy.status.deletionPreparing
+    case 'armed':
+      return deleting.uncertain ? copy.deletion.uncertain : copy.status.deletionPrepared
+    case 'confirming':
+      return copy.status.deletionConfirming
+    case 'completed': {
+      const done = deleting.completed
+      return done === null
+        ? copy.status.deletionConfirming
+        : copy.status.deletionCompleted(done.retrySteps)
+    }
+    case 'cancelled':
+      return deleting.uncertainOperationId === null
+        ? copy.status.deletionCancelled
+        : copy.deletion.uncertainClosed
+    case 'refused':
+      return operatorRefusalMessage(deleting.code, REQUEUE_DELETION_COMMAND)
     case 'idle':
       return null
   }

@@ -2,6 +2,7 @@ package com.bokrilog.identity.internal;
 
 import java.sql.ResultSet;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -863,6 +864,105 @@ public class IdentityAccountRepository {
                 .param("digest", retryKeyDigest)
                 .param("userId", userId)
                 .update();
+    }
+
+    // ------------------------------------------------------------------ Epic 5 회고 AI-1 운영자 재대기열
+
+    /**
+     * 요청 ID로 읽은 실행(SQL 결과). 사용자 식별자를 담지 않는다.
+     *
+     * @param requestedAt 요청 행이 없으면 {@code null} — 요청 행은 운영 완료 커밋(또는 단일 모드 삭제)이 지우므로 끝난 실행뿐이다. 재시도 필요
+     *     목록({@link #findRetryNeededRuns})은 요청 행과 내부 결합해 언제나 있다
+     * @param stoppedAt 재시도 필요 단계의 {@code finished_at} 최댓값. 그런 단계가 없으면 {@code null}
+     */
+    public record StoredRequestRun(String requestId, @Nullable OffsetDateTime requestedAt, String status,
+            @Nullable OffsetDateTime stoppedAt) {}
+
+    /** 운영자 재대기열이 접수한 결과(SQL 결과). */
+    public record StoredRequeue(OffsetDateTime requeuedAt, int retrySteps) {}
+
+    /** 요청 ID로 본 실행의 열 — 멈춘 시각은 재시도 필요 단계의 마지막 결과 시각이다. 사용자 열을 고르지 않는다. 결합은 뒤에 붙인다. */
+    private static final String REQUEST_RUN_COLUMNS = "SELECT run.request_id, request.requested_at, run.status, "
+            + "(SELECT max(step.finished_at) FROM identity_deletion_step AS step WHERE step.user_id = run.user_id "
+            + "AND step.status = 'RETRY_NEEDED') AS stopped_at FROM identity_deletion_run AS run ";
+
+    /**
+     * 재시도 필요로 멈춘 실행(요청 시각 순, 상한 {@code limit}). 요청 행과 내부 결합한다 — 재시도 필요 실행은 요청 행을 언제나 가진다(요청 행을
+     * 지우는 것은 운영 완료 커밋뿐이다). 요청 행이 없는 실행은 Worker가 집지 않으므로 재대기열 대상도 아니다. 호출자는 {@code limit}을 하나 더
+     * 넉넉히 넘겨 잘림을 안다.
+     */
+    public List<StoredRequestRun> findRetryNeededRuns(int limit) {
+        return jdbc.sql(REQUEST_RUN_COLUMNS + "JOIN identity_deletion_request AS request "
+                        + "ON request.request_id = run.request_id WHERE run.status = 'RETRY_NEEDED' "
+                        + "ORDER BY request.requested_at, run.request_id LIMIT :limit")
+                .param("limit", limit)
+                .query(IdentityAccountRepository::storedRequestRun)
+                .list();
+    }
+
+    /**
+     * 그 요청 ID의 실행(상태 무관). 잠그지 않는다. 요청 행과 외부 결합한다 — 끝난 실행(요청 행이 지워졌다)도 상태로 거절 code를 가를 수 있게
+     * 찾는다(그때 요청 시각은 비어 있다).
+     */
+    public Optional<StoredRequestRun> findRunByRequest(String requestId) {
+        return jdbc.sql(REQUEST_RUN_COLUMNS + "LEFT JOIN identity_deletion_request AS request "
+                        + "ON request.request_id = run.request_id WHERE run.request_id = :requestId")
+                .param("requestId", requestId)
+                .query(IdentityAccountRepository::storedRequestRun)
+                .optional();
+    }
+
+    /** 그 요청 ID들의 재시도 필요 단계(요청 ID → 단계 순서대로). 잠그지 않는다. */
+    public Map<String, List<StoredStep>> findFailedStepsByRequest(Collection<String> requestIds) {
+        Map<String, List<StoredStep>> steps = new LinkedHashMap<>();
+        if (requestIds.isEmpty()) {
+            return steps;
+        }
+        jdbc.sql("SELECT run.request_id, step.step, step.status, step.erased_rows, step.failure_code, step.attempts "
+                        + "FROM identity_deletion_step AS step JOIN identity_deletion_run AS run "
+                        + "ON run.user_id = step.user_id WHERE run.request_id IN (:requestIds) "
+                        + "AND step.status = 'RETRY_NEEDED' ORDER BY run.request_id, step.position")
+                .param("requestIds", List.copyOf(requestIds))
+                .query((ResultSet row) -> {
+                    steps.computeIfAbsent(row.getString("request_id"), ignored -> new ArrayList<>())
+                            .add(new StoredStep(row.getString("step"), row.getString("status"),
+                                    row.getObject("erased_rows", Long.class), row.getString("failure_code"),
+                                    row.getInt("attempts")));
+                });
+        return steps;
+    }
+
+    /**
+     * 운영자 재대기열: 그 요청 ID의 재시도 필요 실행을 {@code QUEUED}로 되돌리고 운영자 키 digest를 남긴다. <b>앞서 잠그지 않는 조건부
+     * UPDATE 한 문장이다</b> — 후보 행은 {@code FOR UPDATE SKIP LOCKED}로만 잡으므로 다른 트랜잭션(단계 트랜잭션·단일 모드·사용자 재시도)이
+     * 쥔 행은 기다리지 않고 건너뛴다. 원장 잠금을 쥔 운영 확정이 실행 행에서 기다리지 않아 단계 트랜잭션(실행 행 → 원장 순서)과 교착하지
+     * 않는다. {@code NOWAIT}·{@code lock_timeout}은 트랜잭션을 abort시켜 거절이 아니라 실패가 되므로 쓰지 않는다. 커밋된 상태가
+     * {@code RETRY_NEEDED}가 아니면(READ COMMITTED) 술어가 맞지 않아 0행이다. 요청 행이 없는 실행도 0행이다 — Worker의 claim은 요청 행이
+     * 있는 실행만 집으므로 그런 실행을 {@code QUEUED}로 돌리면 영원히 대기한다. 단계 행은 바꾸지 않는다.
+     *
+     * @return 되돌렸으면 접수 시각과 다시 돌 재시도 필요 단계 수. 0행이면 빈 값
+     */
+    public Optional<StoredRequeue> requeueRunByRequest(String requestId, String retryKeyDigest) {
+        return jdbc.sql("UPDATE identity_deletion_run SET status = 'QUEUED', retry_key_digest = :digest, "
+                        + "retry_requested_at = statement_timestamp() "
+                        + "WHERE user_id = (SELECT run.user_id FROM identity_deletion_run AS run "
+                        + "WHERE run.request_id = :requestId AND run.status = 'RETRY_NEEDED' AND EXISTS (SELECT 1 FROM "
+                        + "identity_deletion_request AS request WHERE request.request_id = run.request_id) "
+                        + "FOR UPDATE OF run SKIP LOCKED) "
+                        + "AND status = 'RETRY_NEEDED' "
+                        + "RETURNING retry_requested_at, (SELECT count(*) FROM identity_deletion_step AS step "
+                        + "WHERE step.user_id = identity_deletion_run.user_id AND step.status = 'RETRY_NEEDED') "
+                        + "AS retry_steps")
+                .param("digest", retryKeyDigest)
+                .param("requestId", requestId)
+                .query((row, index) -> new StoredRequeue(row.getObject("retry_requested_at", OffsetDateTime.class),
+                        row.getInt("retry_steps")))
+                .optional();
+    }
+
+    private static StoredRequestRun storedRequestRun(java.sql.ResultSet row, int index) throws java.sql.SQLException {
+        return new StoredRequestRun(row.getString("request_id"), row.getObject("requested_at", OffsetDateTime.class),
+                row.getString("status"), row.getObject("stopped_at", OffsetDateTime.class));
     }
 
     /**

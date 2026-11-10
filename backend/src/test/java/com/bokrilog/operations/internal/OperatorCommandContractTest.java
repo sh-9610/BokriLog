@@ -200,4 +200,25 @@ class OperatorCommandContractTest {
         assertThat(json(finished.view())).isEqualTo("{\"operationId\":\"op_contract\",\"outcome\":\"COMPLETED\","
                 + "\"command\":\"update-inquiry\",\"status\":\"RESOLVED\",\"transitionedAt\":\"2026-10-13T01:02:03Z\"}");
     }
+
+    // ------------------------------------------------------------------ 삭제 재대기열(Epic 5 회고 AI-1)
+
+    @Test
+    void 삭제_재대기열의_미리보기는_빈_시각을_null로_싣고_확정_본문은_상태_시각_단계_수다() {
+        RequeueDeletionCommand command = new RequeueDeletionCommand(mock(ActorDigest.class), this.environment);
+        var requeue = new RequeueDeletionCommand.Requeue("del_AAAAAAAAAA");
+        when(this.environment.deletionRequeueAvailable()).thenReturn(true);
+        when(this.environment.deletionRun("del_AAAAAAAAAA")).thenReturn(java.util.Optional.of(
+                new OperatorCommandEnvironment.DeletionRunFacts("del_AAAAAAAAAA", AT, true, null, List.of(
+                        new OperatorCommandEnvironment.FailedDeletionStep("SYNC", "STEP_FAILED", 2)))));
+        assertThat(json(preview(command.inspect(accepted("requeue-deletion", "del_AAAAAAAAAA", requeue), requeue))))
+                .isEqualTo("{\"requestId\":\"del_AAAAAAAAAA\",\"requestedAt\":\"2026-10-13T01:02:03Z\","
+                        + "\"stoppedAt\":null,\"failedSteps\":[{\"step\":\"SYNC\",\"failureCode\":\"STEP_FAILED\","
+                        + "\"attempts\":2}]}");
+        var finished = command.afterCommit(engine, "requeue-deletion", ENVELOPE,
+                new RequeueDeletionCommand.RequeueResult("op_contract", AT, 1), "c");
+        assertThat(json(finished.view())).isEqualTo("{\"operationId\":\"op_contract\",\"outcome\":\"COMPLETED\","
+                + "\"command\":\"requeue-deletion\",\"status\":\"QUEUED\",\"requeuedAt\":\"2026-10-13T01:02:03Z\","
+                + "\"retrySteps\":1}");
+    }
 }
