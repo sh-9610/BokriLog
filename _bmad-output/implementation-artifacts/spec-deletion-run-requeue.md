@@ -225,6 +225,25 @@ context:
 - 확인 범위: 백엔드는 `OperatorDeletionRequeueTest`(9건)와 경계·등록·계약·권한·거절 표 시험이 통과했다. 프런트엔드는 typecheck·lint·lint:css·format:check·test(1,668건)가 통과했다.
 - 로컬 전체 build의 판정은 CI가 맡는다. 이 PC에는 Windows 소켓 결함이 있다.
 
+### PR 전 최종 검증(2026-11-10) — patch 1건
+
+**patch:** 새 `OperatorDeletion.test.tsx`가 `stress-test.sh` 부하 12회 중 11회 실패했다.
+- 원인: 운영자 화면의 첫 마운트 대기가 Testing Library 기본 1초를 넘었다.
+- 수정: 첫 대기 두 곳에 `FIRST_MOUNT_TIMEOUT_MS`를 주었다. `firstMount.ts`와 `DEVELOPMENT.md`에 적힌 적용 범위에 이 시험을 더했다. 같은 관례를 쓰는 `OperatorNotice`는 같은 부하에서 12회 모두 통과했다.
+- 수정 뒤: 12회 모두 통과했다.
+
+**기존 결함(이 변경과 무관):** 같은 부하에서 `OperatorInquiry`·`SettingsReconnect`도 실패했다. 이 변경 전인 `develop`(`854f15e`)에서도 각각 10회·11회 실패해 기존 문제로 확인했다.
+
+**확인한 범위:**
+- 백엔드 전체 시험 1,767건이 모두 통과했다. 첫 실행의 119건 실패는 모두 인프라 문제였고(Docker 경합과 `Bad address: listen`), 해당 클래스를 다시 돌려 통과했다.
+- 프런트엔드 시험 전체 1,668건이 통과했다.
+- 동일 출처 검증 1,103건, 주입 origin e2e 73건이 통과했다.
+- 실제 스택 왕복도 확인했다.
+  1. 사용자가 삭제를 요청하고, 세션을 잃은 `RETRY_NEEDED` 상태를 만들었다.
+  2. 운영자가 목록 → 재인증 → 준비 → 문구 → 확정을 거쳤다.
+  3. Worker가 `CREDENTIALS`를 두 번째로 시도하고 나머지 단계를 돌아 `DELETED`가 되었다.
+  4. 원장 행에는 요청 ID 원문과 사용자 ID가 0건이었다.
+
 ## Design Notes
 
 **교착을 피하는 문장 모양:**

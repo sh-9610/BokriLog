@@ -9,6 +9,7 @@ import {
   operatorRefusalMessage,
   REQUEUE_DELETION_COMMAND,
 } from '../content/operator'
+import { FIRST_MOUNT_TIMEOUT_MS } from '../test/firstMount'
 import {
   getObservedAllowedRequests,
   getObservedStorageEntries,
@@ -62,7 +63,11 @@ async function open(): Promise<HTMLElement> {
   stubOperatorAudit(() => Promise.resolve(json({ items: [], nextCursor: null })))
   stubOperatorRestrictions(() => Promise.resolve(json({ items: [] })))
   render(<OperatorScreen />)
-  await screen.findByRole('heading', { level: 2, name: copy.heading })
+  await screen.findByRole(
+    'heading',
+    { level: 2, name: copy.heading },
+    { timeout: FIRST_MOUNT_TIMEOUT_MS },
+  )
   return screen.getByRole('region', { name: copy.heading })
 }
 
@@ -223,7 +228,11 @@ describe('OperatorScreen 삭제 재대기열', () => {
     stubOperatorAudit(() => Promise.resolve(json({ items: [], nextCursor: null })))
     stubOperatorRestrictions(() => Promise.resolve(json({ items: [] })))
     render(<OperatorScreen />)
-    await screen.findByRole('heading', { level: 2, name: operatorContent.restriction.heading })
+    await screen.findByRole(
+      'heading',
+      { level: 2, name: operatorContent.restriction.heading },
+      { timeout: FIRST_MOUNT_TIMEOUT_MS },
+    )
     await waitFor(() => {
       expect(getObservedAllowedRequests()).toContain('GET /api/operator/deletions')
     })
