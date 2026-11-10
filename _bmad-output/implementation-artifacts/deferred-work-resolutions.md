@@ -19,8 +19,14 @@ decision_baseline: 'ERD-1.0.0'
 |---|---|
 | 해소 | 37 |
 | 부분 해소 | 25 |
-| 미해소 | 117 |
+| 미해소 | 118 |
 | 미판정 | 0 |
+
+**2026-11-10 갱신(Epic 5 회고 AI-2·AI-3 문서·경계 정합과 삭제 경로 동일 출처 검증 chore done 전환).** `spec-epic-5-retro-docs-and-verification.md`(PR #151, 머지 커밋 `9774e4c`)의 판정이다.
+- **이 chore가 append한 defer:** 180(삭제 왕복 뒤 로그의 tombstone 키 누출 판정) 한 건이다. 미해소로 판정했다.
+- **이 chore가 해소한 항목:** 없다. 회고 B-5(삭제 경로가 동일 출처에서 돈 적이 없다)와 A-2(identity의 Security 의존)는 원장 항목이 아니라 회고 action item(`epic-5-retro-item-50`·`item-49`)이 소유했고, 이 PR이 둘을 done으로 바꾼다.
+- **이 chore가 지나간 항목:** 27(`identity`의 `spring_session` 결합)이다. `IdentityAccountRepository`를 고쳤으므로 다시 판정했다. Security 타입 의존은 없앴지만 raw SQL 결합은 그대로라 미해소다.
+- **표:** 180건이다(해소 37·부분 해소 25·미해소 118·미판정 0).
 
 **2026-11-10 갱신(Epic 5 회고 AI-1 삭제 실행 재대기열 fix done 전환).** `spec-deletion-run-requeue.md`(PR #149, 머지 커밋 `107407d`)는 판정할 항목이 없다.
 - 이 fix는 `deferred-work.md`에 아무것도 append하지 않았다(1차 리뷰와 최종 검증 모두 defer 0건).
@@ -483,6 +489,12 @@ X-Frame-Options: DENY
 - **안전망.** `DeletionCompletionTest`가 진짜 로그인 세션으로 완료 전환·정리·다른 사용자 세션 보존·인가 요청 보존을 단정한다. 규약이 갈라지면 이 시험이 깨진다.
 
 **미해소 잔여:** 세 선택지 가운데 무엇을 택할지. 결합 면적이 커져 셋째 선택지(세션 소유를 루트로 이전)의 비용이 늘었다. Epic 5가 닫혀 지명된 결정 지점이 없고 주인이 없다(`## 갱신 규칙` (나) 부류).
+
+**미해소(2026-11-10, Epic 5 회고 AI-2 chore 판정, 기준 `9774e4c`) — Security 타입 의존만 없앴다.**
+- **없앤 것.** `IdentityAccountRepository`는 완료 확인 세션에 남길 속성 이름을 만들려고 Spring Security 저장소 클래스 둘을 import했다. 이제 그 이름은 루트가 identity port `CompletionSessionAttributes`로 넘긴다(구현 `CompletionSessionAttributesPort`). `ModuleBoundaryTest`는 모든 모듈의 `org.springframework.security..` 의존을 막는다.
+- **그대로인 것.** `spring_session`·`spring_session_attributes`에 직접 던지는 SQL(세션 행 삭제, 완료 세션의 속성 정리·`principal_name` 비우기, 완료 세션 연결 표의 FK)은 바뀌지 않았다. 세 선택지 가운데 어느 것도 택하지 않았다.
+
+**미해소 잔여:** 2026-11-09 판정과 같다. 세 선택지 가운데 무엇을 택할지 정해야 하고, 주인이 없다. 이 chore는 결합을 넓히지 않았다. 남길 속성 이름의 출처를 루트로 옮겼으므로, 셋째 선택지(세션 소유를 루트로 이전)를 택할 때 옮길 것이 하나 줄었다.
 
 ### 28. `OnboardingScreen`·`SignedInScreen`을 세션 게이트 셸 하나로 합칠지
 
@@ -1744,3 +1756,11 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **위험.** 잔여 세기는 카탈로그로 모듈 표 전부를 보지만, 행이 없던 표는 `residual_plan=0`·sync 잔여 0 단정이 그 표의 재삭제를 증명하지 못한다. 손으로 쓴 열 목록 SQL은 스키마 변경에 약해, 로컬 리허설 없이 넓히면 CI 위험이 크다.
 
 **미해소 잔여:** 실제 흐름(첫 스냅샷 → 발행)으로 표본을 만들지, seed를 그 표들로 넓힐지. `epic-2-retro-item-24`(erase 완전성)와 같은 지점이고, 지명된 스토리는 없다.
+
+### 180. 삭제 왕복 뒤 로그의 tombstone 키 누출 판정
+
+**미해소(2026-11-10, Epic 5 회고 AI-2·AI-3 chore 판정, 기준 `9774e4c`).** 그 chore의 1차 리뷰(verification-gap)가 append했다.
+- **지금 값.** `verify-same-origin.sh`는 tombstone digest 키를 감사 키와 따로 만들어 공급하고, 값이 스택 로그에 없는지 본다. 그런데 그 키를 실제로 쓰는 삭제 실행(tombstone 기록·digest 계산)은 스크립트가 끝난 뒤의 주입 origin e2e(`account-deletion.spec.ts`)에서 처음 돈다.
+- **빈틈.** `ci.yml`의 e2e 단계 뒤에는 compose 정리·진단 업로드만 있다. 삭제 왕복을 지난 로그를 같은 누출 판정으로 다시 보는 검사가 없다. 앱 쪽 `ConfiguredSecrets`·`LogSecretGuard`가 이 키를 감지하므로 로그 encoder 경로는 덮이지만, encoder를 거치지 않는 출력은 보지 않는다.
+
+**미해소 잔여:** e2e 뒤 compose 로그의 누출 판정을 `.github/scripts`에 둘지, 스크립트 안에 짧은 삭제 왕복을 둘지(한글 문구의 curl은 CP949 문제 246). 지명된 작업은 없다. CI 판정을 바꾸는 일이라 `epic-5-retro-item-51`(CI 시한·간헐 실패)과 함께 볼 수 있다.
