@@ -1812,7 +1812,7 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
   - SPEC Verification 명령(네 시험 클래스와 `PageDoorSourceTest`, `--rerun`)을 최종 코드로 돌린 실행 가운데 세 번이 모두 통과했다(Windows 11 로컬, 회당 약 4~6분, 시험 120건).
   - 그 사이 다섯 번은 183(Windows 루프백 `SocketException: Bad address: listen`)으로 실패했다. 네 번은 시험 컨텍스트의 Tomcat·관리 포트가, 한 번은 Gradle 시험 worker 연결이 listen하지 못했다. 컨텍스트 하나가 실패하면 같은 JVM의 클래스가 모두 컨텍스트 실패 임계로 실패하므로 실패한 시험은 모두 컨텍스트 적재 실패였고, 시험 본문이 돌아 실패한 것은 없다 — 문과 무관한 183의 관측이다.
   - 전체 build는 이 판정의 근거에 넣지 않았다.
-  - **PR CI.** PR #158의 CI `backend-quality` 통과를 해소 근거에 더한다(CI가 끝난 뒤 결과를 기록한다).
+  - **PR CI.** PR #158의 CI(run 42978397509, 커밋 `4cbe2cb`)가 아홉 job 모두 통과했다. `backend-quality`는 13분 1초였고, 옮긴 시험을 포함한 전체 백엔드 시험이 통과했다. 같은 PR의 앞선 실행(run 42978368692)은 뒤 push의 concurrency로 취소돼 판정 원장에 기록하지 않는다. 머지 커밋은 `477dad3`이다.
 - **앞으로의 기록 규칙.** 이 시험들(위 만료형·지연형 자리와 문 자가 시험)이 CI에서 실패하면 재실행 전에 `ci-run-verdicts.md`에 판정 `미조사` 행을 쓰고 후속 칸에 159를 단다. 시험 구조가 원인으로 확인됐을 때만 `간헐 시험`으로 쓴다.
 
 ### 178. 전체 삭제 완료 판정자의 sweep 상한과 고착 실행의 관측
