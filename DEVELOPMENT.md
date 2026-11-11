@@ -46,6 +46,18 @@ git rm --cached -r . && git reset --hard
 
 저장소를 두는 경로에는 비ASCII 문자를 피한다. Git 자체에는 영향이 없지만 Java·Gradle 도구가 일부 환경에서 경로 인코딩 문제를 일으킬 수 있다.
 
+**알려진 로컬 환경 한계**(Epic 5 회고 AI-8, 회고 P-7). 로컬 검증이 다음 둘에 막혀도 제품 결함으로 읽지 않는다. 대신 아래 대처를 따른다.
+
+- **Windows 로컬에서는 백엔드 전체 build가 green으로 끝나지 않을 수 있다.**
+  - 증상: Java 루프백 소켓이 간헐적으로 `java.net.SocketException: Bad address`(`listen`·`connect`)로 실패한다. 원인은 확정되지 않았다(`deferred-work.md` 183). Epic 5의 5.1·5.2와 그 뒤 fix 여럿에서 로컬 전체 build가 이 때문에 끝나지 못했다.
+  - 대처: 바꾼 시험 클래스만 `--tests`로 골라 돌린다. 실패한 회차가 `Failed to load ApplicationContext`·`ApplicationContext failure threshold`와 `Bad address`뿐인지(시험 단정 실패가 없는지) 확인하고, 그 클래스를 다시 돌린다.
+  - 전체 green은 PR CI `ci-required`가 판정한다. 그 판정은 SPEC Verification과 원장에 그대로 적는다 — 로컬 전체 통과로 적지 않는다.
+  - 상세는 아래 `### 간헐 실패`의 `Bad address` 항목이다.
+- **`frontend/package-lock.json`이 바뀐 커밋을 받은 뒤에는 `npm --prefix frontend ci`를 다시 한다.**
+  - 이유: 로컬 `frontend/node_modules`는 저장소가 관리하지 않아 lockfile을 따라오지 않는다. 그래서 새 런타임 의존이 생기면 build·시험이 그 모듈을 찾지 못하고 실패한다. 예: Story 4.5의 `web-vitals`가 없어 Epic 5 회고 때 로컬 build가 실패했다.
+  - `git log -1 --format=%h -- frontend/package-lock.json`이 마지막 `npm ci` 뒤의 커밋이면 다시 설치한다.
+  - 동일 출처 검증(`deploy/compose/verify-same-origin.sh`) 앞에서는 `frontend/dist/`와 backend jar도 지금 코드로 다시 빌드한다. 묵은 산출물로 돈 검증은 지금 코드의 증거가 아니다.
+
 ## 브랜치 전략
 
 git flow를 따른다.

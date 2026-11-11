@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 11-10-2026 07:55
+last_updated: 11-11-2026 08:20
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -493,5 +493,5 @@ action_items:
       상시 위임 지시가 frozen 문장을 해석할 수 있는 경계를 정하며, Windows 로컬 build 한계와 npm ci 재설치를 DEVELOPMENT.md에
       적는다(회고 P-6·P-7·P-8)"
     owner: "bmad-customize·사용자"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-11-09.md"
