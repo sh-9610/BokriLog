@@ -13,9 +13,12 @@ import com.bokrilog.sync.SyncJobApi;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -56,6 +59,79 @@ class FirstSnapshotTest extends AuthFlowTestBase {
         assertThat(jdbc().sql("SELECT count(*) FROM portfolio_current_snapshot")
                 .query(Integer.class).single()).isEqualTo(1);
         assertThat(BybitStubConfiguration.requestCount()).isEqualTo(3);
+    }
+
+    /**
+     * deferred 181: 상태 조회는 커밋된 한 시점만 담는다. 발행(공식값 포인터와 작업 {@code SUCCEEDED})이 조회의 공식값 읽기와
+     * 작업 읽기 사이에 커밋돼도, 응답은 발행 전(작업 진행 중·값 없음)이거나 발행 뒤(성공·값 있음)이고 "성공인데 값 없음"은 없다.
+     *
+     * <p>순서는 잠금이 고정한다. 실제 발행을 끝낸 뒤 포인터 행을 지우고 작업을 진행 중으로 되돌려 발행 전을 만들고, 잠금
+     * 트랜잭션 하나가 {@code sync_job}을 {@code ACCESS EXCLUSIVE}로 쥔 채 포인터 복원과 작업 성공을 함께 쓴다(Worker 없는
+     * 발행 합성). 조회는 공식값을 읽은 뒤 {@code sync_job} 읽기에서 막히고, 그것을 확인한 뒤 잠금 트랜잭션을 커밋한다.
+     */
+    @Test
+    void aPublicationCommittedBetweenTheTwoReadsNeverYieldsSuccessWithoutAValue() throws Exception {
+        UUID user=connect(DevBybitStub.Scenario.UTA2);
+        UUID job=sync.admit(user,"state-atomic-read").orElseThrow().jobId();
+        assertThat(await(user,job)).isEqualTo("SUCCEEDED");
+        var published=sync.state(user).orElseThrow().officialValue();
+        assertThat(published).isNotNull();
+        String amount=published.decimal();
+        record Pointer(UUID portfolioId, UUID snapshotId, long sequence, OffsetDateTime publishedAt) {}
+        var pointer=jdbc().sql("SELECT c.portfolio_id,c.portfolio_snapshot_id,c.publication_sequence,c.published_at "
+                + "FROM portfolio_current_snapshot c JOIN portfolio p ON p.portfolio_id=c.portfolio_id WHERE p.user_id=:u")
+                .param("u",user).query((rs,n) -> new Pointer(rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),
+                        rs.getLong(3),rs.getObject(4,OffsetDateTime.class))).single();
+
+        // 발행 전으로 되돌린다: 포인터가 없고 작업은 진행 중이다(lease를 앞에 둬 dispatcher가 다시 집지 않는다).
+        new TransactionTemplate(manager).executeWithoutResult(status -> {
+            jdbc().sql("DELETE FROM portfolio_current_snapshot WHERE portfolio_id=:p").param("p",pointer.portfolioId())
+                    .update();
+            jdbc().sql("UPDATE sync_job SET status='RUNNING',finished_at=NULL,lease_until=now()+interval '1 hour' "
+                    + "WHERE job_id=:j").param("j",job).update();
+        });
+        var before=sync.state(user).orElseThrow();
+        assertThat(before.job()).isNotNull();
+        assertThat(before.job().status()).isEqualTo("RUNNING");
+        assertThat(before.officialValue()).isNull();
+
+        CompletableFuture<Optional<SyncJobApi.State>> pending;
+        /*
+         * 행 잠금은 쥐지 않는다(FOR UPDATE 없음) — 행을 쥔 채 ACCESS EXCLUSIVE로 올리면 그 행을 기다리는 세션과 교착할 수
+         * 있다. 순서는 콜백의 LOCK TABLE이 만들고, holdRowLock이 반환하기 전에 콜백(표 잠금·쓰기)이 이미 실행된다는 helper
+         * 동작에 기댄다.
+         */
+        AutoCloseable publication=holdRowLock("SELECT job_id FROM sync_job WHERE job_id=:id",job,() -> {
+            jdbc().sql("LOCK TABLE sync_job IN ACCESS EXCLUSIVE MODE").update();
+            jdbc().sql("INSERT INTO portfolio_current_snapshot(portfolio_id,portfolio_snapshot_id,publication_sequence,"
+                    + "published_at) VALUES (:p,:s,:q,:t)").param("p",pointer.portfolioId())
+                    .param("s",pointer.snapshotId()).param("q",pointer.sequence()).param("t",pointer.publishedAt())
+                    .update();
+            jdbc().sql("UPDATE sync_job SET status='SUCCEEDED',finished_at=now(),lease_until=NULL WHERE job_id=:j")
+                    .param("j",job).update();
+        });
+        try {
+            pending=CompletableFuture.supplyAsync(() -> sync.state(user));
+            // 공식값은 이미 읽었고(발행이 커밋 전이라 없다) 작업 읽기가 발행 트랜잭션의 표 잠금을 기다린다.
+            // 이 문자열은 SyncJobRepository.latestOf의 SQL 원문에 묶여 있다 — 쿼리를 바꾸면 이 시험은 시한까지 기다리다 실패한다.
+            awaitBlockedOn("FROM sync_job WHERE user_id=$1 AND connection_id=$2");
+        } finally {
+            publication.close();
+        }
+        var raced=pending.get(20,TimeUnit.SECONDS).orElseThrow();
+        assertThat(raced.job()).isNotNull();
+        if ("SUCCEEDED".equals(raced.job().status()))
+            assertThat(raced.officialValue()).as("SUCCEEDED는 반드시 값을 담는다").isNotNull();
+        if (raced.officialValue()==null)
+            assertThat(raced.job().status()).as("값이 없으면 SUCCEEDED가 아니다").isNotEqualTo("SUCCEEDED");
+        assertThat(raced.job().status()).as("조회는 발행 전 시점 하나로 읽었다").isEqualTo("RUNNING");
+        assertThat(raced.officialValue()).isNull();
+
+        var after=sync.state(user).orElseThrow();
+        assertThat(after.job()).isNotNull();
+        assertThat(after.job().status()).isEqualTo("SUCCEEDED");
+        assertThat(after.officialValue()).isNotNull();
+        assertThat(after.officialValue().decimal()).isEqualTo(amount);
     }
 
     @Test

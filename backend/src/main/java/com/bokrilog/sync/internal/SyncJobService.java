@@ -17,6 +17,7 @@ import com.bokrilog.sync.IdempotencyKey;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
@@ -24,6 +25,7 @@ import org.jspecify.annotations.Nullable;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /** sync owns each short transaction; no transaction spans a provider call. */
@@ -41,6 +43,14 @@ class SyncJobService implements SyncJobApi {
     private final OperationalRestrictionApi restrictions;
     private final InitialInputsPlanPort plans;
     private final TransactionTemplate transactions;
+    /**
+     * 첫 스냅샷 상태 조회({@link #state})의 읽기 전용 {@code REPEATABLE READ} 스냅숏 하나(deferred 181). 문장마다 따로 읽으면
+     * 공식값과 작업 {@code SUCCEEDED}를 함께 커밋하는 발행이 두 읽기 사이에 끼어, 커밋된 적 없는 조합(성공인데 값 없음)이
+     * 응답에 실린다. 대시보드 읽기({@code PlanPublicationService.dashboardReads})와 같은 설정이고, 대시보드처럼 계정 접근을
+     * 스냅숏 안에서 한 번, 스냅숏을 닫은 뒤 한 번 더 본다. {@code state}의 호출 그래프는 이 읽기 전용 트랜잭션 안에서 돌므로
+     * callee에 쓰기나 잠금 SELECT({@code FOR UPDATE}·{@code FOR SHARE})를 들이면 이 경로에서 실패한다.
+     */
+    private final TransactionTemplate stateReads;
     private final CashflowConversionMarket market;
     private final PlanPublicationService publications;
     private final AdjustmentHistoryService adjustments;
@@ -72,6 +82,9 @@ class SyncJobService implements SyncJobApi {
         this.sources=sources; this.portfolios=portfolios;
         this.accounts=accounts; this.restrictions=restrictions; this.plans=plans;
         this.transactions=new TransactionTemplate(manager);
+        this.stateReads=new TransactionTemplate(manager);
+        this.stateReads.setReadOnly(true);
+        this.stateReads.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
         this.market=new CashflowConversionMarket(sources,conversions,this.transactions);
         this.publications=publications;
         this.adjustments=adjustments;
@@ -232,8 +245,18 @@ class SyncJobService implements SyncJobApi {
     }
     @Override
     public Optional<State> state(@Nullable UUID userId) {
-        if (userId==null || accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)
-                !=AccessDecision.ALLOWED) return Optional.empty();
+        if (userId==null) return Optional.empty();
+        /*
+         * 접근 판정부터 반환까지 커밋된 한 시점의 스냅숏 하나로 읽는다(deferred 181). 응답은 발행 전(작업 진행 중·값 없음)이거나
+         * 발행 뒤(SUCCEEDED·값 있음)이고, 두 읽기 사이에 낀 발행 커밋이 둘을 섞지 못한다. 잠금은 들이지 않는다.
+         * 대시보드처럼 접근은 스냅숏 앞뒤로 본다 — 읽는 도중 커밋된 삭제 요청이 이전 스냅숏의 값을 내보내지 않게 한다.
+         */
+        var read=Objects.requireNonNull(stateReads.execute(status -> stateAt(userId)));
+        if (accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)!=AccessDecision.ALLOWED) return Optional.empty();
+        return read;
+    }
+    private Optional<State> stateAt(UUID userId) {
+        if (accounts.decide(userId,userId,AccountAccessKind.SENSITIVE)!=AccessDecision.ALLOWED) return Optional.empty();
         // 연결은 한 번만 읽는다 — 두 번 읽으면 그 사이의 해제가 빈 값을 낳는다(Story 2.17 리뷰).
         var active=sources.snapshotConnection(userId).orElse(null);
         if (active==null) {

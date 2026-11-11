@@ -17,10 +17,16 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 37 |
+| 해소 | 38 |
 | 부분 해소 | 25 |
-| 미해소 | 120 |
+| 미해소 | 119 |
 | 미판정 | 0 |
+
+**2026-11-10 갱신(첫 스냅샷 상태 조회 원자 읽기 fix).** `spec-first-snapshot-state-atomic-read.md`(PR #156, 기준 `d6c6872`)의 판정이다. done 전환 PR이 없는 fix라 이 PR이 판정한다.
+- **이 fix가 해소한 항목:** 181(develop push e2e `first-snapshot` 실패)이다. `SyncJobService.state`를 읽기 전용 `REPEATABLE READ` 트랜잭션 하나로 읽게 했고, 두 읽기 사이에 발행 커밋을 끼우는 결정적 시험이 옛 코드에서 실패하고 새 코드에서 통과함을 확인했다. 해소로 판정했다.
+- **이 fix가 append한 defer:** 없다.
+- **이 fix를 결정 지점으로 지목한 항목:** 181뿐이다.
+- **표:** 182건이다(해소 38·부분 해소 25·미해소 119·미판정 0).
 
 **2026-11-10 갱신(181 원인 확정).** 진단 artifact가 만료되기 전에 181의 trace를 조사했다. 원인은 간헐 시험이 아니라 제품 결함이었다 — `GET /api/snapshots/first`가 공식값과 작업 상태를 트랜잭션 없이 따로 읽어, 작업이 `SUCCEEDED`인데 값이 없는 응답을 낼 수 있다. 상태는 미해소 그대로(제품 fix 필요)이고, 표는 182건 그대로다.
 
@@ -1804,6 +1810,15 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **화면이 굳는 이유.** `useFirstSnapshot`은 작업이 `QUEUED`·`RUNNING`일 때만 다시 조회한다(`frontend/src/session/useFirstSnapshot.ts:104`). `SUCCEEDED`를 받으면 멈추므로, 사용자는 새로 고칠 때까지 값 없는 성공 문구에 머물고 계획 조건으로 가는 링크도 받지 못한다(`FirstSnapshotPanel`의 `canPlan`이 값에 기댄다). CI에서는 발행 커밋이 두 읽기 사이에 끼는 드문 창에서만 나서 한 번만 실패했다.
 
 **미해소 잔여:** 제품 fix가 필요하다. `state` 읽기를 읽기 전용 트랜잭션 하나(대시보드처럼 `REPEATABLE READ`)로 묶거나, 작업을 먼저 읽고 공식값을 나중에 읽어 `SUCCEEDED`이면 값이 반드시 보이게 한다. 이 경합을 결정적으로 재현하는 시험도 함께 둔다. 같은 "두 번 읽는" 모양이 같은 메서드의 해제 분기(`:244-246`)와 다른 상태 조회에 있는지도 그 fix가 확인한다. 지명된 작업은 없다. `ci-run-verdicts.md`의 42134981077/1 행은 추가 전용이라 `미조사`로 남고, 판정 변경은 이 절이 소유한다.
+
+**해소(2026-11-10, `spec-first-snapshot-state-atomic-read.md` fix, 기준 `d6c6872`).** 위 잔여의 첫 안을 택했다.
+- **제품.** `SyncJobService`에 읽기 전용·`ISOLATION_REPEATABLE_READ` `TransactionTemplate` `stateReads`를 두고(대시보드의 `dashboardReads`와 같은 설정), `state`의 접근 판정부터 반환까지를 그 안에서 읽고, 대시보드처럼 스냅숏을 닫은 뒤 계정 접근을 한 번 더 본다(읽는 도중 커밋된 삭제 요청이 이전 스냅숏 값을 내보내지 않게). 응답은 커밋된 한 시점 — 발행 전(작업 진행 중·값 없음)이거나 발행 뒤(`SUCCEEDED`·값 있음) — 만 담는다. 잠금·쓰기는 들이지 않았고 분기(연결 없음·해제·제한·rebase·일반)의 의미는 그대로다. 해제 분기(`jobs.latest`와 `officialValue`)와 rebase 분기(`accountRebaseAllowed` → `latestOf`)의 두 읽기도 같은 스냅숏 안에 들어왔다.
+- **시험.** `FirstSnapshotTest.aPublicationCommittedBetweenTheTwoReadsNeverYieldsSuccessWithoutAValue`. 실제 발행 뒤 포인터 행을 지우고 작업을 `RUNNING`으로 되돌려 발행 전을 만든다. 기존 helper `holdRowLock`의 트랜잭션이 `sync_job`을 `ACCESS EXCLUSIVE`로 쥔 채 포인터 복원과 작업 `SUCCEEDED`를 함께 쓴다(Worker 없는 발행 합성). 조회가 공식값을 읽은 뒤 `latestOf`에서 막힌 것을 `awaitBlockedOn`(`pg_stat_activity`)으로 확인하고 커밋한다. 시간·재시도가 아니라 잠금이 순서를 고정한다. 트랜잭션을 뺀 옛 `state`에서는 `[SUCCEEDED는 반드시 값을 담는다]`로 실패했고 새 코드에서는 통과했다.
+- **다른 상태 조회.** `/inputs`·`/cashflow-classification`·`/cashflow-conversion`·`/plan-publication`의 조회는 SPEC 조사에서 이 모양(따로 커밋되는 두 사실을 문장마다 따로 읽어 섞는 것)이 아니었으므로 고치지 않았다.
+  - `/inputs`(`initialCollectionState`)는 작업 한 문장만 읽는다.
+  - `/cashflow-classification`은 작업 행과 결과 묶음을 한 문장(LEFT JOIN)으로 읽는다.
+  - `/cashflow-conversion`은 상태와 결과를 한 JOIN 문장으로 읽고, 뒤따르는 보류 자산 읽기는 이미 커밋된 불변 행이다.
+  - `/plan-publication`은 상태를 먼저 읽고, attempt 행이 자기 `plan_id`를 지닌다.
 
 ### 182. develop push 백업 리허설 `catalog` 결함 주입 단계의 정지
 
