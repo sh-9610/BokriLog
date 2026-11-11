@@ -791,7 +791,8 @@ class PlanCompletionTest extends PlanSyncTestBase {
         assertThat(planStatus(user)).isEqualTo("COMPLETED");
     }
 
-    @Autowired org.testcontainers.postgresql.PostgreSQLContainer postgres;
+    /** 공유 컨테이너. bean이 아니므로 주입받지 않는다({@link PostgresTestcontainersConfig#shared()}). */
+    private final org.testcontainers.postgresql.PostgreSQLContainer postgres = PostgresTestcontainersConfig.shared();
 
     private static final String CHECKS = "SELECT conrelid::regclass::text||'.'||conname,pg_get_constraintdef(oid) "
             + "FROM pg_constraint WHERE conrelid IN ('plan_definition'::regclass,'sync_plan_calculation'::regclass,"

@@ -19,7 +19,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * 깨면 VM 시계가 뒤처질 수 있다. 그러면 fixture가 만든 결과가 DB에게는 "미래"가 되어 계획 종단 시험이 {@code RESULT_TOO_RECENT}로,
  * 작업이 {@code FAILED}로 전체 빌드에서만 간헐 실패한다. 그 원인을 시험 하나하나의 엉뚱한 단정 대신 먼저 말하게 한다.
  *
- * <p><b>언제 재는가.</b> 컨테이너를 얻는 두 경로({@link PostgresTestcontainersConfig}의 bean과 {@code shared()})가 시작 직후 부르고,
+ * <p><b>언제 재는가.</b> 컨테이너를 얻는 두 경로({@link PostgresTestcontainersConfig}의 {@code JdbcConnectionDetails} bean과 {@code shared()})가 시작 직후 부르고,
  * DB 시험의 저장소 초기화({@code AuthFlowTestBase.resetStore}, 시험 메서드마다)도 부른다. 결과는 JVM 안에 붙들어 두고
  * {@link #REMEASURE_AFTER}가 지난 뒤의 다음 진입에서만 다시 잰다 — 수십 분 걸리는 전체 빌드 도중에 VM 시계가 밀리는 경우를 잡으려는
  * 것이고, 그 사이의 진입은 잠금 하나와 경과 시간 비교뿐이다. 측정 자체가 실패하면(연결·조회 오류) 붙들지 않고 다음 진입에서 다시
