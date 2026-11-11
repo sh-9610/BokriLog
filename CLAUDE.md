@@ -237,7 +237,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 첫 스냅샷 상태 조회 원자 읽기 fix(deferred 181) | done | `spec-first-snapshot-state-atomic-read.md`, PR #156 |
 | 시험 PostgreSQL 컨테이너 수명의 컨텍스트 분리 fix | done | `spec-test-container-context-lifecycle.md`, PR #157 |
 | lease 상실·지연 시험의 잠금 문 이전 fix(deferred 177) | done | `spec-lease-loss-test-doors.md`, PR #158 |
-| 회고 AI-8 과정 보강 chore(Code Map 걸림·위임 경계·로컬 한계) | done | `_bmad/custom/bmad-build.toml`·`CLAUDE.md`·`DEVELOPMENT.md` |
+| 회고 AI-8 과정 보강 chore(Code Map 걸림·위임 경계·로컬 한계) | done | `_bmad/custom/bmad-build.toml`·`CLAUDE.md`·`DEVELOPMENT.md`, PR #160 |
 
 ## 스토리가 고정한 계약
 
