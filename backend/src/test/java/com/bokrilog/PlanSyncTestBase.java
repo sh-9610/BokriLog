@@ -305,9 +305,13 @@ abstract class PlanSyncTestBase extends AuthFlowTestBase {
         };
     }
 
+    /**
+     * Waits until some backend waits on a bigint advisory key (the plan lock's kind). 페이지 저장 문의 두 정수 키
+     * ({@code objsubid=2})는 세지 않는다 — 문 앞 대기를 계획 잠금 대기로 읽지 않게.
+     */
     void awaitBlockedOnPlanLock() throws InterruptedException {
         for (int i = 0; i < 200; i++) {
-            if (jdbc().sql("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND NOT granted")
+            if (jdbc().sql("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objsubid<>2 AND NOT granted")
                     .query(Integer.class).single() > 0) return;
             Thread.sleep(50);
         }
@@ -318,14 +322,399 @@ abstract class PlanSyncTestBase extends AuthFlowTestBase {
      * Waits until no advisory lock is held or awaited. Called after the holder let go: the late worker took the
      * plan lock inside its publishing transaction, so an empty {@code pg_locks} means that transaction ended.
      *
-     * <p>Preconditions: the caller saw the late worker waiting on the plan lock ({@link #awaitBlockedOnPlanLock})
-     * and the holder has been joined ({@link #holdPlanLock}'s close). These tests hold no other advisory lock,
-     * so counting every advisory lock rather than the plan lock's key can only make the wait longer, never
-     * shorter; a key filter could pass vacuously if its arithmetic were off.
+     * <p>전제: 호출자는 늦은 작업자가 계획 잠금에서 기다리는 것을 보았고({@link #awaitBlockedOnPlanLock}) holder를 join했다
+     * ({@link #holdPlanLock}의 close). 이 시험들이 쥐는 advisory 잠금은 계획 잠금(bigint 키, {@code objsubid=1})과 페이지
+     * 저장 문(두 정수 키, {@code objsubid=2})뿐이다. 문 키는 빼고 나머지 advisory 잠금을 모두 센다 — 계획 잠금의 키만 고르는
+     * 필터는 산술이 틀리면 헛되이 통과할 수 있지만, 모두 세면 대기가 길어질 수는 있어도 짧아지지는 않는다.
      */
     void awaitPlanLockReleased() throws InterruptedException {
         int left = pollUntil(Duration.ofSeconds(10), () -> jdbc().sql("SELECT count(*) FROM pg_locks "
-                + "WHERE locktype='advisory'").query(Integer.class).single(), count -> count == 0);
+                + "WHERE locktype='advisory' AND objsubid<>2").query(Integer.class).single(), count -> count == 0);
         if (left > 0) throw new AssertionError("the late worker never let go of the plan lock");
+    }
+
+    /** 작업 행의 {@code status|stage|failure_code|resume_count} — 결말이 기대와 다를 때 실패 메시지에 싣는다. */
+    String jobState(UUID job) {
+        return jdbc().sql("SELECT status||'|'||COALESCE(stage,'-')||'|'||COALESCE(failure_code,'-')||'|'||resume_count "
+                + "FROM sync_plan_sync_job WHERE job_id=:j").param("j", job).query(String.class).optional().orElse("GONE");
+    }
+
+    // ------------------------------------------------------------------------------------------ 페이지 저장 문
+
+    /*
+     * 페이지 저장 문의 advisory 키 — 두 정수 키(pg_locks objsubid=2)다. 운영 코드의 advisory 잠금은 모두 bigint 하나
+     * (hashtextextended, objsubid=1)이고 두 정수 키는 없으므로 문은 계획·원장·Worker 잠금과 키 공간이 겹치지 않는다.
+     * classid는 모든 문이 같고 문마다 objid({@link PageDoorKey})를 나눈다. 값은 임의로 고른 양의 int4다(PR #146 마지막
+     * 점검 문에서 온 값이고 뜻은 없다).
+     */
+    static final int PAGE_DOOR_CLASS = 20_261_106;
+    /** 문 획득 대기 상한. 문 트랜잭션의 {@code lock_timeout}(4초)이 이 대기보다 먼저 끝나 실패를 남긴다. */
+    private static final Duration PAGE_DOOR_SHUT_WAIT = Duration.ofSeconds(5);
+    /** 문 앞 막힘 대기의 마감. */
+    private static final Duration PAGE_DOOR_BLOCK_WAIT = Duration.ofSeconds(60);
+    /** 문 holder의 안전 시한 — 문 생성부터 재므로 막힘 대기 마감({@link #PAGE_DOOR_BLOCK_WAIT})보다 길다. */
+    private static final Duration PAGE_DOOR_SAFETY = Duration.ofSeconds(90);
+    /**
+     * 만료 없이 막는 문을 막힘 뒤 열어야 하는 기본 상한 — lease(30초)의 절반. 문 앞에서 기다리는 페이지 트랜잭션이 계획
+     * 작업과 수집 작업 행을 쥐고 있어 heartbeat(5초)가 {@code SKIP LOCKED}로 건너뛰므로, 이보다 오래 막으면 lease가 시험
+     * 밖에서 끝난다. 막힘의 기준 시각은 문 대기의 {@code pg_locks.waitstart}다.
+     */
+    static final Duration PAGE_DOOR_LEASE_BOUND = com.bokrilog.sync.WorkerLease.DURATION.dividedBy(2);
+    /** 문 뒤 명령이 페이지 트랜잭션 뒤에 줄 서기(또는 끝나기)까지의 마감 — {@link #PAGE_DOOR_LEASE_BOUND}보다 짧다. */
+    private static final Duration PAGE_DOOR_COMMAND_WAIT = Duration.ofSeconds(10);
+    /** 문을 연 뒤 명령의 결과를 기다리는 상한. 실패 경로에서도 명령이 시험 밖에서 커밋하지 않도록 이만큼 기다린다. */
+    private static final Duration PAGE_DOOR_COMMAND_DRAIN = Duration.ofSeconds(30);
+    /** holder 스레드가 끝나기를 기다리는 상한(문 열기·닫기 실패). */
+    private static final Duration PAGE_DOOR_HOLDER_JOIN = Duration.ofSeconds(10);
+
+    /**
+     * 페이지 저장 문의 objid. 문마다 하나다 — trigger·함수 이름({@code page_door_<objid>})에도 붙는다. {@code SELF_TEST_}로
+     * 시작하는 셋은 문 자체를 보는 시험 전용이다. 값이 서로 다른 것은 {@code PageDoorSourceTest}가 단정한다.
+     */
+    enum PageDoorKey {
+        FINAL_SWEEP(1),
+        CONTINUATION_COLLECTION(2),
+        THIRD_INTERRUPTION(3),
+        VERIFICATION_COLLECTION(4),
+        LOST_WINDOW(5),
+        REVOCATION_SYNC(6),
+        REVOCATION_VERIFICATION(7),
+        RECONNECTION_SYNC(8),
+        PLAN_END_SYNC(9),
+        SELF_TEST_SHUT_CLEANUP(10),
+        SELF_TEST_EXPIRING_CLEANUP(11),
+        SELF_TEST_LEASE_BOUND(12);
+
+        final int object;
+
+        PageDoorKey(int object) {
+            this.object = object;
+        }
+
+        String trigger() {
+            return "page_door_" + object;
+        }
+    }
+
+    /**
+     * 문을 닫는다: holder가 문 키를 배타적으로 쥐고, 이 사용자의 페이지 저장 가운데 {@code predicate}에 맞는 것이 문(공유
+     * 잠금)을 기다리게 하는 trigger를 건다. {@code predicate}는 SQL 조건이고 {@code j}(그 페이지의 수집을 붙인 RUNNING 계획
+     * 작업 행)와 {@code NEW}(저장되는 페이지)를 쓴다 — 기다리기 전에 한 번 판정한다. {@code expire}면 문이 열린 뒤 같은
+     * 트랜잭션에서 그 계획 작업의 lease를 과거로 만든다(만료형, {@link #expireAtPage}). 아니면 페이지를 늦출 뿐이고(지연형)
+     * 막힌 뒤 {@link #PAGE_DOOR_LEASE_BOUND} 안에 열어야 한다.
+     */
+    PageDoor shutPageDoor(UUID user, PageDoorKey key, String predicate, boolean expire) throws InterruptedException {
+        return shutPageDoor(user, key, predicate, expire, PAGE_DOOR_LEASE_BOUND);
+    }
+
+    /** 만료 없는 문의 막힘 뒤 상한({@code leaseBound})을 정해 닫는 {@link #shutPageDoor(UUID, PageDoorKey, String, boolean)}. */
+    PageDoor shutPageDoor(UUID user, PageDoorKey key, String predicate, boolean expire, Duration leaseBound)
+            throws InterruptedException {
+        var door = new PageDoor(key, expire, true, leaseBound);
+        door.install(user, predicate);
+        return door;
+    }
+
+    /**
+     * 만료형 trigger만 건다(holder 없음 — 문은 처음부터 열려 있다): 이 사용자의 페이지 저장 가운데 {@code predicate}에 맞는
+     * 것이 같은 트랜잭션에서 그 계획 작업의 lease를 과거로 만든다. 페이지 저장 트랜잭션은 이미 계획 작업 행을
+     * {@code FOR UPDATE}로 쥐고 fencing을 통과했고 INSERT 뒤에는 그 lease를 다시 보지 않으므로({@code storePage}는 자식
+     * 수집 lease만 다시 본다), 만료는 다른 세션과 경합 없이 페이지와 함께 커밋되고 holder의 다음 fenced 문부터
+     * {@code LeaseLost}다. 자식 수집 작업의 lease는 건드리지 않는다 — 같은 트랜잭션의 자식 lease 재확인이 롤백시킨다.
+     * {@code predicate}가 첫 holder({@code j.resume_count=0})를 고르지 않으면 재획득된 holder도 만료된다.
+     */
+    PageDoor expireAtPage(UUID user, PageDoorKey key, String predicate) throws InterruptedException {
+        var door = new PageDoor(key, true, false, PAGE_DOOR_LEASE_BOUND);
+        door.install(user, predicate);
+        return door;
+    }
+
+    /**
+     * 작업이 {@code RUNNING}·{@code stage}이고 문 키에 승인되지 않은 대기(문 앞에서 막힌 페이지 저장)가 있을 때까지 기다린다.
+     * 문이 기대한 자리에서 막지 못하면 마감(60초) 뒤 마지막 상태(상태|단계|재개 수|대기 수)와 함께 실패한다 — 문 holder의
+     * 안전 시한(90초, 문 생성부터)보다 먼저 끝나므로 문이 스스로 열린 뒤에 통과하는 일이 없다. 막힘의 기준 시각은 관측
+     * 시각이 아니라 문 대기의 {@code pg_locks.waitstart}(가장 이른 것)이고, DB에서 잰 대기 길이만큼 앞당긴
+     * {@code System.nanoTime()}으로 문에 남긴다(만료 없는 문의 lease 상한은 거기서 잰다). 작업 행이 없으면 상태는 {@code GONE}이다.
+     */
+    void awaitBlockedAtDoor(PageDoor door, UUID job, String stage) throws InterruptedException {
+        if (!door.held()) throw new IllegalStateException("an open door blocks nothing");
+        String state = null;
+        long deadline = System.nanoTime() + PAGE_DOOR_BLOCK_WAIT.toNanos();
+        do {
+            long asked = System.nanoTime();
+            var row = jdbc().sql("SELECT status||'|'||COALESCE(stage,'-')||'|'||resume_count||'|'||(" + door.waiters()
+                    + "), (SELECT (extract(epoch FROM clock_timestamp()-min(waitstart))*1000000)::bigint FROM pg_locks "
+                    + "WHERE " + door.keyCondition() + " AND NOT granted) FROM sync_plan_sync_job WHERE job_id=:j")
+                    .param("j", job).query((rs, n) -> new Object[] {rs.getString(1), rs.getObject(2, Long.class)})
+                    .optional().orElse(new Object[] {"GONE", null});
+            state = (String) row[0];
+            // waitstart는 대기가 막 시작한 짧은 동안 null일 수 있다 — 그때는 다시 본다.
+            if (state.startsWith("RUNNING|" + stage + "|") && !state.endsWith("|0") && row[1] instanceof Long waited) {
+                door.blockedSince(asked - TimeUnit.MICROSECONDS.toNanos(waited));
+                return;
+            }
+            Thread.sleep(50);
+        } while (System.nanoTime() - deadline < 0);
+        throw new AssertionError("the attempt never waited at the " + door.key + " door "
+                + "(status|stage|resume_count|waiters): " + state);
+    }
+
+    /** 문 뒤 명령이 어느 갈래로 통과했는가({@link #runBehindDoor}). */
+    enum CommandBranch {
+        /** 명령의 backend가 문 앞 페이지 트랜잭션 뒤에 줄 섰다(행·tuple 잠금 대기). */
+        QUEUED_BEHIND_PAGE,
+        /** 명령이 줄 서지 않고 먼저 끝났다 — 페이지 트랜잭션이 쥔 것을 건드리지 않는 명령. */
+        FINISHED_FIRST
+    }
+
+    /**
+     * 문 앞 페이지 트랜잭션(문 대기 pid) 뒤에 줄 선 backend 수: {@code pg_blocking_pids}로 그 pid가 막는 backend와, 그
+     * backend가 다시 막는 backend를 끝까지 따라간다 — 첫 대기자는 행의 트랜잭션 ID를, 두 번째 대기자부터는 첫 대기자가 쥔
+     * tuple 잠금을 기다리므로 둘 다 잡힌다.
+     */
+    private int queuedBehindDoor(PageDoor door) {
+        return jdbc().sql("WITH RECURSIVE page AS (SELECT pid FROM pg_locks WHERE " + door.keyCondition()
+                + " AND NOT granted), behind(pid) AS (SELECT a.pid FROM pg_stat_activity a WHERE EXISTS "
+                + "(SELECT 1 FROM page p WHERE p.pid=ANY(pg_blocking_pids(a.pid))) UNION SELECT a.pid FROM "
+                + "pg_stat_activity a JOIN behind b ON b.pid=ANY(pg_blocking_pids(a.pid))) SELECT count(*) FROM behind")
+                .query(Integer.class).single();
+    }
+
+    /**
+     * 문 앞에서 막힌 페이지 트랜잭션 뒤에서 명령을 끝낸다(지연형): 명령을 보내기 전에 그 페이지 트랜잭션 뒤에 줄 선 backend
+     * 수를 기준값으로 재고, 명령을 가상 스레드로 보낸 뒤 그 수가 기준값보다 커지거나({@link CommandBranch#QUEUED_BEHIND_PAGE})
+     * 명령이 이미 끝난 것({@link CommandBranch#FINISHED_FIRST})을 본 뒤 문을 열고 명령의 결과를 돌려준다. 통과한 갈래는 문에
+     * 남고({@link PageDoor#commandBranch()}) 로그 한 줄로도 남는다. 페이지 트랜잭션이 커밋하면 그 행을 기다리던 명령이 먼저
+     * 행을 얻는다 — 첫 대기자가 tuple 잠금을 쥔 채 기다리므로 holder의 다음 문은 그 뒤에 선다.
+     *
+     * <p>명령 자신의 실패는 그대로 던진다. 그 밖의 실패(줄 서기를 보지 못함, 결과 시간 초과, 문 열기 실패)에서는 문을 열고
+     * 명령의 결과를 {@link #PAGE_DOOR_COMMAND_DRAIN}만큼 기다린 뒤(결과는 버린다, 남은 스레드는 interrupt) 원래 예외를
+     * 던진다 — 명령이 시험 밖에서 커밋하지 않게. 정리 중 예외는 원래 예외에 {@code addSuppressed}로 붙는다.
+     */
+    <T> T runBehindDoor(PageDoor door, java.util.concurrent.Callable<T> command) throws Exception {
+        if (!door.held()) throw new IllegalStateException("an open door holds nothing back");
+        int baseline = queuedBehindDoor(door);
+        var result = new java.util.concurrent.CompletableFuture<T>();
+        Thread runner = Thread.ofVirtual().start(() -> {
+            try {
+                result.complete(command.call());
+            } catch (Throwable failed) {
+                result.completeExceptionally(failed);
+            }
+        });
+        try {
+            int seen = pollUntil(PAGE_DOOR_COMMAND_WAIT, () -> result.isDone() ? -1 : queuedBehindDoor(door),
+                    found -> found < 0 || found > baseline);
+            if (seen >= 0 && seen <= baseline)
+                throw new AssertionError("the command never queued behind the " + door.key + " door's page "
+                        + "(queued " + seen + ", baseline " + baseline + ")");
+            CommandBranch branch = seen < 0 ? CommandBranch.FINISHED_FIRST : CommandBranch.QUEUED_BEHIND_PAGE;
+            door.commandBranch = branch;
+            org.slf4j.LoggerFactory.getLogger(PlanSyncTestBase.class).info("page door {} command {}", door.key, branch);
+            door.open();
+            return result.get(PAGE_DOOR_COMMAND_DRAIN.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.ExecutionException commandFailed) {
+            // 명령이 끝났다 — 그 실패를 그대로 던진다.
+            if (commandFailed.getCause() instanceof Exception cause) throw cause;
+            if (commandFailed.getCause() instanceof Error error) throw error;
+            throw commandFailed;
+        } catch (Exception failed) {
+            abandon(door, result, runner, failed);
+            throw failed;
+        } catch (Error failed) {
+            abandon(door, result, runner, failed);
+            throw failed;
+        }
+    }
+
+    /** {@link #runBehindDoor}의 실패 정리: 문을 열고 명령의 결과를 상한까지 기다린 뒤 남은 스레드를 interrupt한다. */
+    private static void abandon(PageDoor door, java.util.concurrent.CompletableFuture<?> result, Thread runner,
+            Throwable original) {
+        try {
+            door.open();
+        } catch (RuntimeException | Error cleanup) {
+            original.addSuppressed(cleanup);
+        }
+        try {
+            result.get(PAGE_DOOR_COMMAND_DRAIN.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException ignored) {
+            // 결과는 버린다 — 명령이 끝났는지(시험 밖 커밋이 없는지)만 기다린다.
+        }
+        if (runner.isAlive()) runner.interrupt();
+    }
+
+    /**
+     * 페이지 저장 문: 전용 가상 스레드 트랜잭션이 문 키를 배타적으로 쥔다(안전 시한 90초, 만료 없는 문은 막힌 뒤 상한
+     * {@code leaseBound}(기본 {@link #PAGE_DOOR_LEASE_BOUND})도 — 그 안에 열지 않으면 holder가 실패로 끝나고 문 열기가 시험을
+     * 실패시킨다). 획득은 {@code lock_timeout} 4초로 묶고, 문을 닫지 못하면 holder를 풀어 끝날 때까지 기다린 뒤 생성자가
+     * 실패한다 — holder 스레드·연결이 남지 않는다. holder 없는 문(만료형 trigger만)도 같은 정리를 쓴다. {@link #open()}은 한 번만 열고 holder가 끝났고
+     * 예외 없이 끝났음을 단정한다. {@link #close()}는 아직 열지 않았으면 열고 trigger·함수를 지운다 — 시험이 실패해도
+     * 일어나고, 정리 중 예외는 첫 예외에 {@code addSuppressed}로 붙는다.
+     */
+    final class PageDoor implements AutoCloseable {
+        private final PageDoorKey key;
+        private final boolean expires;
+        /** 만료 없는 문의 막힘 뒤 상한. */
+        private final Duration leaseBound;
+        private final CountDownLatch release = new CountDownLatch(1);
+        private final java.util.concurrent.atomic.AtomicReference<@Nullable Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        private final @Nullable Thread holder;
+        /** 문 대기가 시작한 시각({@code pg_locks.waitstart}을 {@code System.nanoTime()}으로 옮긴 값). 0이면 아직 보지 못했다. */
+        private volatile long blockedAt;
+        /** {@link #runBehindDoor}가 통과한 갈래. 아직 없으면 {@code null}. */
+        private volatile @Nullable CommandBranch commandBranch;
+        private boolean opened;
+
+        private PageDoor(PageDoorKey key, boolean expires, boolean shut, Duration leaseBound)
+                throws InterruptedException {
+            this.key = key;
+            this.expires = expires;
+            this.leaseBound = leaseBound;
+            if (!shut) {
+                holder = null;
+                return;
+            }
+            var closed = new CountDownLatch(1);
+            Thread started = Thread.ofVirtual().start(() -> {
+                try {
+                    new TransactionTemplate(manager).executeWithoutResult(status -> {
+                        // 이 트랜잭션에만 걸리는 획득 상한: 생성자의 대기(5초)보다 먼저 끝나 실패를 failure에 남긴다.
+                        jdbc().sql("SELECT set_config('lock_timeout','4s',true)").query(String.class).single();
+                        jdbc().sql("WITH l AS MATERIALIZED (SELECT pg_advisory_xact_lock(" + PAGE_DOOR_CLASS + ","
+                                + key.object + ")) SELECT 1 FROM l").query(Integer.class).single();
+                        closed.countDown();
+                        holdUntilOpened();
+                    });
+                } catch (Throwable failed) {
+                    failure.set(failed);
+                } finally {
+                    closed.countDown();
+                }
+            });
+            holder = started;
+            boolean signalled = closed.await(PAGE_DOOR_SHUT_WAIT.toMillis(), TimeUnit.MILLISECONDS);
+            Throwable failed = failure.get();
+            if (!signalled || failed != null) {
+                release.countDown();
+                // holder가 끝날 때까지 기다린다 — 획득 중이면 lock_timeout(4초)이 끝낸다. 스레드·연결을 남기지 않는다.
+                var error = new AssertionError("the " + key + " door was not shut", failed);
+                if (!started.join(PAGE_DOOR_HOLDER_JOIN))
+                    error.addSuppressed(new AssertionError("the " + key + " door holder did not end"));
+                throw error;
+            }
+        }
+
+        /** holder가 문을 쥔 채 열기를 기다린다. 시한을 넘기면 예외로 트랜잭션을 끝내 문을 푼다(시험 실패로 남는다). */
+        private void holdUntilOpened() {
+            long shutAt = System.nanoTime();
+            try {
+                while (!release.await(100, TimeUnit.MILLISECONDS)) {
+                    long now = System.nanoTime();
+                    if (now - shutAt > PAGE_DOOR_SAFETY.toNanos())
+                        throw new IllegalStateException("the " + key + " door was never opened");
+                    long blocked = blockedAt;
+                    if (!expires && blocked != 0 && now - blocked > leaseBound.toNanos())
+                        throw new IllegalStateException("the " + key + " door held a page past its lease bound "
+                                + leaseBound);
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("the " + key + " door holder was interrupted", interrupted);
+            }
+        }
+
+        /** trigger·함수를 건다. 도중에 실패하면 문을 열고 지운 뒤 원래 예외를 던진다(정리 중 예외는 addSuppressed). */
+        private void install(UUID user, String predicate) {
+            try {
+                // OR REPLACE: finally 전에 죽은 시험이 남긴 것이 있어도 다음 시험이 만들 수 있다.
+                jdbc().sql("CREATE OR REPLACE FUNCTION " + key.trigger() + "() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                        + "DECLARE target uuid; BEGIN IF NEW.user_id='" + user + "'::uuid THEN "
+                        + "SELECT j.job_id INTO target FROM sync_plan_sync_job j WHERE j.collection_job_id=NEW.job_id "
+                        + "AND j.status='RUNNING' AND (" + predicate + "); "
+                        + "IF target IS NOT NULL THEN "
+                        + "PERFORM pg_advisory_xact_lock_shared(" + PAGE_DOOR_CLASS + "," + key.object + "); "
+                        + (expires ? "UPDATE sync_plan_sync_job SET lease_until=statement_timestamp()-interval '1 second' "
+                                + "WHERE job_id=target; " : "")
+                        + "END IF; END IF; RETURN NEW; END $$").update();
+                jdbc().sql("CREATE OR REPLACE TRIGGER " + key.trigger() + " BEFORE INSERT ON sync_initial_page_evidence "
+                        + "FOR EACH ROW EXECUTE FUNCTION " + key.trigger() + "()").update();
+            } catch (RuntimeException | Error failed) {
+                try {
+                    close();
+                } catch (RuntimeException | Error cleanup) {
+                    failed.addSuppressed(cleanup);
+                }
+                throw failed;
+            }
+        }
+
+        boolean held() {
+            return holder != null;
+        }
+
+        /** holder가 있었고 그 스레드가 끝났다(문을 쥔 트랜잭션이 끝났다). */
+        boolean holderEnded() {
+            return holder != null && !holder.isAlive();
+        }
+
+        void blockedSince(long nanoTime) {
+            blockedAt = nanoTime;
+        }
+
+        /** {@link #runBehindDoor}가 통과한 갈래. 아직 부르지 않았으면 {@code null}. */
+        @Nullable CommandBranch commandBranch() {
+            return commandBranch;
+        }
+
+        /** {@code pg_locks}에서 이 문 키의 행을 고르는 조건. */
+        String keyCondition() {
+            return "locktype='advisory' AND classid=" + PAGE_DOOR_CLASS + " AND objid=" + key.object + " AND objsubid=2";
+        }
+
+        /** 문 앞 미승인 대기 수의 SQL. */
+        String waiters() {
+            return "SELECT count(*) FROM pg_locks WHERE " + keyCondition() + " AND NOT granted";
+        }
+
+        void open() {
+            if (opened) return;
+            opened = true;
+            release.countDown();
+            if (holder == null) return;
+            boolean ended;
+            try {
+                ended = holder.join(PAGE_DOOR_HOLDER_JOIN);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("interrupted while opening the " + key + " door", interrupted);
+            }
+            if (!ended) throw new AssertionError("the " + key + " door holder did not end");
+            Throwable failed = failure.get();
+            if (failed != null) throw new AssertionError("the " + key + " door holder failed", failed);
+        }
+
+        @Override
+        public void close() {
+            @Nullable Throwable first = null;
+            try {
+                open();
+            } catch (RuntimeException | Error failed) {
+                first = failed;
+            }
+            for (String drop : List.of("DROP TRIGGER IF EXISTS " + key.trigger() + " ON sync_initial_page_evidence",
+                    "DROP FUNCTION IF EXISTS " + key.trigger() + "()")) {
+                try {
+                    jdbc().sql(drop).update();
+                } catch (RuntimeException | Error failed) {
+                    if (first == null) first = failed;
+                    else first.addSuppressed(failed);
+                }
+            }
+            if (first instanceof RuntimeException runtime) throw runtime;
+            if (first instanceof Error error) throw error;
+        }
     }
 }

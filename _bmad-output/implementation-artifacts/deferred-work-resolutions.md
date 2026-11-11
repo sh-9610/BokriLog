@@ -17,10 +17,16 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 38 |
+| 해소 | 39 |
 | 부분 해소 | 25 |
 | 미해소 | 120 |
 | 미판정 | 0 |
+
+**2026-11-11 갱신(lease 상실·지연 시험의 잠금 문 이전 fix).** `spec-lease-loss-test-doors.md`(기준 `ab6d798`)의 판정이다. done 전환 PR이 없는 fix라 이 PR이 판정한다.
+- **이 fix가 해소한 항목:** 177(시간 기반 순서로 lease 상실을 만드는 백엔드 시험들)이다. 대상 시험 아홉 자리를 `PlanSyncTestBase`의 공용 페이지 저장 문(만료형·지연형)으로 옮겼고, `src/test`의 `pg_sleep`이 0건이며 `PageDoorSourceTest`가 그것을 고정한다. SPEC Verification 명령이 최종 코드로 세 번 통과했다(그 사이 183의 루프백 listen 실패 다섯 번은 아래 177 절 — 시험 본문의 실패는 없다). 해소로 판정했다.
+- **이 fix가 append한 defer:** 184(운영 코드에 두 정수 advisory 키가 생기지 않게 막는 `src/main/java` 소스 스캔) 하나다. 미해소로 판정했고 주인은 없다.
+- **이 fix를 결정 지점으로 지목한 항목:** 159(전체 빌드에서만 나는 계획 종단 시험 간헐 실패)와 177이다. 159는 다시 판정해 부분 해소 그대로 두었다 — `RESULT_TOO_RECENT` 16건의 후보는 JVM↔DB 시계 차이로 좁혔고 `PlanCompletionTest`의 작업 `FAILED` 한 번은 설명되지 않은 채 남는다(아래 159 절).
+- **표:** 184건이다(해소 39·부분 해소 25·미해소 120·미판정 0).
 
 **2026-11-11 갱신(시험 PostgreSQL 컨테이너 수명의 컨텍스트 분리 fix).** `spec-test-container-context-lifecycle.md`(PR #157)(기준 `df5a9c6`)의 판정이다. done 전환 PR이 없는 fix라 이 PR이 판정한다.
 - **이 fix가 해소한 항목:** 없다.
@@ -1533,6 +1539,15 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **닫은 것.** 컨테이너를 bean으로 노출하지 않고, 컨텍스트는 `JdbcConnectionDetails` bean으로 접속 정보만 받는다. `SharedPostgresLifecycleTest`가 정상 종료·로드 실패 뒤에도 컨테이너가 같은 id로 살아 있고 SQL이 됨을 고정한다. 같은 시험이 옛 설정에서 실패함을 확인했다.
 - **159의 남는 후보.** 그대로다 — JVM↔DB 시계 차이(`[test-clock]` 줄로 가른다)와, 시간 기반 순서로 lease 상실을 만드는 시험 구조(177)다. 위 주인(lease 상실 시험 잠금 문 fix)과 재판정 조건도 그대로다.
 
+**부분 해소 — 재판정(2026-11-11, lease 상실·지연 시험의 잠금 문 이전 fix, 기준 `ab6d798`).** `spec-lease-loss-test-doors.md`가 위 "주인 지정"의 재판정 조건대로 `PlanEndTest`를 잠금 문으로 옮긴 뒤 다시 판정했다. 상태는 부분 해소 그대로다. `RESULT_TOO_RECENT` 16건의 후보는 JVM↔DB 시계 차이로 좁혔고, `PlanCompletionTest`의 작업 `FAILED` 한 번은 설명되지 않은 채 남는다.
+- **잠금 문 이전이 고친 것.** 177의 시험 구조뿐이다. `PlanEndTest.publicationAndEndAreSerializedByThePlanLockEitherWay`의 늦은 sync는 이제 페이지 저장이 문 앞에 선 것을 본 뒤 종료를 `runBehindDoor`로 끝내고(종료가 페이지 트랜잭션 뒤에 줄 서지 않고 먼저 끝난 갈래임을 단정한다) 문을 연다(지연형) — `pg_sleep` 지연과 단계 대기의 시간 순서가 없다.
+- **시간 기반 구조는 159의 관측을 설명하지 못한다.** 조사 결과, 옛 `slowPageStores` 시험은 뒤 시험에 `RESULT_TOO_RECENT`를 남길 경로가 없다.
+  - trigger는 그 시험 사용자 한정이고 `finally`에서 지워졌다.
+  - 그 시험이 경합에 졌다면(sync가 종료보다 먼저 발행) 종료 판정은 `REFERENCE_STALE`이 먼저 나온다 — `PlanEndRules.judge`는 참조 대조를 `RESULT_TOO_RECENT`보다 앞서 본다.
+- **남는 후보.** `RESULT_TOO_RECENT`는 DB 시각(`now`)이 스텁이 JVM 시각으로 만든 결과 `measuredAt`보다 앞설 때 난다. 그래서 16건이 함께 실패한 모양은 JVM↔DB 시계 차이 가설과 맞는다. 다음 발생 때 시험 보고서의 `[test-clock]` 줄(`DatabaseClockSkew`)로 가른다.
+- **설명되지 않은 관측.** `PlanCompletionTest.laterSyncsOnlyMoveThePostEndValue`의 작업 `FAILED` 한 번은 위 후보로도 시간 기반 구조로도 설명되지 않은 채 남는다(그 시험은 `slowPageStores`를 쓰지 않았다).
+- **부분 해소인 이유.** 원인을 확정하지 않았다. 시계 차이를 실제 실패에서 관측하기 전에는 해소로 적지 않는다.
+
 ### 160. 세션 행이 먼저 지워진 뒤 속성 저장의 FK 위반
 
 **미해소(2026-10-17, 세션 속성 upsert fix가 append).** upsert는 같은 속성 첫 INSERT의 기본 키 충돌만 닫는다. 같은 세션의 다른 요청이 동시 로그아웃·만료 정리로 세션 행이 지워진 뒤 속성을 저장하면 `SPRING_SESSION_ATTRIBUTES` FK에서 500이 날 수 있고, 동시 삭제 뒤 UPDATE는 0행이 된다. 재현 시험은 없다.
@@ -1784,6 +1799,22 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **159와의 관계.** 그 fix가 `PlanEndTest`를 옮긴 뒤 159를 다시 판정한다.
 - **기록 근거.** 이 계열의 CI 실패(run 42197758258 2차 시도)는 시험 구조가 원인으로 확인돼(fix #146) `ci-run-verdicts.md`에 `간헐 시험` 행으로 소급 기록했다. 앞으로 위 "지금 값"의 시험이 CI에서 실패하면 원인이 확정되기 전에는 `미조사`(후속 177)로 쓰고, 시험 구조가 원인으로 확인됐을 때만 `간헐 시험`으로 쓴다.
 
+**해소(2026-11-11, lease 상실·지연 시험의 잠금 문 이전 fix, 기준 `ab6d798`).** `spec-lease-loss-test-doors.md`가 위 "지금 값"의 시험을 모두 잠금 문으로 옮겼다. 운영 코드는 바꾸지 않았다.
+- **공용 문.** PR #146의 `FinalSweepDoor`를 `PlanSyncTestBase`의 `PageDoor`로 일반화했다. 두 정수 advisory 키(`objsubid=2`)에 문마다 `objid`(`PageDoorKey`)를 나누고, holder 안전 시한·획득 `lock_timeout`·한 번 열기·실패해도 trigger·함수를 지우는 정리를 그대로 갖는다.
+- **만료형.** `PlanVerificationTest`의 다섯 자리 — 계속 진행 재획득(본 수집 세 번째 페이지), 세 번째 중단(holder마다 첫 페이지), 정밀 검증 재획득(두 번째 페이지), 버려진 창 helper(R1·R2 셋, 첫 TRANSFER_IN 페이지), 마지막 점검(문 앞 막힘을 본 뒤 열기) — 은 지정 페이지 저장 트랜잭션 안에서 trigger가 계획 작업 lease를 만료시킨다. 페이지 수를 기다리지 않는다.
+- **지연형.** 네 자리 모두 문 앞에 선 페이지를 본 뒤 명령을 `runBehindDoor`로 보낸다. 그 helper는 명령 전에 문 앞 페이지 트랜잭션 뒤에 줄 선 backend 수(`pg_blocking_pids`를 따라가 행·tuple 대기를 모두 센다)를 기준값으로 재고, 그 수가 커지거나(`QUEUED_BEHIND_PAGE`) 명령이 먼저 끝난 것(`FINISHED_FIRST`)을 본 뒤 문을 연다. `PlanEndTest`는 종료가 작업 행을 건드리지 않으므로 먼저 끝나는 갈래임을 단정한다. `BybitConnectionRevocationTest` 둘과 `BybitReconnectionTest` 하나는 해제가 작업 행을 UPDATE하므로 줄 서는 갈래이고(아래 깨끗한 세 실행의 로그 줄에서 세 자리 모두 `QUEUED_BEHIND_PAGE`였다), 그 갈래는 단정하지 않는다 — 명령이 줄 서지 않고 끝나도 단정은 같다(SPEC I/O 표). 실패 경로(줄 서기를 보지 못함·결과 시간 초과·문 열기 실패)는 문을 열고 명령을 상한까지 기다린 뒤 원래 예외를 던진다. 막힘은 문 대기의 `pg_locks.waitstart`부터 재고, 그 뒤 lease의 절반 안에 열지 않으면 문 holder가 스스로 풀고 시험이 실패한다.
+- **회귀 방지.**
+  - `src/test` 아래 시험 소스·resources의 `pg_sleep`(대소문자 무관)이 0건이고 `PageDoorSourceTest`가 다시 생기지 않게 막으며, `PageDoorKey`의 objid가 서로 다른지도 본다.
+  - `aDoorLeavesNothingBehindWhenItsTestFails`가 닫힌 문과 만료형 trigger만 건 문 둘 다에서, 문 안 실패 뒤 trigger·함수·문 키 잠금이 남지 않고 실패에 정리 예외가 붙지 않음을 고정한다.
+  - `aDelayingDoorLetsGoAndFailsPastItsLeaseBound`가 상한 1초로 닫은 지연형 문에 실제 페이지를 세운 뒤 holder가 스스로 문을 풀고 문 열기가 "holder failed"로 실패하며, 그 사이 작업 lease가 끝나지 않았음(`resume_count=0`으로 성공)을 고정한다.
+  - 지정 페이지 술어를 일부러 틀린 국소 실험은 결말 단정이 작업 상태와 함께 실패했다(커밋하지 않았다).
+- **검사.**
+  - SPEC Verification 명령(네 시험 클래스와 `PageDoorSourceTest`, `--rerun`)을 최종 코드로 돌린 실행 가운데 세 번이 모두 통과했다(Windows 11 로컬, 회당 약 4~6분, 시험 120건).
+  - 그 사이 다섯 번은 183(Windows 루프백 `SocketException: Bad address: listen`)으로 실패했다. 네 번은 시험 컨텍스트의 Tomcat·관리 포트가, 한 번은 Gradle 시험 worker 연결이 listen하지 못했다. 컨텍스트 하나가 실패하면 같은 JVM의 클래스가 모두 컨텍스트 실패 임계로 실패하므로 실패한 시험은 모두 컨텍스트 적재 실패였고, 시험 본문이 돌아 실패한 것은 없다 — 문과 무관한 183의 관측이다.
+  - 전체 build는 이 판정의 근거에 넣지 않았다.
+  - **PR CI.** 이 PR의 CI `backend-quality` 통과를 해소 근거에 더한다(PR을 연 뒤 기록한다).
+- **앞으로의 기록 규칙.** 이 시험들(위 만료형·지연형 자리와 문 자가 시험)이 CI에서 실패하면 재실행 전에 `ci-run-verdicts.md`에 판정 `미조사` 행을 쓰고 후속 칸에 159를 단다. 시험 구조가 원인으로 확인됐을 때만 `간헐 시험`으로 쓴다.
+
 ### 178. 전체 삭제 완료 판정자의 sweep 상한과 고착 실행의 관측
 
 **미해소(2026-11-09, Story 5.4 판정, 기준 `f259096`).** Story 5.4의 1차 리뷰(blind-hunter·edge-case-hunter)가 append했다.
@@ -1856,3 +1887,12 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **연쇄는 닫혔다.** 이 실패가 공유 PostgreSQL 컨테이너를 함께 멈춰 같은 JVM의 시험이 `Connection refused`로 무더기 실패하던 경로는 `spec-test-container-context-lifecycle.md`가 닫았다. 이 fix 뒤 전체 build의 `Connection refused`는 0건이다.
 
 **미해소 잔여:** 원인(보안·네트워크 필터 소프트웨어 등)을 가른다. 그동안의 로컬 검증 절차(그 클래스만 다시 돌리기, 전체 green은 CI `ci-required`)는 이 fix가 `DEVELOPMENT.md` `### 간헐 실패`에 적었다. 코드로 우회하거나 재시도하지 않는다. 주인은 없다.
+
+### 184. 운영 코드의 두 정수 advisory 키를 막는 소스 스캔
+
+**미해소(2026-11-11, lease 상실·지연 시험의 잠금 문 이전 fix가 append, 기준 `ab6d798`).** 이 fix의 리뷰(blind-hunter)가 append했다.
+- **전제.** 시험의 페이지 저장 문은 두 정수 advisory 키(`pg_locks` `objsubid=2`)를 쓰고, `PlanSyncTestBase`의 계획 잠금 대기 helper(`awaitBlockedOnPlanLock`·`awaitPlanLockReleased`)는 그 키를 빼고 센다. 운영 코드의 advisory 잠금이 모두 bigint 하나(`hashtextextended`, `objsubid=1`)라서 성립한다.
+- **빈틈.** 그 전제를 고정하는 검사가 없다. 운영 코드에 두 정수 키가 생기면 계획 잠금 대기 helper가 그 잠금을 조용히 놓친다.
+- **이 fix에서 하지 않은 이유.** 운영 소스의 advisory 호출 꼴이 여럿(`xact`·session·`shared`)이라 스캔 규칙을 따로 정해야 하고, 이 fix는 SPEC상 시험 코드만 바꾼다.
+
+**미해소 잔여:** `src/main/java`의 advisory 호출이 모두 단일 bigint 키임을 단정하는 소스 스캔을 둘지 정한다. 주인은 없다.
