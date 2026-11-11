@@ -233,7 +233,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 | 회고 AI-2·AI-3 삭제 문서·경계 정합과 동일 출처 삭제 검증 chore | done | `spec-epic-5-retro-docs-and-verification.md`, PR #151 머지 커밋 `9774e4c` |
 | 회고 AI-4 CI 설치 단계 시한·비-green 실행 판정 원장 chore | done | `spec-ci-flaky-run-verdicts.md`, PR #153 머지 커밋 `a3dd2ff` |
 | 첫 스냅샷 상태 조회 원자 읽기 fix(deferred 181) | done | `spec-first-snapshot-state-atomic-read.md`, PR #156 |
-| 시험 PostgreSQL 컨테이너 수명의 컨텍스트 분리 fix | done | `spec-test-container-context-lifecycle.md` |
+| 시험 PostgreSQL 컨테이너 수명의 컨텍스트 분리 fix | done | `spec-test-container-context-lifecycle.md`, PR #157 |
 
 ## 스토리가 고정한 계약
 

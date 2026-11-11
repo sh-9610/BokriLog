@@ -22,7 +22,7 @@ decision_baseline: 'ERD-1.0.0'
 | 미해소 | 120 |
 | 미판정 | 0 |
 
-**2026-11-11 갱신(시험 PostgreSQL 컨테이너 수명의 컨텍스트 분리 fix).** `spec-test-container-context-lifecycle.md`(기준 `df5a9c6`)의 판정이다. done 전환 PR이 없는 fix라 이 PR이 판정한다.
+**2026-11-11 갱신(시험 PostgreSQL 컨테이너 수명의 컨텍스트 분리 fix).** `spec-test-container-context-lifecycle.md`(PR #157)(기준 `df5a9c6`)의 판정이다. done 전환 PR이 없는 fix라 이 PR이 판정한다.
 - **이 fix가 해소한 항목:** 없다.
 - **이 fix가 append한 defer:** 183(Windows 로컬 전체 백엔드 build의 루프백 소켓 `Bad address`) 하나다. 미해소로 판정했고 주인은 없다.
 - **이 fix를 결정 지점으로 지목한 항목:** 없다.
