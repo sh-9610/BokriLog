@@ -10,7 +10,6 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
@@ -23,8 +22,8 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
  */
 class RestrictionMigrationTest extends PlanSyncTestBase {
 
-    @Autowired
-    org.testcontainers.postgresql.PostgreSQLContainer postgres;
+    /** 공유 컨테이너. bean이 아니므로 주입받지 않는다({@link PostgresTestcontainersConfig#shared()}). */
+    private final org.testcontainers.postgresql.PostgreSQLContainer postgres = PostgresTestcontainersConfig.shared();
 
     @Test
     void v18은_옛_command_행을_기능_전역_제한으로_되채우고_판독기가_막는다() throws Exception {

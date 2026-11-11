@@ -2,7 +2,7 @@
 title: 'Deferred Work 해소 원장'
 status: living
 created: '2026-09-02'
-updated: '2026-11-10'
+updated: '2026-11-11'
 applies_to: '_bmad-output/implementation-artifacts/deferred-work.md'
 decision_baseline: 'ERD-1.0.0'
 ---
@@ -19,8 +19,15 @@ decision_baseline: 'ERD-1.0.0'
 |---|---|
 | 해소 | 38 |
 | 부분 해소 | 25 |
-| 미해소 | 119 |
+| 미해소 | 120 |
 | 미판정 | 0 |
+
+**2026-11-11 갱신(시험 PostgreSQL 컨테이너 수명의 컨텍스트 분리 fix).** `spec-test-container-context-lifecycle.md`(PR #157)(기준 `df5a9c6`)의 판정이다. done 전환 PR이 없는 fix라 이 PR이 판정한다.
+- **이 fix가 해소한 항목:** 없다.
+- **이 fix가 append한 defer:** 183(Windows 로컬 전체 백엔드 build의 루프백 소켓 `Bad address`) 하나다. 미해소로 판정했고 주인은 없다.
+- **이 fix를 결정 지점으로 지목한 항목:** 없다.
+- **지나간 항목:** 159(전체 빌드에서만 나는 계획 종단 시험 간헐 실패)에 같은 "전체 빌드에서만" 계열의 다른 경로(컨텍스트 종료가 공유 컨테이너를 멈추는 경로)를 적고 그 경로를 닫았다. 그 경로는 `Connection refused`를 내므로 159의 관측을 직접 설명하지 않는다. 부분 해소 그대로이고 주인(lease 상실 시험 잠금 문 fix)도 그대로다. 177은 그 fix 몫이라 손대지 않았다.
+- **표:** 183건이다(해소 38·부분 해소 25·미해소 120·미판정 0).
 
 **2026-11-10 갱신(첫 스냅샷 상태 조회 원자 읽기 fix).** `spec-first-snapshot-state-atomic-read.md`(PR #156, 기준 `d6c6872`)의 판정이다. done 전환 PR이 없는 fix라 이 PR이 판정한다.
 - **이 fix가 해소한 항목:** 181(develop push e2e `first-snapshot` 실패)이다. `SyncJobService.state`를 읽기 전용 `REPEATABLE READ` 트랜잭션 하나로 읽게 했고, 두 읽기 사이에 발행 커밋을 끼우는 결정적 시험이 옛 코드에서 실패하고 새 코드에서 통과함을 확인했다. 해소로 판정했다.
@@ -1517,6 +1524,15 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **재판정 조건.** 그 fix가 `PlanEndTest`를 잠금 문으로 옮긴 뒤 이 항목을 다시 판정한다. 옮긴 뒤에도 전체 빌드에서 같은 실패가 나면 원인은 시간 기반 순서가 아니므로 `[test-clock]` 줄로 시계 차이 가설을 가른다.
 - **기록.** 그 사이 CI에서 이 계열의 실패가 나면 재실행 전에 `ci-run-verdicts.md`에 행을 쓰고 후속 칸에 이 번호(159, 시간 기반 lease 상실 시험이면 177)를 단다(`DEVELOPMENT.md` `### 간헐 실패`). 판정은 원인이 확정되기 전에는 `미조사`이고, 시험 구조가 원인으로 확인됐을 때만 `간헐 시험`이다.
 
+**같은 계열의 다른 경로(2026-11-11, 시험 컨테이너 수명 fix, 기준 `df5a9c6`).** `spec-test-container-context-lifecycle.md`가 같은 "전체 빌드에서만" 계열의 다른 경로 하나를 닫았다. 이 경로는 159를 직접 설명하지 않는다 — 이 경로의 실패는 `Connection refused`이고, 159의 관측은 409 `RESULT_TOO_RECENT`·작업 `FAILED`다. 상태(부분 해소)·건수·주인은 바꾸지 않는다.
+- **경로.** 시험 JVM의 공유 PostgreSQL 컨테이너가 `@Bean @ServiceConnection`이었다. 그래서 그 bean을 가진 Spring 컨텍스트 하나가 닫히면(로드 실패·컨텍스트 캐시 축출) Spring Boot의 `TestcontainersLifecycleBeanPostProcessor`가 JVM의 공유 컨테이너를 멈췄다.
+  - 같은 JVM의 뒤 시험은 `Connection refused`로 실패했다.
+  - 그 뒤 공유 컨테이너가 다시 뜨면 새 포트를 받으므로, 캐시에 남은 컨텍스트가 죽은 포트를 계속 쓸 수 있었다(추정 — 관측한 것은 연쇄 `Connection refused`까지다).
+  - 컨텍스트가 많이 쌓이고 축출되는 전체 빌드에서만 열리는 경로다.
+- **관측.** 2026-11-10 로컬 build의 215건 실패와 2026-11-11 로컬 develop build가 이 모양이다. 후자는 Windows 루프백 `Bad address: listen`으로 `AuthDeletionPathTest` 컨텍스트 로드 실패 → 그 JVM 컨테이너 `kill → die(137) → destroy` → 연쇄 `Connection refused` 순서였다. 둘 다 159의 관측(409 `RESULT_TOO_RECENT`·작업 `FAILED`)과 모양이 다르다.
+- **닫은 것.** 컨테이너를 bean으로 노출하지 않고, 컨텍스트는 `JdbcConnectionDetails` bean으로 접속 정보만 받는다. `SharedPostgresLifecycleTest`가 정상 종료·로드 실패 뒤에도 컨테이너가 같은 id로 살아 있고 SQL이 됨을 고정한다. 같은 시험이 옛 설정에서 실패함을 확인했다.
+- **159의 남는 후보.** 그대로다 — JVM↔DB 시계 차이(`[test-clock]` 줄로 가른다)와, 시간 기반 순서로 lease 상실을 만드는 시험 구조(177)다. 위 주인(lease 상실 시험 잠금 문 fix)과 재판정 조건도 그대로다.
+
 ### 160. 세션 행이 먼저 지워진 뒤 속성 저장의 FK 위반
 
 **미해소(2026-10-17, 세션 속성 upsert fix가 append).** upsert는 같은 속성 첫 INSERT의 기본 키 충돌만 닫는다. 같은 세션의 다른 요청이 동시 로그아웃·만료 정리로 세션 행이 지워진 뒤 속성을 저장하면 `SPRING_SESSION_ATTRIBUTES` FK에서 500이 날 수 있고, 동시 삭제 뒤 UPDATE는 0행이 된다. 재현 시험은 없다.
@@ -1828,3 +1844,15 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **증거의 공백.** 단계가 상한에 끊겨 진단 디렉터리가 비었고, `backup-rehearsal-diagnostics-42549803177-1`은 올라가지 않았다(`No files were found`). 남은 증거는 job 로그(90일, 2027-02-07 무렵까지)뿐이다.
 
 **미해소 잔여:** catalog 결함 주입 경로(`age -d | pg_restore --list` 실패)에서 무엇이 기다리는지 가른다(배경 실행 + `wait`, 파이프 한쪽의 정지). 단계 상한에 끊길 때도 진단이 남게 할지도 정한다. 지명된 작업은 없다. 리허설의 PR 경로 분리(164)와 같은 지점에서 볼 수 있다.
+
+### 183. Windows 로컬 전체 백엔드 build의 루프백 소켓 `Bad address`
+
+**미해소(2026-11-11, 시험 PostgreSQL 컨테이너 수명 fix가 append, 기준 `df5a9c6`).**
+- **관측.** 2026-11-10·11 Windows 11 로컬 전체 `backend/gradlew --project-dir backend build`에서 Java 루프백 소켓이 간헐적으로 `java.net.SocketException: Bad address`로 실패했다.
+  - `listen` — 내장 Tomcat·관리 포트의 bind에서 컨텍스트 로드가 실패했다. 2026-11-11에는 `AuthDeletionPathTest`였고, 이 fix 검증의 전체 build(1,774건 중 288건 실패)에서는 `ActionGrantTest`·`BybitConnectionTransactionTest`·`OperatorRecoveryTest`였다. 대상 시험만 돌린 실행에서 `PlanEndTest`도 한 번 그랬다.
+  - `connect` — 같은 전체 build의 `FirstSnapshotTest` 1건이다.
+  - 같은 컨텍스트 구성(`AuthFlowTestBase` 하위)의 뒤 클래스는 Spring 컨텍스트 실패 임계로 함께 실패한다. 그래서 로컬 전체 green을 받을 수 없다.
+- **이 PC 밖에서는 나지 않는다.** 같은 develop 코드의 CI는 green이다. 이 PC의 소켓 수·동적 포트 범위는 정상이었다.
+- **연쇄는 닫혔다.** 이 실패가 공유 PostgreSQL 컨테이너를 함께 멈춰 같은 JVM의 시험이 `Connection refused`로 무더기 실패하던 경로는 `spec-test-container-context-lifecycle.md`가 닫았다. 이 fix 뒤 전체 build의 `Connection refused`는 0건이다.
+
+**미해소 잔여:** 원인(보안·네트워크 필터 소프트웨어 등)을 가른다. 그동안의 로컬 검증 절차(그 클래스만 다시 돌리기, 전체 green은 CI `ci-required`)는 이 fix가 `DEVELOPMENT.md` `### 간헐 실패`에 적었다. 코드로 우회하거나 재시도하지 않는다. 주인은 없다.

@@ -7,7 +7,6 @@ import java.util.Optional;
 import java.util.UUID;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -21,8 +20,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  */
 class DeletionBackupMigrationTest extends PlanSyncTestBase {
 
-    @Autowired
-    PostgreSQLContainer postgres;
+    /** 공유 컨테이너. bean이 아니므로 주입받지 않는다({@link PostgresTestcontainersConfig#shared()}). */
+    private final PostgreSQLContainer postgres = PostgresTestcontainersConfig.shared();
 
     @Test
     void v32는_옛_tombstone을_요청_시각에_닫고_진행_중_실행에_요청_ID를_채운다() throws Exception {

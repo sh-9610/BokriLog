@@ -987,8 +987,8 @@ class PlanEndTest extends PlanSyncTestBase {
         }
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
-    org.testcontainers.postgresql.PostgreSQLContainer postgres;
+    /** 공유 컨테이너. bean이 아니므로 주입받지 않는다({@link PostgresTestcontainersConfig#shared()}). */
+    private final org.testcontainers.postgresql.PostgreSQLContainer postgres = PostgresTestcontainersConfig.shared();
 
     /**
      * B6: the schema pairs an end record with its ended plan — a record cannot cite an active plan, and a plan cannot
