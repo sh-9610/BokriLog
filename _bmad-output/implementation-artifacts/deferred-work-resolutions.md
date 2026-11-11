@@ -22,7 +22,7 @@ decision_baseline: 'ERD-1.0.0'
 | 미해소 | 120 |
 | 미판정 | 0 |
 
-**2026-11-11 갱신(lease 상실·지연 시험의 잠금 문 이전 fix).** `spec-lease-loss-test-doors.md`(기준 `ab6d798`)의 판정이다. done 전환 PR이 없는 fix라 이 PR이 판정한다.
+**2026-11-11 갱신(lease 상실·지연 시험의 잠금 문 이전 fix).** `spec-lease-loss-test-doors.md`(PR #158, 기준 `ab6d798`)의 판정이다. done 전환 PR이 없는 fix라 이 PR이 판정한다.
 - **이 fix가 해소한 항목:** 177(시간 기반 순서로 lease 상실을 만드는 백엔드 시험들)이다. 대상 시험 아홉 자리를 `PlanSyncTestBase`의 공용 페이지 저장 문(만료형·지연형)으로 옮겼고, `src/test`의 `pg_sleep`이 0건이며 `PageDoorSourceTest`가 그것을 고정한다. SPEC Verification 명령이 최종 코드로 세 번 통과했다(그 사이 183의 루프백 listen 실패 다섯 번은 아래 177 절 — 시험 본문의 실패는 없다). 해소로 판정했다.
 - **이 fix가 append한 defer:** 184(운영 코드에 두 정수 advisory 키가 생기지 않게 막는 `src/main/java` 소스 스캔) 하나다. 미해소로 판정했고 주인은 없다.
 - **이 fix를 결정 지점으로 지목한 항목:** 159(전체 빌드에서만 나는 계획 종단 시험 간헐 실패)와 177이다. 159는 다시 판정해 부분 해소 그대로 두었다 — `RESULT_TOO_RECENT` 16건의 후보는 JVM↔DB 시계 차이로 좁혔고 `PlanCompletionTest`의 작업 `FAILED` 한 번은 설명되지 않은 채 남는다(아래 159 절).
@@ -1812,7 +1812,7 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
   - SPEC Verification 명령(네 시험 클래스와 `PageDoorSourceTest`, `--rerun`)을 최종 코드로 돌린 실행 가운데 세 번이 모두 통과했다(Windows 11 로컬, 회당 약 4~6분, 시험 120건).
   - 그 사이 다섯 번은 183(Windows 루프백 `SocketException: Bad address: listen`)으로 실패했다. 네 번은 시험 컨텍스트의 Tomcat·관리 포트가, 한 번은 Gradle 시험 worker 연결이 listen하지 못했다. 컨텍스트 하나가 실패하면 같은 JVM의 클래스가 모두 컨텍스트 실패 임계로 실패하므로 실패한 시험은 모두 컨텍스트 적재 실패였고, 시험 본문이 돌아 실패한 것은 없다 — 문과 무관한 183의 관측이다.
   - 전체 build는 이 판정의 근거에 넣지 않았다.
-  - **PR CI.** 이 PR의 CI `backend-quality` 통과를 해소 근거에 더한다(PR을 연 뒤 기록한다).
+  - **PR CI.** PR #158의 CI `backend-quality` 통과를 해소 근거에 더한다(CI가 끝난 뒤 결과를 기록한다).
 - **앞으로의 기록 규칙.** 이 시험들(위 만료형·지연형 자리와 문 자가 시험)이 CI에서 실패하면 재실행 전에 `ci-run-verdicts.md`에 판정 `미조사` 행을 쓰고 후속 칸에 159를 단다. 시험 구조가 원인으로 확인됐을 때만 `간헐 시험`으로 쓴다.
 
 ### 178. 전체 삭제 완료 판정자의 sweep 상한과 고착 실행의 관측
