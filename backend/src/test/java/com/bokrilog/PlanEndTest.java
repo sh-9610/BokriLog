@@ -744,17 +744,20 @@ class PlanEndTest extends PlanSyncTestBase {
     void publicationAndEndAreSerializedByThePlanLockEitherWay() throws Exception {
         Signed signed = signedInWithPlan("end-late-worker", null);
         var v1 = ready(signed.user());
-        slowPageStores(signed.user());
         UUID late;
-        try {
+        // 수집 중인 sync의 페이지 저장을 문 앞에 세워 두고 종료를 끝낸다 — 종료는 작업 행을 건드리지 않으므로 문이 닫힌 채
+        // 끝나고(먼저 끝나는 갈래), sync는 문이 열린 뒤에야 다음 단계로 간다(시간이 아니라 잠금이 순서를 정한다). 문 뒤
+        // 명령의 시한·실패 정리는 해제 시험과 같은 runBehindDoor가 묶는다.
+        try (var door = shutPageDoor(signed.user(), PageDoorKey.PLAN_END_SYNC, "j.stage='COLLECTION'", false)) {
             late = manualSync(signed.user(), "end-late-worker-sync-1");
-            awaitStage(late, "COLLECTION");
-            var ended = endPlan(signed, "USER_REQUEST", v1, "end-late-worker-key-01");
+            awaitBlockedAtDoor(door, late, "COLLECTION");
+            var ended = runBehindDoor(door, () -> endPlan(signed, "USER_REQUEST", v1, "end-late-worker-key-01"));
             assertThat(ended.statusCode()).as(ended.body()).isEqualTo(200);
-        } finally {
-            dropSlowPageStores();
+            assertThat(door.commandBranch()).as("the end does not touch the attempt's rows")
+                    .isEqualTo(CommandBranch.FINISHED_FIRST);
         }
-        assertThat(awaitSync(late)).isEqualTo("BLOCKED");
+        assertThat(awaitSync(late)).as("status|stage|failure_code|resume_count = %s", jobState(late))
+                .isEqualTo("BLOCKED");
         assertThat(jdbc().sql("SELECT failure_code FROM sync_plan_sync_job WHERE job_id=:j").param("j", late)
                 .query(String.class).single()).isEqualTo("PLAN_CHANGED");
         assertThat(countOf("sync_plan_calculation", signed.user())).isEqualTo(1);
@@ -1192,26 +1195,6 @@ class PlanEndTest extends PlanSyncTestBase {
         var admission = sync.admitPlanSync(user, SyncJobApi.SyncTrigger.MANUAL, key);
         assertThat(admission).as("admission").isInstanceOf(SyncJobApi.SyncAdmission.Accepted.class);
         return ((SyncJobApi.SyncAdmission.Accepted) admission).job().jobId();
-    }
-
-    private void awaitStage(UUID job, String stage) throws InterruptedException {
-        String state = pollUntil(Duration.ofSeconds(30), () -> jdbc().sql("SELECT status||'|'||COALESCE(stage,'-') "
-                + "FROM sync_plan_sync_job WHERE job_id=:j").param("j", job).query(String.class).single(),
-                found -> found.equals("RUNNING|" + stage));
-        assertThat(state).isEqualTo("RUNNING|" + stage);
-    }
-
-    /** Page stores of this user's collection sleep: a sync stays in its collection long enough to be overtaken. */
-    private void slowPageStores(UUID user) {
-        jdbc().sql("CREATE OR REPLACE FUNCTION slow_plan_end_pages() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-                + "IF NEW.user_id='" + user + "'::uuid THEN PERFORM pg_sleep(1.5); END IF; RETURN NEW; END $$").update();
-        jdbc().sql("CREATE OR REPLACE TRIGGER slow_plan_end_pages BEFORE INSERT ON sync_initial_page_evidence "
-                + "FOR EACH ROW EXECUTE FUNCTION slow_plan_end_pages()").update();
-    }
-
-    private void dropSlowPageStores() {
-        jdbc().sql("DROP TRIGGER IF EXISTS slow_plan_end_pages ON sync_initial_page_evidence").update();
-        jdbc().sql("DROP FUNCTION IF EXISTS slow_plan_end_pages()").update();
     }
 
     /**

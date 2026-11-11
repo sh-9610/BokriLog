@@ -580,17 +580,17 @@ class BybitReconnectionTest extends PlanSyncTestBase {
         UUID oldConnection = activeConnectionOf(user);
         var v1 = ready(user);
         int snapshots = countOf("portfolio_snapshot", user);
-        slowPageStores(user);
         UUID late;
-        try {
+        // 수집 중인 sync의 페이지 저장을 문 앞에 세운다. 해제는 그 페이지 트랜잭션이 쥔 작업 행에서 기다리고, 그것을 본 뒤
+        // 문을 연다 — 해제가 먼저 커밋한다. 재연결은 그 뒤다(시간이 아니라 잠금이 순서를 정한다).
+        try (var door = shutPageDoor(user, PageDoorKey.RECONNECTION_SYNC, "j.stage='COLLECTION'", false)) {
             late = manualSync(user, key("reconnect-late-sync"));
-            awaitStage(late, "COLLECTION");
-            Signed fresh = reauthenticate(revoke(signed));
+            awaitBlockedAtDoor(door, late, "COLLECTION");
+            Signed fresh = reauthenticate(runBehindDoor(door, () -> revoke(signed)));
             assertThat(reconnect(fresh, DevBybitStub.Scenario.UTA2, signed.uid()).statusCode()).isEqualTo(200);
-        } finally {
-            dropSlowPageStores();
         }
-        assertThat(awaitSync(late)).isEqualTo("BLOCKED");
+        assertThat(awaitSync(late)).as("status|stage|failure_code|resume_count = %s", jobState(late))
+                .isEqualTo("BLOCKED");
         assertThat(jdbc().sql("SELECT connection_id::text||'|'||failure_code FROM sync_plan_sync_job WHERE job_id=:j")
                 .param("j", late).query(String.class).single()).isEqualTo(oldConnection + "|NOT_PERMITTED");
         assertNoChildInProgress(late);
@@ -1083,27 +1083,6 @@ class BybitReconnectionTest extends PlanSyncTestBase {
         var admission = sync.admitPlanSync(user, SyncJobApi.SyncTrigger.MANUAL, key);
         assertThat(admission).as("admission").isInstanceOf(SyncJobApi.SyncAdmission.Accepted.class);
         return ((SyncJobApi.SyncAdmission.Accepted) admission).job().jobId();
-    }
-
-    private void awaitStage(UUID job, String stage) throws InterruptedException {
-        String state = pollUntil(Duration.ofSeconds(30), () -> jdbc().sql("SELECT status||'|'||COALESCE(stage,'-') "
-                + "FROM sync_plan_sync_job WHERE job_id=:j").param("j", job).query(String.class).single(),
-                found -> found.equals("RUNNING|" + stage));
-        assertThat(state).isEqualTo("RUNNING|" + stage);
-    }
-
-    /** 이 사용자의 수집 페이지 저장이 잠든다 — 동기화가 수집에 오래 머물러 해제·재연결에 따라잡힌다. */
-    private void slowPageStores(UUID user) {
-        jdbc().sql("CREATE OR REPLACE FUNCTION slow_reconnect_pages() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-                + "IF NEW.user_id='" + user + "'::uuid THEN PERFORM pg_sleep(1.5); END IF; RETURN NEW; END $$")
-                .update();
-        jdbc().sql("CREATE OR REPLACE TRIGGER slow_reconnect_pages BEFORE INSERT ON sync_initial_page_evidence "
-                + "FOR EACH ROW EXECUTE FUNCTION slow_reconnect_pages()").update();
-    }
-
-    private void dropSlowPageStores() {
-        jdbc().sql("DROP TRIGGER IF EXISTS slow_reconnect_pages ON sync_initial_page_evidence").update();
-        jdbc().sql("DROP FUNCTION IF EXISTS slow_reconnect_pages()").update();
     }
 
     private interface Call {

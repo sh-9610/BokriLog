@@ -455,17 +455,17 @@ class BybitConnectionRevocationTest extends PlanSyncTestBase {
         UUID connection = connectionOf(signed.user());
         var v1 = ready(signed.user());
         int snapshots = countOf("portfolio_snapshot", signed.user());
-        slowPageStores(signed.user());
         UUID late;
-        try {
+        // 수집 중인 sync의 페이지 저장을 문 앞에 세운다. 해제는 그 페이지 트랜잭션이 쥔 작업 행을 UPDATE하므로 행 잠금에서
+        // 기다리고, 그것을 본 뒤 문을 연다 — 해제가 먼저 커밋하고 늦은 Worker는 다음 fenced 문에서 끝난다.
+        try (var door = shutPageDoor(signed.user(), PageDoorKey.REVOCATION_SYNC, "j.stage='COLLECTION'", false)) {
             late = manualSync(signed.user(), key("revoke-late-sync"));
-            awaitStage(late, "COLLECTION");
-            var revoked = revoke(signed, connection, key("revoke-late-worker"));
+            awaitBlockedAtDoor(door, late, "COLLECTION");
+            var revoked = runBehindDoor(door, () -> revoke(signed, connection, key("revoke-late-worker")));
             assertThat(revoked.statusCode()).as(revoked.body()).isEqualTo(200);
-        } finally {
-            dropSlowPageStores();
         }
-        assertThat(awaitSync(late)).isEqualTo("BLOCKED");
+        assertThat(awaitSync(late)).as("status|stage|failure_code|resume_count = %s", jobState(late))
+                .isEqualTo("BLOCKED");
         assertThat(jdbc().sql("SELECT failure_code FROM sync_plan_sync_job WHERE job_id=:j").param("j", late)
                 .query(String.class).single()).isEqualTo("NOT_PERMITTED");
         assertNoChildInProgress(late);
@@ -742,20 +742,21 @@ class BybitConnectionRevocationTest extends PlanSyncTestBase {
         Signed signed = signedInWithPlan("revoke-verification");
         UUID connection = connectionOf(signed.user());
         var v1 = ready(signed.user());
-        slowPageStores(signed.user());
         UUID verifying;
-        try {
+        // 위 늦은 Worker 시험과 같은 지연형 문: 검증의 페이지 저장이 문 앞에 선 채 해제가 행 잠금에서 기다린 뒤 문을 연다.
+        try (var door = shutPageDoor(signed.user(), PageDoorKey.REVOCATION_VERIFICATION, "j.stage='COLLECTION'",
+                false)) {
             var admission = sync.admitPlanVerification(signed.user(), SyncJobApi.VerificationKind.PRECISION,
                     new SyncJobApi.EvidenceReference(v1.planId(), v1.pointerVersion(), v1.calculationId()),
                     key("revoke-verification-job"));
             assertThat(admission).isInstanceOf(SyncJobApi.VerificationAdmission.Accepted.class);
             verifying = ((SyncJobApi.VerificationAdmission.Accepted) admission).job().jobId();
-            awaitStage(verifying, "COLLECTION");
-            assertThat(revoke(signed, connection, key("revoke-verification")).statusCode()).isEqualTo(200);
-        } finally {
-            dropSlowPageStores();
+            awaitBlockedAtDoor(door, verifying, "COLLECTION");
+            assertThat(runBehindDoor(door, () -> revoke(signed, connection, key("revoke-verification"))).statusCode())
+                    .isEqualTo(200);
         }
-        assertThat(awaitSync(verifying)).isEqualTo("BLOCKED");
+        assertThat(awaitSync(verifying)).as("status|stage|failure_code|resume_count = %s", jobState(verifying))
+                .isEqualTo("BLOCKED");
         assertThat(jdbc().sql("SELECT purpose||'|'||failure_code FROM sync_plan_sync_job WHERE job_id=:j")
                 .param("j", verifying).query(String.class).single()).isEqualTo("VERIFY|NOT_PERMITTED");
         assertNoChildInProgress(verifying);
@@ -1122,27 +1123,6 @@ class BybitConnectionRevocationTest extends PlanSyncTestBase {
         var admission = sync.admitPlanSync(user, SyncJobApi.SyncTrigger.MANUAL, key);
         assertThat(admission).as("admission").isInstanceOf(SyncJobApi.SyncAdmission.Accepted.class);
         return ((SyncJobApi.SyncAdmission.Accepted) admission).job().jobId();
-    }
-
-    private void awaitStage(UUID job, String stage) throws InterruptedException {
-        String state = pollUntil(Duration.ofSeconds(30), () -> jdbc().sql("SELECT status||'|'||COALESCE(stage,'-') "
-                + "FROM sync_plan_sync_job WHERE job_id=:j").param("j", job).query(String.class).single(),
-                found -> found.equals("RUNNING|" + stage));
-        assertThat(state).isEqualTo("RUNNING|" + stage);
-    }
-
-    /** Page stores of this user's collection sleep: a sync stays in its collection long enough to be overtaken. */
-    private void slowPageStores(UUID user) {
-        jdbc().sql("CREATE OR REPLACE FUNCTION slow_revocation_pages() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-                + "IF NEW.user_id='" + user + "'::uuid THEN PERFORM pg_sleep(1.5); END IF; RETURN NEW; END $$")
-                .update();
-        jdbc().sql("CREATE OR REPLACE TRIGGER slow_revocation_pages BEFORE INSERT ON sync_initial_page_evidence "
-                + "FOR EACH ROW EXECUTE FUNCTION slow_revocation_pages()").update();
-    }
-
-    private void dropSlowPageStores() {
-        jdbc().sql("DROP TRIGGER IF EXISTS slow_revocation_pages ON sync_initial_page_evidence").update();
-        jdbc().sql("DROP FUNCTION IF EXISTS slow_revocation_pages()").update();
     }
 
     /** The not-granted locks on this user's plan lock ({@code PlanEndTest}'s query). */

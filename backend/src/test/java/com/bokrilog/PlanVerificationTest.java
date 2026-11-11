@@ -12,9 +12,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -37,20 +34,8 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 class PlanVerificationTest extends PlanSyncTestBase {
     private static final String VERIFICATION_PATH = AuthSecurityConfig.DASHBOARD_PATH + "/verification";
     private static final String SYNC_PATH = AuthSecurityConfig.DASHBOARD_PATH + "/sync";
-    /*
-     * 마지막 점검 문(aContinuationReclaimedInItsFinalSweepPublishesOnceAtItsTcFinal)의 advisory 키 — 두 정수 키다.
-     * 운영 코드의 advisory 잠금은 모두 bigint 하나(hashtextextended, pg_locks objsubid=1)이고 두 정수 키(objsubid=2)는
-     * 없으므로 이 문은 계획·원장·Worker 잠금과 키 공간이 겹치지 않는다. 두 값은 임의로 고른 것이고 뜻은 없다 — 양의 int4이고
-     * 시험의 다른 두 정수 키와 겹치지 않으면 된다(지금 다른 두 정수 키는 없다).
-     */
-    private static final int FINAL_SWEEP_DOOR_CLASS = 20_261_106;
-    private static final int FINAL_SWEEP_DOOR_OBJECT = 1;
-    /** 문 획득 대기 상한. 문 트랜잭션의 {@code lock_timeout}(4초)이 생성자의 이 대기보다 먼저 끝나 실패를 남긴다. */
-    private static final Duration FINAL_SWEEP_DOOR_SHUT_WAIT = Duration.ofSeconds(5);
-    /** 문 앞 막힘 대기의 마감. */
-    private static final Duration FINAL_SWEEP_DOOR_BLOCK_WAIT = Duration.ofSeconds(60);
-    /** 문 holder의 안전 시한 — 문 생성부터 재므로 막힘 대기 마감({@link #FINAL_SWEEP_DOOR_BLOCK_WAIT})보다 길다. */
-    private static final Duration FINAL_SWEEP_DOOR_SAFETY = Duration.ofSeconds(90);
+    /** 첫 holder가 만든 저장 페이지 수 — 만료형 문 술어가 "몇 번째 페이지"를 고른다(재획득 전이라 부분 창 폐기가 없다). */
+    private static final String STORED_PAGES = "(SELECT count(*) FROM sync_initial_page_evidence e WHERE e.job_id=NEW.job_id)";
 
     // ------------------------------------------------------------------------------------------ PRECISION_NO_CHANGE
 
@@ -586,18 +571,18 @@ class PlanVerificationTest extends PlanSyncTestBase {
         moveVerification(user, shown.calculationId(), "31 days");
         var v1 = ready(user);
         BybitStubConfiguration.resetRequestCount();
-        slowPageStores(user);
         UUID job;
-        try {
+        // 첫 holder의 본 수집(마지막 점검 전) 세 번째 페이지 저장이 같은 트랜잭션에서 lease를 만료시킨다 — 시간이 아니라
+        // 그 페이지가 순서를 정한다. 첫 창은 그 전에 완결된다.
+        try (var door = expireAtPage(user, PageDoorKey.CONTINUATION_COLLECTION, "j.resume_count=0 AND "
+                + "j.stage='COLLECTION' AND j.initial_tc IS NULL AND " + STORED_PAGES + "=2")) {
             job = continuation(user, v1, "verify-resume-01-key");
-            awaitPages(job, 3);
-            expireLease(job);
-            assertThat(awaitSync(job, 120)).isEqualTo("SUCCEEDED");
-        } finally {
-            dropSlowPageStores();
+            String outcome = awaitSync(job, 120);
+            assertThat(outcome).as("status|stage|failure_code|resume_count = %s", jobState(job)).isEqualTo("SUCCEEDED");
         }
         assertThat(jdbc().sql("SELECT resume_count FROM sync_plan_sync_job WHERE job_id=:j").param("j", job)
-                .query(Integer.class).single()).isEqualTo(1);
+                .query(Integer.class).single()).as("status|stage|failure_code|resume_count = %s", jobState(job))
+                .isEqualTo(1);
         assertThat(ready(user).pointerVersion()).isEqualTo(2);
         // The first window was complete before the loss: read once. None was read more than twice.
         var byWindow = new java.util.TreeMap<Long, Integer>();
@@ -617,18 +602,13 @@ class PlanVerificationTest extends PlanSyncTestBase {
         // Three anomalies far apart: more windows to read, so each loss lands while collecting.
         for (int day : new int[] {5, 20, 35})
             insertSourceEvent(user, "interrupted-" + day, "TRANSFER_IN", "USDT", "1", v1.startAt().plus(Duration.ofDays(day)));
-        slowPageStores(user);
         UUID job;
-        try {
+        // holder마다(재개 수 0·1·2) 첫 페이지 저장이 같은 트랜잭션에서 lease를 만료시킨다 — 만료된 holder는 다음 fenced 문에서
+        // 끝나므로 holder마다 그 한 페이지뿐이다. 누적 페이지 수를 기다리지 않는다(재획득이 부분 창 증거를 지운다).
+        try (var door = expireAtPage(user, PageDoorKey.THIRD_INTERRUPTION, "j.resume_count<=2")) {
             job = precision(user, v1, "verify-interrupted-01", "GAP_SUSPECTED");
-            for (int loss = 0; loss < 3; loss++) {
-                awaitResumeCount(job, loss);
-                awaitPages(job, loss + 1);
-                expireLease(job);
-            }
-            assertThat(awaitSync(job, 120)).isEqualTo("FAILED");
-        } finally {
-            dropSlowPageStores();
+            String outcome = awaitSync(job, 120);
+            assertThat(outcome).as("status|stage|failure_code|resume_count = %s", jobState(job)).isEqualTo("FAILED");
         }
         assertThat(jdbc().sql("SELECT failure_code||'|'||resume_count FROM sync_plan_sync_job WHERE job_id=:j")
                 .param("j", job).query(String.class).single()).isEqualTo("SYNC_INTERRUPTED|2");
@@ -1200,6 +1180,78 @@ class PlanVerificationTest extends PlanSyncTestBase {
     }
 
     /**
+     * 페이지 저장 문을 쓰는 시험이 문 안에서 실패해도 정리가 돈다 — 닫힌 문(holder 있음)과 만료형 trigger만 건 문(holder
+     * 없음) 둘 다: 문 trigger·함수가 지워지고, 문 키를 쥔 holder 연결도 대기도 남지 않으며, 시험의 실패는 정리 예외 없이
+     * 그대로 나온다 — 다음 시험의 페이지 저장이 남은 문에 막히지 않는다.
+     */
+    @Test
+    void aDoorLeavesNothingBehindWhenItsTestFails() throws Exception {
+        UUID user = UUID.randomUUID();
+        var shutFailed = new IllegalStateException("the test failed inside the shut door");
+        try {
+            try (var door = shutPageDoor(user, PageDoorKey.SELF_TEST_SHUT_CLEANUP, "true", false)) {
+                assertThat(jdbc().sql("SELECT count(*) FROM pg_locks WHERE " + door.keyCondition() + " AND granted")
+                        .query(Integer.class).single()).as("the door is shut").isEqualTo(1);
+                throw shutFailed;
+            }
+        } catch (IllegalStateException thrown) {
+            assertThat(thrown).isSameAs(shutFailed);
+            assertThat(thrown.getSuppressed()).as("cleanup failures").isEmpty();
+        }
+        assertNoDoorLeft();
+        var expiringFailed = new IllegalStateException("the test failed inside the expiring trigger");
+        try {
+            try (var door = expireAtPage(user, PageDoorKey.SELF_TEST_EXPIRING_CLEANUP, "true")) {
+                assertThat(jdbc().sql("SELECT count(*) FROM pg_trigger WHERE tgname=:t")
+                        .param("t", PageDoorKey.SELF_TEST_EXPIRING_CLEANUP.trigger()).query(Integer.class).single())
+                        .as("the expiring trigger is installed").isEqualTo(1);
+                throw expiringFailed;
+            }
+        } catch (IllegalStateException thrown) {
+            assertThat(thrown).isSameAs(expiringFailed);
+            assertThat(thrown.getSuppressed()).as("cleanup failures").isEmpty();
+        }
+        assertNoDoorLeft();
+    }
+
+    /**
+     * 만료 없이 막는 문의 lease 상한: 실제 페이지 저장을 문 앞에 세운 채 상한(여기서는 1초)을 넘기면 holder가 스스로 문을 풀고,
+     * 문 열기가 "holder failed"로 시험을 실패시킨다. 그 사이 작업 lease는 시험 밖에서 끝나지 않는다 — 작업은 재획득 없이
+     * ({@code resume_count=0}) 끝난다.
+     */
+    @Test
+    void aDelayingDoorLetsGoAndFailsPastItsLeaseBound() throws Exception {
+        UUID user = connect(DevBybitStub.Scenario.UTA2);
+        publishedPlan(user, "door-bound", Instant.now().minus(Duration.ofDays(20)));
+        var v1 = ready(user);
+        UUID job;
+        try (var door = shutPageDoor(user, PageDoorKey.SELF_TEST_LEASE_BOUND, "j.stage='COLLECTION'", false,
+                Duration.ofSeconds(1))) {
+            job = precision(user, v1, "verify-door-bound-01", "USER_REQUEST");
+            awaitBlockedAtDoor(door, job, "COLLECTION");
+            assertThat(pollUntil(Duration.ofSeconds(10), door::holderEnded, ended -> ended))
+                    .as("the holder let the door go past its bound").isTrue();
+            org.assertj.core.api.Assertions.assertThatThrownBy(door::open).isInstanceOf(AssertionError.class)
+                    .hasMessageContaining("door holder failed").cause().hasMessageContaining("lease bound");
+        }
+        String outcome = awaitSync(job, 60);
+        assertThat(outcome).as("status|stage|failure_code|resume_count = %s", jobState(job)).isEqualTo("SUCCEEDED");
+        assertThat(jdbc().sql("SELECT resume_count FROM sync_plan_sync_job WHERE job_id=:j").param("j", job)
+                .query(Integer.class).single()).as("the lease never ran out").isZero();
+        assertNoDoorLeft();
+    }
+
+    /** 문 trigger·함수와 문 키의 잠금(holder·대기)이 하나도 남지 않았다. */
+    private void assertNoDoorLeft() {
+        assertThat(jdbc().sql("SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'page\\_door\\_%'")
+                .query(Integer.class).single()).as("door triggers").isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM pg_proc WHERE proname LIKE 'page\\_door\\_%'")
+                .query(Integer.class).single()).as("door functions").isZero();
+        assertThat(jdbc().sql("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND classid=" + PAGE_DOOR_CLASS
+                + " AND objsubid=2").query(Integer.class).single()).as("door holders and waiters").isZero();
+    }
+
+    /**
      * A continuation that loses its lease in its final sweep is reclaimed there and publishes once, with both
      * watermarks at the {@code tcFinal} the first holder fixed.
      */
@@ -1213,9 +1265,10 @@ class PlanVerificationTest extends PlanSyncTestBase {
         Optional<Instant> firstHolderTc;
         // 시간이 아니라 잠금으로 holder를 붙잡는다: 마지막 점검 첫 페이지 저장이 문 앞에서 기다리고, 문이 열리면 그
         // 트랜잭션이 lease를 만료시킨 채 커밋한다 — holder는 FINAL_SWEEP을 벗어나기 전에 lease를 잃는다.
-        try (var door = shutFinalSweepDoor(user)) {
+        try (var door = shutPageDoor(user, PageDoorKey.FINAL_SWEEP, "NEW.range_end>j.initial_tc AND j.resume_count=0",
+                true)) {
             job = continuation(user, v1, "verify-sweep-01-key");
-            awaitBlockedAtFinalSweepDoor(job);
+            awaitBlockedAtDoor(door, job, "FINAL_SWEEP");
             // 첫 holder가 문 앞에서 막힌 시점(재획득 전)에 고정해 둔 tc — 완료 뒤 tcFinal과 같아야 한다.
             firstHolderTc = jdbc().sql("SELECT tc FROM sync_plan_sync_job WHERE job_id=:j").param("j", job)
                     .query((rs, n) -> Optional.ofNullable(rs.getObject(1, OffsetDateTime.class))
@@ -1255,17 +1308,16 @@ class PlanVerificationTest extends PlanSyncTestBase {
         for (int day : new int[] {5, 20, 35})
             insertSourceEvent(user, "reclaimed-" + day, "TRANSFER_IN", "USDT", "1", v1.startAt().plus(Duration.ofDays(day)));
         UUID job;
-        slowPageStores(user);
-        try {
+        // 첫 holder의 두 번째 페이지 저장이 같은 트랜잭션에서 lease를 만료시킨다.
+        try (var door = expireAtPage(user, PageDoorKey.VERIFICATION_COLLECTION,
+                "j.resume_count=0 AND " + STORED_PAGES + "=1")) {
             job = precision(user, v1, "verify-reclaimed-01", "GAP_SUSPECTED");
-            awaitPages(job, 2);
-            expireLease(job);
-            assertThat(awaitSync(job, 120)).isEqualTo("SUCCEEDED");
-        } finally {
-            dropSlowPageStores();
+            String outcome = awaitSync(job, 120);
+            assertThat(outcome).as("status|stage|failure_code|resume_count = %s", jobState(job)).isEqualTo("SUCCEEDED");
         }
         assertThat(jdbc().sql("SELECT resume_count FROM sync_plan_sync_job WHERE job_id=:j").param("j", job)
-                .query(Integer.class).single()).isEqualTo(1);
+                .query(Integer.class).single()).as("status|stage|failure_code|resume_count = %s", jobState(job))
+                .isEqualTo(1);
         var v2 = ready(user);
         assertThat(v2.pointerVersion()).isEqualTo(2);
         // The three stored events were not observed again: excluded, not deleted.
@@ -1308,16 +1360,25 @@ class PlanVerificationTest extends PlanSyncTestBase {
 
     /**
      * Starts a precision verification whose first holder stores the window's first page and then loses its lease
-     * while the window is still incomplete (the stub answers that holder's second page slowly); the resumed holder
-     * reads the window again. Returns the attempt once it ended.
+     * while the window is still incomplete; the resumed holder reads the window again. Returns the attempt once it
+     * ended with {@code expected}. 만료는 첫 holder의 첫 페이지 저장이 같은 트랜잭션에서 건다. 창 안에서는 언제나
+     * TRANSFER_IN을 TRANSFER_OUT보다 먼저 읽으므로({@code BybitAdapter}의 창마다 {@code List.of("TRANSFER_IN",
+     * "TRANSFER_OUT")} 순회) 첫 페이지는 첫 창의 TRANSFER_IN이고, 그 창의 TRANSFER_OUT은 아직 저장되지 않았으므로 창은
+     * 미완료다 — 스텁이 그 응답을 늦추는 것에 기대지 않는다. 술어의 {@code NEW.event_type='TRANSFER_IN'}은 그 가정이
+     * 깨지면 만료가 일어나지 않아 아래 재개 단정이 실패하게 한다.
      */
-    private UUID verifiedAcrossALostWindow(UUID user, SyncJobApi.DashboardResult v1, String key) throws Exception {
-        UUID job = precision(user, v1, key, "USER_REQUEST");
-        awaitPages(job, 1);
-        expireLease(job);
-        awaitSync(job, 60);
+    private UUID verifiedAcrossALostWindow(UUID user, SyncJobApi.DashboardResult v1, String key, String expected)
+            throws Exception {
+        UUID job;
+        try (var door = expireAtPage(user, PageDoorKey.LOST_WINDOW,
+                "j.resume_count=0 AND NEW.event_type='TRANSFER_IN' AND " + STORED_PAGES + "=0")) {
+            job = precision(user, v1, key, "USER_REQUEST");
+            String outcome = awaitSync(job, 60);
+            assertThat(outcome).as("status|stage|failure_code|resume_count = %s", jobState(job)).isEqualTo(expected);
+        }
         assertThat(jdbc().sql("SELECT resume_count FROM sync_plan_sync_job WHERE job_id=:j").param("j", job)
-                .query(Integer.class).single()).as("resumed once").isEqualTo(1);
+                .query(Integer.class).single()).as("resumed once (status|stage|failure_code|resume_count = %s)",
+                        jobState(job)).isEqualTo(1);
         return job;
     }
 
@@ -1331,7 +1392,7 @@ class PlanVerificationTest extends PlanSyncTestBase {
         UUID user = connect(DevBybitStub.Scenario.FLICKER_NEW);
         publishedPlan(user, "verify-flicker-new", Instant.now().minus(Duration.ofDays(3)));
         var v1 = ready(user);
-        UUID job = verifiedAcrossALostWindow(user, v1, "verify-flicker-new-01");
+        UUID job = verifiedAcrossALostWindow(user, v1, "verify-flicker-new-01", "SUCCEEDED");
         assertThat(jdbc().sql("SELECT status FROM sync_plan_sync_job WHERE job_id=:j").param("j", job)
                 .query(String.class).single()).isEqualTo("SUCCEEDED");
         assertThat(outcomes(job)).containsExactly("flicker-01|SUPERSEDED|false");
@@ -1347,7 +1408,7 @@ class PlanVerificationTest extends PlanSyncTestBase {
         publishedPlan(user, "verify-flicker-official", Instant.now().minus(Duration.ofDays(3)));
         var v1 = ready(user);
         assertThat(v1.flowCount()).isEqualTo(1);
-        UUID job = verifiedAcrossALostWindow(user, v1, "verify-flicker-official-01");
+        UUID job = verifiedAcrossALostWindow(user, v1, "verify-flicker-official-01", "NEEDS_REVIEW");
         assertThat(jdbc().sql("SELECT status||'|'||failure_code FROM sync_plan_sync_job WHERE job_id=:j")
                 .param("j", job).query(String.class).single()).isEqualTo("NEEDS_REVIEW|SOURCE_EVENT_MISSING");
         assertThat(outcomes(job)).containsExactly("flicker-01|MISSING|false");
@@ -1363,7 +1424,7 @@ class PlanVerificationTest extends PlanSyncTestBase {
         UUID user = connect(DevBybitStub.Scenario.FLICKER_JUNK);
         publishedPlan(user, "verify-flicker-junk", Instant.now().minus(Duration.ofDays(3)));
         var v1 = ready(user);
-        UUID job = verifiedAcrossALostWindow(user, v1, "verify-flicker-junk-01");
+        UUID job = verifiedAcrossALostWindow(user, v1, "verify-flicker-junk-01", "SUCCEEDED");
         assertThat(jdbc().sql("SELECT status FROM sync_plan_sync_job WHERE job_id=:j").param("j", job)
                 .query(String.class).single()).isEqualTo("SUCCEEDED");
         assertThat(jdbc().sql("SELECT count(*) FROM sync_initial_page_evidence e JOIN sync_plan_sync_job j "
@@ -1621,191 +1682,6 @@ class PlanVerificationTest extends PlanSyncTestBase {
             Thread.sleep(100);
         }
         throw new AssertionError("the attempt did not finish");
-    }
-
-    /** Every page store of the user sleeps 700 ms: the collection lasts long enough to lose its lease mid-way. */
-    private void slowPageStores(UUID user) {
-        // OR REPLACE: a test that failed before its finally cannot leave the next one unable to create them.
-        jdbc().sql("CREATE OR REPLACE FUNCTION slow_verification_pages() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-                + "IF NEW.user_id='" + user + "'::uuid THEN PERFORM pg_sleep(0.7); END IF; RETURN NEW; END $$").update();
-        jdbc().sql("CREATE OR REPLACE TRIGGER slow_verification_pages BEFORE INSERT ON sync_initial_page_evidence "
-                + "FOR EACH ROW EXECUTE FUNCTION slow_verification_pages()").update();
-    }
-
-    private void dropSlowPageStores() {
-        jdbc().sql("DROP TRIGGER IF EXISTS slow_verification_pages ON sync_initial_page_evidence").update();
-        jdbc().sql("DROP FUNCTION IF EXISTS slow_verification_pages()").update();
-    }
-
-    /** Waits until the attempt's collection stored at least {@code pages} pages. */
-    private void awaitPages(UUID job, int pages) throws InterruptedException {
-        for (int i = 0; i < 600; i++) {
-            Integer stored = jdbc().sql("SELECT count(*) FROM sync_initial_page_evidence e JOIN sync_initial_collection_job c "
-                    + "ON c.job_id=e.job_id WHERE c.plan_sync_job_id=:j").param("j", job).query(Integer.class).single();
-            if (stored >= pages) return;
-            Thread.sleep(50);
-        }
-        throw new AssertionError("the collection stored too few pages");
-    }
-
-    private void awaitResumeCount(UUID job, int count) throws InterruptedException {
-        String state = null;
-        for (int i = 0; i < 600; i++) {
-            state = jdbc().sql("SELECT status||'|'||resume_count||'|'||COALESCE(lease_until>statement_timestamp(),"
-                    + "false)||'|'||COALESCE(stage,'-')||'|'||COALESCE(failure_code,'-') FROM sync_plan_sync_job "
-                    + "WHERE job_id=:j").param("j", job).query(String.class).single();
-            if (state.startsWith("RUNNING|" + count + "|true|")) return;
-            Thread.sleep(50);
-        }
-        throw new AssertionError("the attempt was not reclaimed: " + state);
-    }
-
-    /**
-     * 작업이 {@code RUNNING}·{@code FINAL_SWEEP}이고 마지막 점검 문 키에 승인되지 않은 대기(문 앞에서 막힌 페이지 저장)가
-     * 있을 때까지 기다린다. 문이 기대한 자리에서 막지 못하면 마감(60초) 뒤 마지막 상태(상태|단계|재개 수|대기 수)와 함께
-     * 실패한다 — 문 holder의 안전 시한(90초, 문 생성부터)보다 먼저 끝나므로 문이 스스로 열린 뒤에 통과하는 일이 없다.
-     */
-    private void awaitBlockedAtFinalSweepDoor(UUID job) throws InterruptedException {
-        String state = null;
-        long deadline = System.nanoTime() + FINAL_SWEEP_DOOR_BLOCK_WAIT.toNanos();
-        do {
-            state = jdbc().sql("SELECT status||'|'||COALESCE(stage,'-')||'|'||resume_count||'|'||(SELECT count(*) "
-                    + "FROM pg_locks WHERE locktype='advisory' AND classid=" + FINAL_SWEEP_DOOR_CLASS + " AND objid="
-                    + FINAL_SWEEP_DOOR_OBJECT + " AND objsubid=2 AND NOT granted) "
-                    + "FROM sync_plan_sync_job WHERE job_id=:j").param("j", job).query(String.class).single();
-            if (state.startsWith("RUNNING|FINAL_SWEEP|") && !state.endsWith("|0")) return;
-            Thread.sleep(50);
-        } while (System.nanoTime() - deadline < 0);
-        throw new AssertionError("the attempt never waited at the final-sweep door "
-                + "(status|stage|resume_count|waiters): " + state);
-    }
-
-    /** 작업 행의 {@code status|stage|failure_code|resume_count} — 결말이 기대와 다를 때 실패 메시지에 싣는다. */
-    private String jobState(UUID job) {
-        return jdbc().sql("SELECT status||'|'||COALESCE(stage,'-')||'|'||COALESCE(failure_code,'-')||'|'||resume_count "
-                + "FROM sync_plan_sync_job WHERE job_id=:j").param("j", job).query(String.class).optional().orElse("GONE");
-    }
-
-    /**
-     * 마지막 점검 문을 닫는다: 문 키를 배타적으로 쥐고, 이 사용자의 마지막 점검 페이지({@code range_end > initial_tc}) INSERT가
-     * 처음 holder({@code resume_count=0})의 것일 때만 문(공유 잠금)을 기다린 뒤 같은 트랜잭션에서 그 계획 작업의 lease를
-     * 과거로 만드는 trigger를 건다. 페이지 저장 트랜잭션은 이미 계획 작업 행을 {@code FOR UPDATE}로 쥐고 fencing을 통과했고
-     * INSERT 뒤에는 그 lease를 다시 보지 않으므로, 만료는 다른 세션과 경합 없이 페이지와 함께 커밋되고 holder의 다음 fenced
-     * 문부터 {@code LeaseLost}다 — 단계는 {@code FINAL_SWEEP} 그대로라 재획득이 재개 가능이다. 재획득된 holder
-     * ({@code resume_count=1})의 페이지는 막지도 만료시키지도 않는다. trigger 생성이 도중에 실패하면 문을 열고 trigger·함수를
-     * 지운 뒤 원래 예외를 던진다(정리 중 예외는 {@code addSuppressed}).
-     */
-    private FinalSweepDoor shutFinalSweepDoor(UUID user) throws InterruptedException {
-        var door = new FinalSweepDoor();
-        try {
-            // OR REPLACE: finally 전에 죽은 시험이 남긴 것이 있어도 다음 시험이 만들 수 있다.
-            jdbc().sql("CREATE OR REPLACE FUNCTION final_sweep_door() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-                    + "IF NEW.user_id='" + user + "'::uuid AND EXISTS (SELECT 1 FROM sync_plan_sync_job j "
-                    + "WHERE j.collection_job_id=NEW.job_id AND NEW.range_end>j.initial_tc AND j.resume_count=0) THEN "
-                    + "PERFORM pg_advisory_xact_lock_shared(" + FINAL_SWEEP_DOOR_CLASS + "," + FINAL_SWEEP_DOOR_OBJECT + "); "
-                    + "UPDATE sync_plan_sync_job SET lease_until=statement_timestamp()-interval '1 second' "
-                    + "WHERE collection_job_id=NEW.job_id AND status='RUNNING' AND resume_count=0; "
-                    + "END IF; RETURN NEW; END $$").update();
-            jdbc().sql("CREATE OR REPLACE TRIGGER final_sweep_door BEFORE INSERT ON sync_initial_page_evidence "
-                    + "FOR EACH ROW EXECUTE FUNCTION final_sweep_door()").update();
-        } catch (RuntimeException | Error failed) {
-            try {
-                door.close();
-            } catch (RuntimeException | Error cleanup) {
-                failed.addSuppressed(cleanup);
-            }
-            throw failed;
-        }
-        return door;
-    }
-
-    /**
-     * 마지막 점검 문: 전용 가상 스레드 트랜잭션이 문 키를 배타적으로 쥔다(안전 시한 90초 — 그 안에 열지 않으면 holder가
-     * 실패로 끝나고 문 열기가 시험을 실패시킨다). 획득은 {@code lock_timeout} 4초로 묶어, 문을 닫지 못하면 holder 스레드·연결이
-     * 남지 않고 그 실패가 {@code failure}에 기록된 채 생성자가 실패한다. {@link #open()}은 한 번만 열고 holder가 끝났고 예외 없이 끝났음을
-     * 단정한다. {@link #close()}는 아직 열지 않았으면 열고 trigger·함수를 지운다 — 시험이 실패해도 일어나고, 정리 중 예외는
-     * 첫 예외에 {@code addSuppressed}로 붙는다.
-     */
-    private final class FinalSweepDoor implements AutoCloseable {
-        private final CountDownLatch release = new CountDownLatch(1);
-        private final AtomicReference<@Nullable Throwable> failure = new AtomicReference<>();
-        private final Thread holder;
-        private boolean opened;
-
-        FinalSweepDoor() throws InterruptedException {
-            var shut = new CountDownLatch(1);
-            holder = Thread.ofVirtual().start(() -> {
-                try {
-                    new org.springframework.transaction.support.TransactionTemplate(manager).executeWithoutResult(status -> {
-                        // 이 트랜잭션에만 걸리는 획득 상한: 생성자의 대기(5초)보다 먼저 끝나 실패를 failure에 남긴다.
-                        jdbc().sql("SELECT set_config('lock_timeout','4s',true)").query(String.class).single();
-                        jdbc().sql("WITH l AS MATERIALIZED (SELECT pg_advisory_xact_lock(" + FINAL_SWEEP_DOOR_CLASS + ","
-                                + FINAL_SWEEP_DOOR_OBJECT + ")) SELECT 1 FROM l").query(Integer.class).single();
-                        shut.countDown();
-                        try {
-                            if (!release.await(FINAL_SWEEP_DOOR_SAFETY.toMillis(), TimeUnit.MILLISECONDS))
-                                throw new IllegalStateException("the final-sweep door was never opened");
-                        } catch (InterruptedException interrupted) {
-                            Thread.currentThread().interrupt();
-                            throw new IllegalStateException("the final-sweep door holder was interrupted", interrupted);
-                        }
-                    });
-                } catch (Throwable failed) {
-                    failure.set(failed);
-                } finally {
-                    shut.countDown();
-                }
-            });
-            boolean signalled = shut.await(FINAL_SWEEP_DOOR_SHUT_WAIT.toMillis(), TimeUnit.MILLISECONDS);
-            Throwable failed = failure.get();
-            if (!signalled || failed != null) {
-                release.countDown();
-                throw new AssertionError("the final-sweep door was not shut", failed);
-            }
-        }
-
-        void open() {
-            if (opened) return;
-            opened = true;
-            release.countDown();
-            boolean ended;
-            try {
-                ended = holder.join(Duration.ofSeconds(10));
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new AssertionError("interrupted while opening the final-sweep door", interrupted);
-            }
-            if (!ended) throw new AssertionError("the final-sweep door holder did not end");
-            Throwable failed = failure.get();
-            if (failed != null) throw new AssertionError("the final-sweep door holder failed", failed);
-        }
-
-        @Override
-        public void close() {
-            @Nullable Throwable first = null;
-            try {
-                open();
-            } catch (RuntimeException | Error failed) {
-                first = failed;
-            }
-            for (String drop : List.of("DROP TRIGGER IF EXISTS final_sweep_door ON sync_initial_page_evidence",
-                    "DROP FUNCTION IF EXISTS final_sweep_door()")) {
-                try {
-                    jdbc().sql(drop).update();
-                } catch (RuntimeException | Error failed) {
-                    if (first == null) first = failed;
-                    else first.addSuppressed(failed);
-                }
-            }
-            if (first instanceof RuntimeException runtime) throw runtime;
-            if (first instanceof Error error) throw error;
-        }
-    }
-
-    /** The holder loses its lease: it expires now, and the worker's heartbeat and claim take it from there. */
-    private void expireLease(UUID job) {
-        jdbc().sql("UPDATE sync_plan_sync_job SET lease_until=statement_timestamp()-interval '1 second' WHERE job_id=:j")
-                .param("j", job).update();
     }
 
     @SuppressWarnings("unchecked")
