@@ -132,11 +132,135 @@ class AuthTokenValidationTest extends AuthFlowTestBase {
 
         // 이 code는 정상 토큰을 낸다. 교환이 시작됐다면 로그인이 성공했을 것이다.
         HttpResponse<String> response =
-                callback(authorization, authorization.sessionCookie(), code, "not-the-issued-state");
+                callback(
+                        authorization,
+                        authorization.sessionCookie(),
+                        code,
+                        UUID.randomUUID().toString());
 
         assertConvergedWithoutAccount(response);
-        // 이 흐름의 세션은 실패 핸들러가 무효화했다. 남은 세션 행이 없다.
-        assertThat(sessionCount()).isZero();
+        /*
+         * 이 실패는 세션의 인가 요청에 닿지 못했으므로 그 세션을 지우지 않는다(deferred 190). 세션 행은 남지만 주체를
+         * 결정하지 않는다 — 지우면 남이 연 위조 콜백 하나로 진행 중인 로그인이 취소된다.
+         */
+        assertThat(sessionCount()).isEqualTo(1);
+        assertThat(sessionState(authorization.sessionCookie()).body())
+                .contains("\"authenticated\":false");
+    }
+
+    @Test
+    void 로그인_전_세션의_위조_콜백은_진행_중인_로그인을_지우지_않는다() throws Exception {
+        Authorization authorization = startAuthorization();
+        assertThat(sessionCount()).isEqualTo(1);
+
+        /*
+         * 외부 사이트가 `top.location`으로 이 세션의 인가 요청에 닿지 못하는 콜백을 연다(deferred 190). 응답은 지금처럼
+         * 진입 화면과 실패 표지이고, 세션 행과 그 안의 인가 요청은 그대로다.
+         */
+        for (HttpResponse<String> forged :
+                forgedCallbacks(AuthSecurityConfig.GOOGLE_REGISTRATION_ID, authorization.sessionCookie())) {
+            assertThat(forged.statusCode()).isEqualTo(302);
+            assertThat(locationOf(forged)).endsWith(failureLocation(AuthFlowHandlers.FAILURE_MARKER_FAILED));
+            // 쿠키 만료 지시도 없다. 행만 남기고 브라우저의 쿠키를 지우면 결과는 같다 — 흐름이 끊긴다.
+            assertThat(forged.headers().allValues("Set-Cookie")).noneMatch(value -> value.contains("Max-Age=0"));
+        }
+        assertThat(sessionCount()).isEqualTo(1);
+        assertThat(accountCount()).isZero();
+        assertThat(socialLinkCount()).isZero();
+        assertThat(sessionState(authorization.sessionCookie()).body())
+                .contains("\"authenticated\":false");
+
+        // 이어지는 정상 콜백이 로그인을 마친다.
+        String code = issueCode(authorization, TokenPlan.valid(authorization.nonce()));
+        HttpResponse<String> response = callback(authorization, code);
+
+        assertThat(response.statusCode()).isEqualTo(302);
+        assertThat(locationOf(response)).endsWith(AuthFlowHandlers.ONBOARDING_PATH);
+        assertThat(accountCount()).isEqualTo(1);
+        assertThat(socialLinkCount()).isEqualTo(1);
+        assertThat(sessionCount()).isEqualTo(1);
+        String established = sessionCookieOf(response).orElse(authorization.sessionCookie());
+        assertThat(sessionState(established).body()).contains("\"authenticated\":true");
+    }
+
+    @Test
+    void 같은_브라우저에서_두_번_시작한_로그인은_앞_흐름의_콜백이_뒤_흐름을_지우지_않는다() throws Exception {
+        Authorization first = startAuthorization();
+        // 같은 세션에서 다시 시작한다. 세션의 인가 요청은 하나라 뒤 흐름이 앞 흐름의 것을 덮는다.
+        Authorization second = startAuthorization(null, first.sessionCookie());
+        assertThat(second.state()).isNotEqualTo(first.state());
+        assertThat(sessionCount()).isEqualTo(1);
+
+        // 앞 탭의 콜백이 늦게 도착한다. 그 state는 이 세션의 인가 요청과 맞지 않으므로 실패다.
+        String firstCode = issueCode(first, TokenPlan.valid(first.nonce()));
+        HttpResponse<String> stale = callback(first, firstCode);
+
+        assertConvergedWithoutAccount(stale);
+        // 뒤 흐름의 세션과 인가 요청은 그대로다(deferred 190).
+        assertThat(sessionCount()).isEqualTo(1);
+
+        String secondCode = issueCode(second, TokenPlan.valid(second.nonce()));
+        HttpResponse<String> response = callback(second, secondCode);
+
+        assertThat(response.statusCode()).isEqualTo(302);
+        assertThat(locationOf(response)).endsWith(AuthFlowHandlers.ONBOARDING_PATH);
+        assertThat(accountCount()).isEqualTo(1);
+        assertThat(socialLinkCount()).isEqualTo(1);
+        String established = sessionCookieOf(response).orElse(second.sessionCookie());
+        assertThat(sessionState(established).body()).contains("\"authenticated\":true");
+    }
+
+    @Test
+    void 로그인_전_세션도_인가_요청을_소비한_실패는_그_세션을_지운다() throws Exception {
+        // 유효한 state의 취소·제공자 오류는 이 흐름의 인가 요청을 소비한 실패다. 지금처럼 세션을 남기지 않는다.
+        for (String error : List.of("access_denied", "server_error")) {
+            Authorization authorization = startAuthorization();
+
+            HttpResponse<String> response = callbackWithError(authorization, error);
+
+            assertThat(response.statusCode()).isEqualTo(302);
+            assertThat(locationOf(response))
+                    .endsWith(
+                            failureLocation(
+                                    "access_denied".equals(error)
+                                            ? AuthFlowHandlers.FAILURE_MARKER_CANCELLED
+                                            : AuthFlowHandlers.FAILURE_MARKER_FAILED));
+            assertThat(sessionCount()).isZero();
+            // 위 위조 시험이 "만료 지시 없음"을 단정하는 근거다 — 세션을 지우는 실패는 쿠키 만료도 함께 싣는다.
+            assertThat(response.headers().allValues("Set-Cookie")).anyMatch(value -> value.contains("Max-Age=0"));
+        }
+        assertThat(accountCount()).isZero();
+    }
+
+    @Test
+    void 로그인_전_세션의_invalid_request는_state가_있을_때만_세션을_지운다() throws Exception {
+        /*
+         * 같은 code `invalid_request`가 두 모양으로 온다(`missedAuthorizationRequest`). `state` 없이 오면 요청이 인가 응답
+         * 모양이 아니어서 필터가 스스로 던진 것이고 인가 요청에 닿지 못했다 — 세션을 남긴다. 유효한 `state`와 함께 오면
+         * 제공자가 되돌린 오류이고 필터가 인가 요청을 소비했다 — 지금처럼 그 흐름의 세션을 지운다.
+         */
+        Authorization withoutState = startAuthorization();
+        HttpResponse<String> filterThrown =
+                get(callbackPath() + "?error=invalid_request", withoutState.sessionCookie());
+
+        assertThat(filterThrown.statusCode()).isEqualTo(302);
+        assertThat(locationOf(filterThrown)).endsWith(failureLocation(AuthFlowHandlers.FAILURE_MARKER_FAILED));
+        assertThat(sessionCount()).isEqualTo(1);
+        // 남은 흐름은 이어지는 정상 콜백으로 끝난다.
+        String code = issueCode(withoutState, TokenPlan.valid(withoutState.nonce()));
+        assertThat(locationOf(callback(withoutState, code))).endsWith(AuthFlowHandlers.ONBOARDING_PATH);
+        assertThat(accountCount()).isEqualTo(1);
+
+        Authorization withState = startAuthorization();
+        assertThat(sessionCount()).isEqualTo(2);
+        HttpResponse<String> providerError = callbackWithError(withState, "invalid_request");
+
+        assertThat(providerError.statusCode()).isEqualTo(302);
+        assertThat(locationOf(providerError)).endsWith(failureLocation(AuthFlowHandlers.FAILURE_MARKER_FAILED));
+        // 로그인한 앞 세션 하나만 남는다. 제공자 오류를 받은 흐름의 세션은 지워졌다.
+        assertThat(sessionCount()).isEqualTo(1);
+        assertThat(sessionState(withState.sessionCookie()).body()).contains("\"authenticated\":false");
+        assertThat(accountCount()).isEqualTo(1);
     }
 
     @Test

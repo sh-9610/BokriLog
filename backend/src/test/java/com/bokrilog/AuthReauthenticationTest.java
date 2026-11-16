@@ -11,6 +11,20 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.mock.web.MockHttpSession;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.context.SecurityContextImpl;
+import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
+import org.springframework.security.oauth2.core.oidc.IdTokenClaimNames;
+import org.springframework.security.oauth2.core.oidc.OidcIdToken;
+import org.springframework.security.oauth2.core.oidc.user.DefaultOidcUser;
+import org.springframework.security.web.authentication.preauth.PreAuthenticatedAuthenticationToken;
+import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 
 /**
  * 재인증과 세션 회전.
@@ -38,6 +52,10 @@ class AuthReauthenticationTest extends AuthFlowTestBase {
 
     /** 이 시험이 도는 제공자 전부. 축을 늘리는 대신 같은 축이 이 목록을 돈다. */
     private static final List<String> PROVIDERS = List.of(GOOGLE, NAVER, KAKAO);
+
+    /** 배선된 성공 핸들러. HTTP 왕복으로 만들 수 없는 만료 경합을 직접 부르는 시험 하나가 쓴다. */
+    @Autowired
+    private AuthFlowHandlers handlers;
 
     /**
      * 제공자별로 <b>반드시 실려야 하는</b> 재인증 인가 파라미터.
@@ -570,6 +588,88 @@ class AuthReauthenticationTest extends AuthFlowTestBase {
         assertThat(sessionCount()).isZero();
         assertThat(accountCount()).isEqualTo(1);
         assertThat(socialLinkCount()).isEqualTo(1);
+    }
+
+    @Test
+    void 만료된_재인증_무장의_콜백은_성공_핸들러에서_재인증_실패로_접힌다() throws Exception {
+        /*
+         * 흐름 경계가 재인증 무장을 살아 있다고 보고 검증에 넘긴 뒤, 성공 핸들러 전에 그 무장이 만료된 상태다(deferred 191).
+         * HTTP 왕복으로는 그 창을 만들 수 없으므로 배선된 성공 핸들러를 그 상태의 세션으로 직접 부른다 — 판정 함수만 보는
+         * `AuthCallbackFlowSelectionTest`와 달리 여기서는 분기가 실제로 실행된다.
+         *
+         * 검증된 식별자는 어느 계정에도 연결되지 않은 것이다. 로그인 분기로 떨어지면 그 식별자로 새 계정이 생기고 세션이 그
+         * 계정으로 갈아타므로, "계정 0건"과 "주체가 무장의 사용자"가 그 결함을 직접 본다.
+         */
+        UUID userId = UUID.randomUUID();
+        ReauthenticationFlow.Armed expired =
+                new ReauthenticationFlow.Armed(
+                        GOOGLE,
+                        userId,
+                        AuthFlowHandlers.SETTINGS_PATH,
+                        Instant.now().minus(ReauthenticationFlow.ARMED_LIFETIME).minusSeconds(1));
+        assertThat(expired.isLive(Instant.now())).isFalse();
+
+        OAuth2AuthenticationToken verified = verifiedGoogleToken();
+        MockHttpSession session = new MockHttpSession();
+        session.setAttribute(ReauthenticationFlow.FLOW_ATTRIBUTE, expired);
+        session.setAttribute(SessionGuard.REAUTH_REQUIRED_ATTRIBUTE, Boolean.TRUE);
+        // 검증 필터는 성공 핸들러를 부르기 전에 자기 인증 결과를 세션에 저장한다. 그 상태를 그대로 만든다.
+        session.setAttribute(
+                HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY,
+                new SecurityContextImpl(verified));
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("GET", AuthSecurityConfig.CALLBACK_BASE_URI + "/" + GOOGLE);
+        request.setSession(session);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        try {
+            this.handlers.successHandler().onAuthenticationSuccess(request, response, verified);
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+
+        assertThat(response.getRedirectedUrl())
+                .isEqualTo(
+                        AuthFlowHandlers.SETTINGS_PATH
+                                + "?"
+                                + AuthFlowHandlers.FAILURE_MARKER_PARAMETER
+                                + "="
+                                + AuthFlowHandlers.FAILURE_MARKER_REAUTH_FAILED);
+        // 재인증이 성립하지 않았다. 시각이 없고 표시도 그대로다.
+        assertThat(ReauthenticationFlow.lastAuthenticatedAt(session)).isNull();
+        assertThat(SessionGuard.isMarked(session.getAttribute(SessionGuard.REAUTH_REQUIRED_ATTRIBUTE))).isTrue();
+        // 저장된 주체는 검증 결과(ID Token)가 아니라 무장의 사용자 하나다.
+        assertThat(session.getAttribute(HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY))
+                .isInstanceOfSatisfying(
+                        SecurityContext.class,
+                        stored ->
+                                assertThat(stored.getAuthentication())
+                                        .isInstanceOfSatisfying(
+                                                PreAuthenticatedAuthenticationToken.class,
+                                                principal ->
+                                                        assertThat(principal.getName())
+                                                                .isEqualTo(userId.toString())));
+        // 만료 무장은 소비됐다. 같은 무장으로 다시 판정되지 않는다.
+        assertThat(session.getAttribute(ReauthenticationFlow.FLOW_ATTRIBUTE)).isNull();
+        // 로그인 분기로 가지 않았다. 계정도 매핑도 생기지 않았다.
+        assertThat(accountCount()).isZero();
+        assertThat(socialLinkCount()).isZero();
+    }
+
+    /** 검증 필터가 성공 핸들러에 넘기는 모양의 인증 결과. 어느 계정에도 연결되지 않은 Google 식별자이고 방금 인증했다. */
+    private static OAuth2AuthenticationToken verifiedGoogleToken() {
+        Instant now = Instant.now();
+        OidcIdToken idToken =
+                new OidcIdToken(
+                        UUID.randomUUID().toString(),
+                        now,
+                        now.plus(Duration.ofMinutes(5)),
+                        Map.of(
+                                IdTokenClaimNames.ISS, OidcStubConfiguration.issuer(),
+                                IdTokenClaimNames.SUB, "reauth-expired-race-" + UUID.randomUUID(),
+                                IdTokenClaimNames.AUTH_TIME, now));
+        List<SimpleGrantedAuthority> authorities = List.of(new SimpleGrantedAuthority("OIDC_USER"));
+        return new OAuth2AuthenticationToken(new DefaultOidcUser(authorities, idToken), authorities, GOOGLE);
     }
 
     // ----------------------------------------------------------------------

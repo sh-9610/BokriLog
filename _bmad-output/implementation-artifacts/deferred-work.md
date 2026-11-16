@@ -584,3 +584,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-auth-armed-flow-guards.md`
   summary: 재인증 무장이 흐름 경계의 `isLive` 판정 뒤, 성공 핸들러 전에 만료되면 `onSuccess`의 `ReauthenticationFlow.consume`이 null을 내고 콜백이 로그인 분기(`establish`)로 떨어질 수 있다 — 인증된 세션에 검증된 다른 계정이 실릴 수 있는 좁은 경합이다.
   evidence: 2026-11-16 인증 흐름 무장 가드 fix 1차 리뷰(edge-case-hunter). 같은 경합의 연결 쪽은 이 fix의 patch가 `peekIncludingExpired` 방어선으로 막았다. 재인증 쪽은 이 변경 전부터 있던 경로이고(제공자 토큰 교환 시간만큼의 창), `AbstractAuthenticationProcessingFilter`가 성공 핸들러 전에 OIDC 토큰을 세션에 저장하므로 저장된 주체로는 판정할 수 없다. 만료된 재인증 무장도 재인증 분기로 넘겨 실패로 접는 방식을 정해야 한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-auth-callback-residual-guards.md`
+  summary: 실패 핸들러(`onFailure`)는 아직 살아 있는 무장만 보고(`LinkFlow.peek`·`ReauthenticationFlow.peek`·`consume`) 흐름을 고른다 — 흐름 경계 통과 뒤 실패 핸들러 전에 무장이 만료되면 연결·재인증 실패 표지 없이 지금 목적지로 조용히 돌아간다. 성공 핸들러는 `selectCallbackFlow`로 만료 포함 판정을 하므로 두 핸들러의 선택 규칙이 다르다.
+  evidence: 2026-11-16 인증 콜백 잔여 가드 fix 1차 리뷰(blind-hunter). 보안 영향은 없다 — 인증된 세션은 지금 목적지로 되돌리고 세션·주체를 바꾸지 않는다(PR #163의 대칭 방어선). 잃는 것은 실패 표지(사용자 안내)뿐이다. 이 fix의 SPEC은 191을 성공 핸들러로 한정했으므로 실패 핸들러를 같은 선택 함수로 옮기는 것은 범위 밖이다.

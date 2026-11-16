@@ -321,8 +321,12 @@ class AuthFlowHandlers {
      * 그래서 콜백을 보지 않아도 계정 갈아타기 경로가 없었다. 재인증이 그 전제를 깨므로
      * ({@code POST /api/auth/reauthenticate/…} 뒤의 인가 시작은 인증된 세션에서 성립한다) 무장이
      * 없는 콜백 — 연결 무장의 대상과 제공자가 다른 콜백을 포함한다({@link #callbackLinkFlow}) — 은
-     * 이 자리에서 접는다. 접지 않으면 흐름이 만료된 뒤 도착한 콜백이
-     * {@link #onSuccess}의 <b>로그인 분기</b>로 들어가 같은 세션 행에 다른 계정을 심을 수 있다.
+     * 이 자리에서 접는다.
+     *
+     * <p>성공 핸들러도 스스로 막는다 — 무장이 하나라도 남아 있던 콜백은 만료됐더라도 그 흐름의 실패로 접고 로그인 분기로
+     * 보내지 않는다({@link #selectCallbackFlow}, deferred 191). 그래도 이 경계가 필요한 것은 둘이다. 인증된 세션에 <b>무장이
+     * 아예 없는</b> 콜백은 성공 핸들러에서 로그인 분기이므로 검증에 넘기는 순간 같은 세션 행에 다른 계정을 심는다 — 그것을 막는
+     * 것은 이 자리뿐이다. 그리고 여기서 접은 콜백은 검증에 닿지 않으므로 이 세션의 authorization request도 무장도 그대로다.
      */
     Filter authenticationFlowFilter() {
         return new OncePerRequestFilter() {
@@ -598,50 +602,96 @@ class AuthFlowHandlers {
          * 그것을 지나면 연결하려던 식별자로 **두 번째 계정**이 생기고 사용자는 자기 계정을
          * 떠난다. 세 분기가 갈리는 자리는 여기 하나다.
          *
-         * 어느 흐름이 이 콜백을 소비하는지는 `callbackBelongsToLink`가 가른다. 순서로 정하면
-         * 살아 있는 연결 무장이 재인증 콜백을 삼킨다 — 두 흐름이 함께 무장된 상태는 평범한
-         * 경로이기 때문이다(그 근거는 그 메서드의 javadoc이 소유한다).
+         * 어느 흐름이 이 콜백을 소비하는지는 `selectCallbackFlow`가 가르고, 그 안의 연결·재인증
+         * 선택은 `callbackLinkFlow`다. 순서로 정하면 살아 있는 연결 무장이 재인증 콜백을 삼킨다 —
+         * 두 흐름이 함께 무장된 상태는 평범한 경로이기 때문이다(그 근거는 그 메서드의 javadoc이
+         * 소유한다).
          *
          * 소비는 어느 쪽 결과에서도 일어난다. 흐름은 콜백 하나로 끝나며 그것이 일회성이다.
          */
         VerifiedIdentity identity = verifiedIdentityOf(authentication);
-        // 수명이 지난 것까지 먼저 읽는다. 아래 `peek`은 만료된 무장을 버리고 `null`을 내므로 뒤에서는 읽을 수 없다.
+        /*
+         * 이 요청의 수명 판정 시각은 이것 하나다. 선택과 하위 판정(`onLinkSuccess`의 만료 거부, 재인증의 신선도·기록)이
+         * 같은 값을 쓰므로, 선택에서 살아 있던 무장이 같은 요청 안에서 다시 만료 판정을 받지 않는다.
+         */
+        Instant now = Instant.now();
+        // 수명이 지난 것까지 읽는다. `peek`은 만료된 무장을 버리고 `null`을 내므로 "무장이 없었다"와 "늦었다"를 가를 수 없다.
         LinkFlow.Armed storedLink = LinkFlow.peekIncludingExpired(request);
-        ReauthenticationFlow.Armed pendingReauthentication = ReauthenticationFlow.peek(request);
-        LinkFlow.Armed link =
-                callbackLinkFlow(
-                        LinkFlow.peek(request),
-                        pendingReauthentication,
-                        identity == null ? null : identity.provider());
-        if (link == null && pendingReauthentication == null) {
-            /*
-             * 재인증 무장 없이 연결 무장(살아 있든 수명이 지났든)이 남아 있는데 이 콜백이 그것을
-             * 소비하지 않는다. 두 갈래다.
-             *
-             * - 제공자가 다른 콜백이 검증까지 왔다. 흐름 경계가 경로의 제공자로 이 콜백을 이미
-             *   접으므로(`callbackLinkFlow`의 Epic 1 회고 F3 — `epic-1-retro-2026-09-25.md`, 액션
-             *   `epic-1-retro-item-4`) 여기 오는 경로는 없다 — 경로와 인가 요청의 `redirect_uri`가
-             *   어긋나면 검증이 먼저 실패한다.
-             * - 흐름 경계의 수명 판정과 이 자리 사이에 무장이 만료됐다. 위 `peek`이 그 무장을 버린다.
-             *
-             * 어느 쪽이든 판정이 `null`로 끝나면 아래 **로그인 분기**가 인증된 세션에 다른 계정을
-             * 심으므로, 무장이 남아 있었던 한 연결 분기가 받아 실패시킨다(`onLinkSuccess`가 제공자
-             * 불일치와 만료 무장을 거부로 접는다).
-             */
-            link = storedLink;
+        ReauthenticationFlow.Armed storedReauthentication =
+                ReauthenticationFlow.peekIncludingExpired(request);
+        CallbackFlow flow =
+                selectCallbackFlow(
+                        storedLink,
+                        storedReauthentication,
+                        identity == null ? null : identity.provider(),
+                        now);
+
+        /*
+         * 무장의 정리 규칙은 하나다. 고른 무장은 그 case가 소비한다. 고르지 않은 무장은 수명이 지났을 때만 버리고(`peek`이
+         * 하던 정리다) 살아 있으면 그 흐름의 것이므로 남긴다(Epic 1 회고 F3).
+         */
+        switch (flow) {
+            case CallbackFlow.Link(LinkFlow.Armed link) -> {
+                LinkFlow.discard(request);
+                discardIfExpired(request, storedReauthentication, now);
+                onLinkSuccess(request, response, identity, link, now);
+            }
+            case CallbackFlow.Reauthentication(ReauthenticationFlow.Armed armed) -> {
+                ReauthenticationFlow.discard(request);
+                discardIfExpired(request, storedLink, now);
+                onReauthenticationSuccess(request, response, identity, armed, now);
+            }
+            case CallbackFlow.ExpiredReauthentication(ReauthenticationFlow.Armed armed) -> {
+                ReauthenticationFlow.discard(request);
+                discardIfExpired(request, storedLink, now);
+                /*
+                 * 흐름 경계가 살아 있다고 판정한 재인증 무장이 이 자리 전에 만료됐다(deferred 191). 경계의 만료
+                 * 가지와 같은 결과로 접는다 — 재인증 실패. 재인증 시각을 기록하지 않고 `reauth_required` 표시도
+                 * 풀지 않는다. 주체는 무장의 사용자로 다시 쓴다(`convergeReauthentication`).
+                 */
+                convergeReauthentication(request, response, armed, FAILURE_MARKER_REAUTH_FAILED);
+            }
+            case CallbackFlow.Login() -> {
+                /*
+                 * 읽을 수 있는 무장이 하나도 없었다. 두 속성을 그래도 지운다 — 타입이 어긋난 값은 `peekIncludingExpired`가
+                 * 없는 것으로 읽되 버리지 않는다. 재인증 쪽은 예전 `consume`이 이 자리에서 그렇게 치웠고, 연결 쪽도 같은
+                 * 규칙으로 맞춘다.
+                 */
+                LinkFlow.discard(request);
+                ReauthenticationFlow.discard(request);
+                onLogin(request, response, authentication, identity);
+            }
         }
-        if (link != null) {
+    }
+
+    /** 고르지 않은 연결 무장이 수명이 지났으면 버린다. 살아 있으면 남긴다. */
+    private static void discardIfExpired(
+            HttpServletRequest request, LinkFlow.@Nullable Armed link, Instant now) {
+        if (link != null && !link.isLive(now)) {
             LinkFlow.discard(request);
-            onLinkSuccess(request, response, identity, link);
-            return;
         }
+    }
 
-        ReauthenticationFlow.Armed armed = ReauthenticationFlow.consume(request);
-        if (armed != null) {
-            onReauthenticationSuccess(request, response, identity, armed);
-            return;
+    /** 고르지 않은 재인증 무장이 수명이 지났으면 버린다. 살아 있으면 남긴다. */
+    private static void discardIfExpired(
+            HttpServletRequest request, ReauthenticationFlow.@Nullable Armed armed, Instant now) {
+        if (armed != null && !armed.isLive(now)) {
+            ReauthenticationFlow.discard(request);
         }
+    }
 
+    /**
+     * 로그인 분기. 무장이 하나도 없는 콜백만 온다({@link #selectCallbackFlow}).
+     *
+     * <p>{@code establish}는 미연결 식별자를 신규 가입으로 처리한다. 그래서 무장이 있었던 콜백은 어떤 경우에도 여기 오지
+     * 않는다 — 온다면 인증된 세션에 검증된 다른 계정이 실린다.
+     */
+    private void onLogin(
+            HttpServletRequest request,
+            HttpServletResponse response,
+            Authentication authentication,
+            @Nullable VerifiedIdentity identity)
+            throws IOException {
         Optional<AuthSessionService.AuthSession> session = establish(authentication);
         if (session.isEmpty()) {
             /*
@@ -713,12 +763,12 @@ class AuthFlowHandlers {
             HttpServletRequest request,
             HttpServletResponse response,
             @Nullable VerifiedIdentity identity,
-            ReauthenticationFlow.Armed armed)
+            ReauthenticationFlow.Armed armed,
+            Instant now)
             throws IOException {
         if (identity == null
                 || !identity.provider().equals(armed.provider())
-                || !ReauthenticationFlow.isFreshAuthentication(
-                        identity.authenticatedAt(), Instant.now())
+                || !ReauthenticationFlow.isFreshAuthentication(identity.authenticatedAt(), now)
                 || !this.authSessionService.confirmReauthentication(
                         armed.userId(), identity.issuer(), identity.subject())) {
             /*
@@ -736,7 +786,7 @@ class AuthFlowHandlers {
          * 남기면 방금 본인을 확인한 세션이 계속 미인증으로 답한다.
          */
         httpSession.removeAttribute(SessionGuard.REAUTH_REQUIRED_ATTRIBUTE);
-        ReauthenticationFlow.recordAuthentication(httpSession, Instant.now());
+        ReauthenticationFlow.recordAuthentication(httpSession, now);
         writeEstablishedPrincipal(request, response, armed.userId());
 
         // 목적지는 무장 시각에 붙들어 둔 값 하나다. 콜백이 들고 온 어떤 값도 여기 오지 않는다.
@@ -768,7 +818,8 @@ class AuthFlowHandlers {
             HttpServletRequest request,
             HttpServletResponse response,
             @Nullable VerifiedIdentity identity,
-            LinkFlow.Armed armed)
+            LinkFlow.Armed armed,
+            Instant now)
             throws IOException {
         writeEstablishedPrincipal(request, response, armed.userId());
 
@@ -781,7 +832,7 @@ class AuthFlowHandlers {
         LinkService.Outcome outcome =
                 identity == null
                                 || !identity.provider().equals(armed.targetProvider())
-                                || !armed.isLive(Instant.now())
+                                || !armed.isLive(now)
                         ? LinkService.Outcome.DENIED
                         : this.linkService.complete(
                                 request.getSession(), armed, identity.issuer(), identity.subject());
@@ -842,8 +893,77 @@ class AuthFlowHandlers {
         return SessionRotation.rotateAfterSensitiveCommand(request);
     }
 
+    /** 검증을 통과한 콜백을 받는 흐름. {@link #selectCallbackFlow}의 결과다. */
+    sealed interface CallbackFlow {
+
+        /** 연결 분기. 무장이 만료됐거나 제공자가 다르면 {@code onLinkSuccess}가 거부로 접는다. */
+        record Link(LinkFlow.Armed armed) implements CallbackFlow {}
+
+        /** 살아 있는 재인증 무장의 분기. */
+        record Reauthentication(ReauthenticationFlow.Armed armed) implements CallbackFlow {}
+
+        /** 재인증 무장이 있었지만 수명이 지났다. 재인증 실패로 접는다 — 로그인 분기로 가지 않는다. */
+        record ExpiredReauthentication(ReauthenticationFlow.Armed armed) implements CallbackFlow {}
+
+        /** 무장이 하나도 없다. 로그인 분기다. */
+        record Login() implements CallbackFlow {}
+    }
+
     /**
-     * 이 콜백을 소비하는 연결 무장. 없으면 {@code null}이고 그때는 재인증·로그인 분기가 받는다.
+     * 검증을 통과한 콜백을 어느 흐름이 받는가(deferred 191).
+     *
+     * <p><b>저장된 무장은 수명이 지난 것까지 받는다.</b> 흐름 경계({@link #authenticationFlowFilter})가 무장을 살아 있다고
+     * 판정한 뒤 이 자리 전에 만료될 수 있다. 살아 있는 것만 보면 그 무장은 "없던 것"이 되어 콜백이 로그인 분기로 떨어지고,
+     * 인증된 세션에 검증된 <b>다른 계정</b>이 실린다. 그래서 무장이 하나라도 있었던 입력은 어느 것도 {@link CallbackFlow.Login}을
+     * 내지 않는다 — 만료된 무장도 그 흐름의 실패로 접는다.
+     *
+     * <p>연결·재인증 중 무엇이 이 콜백을 받는지는 흐름 경계와 같은 판정이다 — 두 무장을 만료 포함으로 {@link #callbackLinkFlow}에
+     * 넘긴다. 그래서 <b>제공자가 일치하는 무장이 수명과 무관하게 이기고</b>, 이 판정은 경계가 내린 선택을 그대로 잇는다 — 경계
+     * 뒤에 만료가 끼어도 선택이 다른 흐름으로 옮겨 가지 않는다(만료된 재인증 무장이 콜백과 맞으면 제공자가 다른 살아 있는 연결
+     * 무장을 소비하지 않는다, F3). 무장이 모두 살아 있으면 살아 있는 것만 보던 이전 판정과 같은 값을 낸다.
+     *
+     * <ul>
+     *   <li>연결이 이 콜백을 받으면 {@link CallbackFlow.Link}다. 만료된 연결 무장도 여기로 오고 {@code onLinkSuccess}가 거부로
+     *       접는다(허가를 소비하러 가지 않는다).
+     *   <li>재인증 무장이 없는데 연결 무장이 받지 않는 콜백(제공자 불일치)도 연결 분기가 받아 거부로 접는다. 여기 오는 길은
+     *       둘이다. 제공자가 다른 콜백은 흐름 경계가 경로의 제공자로 이미 접으므로(F3) 검증까지 오지 못한다 — 경로와 인가 요청의
+     *       {@code redirect_uri}가 어긋나면 검증이 먼저 실패한다. 그리고 경계 판정 뒤 무장이 만료됐어도 경계의 선택은 이미
+     *       끝났다. 어느 쪽이든 {@code null}로 두면 로그인 분기가 인증된 세션에 다른 계정을 심으므로 연결 분기가 받는다.
+     *   <li>연결이 받지 않고 재인증 무장이 있으면 살아 있는지에 따라 {@link CallbackFlow.Reauthentication}·
+     *       {@link CallbackFlow.ExpiredReauthentication}이다.
+     *   <li>두 무장이 모두 없을 때만 {@link CallbackFlow.Login}이다.
+     * </ul>
+     *
+     * @param provider 검증된 인증 결과의 등록 id. 없으면 {@code null}이고 어느 무장과도 일치하지 않는다
+     * @param now 수명 판정 시각
+     */
+    static CallbackFlow selectCallbackFlow(
+            LinkFlow.@Nullable Armed storedLink,
+            ReauthenticationFlow.@Nullable Armed storedReauthentication,
+            @Nullable String provider,
+            Instant now) {
+        LinkFlow.Armed link = callbackLinkFlow(storedLink, storedReauthentication, provider);
+        if (link == null && storedReauthentication == null) {
+            // 재인증 무장 없이 연결 무장만 남아 있고 이 콜백이 그것과 맞지 않는다. 로그인으로 보내지 않고 연결 분기가 거부한다.
+            link = storedLink;
+        }
+        if (link != null) {
+            return new CallbackFlow.Link(link);
+        }
+        if (storedReauthentication != null) {
+            return storedReauthentication.isLive(now)
+                    ? new CallbackFlow.Reauthentication(storedReauthentication)
+                    : new CallbackFlow.ExpiredReauthentication(storedReauthentication);
+        }
+        return new CallbackFlow.Login();
+    }
+
+    /**
+     * 이 콜백을 소비하는 연결 무장. 연결이 이 콜백을 받지 않으면 {@code null}이다.
+     *
+     * <p>{@code null}이 곧 "재인증이나 로그인이 받는다"는 뜻은 아니다. 그 뒤는 호출자마다 다르다 — 흐름 경계는 재인증 무장이
+     * 없으면 검증 앞에서 되돌리고, 성공 핸들러({@link #selectCallbackFlow})는 재인증 무장이 없으면 남은 연결 무장이 거부로
+     * 받으며 무장이 하나도 없을 때만 로그인으로 보내고, 실패 핸들러는 재인증 무장을 소비한다.
      *
      * <p><b>두 흐름이 함께 무장된 상태는 평범한 경로다.</b> 설정 화면이 연결 버튼 셋과 본인 확인
      * 버튼 셋을 같은 페이지에 그리므로 "네이버 연결 무장 → 제공자 화면에서 이탈 → Google 본인
@@ -1078,6 +1198,11 @@ class AuthFlowHandlers {
         /*
          * 어느 흐름이 이 실패를 소비하는지도 콜백의 등록 id가 가른다(`callbackLinkFlow`). 성공
          * 핸들러와 달리 여기에는 검증된 인증 결과가 없으므로 그 값을 경로에서 읽는다.
+         *
+         * 성공 핸들러(`selectCallbackFlow`)와 달리 여기는 **살아 있는 무장만** 본다(`peek`). 그래서 흐름
+         * 경계의 판정 뒤 이 자리 전에 무장이 만료되면 그 무장은 없는 것이 되고, 선택이 다른 흐름의 표지나 아래
+         * "지금 목적지"로 옮겨 갈 수 있다. 실패라 계정·매핑·주체는 바뀌지 않고 달라지는 것은 표지와 어느 무장이
+         * 소비되는지뿐이다. 성공 핸들러처럼 만료 포함으로 고르는 일은 아직 하지 않았다(defer).
          */
         LinkFlow.Armed link =
                 callbackLinkFlow(
@@ -1127,6 +1252,35 @@ class AuthFlowHandlers {
                     currentDestination(request, ControllerSupport.storedSessionUserId(session)));
             return;
         }
+        if (missedAuthorizationRequest(request, exception)) {
+            /*
+             * 로그인 전 세션의 실패인데 이 세션의 authorization request에 닿지 못했다(deferred 190). 응답은 아래
+             * 수렴과 같고(진입 화면 + 실패 표지) 세션만 지우지 않는다.
+             *
+             * 위협은 위 F2 가드와 같다. 외부 사이트가 `top.location`으로 `state` 없는(또는 모르는 `state`의)
+             * 콜백을 열면 `SameSite=Lax` 쿠키가 실려 피해자의 진행 중인 인증 전 세션이 여기 도착한다. 그 세션을
+             * 지우면 그 안의 인가 요청도 함께 사라지므로, 그것을 반복하는 것만으로 남이 이 사용자의 로그인을 계속
+             * 취소시킬 수 있다. 같은 브라우저에서 로그인을 두 번 시작한 사용자의 앞 탭 콜백(덮인 `state`)도
+             * 뒤 탭의 흐름을 지운다.
+             *
+             * 이 실패는 아무것도 소비하지 않았으므로 이어지는 정상 콜백이 로그인을 마친다. 세션에는 개설된
+             * 주체가 없으므로(그랬다면 위 가드가 받았다) 남겨도 주체를 결정하지 않는다. 인가 요청을 소비한 실패
+             * (사용자 취소·제공자 오류·토큰 검증 실패)는 여기 걸리지 않고 아래에서 지금처럼 그 흐름의 세션을
+             * 지운다. 세션 개설 거부는 성공 핸들러의 수렴이 같은 일을 한다.
+             *
+             * 같은 이유로 완료 확인 세션(Story 5.4 — 삭제가 끝난 계정의 미인증 세션, `DeletionCompletionSessions`)도
+             * 위조 콜백에 지워지지 않는다. 그전에는 위조 콜백 하나가 그 세션 행과 함께 완료 연결(FK cascade)까지
+             * 지워 사용자가 완료 안내를 다시 볼 수 없었다.
+             *
+             * 남기는 대가는 하나다. 위조 콜백도 이 세션에 닿는 요청이므로 흐름 세션의 유휴 수명
+             * (`FLOW_SESSION_TIMEOUT_SECONDS`)을 연장할 수 있다. 그래도 받아들이는 근거는 둘이다 — 생성 시각 기준
+             * 절대 수명 12시간(`SessionGuard`)이 어느 세션에나 상한이고, 이 세션에는 개설된 주체가 없어 무엇도
+             * 결정하지 않는다.
+             */
+            SecurityContextHolder.clearContext();
+            this.redirects.sendRedirect(request, response, entryFailureLocation(marker(exception)));
+            return;
+        }
         converge(request, response, marker(exception));
     }
 
@@ -1145,8 +1299,12 @@ class AuthFlowHandlers {
             throws IOException {
         SecurityContextHolder.clearContext();
         discardSession(request);
-        this.redirects.sendRedirect(
-                request, response, ENTRY_PATH + "?" + FAILURE_MARKER_PARAMETER + "=" + marker);
+        this.redirects.sendRedirect(request, response, entryFailureLocation(marker));
+    }
+
+    /** 인증 화면과 실패 표지. 로그인 실패의 목적지는 이것 하나다. */
+    private static String entryFailureLocation(String marker) {
+        return ENTRY_PATH + "?" + FAILURE_MARKER_PARAMETER + "=" + marker;
     }
 
     /**
