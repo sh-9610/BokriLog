@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 11-11-2026 08:20
+last_updated: 11-16-2026 05:40
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -159,7 +159,7 @@ action_items:
     action: "ARCHITECTURE-SPINE.md의 모듈 지도를 as-built에 맞춘다 — 루트 패키지 약 7,100줄과 루트가 소유한
       첫 테이블(action_grant)을 AD로 인정하거나 새 모듈 경계를 선언한다"
     owner: "SSAFY"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
   - id: "epic-1-retro-item-10-epic-1-실연동-미검증-게이트를-기계가-읽는-자리에-둔다-epics"
     epic: 1
@@ -229,7 +229,7 @@ action_items:
     action: "ARCHITECTURE-SPINE·ERD 새 버전으로 as-built를 반영한다 — 루트 패키지, 작업 표 6개와 종단 code,
       plan_end·plan_completion·sync_next_plan_baseline 소유, JdbcClient, 정정·충돌 정의(A-3·R-4·R-7)"
     owner: "Architect"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-10-05.md"
   - id: "epic-2-retro-item-20-epic-3-운영자-민감-command-전에-공통-부품을-모은다-세션-무"
     epic: 2
@@ -340,7 +340,7 @@ action_items:
     action: "동결 SPEC 문장 셋(3.8 smoke, 3.10 RPO 기준·tombstone 보존)과 ARCHITECTURE-SPINE·PSD·CI-PLAN·ERD의
       Epic 3 차이를 as-built 새 버전에 반영한다(회고 R-2·R-3, Epic 2 item-19 범위 확장)"
     owner: "Architect"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
   - id: "epic-3-retro-item-36-미룬-결정-원장을-140건에-맞추고-판정을-재개하며-done-전환-pr에"
     epic: 3
@@ -410,7 +410,7 @@ action_items:
       interstitial 방지 속성 범위, SHOW 뒤 관문 시점. Epic 2 item-19·Epic 3 item-35 범위에 더한다(회고
       R-1·R-3)"
     owner: "아키텍트(as-built 새 버전)"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-10-16.md"
   - id: "epic-4-retro-item-45-간헐-실패-시험의-주인과-방법을-정한다-실패-시-trace-보존-문서-이"
     epic: 4
@@ -469,7 +469,7 @@ action_items:
       필드·상태·보존식·CLOSURE_SLACK·V24 판정·OVERDUE·재가입 차단 digest·완료 세션·전체 완료, AD-19 상태/실행자
       분리. Epic 2 item-19·Epic 3 item-35·Epic 4 item-44와 합친다(회고 R-2·R-3·R-6)"
     owner: "아키텍트(as-built 새 버전)"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-11-09.md"
   - id: "epic-5-retro-item-53-g-5-전-결정-묶음-사용자-카피-약속-30일-파기-복원해도-되살리지-않"
     epic: 5

@@ -19,8 +19,22 @@ decision_baseline: 'ERD-1.0.0'
 |---|---|
 | 해소 | 39 |
 | 부분 해소 | 25 |
-| 미해소 | 120 |
+| 미해소 | 125 |
 | 미판정 | 0 |
+
+**2026-11-16 갱신(Epic 5 회고 AI-5 as-built 새 버전 chore done 전환).** `spec-as-built-new-version.md`(PR #161, 머지 커밋 `67abc7f`)의 판정이다.
+- **이 chore가 append한 defer:** 185~189 다섯 건이다. 모두 미해소로 판정했다.
+  - 185: CI-PLAN as-built 새 버전. 범위 결정 [S]로 분리했다.
+  - 186: 광고 닫은 뒤 대시보드 제목 포커스.
+  - 187: AD-14 개발 관측 profile·`logcli` 부재.
+  - 188: epics.md AR·남은 AC의 as-built 주석.
+  - 189: `deploy.sh` 신호 중단의 `INTERRUPTED` 단계가 감사 원장에 남지 않음.
+- **이 chore가 해소한 항목:** 없다. 이 chore가 닫은 것은 원장 항목이 아니라 회고 action item 다섯이다 — `epic-2-retro-item-19`, `epic-3-retro-item-35`, `epic-4-retro-item-44`, `epic-5-retro-item-52`, `epic-1-retro-item-9`. 이 PR이 그 다섯을 done으로 바꾼다. item-35의 CI-PLAN 부분은 185로 넘어갔다.
+- **이 chore를 결정 지점으로 지목한 항목:** 146(CI-PLAN §1·§5 as-built 반영)이다. 잔여의 주인이 `epic-3-retro-item-35`였다. 이 chore는 CI-PLAN을 범위에서 떼어 185로 넘겼으므로 미해소 그대로이고, 주인을 185를 가져갈 CI-PLAN 새 버전 작업으로 옮긴다(아래 146 절).
+- **지나간 항목:**
+  - 65(Epic 1 command의 confirmation hash): ERD-1.1.0 §5가 "미결정 — 주인 Epic 1 회고 item-7"로 적기만 했다. 미해소 그대로다.
+  - 27(`identity`의 `spring_session` 직접 SQL): SPINE 1.1 AD-24가 이 결합을 알려진 결합으로 적기만 했다. 미해소 그대로다.
+- **표:** 189건이다(해소 39·부분 해소 25·미해소 125·미판정 0).
 
 **2026-11-11 갱신(lease 상실·지연 시험의 잠금 문 이전 fix).** `spec-lease-loss-test-doors.md`(PR #158, 기준 `ab6d798`)의 판정이다. done 전환 PR이 없는 fix라 이 PR이 판정한다.
 - **이 fix가 해소한 항목:** 177(시간 기반 순서로 lease 상실을 만드는 백엔드 시험들)이다. 대상 시험 아홉 자리를 `PlanSyncTestBase`의 공용 페이지 저장 문(만료형·지연형)으로 옮겼고, `src/test`의 `pg_sleep`이 0건이며 `PageDoorSourceTest`가 그것을 고정한다. SPEC Verification 명령이 최종 코드로 세 번 통과했다(그 사이 183의 루프백 listen 실패 다섯 번은 아래 177 절 — 시험 본문의 실패는 없다). 해소로 판정했다.
@@ -526,6 +540,8 @@ X-Frame-Options: DENY
 
 **미해소 잔여:** 2026-11-09 판정과 같다. 세 선택지 가운데 무엇을 택할지 정해야 하고, 주인이 없다. 이 chore는 결합을 넓히지 않았다. 남길 속성 이름의 출처를 루트로 옮겼으므로, 셋째 선택지(세션 소유를 루트로 이전)를 택할 때 옮길 것이 하나 줄었다.
 
+**미해소 — 재확인(2026-11-16, Epic 5 회고 AI-5 as-built 새 버전 chore 판정, 기준 `67abc7f`).** SPINE 1.1(`architecture-BokriLog-2026-11-16/ARCHITECTURE-SPINE.md`) AD-24가 아키텍처 문서에 이 결합을 처음 적었다. 내용은 루트가 소유한 업무 표는 `action_grant` 하나이고, `spring_session*`은 루트가 구성하는 Spring Session 프레임워크 스키마이며, identity의 직접 SQL은 알려진 결합이라는 것이다. PSD 1.1 §3도 같은 문장이다. 결합 자체는 바꾸지 않았다. 세 선택지 가운데 하나를 택하는 결정과 주인 없음은 그대로다.
+
 ### 28. `OnboardingScreen`·`SignedInScreen`을 세션 게이트 셸 하나로 합칠지
 
 **부분 해소(2026-09-08).** Story 1.4가 append했다(PR #14). 버튼 축의 중복은 Story 1.5가 실제로 만들지 않았다 — `frontend/src/components/SignOutButton.tsx`(52줄)와 `SignOutButton.test.tsx`(239줄)를 두 화면이 함께 쓴다. 이 라운드에 새로 생길 수 있었던 중복 한 축이 생기지 않았으므로 그만큼은 해소다.
@@ -824,6 +840,8 @@ Docker 없는 정적 리터럴 비교 시험은 이 저장소에 전례가 없�
 **미해소(2026-10-15, 판정 라운드, 기준 `189c16b`).** Story 2.1의 다중 목표 점검이 갈라내 append했다(source_spec 없음). 두 command의 확인 문구는 여전히 상수다 — `LinkService.java:66`(`CONFIRMATION = "연결"`)·`UnlinkService.java:77`(`"해제"`)이고 둘 다 그 상수로 발급하므로(`LinkService.java:181`·`UnlinkService.java:172`), `ActionGrant.java:163-169`가 `(command, target, confirmation)`으로 만드는 해시는 이 두 command에서 `(command, target)`의 결정적 함수이고 판별력이 0이다. 다른 발급 자리(Bybit 연결·연결 해제·계획 종료·운영 command)는 요청마다 정해진 문구 값을 넘기고, 운영 command 쪽은 Story 3.1이 확인 문구 재입력으로 닫았다. `sprint-status.yaml`의 `epic-1-retro-item-7`은 `in-progress`이고 `CLAUDE.md`는 "Epic 1·2 command의 hash는 ERD 정정 몫으로 남는다"고 적는다.
 
 **미해소 잔여:** 두 command를 개조할지, `ERD-1.0.0` §5를 정정할지의 선택. 주인은 Epic 1 회고 item-7이다.
+
+**미해소 — 재확인(2026-11-16, Epic 5 회고 AI-5 as-built 새 버전 chore 판정, 기준 `67abc7f`).** ERD-1.1.0(`EPIC-IMPLEMENTATION-READINESS-1.1.md`) §5가 as-built를 적었다. `delete-account`와 운영 command는 입력 문구를 확인 hash에 넣고, Epic 1·2 command의 hash는 "미결정 — 주인 Epic 1 회고 item-7"이다. 개조할지 정정할지의 선택은 하지 않았다. 잔여의 "`ERD-1.0.0` §5"는 이제 ERD-1.1.0 §5를 가리킨다.
 
 ### 66. Bybit permission·retCode 허용 목록이 비어 있어 실제 제공자에서 거절 사유가 오분류될 수 있고, 그 공백을 읽는 게이트가 없다
 
@@ -1359,6 +1377,8 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 **미해소(2026-10-15, CI 임계 경로 chore 판정, 기준 `571bb3c`).** 이 chore(`spec-ci-critical-path.md`, PR #104)의 리뷰가 append했고 그 done 전환 PR에서 판정한다(`CLAUDE.md` 표준 흐름 7번). CI-PLAN은 바뀌지 않았다 — §1 job 구조와 §5 분류 표(`CI-PLAN.md:186-191`)에 `backup-rehearsal`·`backup-restore`가 없는데, `classify-changes.sh`·`aggregate-results.sh` 머리 주석이 정본으로 인용하는 것은 여전히 그 §1·§5다. 결정 변경은 새 버전 발행이어야 하므로 이 chore 범위 밖이었다.
 
 **미해소 잔여:** CI-PLAN as-built 새 버전에 새 job·분류·집계 기대치와 실측 timeout을 반영하는 일. 주인 — Epic 3 회고 AI-10(`epic-3-retro-item-35`, Architect)이 CI-PLAN 차이를 as-built 새 버전에 반영하는 액션이다.
+
+**미해소 — 주인 이전(2026-11-16, Epic 5 회고 AI-5 as-built 새 버전 chore 판정, 기준 `67abc7f`).** 주인이던 `epic-3-retro-item-35`는 `spec-as-built-new-version.md`(PR #161)가 닫았다. 다만 사용자 범위 결정 [S]로 CI-PLAN을 떼어 deferred 185로 넘겼다. 그래서 CI-PLAN은 바뀌지 않았고(§1·§5에 `backup-rehearsal`·`backup-restore`가 여전히 없다), 새 SPINE 1.1의 companion도 옛 폴더의 CI-PLAN을 가리킨다. 이 항목의 잔여는 185(CI-PLAN as-built 새 버전과 job timeout 실측 보정)와 같은 작업이 가져간다.
 
 ### 147. 광고 동의 결정 행의 빈도 제한·행 수 상한
 
@@ -1896,3 +1916,47 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **이 fix에서 하지 않은 이유.** 운영 소스의 advisory 호출 꼴이 여럿(`xact`·session·`shared`)이라 스캔 규칙을 따로 정해야 하고, 이 fix는 SPEC상 시험 코드만 바꾼다.
 
 **미해소 잔여:** `src/main/java`의 advisory 호출이 모두 단일 bigint 키임을 단정하는 소스 스캔을 둘지 정한다. 주인은 없다.
+
+### 185. CI-PLAN as-built 새 버전과 job timeout 실측 보정
+
+**미해소(2026-11-16, Epic 5 회고 AI-5 as-built 새 버전 chore 판정, 기준 `67abc7f`).** 그 chore의 범위 결정에서 사용자가 CI-PLAN만 떼기로 했다([S], source_spec 없음).
+- **차이.** CI-PLAN은 바뀌지 않았다. 다음은 여전히 없다.
+  - `release-validation`·ARM64 build·WebKit·k6(CI-PLAN L178·L266, Epic 3 회고 R-3).
+  - `backend-assemble`·시험 fork 분할·`backup-restore` 분류·리허설 병렬 구조(146 포함).
+  - job timeout 실측 보정. CLAUDE.md `## CI`가 미뤄 둔 것이다.
+- **가리키는 곳.** SPINE 1.1 AD-14·AD-15와 Consistency의 Images 행, PSD 1.1 §10이 이 항목을 as-built 주석으로 가리킨다.
+
+**미해소 잔여:** CI-PLAN을 새 버전으로 발행하고 timeout 실측 표를 붙인다. 146의 잔여도 함께 가져간다. 지명된 작업은 없다.
+
+### 186. 광고를 닫은 뒤 대시보드 제목으로 포커스를 옮기는 구현
+
+**미해소(2026-11-16, Epic 5 회고 AI-5 as-built 새 버전 chore 판정, 기준 `67abc7f`).** Epic 4 회고 R-3 "닫기 뒤 포커스"의 처분이다. 요구를 철회하지 않고 구현 항목으로 남겼다(SPEC Ask First의 기본 처분).
+- **차이.** `EXPERIENCE.md:204`와 `epic-4-context.md`는 "닫힌 뒤 갱신된 대시보드 제목으로 포커스"를 요구한다. 그런데 중립 화면은 모든 결말을 `/dashboard`로 문서 이동(replace)하고, 새 문서에는 초기 포커스가 없다. 스토리 AC(4.3·4.4)에는 없는 요구다.
+- **가리키는 곳.** `EXPERIENCE.md:205`의 as-built 주석과 ERD-1.1.0 §8이 이 항목을 가리킨다.
+
+**미해소 잔여:** 문서 이동 뒤 광고 복귀를 무엇으로 넘길지(주소 표지·`noticeKindOf` 유형)와, 초점을 사용자 조작의 결과에만 옮긴다는 계약(2.9·2.11)과의 관계를 정해 구현한다. 지명된 작업은 없다.
+
+### 187. AD-14 개발 profile 관측 스택과 `logcli`의 부재
+
+**미해소(2026-11-16, Epic 5 회고 AI-5 as-built 새 버전 chore 판정, 기준 `67abc7f`).** 그 chore가 작업 중 발견한 회고 액션 밖의 차이다. SPEC Never에 따라 append만 했다.
+- **차이.** 개발 compose(`deploy/compose/compose.yaml`)는 `postgres`·`migrate`·`backend`·`nginx` 넷뿐이다. Prometheus·Loki·Grafana·Alloy profile과 `logcli`는 저장소에 없다. promtool은 CI `check-alert-rules.sh`만 쓴다.
+- **가리키는 곳.** SPINE 1.1 AD-14 Rule은 1.0 문장 그대로이고, 아래 as-built 주석과 PSD 1.1 §10 주석이 이 항목을 가리킨다.
+
+**미해소 잔여:** 요구를 철회해 문서를 구현에 맞출지, 개발 관측 profile을 만들지 정한다. 지명된 작업은 없다.
+
+### 188. epics.md 요구사항 원장과 남은 스토리 문장의 as-built 주석
+
+**미해소(2026-11-16, Epic 5 회고 AI-5 as-built 새 버전 chore 판정, 기준 `67abc7f`).** 그 chore의 1차 리뷰(blind-hunter)가 낸 defer다.
+- **차이.** 다음 문장이 1.1 문서와 모순되는데 주석이 없다.
+  - AR-7·AR-12·AR-14·AR-18.
+  - Story 5.1 AC-3, Story 5.3 결정 상태의 35일 보존, Story 4.3 AC-4.
+- **범위 밖이었던 이유.** 그 chore의 SPEC은 회고가 지목한 세 문장과 EXPERIENCE 한 곳만 주석 범위로 정했다.
+
+**미해소 잔여:** 같은 `> as-built(…)` 형식으로 주석을 달지 정한다. 다음 as-built 새 버전이나 epics.md를 고치는 작업이 가져갈 수 있다. 지명된 작업은 없다.
+
+### 189. 배포 신호 중단의 감사 원장 기록 누락(`INTERRUPTED` 단계)
+
+**미해소(2026-11-16, Epic 5 회고 AI-5 as-built 새 버전 chore 판정, 기준 `67abc7f`).** 그 chore의 리뷰 patch(PSD §8 배포 기록 단계 열거)에서 찾은 코드 결함이다.
+- **결함.** `deploy/production/deploy.sh:470-471`의 `on_signal`이 단계 `INTERRUPTED`·code `SIGNAL`을 넘긴다. 그런데 `DeployAuditApi.Step`(`backend/src/main/java/com/bokrilog/operations/DeployAuditApi.java:47`)에 그 값이 없어 `DeployAuditRunner`가 거부한다. 정리·되돌림은 정상이고, 중단 사실만 원장에 남지 않는다. 2026-11-16 메인 세션이 두 파일을 열어 확인했다.
+
+**미해소 잔여:** 중단 시 그 시점 단계 이름을 쓸지, `Step`에 값을 더할지 정하고 `rehearse-deploy.sh`에 신호 중단 시나리오를 둘지 본다. 운영 배포 smoke(3.8 미검증)보다 앞서 닫는 편이 맞다. 지명된 작업은 없다.
