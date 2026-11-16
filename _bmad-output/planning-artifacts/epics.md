@@ -9,16 +9,16 @@ epic4ValidationStatus: validated
 epic5ValidationStatus: validated
 finalValidationStatus: passed
 implementationReadinessStatus: ready-for-sprint-planning
-implementationDecisionVersion: ERD-1.0.0
+implementationDecisionVersion: ERD-1.1.0
 externalLaunchGates: ['G-4-provider-account-and-live-approval', 'G-5-legal-and-privacy-approval', 'production-secrets-and-accounts']
 approvedStories: ['1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '2.1', '2.2', '2.3', '2.4', '2.5', '2.6', '2.7', '2.8', '2.9', '2.10', '2.11', '2.12', '2.13', '2.14', '2.15', '2.16', '2.17', '3.1', '3.2', '3.3', '3.4', '3.5', '3.6', '3.7', '3.8', '3.9', '3.10', '4.1', '4.2', '4.3', '4.4', '4.5', '5.1', '5.2', '5.3', '5.4']
 inputDocuments:
   - _bmad-output/planning-artifacts/prds/prd-BokriLog-2026-08-23/prd.md
-  - _bmad-output/planning-artifacts/architecture/architecture-BokriLog-2026-08-24/ARCHITECTURE-SPINE.md
-  - _bmad-output/planning-artifacts/architecture/architecture-BokriLog-2026-08-24/PORTFOLIO-SOLUTION-DESIGN.md
+  - _bmad-output/planning-artifacts/architecture/architecture-BokriLog-2026-11-16/ARCHITECTURE-SPINE.md
+  - _bmad-output/planning-artifacts/architecture/architecture-BokriLog-2026-11-16/PORTFOLIO-SOLUTION-DESIGN.md
   - _bmad-output/planning-artifacts/ux-designs/ux-BokriLog-2026-08-23/DESIGN.md
   - _bmad-output/planning-artifacts/ux-designs/ux-BokriLog-2026-08-23/EXPERIENCE.md
-  - _bmad-output/planning-artifacts/EPIC-IMPLEMENTATION-READINESS.md
+  - _bmad-output/planning-artifacts/EPIC-IMPLEMENTATION-READINESS-1.1.md
 ---
 
 # BokriLog - Epic Breakdown
@@ -155,6 +155,7 @@ inputDocuments:
 ## Epic List
 
 요구사항 원장과 아래 5개 에픽·45개 스토리는 사용자 승인과 최종 검증을 완료했다. Story 2.17(재연결, `RECONNECT-1.0`)은 2026-10-14 Epic 2 보완 스토리로 추가 승인했다(Epic 2 회고 AI-1). Story 4.5(광고 이벤트·Web Vitals 계측과 성능 kill switch)는 2026-10-17 Epic 4 보완 스토리로 추가 승인했다(Epic 4 회고 AI-4, Story 4.4의 범위 분할 몫). 삭제 경로 조기 구현, 중간 검증 지점, Epic 1의 삭제 상태·접근 차단 계약, 개발·출시·운영 증거의 분리를 반영했다. 구현 세부 결정은 `ERD-1.0.0`으로 고정했으며 frontmatter의 `approvedStories`는 설계 승인 상태를 뜻한다. 실제 구현·테스트 완료 상태를 뜻하지 않는다.
+> as-built(ERD-1.1.0): 개정 절(§5·§8·§8.1·§9)은 ERD-1.1.0이 대체한다.
 
 ### 설계 원칙
 
@@ -3310,6 +3311,7 @@ Google·네이버·카카오 중 하나로 가입·로그인하고, 최근 재�
 **범위:** 저장된 수동 sync result trigger, 동의·restriction·30분/일 3회 cap, 원자 reservation·result binding. **제외:** provider 호출·광고 UI.
 
 **선행:** Story 2.11, Story 3.2, Story 4.1. **결정 상태:** 성공한 수동 동기화 뒤 중립 전환 화면의 `결과 보기` anchor 클릭만 공식 trigger로 인정하고, server-side 30분·일 3회 reservation을 노출 시도로 집계한다.
+> as-built(ERD-1.1.0 §8): reservation은 `결과 보기` 클릭이 아니라 대시보드가 자기 화면에서 접수한 수동 동기화의 성공 직후 부르는 자격 판정(`POST /api/engagement/ad-eligibility`)에서 일어나고, ELIGIBLE 행이 곧 노출 시도라 이동하지 않거나 SHOW가 아닌 결말에서도 cap이 소비된다.
 
 **연결 요구사항:** FR-14·FR-15, AR-13·AR-18, UX-DR12~UX-DR13.
 
@@ -3344,6 +3346,7 @@ Google·네이버·카카오 중 하나로 가입·로그인하고, 최근 재�
 **AC-2:** 승인된 사용자 행동/화면 전환 trigger와 비개인화 모드만 사용하며 공급자가 dashboard DOM 문맥 분석을 요구하면 요청하지 않는다.
 
 **AC-3:** `광고` 표지와 iframe 밖 첫 native 닫기를 즉시 제공하고 countdown·보상·새로고침·임의 popup 없이 닫으면 binding된 동일 공식 결과로 이동한다.
+> as-built(ERD-1.1.0 §8): 모든 결말은 `/dashboard`(그 시점의 현재 포인터, 저장된 최신 결과)로 replace한다.
 
 **AC-4:** 키보드·스크린리더·200%·400% 확대·reduced-motion, 안전한 미디어와 iframe 밖 포커스 이동을 실제 소재에서 검증하고 실패 시 광고를 건너뛴다.
 
@@ -3422,6 +3425,7 @@ Google·네이버·카카오 중 하나로 가입·로그인하고, 최근 재�
 **AC-1:** 화면은 즉시 접근 차단, 운영 데이터 삭제 대상, 백업 최대 30일 파기 예정, 승인된 법정 분리 보존 필드·근거·목적·기간을 구분하고 연결 해제와 차이를 설명한다.
 
 **AC-2:** 현재 수단 재인증 후 사용자·세션·`DELETE_ACCOUNT`·정책 version·TTL·확인 hash에 귀속된 일회성 허가와 계정 표시명 재입력을 요구한다.
+> as-built(ERD-1.1.0 §5): 서비스가 이름·이메일을 저장하지 않으므로 계정 표시명 대신 고정 문구 `계정을 삭제합니다`를 재입력하고(입력한 문구가 확인 hash에 들어간다), 확정 성공은 세션 ID를 회전하지 않는 이 command 한정 예외다.
 
 **AC-3:** CSRF·동일 출처·삭제 상태를 재검사해 request·시작시각·정책 version을 원자 생성하고 즉시 모든 세션·자격정보·민감 화면·일반 쓰기·중복 요청을 차단한다.
 

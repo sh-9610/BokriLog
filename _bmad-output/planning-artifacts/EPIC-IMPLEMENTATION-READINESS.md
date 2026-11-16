@@ -1,6 +1,7 @@
 ---
 title: 'BokriLog Epic & Story Implementation Readiness Decisions'
-status: final
+status: superseded
+superseded_by: 'EPIC-IMPLEMENTATION-READINESS-1.1.md'
 created: '2026-09-02'
 updated: '2026-09-02'
 applies_to: '_bmad-output/planning-artifacts/epics.md'
