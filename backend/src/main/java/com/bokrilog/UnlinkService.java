@@ -207,12 +207,14 @@ class UnlinkService {
     }
 
     /**
-     * 이 세션에 남은 해제 무장을 버리고 <b>그 무장이 낳은 허가 하나만</b> 무효화한다.
+     * 이 세션에 남은 해제 무장을 버리고 <b>그 무장이 낳은 허가 하나만</b> 무효화한다. 대상 제공자를 보지 않는다.
      *
-     * <p>{@code LinkService.abandon}과 같은 근거의 같은 모양이다. 호출자가 셋이고 셋 다 "이 세션의
-     * 해제 의도를 지금 끝낸다"는 같은 뜻이다 — 새 해제 준비가 앞의 무장을 덮을 때({@link #start}),
-     * 연결 시작이 흐름을 갈아탈 때, 재인증 시작이 갈아탈 때다(뒤의 둘은
-     * {@code AuthSessionController}).
+     * <p>{@code LinkService.abandon}과 같은 근거의 같은 모양이다. 호출자는 모두 "이 세션의 해제 의도를 지금 끝낸다"는
+     * 같은 뜻이고 다른 무장이 성립한 직후에 부른다 — 연결 시작({@code AuthSessionController.startLink}), 재인증 시작
+     * ({@code AuthSessionController.startReauthentication}이 부르는 {@code abandonArmedFlows}), Bybit 연결 준비·Bybit 연결
+     * 해제 준비({@code BybitConnectionController}), 계정 삭제 준비({@code AccountDeletionController})다. 새 해제 준비가 앞의
+     * 무장을 덮는 것은 {@link #start}의 {@link #supersedePreviousArming}이 따로 하고, 로그아웃은 세션 행째 지우므로 이것을
+     * 부르지 않는다. 대상을 대조하는 해제 취소는 {@link #abandon(HttpSession, String)}이다.
      *
      * <p>수명이 지난 무장도 대상이다. 그 무장의 허가는 아직 살아 있을 수 있고, 살아 있다면 같은
      * 이유로 지워야 한다.
@@ -227,6 +229,31 @@ class UnlinkService {
         if (armed != null) {
             this.grants.invalidateReference(armed.userId(), armed.grantReference());
         }
+    }
+
+    /**
+     * 해제 취소({@code AuthSessionController.cancelUnlink})가 부르는 형태. 무장의 대상 제공자가 {@code targetProvider}와
+     * 같을 때만 버린다(Epic 1 회고 F6 — {@code epic-1-retro-2026-09-25.md}, 액션 {@code epic-1-retro-item-3}).
+     *
+     * <p>취소는 "그 제공자의 해제 대화상자를 닫는다"는 뜻이다. 대상을 보지 않으면 다른 제공자의 취소 요청 — 오래된
+     * 탭에 남은 다른 대화상자, 같은 세션의 겹친 요청 — 이 진행 중인 해제 무장과 그 허가를 지워 이어지는 확정이 거부된다.
+     * 대상이 다르면 아무것도 하지 않는다. 응답은 호출자가 정하며 대상 일치 여부로 갈리지 않는다(언제나 204).
+     *
+     * <p>무장을 한 번 읽고 그 값으로 판정하고 버린다 — 다시 읽으면 판정한 무장과 버리는 무장이 다를 수 있다. 무장이
+     * 없으면 대상을 판정할 수 없으므로 속성만 지운다(버릴 허가가 없다). 읽을 수 없는 값은 {@code peekIncludingExpired}가
+     * 그 자리에서 지우고 없는 무장과 같이 {@code null}을 낸다.
+     */
+    void abandon(HttpSession session, String targetProvider) {
+        UnlinkFlow.Armed armed = UnlinkFlow.peekIncludingExpired(session);
+        if (armed == null) {
+            UnlinkFlow.discard(session);
+            return;
+        }
+        if (!armed.targetProvider().equals(targetProvider)) {
+            return;
+        }
+        UnlinkFlow.discard(session);
+        this.grants.invalidateReference(armed.userId(), armed.grantReference());
     }
 
     /**

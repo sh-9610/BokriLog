@@ -337,6 +337,30 @@ class AuthReauthenticationTest extends AuthFlowTestBase {
     }
 
     @Test
+    void 제공자가_보낸_invalid_request는_위조_콜백_가드에_걸리지_않고_무장을_소비한다() throws Exception {
+        /*
+         * 위조 콜백 가드(Epic 1 회고 F2)는 `invalid_request`를 요청이 인가 응답 모양이 아닐 때만 받는다. 제공자가 유효한
+         * `state`와 함께 되돌린 `error=invalid_request`는 이 세션의 인가 요청을 소비한 제공자 오류이므로 지금처럼 무장을
+         * 소비하고 실패 표지로 수렴해야 한다 — code만 보는 가드였다면 무장이 남고 표지 없이 되돌아간다.
+         */
+        String subject = "reauth-provider-invalid-request-" + UUID.randomUUID();
+        String cookie = sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID userId = userIdOf(OidcStubConfiguration.issuer(), subject).orElseThrow();
+        assertThat(startReauthentication(GOOGLE, cookie, csrfTokenOf(cookie)).statusCode())
+                .isEqualTo(204);
+        Authorization authorization = startAuthorization(GOOGLE, null, cookie);
+
+        HttpResponse<String> callback =
+                callbackWithError(GOOGLE, cookie, "invalid_request", authorization.state());
+
+        assertReauthenticationFailed(callback);
+        assertThat(sessionCookieOf(callback)).isEmpty();
+        assertSessionSurvived(callback, cookie, userId);
+        assertThat(sessionAttribute(sessionIdOf(cookie), ReauthenticationFlow.FLOW_ATTRIBUTE))
+                .isNull();
+    }
+
+    @Test
     void 무장이_만료된_뒤_도착한_콜백은_이유와_함께_수렴한다() throws Exception {
         String subject = "reauth-expired-arming-" + UUID.randomUUID();
         String cookie = sessionCookieOf(signIn(subject)).orElseThrow();
@@ -453,6 +477,62 @@ class AuthReauthenticationTest extends AuthFlowTestBase {
         assertThat(callback.statusCode()).isEqualTo(302);
         assertThat(locationOf(callback)).endsWith(AuthFlowHandlers.ONBOARDING_PATH);
         assertSessionSurvived(callback, cookie, userId);
+    }
+
+    @Test
+    void 위조_콜백은_살아_있는_재인증_무장을_소비하지_않는다() throws Exception {
+        /*
+         * I/O 표 "F2 위조 콜백(재인증)"(Epic 1 회고 F2). 살아 있는 무장이 있으면 흐름 경계가 콜백을 검증에
+         * 넘기고, 이 세션의 인가 요청에 닿지 못한 검증은 실패 핸들러로 온다. 그 실패가 무장을 소비하면 외부
+         * 사이트가 이것을 반복하는 것만으로 이 사용자의 재인증을 계속 거부할 수 있다.
+         */
+        String subject = "reauth-forged-" + UUID.randomUUID();
+        String cookie = sessionCookieOf(signIn(subject)).orElseThrow();
+        UUID userId = userIdOf(OidcStubConfiguration.issuer(), subject).orElseThrow();
+        assertThat(startReauthentication(GOOGLE, cookie, csrfTokenOf(cookie)).statusCode())
+                .isEqualTo(204);
+        Authorization authorization = startAuthorization(GOOGLE, null, cookie);
+        String sessionId = sessionIdOf(cookie);
+        String token = storedCsrfToken(sessionId).getToken();
+        Object armedBefore = sessionAttribute(sessionId, ReauthenticationFlow.FLOW_ATTRIBUTE);
+        assertThat(armedBefore)
+                .isInstanceOfSatisfying(
+                        ReauthenticationFlow.Armed.class,
+                        armed -> {
+                            assertThat(armed.provider()).isEqualTo(GOOGLE);
+                            assertThat(armed.userId()).isEqualTo(userId);
+                            assertThat(armed.returnPath()).isEqualTo(AuthFlowHandlers.ONBOARDING_PATH);
+                        });
+
+        for (HttpResponse<String> forged : forgedCallbacks(GOOGLE, cookie)) {
+            // "무장 없는 콜백"과 같은 302(지금 목적지)다. 표지·회전이 없다.
+            assertThat(forged.statusCode()).isEqualTo(302);
+            assertThat(locationOf(forged)).endsWith(AuthFlowHandlers.ONBOARDING_PATH);
+            assertThat(locationOf(forged)).doesNotContain("auth=");
+            assertThat(sessionCookieOf(forged)).isEmpty();
+            assertSessionSurvived(forged, cookie, userId);
+            assertThat(storedCsrfToken(sessionId).getToken()).isEqualTo(token);
+            // 같은 무장이다 — 제공자·사용자·복귀 경로·무장 시각까지 그대로다(record 동등).
+            assertThat(sessionAttribute(sessionId, ReauthenticationFlow.FLOW_ATTRIBUTE))
+                    .isEqualTo(armedBefore);
+            assertThat(sessionAttribute(sessionId, ReauthenticationFlow.AUTHENTICATED_AT_ATTRIBUTE))
+                    .isNull();
+        }
+
+        // 이어지는 정상 콜백이 그 무장과 인가 요청으로 재인증을 마친다.
+        String code =
+                issueCode(authorization, TokenPlan.valid(authorization.nonce()).subject(subject));
+        HttpResponse<String> callback = callback(authorization, cookie, code, authorization.state());
+
+        assertThat(callback.statusCode()).isEqualTo(302);
+        assertThat(locationOf(callback)).endsWith(AuthFlowHandlers.ONBOARDING_PATH);
+        assertThat(locationOf(callback)).doesNotContain("auth=");
+        String rotated = sessionCookieOf(callback).orElseThrow();
+        assertThat(sessionAttribute(
+                        sessionIdOf(rotated), ReauthenticationFlow.AUTHENTICATED_AT_ATTRIBUTE))
+                .isInstanceOf(Instant.class);
+        assertThat(sessionCountOf(userId)).isEqualTo(1);
+        assertThat(accountCount()).isEqualTo(1);
     }
 
     @Test

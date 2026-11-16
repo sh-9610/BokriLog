@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -35,12 +36,16 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.authentication.preauth.PreAuthenticatedAuthenticationToken;
 import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
+import org.springframework.security.web.csrf.CsrfToken;
+import org.springframework.security.web.csrf.HttpSessionCsrfTokenRepository;
 import org.springframework.session.Session;
 import org.springframework.session.SessionRepository;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -384,6 +389,31 @@ abstract class AuthFlowTestBase {
             String provider, @Nullable String sessionCookie, String error, String state)
             throws IOException, InterruptedException {
         return get(callbackPath(provider) + "?error=" + error + "&state=" + state, sessionCookie);
+    }
+
+    /**
+     * 이 세션의 인가 요청에 닿지 못하는 위조 콜백 여섯을 차례로 보낸다(Epic 1 회고 F2 — {@code epic-1-retro-2026-09-25.md},
+     * 액션 {@code epic-1-retro-item-2}).
+     *
+     * <p>외부 사이트가 {@code top.location}으로 열 수 있는 모양이다. 앞의 넷은 인가 응답 모양이 아니어서
+     * {@code OAuth2LoginAuthenticationFilter}가 {@code invalid_request}로 끝낸다 — 매개변수 없음, {@code state} 없는
+     * {@code error}, {@code state} 없는 code, code·{@code error} 없는 {@code state}. 뒤의 둘은 {@code state}가 세션의 인가
+     * 요청과 맞지 않아 {@code authorization_request_not_found}로 끝난다. 어느 것도 저장된 인가 요청을 지우지 않는다.
+     *
+     * <p>{@code state}·code는 실행 시점에 만든다 — 시험의 토큰 모양 리터럴은 gitleaks {@code generic-api-key}가 잡는다.
+     */
+    List<HttpResponse<String>> forgedCallbacks(String provider, String sessionCookie)
+            throws IOException, InterruptedException {
+        String unknownState = UUID.randomUUID().toString();
+        String unknownCode = UUID.randomUUID().toString();
+        List<HttpResponse<String>> responses = new ArrayList<>();
+        responses.add(get(callbackPath(provider), sessionCookie));
+        responses.add(get(callbackPath(provider) + "?error=access_denied", sessionCookie));
+        responses.add(get(callbackPath(provider) + "?code=" + unknownCode, sessionCookie));
+        responses.add(get(callbackPath(provider) + "?state=" + unknownState, sessionCookie));
+        responses.add(callback(provider, sessionCookie, unknownCode, unknownState));
+        responses.add(callbackWithError(provider, sessionCookie, "access_denied", unknownState));
+        return responses;
     }
 
     /** 인증 시작 → 검증된 콜백까지 한 번에. 정상 로그인 하나가 필요한 시험이 쓴다. */
@@ -1275,6 +1305,44 @@ abstract class AuthFlowTestBase {
     @Nullable Object sessionAttribute(String sessionId, String name) {
         Session session = this.sessions.findById(sessionId);
         return session == null ? null : session.getAttribute(name);
+    }
+
+    /**
+     * 제품 저장소({@code SessionBoundCsrfTokenRepository})가 위임하는 저장소와 같은 기본 구성이 쓰는 세션 속성 이름. 이름을
+     * 다시 적지 않고 저장소가 실제로 쓰는 속성 이름을 관측한다.
+     *
+     * <p>처음 부를 때 한 번 관측한다(holder 지연 초기화). 이 base의 static 초기화에 두면 관측이 실패할 때 이것을 쓰지 않는
+     * 시험 클래스까지 {@code ExceptionInInitializerError}로 무너진다.
+     */
+    static String csrfAttribute() {
+        return CsrfAttribute.NAME;
+    }
+
+    private static final class CsrfAttribute {
+
+        static final String NAME = observe();
+
+        private static String observe() {
+            HttpSessionCsrfTokenRepository csrf = new HttpSessionCsrfTokenRepository();
+            MockHttpServletRequest probe = new MockHttpServletRequest();
+            csrf.saveToken(csrf.generateToken(probe), probe, new MockHttpServletResponse());
+            List<String> names = Collections.list(probe.getSession().getAttributeNames());
+            if (names.size() != 1) {
+                throw new IllegalStateException("CSRF 저장소의 세션 속성이 하나가 아니다: " + names);
+            }
+            return names.getFirst();
+        }
+    }
+
+    /**
+     * 세션에 저장된 CSRF 토큰. 응답 본문의 토큰은 요청마다 다르게 가려지므로({@code XorCsrfTokenRequestAttributeHandler})
+     * "토큰이 바뀌지 않았다"는 이 원본으로 단정한다.
+     */
+    CsrfToken storedCsrfToken(String sessionId) {
+        if (!(sessionAttribute(sessionId, csrfAttribute()) instanceof CsrfToken stored)) {
+            throw new IllegalStateException("저장된 CSRF 토큰이 없는 세션이다: " + sessionId);
+        }
+        return stored;
     }
 
     /**

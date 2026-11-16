@@ -582,6 +582,10 @@ class AuthSessionController {
      * 답을 나누지 않는다: 나누면 이 경로가 "저 세션이 지금 무엇을 준비했는가"를 묻는 오라클이 된다.
      * 그래서 멱등이고, 아무것도 없을 때 부르면 아무 일도 하지 않는다.
      *
+     * <p><b>경로의 제공자가 무장의 대상과 같을 때만 버린다</b>(Epic 1 회고 F6 — {@code epic-1-retro-2026-09-25.md}, 액션
+     * {@code epic-1-retro-item-3}). 다른 제공자의 취소는 진행 중인 해제
+     * 무장과 허가를 건드리지 않으며, 그때도 답은 같은 204다 — 대상 불일치를 응답으로 구분하면 위와 같은 오라클이 된다.
+     *
      * <p>주체가 없어도 204다. 버릴 무장이 애초에 없고, 이 요청은 어떤 계정 상태도 읽지 않는다 — 다만
      * {@code /api/auth/} 아래이므로 CSRF·{@code Origin}은 그대로 지난다.
      */
@@ -598,7 +602,7 @@ class AuthSessionController {
         }
         HttpSession session = request.getSession(false);
         if (session != null) {
-            this.unlinkService.abandon(session);
+            this.unlinkService.abandon(session, provider);
         }
         response.setStatus(HttpStatus.NO_CONTENT.value());
     }

@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -20,9 +19,7 @@ import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.mock.web.MockHttpServletRequest;
-import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.web.csrf.CsrfToken;
-import org.springframework.security.web.csrf.HttpSessionCsrfTokenRepository;
 import org.springframework.security.web.csrf.XorCsrfTokenRequestAttributeHandler;
 import org.springframework.session.DelegatingIndexResolver;
 import org.springframework.session.Session;
@@ -61,9 +58,6 @@ class AuthSessionConcurrencyTest extends AuthFlowTestBase {
 
     /** 동시 출발·응답 대기의 상한. 넘으면 멈추지 않고 실패한다. */
     private static final long WAIT_SECONDS = 30;
-
-    /** 제품 저장소({@code SessionBoundCsrfTokenRepository})가 위임하는 저장소와 같은 기본 구성이 쓰는 세션 속성 이름. */
-    private static final String CSRF_ATTRIBUTE = csrfAttributeName();
 
     @Autowired
     private SessionRepository<? extends Session> repository;
@@ -178,22 +172,6 @@ class AuthSessionConcurrencyTest extends AuthFlowTestBase {
         return new XorCsrfTokenRequestAttributeHandler().resolveCsrfTokenValue(request, stored);
     }
 
-    private CsrfToken storedCsrfToken(String sessionId) {
-        Object stored = sessionAttribute(sessionId, CSRF_ATTRIBUTE);
-        assertThat(stored).isInstanceOf(CsrfToken.class);
-        return (CsrfToken) stored;
-    }
-
-    /** 이름을 다시 적지 않고 저장소가 실제로 쓰는 속성 이름을 관측한다. */
-    private static String csrfAttributeName() {
-        HttpSessionCsrfTokenRepository csrf = new HttpSessionCsrfTokenRepository();
-        MockHttpServletRequest probe = new MockHttpServletRequest();
-        csrf.saveToken(csrf.generateToken(probe), probe, new MockHttpServletResponse());
-        List<String> names = Collections.list(probe.getSession().getAttributeNames());
-        assertThat(names).hasSize(1);
-        return names.getFirst();
-    }
-
     private long sessionRows(String sessionId) {
         return jdbc().sql("SELECT count(*) FROM spring_session WHERE session_id = :id")
                 .param("id", sessionId)
@@ -202,7 +180,7 @@ class AuthSessionConcurrencyTest extends AuthFlowTestBase {
     }
 
     private long csrfAttributeRows(String sessionId) {
-        return attributeRows(sessionId, CSRF_ATTRIBUTE);
+        return attributeRows(sessionId, csrfAttribute());
     }
 
     private long attributeRows(String sessionId, String name) {

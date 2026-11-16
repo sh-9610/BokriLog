@@ -62,7 +62,10 @@ final class ControllerSupport {
     /**
      * 세션에 저장된 인증 주체의 내부 {@code user_id}. {@link #currentUserId()}와 달리 요청의 thread-local 인증이 아니라 세션 속성을 읽는다 —
      * 재인증을 요구받은(표시된) 세션은 guard 필터가 thread-local 인증을 지우므로 그 세션의 주체를 알 길이 이것뿐이다. 세션 확인 응답의
-     * 삭제 진행 표지(Story 5.1)만 쓴다 — 이 값으로 접근을 허용하지 않는다. 없거나 읽을 수 없거나 UUID가 아니면 {@code null}이다.
+     * 삭제 진행 표지(Story 5.1)와 인증 실패 핸들러의 위조 콜백 가드(Epic 1 회고 F2 — {@code epic-1-retro-2026-09-25.md}, 액션
+     * {@code epic-1-retro-item-2})가 되돌릴 목적지의 운영자 접기({@code AuthFlowHandlers.onFailure} —
+     * 그 자리도 thread-local이 이미 비었다)만 쓴다 — 이 값으로 접근을 허용하지 않는다. 없거나 읽을 수 없거나 UUID가 아니면
+     * {@code null}이다.
      */
     static @Nullable UUID storedSessionUserId(@Nullable HttpSession session) {
         if (session == null) {
