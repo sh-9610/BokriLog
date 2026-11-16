@@ -2,7 +2,8 @@
 name: 'BokriLog MVP Portfolio Solution Design'
 type: solution-design
 audience: '개발 포트폴리오 검토자와 미래 구현자'
-status: final
+status: superseded
+superseded_by: '../architecture-BokriLog-2026-11-16/PORTFOLIO-SOLUTION-DESIGN.md'
 updated: '2026-09-04'
 source: 'ARCHITECTURE-SPINE.md'
 companions:

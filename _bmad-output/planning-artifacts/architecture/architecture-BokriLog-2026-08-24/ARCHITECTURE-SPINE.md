@@ -5,7 +5,8 @@ purpose: build-substrate
 altitude: feature
 paradigm: 'Modular Monolith with Ports and Adapters'
 scope: 'BokriLog MVP의 금융소스 연동, 통합 포트폴리오, 계산, 저장, 보안, 배포 및 운영 경계'
-status: final
+status: superseded
+superseded_by: '../architecture-BokriLog-2026-11-16/ARCHITECTURE-SPINE.md'
 created: '2026-08-24'
 updated: '2026-09-04'
 binds:
