@@ -176,6 +176,30 @@ class OperatorAccessTest extends OperatorTestBase {
         assertThat(locationOf(returned)).isEqualTo("/operator");
     }
 
+    /**
+     * 위조 콜백 가드(Epic 1 회고 F2 — {@code epic-1-retro-2026-09-25.md}, 액션 {@code epic-1-retro-item-2})의 되돌림도 운영자
+     * 목적지를 지킨다. 실패 핸들러에서는 thread-local 인증이 이미 비어 있으므로 저장된 주체로 접지 않으면 운영자의
+     * {@code /operator}가 흐름 경계의 되돌림과 다르게 대시보드로 접힌다.
+     */
+    @Test
+    void 위조_콜백의_되돌림도_운영자_목적지를_지킨다() throws Exception {
+        Signed operator = signedIn("destination-forged");
+        operatorAccess().reinterpret(entry(operator.subject(), "audit"));
+        String cookie = sessionCookieOf(signInWithNext(operator.subject(), "/operator")).orElseThrow();
+        assertThat(topLevelFieldsOf(sessionState(cookie).body())).containsEntry("destination", "operator");
+        assertThat(startReauthentication(GOOGLE, cookie, csrfTokenOf(cookie)).statusCode()).isEqualTo(204);
+        startAuthorization(GOOGLE, null, cookie);
+        String sessionId = sessionIdOf(cookie);
+        Object armed = sessionAttribute(sessionId, ReauthenticationFlow.FLOW_ATTRIBUTE);
+        assertThat(armed).isInstanceOf(ReauthenticationFlow.Armed.class);
+
+        for (HttpResponse<String> forged : forgedCallbacks(GOOGLE, cookie)) {
+            assertThat(forged.statusCode()).isEqualTo(302);
+            assertThat(locationOf(forged)).isEqualTo("/operator");
+        }
+        assertThat(sessionAttribute(sessionId, ReauthenticationFlow.FLOW_ATTRIBUTE)).isEqualTo(armed);
+    }
+
     @Test
     void allowlist_형식은_엄격하다() {
         assertThat(OperatorProperties.parseOperators(null)).isEmpty();

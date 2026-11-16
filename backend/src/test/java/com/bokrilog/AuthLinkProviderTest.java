@@ -331,7 +331,12 @@ class AuthLinkProviderTest extends AuthFlowTestBase {
     }
 
     @Test
-    void 무장과_다른_제공자의_콜백은_실패한다() throws Exception {
+    void 무장과_다른_제공자의_콜백은_연결_무장을_소비하지_않는다() throws Exception {
+        /*
+         * I/O 표 "F3 남의 제공자 콜백"(Epic 1 회고 F3). 재인증 무장이 없을 때 연결 무장은 그 대상 제공자의
+         * 콜백만 소비한다. 이전 계약은 "네이버 콜백이 카카오 연결 무장을 집어 실패시킨다"였고, 그러면 사용자는
+         * 이어지는 카카오 콜백으로도 연결을 마치지 못했다.
+         */
         Linked user = signInAndReauthenticate("link-provider-swap");
         // 네이버로 무장하고 네이버 흐름을 연 뒤, 콜백이 오기 전에 카카오로 다시 무장한다.
         assertThat(startLink(NAVER, user.cookie(), csrfTokenOf(user.cookie())).statusCode())
@@ -339,6 +344,8 @@ class AuthLinkProviderTest extends AuthFlowTestBase {
         Authorization naver = startAuthorization(NAVER, null, user.cookie());
         assertThat(startLink(KAKAO, user.cookie(), csrfTokenOf(user.cookie())).statusCode())
                 .isEqualTo(204);
+        String sessionId = sessionIdOf(user.cookie());
+        String token = storedCsrfToken(sessionId).getToken();
         String code =
                 issueCode(
                         naver,
@@ -347,10 +354,50 @@ class AuthLinkProviderTest extends AuthFlowTestBase {
 
         HttpResponse<String> callback = callback(naver, user.cookie(), code, naver.state());
 
-        assertLinkFailed(callback);
-        assertThat(socialLinkCount()).isEqualTo(1);
-        assertThat(consumedGrantCount()).isZero();
-        assertRotatedSessionSurvived(callback, user.cookie(), user.userId());
+        // "무장 없는 콜백"과 같은 302(지금 목적지)다. 검증에 넘기지 않았으므로 회전도 표지도 없다.
+        assertThat(callback.statusCode()).isEqualTo(302);
+        assertThat(locationOf(callback)).endsWith(AuthFlowHandlers.ONBOARDING_PATH);
+        assertThat(locationOf(callback)).doesNotContain("auth=");
+        assertArmedLinkUntouched(callback, user, sessionId, token, KAKAO);
+
+        // 이어지는 카카오 콜백이 살아 있는 연결 무장으로 연결을 마친다.
+        String kakaoSubject = "link-provider-swap-kakao-" + UUID.randomUUID();
+        Authorization kakao = startAuthorization(KAKAO, null, user.cookie());
+        String kakaoCode =
+                issueCode(kakao, TokenPlan.valid(kakao.nonce()).subject(kakaoSubject));
+        HttpResponse<String> linked = callback(kakao, user.cookie(), kakaoCode, kakao.state());
+
+        assertLinkSucceeded(linked, user, KAKAO, kakaoSubject);
+    }
+
+    @Test
+    void 위조_콜백은_살아_있는_연결_무장을_소비하지_않는다() throws Exception {
+        /*
+         * I/O 표 "F2 위조 콜백(연결)"(Epic 1 회고 F2). 외부 사이트가 `top.location`으로 이 세션의 인가 요청에
+         * 닿지 못하는 콜백을 연다 — `state`·code 없음, `state` 없는 오류, 모르는 `state`의 code·오류. 흐름 경계는
+         * 살아 있는 무장을 보고 검증에 넘기고 검증은 인가 요청을 찾지 못한다. 그 실패가 무장을 버리면 이것을
+         * 반복하는 것만으로 이 사용자의 연결을 계속 거부할 수 있다.
+         */
+        Linked user = signInAndReauthenticate("link-forged");
+        assertThat(startLink(NAVER, user.cookie(), csrfTokenOf(user.cookie())).statusCode())
+                .isEqualTo(204);
+        Authorization naver = startAuthorization(NAVER, null, user.cookie());
+        String sessionId = sessionIdOf(user.cookie());
+        String token = storedCsrfToken(sessionId).getToken();
+
+        for (HttpResponse<String> forged : forgedCallbacks(NAVER, user.cookie())) {
+            assertThat(forged.statusCode()).isEqualTo(302);
+            assertThat(locationOf(forged)).endsWith(AuthFlowHandlers.ONBOARDING_PATH);
+            assertThat(locationOf(forged)).doesNotContain("auth=");
+            assertArmedLinkUntouched(forged, user, sessionId, token, NAVER);
+        }
+
+        // 이어지는 정상 네이버 콜백이 그 무장·허가·인가 요청으로 연결을 마친다.
+        String naverSubject = "link-forged-naver-" + UUID.randomUUID();
+        String code = issueCode(naver, TokenPlan.valid(naver.nonce()).subject(naverSubject));
+        HttpResponse<String> linked = callback(naver, user.cookie(), code, naver.state());
+
+        assertLinkSucceeded(linked, user, NAVER, naverSubject);
     }
 
     @Test
@@ -478,6 +525,29 @@ class AuthLinkProviderTest extends AuthFlowTestBase {
         assertThat(locationOf(callback))
                 .doesNotContain(AuthFlowHandlers.FAILURE_MARKER_LINK_CANCELLED);
         assertThat(socialLinkCount()).isEqualTo(1);
+    }
+
+    @Test
+    void 제공자가_보낸_invalid_request는_위조_콜백_가드에_걸리지_않고_무장을_소비한다() throws Exception {
+        /*
+         * 위조 콜백 가드(Epic 1 회고 F2)는 `invalid_request`를 요청이 인가 응답 모양이 아닐 때만 받는다. 제공자가 유효한
+         * `state`와 함께 되돌린 `error=invalid_request`는 이 세션의 인가 요청을 소비한 제공자 오류이므로 지금처럼 무장을
+         * 소비하고 실패 표지로 수렴해야 한다.
+         */
+        Linked user = signInAndReauthenticate("link-provider-invalid-request");
+        assertThat(startLink(NAVER, user.cookie(), csrfTokenOf(user.cookie())).statusCode())
+                .isEqualTo(204);
+        Authorization naver = startAuthorization(NAVER, null, user.cookie());
+
+        HttpResponse<String> callback =
+                callbackWithError(NAVER, user.cookie(), "invalid_request", naver.state());
+
+        assertLinkFailed(callback);
+        assertThat(socialLinkCount()).isEqualTo(1);
+        assertThat(consumedGrantCount()).isZero();
+        assertThat(sessionCookieOf(callback)).isEmpty();
+        assertThat(sessionState(user.cookie()).body()).contains("\"authenticated\":true");
+        assertThat(sessionAttribute(sessionIdOf(user.cookie()), LinkFlow.FLOW_ATTRIBUTE)).isNull();
     }
 
     @Test
@@ -881,6 +951,49 @@ class AuthLinkProviderTest extends AuthFlowTestBase {
                         AuthFlowHandlers.SETTINGS_PATH
                                 + "?auth="
                                 + AuthFlowHandlers.FAILURE_MARKER_LINK_FAILED);
+    }
+
+    /**
+     * 가드에 걸린 콜백이 아무것도 바꾸지 않았는가(Epic 1 회고 F2·F3).
+     *
+     * <p>세션 행(회전 없음)·주체({@code principal_name}으로 센 그 사용자의 세션 수)·CSRF 토큰이 그대로이고, 연결
+     * 무장이 같은 대상으로 남았으며 허가는 소비되지 않았고 매핑·계정은 늘지 않았다.
+     */
+    private void assertArmedLinkUntouched(
+            HttpResponse<String> callback,
+            Linked user,
+            String sessionId,
+            String csrfToken,
+            String target)
+            throws Exception {
+        assertThat(sessionCookieOf(callback)).isEmpty();
+        assertThat(sessionAttribute(sessionId, LinkFlow.FLOW_ATTRIBUTE))
+                .isInstanceOfSatisfying(
+                        LinkFlow.Armed.class,
+                        armed -> assertThat(armed.targetProvider()).isEqualTo(target));
+        assertThat(actionGrantCount()).isEqualTo(1);
+        assertThat(consumedGrantCount()).isZero();
+        assertThat(socialLinkCount()).isEqualTo(1);
+        assertThat(accountCount()).isEqualTo(1);
+        assertThat(sessionCountOf(user.userId())).isEqualTo(1);
+        assertThat(sessionState(user.cookie()).body()).contains("\"authenticated\":true");
+        assertThat(storedCsrfToken(sessionId).getToken()).isEqualTo(csrfToken);
+    }
+
+    /** 가드 뒤에 이어진 정상 콜백이 그 무장으로 연결을 마쳤는가. */
+    private void assertLinkSucceeded(
+            HttpResponse<String> callback, Linked user, String provider, String subject) {
+        assertThat(callback.statusCode()).isEqualTo(302);
+        assertThat(locationOf(callback))
+                .endsWith(
+                        AuthFlowHandlers.SETTINGS_PATH
+                                + "?auth="
+                                + AuthFlowHandlers.NOTICE_MARKER_LINK_SUCCEEDED);
+        assertThat(linkedProvidersOf(user.userId())).containsExactlyInAnyOrder(GOOGLE, provider);
+        assertThat(userIdOf(OidcStubConfiguration.issuer(provider), subject))
+                .contains(user.userId());
+        assertThat(consumedGrantCount()).isEqualTo(1);
+        assertThat(accountCount()).isEqualTo(1);
     }
 
     /**

@@ -27,6 +27,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.OAuth2ErrorCodes;
+import org.springframework.security.oauth2.core.endpoint.OAuth2ParameterNames;
 import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.security.web.DefaultRedirectStrategy;
 import org.springframework.security.web.RedirectStrategy;
@@ -40,6 +41,7 @@ import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.session.Session;
 import org.springframework.session.SessionRepository;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
@@ -126,6 +128,19 @@ class AuthFlowHandlers {
 
     /** 확정된 목적지. {@code GET /api/auth/session}이 종류만 보고한다. */
     static final String DESTINATION_ATTRIBUTE = "bokrilog.auth.destination";
+
+    /**
+     * 세션의 인가 요청과 {@code state}가 맞지 않을 때 {@code OAuth2LoginAuthenticationFilter}가 내는 오류 code.
+     *
+     * <p>{@link #onFailure}의 <b>위조 콜백 가드</b>가 이 값으로 "이 세션의 인가 요청에 닿지 못한 실패"를 고른다 — 인증된
+     * 세션에 외부 사이트가 모르는 {@code state}의 콜백을 열어도 살아 있는 연결·재인증 무장을 버리지 않게 하는 가드다
+     * (Epic 1 회고 F2 — {@code epic-1-retro-2026-09-25.md}, 액션 {@code epic-1-retro-item-2}).
+     *
+     * <p>그 필터의 private 상수({@code AUTHORIZATION_REQUEST_NOT_FOUND_ERROR_CODE})라 참조할 수 없어 같은 값을 여기
+     * 적는다. Spring Security가 이 값을 바꾸면 모르는 {@code state} 쪽 위조 콜백 가드가 조용히 꺼져 그런 콜백이 다시
+     * 무장을 버린다 — {@code AuthLinkProviderTest}·{@code AuthReauthenticationTest}의 위조 콜백 시험이 그때 실패한다.
+     */
+    static final String AUTHORIZATION_REQUEST_NOT_FOUND_ERROR_CODE = "authorization_request_not_found";
 
     /** 인증 화면이 읽는 실패 표지의 쿼리 이름. */
     static final String FAILURE_MARKER_PARAMETER = "auth";
@@ -305,7 +320,8 @@ class AuthFlowHandlers {
      * request를 가질 수 없었다 — 시작이 여기서 거절됐으므로 콜백에는 대조할 {@code state}가 없고,
      * 그래서 콜백을 보지 않아도 계정 갈아타기 경로가 없었다. 재인증이 그 전제를 깨므로
      * ({@code POST /api/auth/reauthenticate/…} 뒤의 인가 시작은 인증된 세션에서 성립한다) 무장이
-     * 없는 콜백은 이 자리에서 접는다. 접지 않으면 흐름이 만료된 뒤 도착한 콜백이
+     * 없는 콜백 — 연결 무장의 대상과 제공자가 다른 콜백을 포함한다({@link #callbackLinkFlow}) — 은
+     * 이 자리에서 접는다. 접지 않으면 흐름이 만료된 뒤 도착한 콜백이
      * {@link #onSuccess}의 <b>로그인 분기</b>로 들어가 같은 세션 행에 다른 계정을 심을 수 있다.
      */
     Filter authenticationFlowFilter() {
@@ -348,10 +364,15 @@ class AuthFlowHandlers {
                         }
                         if (armed == null) {
                             /*
-                             * 인증된 세션에 도착한, 무장 없는 콜백이다. 이 흐름은 이 세션의
-                             * 사실이 아니므로 검증에 넘기지 않고 지금 목적지로 되돌린다. 세션은
-                             * 건드리지 않는다 — 남의 사이트가 연 콜백일 수도 있고, 그때 세션을
-                             * 바꾸는 것이 곧 크로스 사이트 계정 갈아타기다.
+                             * 인증된 세션에 도착한, 이 세션의 무장이 소비하지 않는 콜백이다. 무장이
+                             * 아예 없는 콜백과, 연결 무장은 있지만 그 대상과 제공자가 다른 콜백
+                             * (`callbackLinkFlow`가 `null`을 낸 경우 — Epic 1 회고 F3,
+                             * `epic-1-retro-2026-09-25.md`, 액션 `epic-1-retro-item-4`)이 함께 온다.
+                             * 이 흐름은 이 세션의 사실이 아니므로 검증에 넘기지 않고 지금 목적지로
+                             * 되돌린다. 세션도 무장도 인가 요청도 건드리지 않는다 — 남의 사이트가 연
+                             * 콜백일 수도 있고, 그때 세션을 바꾸는 것이 곧 크로스 사이트 계정
+                             * 갈아타기이며, 연결 무장을 버리면 이어지는 정상 콜백이 연결을 마치지
+                             * 못한다.
                              */
                             redirects.sendRedirect(request, response, currentDestination(request));
                             return;
@@ -584,11 +605,31 @@ class AuthFlowHandlers {
          * 소비는 어느 쪽 결과에서도 일어난다. 흐름은 콜백 하나로 끝나며 그것이 일회성이다.
          */
         VerifiedIdentity identity = verifiedIdentityOf(authentication);
+        // 수명이 지난 것까지 먼저 읽는다. 아래 `peek`은 만료된 무장을 버리고 `null`을 내므로 뒤에서는 읽을 수 없다.
+        LinkFlow.Armed storedLink = LinkFlow.peekIncludingExpired(request);
+        ReauthenticationFlow.Armed pendingReauthentication = ReauthenticationFlow.peek(request);
         LinkFlow.Armed link =
                 callbackLinkFlow(
                         LinkFlow.peek(request),
-                        ReauthenticationFlow.peek(request),
+                        pendingReauthentication,
                         identity == null ? null : identity.provider());
+        if (link == null && pendingReauthentication == null) {
+            /*
+             * 재인증 무장 없이 연결 무장(살아 있든 수명이 지났든)이 남아 있는데 이 콜백이 그것을
+             * 소비하지 않는다. 두 갈래다.
+             *
+             * - 제공자가 다른 콜백이 검증까지 왔다. 흐름 경계가 경로의 제공자로 이 콜백을 이미
+             *   접으므로(`callbackLinkFlow`의 Epic 1 회고 F3 — `epic-1-retro-2026-09-25.md`, 액션
+             *   `epic-1-retro-item-4`) 여기 오는 경로는 없다 — 경로와 인가 요청의 `redirect_uri`가
+             *   어긋나면 검증이 먼저 실패한다.
+             * - 흐름 경계의 수명 판정과 이 자리 사이에 무장이 만료됐다. 위 `peek`이 그 무장을 버린다.
+             *
+             * 어느 쪽이든 판정이 `null`로 끝나면 아래 **로그인 분기**가 인증된 세션에 다른 계정을
+             * 심으므로, 무장이 남아 있었던 한 연결 분기가 받아 실패시킨다(`onLinkSuccess`가 제공자
+             * 불일치와 만료 무장을 거부로 접는다).
+             */
+            link = storedLink;
+        }
         if (link != null) {
             LinkFlow.discard(request);
             onLinkSuccess(request, response, identity, link);
@@ -731,8 +772,16 @@ class AuthFlowHandlers {
             throws IOException {
         writeEstablishedPrincipal(request, response, armed.userId());
 
+        /*
+         * 수명이 지난 무장은 허가를 소비하러 가지 않고 거부로 접는다. 흐름 경계가 늦은 콜백을 이미
+         * 접지만 그 판정과 이 자리 사이에 만료될 수 있고(`onSuccess`의 방어선이 그 무장을 여기로
+         * 넘긴다), 허가의 만료는 데이터베이스 시계라 JVM 시계의 무장 수명과 같은 순간에 끝난다는
+         * 보장이 없다.
+         */
         LinkService.Outcome outcome =
-                identity == null || !identity.provider().equals(armed.targetProvider())
+                identity == null
+                                || !identity.provider().equals(armed.targetProvider())
+                                || !armed.isLive(Instant.now())
                         ? LinkService.Outcome.DENIED
                         : this.linkService.complete(
                                 request.getSession(), armed, identity.issuer(), identity.subject());
@@ -806,9 +855,16 @@ class AuthFlowHandlers {
      * ({@code LinkService.start}·{@code AuthSessionController.startReauthentication}) 이 판정은 그
      * 뒤에 남는 상태를 위한 2차 방어다.
      *
-     * <p>어느 쪽도 일치하지 않으면 연결이 먼저다. 그 경우는 어느 흐름에서도 실패이고 순서가 정하는
-     * 것은 표지 하나뿐이며, 재인증만 무장된 상태의 제공자 바꿔치기는 Story 1.8이 고정한 대로
-     * 재인증 실패로 수렴한다.
+     * <p><b>연결 무장만 있을 때도 일치해야 이긴다</b>(Epic 1 회고 F3). 연결 무장은 그 무장의 대상
+     * 제공자 콜백만 소비한다 — 그렇지 않으면 다른 제공자의 콜백(같은 화면에서 앞서 연 다른 제공자
+     * 흐름의 늦은 도착, 남의 사이트가 연 콜백)이 살아 있는 연결 무장을 집어 실패로 끝내고, 사용자는
+     * 이어지는 정상 콜백으로도 연결을 마치지 못한다. 그때 이 판정은 {@code null}이고, 재인증 무장도
+     * 없으므로 흐름 경계({@link #authenticationFlowFilter})가 "무장 없는 콜백"과 같이 지금
+     * 목적지로 되돌린다 — 검증에 넘기지 않으므로 이 세션의 authorization request도 무장도 그대로다.
+     *
+     * <p>두 무장이 함께 있고 어느 쪽도 일치하지 않으면 연결이 먼저다. 그 경우는 어느 흐름에서도
+     * 실패이고 순서가 정하는 것은 표지 하나뿐이며, 재인증만 무장된 상태의 제공자 바꿔치기는
+     * Story 1.8이 고정한 대로 재인증 실패로 수렴한다.
      *
      * @param provider 이 콜백이 알려 준 등록 id. 성공 핸들러는 검증된 인증 결과에서, 흐름 경계와
      *     실패 핸들러는 경로에서 읽는다
@@ -820,8 +876,11 @@ class AuthFlowHandlers {
         if (link == null) {
             return null;
         }
-        if (armed == null || link.targetProvider().equals(provider)) {
+        if (link.targetProvider().equals(provider)) {
             return link;
+        }
+        if (armed == null) {
+            return null;
         }
         return armed.provider().equals(provider) ? null : link;
     }
@@ -975,11 +1034,43 @@ class AuthFlowHandlers {
     private void onFailure(
             HttpServletRequest request, HttpServletResponse response, AuthenticationException exception)
             throws IOException {
+        HttpSession session = request.getSession(false);
+        if (session != null
+                && carriesEstablishedPrincipal(session)
+                && missedAuthorizationRequest(request, exception)) {
+            /*
+             * 이 세션의 authorization request에 닿지 못한 실패다(Epic 1 회고 F2). 무장을 건드리지
+             * 않고 "무장 없는 콜백"과 같이 지금 목적지로 되돌린다.
+             *
+             * 위협은 `discardSession`의 것과 같다. 콜백은 미인증 최상위 GET이고 세션 쿠키는
+             * `SameSite=Lax`라 최상위 내비게이션에 실리므로, 외부 사이트가 `top.location`으로
+             * `state` 없는(또는 모르는 `state`의) 콜백을 열면 피해자의 브라우저가 자기 세션을 들고
+             * 여기 도착한다. 흐름 경계는 살아 있는 무장이 있으면 콜백을 검증에 넘기고, 그 검증은
+             * 이 세션의 인가 요청을 찾지 못해 여기로 온다. 그때 아래처럼 무장을 버리면 그것을
+             * 반복하는 것만으로 남이 이 사용자의 연결·재인증을 계속 거부할 수 있다.
+             *
+             * 이 실패는 아무것도 소비하지 않았다 — `OAuth2LoginAuthenticationFilter`는 `state`가
+             * 맞을 때만 저장된 인가 요청을 지우므로 진행 중인 흐름의 인가 요청도 그대로이고, 이어지는
+             * 정상 콜백이 그 흐름을 마친다. 세션 행·주체·CSRF 토큰도 바뀌지 않는다. 사용자 취소·
+             * 제공자 오류·검증 실패처럼 인가 요청을 소비한 실패는 이 가드에 걸리지 않고 아래에서
+             * 지금처럼 무장을 소비한다.
+             *
+             * 목적지의 사용자는 저장된 주체에서 읽는다. 실패 핸들러에 오기 전에
+             * `AbstractAuthenticationProcessingFilter`가 thread-local을 비웠으므로 그쪽을 보면 운영자의
+             * 목적지가 흐름 경계의 되돌림과 다르게 접힌다.
+             */
+            this.redirects.sendRedirect(
+                    request,
+                    response,
+                    currentDestination(request, ControllerSupport.storedSessionUserId(session)));
+            return;
+        }
         /*
          * 무장된 재인증 흐름이 있으면 그 흐름의 목적지로 돌아간다.
          *
-         * 여기 오는 것은 사용자 취소와 제공자 오류, 그리고 `state` 불일치·재사용처럼 인증이
-         * 확정되기 전에 끝난 실패다. 그때 세션에는 아직 개설된 주체가 그대로 있으므로 주체를
+         * 여기 오는 것은 사용자 취소와 제공자 오류, 그리고 토큰 검증 실패처럼 인증이 확정되기
+         * 전에 끝난 실패다(인가 요청에 닿지 못한 `state` 없음·불일치·재사용은 인증된 세션이면 위
+         * 가드가 먼저 받는다). 그때 세션에는 아직 개설된 주체가 그대로 있으므로 주체를
          * 다시 쓸 일이 없고(`onSuccess` 안의 실패와 다른 점이다), `discardSession`의 "인증된
          * 세션은 건드리지 않는다"도 그대로 성립한다. 그래도 이 경로를 지나지 않는 이유는
          * 목적지다 — 이미 로그인한 사용자를 인증 화면으로 보낼 이유가 없다.
@@ -1020,6 +1111,20 @@ class AuthFlowHandlers {
                             + FAILURE_MARKER_PARAMETER
                             + "="
                             + reauthenticationMarker(exception));
+            return;
+        }
+        if (session != null && carriesEstablishedPrincipal(session)) {
+            /*
+             * 인증된 세션인데 어느 흐름도 이 실패를 소비하지 않았다. 흐름 경계가 무장 없는 콜백을
+             * 먼저 접으므로 여기 오는 경로는 없다(그 판정과 이 자리 사이에 무장이 만료된 경합 정도다).
+             * 그래도 이미 로그인한 사용자를 인증 화면으로 보낼 이유가 없으므로 위 가드와 같은 302로
+             * 지금 목적지에 되돌린다. `converge`로 가도 `discardSession`이 세션을 지키지만 목적지가
+             * 인증 화면이 된다.
+             */
+            this.redirects.sendRedirect(
+                    request,
+                    response,
+                    currentDestination(request, ControllerSupport.storedSessionUserId(session)));
             return;
         }
         converge(request, response, marker(exception));
@@ -1179,14 +1284,59 @@ class AuthFlowHandlers {
     }
 
     /**
+     * 이 실패가 이 세션의 authorization request에 닿지 못했는가(Epic 1 회고 F2).
+     *
+     * <p>{@code OAuth2LoginAuthenticationFilter}가 인가 요청을 지우기 <b>전에</b> 던지는 두 code만
+     * 해당한다.
+     * <ul>
+     *   <li>{@code invalid_request} — 요청이 인가 응답 모양이 아니다({@code state}가 없거나,
+     *       {@code code}·{@code error}가 모두 없다). 제공자가 유효한 {@code state}와 함께 되돌린
+     *       {@code error=invalid_request}도 같은 code로 오지만 그것은 인가 요청을 소비한 제공자
+     *       오류이므로, 요청 모양을 함께 보아 필터가 스스로 던진 것만 고른다.
+     *   <li>{@code authorization_request_not_found} — 세션의 인가 요청과 {@code state}가 맞지 않는다.
+     *       저장된 요청은 {@code state}가 맞을 때만 지워지므로 이 실패는 아무것도 소비하지 않았다.
+     * </ul>
+     */
+    private static boolean missedAuthorizationRequest(
+            HttpServletRequest request, AuthenticationException exception) {
+        if (!(exception instanceof OAuth2AuthenticationException oauth2Exception)) {
+            return false;
+        }
+        String code = oauth2Exception.getError().getErrorCode();
+        if (AUTHORIZATION_REQUEST_NOT_FOUND_ERROR_CODE.equals(code)) {
+            return true;
+        }
+        return OAuth2ErrorCodes.INVALID_REQUEST.equals(code) && !isAuthorizationResponse(request);
+    }
+
+    /**
+     * {@code OAuth2LoginAuthenticationFilter}가 인가 응답으로 받아들이는 모양인가. 그 필터의 판정
+     * ({@code OAuth2AuthorizationResponseUtils.isAuthorizationResponse}, package-private)과 같은 식이다 —
+     * {@code state}가 있고 {@code code}나 {@code error}가 있다.
+     */
+    private static boolean isAuthorizationResponse(HttpServletRequest request) {
+        return StringUtils.hasText(request.getParameter(OAuth2ParameterNames.STATE))
+                && (StringUtils.hasText(request.getParameter(OAuth2ParameterNames.CODE))
+                        || StringUtils.hasText(request.getParameter(OAuth2ParameterNames.ERROR)));
+    }
+
+    /**
      * 지금 세션이 가진 목적지. 없으면 기본 대시보드다. 운영자 화면은 지금 운영자일 때만 남는다
      * ({@link OperatorAccess#foldDestination}).
      */
     private String currentDestination(HttpServletRequest request) {
+        return currentDestination(request, ControllerSupport.currentUserId());
+    }
+
+    /**
+     * {@link #currentDestination(HttpServletRequest)}의 사용자를 호출자가 주는 형태. thread-local 인증이
+     * 이미 비워진 실패 핸들러가 저장된 주체로 같은 목적지를 낸다.
+     */
+    private String currentDestination(HttpServletRequest request, @Nullable UUID userId) {
         String destination =
                 Optional.ofNullable(allowedDestination(attribute(request, DESTINATION_ATTRIBUTE)))
                         .orElse(DASHBOARD_PATH);
-        return this.operators.foldDestination(ControllerSupport.currentUserId(), destination);
+        return this.operators.foldDestination(userId, destination);
     }
 
     private static @Nullable String attribute(HttpServletRequest request, String name) {

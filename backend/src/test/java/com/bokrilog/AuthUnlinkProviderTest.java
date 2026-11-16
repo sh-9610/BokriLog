@@ -595,6 +595,38 @@ class AuthUnlinkProviderTest extends AuthFlowTestBase {
     }
 
     @Test
+    void 다른_제공자의_취소는_진행_중인_해제_무장을_지우지_않는다() throws Exception {
+        /*
+         * I/O 표 "F6 다른 제공자 취소"(Epic 1 회고 F6). 취소는 그 제공자의 대화상자를 닫는 것이다 — 대상을 보지
+         * 않으면 다른 제공자의 취소 하나가 진행 중인 네이버 해제의 무장과 허가를 지워 이어지는 확정이 거부된다.
+         * 답은 무장이 있을 때·없을 때와 같은 204다(대상 불일치를 응답으로 구분하지 않는다).
+         */
+        Linked user = signInLinkAndReauthenticate("unlink-cancel-other");
+        assertThat(prepareUnlink(NAVER, user.cookie(), csrfTokenOf(user.cookie())).statusCode())
+                .isEqualTo(204);
+        String sessionId = sessionIdOf(user.cookie());
+        String live = singleGrantReference();
+
+        for (String other : List.of(GOOGLE, KAKAO)) {
+            HttpResponse<String> cancelled =
+                    cancelUnlink(other, user.cookie(), csrfTokenOf(user.cookie()));
+            assertThat(cancelled.statusCode()).isEqualTo(204);
+            assertThat(cancelled.body()).isEmpty();
+        }
+
+        assertThat(sessionAttribute(sessionId, UnlinkFlow.FLOW_ATTRIBUTE))
+                .isInstanceOf(UnlinkFlow.Armed.class);
+        assertThat(actionGrantExists(live)).isTrue();
+        assertThat(actionGrantConsumed(live)).isFalse();
+
+        // 이어지는 네이버 확정이 그 무장과 허가로 성공한다.
+        assertThat(confirmUnlink(NAVER, user.cookie(), csrfTokenOf(user.cookie())).statusCode())
+                .isEqualTo(204);
+        assertThat(socialLinkCount()).isEqualTo(1);
+        assertThat(actionGrantConsumed(live)).isTrue();
+    }
+
+    @Test
     void 오래된_탭의_취소는_다른_세션의_허가를_지우지_않는다() throws Exception {
         /*
          * I/O 표 "오래된 탭 취소". 같은 사용자의 세션 B가 같은 제공자로 준비하면 그 발급이 세션 A의 허가를
