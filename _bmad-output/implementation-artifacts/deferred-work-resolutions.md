@@ -19,8 +19,15 @@ decision_baseline: 'ERD-1.0.0'
 |---|---|
 | 해소 | 39 |
 | 부분 해소 | 25 |
-| 미해소 | 125 |
+| 미해소 | 127 |
 | 미판정 | 0 |
+
+**2026-11-16 갱신(인증 흐름 무장 가드 fix done 전환).** `spec-auth-armed-flow-guards.md`(PR #163, 머지 커밋 `b217831`)의 판정이다.
+- **이 fix가 append한 defer:** 190(로그인 전 세션의 같은 위조 콜백 위협)·191(재인증 무장이 검증 도중 만료되는 경합) 둘이다. 1차 리뷰가 낸 것이고 둘 다 미해소로 판정했다.
+- **이 fix가 해소한 항목:** 없다. 이 fix가 닫은 것은 원장 항목이 아니라 회고 action item 셋이다 — `epic-1-retro-item-2`(F2, 위조 콜백이 무장을 버림), `epic-1-retro-item-3`(F6, 다른 제공자의 해제 취소), `epic-1-retro-item-4`(F3, 다른 제공자 콜백이 연결 무장을 소비). 이 PR이 그 셋을 done으로 바꾼다.
+- **이 fix를 결정 지점으로 지목한 항목:** 없다(원장에서 `onFailure`·`cancelUnlink`·`callbackLinkFlow`를 든 항목이 없다).
+- **지나간 항목:** 회고 F5(콜백 경계 셋의 고아 허가)는 회고가 defer로 분류했지만 원장 항목이 아니다. 이 fix는 다루지 않았다(SPEC Never).
+- **표:** 191건이다(해소 39·부분 해소 25·미해소 127·미판정 0).
 
 **2026-11-16 갱신(Epic 5 회고 AI-5 as-built 새 버전 chore done 전환).** `spec-as-built-new-version.md`(PR #161, 머지 커밋 `67abc7f`)의 판정이다.
 - **이 chore가 append한 defer:** 185~189 다섯 건이다. 모두 미해소로 판정했다.
@@ -1960,3 +1967,19 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 - **결함.** `deploy/production/deploy.sh:470-471`의 `on_signal`이 단계 `INTERRUPTED`·code `SIGNAL`을 넘긴다. 그런데 `DeployAuditApi.Step`(`backend/src/main/java/com/bokrilog/operations/DeployAuditApi.java:47`)에 그 값이 없어 `DeployAuditRunner`가 거부한다. 정리·되돌림은 정상이고, 중단 사실만 원장에 남지 않는다. 2026-11-16 메인 세션이 두 파일을 열어 확인했다.
 
 **미해소 잔여:** 중단 시 그 시점 단계 이름을 쓸지, `Step`에 값을 더할지 정하고 `rehearse-deploy.sh`에 신호 중단 시나리오를 둘지 본다. 운영 배포 smoke(3.8 미검증)보다 앞서 닫는 편이 맞다. 지명된 작업은 없다.
+
+### 190. 로그인 전 세션의 위조 콜백이 진행 중인 로그인을 취소한다
+
+**미해소(2026-11-16, 인증 흐름 무장 가드 fix 판정, 기준 `b217831`).** 그 fix의 1차 리뷰(edge-case-hunter·blind-hunter)가 append했다.
+- **위협.** 외부 사이트가 `top.location`으로 `state` 없는 콜백을 열면 `onFailure` → `converge` → `discardSession`이 진행 중인 인증 전 세션과 그 authorization request를 지운다. 피해자의 로그인 시도를 반복해 취소시킬 수 있다. 강제 로그아웃은 아니다.
+- **이 fix에서 하지 않은 이유.** 이 fix의 위조 콜백 가드는 저장된 주체가 있는 세션에만 걸린다. 로그인 전 흐름의 실패 수렴은 SPEC Always가 바꾸지 않기로 정했다.
+
+**미해소 잔여:** 인증 전 세션에서도 위조 실패(`invalid_request`·`authorization_request_not_found`)를 그 흐름의 사실이 아닌 것으로 보고 세션을 남길지 정한다. 다만 인증 전 세션의 정리 계약("실패는 어떤 상태도 바꾸지 않는다"와 세션 행 정리)을 함께 다시 봐야 한다. 지명된 작업은 없고, 실연동 게이트 전에 보는 편이 맞다.
+
+### 191. 재인증 무장이 검증 도중 만료되면 콜백이 로그인 분기로 갈 수 있다
+
+**미해소(2026-11-16, 인증 흐름 무장 가드 fix 판정, 기준 `b217831`).** 그 fix의 1차 리뷰(edge-case-hunter)가 append했다.
+- **경합.** 흐름 경계의 `isLive` 판정 뒤 성공 핸들러 전에 재인증 무장이 만료되면, `onSuccess`의 `ReauthenticationFlow.consume`이 `null`을 낸다. 그러면 콜백이 로그인 분기(`establish`)로 떨어져 인증된 세션에 검증된 다른 계정이 실릴 수 있다. 창은 제공자 토큰 교환 시간만큼이다.
+- **연결 쪽은 막았다.** 같은 경합의 연결 쪽은 그 fix가 `peekIncludingExpired` 방어선으로 막았다. 재인증 쪽은 이 변경 전부터 있던 경로이고, 성공 핸들러 전에 OIDC 토큰이 세션에 저장돼 저장된 주체로는 판정할 수 없다.
+
+**미해소 잔여:** 만료된 재인증 무장도 재인증 분기로 넘겨 실패로 접는다(연결 쪽과 같은 모양). 지명된 작업은 없고, 실연동 게이트 전에 닫는 편이 맞다.
