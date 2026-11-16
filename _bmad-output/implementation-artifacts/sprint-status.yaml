@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 11-16-2026 05:40
+last_updated: 11-16-2026 09:30
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -110,21 +110,21 @@ action_items:
     action: "AuthFlowHandlers.onFailure의 무장 폐기에 discardSession과 같은 급의 가드를 넣어, 교차 사이트
       최상위 내비게이션이 피해자의 살아 있는 LinkFlow 무장을 반복 파괴하지 못하게 한다. 실연동 게이트 전 필수"
     owner: "SSAFY"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
   - id: "epic-1-retro-item-3-authsessioncontroller-cancelunlink가-prov"
     epic: 1
     action: "AuthSessionController.cancelUnlink가 provider를 UnlinkService.abandon에
       넘기고 대상이 다르면 무시하게 한다. 다른 지원 제공자로 취소하는 시험 축을 더한다"
     owner: "SSAFY"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
   - id: "epic-1-retro-item-4-authflowhandlers-callbacklinkflow가-재인증-무"
     epic: 1
     action: "AuthFlowHandlers.callbackLinkFlow가 재인증 무장이 없을 때도 콜백의 등록 id를 보게 한다. 살아
       있는 연결 무장이 남의 제공자 콜백에 소비되지 않음을 단정한다"
     owner: "SSAFY"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
   - id: "epic-1-retro-item-5-해제-확인-대화상자에-epics-md-story-1-11-ac-4의-세"
     epic: 1
