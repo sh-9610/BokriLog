@@ -264,6 +264,14 @@ class AccountDeletionRunService implements AccountDeletionRunApi {
                 found.deletionCompletedAt() == null ? null : found.deletionCompletedAt().toInstant()));
     }
 
+    @Override
+    @Transactional
+    public int expireDeletedIdentities() {
+        // 잠금 대기 2초·문장 5초 — 백업 파기 판정 트랜잭션과 같은 상한이다. 일괄 크기는 두지 않는다(같은 판정자의 만료 삭제와 같은 관용).
+        repository.limitDeletedIdentitySweepTime();
+        return repository.expireDeletedIdentities(DELETED_IDENTITY_RETENTION);
+    }
+
     /** 삭제 요청 ID의 모양. V30의 CHECK와 한 쌍이다. */
     private static final Pattern REQUEST_ID = Pattern.compile("[A-Za-z0-9_-]{1,64}");
 

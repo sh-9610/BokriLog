@@ -47,7 +47,7 @@ class AccountDeletionRequestTest extends PlanSyncTestBase {
 
     private static final String PHRASE = "계정을 삭제합니다";
 
-    private static final String VERSION = "ACCOUNT-DELETION-1.0";
+    private static final String VERSION = "ACCOUNT-DELETION-1.1";
 
     private static final Path SHARED_FIXTURE = Path.of("../frontend/src/content/accountDeletionPolicy.fixture.json");
 
@@ -226,6 +226,9 @@ class AccountDeletionRequestTest extends PlanSyncTestBase {
 
         assertRefused(confirm(signed, VERSION, "계정을 삭제", key("delete-mismatch-1")), 403, "CONFIRMATION_MISMATCH");
         assertRefused(confirm(signed, "ACCOUNT-DELETION-0.9", PHRASE, key("delete-mismatch-2")), 409,
+                "ACCOUNT_DELETION_POLICY_CHANGED");
+        // 1.0을 본 화면(G-5 전 결정 D-3 이전 고지)의 확정도 저장하지 않는다 — 고지 문장이 바뀌어 정책 버전이 올랐다.
+        assertRefused(confirm(signed, "ACCOUNT-DELETION-1.0", PHRASE, key("delete-mismatch-old")), 409,
                 "ACCOUNT_DELETION_POLICY_CHANGED");
         var keyless = sendJson("POST", CONFIRM_PATH, body(VERSION, PHRASE), signed.cookie(),
                 headers(signed.csrf(), null));
@@ -668,20 +671,84 @@ class AccountDeletionRequestTest extends PlanSyncTestBase {
 
     /**
      * 고지 hash를 고정한다 — 정책 상수의 정규 직렬화를 여기 손으로 적고 그 SHA-256을 실행 중에 계산해 대조한다. {@code TARGETS}·
-     * {@code CONFIRMATION}·{@code BACKUP_DESTROY_DAYS}·{@code LEGAL_RETENTION} 가운데 무엇이든 바꾸면 이 시험이 깨진다 — 그때는
-     * {@code VERSION}을 올리고(이미 본 화면의 확정이 409로 다시 읽게 된다) 아래 직렬화를 새 정책으로 고친다.
+     * {@code CONFIRMATION}·{@code BACKUP_DESTROY_DAYS}·{@code LEGAL_RETENTION}·{@code NOTICE_DIGEST} 가운데 무엇이든 바꾸면 이 시험이
+     * 깨진다 — 그때는 {@code VERSION}을 올리고(이미 본 화면의 확정이 409로 다시 읽게 된다) 아래 직렬화를 새 정책으로 고친다. 마지막 줄의
+     * 화면 고지 digest는 리터럴로 적지 않는다 — 공유 표와의 대조는 {@link #고지_문장_digest는_공유_표의_notice에서_다시_계산한_값이다}가 한다.
      */
     @Test
-    void 고지_hash는_ACCOUNT_DELETION_1_0의_정규_직렬화다() {
+    void 고지_hash는_ACCOUNT_DELETION_1_1의_정규_직렬화다() throws Exception {
         String canonical = String.join("\n",
-                "version=ACCOUNT-DELETION-1.0",
+                "version=ACCOUNT-DELETION-1.1",
                 "targets=ACCOUNT_AND_SIGN_IN,SESSIONS,BYBIT_CREDENTIALS,BYBIT_CONNECTIONS,SOURCE_EVENTS,CASHFLOWS,"
                         + "SNAPSHOTS,PLANS,CALCULATIONS,SYNC_JOBS,SUPPORT_INQUIRIES,AD_RECORDS,OPERATIONS_RECORDS",
                 "backupDestroyDays=30",
                 "legalRetention=",
-                "confirmation=계정을 삭제합니다");
-        assertThat(AccountDeletionPolicy.VERSION).isEqualTo("ACCOUNT-DELETION-1.0");
+                "confirmation=계정을 삭제합니다",
+                "notice=" + noticeDigestOfSharedTable());
+        assertThat(AccountDeletionPolicy.VERSION).isEqualTo("ACCOUNT-DELETION-1.1");
         assertThat(AccountDeletionPolicy.noticeHash()).isEqualTo(sha256(canonical)).matches("[0-9a-f]{64}");
+    }
+
+    /**
+     * 화면 고지 문장의 원본은 공유 표의 {@code notice} 하나다(D-3). 표에서 정규 직렬화를 다시 계산한 SHA-256이 서버 상수
+     * {@code NOTICE_DIGEST}와 같고, 표의 버전별 이력({@code noticeDigestByVersion})에서 지금 {@code VERSION}의 행과도 같아야 한다. 이력의
+     * digest는 서로 모두 달라야 한다 — 그래서 문장을 바꾸면 새 버전 행을 더하고 {@code VERSION}·상수를 올려야 하고, 버전을 그대로 두려면 지금
+     * 행을 고쳐 써야 한다(리뷰에 이력 수정으로 보인다). 삭제 대상 문장의 code는 정책 {@code TARGETS}와 같은 집합·순서이고, 백업 문장 틀은 일
+     * 수 자리 하나를 가지며, 정규 직렬화가 줄 단위이므로 어느 문장에도 줄바꿈이 없다.
+     */
+    @Test
+    void 고지_문장_digest는_공유_표의_notice에서_다시_계산한_값이다() throws Exception {
+        JsonNode table = sharedTable();
+        JsonNode notice = table.get("notice");
+        assertThat(notice).isNotNull();
+        assertThat(notice.get("targets").propertyNames()).containsExactlyElementsOf(AccountDeletionPolicy.TARGETS);
+        assertThat(strings(notice.get("kept"))).isNotEmpty();
+        assertThat(notice.get("backup").asString().split("\\{days}", -1)).hasSize(2);
+        assertThat(notice.get("legalNone").asString()).isNotBlank();
+
+        // 정규 직렬화의 경계 — 줄바꿈이 든 문장은 다른 줄로 읽혀 직렬화가 모호해진다.
+        List<String> sentences = new ArrayList<>();
+        AccountDeletionPolicy.TARGETS.forEach(code -> sentences.add(notice.get("targets").get(code).asString()));
+        sentences.addAll(strings(notice.get("kept")));
+        sentences.add(notice.get("backup").asString());
+        sentences.add(notice.get("legalNone").asString());
+        assertThat(sentences).allSatisfy(sentence -> assertThat(sentence).doesNotContain("\n").doesNotContain("\r"));
+
+        String recomputed = noticeDigestOfSharedTable();
+        assertThat(AccountDeletionPolicy.NOTICE_DIGEST).matches("[0-9a-f]{64}").isEqualTo(recomputed);
+
+        // 버전별 고지 digest 이력 — 지금 버전의 행이 상수와 같고, 행의 digest는 서로 모두 다르다.
+        JsonNode history = table.get("noticeDigestByVersion");
+        assertThat(history).isNotNull();
+        assertThat(history.get(AccountDeletionPolicy.VERSION)).as("지금 버전의 이력 행").isNotNull();
+        assertThat(history.get(AccountDeletionPolicy.VERSION).asString()).isEqualTo(AccountDeletionPolicy.NOTICE_DIGEST);
+        List<String> digests = new ArrayList<>();
+        for (String version : history.propertyNames()) {
+            assertThat(version).matches("ACCOUNT-DELETION-[0-9]+\\.[0-9]+");
+            digests.add(history.get(version).asString());
+        }
+        assertThat(digests).allSatisfy(digest -> assertThat(digest).matches("[0-9a-f]{64}")).doesNotHaveDuplicates();
+    }
+
+    /** 공유 표 {@code notice}의 정규 직렬화(정책 설계 노트 그대로)의 SHA-256. */
+    private static String noticeDigestOfSharedTable() throws Exception {
+        JsonNode notice = sharedTable().get("notice");
+        List<String> lines = new ArrayList<>();
+        for (String code : AccountDeletionPolicy.TARGETS) {
+            JsonNode sentence = notice.get("targets").get(code);
+            assertThat(sentence).as(code).isNotNull();
+            lines.add("target." + code + "=" + sentence.asString());
+        }
+        for (String kept : strings(notice.get("kept"))) {
+            lines.add("kept=" + kept);
+        }
+        lines.add("backup=" + notice.get("backup").asString());
+        lines.add("legalNone=" + notice.get("legalNone").asString());
+        return sha256(String.join("\n", lines));
+    }
+
+    private static JsonNode sharedTable() throws Exception {
+        return JsonMapper.builder().build().readTree(Files.readString(SHARED_FIXTURE, StandardCharsets.UTF_8));
     }
 
     /** 재인증을 요구받은 삭제 진행 세션의 세션 응답도 삭제 진행을 말한다 — 화면이 회복 패널 대신 진행 화면을 그린다. */

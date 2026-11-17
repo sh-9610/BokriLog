@@ -131,7 +131,8 @@ public interface AccountLifecycleApi {
      * 판정은 그 기록과, 기록을 남긴 삭제 실행의 계정이 {@code DELETED}인가만 본다 — 계정 ID를 돌려주지 않는다. {@link DeletedIdentityState#NONE}
      * 이 아니면 로그인은 계정을 만들지 않는다. 매핑 연결({@link #linkSocialIdentity})도 같은 기록을 INSERT 술어로 본다(상태와 무관하게).
      *
-     * <p>해제 경로는 없다. 신규 가입 허용 여부는 G-5가 정한다. 받아들일 수 없는 입력은 {@link DeletedIdentityState#NONE}이다(그 값은 어차피
+     * <p>해제 command·문의 경로는 없고 기한이 해제다(G-5 전 결정 D-4, {@link AccountDeletionRunApi#expireDeletedIdentities}) — 그 삭제의
+     * 전체 삭제 완료가 기록되면(실행 없는 기록은 기록 뒤 35일) 기록이 지워지고 같은 로그인 수단의 가입은 새 계정이 된다. 받아들일 수 없는 입력은 {@link DeletedIdentityState#NONE}이다(그 값은 어차피
      * 매핑이 될 수 없다).
      */
     DeletedIdentityState deletedIdentityStateOf(@Nullable String issuer, @Nullable String subject);

@@ -108,6 +108,9 @@ async function expectProgress(): Promise<void> {
   expect(screen.getByText(ACCOUNT_DELETION_POLICY_VERSION)).toBeInTheDocument()
   expect(screen.getByText(accountDeletionContent.progress.state)).toBeInTheDocument()
   expect(screen.getByText(backupDeadlineText(REQUESTED_AT, 30))).toBeInTheDocument()
+  // 요청 + 30일은 내부 목표일이다 — 약속한 기한이 아님을 레이블과 설명이 말한다.
+  expect(screen.getByText(accountDeletionContent.progress.backupLabel)).toBeInTheDocument()
+  expect(screen.getByText(accountDeletionContent.progress.backupTargetNote)).toBeInTheDocument()
   // `복리 계획 비교`와 비추천 고지가 제목 바로 아래 인접해 있다.
   const title = screen.getByRole('heading', { level: 1, name: authContent.pageTitle })
   expect(title.nextElementSibling?.textContent).toBe(authContent.disclaimer)

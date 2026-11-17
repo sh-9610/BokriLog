@@ -12,10 +12,12 @@ import com.bokrilog.identity.AccountLifecycleApi.DeletedIdentityState;
 import com.bokrilog.identity.DeletedIdentityDigests;
 import com.bokrilog.identity.DeletionOutcome;
 import com.bokrilog.identity.DeletionStep;
+import com.bokrilog.operations.BackupDestructionApi;
 import com.bokrilog.operations.DeletionTombstoneApi;
 import com.bokrilog.operations.OperationsDeletionApi;
 import com.bokrilog.operations.OperatorCommandApi;
 import com.bokrilog.sync.WorkerLease;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.net.http.HttpResponse;
@@ -51,7 +53,7 @@ class DeletionCompletionTest extends PlanSyncTestBase {
 
     private static final String PHRASE = "계정을 삭제합니다";
 
-    private static final String VERSION = "ACCOUNT-DELETION-1.0";
+    private static final String VERSION = "ACCOUNT-DELETION-1.1";
 
     /** 일반 미인증 세션 확인 응답. 완료 세션의 표지가 다른 응답에 새지 않는다. */
     private static final String UNAUTHENTICATED = "{\"authenticated\":false,\"destination\":\"entry\"}";
@@ -71,6 +73,8 @@ class DeletionCompletionTest extends PlanSyncTestBase {
     @Autowired AccountErasure erasure;
 
     @Autowired BackupDestructionJudge judge;
+
+    @Autowired BackupDestructionApi destruction;
 
     @Autowired OperatorCommandApi commands;
 
@@ -301,6 +305,122 @@ class DeletionCompletionTest extends PlanSyncTestBase {
         assertThat(after.status()).isEqualTo(RunStatus.DELETION_COMPLETED);
         assertThat(after.operationalErasedAt()).isEqualTo(completed.operationalErasedAt());
         assertThat(this.runs.completedDeletionOf(requestId).orElseThrow()).isEqualTo(completed);
+    }
+
+    // ------------------------------------------------------------------------------------------ 재가입 차단 기한(G-5 전 결정 D-4)
+
+    /**
+     * 매트릭스 "완료 전 로그인"·"전체 완료 뒤 재가입": 운영 데이터 삭제만 끝난({@code OPERATIONAL_DATA_ERASED}) 동안은 판정 주기가 돌아도 차단
+     * 기록이 남아 같은 identity 로그인이 계정을 만들지 않는다(표지 {@code deleted}). 백업 파기가 끝나 판정 주기가 전체 삭제 완료를 기록하면 같은
+     * 주기가 그 기록을 지우고, 같은 identity 로그인은 새 계정을 만든다(옛 계정은 {@code DELETED} 그대로다).
+     */
+    @Test
+    void 전체_삭제_완료가_기록되면_재가입_차단이_풀리고_그_전에는_남는다() throws Exception {
+        Deleted deleted = deleteThroughHttp("completion-expire");
+        Signed signed = deleted.signed();
+        String issuer = OidcStubConfiguration.issuer();
+
+        // 운영 완료만 — 판정 주기가 돌아도 차단은 남는다.
+        this.judge.judgeNow();
+        assertThat(this.runs.runOf(signed.user()).orElseThrow().status()).isEqualTo(RunStatus.OPERATIONAL_DATA_ERASED);
+        assertThat(deletedIdentityCount()).isEqualTo(1);
+        long accounts = accountCount();
+        assertThat(locationOf(signIn(signed.subject()))).isEqualTo("/?auth=" + AuthFlowHandlers.FAILURE_MARKER_DELETED);
+        assertThat(accountCount()).isEqualTo(accounts);
+
+        // 백업 파기 완료 → 같은 판정 주기가 전체 완료를 기록하고 차단 기록을 지운다.
+        jdbc().sql("UPDATE operations_deletion_tombstone SET status = 'DESTROYED', destroyed_at = statement_timestamp() "
+                + "WHERE request_id = :r").param("r", deleted.requestId()).update();
+        this.judge.judgeNow();
+        assertThat(this.runs.runOf(signed.user()).orElseThrow().status()).isEqualTo(RunStatus.DELETION_COMPLETED);
+        assertThat(deletedIdentityCount()).isZero();
+        assertThat(accountLifecycle().deletedIdentityStateOf(issuer, signed.subject()))
+                .isEqualTo(DeletedIdentityState.NONE);
+
+        var again = signIn(signed.subject());
+        assertThat(again.statusCode()).isEqualTo(302);
+        assertThat(locationOf(again)).doesNotContain("auth=");
+        assertThat(accountCount()).isEqualTo(accounts + 1);
+        UUID fresh = userIdOf(issuer, signed.subject()).orElseThrow();
+        assertThat(fresh).isNotEqualTo(signed.user());
+        assertThat(lifecycleOf(fresh)).isEqualTo("ACTIVE");
+        assertThat(lifecycleOf(signed.user())).isEqualTo("DELETED");
+        // 다시 판정해도 새 계정의 매핑은 그대로다(지울 기록이 없다).
+        this.judge.judgeNow();
+        assertThat(countOf("identity_social_link", fresh)).isEqualTo(1);
+    }
+
+    /**
+     * 매트릭스 "정리 실패": 재가입 차단 기록의 정리가 예외로 끝나도 판정 한 번은 예외 없이 끝나고, 남는 것은 JSON 로그 WARN 한 줄(본문
+     * {@code deleted identity expiry failed}, {@code exception}은 예외의 단순 이름)뿐이다 — 예외 메시지 원문(SQL이 실릴 수 있다)은 어디에도
+     * 남지 않는다. 기록은 그대로 남고 다음 주기가 다시 한다.
+     */
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void 차단_기록_정리가_실패하면_WARN_한_줄로_접고_판정은_끝난다(CapturedOutput output) throws Exception {
+        Deleted deleted = deleteThroughHttp("completion-expire-fail");
+        jdbc().sql("UPDATE operations_deletion_tombstone SET status = 'DESTROYED', destroyed_at = statement_timestamp() "
+                + "WHERE request_id = :r").param("r", deleted.requestId()).update();
+        String sentinel = "expiry-sentinel-" + UUID.randomUUID();
+        AccountDeletionRunApi delegate = this.runs;
+        AccountDeletionRunApi failing = (AccountDeletionRunApi) Proxy.newProxyInstance(
+                AccountDeletionRunApi.class.getClassLoader(), new Class<?>[] {AccountDeletionRunApi.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("expireDeletedIdentities")) {
+                        throw new IllegalStateException(sentinel);
+                    }
+                    try {
+                        return method.invoke(delegate, args);
+                    } catch (InvocationTargetException failure) {
+                        throw failure.getCause();
+                    }
+                });
+        BackupDestructionJudge judge = new BackupDestructionJudge(this.destruction, failing, accountDeletion(),
+                new SimpleMeterRegistry(), false);
+
+        judge.judgeNow();
+        // 전체 완료 기록은 그대로 됐고 차단 기록은 남는다(다음 주기 몫).
+        assertThat(this.runs.runOf(deleted.signed().user()).orElseThrow().status())
+                .isEqualTo(RunStatus.DELETION_COMPLETED);
+        assertThat(deletedIdentityCount()).isEqualTo(1);
+        assertThat(LogLines.records(output.getAll()).stream()
+                .filter(record -> "deleted identity expiry failed".equals(record.get("event"))).toList())
+                .singleElement().satisfies(record -> {
+                    assertThat(record).containsEntry("level", "WARN").containsEntry("exception", "IllegalStateException");
+                    assertThat(record.values()).allSatisfy(value -> assertThat(String.valueOf(value))
+                            .doesNotContain(sentinel));
+                });
+        assertThat(output.getAll()).doesNotContain(sentinel);
+        // 다음 주기(정상 판정자)가 지운다.
+        this.judge.judgeNow();
+        assertThat(deletedIdentityCount()).isZero();
+    }
+
+    /**
+     * 매트릭스 "실행 없는 기록": 실행 행이 없는 기록(요청 ID가 없거나 그 요청 ID의 실행이 없다)은 기록 뒤 35일(tombstone 보존과 같은 수)이 지나야
+     * 지워진다 — 36일 전 기록은 지우고 34일 전 기록은 남긴다. 실행이 있고 아직 전체 완료가 아닌 기록은 오래돼도 남는다. 시각은 DB 시각이다.
+     */
+    @Test
+    void 실행_없는_차단_기록은_기록_뒤_35일이_지나야_지워진다() throws Exception {
+        assertThat(AccountDeletionRunApi.DELETED_IDENTITY_RETENTION).isEqualTo(DeletionTombstoneApi.RETENTION);
+        String issuer = OidcStubConfiguration.issuer();
+        String noRunOld = recordAged(issuer, "completion-norun-old", "del_" + UUID.randomUUID(), 36);
+        String noRunYoung = recordAged(issuer, "completion-norun-young", "del_" + UUID.randomUUID(), 34);
+        String singleOld = recordAged(issuer, "completion-single-old", null, 36);
+        String singleYoung = recordAged(issuer, "completion-single-young", null, 34);
+
+        // 실행이 있고 운영 완료만인 기록 — 40일 전으로 돌려도 남는다.
+        Deleted unfinished = deleteThroughHttp("completion-expire-pending");
+        jdbc().sql("UPDATE identity_deleted_identity SET recorded_at = statement_timestamp() - interval '40 days' "
+                + "WHERE request_id = :r").param("r", unfinished.requestId()).update();
+
+        assertThat(this.runs.expireDeletedIdentities()).isEqualTo(2);
+        assertThat(deletedIdentityDigests()).doesNotContain(noRunOld, singleOld).contains(noRunYoung, singleYoung)
+                .hasSize(3);
+        assertThat(jdbc().sql("SELECT count(*) FROM identity_deleted_identity WHERE request_id = :r")
+                .param("r", unfinished.requestId()).query(Integer.class).single()).isEqualTo(1);
+        // 멱등 — 다시 불러도 지울 것이 없다.
+        assertThat(this.runs.expireDeletedIdentities()).isZero();
     }
 
     // ------------------------------------------------------------------------------------------ 리뷰 보강(1차)
@@ -659,6 +779,23 @@ class DeletionCompletionTest extends PlanSyncTestBase {
     private String primaryIdOf(String cookie) {
         return jdbc().sql("SELECT primary_id FROM spring_session WHERE session_id = :s").param("s", sessionIdOf(cookie))
                 .query(String.class).single();
+    }
+
+    private int deletedIdentityCount() {
+        return jdbc().sql("SELECT count(*) FROM identity_deleted_identity").query(Integer.class).single();
+    }
+
+    private List<String> deletedIdentityDigests() {
+        return jdbc().sql("SELECT identity_digest FROM identity_deleted_identity").query(String.class).list();
+    }
+
+    /** 실행 행 없는 차단 기록 하나를 {@code days}일 전 기록으로 남기고 그 digest를 돌려준다(값은 실행 시점에 만든다). */
+    private String recordAged(String issuer, String prefix, @Nullable String requestId, int days) {
+        String digest = this.deletedIdentities.digestOf(issuer, prefix + "-" + UUID.randomUUID()).orElseThrow();
+        jdbc().sql("INSERT INTO identity_deleted_identity (identity_digest, request_id, recorded_at) "
+                        + "VALUES (:d, :r, statement_timestamp() - make_interval(days => :days))")
+                .param("d", digest).param("r", requestId).param("days", days).update();
+        return digest;
     }
 
     private int completionLinks() {

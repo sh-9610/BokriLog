@@ -1,6 +1,6 @@
 {
   "path": "/api/account/deletion",
-  "version": "ACCOUNT-DELETION-1.0",
+  "version": "ACCOUNT-DELETION-1.1",
   "confirmation": "계정을 삭제합니다",
   "backupDestroyDays": 30,
   "targets": [
@@ -19,6 +19,35 @@
     "OPERATIONS_RECORDS"
   ],
   "legalRetention": [],
+  "notice": {
+    "targets": {
+      "ACCOUNT_AND_SIGN_IN": "계정과 연결된 로그인 수단(Google·네이버·카카오)",
+      "SESSIONS": "모든 기기의 로그인 세션",
+      "BYBIT_CREDENTIALS": "저장된 Bybit API 자격정보",
+      "BYBIT_CONNECTIONS": "Bybit 계정 연결과 그 연결 기록",
+      "SOURCE_EVENTS": "Bybit에서 수집한 원 사건과 원천 기록",
+      "CASHFLOWS": "외부 자금흐름 판정과 환산 기록",
+      "SNAPSHOTS": "현재가치 스냅샷과 구성 내역",
+      "PLANS": "복리 계획과 그 조건·종료·완료 기록",
+      "CALCULATIONS": "계산 결과·계산 버전·계산 근거",
+      "SYNC_JOBS": "수집·동기화·정밀 검증 작업 기록",
+      "SUPPORT_INQUIRIES": "문의 내역과 답변",
+      "AD_RECORDS": "광고 동의와 광고 시도·빈도 기록",
+      "OPERATIONS_RECORDS": "운영 기록(운영 제한 대상·감사 기록 등) 속 나를 알아볼 수 있는 정보 — 지우거나 알아볼 수 없는 값으로 바꿉니다"
+    },
+    "kept": [
+      "사용자를 알아볼 수 없는 공개 시장 가격 기록과 다른 사용자의 데이터",
+      "삭제 사실 기록 — 서비스 밖에 요청 ID와 나를 되짚을 수 없는 암호화 값(keyed digest)만 보관하고, 삭제가 끝난 날부터 35일이 지나고 백업 사본 파기가 확인되면 지웁니다. 이 기록으로는 나를 알아볼 수 없습니다.",
+      "운영 감사 기록 — 기록은 남기되 나를 알아볼 수 있는 정보는 알아볼 수 없는 값(digest)으로 바꿉니다.",
+      "재가입 차단 기록 — 삭제가 모두 끝날 때까지(백업 사본 파기 확인까지) 삭제한 계정의 로그인 수단으로 새로 가입하지 못하게, 그 로그인 수단을 되짚을 수 없는 암호화 값(keyed digest)만 남깁니다. 로그인 식별자 원문과 계정 정보는 남기지 않고, 삭제가 모두 끝나면 이 기록도 지웁니다.",
+      "사용자 정보가 없는 이용 측정 표본(화면 성능 측정값)"
+    ],
+    "backup": "암호화 백업에 남은 사본은 운영 데이터 삭제를 마친 다음 날부터 최대 {days}일 안에 파기합니다. 삭제 처리가 늦어지면 그만큼 늦어질 수 있습니다. 삭제 요청 기록이 서비스 밖 보관소에 남은 뒤에는 백업으로 복원하더라도 삭제한 계정을 되살리지 않습니다. 그 전에 장애로 복원하는 드문 경우에는 요청이 반영되지 않을 수 있어 공지로 알려 드리며, 다시 요청해 주셔야 합니다.",
+    "legalNone": "법령에 따라 따로 보존하는 항목은 없습니다. 모든 운영 데이터를 삭제합니다."
+  },
+  "noticeDigestByVersion": {
+    "ACCOUNT-DELETION-1.1": "b10f460fe193e1c4e2ee576ed6f1f05a6a4019182963d62ab9135a66d36f5427"
+  },
   "retryPath": "/api/account/deletion/retry",
   "progressStatuses": [
     "IN_PROGRESS",

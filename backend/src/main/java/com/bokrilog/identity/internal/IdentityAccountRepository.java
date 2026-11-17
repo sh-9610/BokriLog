@@ -1,6 +1,7 @@
 package com.bokrilog.identity.internal;
 
 import java.sql.ResultSet;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -192,6 +193,37 @@ public class IdentityAccountRepository {
                 .query(Boolean.class)
                 .single();
         return Boolean.TRUE.equals(exists);
+    }
+
+    /**
+     * 재가입 차단 기록 정리 트랜잭션 하나의 상한: 잠금 대기 2초·문장 5초({@code set_config}의 트랜잭션 범위). 백업 파기 판정의 tombstone 판정
+     * 트랜잭션({@code DeletionTombstoneRepository.limitJudgeTime})과 같은 값이다 — 판정 주기가 삭제 단계·로그인을 오래 기다리지도, 그것을 오래
+     * 붙들지도 않게 한다. 넘기면 그 정리는 실패하고 다음 주기가 다시 한다.
+     */
+    public void limitDeletedIdentitySweepTime() {
+        jdbc.sql("SELECT set_config('lock_timeout', :lock, true), set_config('statement_timeout', :statement, true)")
+                .param("lock", "2s")
+                .param("statement", "5s")
+                .query((row, index) -> 1)
+                .single();
+    }
+
+    /**
+     * 기한이 지난 재가입 차단 기록을 지운다(G-5 전 결정 D-4) — 그 요청 ID의 실행이 {@code DELETION_COMPLETED}인 기록과, 실행 행이 없는(요청
+     * ID가 없는 것 포함) 기록 가운데 기록 시각이 문장 시각 − {@code retention}보다 앞선 것. 실행이 있고 아직 전체 완료가 아닌 기록은 남는다.
+     *
+     * @return 지운 기록 수
+     */
+    public int expireDeletedIdentities(Duration retention) {
+        return jdbc.sql("DELETE FROM identity_deleted_identity AS record "
+                        + "WHERE EXISTS (SELECT 1 FROM identity_deletion_run AS run "
+                        + "WHERE run.request_id = record.request_id AND run.status = 'DELETION_COMPLETED') "
+                        + "OR (NOT EXISTS (SELECT 1 FROM identity_deletion_run AS run "
+                        + "WHERE run.request_id = record.request_id) "
+                        + "AND record.recorded_at < statement_timestamp() "
+                        + "- CAST(:retentionMillis AS double precision) * interval '1 millisecond')")
+                .param("retentionMillis", retention.toMillis())
+                .update();
     }
 
     /** 방금 만든 매핑 하나를 지운다(재확인이 차단 기록을 본 경우 — {@code AccountLifecycleService.linkSocialIdentity}). */

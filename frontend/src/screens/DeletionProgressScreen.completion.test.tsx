@@ -153,8 +153,10 @@ describe('삭제 완료 안내', () => {
     // 제목은 세션의 완료 표지로 먼저 서고, 값은 완료 조회를 읽은 뒤에 실린다.
     expect(await screen.findByText(accountDeletionTimeText(ERASED_AT))).toBeInTheDocument()
     expect(screen.getByText(copy.body)).toBeInTheDocument()
-    // 백업 사본 파기 기한도 시각까지 말한다(서버 값 그대로).
+    // 백업 사본 파기 목표일도 시각까지 말한다(서버 값 그대로). 내부 목표이고 약속한 기한이 아님을 함께 말한다.
     expect(screen.getByText(accountDeletionTimeText(DEADLINE))).toBeInTheDocument()
+    expect(screen.getByText(copy.backupDeadlineLabel)).toBeInTheDocument()
+    expect(screen.getByText(accountDeletionContent.progress.backupTargetNote)).toBeInTheDocument()
     // 요청 ID는 문의할 때 알려 줄 값이다.
     expect(screen.getByText('del_done')).toBeInTheDocument()
     expect(screen.getByText(accountDeletionContent.progress.requestIdLabel)).toBeInTheDocument()
@@ -204,7 +206,7 @@ describe('삭제 완료 안내', () => {
     expect(csrf).toBe(CSRF_TOKEN)
   })
 
-  it('백업 사본 파기 기한 초과를 숨기지 않고 완료로 말하지 않는다', async () => {
+  it('백업 사본 파기 목표일 초과를 숨기지 않고 완료로 말하지 않는다', async () => {
     window.history.pushState({}, '', SETTINGS_PATH)
     stubAccountDeletionState(completionState({ backupDestruction: 'OVERDUE' }))
     render(<SettingsScreen />)
@@ -521,10 +523,28 @@ describe('삭제 완료 안내', () => {
     )
   })
 
-  it('남기는 것에 재가입 차단 기록이 있다', () => {
-    expect(accountDeletionContent.kept.some((line) => line.startsWith('재가입 차단 기록'))).toBe(
-      true,
+  it('남기는 것에 재가입 차단 기록과 그 기한이 있다', () => {
+    const line = accountDeletionContent.kept.find((kept) => kept.startsWith('재가입 차단 기록'))
+    expect(line).toBeDefined()
+    // 기한은 전체 삭제 완료다(D-4) — 무기한으로 남긴다고 말하지 않는다.
+    expect(line).toContain('삭제가 모두 끝나면 이 기록도 지웁니다')
+    // 완료 화면의 한계 문장·목표일 설명도 백업 파기 기준점을 운영 데이터 삭제를 마친 다음 날로 말하고 일 수는 공유 표 값이다(D-1).
+    const promise = `운영 데이터 삭제를 마친 다음 날부터 최대 ${String(accountDeletionPolicy.backupDestroyDays)}일`
+    expect(accountDeletionContent.completion.limitNotice).toContain(promise)
+    expect(accountDeletionContent.progress.backupTargetNote).toContain(promise)
+    // 범위 없는 복원 약속을 남기지 않는다 — 고지 문장과 같은 조건(서비스 밖 보관소)을 말한다.
+    expect(accountDeletionContent.completion.overdueNotice).toContain(
+      '서비스 밖 보관소에 남은 뒤에는',
     )
+    for (const text of [
+      accountDeletionContent.progress.backupTargetNote,
+      accountDeletionContent.completion.overdueNotice,
+      accountDeletionContent.completion.limitNotice,
+    ]) {
+      for (const word of FORBIDDEN_COPY_WORDS) {
+        expect(text).not.toContain(word)
+      }
+    }
   })
 })
 
