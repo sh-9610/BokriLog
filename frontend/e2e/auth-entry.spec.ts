@@ -1225,7 +1225,20 @@ test.describe('계측 beacon · 주입 origin', () => {
         answers.push({ status: response.status(), body: response.request().postDataJSON() })
       }
     })
-    // LCP는 신뢰된 입력(클릭)으로 확정된다.
+    // LCP는 신뢰된 입력(클릭)으로 확정된다. 그런데 `web-vitals`는 첫 신뢰된 입력에서 관측을 끊고 확정하므로, LCP 항목을 하나도
+    // 받기 전에 클릭하면 값 없이 확정돼 LCP를 영영 보고하지 않는다(CI 부하에서 실측 — 제목이 보인 것은 칠해졌다는 뜻이 아니다).
+    // 그래서 LCP 항목이 관측된 뒤에 클릭한다.
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          new PerformanceObserver((list, observer) => {
+            if (list.getEntries().length > 0) {
+              observer.disconnect()
+              resolve()
+            }
+          }).observe({ type: 'largest-contentful-paint', buffered: true })
+        }),
+    )
     await page.mouse.click(1, 1)
 
     await expect

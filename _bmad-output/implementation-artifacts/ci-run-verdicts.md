@@ -2,7 +2,7 @@
 title: 'CI 비-green 실행 판정 원장'
 status: living
 created: '2026-11-10'
-updated: '2026-11-10'
+updated: '2026-11-17'
 owner_spec: '_bmad-output/implementation-artifacts/spec-ci-flaky-run-verdicts.md'
 ---
 
@@ -56,3 +56,4 @@ GitHub Actions(`.github/workflows/ci.yml`)에서 green이 아니었던 시도를
 | 2026-11-06 | 42197758258/2 | `pull_request` `feature/5-4-deletion-completion`(PR #145) | `backend-quality` → `Gradle 빌드` | `failure` | `PlanVerificationTest.aContinuationReclaimedInItsFinalSweepPublishesOnceAtItsTcFinal` 실패 — `pg_sleep` 지연 trigger + `expireLease`의 시간 기반 순서로 마지막 점검 중 lease 상실을 만드는 구조가 holder보다 늦었다 | `간헐 시험` | fix PR #146(`spec-plan-verification-final-sweep-race.md`, advisory lock 잠금 문). 같은 계열의 남은 시험은 deferred 177. PR #145는 develop 병합 뒤 green으로 머지했다 |
 | 2026-11-06 | 42231959937/1 | `pull_request` `fix/plan-verification-final-sweep-race`(PR #146) | `frontend-quality` → `Chromium headless shell 설치` | `cancelled` — 단계 5분 44초, job 상한 8분 | 느린 apt 미러. `azure.archive.ubuntu.com`에서 `fonts-freefont-ttf`에 2분 32초, 다음 `fonts-unifont`를 받던 중 job 상한에 취소됐다(분당 약 2MB). 단계 시한이 없어 job 전체가 취소됐다 | `환경` | 재실행 42231959937/2(2026-11-09, `Re-run all jobs`) green. 단계 시한 3분은 `spec-ci-flaky-run-verdicts.md` |
 | 2026-11-09 | 42549803177/1 | `push` `develop`(PR #146 머지 `2441364`) | `backup-rehearsal` → `백업 리허설` | `failure` — 단계 상한 40분 | 리허설 출력이 `3. 단계 실패 catalog(gen_20260102)` 머리(02:18:10) 뒤 아무것도 내지 않은 채 37분 멈췄고 단계 상한에 끊겼다. 진단 디렉터리가 비어 있어 `backup-rehearsal-diagnostics-42549803177-1`은 올라가지 않았다(`No files were found`). 원인은 확정하지 않았다 | `미조사` | 재실행하지 않았다. 다음 develop push(42563422690, PR #145)는 green. deferred 182 |
+| 2026-11-17 | 44069265209/1 | `pull_request` `chore/g5-deletion-policy-defaults`(PR #167) | `same-origin-integration` → `Story 1.1 회귀 (Nginx origin)` | `failure` — 1건 실패·73건 통과(4.5분) | `auth-entry.spec.ts:1215`(설정 화면 Vitals beacon 204) 시험이 15초 동안 `/api/engagement/telemetry` 요청을 하나도 보지 못했다(trace에 telemetry POST 0건, 콘솔 오류 없음, 화면은 정상 렌더). `web-vitals` 6.2.3 `onLCP`는 첫 신뢰된 입력에서 관측을 끊고 확정하는데, LCP 항목을 받기 전이면(값 −1) 아무것도 보고하지 않는다 — 시험이 제목이 보인 직후 클릭해 부하에서 첫 LCP 항목보다 클릭이 앞섰다. 같은 브랜치 로컬 주입 origin 8회는 모두 통과 | `간헐 시험` | 같은 PR의 커밋이 시험을 "LCP 항목이 관측된 뒤 클릭"으로 고쳤다(로컬 10회 통과). 재실행하지 않았다 |

@@ -149,6 +149,8 @@ function CompletionDetails({
         )}
         <MetaRow term={completionCopy.legalLabel} value={legalRetentionText(legalRetention)} />
       </dl>
+      {/* 목표일은 내부 목표다 — 약속한 기한(고지 문장)과 다름을 함께 말한다. */}
+      <p>{copy.backupTargetNote}</p>
       {completion.backupDestruction === 'OVERDUE' ? (
         <p className={progressStyles.retryNotice}>{completionCopy.overdueNotice}</p>
       ) : null}
@@ -379,32 +381,36 @@ export function DeletionProgressScreen({
             />
           )}
           {request === null || progress === null || view.kind !== 'loaded' ? null : (
-            <dl className={styles.connectionMeta}>
-              <div className={styles.connectionMetaRow}>
-                <dt className={styles.connectionTerm}>{copy.stateLabel}</dt>
-                <dd className={styles.connectionValue}>{stateText(progress)}</dd>
-              </div>
-              <div className={styles.connectionMetaRow}>
-                <dt className={styles.connectionTerm}>{copy.requestedAtLabel}</dt>
-                <dd className={styles.connectionValue}>
-                  {accountDeletionTimeText(request.requestedAt)}
-                </dd>
-              </div>
-              <div className={styles.connectionMetaRow}>
-                <dt className={styles.connectionTerm}>{copy.requestIdLabel}</dt>
-                <dd className={styles.connectionValue}>{request.requestId}</dd>
-              </div>
-              <div className={styles.connectionMetaRow}>
-                <dt className={styles.connectionTerm}>{copy.policyVersionLabel}</dt>
-                <dd className={styles.connectionValue}>{request.policyVersion}</dd>
-              </div>
-              <div className={styles.connectionMetaRow}>
-                <dt className={styles.connectionTerm}>{copy.backupLabel}</dt>
-                <dd className={styles.connectionValue}>
-                  {backupDeadlineText(request.requestedAt, view.state.policy.backupDestroyDays)}
-                </dd>
-              </div>
-            </dl>
+            <>
+              <dl className={styles.connectionMeta}>
+                <div className={styles.connectionMetaRow}>
+                  <dt className={styles.connectionTerm}>{copy.stateLabel}</dt>
+                  <dd className={styles.connectionValue}>{stateText(progress)}</dd>
+                </div>
+                <div className={styles.connectionMetaRow}>
+                  <dt className={styles.connectionTerm}>{copy.requestedAtLabel}</dt>
+                  <dd className={styles.connectionValue}>
+                    {accountDeletionTimeText(request.requestedAt)}
+                  </dd>
+                </div>
+                <div className={styles.connectionMetaRow}>
+                  <dt className={styles.connectionTerm}>{copy.requestIdLabel}</dt>
+                  <dd className={styles.connectionValue}>{request.requestId}</dd>
+                </div>
+                <div className={styles.connectionMetaRow}>
+                  <dt className={styles.connectionTerm}>{copy.policyVersionLabel}</dt>
+                  <dd className={styles.connectionValue}>{request.policyVersion}</dd>
+                </div>
+                <div className={styles.connectionMetaRow}>
+                  <dt className={styles.connectionTerm}>{copy.backupLabel}</dt>
+                  <dd className={styles.connectionValue}>
+                    {backupDeadlineText(request.requestedAt, view.state.policy.backupDestroyDays)}
+                  </dd>
+                </div>
+              </dl>
+              {/* 목표일은 내부 목표다 — 약속한 기한(고지 문장)과 다름을 함께 말한다. */}
+              <p>{copy.backupTargetNote}</p>
+            </>
           )}
           {progress === null || !retryNeeded ? null : (
             <div className={progressStyles.retryBlock}>

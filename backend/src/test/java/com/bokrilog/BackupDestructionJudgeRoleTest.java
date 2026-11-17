@@ -20,7 +20,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 import org.mockito.Mockito;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.dao.QueryTimeoutException;
@@ -169,5 +172,36 @@ class BackupDestructionJudgeRoleTest {
         when(this.destruction.measure()).thenReturn(new BackupDestructionApi.Measurement(0, 0, Optional.empty()));
         assertThatThrownBy(judge::judgeNow).isInstanceOf(QueryTimeoutException.class);
         verify(this.accounts).scrubCompletionSessions();
+    }
+
+    /**
+     * G-5 전 결정 D-4(매트릭스 "정리 실패"): 재가입 차단 기록의 정리가 실패해도 판정 결과·완료 기록·완료 세션 정리·gauge는 그대로 돈다 — WARN
+     * 한 줄로 접고 다음 주기가 다시 한다. 정리는 전체 완료 기록 뒤에 돈다(같은 주기가 막 기록한 완료까지 본다). 그 WARN 줄의 모양(JSON
+     * {@code event}·{@code exception}, 메시지 원문 없음)은 로그 인코더가 배선된 {@code DeletionCompletionTest}가 본다.
+     */
+    @Test
+    void 재가입_차단_정리가_실패해도_판정과_다른_정리는_돈다() {
+        when(this.destruction.openRequestIds()).thenReturn(List.of());
+        when(this.destruction.judge(Map.of())).thenReturn(new BackupDestructionApi.Judgement(0, 0, 0));
+        when(this.destruction.measure()).thenReturn(new BackupDestructionApi.Measurement(0, 0, Optional.empty()));
+        String awaiting = "del_" + UUID.randomUUID();
+        when(this.runs.awaitingDeletionCompletion()).thenReturn(List.of(awaiting));
+        when(this.destruction.destroyedAmong(List.of(awaiting))).thenReturn(Set.of(awaiting));
+        when(this.runs.recordDeletionCompleted(Set.of(awaiting))).thenReturn(1);
+        when(this.runs.expireDeletedIdentities()).thenThrow(new QueryTimeoutException("timeout"));
+        when(this.accounts.scrubCompletionSessions()).thenReturn(1);
+        BackupDestructionJudge judge = judge(this.destruction, this.runs, new SimpleMeterRegistry());
+
+        assertThat(judge.judgeNow()).isEqualTo(new BackupDestructionApi.Judgement(0, 0, 0));
+        InOrder order = Mockito.inOrder(this.runs, this.accounts, this.destruction);
+        order.verify(this.runs).recordDeletionCompleted(Set.of(awaiting));
+        order.verify(this.accounts).scrubCompletionSessions();
+        order.verify(this.runs).expireDeletedIdentities();
+        order.verify(this.destruction).measure();
+
+        // 성공하면 지운 수를 돌려준다.
+        Mockito.reset(this.runs);
+        when(this.runs.expireDeletedIdentities()).thenReturn(2);
+        assertThat(judge.expireNow()).isEqualTo(2);
     }
 }

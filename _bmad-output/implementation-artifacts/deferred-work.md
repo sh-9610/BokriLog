@@ -587,3 +587,27 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-auth-callback-residual-guards.md`
   summary: 실패 핸들러(`onFailure`)는 아직 살아 있는 무장만 보고(`LinkFlow.peek`·`ReauthenticationFlow.peek`·`consume`) 흐름을 고른다 — 흐름 경계 통과 뒤 실패 핸들러 전에 무장이 만료되면 연결·재인증 실패 표지 없이 지금 목적지로 조용히 돌아간다. 성공 핸들러는 `selectCallbackFlow`로 만료 포함 판정을 하므로 두 핸들러의 선택 규칙이 다르다.
   evidence: 2026-11-16 인증 콜백 잔여 가드 fix 1차 리뷰(blind-hunter). 보안 영향은 없다 — 인증된 세션은 지금 목적지로 되돌리고 세션·주체를 바꾸지 않는다(PR #163의 대칭 방어선). 잃는 것은 실패 표지(사용자 안내)뿐이다. 이 fix의 SPEC은 191을 성공 핸들러로 한정했으므로 실패 핸들러를 같은 선택 함수로 옮기는 것은 범위 밖이다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-g5-deletion-policy-defaults.md`
+  summary: 실저장소(OCI Object Storage·OCI 밖 S3 호환 저장소)에 `backup.sh`를 실제로 연결해 두 저장소 저장·원격 SHA-256 대조·29일 파기(`PURGED`)와 그 뒤 5.3 판정의 `DESTROYED`·전체 삭제 완료 기록까지의 증거를 남긴다 — 출시 증거 `ops-real-storage-backup-destruction-3.9-5.3`.
+  evidence: 2026-11-17 G-5 전 결정 D-6(Epic 3 회고 AI-8 `epic-3-retro-item-33`, R-1)이 빠진 운영 증거 항목으로 지목했다. Story 3.9는 MinIO 리허설만, 5.3은 V24 기록 판정만 통과했다(실저장소 미검증 — `CLAUDE.md` 3.9·5.3 계약 줄). 버전 보관·소프트 삭제 해제 확인도 이 증거에 든다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-g5-deletion-policy-defaults.md`
+  summary: 운영 호스트에서 `deploy/production/deploy.sh` 한 번의 실제 blue/green 배포(gate → 감사 → drain → migrate → 대기 슬롯 검증 → upstream 교체 → 새 Worker)와 cutover 뒤 smoke·rollback 창의 증거를 남긴다 — 출시 증거 `ops-deploy-smoke-3.8`.
+  evidence: 2026-11-17 G-5 전 결정 D-6(`epic-3-retro-item-33`, R-1). Story 3.8은 CI `deploy-rehearsal`만 통과했다(운영 배포 미검증). 이미지 공급망·운영 연결 묶음(3.8 defer)과 같은 출시 경로다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-g5-deletion-policy-defaults.md`
+  summary: Story 3.8 AC-2의 자원·비용 gate를 실제 계정에서 확인한다 — OCI home region A1 2 OCPU/12GB entitlement, reserved IP, Always Free 표시·예상 비용, 슬롯별 메모리 한도와 blue/green peak가 실제 호스트에서 맞는지.
+  evidence: 2026-11-17 G-5 전 결정 D-6(`epic-3-retro-item-33`, R-1). 3.8은 entitlement·비용·메모리·peak를 gate fixture로만 시험했다(epics.md Story 3.8 AC-2 검증 메모). 실제 계정의 entitlement 화면·청구 예상은 저장소 밖 증거다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-g5-deletion-policy-defaults.md`
+  summary: Story 3.10 AC-2의 격리 전체 복원을 실제 인프라에서 한다 — 빈 격리 환경에서 저장소 밖 manifest와 선택 generation만으로 인프라·PostgreSQL role/extension/migration·앱을 재구축하고 공식 포인터 불변식을 검증한다. 출시 증거 `ops-isolated-restore-3.10`이고, 계정 삭제 쪽 통합시험은 `nfr-18-deletion-restore-integration-5.4`다.
+  evidence: 2026-11-17 G-5 전 결정 D-6(`epic-3-retro-item-33`, R-1). 3.10은 같은 호스트의 CI `restore-rehearsal`만 통과했다(실제 복원 미검증). 호스트 전환 runbook·격리 환경 실제 provider 왕복(3.10 defer)과 같은 훈련에서 볼 수 있다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-g5-deletion-policy-defaults.md`
+  summary: G-5 전 결정 여섯(`sprint-change-proposal-2026-11-17.md` D-1~D-6 — 정책 `ACCOUNT-DELETION-1.1`과 화면 고지 digest를 덮는 고지 hash, 백업 약속의 기준점 "운영 데이터 삭제를 마친 날", 복원 RPO 구간 공지, 재가입 차단 기록의 기한(전체 삭제 완료·실행 없는 기록 35일), 완료 세션 실패 수렴의 수용, 출시 증거 `launchEvidence`)을 ERD·ARCHITECTURE-SPINE의 다음 as-built 버전에 반영한다.
+  evidence: 2026-11-17 G-5 전 결정 chore(`spec-g5-deletion-policy-defaults.md`)의 SPEC Never가 ERD·SPINE 본문을 고치지 않게 했다(다음 as-built 버전 몫). `ERD-1.1.0` §9는 이 항목들을 "미결정 — 주인 G-5(Epic 5 회고 item-53)"로 둔다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-g5-deletion-policy-defaults.md`
+  summary: 복원 뒤 RPO 구간 공지(`DEVELOPMENT.md` 복원 순서 9단계)를 실제로 낼 수단이 없다 — `publish-notice`는 덮을 제한이 하나 이상 있어야 하고(`PublishNoticeCommand.coverRefusal`), 복원 격리 스택은 로그인 제공자·운영자 값이 빈 채(`env=restore`) 떠 재인증이 필요한 운영 command를 그 자리에서 발행할 수 없다. 공지 대상 정의(dump 시작 앞에 확정됐지만 tombstone이 외부 사본에 실리기 전인 요청 포함)와 호스트 전환 runbook(3.10 defer)과의 순서도 정해야 한다.
+  evidence: 2026-11-17 G-5 전 결정 chore 1차 리뷰(blind-hunter·edge-case-hunter). 변경 제안서 D-2가 남는 창을 "운영 절차로 덮는다"고 정했지만 그 절차가 기댈 공지 수단은 제한 없는 공지·복원 중 발행을 지원하지 않는다. 사용자 카피가 공지를 약속하므로 출시(G-5) 전에 수단을 정해야 한다.
+- source_spec: `_bmad-output/implementation-artifacts/spec-g5-deletion-policy-defaults.md`
+  summary: 재가입 차단 기록이 전체 삭제 완료(`DELETION_COMPLETED`)에만 묶여, 법정 분리 보존 항목이 생겨 완료가 기록되지 않거나 실행이 `RETRY_NEEDED`로 방치되거나 `PURGED`가 끝내 오지 않는 generation(deferred 176)이 있으면 무기한 남는다 — 절대 상한 또는 그 경우의 처리를 정한다.
+  evidence: 2026-11-17 G-5 전 결정 chore 1차 리뷰(blind-hunter). 지금은 법정 보존 목록이 비어 있고 고착 실행은 운영자 재대기열(`requeue-deletion`)·`OVERDUE` 경보가 있어 "삭제가 모두 끝나면 지운다"는 고지와 어긋나지 않지만, G-5가 보존 항목을 승인하면 `BackupDestructionJudge.completeNow`가 완료를 기록하지 않으므로 차단도 풀리지 않는다. 주인 G-5.
+- source_spec: `_bmad-output/implementation-artifacts/spec-g5-deletion-policy-defaults.md`
+  summary: 재가입 차단 기록 정리(`BackupDestructionJudge.expireNow`)가 계속 실패해도 WARN 한 줄뿐이라 고지한 보존 기한을 넘긴 기록이 쌓여도 경보·gauge가 없다.
+  evidence: 2026-11-17 G-5 전 결정 chore 1차 리뷰(blind-hunter). 같은 판정자의 전체 완료 기록·완료 세션 정리도 같은 관용(WARN 한 줄)이라 삭제 실행의 운영 메트릭·경보(deferred 172·178)와 같은 주인이다.

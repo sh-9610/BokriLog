@@ -277,4 +277,23 @@ public interface AccountDeletionRunApi {
 
     /** 그 요청 ID의 실행이 운영 데이터 삭제를 끝냈으면 그 시각들(완료 조회, Story 5.4). 아니면 빈 값. 사용자 식별자를 돌려주지 않는다. */
     Optional<CompletedDeletion> completedDeletionOf(@Nullable String requestId);
+
+    // ------------------------------------------------------------------ G-5 전 결정 D-4 재가입 차단 기한
+
+    /**
+     * 실행 행이 없는 재가입 차단 기록(단일 모드 — 리허설 표본·복원 재삭제 — 처럼 요청 ID가 없거나, 그 요청 ID의 실행 행이 없는 것)의 보존
+     * 기한. 기록 시각부터 센다. tombstone 보존({@code DeletionTombstoneApi.RETENTION}, 35일)과 같은 수다 — 시험이 둘을 대조한다.
+     */
+    Duration DELETED_IDENTITY_RETENTION = Duration.ofDays(35);
+
+    /**
+     * 기한이 지난 재가입 차단 기록({@code identity_deleted_identity})을 지운다(트랜잭션 하나, 시각은 DB 문장 시각). 기한은 셋이다 — 그 요청
+     * ID의 실행이 전체 삭제 완료({@code DELETION_COMPLETED})면 지운다(그 뒤 같은 로그인 수단의 가입은 새 계정이다). 실행 행이 없는 기록은 기록
+     * 뒤 {@link #DELETED_IDENTITY_RETENTION}이 지나면 지운다. 실행이 있고 아직 전체 완료가 아니면 남긴다. 해제 command·문의 경로는 없다 —
+     * 기한이 해제다. 루트 판정자({@code BackupDestructionJudge})가 주기마다 부른다. 트랜잭션은 잠금 대기 2초·문장 5초 상한을 건다(넘기면
+     * 예외 — 판정자가 접고 다음 주기가 다시 한다).
+     *
+     * @return 이번에 지운 기록 수
+     */
+    int expireDeletedIdentities();
 }

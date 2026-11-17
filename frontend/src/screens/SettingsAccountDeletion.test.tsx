@@ -142,6 +142,16 @@ describe('SettingsScreen의 계정 삭제', () => {
       expect(region.textContent).toContain(copy)
     }
     expect(region.textContent).toContain(accountDeletionContent.backup(30))
+    // 백업 약속의 기준점은 운영 데이터 삭제를 마친 날이고(D-1) 복원 단서를 함께 말한다(D-2). 문장은 공유 표의 `notice`에서 온다.
+    expect(region.textContent).toContain('운영 데이터 삭제를 마친 다음 날부터 최대 30일')
+    expect(region.textContent).toContain(
+      '삭제 요청 기록이 서비스 밖 보관소에 남은 뒤에는 백업으로 복원하더라도 삭제한 계정을 되살리지 않습니다',
+    )
+    expect(region.textContent).not.toContain('요청일부터')
+    expect(accountDeletionContent.backup(30)).toBe(
+      accountDeletionPolicy.notice.backup.replace('{days}', '30'),
+    )
+    expect(ACCOUNT_DELETION_POLICY_VERSION).toBe('ACCOUNT-DELETION-1.1')
     for (const code of accountDeletionPolicy.targets) {
       const sentence = accountDeletionTargetSentence(code)
       expect(sentence).not.toBeNull()
@@ -357,6 +367,14 @@ describe('SettingsScreen의 계정 삭제', () => {
     expect(ACCOUNT_DELETION_PATH).toBe(accountDeletionPolicy.path)
     expect(ACCOUNT_DELETION_POLICY_VERSION).toBe(accountDeletionPolicy.version)
     expect([...ACCOUNT_DELETION_TARGETS]).toEqual(accountDeletionPolicy.targets)
+    // 고지 문장의 원본은 공유 표의 `notice` 하나다 — 화면 카피가 그 문장을 그대로 쓴다(서버 고지 hash가 같은 문장을 덮는다).
+    expect(Object.keys(accountDeletionPolicy.notice.targets)).toEqual(accountDeletionPolicy.targets)
+    const noticeTargets: Readonly<Record<string, string>> = accountDeletionPolicy.notice.targets
+    for (const code of accountDeletionPolicy.targets) {
+      expect(accountDeletionTargetSentence(code)).toBe(noticeTargets[code])
+    }
+    expect([...accountDeletionContent.kept]).toEqual(accountDeletionPolicy.notice.kept)
+    expect(accountDeletionContent.legalNone).toBe(accountDeletionPolicy.notice.legalNone)
     expect([...ACCOUNT_DELETION_REFUSAL_CODES].sort()).toEqual(
       [...accountDeletionPolicy.refusalCodes].sort(),
     )

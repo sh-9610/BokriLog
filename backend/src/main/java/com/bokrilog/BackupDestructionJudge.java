@@ -27,7 +27,7 @@ import org.springframework.stereotype.Component;
  * API({@link AccountDeletionRunApi#operationalCompletions})에서 읽어, (3) operations의 {@link BackupDestructionApi#judge}에 넘긴다 — 열린
  * 집합 닫기·영향 generation 기록·완료·초과 전환·감사 행은 tombstone마다 짧은 트랜잭션 하나다(잠금 대기·문장 상한, 잠긴 행은 다음 주기). operations는 identity에 닿지 않고 루트가 잇는다. (4) 백업
  * 파기가 완료된 요청을 identity의 전체 삭제 완료로 옮기고({@link #completeNow}) 완료 확인 세션을 정리한다({@link #scrubNow}, Story 5.4).
- * (5) gauge 값을 다시 읽는다.
+ * (5) 기한이 지난 재가입 차단 기록을 지운다({@link #expireNow}, G-5 전 결정 D-4). (6) gauge 값을 다시 읽는다.
  *
  * <p><b>gauge.</b> 이름·tag는 {@link TelemetryAllowlist}의 표와 같다.
  * <ul>
@@ -140,6 +140,8 @@ class BackupDestructionJudge {
         } finally {
             // 완료 세션 정리는 파기 판정·전체 완료 기록과 무관하다 — 앞 단계가 실패해도 돈다(자기 실패는 스스로 접는다).
             logTransition("COMPLETION_SESSION_SCRUBBED", scrubNow());
+            // 재가입 차단 기록의 기한도 같다 — 이번 주기가 막 기록한 전체 완료까지 본다(앞 단계 뒤라서).
+            logTransition("DELETED_IDENTITY_EXPIRED", expireNow());
             measureNow();
         }
     }
@@ -192,6 +194,23 @@ class BackupDestructionJudge {
         } catch (RuntimeException failed) {
             LOG.atWarn().addKeyValue("exception", failed.getClass().getSimpleName())
                     .log("completion session scrub failed");
+            return 0;
+        }
+    }
+
+    /**
+     * 기한이 지난 재가입 차단 기록의 정리(G-5 전 결정 D-4). 전체 삭제 완료가 기록된 요청의 기록과, 실행 행이 없고 기록 뒤 35일이 지난 기록을
+     * identity 공개 API({@link AccountDeletionRunApi#expireDeletedIdentities})로 지운다. 실패는 판정·완료 기록·세션 정리를 막지 않는다 — WARN
+     * 한 줄(예외의 단순 이름)이고 다음 주기가 다시 한다({@link #scrubNow}와 같은 관용).
+     *
+     * @return 이번에 지운 기록 수
+     */
+    int expireNow() {
+        try {
+            return this.runs.expireDeletedIdentities();
+        } catch (RuntimeException failed) {
+            LOG.atWarn().addKeyValue("exception", failed.getClass().getSimpleName())
+                    .log("deleted identity expiry failed");
             return 0;
         }
     }

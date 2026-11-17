@@ -25,7 +25,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 /**
- * 사용자의 계정 삭제 요청(Story 5.1, {@code SECURITY-ACTION-1.0}·{@code ACCOUNT-DELETION-1.0}).
+ * 사용자의 계정 삭제 요청(Story 5.1, {@code SECURITY-ACTION-1.0}·정책 {@link AccountDeletionPolicy#VERSION}).
  *
  * <p><b>세 단계를 순서대로 강제한다.</b> 최근 재인증(1.8) → {@code delete-account} 일회성 허가(1.9) → 고정 문구를 다시 입력한 확정.
  * Bybit 연결 해제({@link BybitRevocationCommandService})와 같은 모양이다 — 허가 서비스가 루트 package-private이라 흐름과 세션
