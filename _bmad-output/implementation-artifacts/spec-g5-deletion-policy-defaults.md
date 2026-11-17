@@ -94,6 +94,7 @@ context:
   - defer 3(원장 198~200): 복원 뒤 RPO 공지 수단, 법정 보존·고착 실행에서 재가입 차단 기록의 무기한 잔존, 정리 실패 관측.
   - reject: 프런트 대조 시험의 동어반복(단일 원본이 된 결과, 강제는 백엔드 digest 이력), 기한 상수 대조 시험의 의미 차이(수만 같게 두는 의도), 번들의 표 메타데이터 약 1.5KB, 법정 보존 뒤 고지 괄호(그때는 고지 hash가 바뀌어 새 버전으로 다시 쓴다).
   - KEEP: 고지 문장의 단일 원본은 공유 표 `notice`이고 서버는 digest 상수만 갖는다(Java에 한국어 사본 없음). 재가입 차단 정리는 identity 공개 API 한 메서드와 판정자 finally의 실패 격리.
+- 2026-11-17 PR #167 CI(44069265209/1) `same-origin-integration`의 간헐 시험 실패 — 이 변경과 무관한 `auth-entry.spec.ts` Vitals beacon 시험이 LCP 항목보다 먼저 클릭해 `web-vitals`가 값 없이 확정했다. 시험을 "LCP 항목 관측 뒤 클릭"으로 고치고 `ci-run-verdicts.md`에 행을 더했다.
 
 ## Design Notes
 
