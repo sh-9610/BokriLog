@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 11-16-2026 09:30
+last_updated: 11-17-2026 12:30
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -166,7 +166,7 @@ action_items:
     action: "Epic 1 실연동 미검증 게이트를 기계가 읽는 자리에 둔다(epics.md frontmatter의 externalLaunchGates
       또는 sprint-status의 동등한 필드). Epic 2 착수 전"
     owner: "SSAFY"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-09-25.md"
   - id: "epic-1-retro-item-11-authsecurityconfig의-permitall-근거-주석을-현실에"
     epic: 1
@@ -326,14 +326,14 @@ action_items:
     action: "deferred-work.md에 빠진 운영 증거 항목(3.9 실제 OCI·외부 저장소 연결과 파기 증거, 3.8 운영 배포
       smoke, 3.8 AC-2 entitlement 실제 확인, 3.10 AC-2 인프라 재구축)을 더한다(회고 R-1)"
     owner: "Dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
   - id: "epic-3-retro-item-34-운영-출시-증거-게이트-운영-배포-smoke-실저장소-백업-파기-실제-격"
     epic: 3
     action: "운영·출시 증거 게이트(운영 배포 smoke·실저장소 백업·파기·실제 격리 복원·월별 훈련)를 epics.md externalLaunchGates
       같은 기계 판독 자리에 이름으로 둔다(회고 R-4, Epic 1 item-10과 함께)"
     owner: "PM(사용자)"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-10-13.md"
   - id: "epic-3-retro-item-35-동결-spec-문장-셋-3-8-smoke-3-10-rpo-기준-tombs"
     epic: 3
@@ -477,7 +477,7 @@ action_items:
       포함 여부, 재가입 차단 보존·해제·복원 내구성, 완료 세션의 실패 수렴 보호, NFR-18·실저장소 파기를 게이트 표나 원장에 독립 증거로
       등록(회고 R-4·R-5·R-6·R-8·B-2·B-3)"
     owner: "사용자(G-5 기획 결정, bmad-correct-course)"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-11-09.md"
   - id: "epic-5-retro-item-54-공통-부품-크기-정리-선택-identityaccountrepository"
     epic: 5
