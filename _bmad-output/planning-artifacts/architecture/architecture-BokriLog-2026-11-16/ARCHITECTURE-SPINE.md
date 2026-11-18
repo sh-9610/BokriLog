@@ -18,14 +18,14 @@ sources:
   - '../../ux-designs/ux-BokriLog-2026-08-23/EXPERIENCE.md'
 companions:
   - 'PORTFOLIO-SOLUTION-DESIGN.md'
-  - '../architecture-BokriLog-2026-08-24/CI-PLAN.md'
+  - 'CI-PLAN.md'
   - '../../EPIC-IMPLEMENTATION-READINESS-1.1.md'
   - '../architecture-BokriLog-2026-08-24/reviews/final-recommendation-validation-2026-08-26.md'
 ---
 
 # Architecture Spine — BokriLog MVP (1.1)
 
-> 1.1은 Epic 1~5의 as-built를 반영한 새 버전이다. AD 번호와 정책 버전 이름은 1.0과 같고, 바뀐 AD는 제목에 `[ADOPTED · 1.1 개정]`을 단다. 바뀐 곳마다 근거는 문서 끝 `## 1.0 → 1.1 변경 기록`에 있다. CI-PLAN은 1.0 폴더의 것이 그대로 정본이다(새 버전은 deferred 185).
+> 1.1은 Epic 1~5의 as-built를 반영한 새 버전이다. AD 번호와 정책 버전 이름은 1.0과 같고, 바뀐 AD는 제목에 `[ADOPTED · 1.1 개정]`을 단다. 바뀐 곳마다 근거는 문서 끝 `## 1.0 → 1.1 변경 기록`에 있다. CI-PLAN은 같은 폴더의 `CI-PLAN.md`(1.4.0, 2026-11-18 as-built)가 정본이고 1.0 폴더의 1.3.0은 superseded다(deferred 185).
 
 ## Design Paradigm
 
@@ -145,7 +145,7 @@ flowchart LR
 - **Rule:** 개발 profile에서만 Prometheus·Loki·Grafana·Alloy를 필요 시 실행한다. 운영에는 Alloy만 상주시켜 Grafana Cloud Free로 metric/log를 전송하고 외부 synthetic `GET /api/status`와 telemetry 부재를 경보한다. 사용자 식별자·자산 금액·Bybit payload·secret/token은 모든 signal에서 금지한다. JUnit, Testcontainers, stub, promtool, k6, logcli는 개발·CI에서만 실행한다.
 - **As-built(1.1):** 외부 liveness는 공개 `GET /api/status`(경보 `LivenessProbeFailed`, job `bokrilog-liveness`)이고 `/health/live` 경로는 없다. Actuator는 게시하지 않는 관리 포트에서 `prometheus` 하나만 열고, 메트릭 이름·tag는 `TelemetryAllowlist`, 로그는 `RedactingJsonEncoder`의 JSON 한 줄이 통과시킨다. 경보 규칙은 `deploy/observability/alerts.yml`(모든 selector `env="production"`, 미측정은 `...Unmeasured` `info`)이고 promtool 단위시험은 CI의 `check-alert-rules.sh`가 돈다. 운영 Alloy·Grafana Cloud·synthetic 연결은 아직 없다(3.8 defer — preflight는 Alloy 256MiB를 예약으로만 계상한다). 배포 smoke는 k6가 아니라 curl 셋이다(PSD §8).
 
-> as-built(1.1): Rule의 개발 관측 profile(Prometheus·Loki·Grafana·Alloy)과 `logcli`는 저장소에 없다(deferred 187). k6와 CI의 ARM64 image 검사도 없다(deferred 185).
+> as-built(1.1): Rule의 개발 관측 profile(Prometheus·Loki·Grafana·Alloy)과 `logcli`는 저장소에 없다(deferred 187). k6도 없고(deferred 207), CI의 ARM64 image 검사도 없다(deferred 125). 정본은 CI-PLAN 1.4 §12다.
 
 ### AD-15 — OCI 무료 운영 경계와 탈출 조건 [ADOPTED]
 
@@ -153,7 +153,7 @@ flowchart LR
 - **Prevents:** 4 OCPU/24GB를 무과금으로 가정하거나 Always Free를 고가용성 서비스로 표현하는 것
 - **Rule:** 무과금 기준은 home region의 OCI A1 단일 VM 2 OCPU/12GB와 regional reserved public IPv4다. 생성 전 콘솔 entitlement·capacity·Always Free 표시·예상 비용 0을 확인한다. API 슬롯당 768MiB, Worker 512MiB, PostgreSQL 3GiB, Alloy 256MiB, Nginx 128MiB에서 시작하고 동일 ARM64 digest의 blue/green peak gate를 통과해야 한다. disk·Grafana 사용량은 70% 경고/85% 긴급, 월 비용은 30,000원 budget alert를 둔다. 운영 등급은 `24×7 상시 실행 목표, best-effort, SLA 없음`이다. 최초 회수, A1 8시간 확보 실패, 유료 사용자 발생 또는 가용성 약속 필요 시 PAYG/유료 VPS로 전환한다.
 
-> as-built(1.1): "동일 ARM64 digest" — CI에 ARM64 image build·검사가 없다(deferred 185). 운영 gate(`preflight.sh`)는 실제 이미지 아키텍처와 메모리 peak를 보지만 CI 리허설에서는 아키텍처 검사를 건너뛴다.
+> as-built(1.1): "동일 ARM64 digest" — CI에 ARM64 image build·검사가 없다(deferred 125, CI-PLAN 1.4 §12). 운영 gate(`preflight.sh`)는 실제 이미지 아키텍처와 메모리 peak를 보지만 CI 리허설에서는 아키텍처 검사를 건너뛴다.
 
 ### AD-16 — 발행 소유권, 원 사건 정체성과 fencing [ADOPTED · 1.1 개정]
 
@@ -229,7 +229,7 @@ flowchart LR
 | Images | 운영 이미지는 `linux/arm64`로 CI 검증하고 tag가 아니라 digest로 배포한다. |
 | Dependency locking | 아키텍처 표는 허용 계열과 검증 기준을 제공하고 실제 artifact는 Gradle/frontend lockfile과 image digest가 소유한다. |
 
-> as-built(1.1): Images 행 — CI에 `linux/arm64` image build·검사가 없다(deferred 185). 운영 gate(`preflight.sh`)만 실제 이미지 아키텍처를 본다.
+> as-built(1.1): Images 행 — CI에 `linux/arm64` image build·검사가 없다(deferred 125, CI-PLAN 1.4 §12). 운영 gate(`preflight.sh`)만 실제 이미지 아키텍처를 본다.
 
 ## Stack
 
@@ -351,8 +351,8 @@ sequenceDiagram
 - **AD-8·Deferred(포인터만)** — 안전 중첩·Bybit 사건·환산·강한 신호의 결정 버전 포인터를 `ERD-1.0.0`에서 `ERD-1.1.0`으로 바꿨다. 가리키는 절(§2·§6)은 1.0.0과 같고 규칙은 바뀌지 않았으므로 개정 표지를 달지 않았다. 근거: `../../EPIC-IMPLEMENTATION-READINESS-1.1.md`. [E2 R-7]
 - **AD-12** — 역할 분리(`BOKRILOG_ROLE`), Worker 단일 잠금, 일회성 역할 다섯 가운데 `deploy-audit`·`backup-record`의 Flyway 끔과 나머지 셋의 검증, 상태 잠금 하나, 운영 배포 미검증을 적었다. 근거: `backend/src/main/resources/application.yml`(`deploy-audit`·`backup-record`·`deletion-sample`·`tombstone-export`·`restore-apply` 프로필), `BokrilogRole.java`, `deploy/production/deploy.sh`, `spec-3-8-blue-green-deploy.md`. [E3 R-3]
 - **AD-13** — Terraform source/state를 `terraform=manual`로, 다른 호스트 전체 재구축을 같은 호스트 격리 프로젝트 복원으로, RPO 기준을 `dump_started_at`으로 적었다. 근거: `deploy/production/recovery-manifest.example`, `deploy/production/restore.sh`, `deploy/production/backup.sh`, `spec-3-9-encrypted-backup.md`, `spec-3-10-isolated-restore.md`. [E3 R-2, E3 R-3]
-- **AD-14** — Rule의 synthetic 대상 `/health/live`만 `GET /api/status`로 바꾸고, Alloy 미연결·curl smoke를 As-built에 적었다. 개발 관측 profile·`logcli` 부재(deferred 187)와 k6·CI ARM64 검사 부재(deferred 185)는 Rule을 고치지 않고 as-built 주석으로만 달았다. 근거: `deploy/observability/alerts.yml`(`LivenessProbeFailed`), `StatusController.java`, `deploy/production/deploy.sh`(curl smoke), `deploy/production/preflight.sh`(Alloy 예약), `deploy/compose/compose.yaml`(관측 서비스 없음), `spec-3-7-observability-foundation.md`. [E3 R-3]
-- **AD-15·Consistency Images 행(주석만)** — 고치지 않고 "CI에 ARM64 image build·검사 없음 — deferred 185" as-built 주석만 달았다. 근거: `.github/workflows/ci.yml`(ARM64 job 없음), `deploy/production/preflight.sh`(운영 gate의 이미지 아키텍처 검사, 리허설은 건너뜀). [E3 R-3 — CI-PLAN 부분은 deferred 185]
+- **AD-14** — Rule의 synthetic 대상 `/health/live`만 `GET /api/status`로 바꾸고, Alloy 미연결·curl smoke를 As-built에 적었다. 개발 관측 profile·`logcli` 부재(deferred 187)와 k6 부재(deferred 207)·CI ARM64 검사 부재(deferred 125, CI-PLAN 1.4 §12)는 Rule을 고치지 않고 as-built 주석으로만 달았다. 근거: `deploy/observability/alerts.yml`(`LivenessProbeFailed`), `StatusController.java`, `deploy/production/deploy.sh`(curl smoke), `deploy/production/preflight.sh`(Alloy 예약), `deploy/compose/compose.yaml`(관측 서비스 없음), `spec-3-7-observability-foundation.md`. [E3 R-3]
+- **AD-15·Consistency Images 행(주석만)** — 고치지 않고 "CI에 ARM64 image build·검사 없음 — deferred 125(CI-PLAN 1.4 §12)" as-built 주석만 달았다. 근거: `.github/workflows/ci.yml`(ARM64 job 없음), `deploy/production/preflight.sh`(운영 gate의 이미지 아키텍처 검사, 리허설은 건너뜀). [E3 R-3 — CI-PLAN 부분은 deferred 185가 CI-PLAN 1.4로 넘겼다]
 - **AD-16** — `sync_run`·`LOST_LEASE`·`SUPERSEDED` 종단·`sync_sequence`·revision 정체성을 작업 표 여섯과 표별 종단 code·`fencing_generation`·`UNIQUE(provider_account_id, source_id)`·`CONFLICT`로 고치고 `plan_end`·`plan_completion`·`sync_next_plan_baseline`의 소유를 적었다. `heartbeat_at`은 판정 표(V8)를 뺀 다섯 표에만 있다. 근거: `V5`·`V7`·`V8`·`V9`·`V10`·`V11`·`V12`·`V13`·`V14`·`V15` migration, `sync/internal/SyncLease.java`, `PlanSyncService.java`(`SYNC_INTERRUPTED`), `PlanPublicationService.java`(`PUBLICATION_INTERRUPTED`), `InitialCollectionRepository.java`(`PROVIDER_ID_CONFLICT`). [E2 R-4, E2 R-7]
 - **AD-18** — adapter 위치(브라우저), 서버의 활성 판정, reservation 시점, 관문 두 시점과 SHOW 뒤 무검사, 이동 대상 `/dashboard`, 4.5 성능 kill switch를 적었다. 근거: `frontend/src/ads/gptAdapter.ts`, `frontend/src/session/useDashboardSync.ts`(`requestAdEligibility`), `engagement/internal/AdProviderState.java`·`AdGate.java`·`AdPerformanceJudge.java`, `V27`·`V28`·`V29`, `spec-4-2-ad-eligibility.md`·`spec-4-3-neutral-ad-transition.md`·`spec-4-5-ad-telemetry-web-vitals.md`. [E4 R-3]
 - **AD-19** — "identity가 orchestration 소유"를 상태(identity V30·V31)와 실행자(루트 `AccountErasure*`) 분리로 고치고 단계·모드·재시도·tombstone 키 역할 제한, 실행 행의 종단 `OPERATIONAL_DATA_ERASED`(V31)·`DELETION_COMPLETED`(V33)와 "운영 데이터 삭제 완료 ≠ 백업 파기 완료" 구분을 적었다. 근거: `V30`·`V31`·`V33` migration, `AccountErasure.java`·`AccountErasureRun.java`·`AccountErasureWorker.java`, `identity/DeletionStep.java`, `deploy/production/preflight.sh`(`TOMBSTONE_KEY_IN_API`), `spec-5-1-account-deletion-request.md`·`spec-5-2-account-data-erasure.md`. [E3 R-3, E5 R-3, E5 A-4]

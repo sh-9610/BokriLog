@@ -3,7 +3,8 @@ name: 'BokriLog MVP CI Plan'
 type: ci-plan
 purpose: '현재 구현부터 OCI 배포 후보까지 빠르고 재현 가능한 품질 게이트를 단계적으로 확장하는 정본'
 audience: 'BokriLog 구현자, 리뷰어, 운영자와 후속 자동화 작업을 수행하는 에이전트'
-status: final
+status: superseded
+superseded_by: '../architecture-BokriLog-2026-11-16/CI-PLAN.md'
 version: '1.3.0'
 created: '2026-09-03'
 updated: '2026-09-05'

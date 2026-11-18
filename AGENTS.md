@@ -16,7 +16,7 @@ Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개�
 
 ## Where things are
 
-- 기획 산출물 `_bmad-output/planning-artifacts/` — `epics.md`, `EPIC-IMPLEMENTATION-READINESS-1.1.md`(`ERD-1.1.0`), `architecture/architecture-BokriLog-2026-11-16/`(SPINE·PSD 1.1, CI-PLAN은 `architecture-BokriLog-2026-08-24/`)
+- 기획 산출물 `_bmad-output/planning-artifacts/` — `epics.md`, `EPIC-IMPLEMENTATION-READINESS-1.1.md`(`ERD-1.1.0`), `architecture/architecture-BokriLog-2026-11-16/`(SPINE·PSD 1.1, CI-PLAN 1.4.0)
 - 구현 산출물 `_bmad-output/implementation-artifacts/` — `sprint-status.yaml`, `spec-*.md`, `deferred-work*.md`, 에픽 회고
 - 절차와 명령의 상세는 `DEVELOPMENT.md`가 소유한다.
 
