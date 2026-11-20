@@ -2,7 +2,7 @@
 title: 'Deferred Work 해소 원장'
 status: living
 created: '2026-09-02'
-updated: '2026-11-11'
+updated: '2026-11-21'
 applies_to: '_bmad-output/implementation-artifacts/deferred-work.md'
 decision_baseline: 'ERD-1.0.0'
 ---
@@ -17,10 +17,15 @@ decision_baseline: 'ERD-1.0.0'
 
 | 상태 | 건수 |
 |---|---|
-| 해소 | 41 |
-| 부분 해소 | 25 |
-| 미해소 | 134 |
+| 해소 | 43 |
+| 부분 해소 | 26 |
+| 미해소 | 140 |
 | 미판정 | 0 |
+
+**2026-11-21 갱신(CI-PLAN 1.4.0 PR #169 done 전환, merge commit 2937edb).** PR #169의 산출물과 검증 기록을 기준으로 판정했다.
+- **해소:** 146·185. 1.4.0이 현재 job 그래프·backup-rehearsal·backup-restore 분류·timeout 실측을 as-built로 반영했다.
+- **PR #169가 추가한 항목:** 201~204·206~209는 미해소, 205는 부분 해소다. 205의 권장값은 문서에서 보정됐지만 ci.yml 적용은 남고, 적용 대상 값은 209에서 정정했다.
+- **표:** 209건이다(해소 43·부분 해소 26·미해소 140·미판정 0).
 
 **2026-11-17 갱신(Epic 5 회고 AI-6 G-5 전 결정 묶음 chore done 전환).** `spec-g5-deletion-policy-defaults.md`(PR #167, 머지 커밋 `7f00950`)의 판정이다. 결정 기록은 `sprint-change-proposal-2026-11-17.md`(D-1~D-6)다.
 - **이 chore가 append한 defer:** 193~200 여덟 건이다. 모두 미해소로 판정했다(아래 각 절).
@@ -1406,6 +1411,9 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소 — 주인 이전(2026-11-16, Epic 5 회고 AI-5 as-built 새 버전 chore 판정, 기준 `67abc7f`).** 주인이던 `epic-3-retro-item-35`는 `spec-as-built-new-version.md`(PR #161)가 닫았다. 다만 사용자 범위 결정 [S]로 CI-PLAN을 떼어 deferred 185로 넘겼다. 그래서 CI-PLAN은 바뀌지 않았고(§1·§5에 `backup-rehearsal`·`backup-restore`가 여전히 없다), 새 SPINE 1.1의 companion도 옛 폴더의 CI-PLAN을 가리킨다. 이 항목의 잔여는 185(CI-PLAN as-built 새 버전과 job timeout 실측 보정)와 같은 작업이 가져간다.
 
+
+**해소(2026-11-21, CI-PLAN 1.4.0 done 전환, PR #169).** 새 CI-PLAN §1·§5가 실제 backup-rehearsal job과 backup-restore 변경 분류·집계 기대치를 as-built로 적었다. 이 항목의 잔여가 반영됐다.
+
 ### 147. 광고 동의 결정 행의 빈도 제한·행 수 상한
 
 **미해소(2026-10-15, Story 4.1 판정, 기준 `176190f`).** Story 4.1(`spec-4-1-ad-consent.md`, PR #107)의 리뷰가 이 항목을 append했고, 같은 스토리의 done 전환에서 판정한다(`CLAUDE.md` 표준 흐름 7번).
@@ -1960,6 +1968,9 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 
 **미해소 잔여:** CI-PLAN을 새 버전으로 발행하고 timeout 실측 표를 붙인다. 146의 잔여도 함께 가져간다. 지명된 작업은 없다.
 
+
+**해소(2026-11-21, CI-PLAN 1.4.0 done 전환, PR #169).** CI-PLAN 1.4.0이 9-job 구조, 리허설 병렬 구조, fork 분할·jar digest 대조와 실제 job·단계 timeout 실측을 새 정본에 반영했다. 별도로 남은 미구현·미결정 항목은 201~209에 기록했다.
+
 ### 186. 광고를 닫은 뒤 대시보드 제목으로 포커스를 옮기는 구현
 
 **미해소(2026-11-16, Epic 5 회고 AI-5 as-built 새 버전 chore 판정, 기준 `67abc7f`).** Epic 4 회고 R-3 "닫기 뒤 포커스"의 처분이다. 요구를 철회하지 않고 구현 항목으로 남겼다(SPEC Ask First의 기본 처분).
@@ -2084,3 +2095,57 @@ interval을 layout effect로 옮겨 그 상태를 그린 커밋에서 걸리고 
 **미해소(2026-11-17, G-5 전 결정 묶음 chore 판정, 기준 `7f00950`).** 1차 리뷰가 append했다. 실패는 WARN 한 줄뿐이다.
 
 **미해소 잔여:** 판정자 주기 단계들의 실패 gauge·경보. 172·178과 같은 주인(운영 경보 묶음)이다.
+
+### 201. CI-D5의 artifact 정체성과 PR head·base 재검증
+
+**미해소(2026-11-21, CI-PLAN 1.4.0 done 전환, PR #169).** 1.4.0은 모든 job이 github.sha를 checkout하고 ci-required가 현재 PR head·base를 다시 조회하지 않는 상태를 미구현으로 기록했다.
+
+**미해소 잔여:** 검증한 merge_sha를 후속 job에 고정하고, 집계 시 head·base가 바뀌었거나 조회에 실패하면 fail-closed하며 artifact에 PR·producer·digest 정체성을 싣는다.
+
+### 202. 반대편 품질 job과 의존 리허설의 승인된 건너뛰기
+
+**미해소(2026-11-21, CI-PLAN 1.4.0 done 전환, PR #169).** 현재 분류기는 docs-only·reason·backup-restore만 내며 frontend-only 변경도 backend job과 통합·배포 리허설을 실행한다.
+
+**미해소 잔여:** 반대편 job을 건너뛸 조건과 통합·리허설이 소비하는 jar·dist 산출물 경로를 정한다.
+
+### 203. dependency·license·container 검사와 차단 기준
+
+**미해소(2026-11-21, CI-PLAN 1.4.0 done 전환, PR #169).** CI에 dependency·license·container 검사가 없고, 도구·실행 시점·취약점 처리 기준도 고정되지 않았다.
+
+**미해소 잔여:** 고정 snapshot과 Critical 차단·High waiver 정책을 포함해 검사 도구·경로를 정한다.
+
+### 204. GitHub Actions 사용량 예산과 경보
+
+**미해소(2026-11-21, CI-PLAN 1.4.0 done 전환, PR #169).** 월간 Actions 한도와 사용량 기록·경보는 저장소에 정해져 있지 않다.
+
+**미해소 잔여:** 월간 한도, 70% 경고·90% 조정 기준, billed runner-minute 기록 방법을 정한다.
+
+### 205. CI-PLAN 1.4.0 timeout 권장값 적용
+
+**부분 해소(2026-11-21, CI-PLAN 1.4.0 done 전환, PR #169).** 권장값의 근거와 보정 규칙은 문서화됐고 리뷰에서 값도 바로잡혔다. 사용자 결정에 따라 PR #169는 ci.yml을 바꾸지 않았다.
+
+**미해소 잔여:** 실제 적용은 정정된 값으로 다시 추적한다(deferred 209). 이 항목에 처음 적힌 값은 209가 대체한다.
+
+### 206. main 대상 PR에서 backup-restore 분류
+
+**미해소(2026-11-21, CI-PLAN 1.4.0 done 전환, PR #169).** 분류기가 PR의 target branch를 받지 않아 main 대상 frontend-only PR도 backup-restore=false가 될 수 있다.
+
+**미해소 잔여:** main 대상 PR에서 리허설을 필수로 할지 정하고 필요한 workflow 입력과 판정을 구현한다.
+
+### 207. Release Gate와 배포 경로
+
+**미해소(2026-11-21, CI-PLAN 1.4.0 done 전환, PR #169).** main 전용 Release Gate·release-validation·CD workflow는 저장소에 없다. CI-PLAN 1.4.0은 이를 미구현으로 남겼다.
+
+**미해소 잔여:** release PR 검증·승인·backport·보호된 SHA의 재생성·production promotion·cache 격리·제한 k6의 경계를 별도 작업으로 정한다.
+
+### 208. CI-D2 시간 목표 재설정
+
+**미해소(2026-11-21, CI-PLAN 1.4.0 done 전환, PR #169).** 최근 측정 wall-clock이 기존 목표를 넘지만 1.4.0은 시간 목표를 바꾸지 않았다.
+
+**미해소 잔여:** 목표를 실측에 맞출지, 구조 개선으로 목표에 다가갈지와 PR 경로 측정 방법을 결정한다.
+
+### 209. 보정된 CI timeout 권장값 적용과 재측정
+
+**미해소(2026-11-21, CI-PLAN 1.4.0 done 전환, PR #169).** CI-PLAN 1.4.0 §10에는 리뷰 뒤 보정된 권장값이 있지만 workflow 값은 그대로이고, 적용 전 추가 측정이 필요하다.
+
+**미해소 잔여:** PR·실패·cache miss 표본을 더 모은 뒤 ci.yml·단계 예산·관련 CI 계약 단정을 함께 갱신한다.
