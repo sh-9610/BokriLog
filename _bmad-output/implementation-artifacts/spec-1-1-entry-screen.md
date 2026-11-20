@@ -171,4 +171,4 @@ context:
 - 프런트엔드 준비·명령·구조·규칙. AC-4의 "문서화된 절차"
   [`DEVELOPMENT.md:65`](../../DEVELOPMENT.md#L65)
 - 제품 코드 도입 사실과 다음 단계를 갱신해 이후 세션의 전제를 맞춘다
-  [`CLAUDE.md:17`](../../CLAUDE.md#L17)
+  [`CLAUDE.md:17`](https://github.com/sh-9610/BokriLog/blob/2d9f85a3ee73dddce9b7feb786c97ef7d1f12fe2/CLAUDE.md#L17)

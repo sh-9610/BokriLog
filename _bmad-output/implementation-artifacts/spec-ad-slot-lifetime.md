@@ -122,4 +122,4 @@ context:
   [`gptAdapter.test.ts:188`](../../frontend/src/ads/gptAdapter.test.ts#L188)
 
 - 4.4 계약 줄에 상한 구절
-  [`CLAUDE.md:271`](../../CLAUDE.md#L271)
+  [`CLAUDE.md:271`](https://github.com/sh-9610/BokriLog/blob/d9b72bc1b0b24d69ce8102a8d5f559b933d063f8/CLAUDE.md#L271)

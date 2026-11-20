@@ -945,3 +945,22 @@ npx bmad-method@6.11.0 install \
 - `scripts/check-bmad-env.sh`: 위 설정이 실제로 동작하는지 한 번에 검증한다.
 
 애플리케이션 기술 스택과 허용 버전은 아키텍처 문서를 권위 기준으로 삼고, 실제 설치 버전은 lockfile과 image digest가 소유한다. 프런트엔드는 `frontend/package-lock.json`이, 백엔드의 Gradle 버전은 `backend/gradle/wrapper/gradle-wrapper.properties`가 소유하며 그 파일은 배포본 SHA-256까지 고정한다. 백엔드 의존 버전은 `build.gradle.kts`가 인용한 BOM이 결정한다. BOM은 둘이다. Spring Boot BOM(플러그인이 노출하는 좌표를 그대로 인용하며 Flyway·PostgreSQL 드라이버·Testcontainers까지 관리한다)과 Spring Modulith BOM 2.1.1(Boot BOM이 관리하지 않아 버전을 여기서 고정하며 시험 classpath에만 적용한다)이다. 두 BOM이 겹치는 좌표는 없다. Gradle dependency lock과 운영 image digest는 아직 도입 전이다. 제품이 Python 애플리케이션이라는 전제에서 `.python-version`, `pyproject.toml`, 애플리케이션 `.venv`를 만들지 않는다.
+
+## 세션 상태 조회
+
+저장소 루트에서 기존 BMAD와 같은 uv 관리 Python 및 YAML 파서로 조회한다. GitHub 실행 조회에는 인증된 GitHub CLI가 필요하다.
+
+```sh
+uv run --managed-python --no-cache scripts/session-status.py
+```
+
+현재 브랜치와 변경 파일, 최근 커밋 5건, 진행·리뷰 스토리의 SPEC 상태, 열린 회고 액션의 ID와 설명, `develop` push CI 최근 3건을 표시한다. CI는 실행 ID와 시도 번호로 판정 원장의 기록 여부를 표시한다. GitHub 조회에 실패해도 로컬 결과는 확인할 수 있다. 판정 원장의 기록 대상과 예외는 [원장 규칙](_bmad-output/implementation-artifacts/ci-run-verdicts.md#규칙)을 따른다.
+
+패키지 인덱스에도 접속할 수 없으면 uv가 YAML 파서를 내려받기 전에 멈출 수 있다. 이때 아래 두 명령으로 현재 체크아웃을 확인한다.
+
+```sh
+git --no-optional-locks -c core.quotepath=false status --short --branch --untracked-files=all
+git log --oneline -5
+```
+
+[스프린트 원장](_bmad-output/implementation-artifacts/sprint-status.yaml)의 `development_status`에서 `in-progress`·`review` 스토리 번호를 찾고 같은 디렉터리의 `spec-<번호>-*.md` frontmatter에서 `status`를 확인한다. 후보가 없거나 여럿이면 SPEC 상태는 확인 불가다. `action_items`에서는 `open`·`in-progress` 항목의 `id`와 `action` 전체를 읽는다. 최신 CI 상태는 GitHub에 다시 연결했을 때 조회한다.

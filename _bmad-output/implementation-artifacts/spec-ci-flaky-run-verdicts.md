@@ -153,7 +153,7 @@ context:
   [`DEVELOPMENT.md:186`](../../DEVELOPMENT.md#L186)
 
 - 세션 시작 확인에 develop push 결말을 더했다
-  [`CLAUDE.md:11`](../../CLAUDE.md#L11)
+  [`CLAUDE.md:11`](https://github.com/sh-9610/BokriLog/blob/7e09f34c400248c2b1124f89de0d08ffb8a3dc1e/CLAUDE.md#L11)
 
 **시험**
 

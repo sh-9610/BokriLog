@@ -336,4 +336,4 @@ UPDATE identity_deletion_run SET status = 'QUEUED', retry_key_digest = :digest,
   [`OperatorDeletionRequeueTest.java:68`](../../backend/src/test/java/com/bokrilog/OperatorDeletionRequeueTest.java#L68)
 
 - 5.2 계약 줄: 운영자 재대기열과 키 덮어쓰기
-  [`CLAUDE.md:294`](../../CLAUDE.md#L294)
+  [`CLAUDE.md:294`](https://github.com/sh-9610/BokriLog/blob/9724173fae731772dd722cd65dff67d0588f9679/CLAUDE.md#L294)

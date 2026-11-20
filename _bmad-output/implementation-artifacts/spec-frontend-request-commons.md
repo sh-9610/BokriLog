@@ -172,4 +172,4 @@ const payload = objectOf(await readJson(response))
   [`http.test.ts:184`](../../frontend/src/session/http.test.ts#L184)
 
 - 새 상태 변경 요청이 따를 규칙 문장
-  [`CLAUDE.md:87`](../../CLAUDE.md#L87)
+  [`CLAUDE.md:87`](https://github.com/sh-9610/BokriLog/blob/6869c71f63adbce4a0053b4533467892ea91495f/CLAUDE.md#L87)

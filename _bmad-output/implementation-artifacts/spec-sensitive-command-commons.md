@@ -122,7 +122,7 @@ context:
 - 콜백 경로는 반환·예외 모양을 유지한 채 본체만 공통으로
   [`AuthFlowHandlers.java:760`](../../backend/src/main/java/com/bokrilog/AuthFlowHandlers.java#L760)
 - 계약 문장 한 줄
-  [`CLAUDE.md:205`](../../CLAUDE.md#L205)
+  [`CLAUDE.md:205`](https://github.com/sh-9610/BokriLog/blob/9e6624a993d962ada8ba50e482a2a52f57413f36/CLAUDE.md#L205)
 
 **세션 무장 메커니즘 한 벌**
 

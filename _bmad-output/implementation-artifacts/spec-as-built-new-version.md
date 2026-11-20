@@ -170,7 +170,7 @@ AD 번호를 유지해야 코드 주석이 `ARCHITECTURE-SPINE.md`라는 이름�
   [`EPIC-IMPLEMENTATION-READINESS.md:3`](../planning-artifacts/EPIC-IMPLEMENTATION-READINESS.md#L3)
 
 - 세션 시작 문서가 1.1을 가리킨다
-  [`CLAUDE.md:50`](../../CLAUDE.md#L50)
+  [`CLAUDE.md:50`](https://github.com/sh-9610/BokriLog/blob/90eee3242a9e32f1ae9693d1408e82d3be89f492/CLAUDE.md#L50)
 
 - 분리·발견 항목 185~189
   [`deferred-work.md`](deferred-work.md)

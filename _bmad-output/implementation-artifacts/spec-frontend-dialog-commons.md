@@ -144,4 +144,4 @@ context:
 **문서**
 
 - 공통 부품 셋과 읽기 경로 이전의 범위 한정
-  [`CLAUDE.md:87`](../../CLAUDE.md#L87)
+  [`CLAUDE.md:87`](https://github.com/sh-9610/BokriLog/blob/a75d08e3e0e6f4974f368994bc2825822dd9ec65/CLAUDE.md#L87)
