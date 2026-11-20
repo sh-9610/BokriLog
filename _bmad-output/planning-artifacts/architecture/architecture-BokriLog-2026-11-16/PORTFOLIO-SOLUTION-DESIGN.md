@@ -8,7 +8,7 @@ updated: '2026-11-16'
 supersedes: '../architecture-BokriLog-2026-08-24/PORTFOLIO-SOLUTION-DESIGN.md'
 source: 'ARCHITECTURE-SPINE.md'
 companions:
-  - '../architecture-BokriLog-2026-08-24/CI-PLAN.md'
+  - 'CI-PLAN.md'
   - '../../EPIC-IMPLEMENTATION-READINESS-1.1.md'
 ---
 
@@ -228,7 +228,7 @@ Migration은 DB가 권위인 lock과 schema history 아래 같은 image의 불�
 Append-only deployment record는 최소 `APPROVED → MIGRATED → INACTIVE_VERIFIED → CUTOVER → OBSERVING → VERIFIED` 상태를 가지며 실패와 `ROLLED_BACK`을 분리한다. Deployment ID, environment, 승인자, target·previous·evidence digest, migration, readiness·smoke·telemetry, cutover, Worker singleton, 관찰과 rollback 결과를 기록한다. Versioned observation policy의 시간, health, 오류율, telemetry와 queue 기준을 통과한 `VERIFIED` 전에는 출시 완료로 표시하지 않는다. 실행 중 production 배포는 더 새 commit 때문에 자동 취소하지 않으며, current와 rollback window 안의 predecessor image·evidence를 registry garbage collection에서 보호한다.
 
 > as-built(1.1): 위 세 문단은 목표이고 지금 구현은 다음과 같다.
-> - **evidence.** release manifest(`release.env`)가 `<repo>@sha256:` image, platform `linux/arm64`, migration 버전·종류, SBOM·서명 파일의 SHA-256을 싣고, gate가 실제 이미지 아키텍처와 `cosign verify`·`cosign verify-attestation --type spdxjson`을 본다. 서명 신원은 manifest가 아니라 운영자가 소유한 host 사실(`signer_identity`·`signer_issuer`)이다. 그 evidence를 만드는 CI Release Gate·이미지 공급망 파이프라인은 아직 없다(3.8 defer, CI 쪽은 deferred 185).
+> - **evidence.** release manifest(`release.env`)가 `<repo>@sha256:` image, platform `linux/arm64`, migration 버전·종류, SBOM·서명 파일의 SHA-256을 싣고, gate가 실제 이미지 아키텍처와 `cosign verify`·`cosign verify-attestation --type spdxjson`을 본다. 서명 신원은 manifest가 아니라 운영자가 소유한 host 사실(`signer_identity`·`signer_issuer`)이다. 그 evidence를 만드는 이미지 공급망 파이프라인은 아직 없고(deferred 125), 그것을 받는 CI Release Gate 경로도 없다(deferred 207). 정본은 CI-PLAN 1.4 §12다.
 > - **직렬화.** durable DB lease·fencing token이 아니라 호스트 파일 잠금 `state_dir/.lock` 하나다(`lib.sh` `lock_acquire`, 소유자 기록·죽은 소유자는 `LOCK_STALE`로 거부만 한다). 배포·백업·복원·tombstone 내보내기가 같은 잠금을 쓴다. predecessor 대조는 상태 파일 `deploy.state`의 활성 슬롯과 실제로 도는 API 슬롯의 일치이고, 다르면 gate가 거부한다.
 > - **기록.** 별도 deployment record 표가 없고 감사 원장 행이 기록이다. 단계는 배포 절차의 `GATE`·`DRAINED`·`MIGRATED`·`INACTIVE_VERIFIED`·`CUTOVER`·`VERIFIED`·`ROLLED_BACK`과 배포 밖의 운영 행동 `WINDOW_CLOSED`(`deploy.sh close-window` — rollback 창 닫기) 여덟이고(`DeployAuditApi.Step`), 결과는 `REQUESTED`(`GATE`만)·`COMPLETED`·`FAILED`다. 신호 중단은 `deploy.sh`가 단계 `INTERRUPTED`·code `SIGNAL`로 감사를 시도하지만 `INTERRUPTED`는 이 여덟에 없어 그 행은 기록되지 못한다(deferred 189). 1.0의 `APPROVED`·`OBSERVING`은 없다 — 승인 단계와 관찰 기간이 없고, `VERIFIED`는 새 Worker telemetry 확인과 이전 슬롯 정지 뒤다. 배포 operation ID는 `deploy_<UTC 시각>_<난수>`이다.
 
@@ -264,7 +264,7 @@ OCI 밖 서버로 복구하면 기존 reserved IP를 가져갈 수 없다. 이�
 | CI | 임시 테스트 의존성 | 전체 품질 게이트와 ARM64 image 검사 |
 | 운영 | Alloy → Grafana Cloud | 외부 synthetic와 제한된 배포 smoke만 |
 
-> as-built(1.1): 개발 행 — 개발 관측 profile(Prometheus·Loki·Grafana·Alloy)과 `logcli`는 저장소에 없다(deferred 187). k6와 CI 행의 ARM64 image 검사도 없다(deferred 185).
+> as-built(1.1): 개발 행 — 개발 관측 profile(Prometheus·Loki·Grafana·Alloy)과 `logcli`는 저장소에 없다(deferred 187). k6도 없고(deferred 207), CI 행의 ARM64 image 검사도 없다(deferred 125). 정본은 CI-PLAN 1.4 §12다.
 
 > as-built(1.1): k6는 도입되지 않았고 배포 smoke는 curl 셋이다(§8). 운영 경보 규칙은 `deploy/observability/alerts.yml`(모든 selector `env="production"`, 미측정은 `...Unmeasured` `info`)이고 promtool 단위시험은 CI가 돈다. 애플리케이션은 게시하지 않는 관리 포트의 Actuator `prometheus` 하나만 내고, 운영 Alloy·Grafana Cloud·synthetic 연결은 아직 없다(3.8 defer).
 
@@ -371,6 +371,6 @@ metric label과 로그 필드는 allowlist한다. user ID, 계획 ID, request ID
 - **§6 데이터 저장과 무결성** — 외부 사건 중복 방지의 유일성과 V25 tombstone outbox의 용도를 적었다. 근거: `V7__initial_source_event_collection.sql`, `V25__operations_deletion_tombstone.sql`. [E2 R-4, E3 R-3]
 - **§8 배포 구조** — k6 smoke를 curl 셋으로(3.8 동결 문장의 "미인증 세션 401"이 아니라 `GET /api/auth/session` 200·`GET /api/connections/bybit` 401), Grafana 도착 확인을 관리 포트 tag 확인으로, durable lease를 파일 잠금으로, 배포 기록 상태를 `DeployAuditApi.Step` 여덟(`WINDOW_CLOSED` 포함)과 결과 셋으로 고쳤다(`APPROVED`·`OBSERVING` 없음, 신호 중단 단계 `INTERRUPTED`가 기록되지 못하는 차이는 deferred 189). 근거: `deploy/production/deploy.sh`(`close-window`·`on_signal`)·`preflight.sh`·`lib.sh`, `operations/DeployAuditApi.java`(`Step`)·`DeployAuditRunner.java`, `backend/src/main/resources/application.yml`(`deploy-audit`), `spec-3-8-blue-green-deploy.md`. [E3 R-2, E3 R-3]
 - **§9 백업과 재해복구** — 백업 실제 순서, RPO 기준 `dump_started_at`(3.10 동결 문장의 "store object 시각"이 아니다), Terraform → `terraform=manual`, 다른 호스트 재구축 → 같은 호스트 격리 프로젝트 복원과 검증 범위를 적었다. 근거: `deploy/production/backup.sh`·`restore.sh`·`recovery-manifest.example`·`check-recovery-manifest.sh`, `spec-3-9-encrypted-backup.md`·`spec-3-10-isolated-restore.md`. [E3 R-2, E3 R-3]
-- **§10 관측성과 테스트** — 외부 검사 경로 `/health/live`를 `GET /api/status`로 바꾸고 k6 미도입·Alloy 미연결을 적었다. 개발 행은 고치지 않고 as-built 주석만 달았다(개발 관측 profile·`logcli` 없음은 deferred 187, k6·CI ARM64 검사 없음은 deferred 185). 근거: `deploy/observability/alerts.yml`(`LivenessProbeFailed`), `StatusController.java`, `deploy/compose/compose.yaml`, `.github/workflows/ci.yml`. [E3 R-3]
+- **§10 관측성과 테스트** — 외부 검사 경로 `/health/live`를 `GET /api/status`로 바꾸고 k6 미도입·Alloy 미연결을 적었다. 개발 행은 고치지 않고 as-built 주석만 달았다(개발 관측 profile·`logcli` 없음은 deferred 187, k6 없음은 deferred 207, CI ARM64 검사 없음은 deferred 125(CI-PLAN 1.4 §12)). 근거: `deploy/observability/alerts.yml`(`LivenessProbeFailed`), `StatusController.java`, `deploy/compose/compose.yaml`, `.github/workflows/ci.yml`. [E3 R-3]
 - **§11 광고, 계정 삭제와 운영 통제** — adapter 위치(브라우저)·표 구성·reservation 시점·이동 대상, 삭제 상태와 실행자의 분리·실행 단계·재시도, tombstone·백업 파기 판정(외부 사본 24시간과 행 필터 — 3.10 동결 문장의 "35일 지난 object"가 아니다)을 적었다. 근거: `frontend/src/ads/gptAdapter.ts`, `frontend/src/session/useDashboardSync.ts`, `V27`~`V33` migration, `AccountErasureRun.java`, `BackupDestructionJudge.java`, `deploy/production/tombstone-export.sh`, `spec-4-2-ad-eligibility.md`·`spec-4-3-neutral-ad-transition.md`·`spec-5-1-account-deletion-request.md`~`spec-5-3-backup-destruction-tracking.md`. [E4 R-3, E3 R-2, E3 R-3, E5 R-3, E5 A-4]
 - **§15 구현 기준선** — 기준 결정 버전을 `ERD-1.1.0`으로 바꿨다(그 항목들의 절은 1.0.0과 같다). 근거: `../../EPIC-IMPLEMENTATION-READINESS-1.1.md`. [E2 R-7]
