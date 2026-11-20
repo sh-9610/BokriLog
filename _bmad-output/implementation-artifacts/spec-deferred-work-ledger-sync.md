@@ -191,4 +191,4 @@ context:
 **저장소 안내면 반영**
 
 - 미해소 열거를 원장과 맞췄다. 수치는 담지 않고 항목 33을 가리킨다
-  [`CLAUDE.md:174`](../../CLAUDE.md#L174)
+  [`CLAUDE.md:174`](https://github.com/sh-9610/BokriLog/blob/799fe9871742f0103e481df2b34666e2c00f28b1/CLAUDE.md#L174)

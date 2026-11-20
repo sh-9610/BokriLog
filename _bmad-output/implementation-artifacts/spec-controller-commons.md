@@ -150,4 +150,4 @@ return ControllerSupport.noStoreJson(status, new PlanEndError(code, message, Con
   [`SuccessorPlanTest.java:299`](../../backend/src/test/java/com/bokrilog/SuccessorPlanTest.java#L299)
 
 - 새 컨트롤러가 따를 규칙 문장
-  [`CLAUDE.md:91`](../../CLAUDE.md#L91)
+  [`CLAUDE.md:91`](https://github.com/sh-9610/BokriLog/blob/7e8864257535953d44c7fb8c2d1ca1dac8ed2df0/CLAUDE.md#L91)

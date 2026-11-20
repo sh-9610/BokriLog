@@ -178,11 +178,11 @@ context:
 **계약·문서**
 
 - 새 시험·CI 계약 — fork 사이 DB·포트·파일 공유 금지, JVM 안 병렬·`reuse` 금지
-  [`CLAUDE.md:285`](../../CLAUDE.md#L285)
+  [`CLAUDE.md:285`](https://github.com/sh-9610/BokriLog/blob/f4e24a6d7749d32f66dce558e7ad3af5828ee9db/CLAUDE.md#L285)
 - `min(3, --max-workers)`와 2코어 기기·Docker Desktop의 컨테이너 셋
-  [`CLAUDE.md:97`](../../CLAUDE.md#L97)
+  [`CLAUDE.md:97`](https://github.com/sh-9610/BokriLog/blob/f4e24a6d7749d32f66dce558e7ad3af5828ee9db/CLAUDE.md#L97)
 - 시험 시간 서술 — 분할 전·후 로컬 실측, CI 실측은 PR이 채운다
-  [`CLAUDE.md:130`](../../CLAUDE.md#L130)
+  [`CLAUDE.md:130`](https://github.com/sh-9610/BokriLog/blob/f4e24a6d7749d32f66dce558e7ad3af5828ee9db/CLAUDE.md#L130)
 - 로컬 정식 명령은 `clean build`(fork 3)이고 `--max-workers=1`은 fork 1이라 wall-clock 비교 불가
   [`DEVELOPMENT.md:220`](../../DEVELOPMENT.md#L220)
 - 분할 근거·오버헤드(콜드 러너가 기본 경로)·실측 문단

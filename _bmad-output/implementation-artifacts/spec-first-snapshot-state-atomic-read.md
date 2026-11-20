@@ -129,4 +129,4 @@ context: []
   [`deferred-work-resolutions.md:1797`](deferred-work-resolutions.md#L1797)
 
 - 진행 표와 대시보드 읽기 계약 한 줄
-  [`CLAUDE.md:235`](../../CLAUDE.md#L235)
+  [`CLAUDE.md:235`](https://github.com/sh-9610/BokriLog/blob/6ccf03d6057856b815f201d0e796846fd5258290/CLAUDE.md#L235)

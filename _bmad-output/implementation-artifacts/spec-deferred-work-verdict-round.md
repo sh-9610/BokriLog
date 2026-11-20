@@ -101,7 +101,7 @@ context:
 **재발 방지 규칙**
 
 - done 전환 PR이 세 부류(append·해소·지목)의 defer를 판정한다
-  [`CLAUDE.md:35`](../../CLAUDE.md#L35)
+  [`CLAUDE.md:35`](https://github.com/sh-9610/BokriLog/blob/d2922b5354cdda69345d56f5b8fbc60559c93c6b/CLAUDE.md#L35)
 
 - 원장 갱신 규칙에 판정 시점의 정본과 (가)·(나) 목록을 덧붙임
   [`deferred-work-resolutions.md:408`](deferred-work-resolutions.md#L408)
@@ -127,4 +127,4 @@ context:
   [`deferred-work-resolutions.md:1008`](deferred-work-resolutions.md#L1008)
 
 - `## 미룬 결정` 건수·분포·회고 액션 확인 대기 문장
-  [`CLAUDE.md:264`](../../CLAUDE.md#L264)
+  [`CLAUDE.md:264`](https://github.com/sh-9610/BokriLog/blob/d2922b5354cdda69345d56f5b8fbc60559c93c6b/CLAUDE.md#L264)

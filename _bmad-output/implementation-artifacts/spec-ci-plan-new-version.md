@@ -133,5 +133,5 @@ timeout 보정 규칙(권장값 계산): `권장 = ceil(최댓값 × 1.5)`분을
   [`ARCHITECTURE-SPINE.md:148`](../planning-artifacts/architecture/architecture-BokriLog-2026-11-16/ARCHITECTURE-SPINE.md#L148)
 
 - 세션 문서의 정본 경로와 timeout 진술
-  [`CLAUDE.md:132`](../../CLAUDE.md#L132)
+  [`CLAUDE.md:132`](https://github.com/sh-9610/BokriLog/blob/35dfcf9c4901017c9d0050d125ec2a3b2203b0ca/CLAUDE.md#L132)
   [`DEVELOPMENT.md:845`](../../DEVELOPMENT.md#L845)

@@ -170,4 +170,4 @@ backdateAdmission(job); // Eligibility만: 다음 수동 접수가 쿨다운에 
   [`AdTestBaseTest.java:58`](../../backend/src/test/java/com/bokrilog/AdTestBaseTest.java#L58)
 
 - 새 광고 시험이 따를 규칙 문장
-  [`CLAUDE.md:289`](../../CLAUDE.md#L289)
+  [`CLAUDE.md:289`](https://github.com/sh-9610/BokriLog/blob/3432f50ff35008d5116a786233c01df67a132ac5/CLAUDE.md#L289)

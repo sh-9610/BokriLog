@@ -161,7 +161,7 @@ context: []
   [`DEVELOPMENT.md:181`](../../DEVELOPMENT.md#L181)
 
 - 시험 fork 계약의 불변식 한 구절
-  [`CLAUDE.md:305`](../../CLAUDE.md#L305)
+  [`CLAUDE.md:305`](https://github.com/sh-9610/BokriLog/blob/29428b92f822b269f47e5b07abce38fc4c941fe5/CLAUDE.md#L305)
 
 - 159는 같은 계열의 다른 경로, 새 defer 183
   [`deferred-work-resolutions.md:1503`](deferred-work-resolutions.md#L1503)

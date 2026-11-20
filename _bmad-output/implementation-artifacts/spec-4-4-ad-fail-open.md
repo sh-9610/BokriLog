@@ -180,7 +180,7 @@ context:
 **문서**
 
 - 여러 스토리에 걸치는 adapter 계약과 접근성 경계
-  [`CLAUDE.md:268`](../../CLAUDE.md#L268)
+  [`CLAUDE.md:268`](https://github.com/sh-9610/BokriLog/blob/cfc43a2121f726be364e5b52648a3eccd5a7e226/CLAUDE.md#L268)
 
 **시험**
 
