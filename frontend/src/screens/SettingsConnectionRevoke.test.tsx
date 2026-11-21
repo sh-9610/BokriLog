@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { authContent, CSRF_HEADER } from '../content/auth'
 import {
+  BYBIT_CONNECTION_PATH,
   BYBIT_REVOCATION_CANCEL_PATH,
   BYBIT_REVOCATION_CONFIRM_PATH,
   BYBIT_REVOCATION_PATH,
@@ -92,6 +93,12 @@ function revokedResult(): Promise<Response> {
 
 function noContent(): Promise<Response> {
   return Promise.resolve(new Response(null, { status: 204 }))
+}
+
+function gatewayTimeout(): Promise<Response> {
+  return Promise.resolve(
+    jsonResponse({ code: 'UPSTREAM_UNAVAILABLE', message: 'x', correlationId: 'c' }, 504),
+  )
 }
 
 function pendingResponse(): Promise<Response> {
@@ -276,18 +283,28 @@ describe('SettingsScreen의 Bybit 연결 해제', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
-  it('응답을 받지 못하면 대화상자를 유지하고 같은 키로 다시 보낸다', async () => {
+  it.each([
+    {
+      interruption: '네트워크 단절',
+      firstResponse: () => Promise.reject(new TypeError('network')),
+    },
+    { interruption: '공통 오류 본문이 있는 504', firstResponse: gatewayTimeout },
+  ])('$interruption 뒤 대화상자를 유지하고 같은 키로 다시 보낸다', async ({ firstResponse }) => {
     await renderConnected()
     const dialog = await openDialog()
     const keys: (string | null)[] = []
     stubRevocationConfirmRequest((init) => {
       keys.push(new Headers(init?.headers).get('Idempotency-Key'))
-      return keys.length === 1 ? Promise.reject(new TypeError('network')) : revokedResult()
+      return keys.length === 1 ? firstResponse() : revokedResult()
     })
-    fireEvent.click(within(dialog).getByRole('button', { name: revocationContent.dialog.confirm }))
+    const confirm = within(dialog).getByRole('button', { name: revocationContent.dialog.confirm })
+    fireEvent.click(confirm)
     expect(await within(dialog).findByText(revocationContent.dialog.uncertain)).toBeInTheDocument()
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toBeTruthy()
+    expect(getObservedAllowedRequests()).not.toContain(`POST ${BYBIT_REVOCATION_CANCEL_PATH}`)
 
-    fireEvent.click(within(dialog).getByRole('button', { name: revocationContent.dialog.confirm }))
+    fireEvent.click(confirm)
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
@@ -330,6 +347,35 @@ describe('SettingsScreen의 Bybit 연결 해제', () => {
       await within(connectionSection()).findByText(revocationContent.revoked),
     ).toBeInTheDocument()
   })
+
+  it.each([
+    { label: '이미 해제됨', lookup: revokedState, expected: revocationContent.revoked },
+    { label: '연결 유지', lookup: connected, expected: connectionContent.connected },
+    { label: '조회 실패', lookup: gatewayTimeout, expected: connectionContent.unavailable },
+  ])(
+    '504 뒤 취소하면 확정을 재전송하지 않고 다시 조회한다 ($label)',
+    async ({ lookup, expected }) => {
+      await renderConnected()
+      const dialog = await openDialog()
+      stubRevocationConfirmRequest(gatewayTimeout)
+      fireEvent.click(
+        within(dialog).getByRole('button', { name: revocationContent.dialog.confirm }),
+      )
+      await within(dialog).findByText(revocationContent.dialog.uncertain)
+
+      stubRevocationCancelRequest(noContent)
+      stubConnectionStatusRequest(lookup)
+      fireEvent.click(within(dialog).getByRole('button', { name: revocationContent.dialog.cancel }))
+
+      expect(await within(status()).findByText(revocationContent.unknown)).toBeInTheDocument()
+      expect(await within(connectionSection()).findByText(expected)).toBeInTheDocument()
+      const requests = getObservedAllowedRequests()
+      expect(requests.filter((entry) => entry === `GET ${BYBIT_CONNECTION_PATH}`)).toHaveLength(2)
+      expect(
+        requests.filter((entry) => entry === `POST ${BYBIT_REVOCATION_CONFIRM_PATH}`),
+      ).toHaveLength(1)
+    },
+  )
 
   it('본인 확인이 없으면 대화상자 대신 본인 확인 안내를 말한다', async () => {
     await renderConnected()
