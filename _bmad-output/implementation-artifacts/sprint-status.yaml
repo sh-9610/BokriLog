@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-02-2026 16:34
-last_updated: 11-17-2026 12:30
+last_updated: 11-21-2026 14:01
 project: BokriLog
 project_key: NOKEY
 tracking_system: file-system
@@ -485,7 +485,7 @@ action_items:
       본문 판독의 ControllerSupport 이전, 프런트 5xx '답하지 않음' 분류의 http.ts 일원화와 Bybit 해제 504
       판정 주인(회고 A-3·D-1·D-2·D-3)"
     owner: "chore(선택)"
-    status: open
+    status: in-progress
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-11-09.md"
   - id: "epic-5-retro-item-55-과정-보강-회고-액션-code-map-규칙이-같은-파일의-항목-전부와-과"
     epic: 5
