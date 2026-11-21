@@ -4,6 +4,8 @@
 
 ## 최초 준비
 
+일반 제품 개발은 변경 영역의 [프런트엔드 절](#프런트엔드-frontend), [백엔드 절](#백엔드-backend), [동일 출처 실행 절](#동일-출처-실행-deploy)을 따른다. 기본 작업 절차는 [CLAUDE.md](CLAUDE.md#일반-pr-절차)에 있다. BMAD를 선택해 실행할 때는 다음 준비와 점검을 사용한다.
+
 1. `uv`를 설치한다. Windows에서는 `winget install astral-sh.uv`, macOS에서는 Homebrew의 `brew install uv`를 사용할 수 있다. 이 환경은 `uv 0.12.5`에서 검증했으며, 그보다 오래된 버전은 별도 검증이 필요하다.
 2. 점검 스크립트는 POSIX 셸을 요구한다. Windows에서는 Git Bash에서 실행한다.
 3. 저장소 루트에서 아래 명령으로 환경을 검증한다.
@@ -30,7 +32,7 @@
 
 줄바꿈은 `.gitattributes`가 결정한다. 텍스트 파일은 인덱스와 작업 트리 모두 LF로 통일하고, 셸 스크립트와 빌드 wrapper(`gradlew`, `mvnw`)는 LF로 명시 고정한다. `*.bat`과 `*.cmd`만 CRLF를 유지한다. `core.autocrlf`는 기기별 로컬 설정이라 공유되지 않으므로 신뢰하지 않는다. 셸 스크립트에 CR이 섞이면 bash가 `$'\r': command not found`로 즉시 실패한다.
 
-새 기기에서 clone한 뒤에는 위 `## 최초 준비`만 수행하면 된다. `.agents/skills/`와 `.claude/skills/`가 저장소에 포함되어 있으므로 인스톨러를 다시 실행하지 않아도 점검이 통과한다.
+새 기기에서 BMAD를 사용할 때는 위 `## 최초 준비`의 BMAD 점검을 따른다. 두 타깃의 스킬이 저장소에 포함되어 있어 기존 설치본을 사용할 수 있다.
 
 `scripts/check-bmad-env.sh`는 bash 3.2와 호환되며 `sed -i`, `grep -P`, `readlink -f` 같은 GNU 전용 플래그를 쓰지 않는다. macOS 기본 bash에서 수정 없이 동작한다.
 
@@ -202,7 +204,7 @@ Playwright는 재시도하지 않는다(`retries: 0`). 재시도는 flaky 실패
   - **`develop` 실패는 발견한 다음 PR에서 쓴다.** `develop`에는 직접 커밋하지 않으므로, push 실패를 본 사람이 그다음 PR(어떤 PR이든)에 원장 행을 함께 싣는다. 재실행하지 않았어도 쓴다. 세션을 시작할 때 `gh run list --workflow ci.yml --branch develop --event push --limit 3`으로 최근 develop push가 green인지 보고, 아니면 원장에 그 행이 있는지 확인한다.
   - **`미조사` 행은 defer 번호를 단다.** 원인을 확정하지 못하면 `deferred-work.md`에 항목을 append하고 그 번호를 후속 칸에 적는다(이미 그 실패를 소유한 defer가 있으면 그 번호). 진단 artifact가 있으면 그 이름과 보존 만료(진단 artifact는 7일)를 defer evidence에 적는다 — 만료 뒤에는 job 로그(저장소 보존 90일)만 남는다. 단계가 상한에 끊기면 스크립트가 진단을 남기지 못해 artifact가 아예 없을 수 있으니, 업로드 단계의 `No files were found` 경고도 함께 적는다.
   - **기록 대상.** 코드 수정 없이 재실행으로 풀린 시도, 원인이 확정되지 않은 실패, 간헐 시험 실패다. 간헐 시험 실패는 그 뒤 fix가 고쳤어도 그 실패 자체를 적는다.
-  - **기록하지 않는 것.** 커밋으로 고친 결함(그 SPEC의 Change Log가 소유한다). 같은 PR의 새 push로 `ci.yml` `concurrency`의 `cancel-in-progress`가 취소한 run. 원인 job의 실패 때문에 뒤따라 취소·실패한 job과 `ci-required` 집계 — 원인 job의 행 하나로 적는다.
+  - **기록하지 않는 것.** 커밋으로 고친 결함(일반 PR의 설명 또는 해당 SPEC의 Change Log에 원인과 재검증 결과를 남긴다). 같은 PR의 새 push로 `ci.yml` `concurrency`의 `cancel-in-progress`가 취소한 run. 원인 job의 실패 때문에 뒤따라 취소·실패한 job과 `ci-required` 집계 — 원인 job의 행 하나로 적는다.
 - **Chromium 설치 단계의 상한은 3분이다**(Epic 5 회고 AI-4). `frontend-quality`·`same-origin-integration`의 `Chromium headless shell 설치`는 정상 14~89초이고(PR #139~#152 기간 green run 8회의 두 job 16건), apt 미러가 느리면 3분에 이 단계 이름의 실패로 끝난다(전에는 job 상한에 걸려 `cancelled`였다 — 원장의 두 `환경` 행). 재시도는 두지 않는다 — 원장 행이 쌓이면 설치 중복 제거(`deferred-work.md` 20)와 함께 다룬다.
 
 ## 백엔드 (`backend/`)
@@ -948,7 +950,7 @@ npx bmad-method@6.11.0 install \
 
 ## 세션 상태 조회
 
-저장소 루트에서 기존 BMAD와 같은 uv 관리 Python 및 YAML 파서로 조회한다. GitHub 실행 조회에는 인증된 GitHub CLI가 필요하다.
+세션 상태 스크립트는 선택 조회 도구다. 저장소 루트에서 uv 관리 Python 및 YAML 파서로 실행한다. GitHub 실행 조회에는 인증된 GitHub CLI가 필요하다.
 
 ```sh
 uv run --managed-python --no-cache scripts/session-status.py
@@ -956,7 +958,7 @@ uv run --managed-python --no-cache scripts/session-status.py
 
 현재 브랜치와 변경 파일, 최근 커밋 5건, 진행·리뷰 스토리의 SPEC 상태, 열린 회고 액션의 ID와 설명, `develop` push CI 최근 3건을 표시한다. CI는 실행 ID와 시도 번호로 판정 원장의 기록 여부를 표시한다. GitHub 조회에 실패해도 로컬 결과는 확인할 수 있다. 판정 원장의 기록 대상과 예외는 [원장 규칙](_bmad-output/implementation-artifacts/ci-run-verdicts.md#규칙)을 따른다.
 
-패키지 인덱스에도 접속할 수 없으면 uv가 YAML 파서를 내려받기 전에 멈출 수 있다. 이때 아래 두 명령으로 현재 체크아웃을 확인한다.
+스크립트 없이 진행하거나 YAML 파서를 내려받을 수 없으면 아래 두 명령으로 현재 체크아웃을 확인한다.
 
 ```sh
 git --no-optional-locks -c core.quotepath=false status --short --branch --untracked-files=all

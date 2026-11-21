@@ -20,7 +20,7 @@ GitHub Actions(`.github/workflows/ci.yml`)에서 green이 아니었던 시도를
   - 재실행하지 않은 채 원인이 확정되지 않은 실패 — `develop` push 실패를 포함한다
   - 간헐 시험 실패(시험 구조의 경합·시간 의존으로 난 실패) — 그 뒤 fix가 고쳤어도 그 실패 자체는 적는다
 - **기록하지 않는 것.**
-  - 커밋으로 고친 결함(제품·시험·스크립트의 실제 결함을 고친 커밋이 다음 실행을 green으로 만든 경우). 그 경위는 해당 SPEC의 Change Log가 소유한다.
+  - 커밋으로 고친 결함(제품·시험·스크립트의 실제 결함을 고친 커밋이 다음 실행을 green으로 만든 경우). 원인과 재검증 결과는 일반 PR의 설명 또는 해당 SPEC의 Change Log에 남긴다.
   - 같은 PR의 새 push로 `ci.yml` `concurrency`의 `cancel-in-progress`가 취소한 run.
   - 원인 job의 실패 때문에 뒤따라 취소·실패한 job과 집계(`ci-required`). 원인 job의 행 하나로 적는다.
 - **언제 쓰는가.**
