@@ -52,7 +52,11 @@ function Facts({ item }: { readonly item: ServiceNoticeItem }): ReactElement {
         <div>
           <dt>{copy.support}</dt>
           <dd>
-            <a className={styles.link} href={`mailto:${item.supportContact}`}>
+            <a
+              data-google-interstitial="false"
+              className={styles.link}
+              href={`mailto:${item.supportContact}`}
+            >
               {item.supportContact}
             </a>
           </dd>

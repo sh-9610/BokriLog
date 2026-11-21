@@ -312,7 +312,11 @@ export function NextPlanBaselinePanel({
         </button>
       ) : null}
       {positive && !busy ? (
-        <a className={styles.button} href={planConditionContent.path}>
+        <a
+          data-google-interstitial="false"
+          className={styles.button}
+          href={planConditionContent.path}
+        >
           {copy.conditions}
         </a>
       ) : null}

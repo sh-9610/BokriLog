@@ -1,6 +1,16 @@
 # 광고
 
-**광고 (Epic 4)**
+**대시보드 수동 동기화 광고 변경 (2026-11-22)**
+
+- 사용자 요청에 따라 광고를 별도 안내 화면에서 준비하던 계약을 대시보드의 기존 `동기화` 조작으로 옮긴다. Google 웹 전면 광고는 준비된 광고 슬롯과 실제 링크 클릭을 사용한다. 광고가 준비되지 않거나 공급되지 않아도 기존 동기화 POST와 결과 접근은 가능하다.
+- BokriLog의 새 광고 흐름은 자체 사전 동의와 사용자당 일 3회·30분 제한을 사용하지 않는다. 동기화 접수의 30초 대기와 전역 `ADVERTISING` 운영 제한은 별개의 계약이다. 기존 광고 기록은 삭제·복원 경로가 처리한다.
+- 사용자 승인으로 광고 태그의 CSP 예외를 대시보드에 적용한다. Google에 보내는 광고 요청 설정에 금융값이나 계정 식별자를 추가하지 않는다. 광고가 기본 비활성인 상태에서 개발·배포하고, 브라우저에서 실제 제한 광고 게재 및 저장소 사용이 확인된 뒤 G-4에서 활성화를 결정한다. Google의 웹 전면 광고 빈도는 광고 단위에서 별도로 설정하며 매 클릭의 실제 노출은 공급자가 결정한다.
+- `GET /api/engagement/dashboard-ad`는 인증된 활성 계정에서 광고 단위 경로만 돌려준다. 광고 중단 또는 공급자 비활성 상태에서는 빈 응답으로 접힌다. 배포 기본값은 꺼짐이다.
+- 준비된 링크는 같은 대시보드로 돌아가며 클릭 시 기존 CSRF·멱등 키가 붙은 수동 POST를 시작한다. 이동 직후에는 자동 ENTRY 접수를 생략하고 직전 POST의 작업 상태를 짧게 확인한다. 링크를 직접 열어도 수동 POST를 만들지 않는다.
+- 대시보드의 광고 요청·준비·실패와 Web Vitals 카운터를 수집한다. 기존 자동 성능 중단용 DB 표본은 과거 `/ad-transition` 소비 기록에 귀속돼 있어, 새 대시보드 흐름의 표본과 연결하는 작업은 G-4에 남는다. 기존 제한과 수동 중단은 광고 설정 조회에 적용된다. 이미 슬롯을 준비한 열린 탭은 설정 유효 기간 120초가 지나면 새 설정을 조회한다.
+- 변경 의도와 검증 범위는 [수동 동기화 광고 SPEC](../spec-manual-sync-advertising.md)이 소유한다. 아래는 앞선 Epic 4의 출시 전 구현 이력이다.
+
+**이전 광고 계약 (Epic 4)**
 - 광고 동의는 `engagement` 모듈의 추가 전용 결정 행(`engagement_ad_consent_decision`)이고 현재 상태는 사용자 advisory 잠금 아래 순번(`id`)이 가장 큰 행이다. 상태는 `UNDECIDED`(행 없음 또는 옛 정책 버전)·`GRANTED`·`DENIED` 셋이며 "동의 유효"는 지금 정책 버전(`AdConsentApi.POLICY_VERSION`, 지금 `AD-CONSENT-1.0`)의 `GRANTED` 하나다 — 정책 버전을 올리면 모두 다시 묻고 자동 재동의는 없다. 변경 요청은 사용자가 본 설명의 정책 버전을 싣고 다르면 409 `AD_CONSENT_POLICY_CHANGED`다(화면 상수 `AD_CONSENT_POLICY_VERSION`과 서버 상수를 시험이 대조한다 — 설명을 바꾸면 버전을 올린다). 쓰기는 사용자 잠금 → `lockWriteAccess` → 멱등 → INSERT 한 트랜잭션이고 감사 원장·재인증은 없다. 동의 판독(`AdConsentApi`)은 `engagement`와 그 컨트롤러만 의존할 수 있다 — 연결·동기화·대시보드는 동의와 무관하게 같다(`ModuleBoundaryTest`). 4.1은 광고 SDK·외부 요청·CSP·브라우저 저장소를 하나도 들이지 않았고, GPT를 load하는 예외 범위는 중립 route 한정으로 4.3 SPEC이 정한다. 동의 카피는 외부 게이트 G-4(개인정보 검토) 전 초안이다(4.1).
 - 광고 자격의 결과 참조는 수동 동기화 attempt의 `jobId`이고, 후보는 그 사용자의 `purpose=SYNC`·`trigger=MANUAL`·`SUCCEEDED`·`calculation_id` 있는 attempt뿐이다(`SyncJobApi.publishedManualSync`, 판정은 attempt 행으로 하고 비후보·남의 것·없는 것은 같은 404). 판정은 사용자 잠금 → `lockWriteAccess` → 기존 행 → 후보 → 관문(동의 → `ADVERTISING` 전역 제한 → 공급자 `BOKRILOG_AD_PROVIDER_ENABLED`, 기본 꺼짐) → 빈도 제한(마지막 자격 뒤 30분·`Asia/Seoul` 하루 3회, 순수 `AdFrequencyPolicy`에 DB 시각) → `(user, jobId)` 한 행(`engagement_ad_attempt`) 순서다. ELIGIBLE 행이 곧 reservation·노출 시도이고 4.3이 쓸 불투명 `transition`을 함께 발급한다. 재전송은 결론을 낮추기만 한다 — ELIGIBLE은 관문을 다시 봐 SKIPPED가 될 수 있고 SKIPPED는 그대로다. 판정은 결과 접근을 막지 않으며 sync·plan·dashboard는 engagement에 의존하지 않는다(`ModuleBoundaryTest`). transition 소비·후보 신선도는 4.3 몫이다(4.2).
 - 광고 시도(4.3): 대시보드가 자기 화면에서 ACCEPTED로 접수한 MANUAL SYNC job의 성공에만 판정을 jobId당 한 번 부르고(JOINED·자동·따라가기 이동·검증 제외, 대화상자·새 접수 중이면 이동 안 함), ELIGIBLE이면 `/ad-transition?t=<transition>`으로 문서 이동한다. 중립 화면은 `t`를 메모리로 옮겨 주소에서 지운 뒤(`replaceAddress`) `POST /api/engagement/ad-transition`으로 소비하고 — 사용자 잠금 → `lockWriteAccess` → 행 `FOR UPDATE` → `CONSUMED`·`EXPIRED`(결정 뒤 120초, DB 시각)·4.2와 같은 관문(`AdGate`) → `transition_consumed_at`(V28) 한 트랜잭션, 남의 것·없는 것은 같은 404 — SHOW일 때만 GPT web interstitial을 `결과 보기` anchor에 건다. `광고 닫기`(첫 조작·최초 포커스)와 SHOW가 아닌 모든 결말은 광고 없이 `/dashboard`로 replace한다. 공급자 활성은 `BOKRILOG_AD_PROVIDER_ENABLED`와 형식에 맞는 `BOKRILOG_AD_UNIT_PATH`(기본 빈 값)가 함께일 때다(4.3).

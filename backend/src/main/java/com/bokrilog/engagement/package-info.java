@@ -1,35 +1,13 @@
 /**
- * 광고 참여(engagement)의 소유 모듈 — Epic 4가 처음 만든 여덟 번째 모듈.
+ * 대시보드 광고 설정, 브라우저 계측, 기존 광고 기록의 계정 삭제를 소유한다.
  *
- * <p><b>Story 4.1은 광고 동의를 둔다.</b> 사용자별 추가 전용 결정 행(정책 버전·선택·DB 시각)을 쌓고 지금 상태는 최신
- * 행에서 읽는다({@link com.bokrilog.engagement.AdConsentApi}). 정책 버전이 바뀌면 상태는 미결정으로 돌아가고 자동 재동의가
- * 없다. 쓰기 트랜잭션은 사용자 잠금 뒤 {@code identity}의 {@code AccountAccessApi.lockWriteAccess}로 삭제 상태를 다시 본다 —
- * 삭제가 시작된 계정의 결정이 다시 생기지 않는다.
+ * <p>{@link com.bokrilog.engagement.DashboardAdApi}는 전역 운영 제한과 공급자 활성 설정을 판독한다. 광고를 준비하는 것은
+ * 대시보드이고 동기화와 결과 조회는 이 모듈의 판정을 기다리지 않는다.
  *
- * <p><b>Story 4.2는 광고 자격과 빈도 제한을 둔다</b>({@link com.bokrilog.engagement.AdEligibilityApi}). 후보는 공식 결과를 원자
- * 저장한 수동 동기화 attempt뿐이고({@code sync}의 공개 판정 하나로 본다), 관문(동의·전역 {@code ADVERTISING} 운영 제한·공급자
- * 활성)과 30분·{@code Asia/Seoul} 하루 3회 빈도 제한을 지나면 그 결정 행이 곧 reservation이다. 결과 하나에 결정 하나이고 재전송은
- * 새 시도가 아니다. 계측 어휘는 {@link com.bokrilog.engagement.AdTelemetry}다.
+ * <p>{@link com.bokrilog.engagement.ClientTelemetryApi}는 같은 출처에서 온 브라우저 이벤트를 닫힌 어휘의 카운터로 센다.
+ * 기존 SHOW와 관련된 Vitals 표본 계약은 그 기록의 호환성을 위해 남는다. 활성화된 전역 운영 중단은 그 출처와 관계없이 적용된다.
  *
- * <p><b>Story 4.3은 transition 소비를 둔다</b>({@link com.bokrilog.engagement.AdTransitionApi}). 중립 전환 화면이 자격의
- * transition 참조를 한 번 소비시키고, 처음 소비이고 결정 뒤 120초 안이며 관문(자격 판정과 같은 한 벌)을 다시 지날 때만 공급자
- * 단위 경로를 돌려준다. 광고를 띄우는 것(GPT web interstitial adapter)은 브라우저의 중립 화면이고 이 모듈은 그 판정만 한다.
- *
- * <p><b>Story 4.5는 브라우저 계측과 성능 kill switch를 둔다</b>({@link com.bokrilog.engagement.ClientTelemetryApi}). 네 화면이
- * 동일 출처 beacon으로 보낸 Web Vitals·광고 이벤트를 닫힌 어휘의 카운터로 세고, 광고를 띄운 문서의 Vitals만 SHOW 소비 1건당
- * metric마다 한 번 비식별 표본(V29의 표본 표, 사용자 열 없음)으로 남긴다. Worker의 판정이 그 표본의 p75가 NFR-14 임계를 넘으면
- * {@code operations}의 {@code AdvertisingStopApi}로 전역 {@code ADVERTISING} 제한(출처 {@code PERFORMANCE})을 만든다.
- *
- * <p>계정 삭제는 deletion port({@link com.bokrilog.engagement.EngagementDeletionApi})가 두 표의 행을 지운다. 표본 표는 사용자 귀속이
- * 아니라 지울 것이 없다.
- *
- * <p>fail-open과 광고 전용 정지(Story 4.4)는 뒤 스토리가 이 모듈에 더한다. 동의·자격·소비는 연결·동기화·대시보드 어디에서도 읽지
- * 않는다 — 광고는 결과 조회의 성공 조건이 아니다. 의존은 이 모듈에서 {@code sync}·{@code operations}·{@code identity} 쪽으로만
- * 난다.
- *
- * <p>이 모듈은 HTTP·세션을 모른다. 인증·CSRF·계정 접근 판정·본문 모양은 루트({@code AdConsentController}·
- * {@code AdEligibilityController}·{@code AdTransitionController}·{@code ClientTelemetryController})가 본다. 다른 모듈은 이
- * 패키지의 공개 API로만 협력하고 {@code internal}이나 소유 표({@code engagement_*})에 닿지 않는다({@code ModuleBoundaryTest}가
- * 강제한다).
+ * <p>계정 삭제는 {@link com.bokrilog.engagement.EngagementDeletionApi}로 기존 동의·광고 시도 행을 지운다.
+ * 이 패키지의 내부 표에는 다른 모듈이 직접 접근하지 않는다.
  */
 package com.bokrilog.engagement;

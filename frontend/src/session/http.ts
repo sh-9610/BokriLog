@@ -11,7 +11,7 @@ import { SESSION_REQUEST_TIMEOUT_MS } from './useSessionState'
  * `Accept`와 CSRF 토큰, 본문이 있을 때만 `Content-Type`, 멱등 키를 받았을 때만 `Idempotency-Key`. 동일 출처 `Origin`은
  * 브라우저가 싣고 스크립트가 만들 수 없으므로 여기에 그것을 다루는 코드가 없는 것이 정상이다.
  *
- * 예외는 `telemetry/beacon.ts` 하나다 — `keepalive`로 문서를 떠난 뒤에도 보내고 응답을 읽지 않는 계측 전송이라 모양이 다르다.
+ * 광고 링크에서 시작한 수동 동기화는 문서 이동과 함께 전송이 끝나도록 `keepalive`를 쓴다.
  */
 
 /** JSON 객체 하나. 응답 해석기가 받는 모양이다. */
@@ -44,6 +44,7 @@ export interface PostJsonOptions {
   readonly idempotencyKey?: string
   /** 시한·중단은 호출자가 정한다. 지정하지 않으면 시한이 없다. */
   readonly signal?: AbortSignal
+  readonly keepalive?: boolean
 }
 
 /**
@@ -73,6 +74,7 @@ export async function postJson(path: string, options: PostJsonOptions): Promise<
   if (options.signal !== undefined) {
     init.signal = options.signal
   }
+  if (options.keepalive === true) init.keepalive = true
   return await fetch(path, init)
 }
 

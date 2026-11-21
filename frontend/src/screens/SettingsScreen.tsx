@@ -2,7 +2,6 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactEl
 
 import { AccountDeletionDialog } from '../components/AccountDeletionDialog'
 import { AccountDeletionPanel } from '../components/AccountDeletionPanel'
-import { AdConsentPanel } from '../components/AdConsentPanel'
 import { BybitConnectionForm } from '../components/BybitConnectionForm'
 import { ConnectionRevokeDialog } from '../components/ConnectionRevokeDialog'
 import { ProviderMark } from '../components/ProviderMark'
@@ -30,7 +29,6 @@ import {
 import { entryContent } from '../content/entry'
 import { fetchLinkedProviders } from '../session/linkProvider'
 import { accountDeletionSentence, useAccountDeletion } from '../session/useAccountDeletion'
-import { adConsentSentence, useAdConsent } from '../session/useAdConsent'
 import { useBybitConnection, type ConnectionNotice } from '../session/useBybitConnection'
 import { useLinking } from '../session/useLinking'
 import { useReauthentication } from '../session/useReauthentication'
@@ -175,9 +173,7 @@ export function SettingsScreen(): ReactElement {
    * 자기 표지를 비우는 순간 그 자리로 옛 문장이 올라온다. 마지막으로 만진 흐름이 그 자리를
    * 소유하게 하면 그 되살아남이 구조적으로 불가능해진다.
    */
-  const [lastFlow, setLastFlow] = useState<
-    'auth' | 'connection' | 'adConsent' | 'support' | 'deletion'
-  >('auth')
+  const [lastFlow, setLastFlow] = useState<'auth' | 'connection' | 'support' | 'deletion'>('auth')
 
   const onUnlinked = useCallback((removed: SignInProvider): void => {
     /*
@@ -195,8 +191,6 @@ export function SettingsScreen(): ReactElement {
   const connection = useBybitConnection(csrfToken, gate === 'ready')
   // 문의(Story 3.6). 세션이 확인된 뒤에만 읽고 값은 메모리에만 있다.
   const support = useSupportInquiries(gate === 'ready', csrfToken)
-  // 광고 동의(Story 4.1). 세션이 확인된 뒤에만 읽고 값은 메모리에만 있다. 이 화면 밖의 어느 경로도 이 값을 읽지 않는다.
-  const adConsent = useAdConsent(gate === 'ready', csrfToken)
   // 계정 삭제 요청(Story 5.1). 세션이 확인된 뒤에만 정책을 읽고 값은 메모리에만 있다.
   const deletion = useAccountDeletion(gate === 'ready', csrfToken)
 
@@ -363,13 +357,11 @@ export function SettingsScreen(): ReactElement {
       ? accountDeletionSentence(deletion.notice)
       : lastFlow === 'support'
         ? supportSentence(support.notice)
-        : lastFlow === 'adConsent'
-          ? adConsentSentence(adConsent.notice)
-          : lastFlow === 'connection'
-            ? connectionNoticeText(connection.notice, connection.confirmation !== null)
-            : unlinking.notice === null
-              ? null
-              : authContent.notices[unlinking.notice]
+        : lastFlow === 'connection'
+          ? connectionNoticeText(connection.notice, connection.confirmation !== null)
+          : unlinking.notice === null
+            ? null
+            : authContent.notices[unlinking.notice]
 
   return (
     <>
@@ -786,18 +778,6 @@ export function SettingsScreen(): ReactElement {
                   </>
                 )}
               </section>
-
-              {/*
-                광고 동의(Story 4.1). 거래소 연결 바로 뒤에 둔다 — 설정 화면이 로그인 수단·연결과 함께 동의 상태를 보인다.
-                결과는 위 live region이 한 번 말하고, 이 영역은 광고를 띄우지도 외부로 요청하지도 않는다.
-              */}
-              <AdConsentPanel
-                blocked={busy}
-                consent={adConsent}
-                onAction={() => {
-                  setLastFlow('adConsent')
-                }}
-              />
 
               <section aria-labelledby={authContent.settings.reauth.id} className={styles.section}>
                 <h2 className={styles.sectionHeading} id={authContent.settings.reauth.id}>

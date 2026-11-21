@@ -570,7 +570,7 @@ export function idleSyncState(overrides: Partial<DashboardSync> = {}): Dashboard
     admitting: false,
     verificationCooldownSeconds: null,
     focus: null,
-    request: () => undefined,
+    request: () => false,
     requestVerification: () => undefined,
     ...overrides,
   }

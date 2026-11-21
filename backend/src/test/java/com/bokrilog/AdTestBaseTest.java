@@ -35,14 +35,7 @@ class AdTestBaseTest {
 
     /** helper 이름 → 정의가 있어야 하는 유일한 파일({@code src/test/java} 기준 경로). */
     private static final Map<String, String> HOLDERS = Map.of(
-            "admitManual", AD_BASE,
-            "backdateAdmission", AD_BASE,
-            "grant", AD_BASE,
             "newTransition", AD_BASE,
-            "assertNotFound", AD_BASE,
-            "insertEligible", AD_BASE,
-            "insertConsent", AD_BASE,
-            "claim", AD_BASE,
             "providerBackOn", AD_BASE,
             "concurrently", OPERATOR_BASE);
 
@@ -100,10 +93,10 @@ class AdTestBaseTest {
 
     @Test
     void 훑는_범위는_그_base의_하위_클래스와_base_자신이다() {
-        assertThat(AD_FAMILY.matcher("class AdEligibilityTest extends AdTestBase {").find()).isTrue();
+        assertThat(AD_FAMILY.matcher("class DashboardAdTest extends AdTestBase {").find()).isTrue();
         assertThat(AD_FAMILY.matcher("class SupportInquiryTest extends OperatorTestBase {").find()).isFalse();
         assertThat(OPERATOR_FAMILY.matcher("class SupportInquiryTest extends OperatorTestBase {").find()).isTrue();
-        assertThat(OPERATOR_FAMILY.matcher("class AdTransitionTest extends AdTestBase {").find()).isTrue();
+        assertThat(OPERATOR_FAMILY.matcher("class ClientTelemetryTest extends AdTestBase {").find()).isTrue();
         assertThat(OPERATOR_FAMILY.matcher("class FirstSnapshotTest extends AuthFlowTestBase {").find()).isFalse();
     }
 

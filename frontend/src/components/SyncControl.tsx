@@ -12,7 +12,7 @@ import type { PlanEnd } from '../session/usePlanEnd'
 import { calculationEvidenceContent } from '../content/calculationEvidence'
 import { planEndContent } from '../content/planEnd'
 import { copyFor, planResultContent } from '../content/planResult'
-import { planSyncContent as copy } from '../content/planSync'
+import { planSyncContent as copy, DASHBOARD_SYNC_RETURN_PATH } from '../content/planSync'
 import { planVerificationContent } from '../content/planVerification'
 import { inLongGap, inProgress, purposeOf } from '../session/useDashboard'
 import { Instant, Time } from './EvidenceParts'
@@ -331,15 +331,17 @@ export function SyncControl({
   verification,
   sync,
   newPlan,
+  adExpiresAt = null,
 }: {
   readonly status: SyncStatus
   readonly verification: VerificationStatus
   readonly sync: DashboardSync
   readonly newPlan?: NewPlanChoice
+  readonly adExpiresAt?: number | null
 }): ReactElement {
   const summaryRef = useRef<HTMLDivElement>(null)
   const explanationRef = useRef<HTMLDivElement>(null)
-  const buttonRef = useRef<HTMLButtonElement>(null)
+  const buttonRef = useRef<HTMLButtonElement | HTMLAnchorElement>(null)
   const catchUpRef = useRef<HTMLButtonElement>(null)
   const newPlanRef = useRef<HTMLButtonElement>(null)
   const noticeRef = useRef<HTMLDivElement>(null)
@@ -639,18 +641,47 @@ export function SyncControl({
   ].filter((id) => id !== null)
   return (
     <div className={styles.sync} id={SYNC_CONTROL_ID} {...tracking}>
-      <button
-        aria-describedby={described.length === 0 ? undefined : described.join(' ')}
-        aria-disabled={!sync.canRequest}
-        className={styles.button}
-        onClick={() => {
-          if (sync.canRequest) sync.request()
-        }}
-        ref={buttonRef}
-        type="button"
-      >
-        {copy.action}
-      </button>
+      {adExpiresAt !== null && sync.canRequest ? (
+        <a
+          aria-describedby={described.length === 0 ? undefined : described.join(' ')}
+          className={styles.button}
+          href={DASHBOARD_SYNC_RETURN_PATH}
+          onClickCapture={(event) => {
+            const eligibleClick =
+              event.button === 0 &&
+              !event.ctrlKey &&
+              !event.metaKey &&
+              !event.shiftKey &&
+              !event.altKey
+            const fresh = performance.now() < adExpiresAt
+            const admitted = eligibleClick && sync.request(fresh)
+            if (!admitted || !fresh) {
+              event.preventDefault()
+              event.stopPropagation()
+            }
+          }}
+          ref={(element) => {
+            buttonRef.current = element
+          }}
+        >
+          {copy.action}
+        </a>
+      ) : (
+        <button
+          aria-describedby={described.length === 0 ? undefined : described.join(' ')}
+          aria-disabled={!sync.canRequest}
+          className={styles.button}
+          onClick={() => {
+            if (sync.canRequest) sync.request()
+          }}
+          ref={(element) => {
+            buttonRef.current = element
+          }}
+          type="button"
+        >
+          {copy.action}
+        </button>
+      )}
       {running ? (
         <div className={styles.progress}>
           <p className={styles.state} id={STATE_ID}>

@@ -1,12 +1,12 @@
 # 경로와 화면
 
-- **브라우저 경계.** 외부 폰트·CDN·분석·광고 SDK 금지(인증된 네 화면의 동일 출처 계측 beacon `/api/engagement/telemetry`는 허용 범위다 — 4.5). `localStorage`·`sessionStorage`·쿠키·IndexedDB 쓰기 금지. 유일한 예외는 `/ad-transition` 문서다 — 동의·서버 자격·1회 소비를 통과한 SHOW에서만 `ads/gptAdapter.ts`가 GPT를 load하고, GPT가 쓰는 쿠키·저장소는 4.1 동의가 설명한 범주다(4.3). 진입 화면은 문서·번들 외 요청 0건이며 시험이 고정한다. 인증 토큰과 금융 원본은 브라우저 영속 저장소에 두지 않는다.
+- **브라우저 경계.** 외부 폰트·CDN·분석 SDK는 두지 않는다. 인증된 대시보드의 수동 동기화 광고만 서버 광고 설정을 읽고 GPT 제한 광고 슬롯을 준비할 수 있다. 동일 출처 계측은 `/api/engagement/telemetry`를 이용한다. 앱은 `localStorage`·`sessionStorage`·IndexedDB에 쓰지 않으며, 인증 토큰과 금융 원본을 브라우저 영속 저장소에 두지 않는다. 진입 화면은 문서·번들 외 요청 0건을 시험으로 고정한다.
 - **디자인 토큰.** `frontend/src/styles/tokens.css`가 정본이며 `DESIGN.md` frontmatter의 평면 이름을 그대로 옮긴 것이다. 색·타이포그래피·모서리·간격 리터럴을 컴포넌트에 직접 쓰지 않는다. stylelint가 강제하고, 인라인 예외는 `-- 이유`가 붙은 disable 주석만 허용한다. 없는 토큰을 지어내지 않는다.
 - **화면 카피.** `frontend/src/content/`가 소유하고 화면과 시험이 같은 문자열을 참조한다. 모든 핵심 화면에 `복리 계획 비교`와 "투자성과·계좌 수익률·투자 추천이 아닙니다" 고지를 인접 배치한다. 실시간·정확 보장, 수익 축하, 손실 공포, 스트릭·배지 표현은 금지다.
 
 **경로·화면 경계**
 - 화면 경로는 여섯(`/onboarding`·`/dashboard`·`/settings`·`/plan-conditions`·`/operator`·`/ad-transition`)이고 `App.tsx` 경로 맵과 Nginx 허용 목록이 같은 집합이어야 한다. 그중 복귀 목적지는 넷(`/plan-conditions`·`/ad-transition` 제외, `/operator`는 운영자에게만 — 접기 규칙은 helper 하나 `OperatorAccess.foldDestination`)이고 서버 `ALLOWED_DESTINATIONS`, 세션 목적지 맵, 복귀 목적지 집합이 같은 집합이어야 한다 — 합쳐 **다섯 곳**이다. 타입 검사가 잡는 것은 하나뿐이다. 근거·조정 이력·종료·완료는 새 경로가 아니라 대시보드 패널 안에서 연다(2.9~2.14).
-- CSP는 넓히지 않는다. 폼은 `fetch`로 보내고 `form-action 'none'`을 유지한다(2.1). 예외는 `/ad-transition` 한 경로의 광고 공급자 origin뿐이고 그 값은 출시 게이트 G-4가 실측으로 보정한다(4.3).
+- 폼은 `fetch`로 보내고 `form-action 'none'`을 유지한다. 광고 공급자 origin은 정확히 `/dashboard` 경로에 허용하고 G-4에서 실측한다. 이전 `/ad-transition` 주소는 대시보드로 돌아가는 호환 경로다.
 - 화면은 대시보드 응답 하나를 한 단위로 교체한다. 늦은 응답은 버리고, 버전 역행·충돌은 교체하지 않고, 실패한 다시 불러오기는 마지막 정상 결과를 유지하며, 401·403은 값을 메모리에서 지운다. 같은 계획의 종단(중도 종료·완료) 뒤 활성 묶음과 새 계획 시작 뒤 이전 계획 응답의 역행은 거절한다(2.8·2.13~2.15).
 - 초점은 사용자가 누른 조작의 결과에만 옮긴다. 자동 트리거의 완료는 status 문장 한 번이다. 화면당 live region은 하나이고 대시보드 status는 `aria-atomic="false"`다(2.9·2.11).
 

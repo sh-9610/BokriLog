@@ -1,5 +1,6 @@
-import { useState, type ReactElement } from 'react'
+import { useLayoutEffect, useState, type ReactElement } from 'react'
 
+import { useDashboardAd } from '../ads/useDashboardAd'
 import { DashboardStatusText } from '../components/DashboardStatusText'
 import { FirstSnapshotPanel } from '../components/FirstSnapshotPanel'
 import { NextPlanBaselinePanel } from '../components/NextPlanBaselinePanel'
@@ -11,6 +12,8 @@ import { ServiceNotice } from '../components/ServiceNotice'
 import { SignOutButton } from '../components/SignOutButton'
 import { authContent, DASHBOARD_PATH, reauthNoticeKindOf, SETTINGS_PATH } from '../content/auth'
 import { entryContent } from '../content/entry'
+import { DASHBOARD_SYNC_RETURN_QUERY } from '../content/planSync'
+import { replaceAddress } from '../session/navigation'
 import { useDashboardAdjustments } from '../session/useAdjustmentHistory'
 import { useDashboardEvidence } from '../session/useCalculationEvidence'
 import {
@@ -84,9 +87,21 @@ export function SignedInScreen(): ReactElement {
   // The adjustment history of the same bundle (Story 2.10), in its own state.
   const adjustments = useDashboardAdjustments(dashboard)
   // The user-time sync of the shown plan (Story 2.11): entry, tab return and the button, in its own state.
-  const sync = useDashboardSync(dashboard, selected === null ? csrfToken : null)
+  const [fromManualSync] = useState(() => window.location.search === DASHBOARD_SYNC_RETURN_QUERY)
+  useLayoutEffect(() => {
+    if (fromManualSync) replaceAddress(DASHBOARD_PATH)
+  }, [fromManualSync])
+  const sync = useDashboardSync(dashboard, selected === null ? csrfToken : null, fromManualSync)
   // The explicit early end of the shown plan (Story 2.13): reauthentication, the confirmation dialog, the end.
   const planEnd = usePlanEnd(dashboard, csrfToken)
+  const adExpiresAt = useDashboardAd(
+    gate === 'ready' &&
+      selected === null &&
+      !signOut.pending &&
+      !reauthentication.pending &&
+      (dashboard.view.kind === 'READY' || dashboard.view.kind === 'COMPLETED'),
+    csrfToken,
+  )
   // Whether the first-snapshot panel leads the dashboard, and how (`planPresenceOf` gives the reasons).
   const presence = planPresenceOf(dashboard.view)
   // 서비스 공지(Story 3.5): 대시보드 응답과 따로 읽고 따로 그린다 — 마지막 정상값과 섞이지 않는다.
@@ -129,7 +144,7 @@ export function SignedInScreen(): ReactElement {
     <>
       <div className={styles.page} inert={dialog !== null}>
         {/* 건너뛰기 링크는 진입 화면과 같은 관용이다. 반복되는 머리말을 지나칠 첫 조작이다. */}
-        <a className={styles.skipLink} href={`#${MAIN_ID}`}>
+        <a className={styles.skipLink} data-google-interstitial="false" href={`#${MAIN_ID}`}>
           {entryContent.skipLink}
         </a>
 
@@ -148,7 +163,11 @@ export function SignedInScreen(): ReactElement {
 
               `<a href>`다. 화면 전환은 전부 문서 요청이고 이 저장소에는 클라이언트 라우팅이 없다.
             */}
-              <a className={styles.settingsLink} href={SETTINGS_PATH}>
+              <a
+                className={styles.settingsLink}
+                data-google-interstitial="false"
+                href={SETTINGS_PATH}
+              >
                 {authContent.settings.link}
               </a>
               <SignOutButton onSignOut={signOut.requestSignOut} pending={signOut.pending} />
@@ -244,6 +263,7 @@ export function SignedInScreen(): ReactElement {
               planEnd={planEnd}
               reauthentication={reauthentication}
               sync={sync}
+              adExpiresAt={adExpiresAt}
             />
           ) : null}
           {ready ? (

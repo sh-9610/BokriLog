@@ -2,9 +2,6 @@ package com.bokrilog.engagement.internal;
 
 import com.bokrilog.engagement.AdEligibilityApi.SkipReason;
 import java.time.Duration;
-import java.time.Instant;
-import java.time.OffsetDateTime;
-import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -29,7 +26,7 @@ class AdAttemptRepository {
      * <p>각 경로는 자기 advisory 잠금 하나 → 같은 {@code AccountAccessApi.lockWriteAccess}(계정 생명주기 행 {@code FOR UPDATE})
      * 순서이므로, 동의 쓰기·판정·소비·계측은 결국 그 생명주기 행에서 한 줄로 선다 — 동의 변경과 자격 판정도 서로를 기다린다.
      * 두 advisory 잠금을 함께 쥐는 경로가 없고, 생명주기 행을 먼저 쥔 뒤 이 잠금을 쥐는 경로도 없어(계정 삭제의 erase port는
-     * advisory 잠금 없이 행을 지운다) 교착이 없다. 판정은 커밋된 최신 동의를 읽는다.
+     * advisory 잠금 없이 행을 지운다) 교착이 없다.
      */
     static final String USER_LOCK_PREFIX = "bokrilog.engagement.ad_eligibility.user:";
 
@@ -66,31 +63,6 @@ class AdAttemptRepository {
                     return new Row(reason == null ? null : SkipReason.valueOf(reason), rs.getString("transition_ref"));
                 })
                 .optional();
-    }
-
-    /** 이 문장의 DB 시각 — 빈도 제한 판정의 기준 시각. */
-    Instant now() {
-        OffsetDateTime now = this.jdbc.sql("SELECT statement_timestamp()").query(OffsetDateTime.class).single();
-        if (now == null) {
-            throw new IllegalStateException("DB 시각을 읽지 못했다.");
-        }
-        return now.toInstant();
-    }
-
-    /**
-     * 그 사용자의 최근 자격 시각들 — 순번(identity)이 큰 것부터 {@code limit}건. 판정은 사용자 잠금 아래에서만 쓰므로 순번 순서가
-     * 커밋 순서다. 시각으로 정렬하지 않는다(DB 시계가 뒤로 가면 뒤집힌다).
-     */
-    List<Instant> recentEligible(UUID userId, int limit) {
-        return this.jdbc.sql("SELECT decided_at FROM engagement_ad_attempt WHERE user_id = :u AND outcome = 'ELIGIBLE' "
-                        + "ORDER BY id DESC LIMIT :n")
-                .param("u", userId)
-                .param("n", limit)
-                .query(OffsetDateTime.class)
-                .list()
-                .stream()
-                .map(OffsetDateTime::toInstant)
-                .toList();
     }
 
     /** 자격(reservation) 한 행을 쓴다. */

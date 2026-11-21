@@ -76,6 +76,9 @@ function loadGpt({ slotKind = 'slot', throwIn = [] }: GptOptions = {}): FakeGpt 
     },
   }
   const slot = {
+    setConfig: (settings: unknown) => {
+      calls.push(`setConfig ${JSON.stringify(settings)}`)
+    },
     addService: (service: unknown) => {
       calls.push(`addService ${String(service === pubads)}`)
       return slot
@@ -124,8 +127,9 @@ function pendingCommands(): number {
 }
 
 const DISPLAY_SEQUENCE = [
-  'setPrivacySettings {"nonPersonalizedAds":true}',
+  'setPrivacySettings {"limitedAds":true}',
   `defineOutOfPageSlot ${AD_UNIT_PATH} ${String(INTERSTITIAL)}`,
+  'setConfig {"interstitial":{"triggers":{"unhideWindow":false,"navBar":false,"inactivity":false,"endOfArticle":false,"continueReading":false,"backward":false}}}',
   'addService true',
   'addEventListener slotOnload',
   'addEventListener slotRenderEnded',
@@ -170,13 +174,14 @@ describe('GPT web interstitial adapter: 준비', () => {
     expect(AD_READY_TIMEOUT_MS).toBe(3000)
   })
 
-  it('GPT를 script 요소로 load하고, 비개인화 설정 → interstitial slot → 리스너 → 서비스 → display 순서로 부르며 targeting이 없다', () => {
+  it('제한 광고용 GPT를 로드하고 제한 설정과 슬롯을 순서대로 준비한다', () => {
     const onFailure = vi.fn()
 
     showInterstitial(AD_UNIT_PATH, onFailure, onReady)
 
     const scripts = gptScripts()
     expect(scripts).toHaveLength(1)
+    expect(scripts[0]?.src).toBe('https://pagead2.googlesyndication.com/tag/js/gpt.js')
     expect(scripts[0]?.async).toBe(true)
     // 그 자리에서는 아무것도 부르지 않는다 — GPT가 load된 뒤 command queue가 처리한다.
     expect(pendingCommands()).toBe(1)
@@ -187,8 +192,7 @@ describe('GPT web interstitial adapter: 준비', () => {
     expect(getObservedStorageEntries()).toEqual([])
   })
 
-  // 준비는 준비 시한만 해제한다 — adapter가 준비 시한 뒤 스스로 실패하지 않는다는 사실만 고정한다. 준비된 광고의 수명 상한은
-  // adapter 계약 밖이고 화면이 소비 창(`AD_CLAIM_WINDOW_SECONDS`)에 취소로 건다(`AdTransitionScreen`, Epic 4 회고 AI-1).
+  // 준비된 광고 슬롯의 유효성 확인은 대시보드 광고 설정 훅이 맡는다.
   it('3초 안에 우리 slot이 준비되면 준비 시한이 지나도 실패하지 않는다 — 수명 상한은 adapter 밖(화면)', () => {
     const onFailure = vi.fn()
     showInterstitial(AD_UNIT_PATH, onFailure, onReady)
@@ -315,7 +319,8 @@ describe('GPT web interstitial adapter: 실패', () => {
     expect(onFailure).toHaveBeenCalledTimes(1)
     const gpt = loadGpt()
     expect(gpt.calls).toEqual([])
-    expectNoRetry(gpt)
+    expect(gptScripts()).toHaveLength(0)
+    expect(getObservedRequests()).toEqual([])
   })
 
   it('정의 중 예외도 한 번 실패를 알린다', () => {

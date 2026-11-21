@@ -31,13 +31,7 @@ export function navigateTo(path: string): void {
   window.location.assign(path)
 }
 
-/**
- * 문서를 다시 요청하지 않고 지금 히스토리 항목의 주소만 바꾼다(Story 4.3, `history.replaceState`).
- *
- * 전환이 아니다 — 화면도 문서도 그대로이고 주소 표시줄의 값만 바뀐다. 중립 전환 화면이 문서 경계를 넘어 받은 transition 참조를
- * 메모리로 옮긴 뒤 쿼리를 지우는 데만 쓴다. 그래야 광고 공급자 script가 load되기 전에 주소에서 그 값이 사라지고, 새로고침·뒤로
- * 가기로 같은 화면에 다시 들어오면 참조가 없어 곧바로 결과로 간다.
- */
+/** 문서를 다시 요청하지 않고 현재 히스토리 항목의 주소를 바꾼다. */
 export function replaceAddress(path: string): void {
   window.history.replaceState(window.history.state, '', path)
 }

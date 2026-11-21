@@ -528,7 +528,7 @@ export function CalculationEvidence({
                   <>
                     <p>{copy.failure.signedOut}</p>
                     {/* A document link: the entry screen checks the session again and offers the sign-in. */}
-                    <a className={styles.link} href={ENTRY_PATH}>
+                    <a data-google-interstitial="false" className={styles.link} href={ENTRY_PATH}>
                       {copy.failure.signInLink}
                     </a>
                   </>

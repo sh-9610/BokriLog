@@ -27,8 +27,8 @@ import { ACCOUNT_DELETION_PROGRESS_STATUSES, retryDeletion } from '../session/ac
 import { replaceLocation } from '../session/navigation'
 import { FIRST_MOUNT_TIMEOUT_MS } from '../test/firstMount'
 import {
-  getObservedAdConsentRequests,
   getObservedAllowedRequests,
+  getObservedDashboardAdRequests,
   getObservedNoticeRequests,
   getObservedRequests,
   getObservedStorageEntries,
@@ -131,7 +131,7 @@ describe('삭제 진행 화면', () => {
       `GET ${ACCOUNT_DELETION_PATH}`,
     ])
     expect(getObservedSupportRequests()).toEqual([])
-    expect(getObservedAdConsentRequests()).toEqual([])
+    expect(getObservedDashboardAdRequests()).toEqual([])
     expect(getObservedNoticeRequests()).toEqual([])
     expect(getObservedRequests()).toEqual([])
     expect(vi.mocked(replaceLocation)).not.toHaveBeenCalled()

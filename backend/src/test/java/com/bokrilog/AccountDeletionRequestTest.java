@@ -427,9 +427,7 @@ class AccountDeletionRequestTest extends PlanSyncTestBase {
                 kept, headers(csrf, key("delete-elsewhere-sync"))));
         answers.put("connection", send("POST", AuthSecurityConfig.BYBIT_CONNECTION_PATH, kept,
                 headers(csrf, null)));
-        answers.put("adConsent", sendJson("POST", AdConsentController.AD_CONSENT_PATH,
-                "{\"choice\":\"GRANTED\",\"policyVersion\":\"" + com.bokrilog.engagement.AdConsentApi.POLICY_VERSION
-                        + "\"}", kept, headers(csrf, key("delete-elsewhere-ad"))));
+        answers.put("dashboardAd", get(DashboardAdController.DASHBOARD_AD_PATH, kept));
         answers.put("inquiry", sendJson("POST", AuthSecurityConfig.SUPPORT_PATH + "/inquiries",
                 "{\"category\":\"ACCOUNT\",\"title\":\"로그인 문의\",\"description\":\"로그인이 안 됩니다.\","
                         + "\"contact\":\"IN_APP\"}", kept, headers(csrf, key("delete-elsewhere-inquiry"))));
@@ -448,7 +446,7 @@ class AccountDeletionRequestTest extends PlanSyncTestBase {
                 "dashboard", "403 FORBIDDEN",
                 "sync", "403 FORBIDDEN",
                 "connection", "403 FORBIDDEN",
-                "adConsent", "404 NOT_FOUND",
+                "dashboardAd", "404 NOT_FOUND",
                 "inquiry", "404 NOT_FOUND",
                 "inquiries", "404 NOT_FOUND"));
         assertThat(countOf("sync_plan_sync_job", signed.user())).isZero();
