@@ -4,25 +4,35 @@ Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개�
 
 ## 언어
 
-대화와 산출 문서 모두 한국어다. BMAD 중앙 설정(`_bmad/core/config.yaml`)이 `communication_language: Korean`, `document_output_language: Korean`으로 고정되어 있으므로 이 값을 따른다. 브랜치명·커밋 subject·코드 식별자만 영문이다. 코드 주석도 한국어다 — 새로 쓰거나 고치는 주석은 한국어로 쓰고, 기존 영어 주석은 그 파일을 고칠 때 손대는 범위에서만 바꾸며 주석만 바꾸는 일괄 치환은 하지 않는다(Epic 2 회고 AI-10, 2026-10-06 결정).
+대화와 산출 문서 모두 한국어다. BMAD를 사용할 때도 중앙 설정의 한국어 값을 따른다. 브랜치명·커밋 subject·코드 식별자만 영문이다. 코드 주석도 한국어다 — 새로 쓰거나 고치는 주석은 한국어로 쓰고, 기존 영어 주석은 그 파일을 고칠 때 손대는 범위에서만 바꾸며 주석만 바꾸는 일괄 치환은 하지 않는다(Epic 2 회고 AI-10, 2026-10-06 결정).
 
 ## 세션 시작 시 확인 순서
 
-[현재 진행 지점](#현재-진행-지점)을 조회하고 아래 영역 표에서 변경에 필요한 계약을 읽는다.
-스토리를 시작하거나 코드를 바꾸는 요청이면 `bmad-build` 스킬로 진행한다. 질문·조사·문서 읽기는 스킬 없이 답한다.
+[현재 진행 지점](#현재-진행-지점)에서 작업을 확인하고 [변경 영역의 계약](#스토리가-고정한-계약)을 읽는다.
 
-## BMAD 스킬 실행
+## 일반 PR 절차
 
-이 저장소의 작업은 `.claude/skills/bmad-*` 스킬로 진행한다. 각 스킬의 `SKILL.md`는 렌더링 명령 하나만 담고 있다.
+일상적인 변경은 범위와 완료 조건 정리 → 구현 → 검증 → PR 순서로 진행한다. 새 요구사항, 모듈 경계, 여러 PR의 의존성이나 회고를 구조화할 때는 필요한 BMAD 스킬을 선택할 수 있다.
+
+1. **착수.** PR에 변경 범위·관련 계약·완료 조건·검증 방법을 남긴다. [스프린트 원장](_bmad-output/implementation-artifacts/sprint-status.yaml)의 `open`·`in-progress` 액션을 변경 주제·모듈·계약, 파일 기본 이름·클래스 이름, 적용되는 작업 절차로 대조한다. 관련 ID와 이번 범위(해소·일부·범위 밖)를 적는다. 해당 항목이 없으면 한 줄로 표시한다. 미룬 작업 원장에서도 관련 번호와 이번 작업을 결정 지점으로 지목한 항목을 확인한다.
+2. **구현 전 검토.** 인증·재인증, 계정 삭제·복원, 금융 계산, DB 스키마, 운영 배포의 동작 계약이 바뀌면 영향과 실패 시 동작, 검증 방법을 먼저 기록하고 변경안을 독립적으로 검토한다. 승인된 계약을 바꾸거나 모호한 해석을 결정해야 하면 사용자에게 먼저 확인한다. 진행 중 이 범위로 넓어져도 같은 절차를 적용한다. 운영 스크립트 변경은 신호 처리, 잠금, 실패 경로, 실패 시 차단, 운영 모드 거부 조건을 확인한다.
+3. **병합 전.** diff 범위가 넓어졌으면 관련 항목을 다시 확인한다. 요구사항과 관련 회귀시험의 결과를 PR에 남기고 `ci-required` 통과를 확인한다. 영향이 큰 변경은 구현 결과와 실패 경로를 독립적으로 리뷰한다. 실연동·운영 검증·외부 승인 상태는 [출시 게이트와 증거](_bmad-output/planning-artifacts/epics.md)에서 확인한다.
+4. **완료 기록.** 새로 미룬 항목, 해소하거나 일부 해소한 항목, 이번 작업이 결정 지점이었던 항목을 [미룬 작업 판정](_bmad-output/implementation-artifacts/deferred-work-resolutions.md#갱신-규칙)에 반영한다. 항목별 근거와 요약 건수를 맞추고, 잔여 범위와 다음 결정 지점 또는 담당 미정 상태를 적는다. 병합 결과가 필요한 기록은 병합 전 PR에 담당과 후속 문서 PR 범위를 적고 병합 후 이어서 갱신한다. 회고 액션 전체가 검증됐을 때 `sprint-status.yaml`에서 `done`으로 올린다.
+
+토픽 브랜치 작업은 사용자 체크아웃을 옮기지 않고 별도 `git worktree`에서 하고, 머지 뒤 worktree와 브랜치를 모두 지운다.
+
+## BMAD를 선택했을 때
+
+스킬 실행은 설치된 타깃의 `SKILL.md`를 따른다.
 
 - `SKILL.md`가 지시하는 `render_skill.py` 명령을 그대로 한 번 실행하고, 출력된 절대경로 `workflow.md`를 읽어 따른다.
 - 렌더링이 실패하면 명령 출력을 보고하고 중단한다. `.claude/skills/` 아래의 워크플로 원본을 직접 읽어 대신 실행하지 않는다.
 - `.claude/skills/`(Claude Code)와 `.agents/skills/`(Codex)는 같은 설치본에서 생성된 동일 파일이다. 스킬 파일을 손으로 고치지 않는다. 동작을 바꿀 때는 `_bmad/custom/` 또는 `bmad-customize` 스킬을 사용한다.
 - `_bmad/config*.toml`과 모듈 `config.yaml`은 인스톨러가 재생성한다. 직접 수정하지 않는다.
 
-### 스토리·변경 작업의 표준 흐름
+### bmad-build 실행 흐름
 
-`bmad-build`가 다음 순서를 강제한다. 단계를 건너뛰지 않는다.
+`bmad-build`를 선택한 작업에는 다음 순서를 적용한다.
 
 1. **SPEC 작성** — `_bmad-output/implementation-artifacts/spec-<slug>.md`. 스토리는 `spec-1-3-<slug>.md`처럼 스토리 번호로 시작하고, chore·fix도 SPEC을 쓴다(예: `spec-ci-foundation.md`). SPEC의 `## Intent`·`## Boundaries & Constraints`는 사람이 소유하며 승인 뒤 고치지 않는다.
 2. **CHECKPOINT 1(Intent 승인)** — 사용자 승인을 받기 전에는 구현하지 않는다. SPEC 토큰 초과 경고가 나오면 사용자는 보통 `[K] 유지`를, 도구 선택 안이 여럿이면 추천안을 고른다.
@@ -32,16 +42,14 @@ Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개�
 6. **PR** — 토픽 브랜치를 push하고 `develop`으로 PR을 연다. `ci-required`가 green이면 `Create a merge commit`으로 머지한다(`gh pr merge --merge`).
 7. **done 전환** — 머지 뒤 `chore/sprint-status-<n>-<m>-done` 브랜치에서 sprint-status 한 줄을 `done`으로 바꾸는 docs PR을 따로 올린다(PR #3, #10 패턴). 문서-only 경로라 `changes → ci-required`만 돌고 1분 안에 끝난다. 스토리·chore·fix의 done 전환 PR(done 전환 PR이 없는 작업이면 그 작업의 PR 자체)은 세 부류의 defer 판정을 `deferred-work-resolutions.md`에 함께 적는다 — 그 작업이 `deferred-work.md`에 append한 defer, 그 작업이 해소한 defer, 그 작업을 결정 지점으로 지목한 defer(결정하지 못하고 지나갔으면 미해소·주인 상실로라도 판정). 항목별 절과 상태 표·건수를 같은 PR에서 맞추고 판정을 다음 라운드로 넘기지 않는다(Epic 1 회고 액션 8(`epic-1-retro-item-8`)·Epic 2 회고 AI-6(`epic-2-retro-item-18`)·Epic 3 회고 AI-11(`epic-3-retro-item-36`)).
 
-토픽 브랜치 작업은 사용자 체크아웃을 옮기지 않고 별도 `git worktree`에서 하고, 머지 뒤 worktree와 브랜치를 모두 지운다.
-
-### 커밋·푸시·머지의 자율 범위
+## 커밋·푸시·머지의 자율 범위
 
 - 커밋·푸시는 사용자가 요청할 때만 한다.
 - "진행해줘"·"병합하는 데 문제가 없다면 진행해줘"처럼 명시적 진행 지시가 있고 `ci-required`가 green이며 충돌이 없으면 push → PR → 머지까지 한 번에 진행한다. 사용자는 PR 페이지에서 사후 검토한다.
 - "확인해줘"류 지시면 PR까지만 열고 머지는 묻는다.
 - 실패한 CI를 재시도로 덮지 않는다. 원인을 찾아 고친 커밋을 올린다.
 - "묻지 말고 쭉 진행해"류 상시 위임은 SPEC `<frozen-after-approval>`(Intent·Boundaries·I/O 표)의 해석을 덮지 않는다. 그 부분이 모호하거나 현실과 어긋나 해석이 필요하면 상시 위임이 있어도 멈추고 묻는다. 상시 위임이 덮는 것은 그 밖이다: 리뷰 patch 반영, 위 조건을 갖춘 push·PR·머지, 다음 작업 착수(Epic 5 회고 AI-8, 2026-11-11 결정).
-- 오래 혼자 진행할 때는 마디마다 한두 줄로 보고한다. 마디는 SPEC 승인, 구현 완료, 리뷰 분류, PR 열림, CI 결과, 머지다. 보고에는 끝난 것과 다음 것을 적고, 작업 하나가 끝나면 요약한다(Epic 5 회고 AI-8, 2026-11-11 결정).
+- 오래 혼자 진행할 때는 마디마다 한두 줄로 보고한다. 마디는 필요한 승인, 구현 완료, 리뷰 결과, PR 열림, CI 결과, 머지다. 보고에는 끝난 것과 다음 것을 적고, 작업 하나가 끝나면 요약한다(Epic 5 회고 AI-8, 2026-11-11 결정).
 
 ## 코드 규칙
 
@@ -55,11 +63,11 @@ Bybit 읽기 전용 연결로 복리 목표 계획을 기록·비교하는 개�
 
 ## 현재 진행 지점
 
-현재 체크아웃에서 `uv run --managed-python --no-cache scripts/session-status.py`를 실행한다. [조회 절차](DEVELOPMENT.md#세션-상태-조회) 사용자 체크아웃은 `develop`에 두고, 진행·리뷰 스토리와 열린 회고 액션을 확인한다. 스토리 배경은 해당 `epic-<n>-context.md`, 과거 결정과 미검증 출시 게이트는 [구현 이력](_bmad-output/implementation-artifacts/context/history.md)에서 찾는다.
+사용자 체크아웃은 `develop`에 두고, [스프린트 원장](_bmad-output/implementation-artifacts/sprint-status.yaml)에서 진행 중인 스토리와 열린 회고 액션을 확인한다. 한 번에 보고 싶으면 [세션 상태 조회](DEVELOPMENT.md#세션-상태-조회)를 사용한다. 스토리 배경은 해당 `epic-<n>-context.md`, 과거 결정과 미검증 출시 게이트는 [구현 이력](_bmad-output/implementation-artifacts/context/history.md)에서 찾는다.
 
 ## 스토리가 고정한 계약
 
-작업이 닿는 영역의 파일을 모두 읽고 SPEC frontmatter의 `context`에 각 경로를 `{project-root}/_bmad-output/implementation-artifacts/context/파일명.md`로 적는다. 해당 스토리 SPEC의 Design Notes와 구현에서 확정한 내용도 확인한다.
+작업이 닿는 영역의 파일과 해당 스토리 SPEC의 Design Notes, 구현에서 확정한 내용을 읽는다. 일반 작업은 관련 계약을 PR에 연결하고, BMAD 작업은 SPEC frontmatter의 `context`에 각 경로를 `{project-root}/_bmad-output/implementation-artifacts/context/파일명.md`로 적는다.
 
 | 변경 영역 | 계약 파일 |
 |---|---|
@@ -97,7 +105,7 @@ BMAD Python 스크립트는 저장소 루트에서 `uv run --managed-python --no
 
 충돌 시 우선순위는 PRD의 제품 범위 → 아키텍처의 불변식(SPINE 1.1) → `ERD-1.1.0`의 하위 구현 계약 순이다. 결정을 바꿀 때는 기존 문서를 덮어쓰지 않고 새 버전으로 발행한다. `sprint-status.yaml`의 스토리 키 앞부분(`1-3`)이 브랜치 번호이고, 스토리 본문은 `epics.md`의 해당 `### Story` 절이다.
 
-`deferred-work.md`는 `bmad-build`가 `defer` 판정마다 항목을 **추가만** 하는 로그다. 기존 항목을 고치거나 지우지 않는다. 해소 여부는 `deferred-work-resolutions.md`에 기록하고 상태 요약 표를 함께 맞춘다. 검사가 실제로 성공한 뒤에만 해소로 적는다.
+`deferred-work.md`는 미룬 작업을 **추가만** 하는 로그다. 기존 항목을 고치거나 지우지 않는다. 해소 여부는 `deferred-work-resolutions.md`에 기록하고 상태 요약 표를 함께 맞춘다. 검사가 실제로 성공한 뒤에만 해소로 적는다.
 
 ## 미룬 결정
 
@@ -122,5 +130,5 @@ slug는 짧은 영문 소문자 kebab-case다. 한글 브랜치명과 도구 이
 - BMAD 인스톨러를 다시 실행하면 `_bmad/scripts/`의 로컬 수정(UTF-8 stdout)이 업스트림 원본으로 덮어쓰인다. 절차와 복구 방법은 `DEVELOPMENT.md`의 `## 에이전트 타깃`에 있다.
 - 제품 기술 스택은 `ARCHITECTURE-SPINE.md`(1.1, `architecture-BokriLog-2026-11-16/`)가 권위 기준이다(Java/Spring/PostgreSQL, React/Vite). 이 저장소의 Python 환경은 기획 도구 전용이며 제품 런타임과 무관하다.
 - `.idea/`, `.claude/settings.local.json`, `compose.override.yaml`, `.env*`는 기기별 파일이라 커밋하지 않는다. 저장소가 소유하는 compose 구성은 `deploy/compose/compose.yaml` 하나다.
-- 스토리 머지 때 공통 계약이 바뀌면 해당 영역 문서를 갱신한다. 진행 상태는 sprint-status 원장에, 스토리별 도입·리뷰 경위는 SPEC에 기록한다.
+- 공통 계약이 바뀌면 해당 영역 문서를 갱신한다. 기존 스토리와 회고 액션의 상태는 스프린트 원장에, 일반 작업의 진행과 리뷰 근거는 PR에 남긴다. BMAD 작업의 도입·리뷰 경위는 SPEC에도 기록한다.
 - `AGENTS.md`는 Codex가 읽는 진입 파일이며 이 파일을 대체하지 않는다. 규칙의 권위는 `CLAUDE.md` 하나이고 `AGENTS.md`는 오리엔테이션·실행 명령과 "제품 경로를 바꾸기 전에 `CLAUDE.md`를 읽으라"는 지시만 담는다. 규칙을 그리로 복사하지 않는다 — 두 벌이 되면 갈라지고 맞춰 줄 검사가 없다. `AGENTS.md`의 `bmad:context` 마커 안쪽은 `bmad-project-context` 스킬이 소유하며 refresh 때 교체된다.
