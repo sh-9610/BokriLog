@@ -258,10 +258,10 @@ export async function confirmRevocation(
     return { outcome: 'unanswered' }
   }
   /*
-   * 5xx 가운데 공통 오류 본문(`code`·`correlationId`)이 있는 것은 서버가 답한 실패다 — 확정 트랜잭션 전체가 롤백됐다.
-   * 본문이 그 모양이 아닌 5xx(프록시가 끊은 응답)만 커밋 여부를 단정하지 않고 같은 키 재시도로 둔다.
+   * Nginx는 백엔드 응답을 기다리다 504가 나면 공통 오류 본문을 보낸다. 이미 해제가 커밋됐을 수 있으므로
+   * 504와 공통 오류 본문이 없는 5xx는 결과 미확인으로 두고 같은 키로 재시도할 수 있게 한다.
    */
-  if (result.status >= 500 && !commonError(result.payload)) {
+  if (result.status === 504 || (result.status >= 500 && !commonError(result.payload))) {
     return { outcome: 'unanswered' }
   }
   return { outcome: 'failed', code: result.code }
