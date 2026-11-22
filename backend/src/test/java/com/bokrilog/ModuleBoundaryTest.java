@@ -512,21 +512,6 @@ class ModuleBoundaryTest {
     }
 
     /**
-     * 광고 동의는 결과 조회의 조건이 아니다(Story 4.1). 동의 API에 닿는 운영 클래스는 engagement 모듈 안과 설정 화면이 부르는 루트
-     * 컨트롤러 하나다 — 연결·동기화·계획·대시보드 경로가 동의 여부로 동작을 바꿀 길이 없다. 광고 자격 판정(Story 4.2)이 생기면 그
-     * 판정은 engagement 안에서 이 API를 읽는다.
-     */
-    @Test
-    void 광고_동의_API는_engagement와_동의_컨트롤러만_닿는다() {
-        ArchRule rule = noClasses()
-                .that().resideOutsideOfPackage("com.bokrilog.engagement..")
-                .and().haveNameNotMatching("com\\.bokrilog\\.AdConsentController(\\$.*)?")
-                .should().dependOnClassesThat().belongToAnyOf(com.bokrilog.engagement.AdConsentApi.class)
-                .because("동의 여부로 연결·동기화·대시보드 동작을 바꾸지 않는다.");
-        rule.check(PRODUCTION_CLASSES);
-    }
-
-    /**
      * 광고 동의 행의 삭제는 계정 삭제 orchestrator 한 곳이다(Story 4.1). 다른 자리가 동의를 지우면 삭제 전환·tombstone 없이 사용자의
      * 결정이 사라진다. 구현하는 모듈 안쪽은 이 규칙 밖이다.
      */
@@ -569,34 +554,6 @@ class ModuleBoundaryTest {
                 java.nio.charset.StandardCharsets.UTF_8)).contains("engagement_ad_consent_decision");
         assertThat(java.nio.file.Files.readString(owner.resolve("AdAttemptRepository.java"),
                 java.nio.charset.StandardCharsets.UTF_8)).contains("engagement_ad_attempt");
-    }
-
-    /**
-     * 광고 자격 판정(Story 4.2)에 닿는 운영 클래스는 engagement 모듈 안과 그 판정을 여는 루트 컨트롤러 하나다 — 대시보드·동기화
-     * 경로가 판정을 일으키거나(대시보드 진입·탭 재활성화가 광고를 만들지 않는다) 판정 결과로 결과 접근을 바꿀 길이 없다.
-     */
-    @Test
-    void 광고_자격_API는_engagement와_자격_컨트롤러만_닿는다() {
-        ArchRule rule = noClasses()
-                .that().resideOutsideOfPackage("com.bokrilog.engagement..")
-                .and().haveNameNotMatching("com\\.bokrilog\\.AdEligibilityController(\\$.*)?")
-                .should().dependOnClassesThat().belongToAnyOf(com.bokrilog.engagement.AdEligibilityApi.class)
-                .because("광고 자격은 결과 조회의 조건이 아니고, 판정은 사용자의 결과 보기 요청 하나로만 일어난다.");
-        rule.check(PRODUCTION_CLASSES);
-    }
-
-    /**
-     * transition 소비(Story 4.3)에 닿는 운영 클래스는 engagement 모듈 안과 중립 전환 화면이 부르는 루트 컨트롤러 하나다 — 대시보드·
-     * 동기화 경로가 광고 시도를 일으키거나 소비 결과로 결과 접근을 바꿀 길이 없다.
-     */
-    @Test
-    void 광고_transition_API는_engagement와_transition_컨트롤러만_닿는다() {
-        ArchRule rule = noClasses()
-                .that().resideOutsideOfPackage("com.bokrilog.engagement..")
-                .and().haveNameNotMatching("com\\.bokrilog\\.AdTransitionController(\\$.*)?")
-                .should().dependOnClassesThat().belongToAnyOf(com.bokrilog.engagement.AdTransitionApi.class)
-                .because("광고는 결과 조회의 조건이 아니고, 광고 시도는 중립 전환 화면의 소비 하나로만 일어난다.");
-        rule.check(PRODUCTION_CLASSES);
     }
 
     /**
@@ -644,7 +601,7 @@ class ModuleBoundaryTest {
 
     /**
      * 의존은 engagement에서 다른 모듈 쪽으로만 난다(Story 4.2). 다른 모듈은 engagement를 모르고(sync는 후보 판정을 주기만 하고 그
-     * 소비자를 모른다), 루트에서 engagement에 닿는 곳은 네 컨트롤러(동의·자격·transition·계측 beacon, Story 4.5)·계정 삭제·복원
+     * 소비자를 모른다), 루트에서 engagement에 닿는 곳은 광고 설정과 계측 컨트롤러·계정 삭제·복원
      * 불변식·계측 허용 표뿐이다 — 대시보드·동기화 컨트롤러가 광고를 읽거나 일으킬 길이 없다.
      */
     @Test
@@ -658,11 +615,10 @@ class ModuleBoundaryTest {
         modules.check(PRODUCTION_CLASSES);
         ArchRule root = noClasses()
                 .that().resideInAPackage("com.bokrilog")
-                .and().haveNameNotMatching("com\\.bokrilog\\.(AdConsentController|AdEligibilityController"
-                        + "|AdTransitionController|ClientTelemetryController|AccountErasure|RestoreInvariants"
+                .and().haveNameNotMatching("com\\.bokrilog\\.(DashboardAdController|ClientTelemetryController|AccountErasure|RestoreInvariants"
                         + "|TelemetryAllowlist)(\\$.*)?")
                 .should().dependOnClassesThat().resideInAPackage("com.bokrilog.engagement..")
-                .because("engagement에 닿는 루트 자리는 정해진 일곱 곳이다.");
+                .because("engagement에 닿는 루트 자리는 정해진 곳이다.");
         root.check(PRODUCTION_CLASSES);
     }
 

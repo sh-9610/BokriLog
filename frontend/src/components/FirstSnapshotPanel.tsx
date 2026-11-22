@@ -98,7 +98,11 @@ export function FirstSnapshotPanel({
           ) : null}
         </div>
       ) : null}
-      {view.kind === 'unconnected' ? <a href="/settings">{copy.connectionSettings}</a> : null}
+      {view.kind === 'unconnected' ? (
+        <a data-google-interstitial="false" href="/settings">
+          {copy.connectionSettings}
+        </a>
+      ) : null}
       {view.kind === 'unavailable' ? (
         <button type="button" onClick={refresh}>
           {copy.refresh}

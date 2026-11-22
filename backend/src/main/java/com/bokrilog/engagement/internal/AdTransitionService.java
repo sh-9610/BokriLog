@@ -91,7 +91,7 @@ class AdTransitionService implements AdTransitionApi {
         if (row.expired()) {
             return new Claim.Skip(SkipReason.EXPIRED);
         }
-        AdEligibilityApi.SkipReason closed = this.gate.firstClosed(userId);
+        AdEligibilityApi.SkipReason closed = this.gate.firstClosed();
         if (closed != null) {
             return new Claim.Skip(switch (closed) {
                 case CONSENT_REQUIRED -> SkipReason.CONSENT_REQUIRED;

@@ -81,7 +81,7 @@ export function App(): ReactElement {
     return <PlanConditionScreen />
   }
   if (pathname === AD_TRANSITION_PATH) {
-    // 중립 전환 화면(Story 4.3). `/plan-conditions`처럼 화면 경로이지만 로그인 복귀 목적지가 아니다.
+    // 이전 광고 주소는 대시보드로 복귀한다.
     return <AdTransitionScreen />
   }
   if (pathname === OPERATOR_PATH) {

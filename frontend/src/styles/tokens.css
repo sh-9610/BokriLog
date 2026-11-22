@@ -224,10 +224,6 @@
   --component-history-row-divider: var(--color-border-default);
   --component-history-row-meta: var(--color-ink-secondary);
 
-  --component-neutral-ad-transition-background: var(--color-surface-base);
-  --component-neutral-ad-transition-foreground: var(--color-ink-secondary);
-  --component-neutral-ad-transition-border: var(--color-border-strong);
-
   --component-service-notice-background: var(--color-info-bg);
   --component-service-notice-foreground: var(--color-info);
   --component-service-notice-border: var(--color-info);

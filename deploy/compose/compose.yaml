@@ -187,6 +187,8 @@ services:
       # 없다(허위 지원 경로를 만들지 않는다). 개발·CI의 값은 `verify-same-origin.sh`가 개발용 주소로 넣고 그 스택에
       # 이어 도는 Playwright 회귀가 그 값을 쓴다.
       BOKRILOG_SUPPORT_CONTACT: ${BOKRILOG_SUPPORT_CONTACT:-}
+      BOKRILOG_AD_PROVIDER_ENABLED: ${BOKRILOG_AD_PROVIDER_ENABLED:-false}
+      BOKRILOG_AD_UNIT_PATH: ${BOKRILOG_AD_UNIT_PATH:-}
       # 메트릭 공통 tag `env`(Story 3.7). 이 스택은 개발(`development`) 또는 CI(`ci`)다 — `production`을 쓰지 않는다.
       # CI의 `동일 출처 검증` 단계가 `ci`를 넣는다. 관리 포트(기본 18081)는 컨테이너의 127.0.0.1에만 묶인다
       # (`BOKRILOG_MANAGEMENT_ADDRESS` 기본값). 게시도 `expose`도 하지 않으므로 같은 compose 네트워크의 다른 서비스도 닿지 못하고,

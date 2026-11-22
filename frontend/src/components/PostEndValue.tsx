@@ -34,12 +34,14 @@ export function PostEndValue({
   unreadable,
   status,
   sync,
+  adExpiresAt,
 }: {
   readonly completion: PlanCompletionRecord
   readonly postEnd: Value | null
   /** The server sent a later value this screen could not vouch for: said as not read, never as none. */
   readonly unreadable: boolean
   readonly status: SyncStatus
+  readonly adExpiresAt?: number | null
   readonly sync: DashboardSync
 }): ReactElement {
   return (
@@ -68,7 +70,12 @@ export function PostEndValue({
           </div>
         </dl>
       )}
-      <SyncControl status={status} sync={sync} verification={UNKNOWN_VERIFICATION} />
+      <SyncControl
+        adExpiresAt={adExpiresAt}
+        status={status}
+        sync={sync}
+        verification={UNKNOWN_VERIFICATION}
+      />
     </section>
   )
 }

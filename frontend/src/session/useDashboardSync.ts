@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-import { adTransitionHref } from '../content/adTransition'
 import { DASHBOARD_SYNC_PATH } from '../content/planSync'
 import { DASHBOARD_VERIFICATION_PATH, type VerificationKind } from '../content/planVerification'
-import { requestAdEligibility } from './adTransition'
 import { postJson, readJson } from './http'
-import { navigateTo } from './navigation'
 import {
   bundleOf,
   inProgress,
@@ -109,7 +106,7 @@ export interface DashboardSync {
   /** The last focus move a job asked for. */
   readonly focus: SyncFocus | null
   /** Asks for a manual sync. Ignored when `canRequest` is false, or while a manual request is in flight. */
-  readonly request: () => void
+  readonly request: (keepalive?: boolean) => boolean
   /**
    * Asks for a precision verification (`PRECISION`) or the catch-up (`CATCH_UP`) of the shown result.
    * Ignored when that one cannot be asked for now, or while a manual request is in flight.
@@ -288,7 +285,6 @@ interface Followed {
    * 따라가기가 다른 작업으로 옮겨 가도 유지해서, 옮겨 간 작업을 이 작업으로 잘못 보지 않는다. 광고로 이어질 수 있는
    * 것은 이 작업의 성공뿐이다(Story 4.3).
    */
-  readonly manualSyncAdmission: string | null
   /** The view shown when following began. Only a later answer can end it. */
   readonly since: DashboardView
   readonly budget: object
@@ -328,12 +324,6 @@ interface Judgement {
   readonly cooldown?: number | null
   readonly verificationCooldown?: number | null
   readonly focus: SyncFocus['target'] | null
-  /**
-   * 광고 자격을 물을 작업(Story 4.3): 이 화면의 `동기화` 누름이 접수된 작업(`manualSyncAdmission`, 끝난 작업의 trigger
-   * `MANUAL`, purpose `SYNC`)이 `succeeded`로 끝난 것. 자동 작업, 합류만 한 작업, 다른 탭이 접수한 작업, 검증, 실패,
-   * 검토는 아니다.
-   */
-  readonly adCandidate?: string
 }
 
 /** Where the summary of a job of this purpose is: the verification control's, or the sync control's. */
@@ -435,7 +425,6 @@ function judge(
             purpose: purposeOf(latest),
             manual: false,
             origin: 'elsewhere',
-            manualSyncAdmission: null,
             since: view,
             budget: {},
           },
@@ -466,16 +455,6 @@ function judge(
       // An ending this screen does not know is one that published nothing it can vouch for.
       const ending = ENDINGS[latest.status] ?? 'failed'
       const purpose = purposeOf(latest)
-      // Story 4.3: 이 화면의 `동기화` 누름이 접수된 작업(합류한 작업, 다른 탭이 접수한 작업, 따라가기가 옮겨 간 작업이
-      // 아닌 것)이 새 공식 결과로 끝났을 때만 광고로 이어질 수 있다. 판단은 끝난 작업이 한다 — 그 id·trigger·purpose다.
-      const adCandidate =
-        followed.manual &&
-        followed.manualSyncAdmission === latest.jobId &&
-        ending === 'succeeded' &&
-        latest.trigger === 'MANUAL' &&
-        purpose === 'SYNC'
-          ? latest.jobId
-          : undefined
       return {
         followed: null,
         outcome: { phase: ending, purpose, survivesReload: false },
@@ -486,7 +465,6 @@ function judge(
             ? 'heading'
             : summaryTarget(purpose)
           : null,
-        ...(adCandidate === undefined ? {} : { adCandidate }),
       }
     }
   }
@@ -558,7 +536,11 @@ function say(phase: Outcome, purpose: SyncPurpose, survivesReload = false): Said
  * The session's own re-check when a tab is shown again (Story 1.5) is left as it is: while it runs the view is
  * `checking`, following pauses, and it resumes with the next answer.
  */
-export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null): DashboardSync {
+export function useDashboardSync(
+  dashboard: Dashboard,
+  csrfToken: string | null,
+  fromManualSync = false,
+): DashboardSync {
   const { view, loading } = dashboard
   const [requesting, setRequesting] = useState<SyncPurpose | null>(null)
   // Automatic sync admissions (`ENTRY`, `VISIBILITY`) in flight: a verification or catch-up waits for them.
@@ -570,8 +552,6 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   const [focus, setFocus] = useState<SyncFocus | null>(null)
   const [gaveUp, setGaveUp] = useState<readonly string[]>([])
   const [visible, setVisible] = useState(() => document.visibilityState !== 'hidden')
-  // Story 4.3: 광고 자격을 물을, 마지막으로 성공한 수동 동기화.
-  const [adJob, setAdJob] = useState<string | null>(null)
   const [seen, setSeen] = useState(view)
   const [wasLoading, setWasLoading] = useState(loading)
 
@@ -580,13 +560,12 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
   const dashboardRef = useRef(dashboard)
   const csrfRef = useRef(csrfToken)
   const followedRef = useRef(followed)
-  const entrySent = useRef(false)
+  const entrySent = useRef(fromManualSync)
+  const returnObserved = useRef(false)
   // The kind of view the entry sync was decided on, and whether the one observation sync after it was decided.
   const entryOn = useRef<DashboardView['kind'] | null>(null)
   const observationEntryDecided = useRef(false)
   const manualInFlight = useRef(false)
-  // 광고 자격을 이미 물은 작업들: 답이 무엇이든 작업마다 한 번이다.
-  const adAsked = useRef(new Set<string>())
   const posts = useRef(0)
   const hiddenAt = useRef<number | null>(null)
   // The view shown when a long-hidden tab came back; the first answer after it decides `VISIBILITY`.
@@ -613,7 +592,6 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
     if (next.cooldown !== undefined) setCooldown(next.cooldown)
     if (next.verificationCooldown !== undefined) setVerificationCooldown(next.verificationCooldown)
     if (next.focus !== null) setFocus(focusOn(next.focus))
-    if (next.adCandidate !== undefined) setAdJob(next.adCandidate)
   }
 
   /*
@@ -648,7 +626,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
    * flight synchronously, so a second press in the same tick is dropped; any admission in flight (`posts`)
    * drops a verification or catch-up press in the same tick.
    */
-  const admit = useCallback((operation: Operation): void => {
+  const admit = useCallback((operation: Operation, keepalive = false): void => {
     const token = csrfRef.current
     if (token === null) return
     const manual = operation.kind === 'verification' || operation.trigger === 'MANUAL'
@@ -684,6 +662,7 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
                 ? { trigger: operation.trigger }
                 : { kind: operation.verification, ...operation.reference },
             signal: controller.signal,
+            ...(keepalive ? { keepalive: true } : {}),
           },
         )
         answer =
@@ -755,9 +734,6 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
             // stays one following (a manual press is never forgotten by an automatic answer for it). A sync
             // may join a verification in progress: the job decides the purpose, not the request.
             const since = viewRef.current
-            // Story 4.3: 새 작업으로 접수된 `동기화` 누름만 이 화면의 수동 동기화다. 작업에 합류한 누름은 아니다.
-            const ownSync =
-              manual && operation.kind === 'sync' && admitted === 'ACCEPTED' ? job.jobId : null
             setFollowed((current) =>
               current?.jobId === job.jobId
                 ? {
@@ -765,7 +741,6 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
                     purpose: purposeOf(job),
                     manual: current.manual || manual,
                     origin: 'here',
-                    manualSyncAdmission: current.manualSyncAdmission ?? ownSync,
                   }
                 : {
                     jobId: job.jobId,
@@ -773,7 +748,6 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
                     purpose: purposeOf(job),
                     manual,
                     origin: 'here',
-                    manualSyncAdmission: ownSync,
                     since,
                     budget: {},
                   },
@@ -801,29 +775,34 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
     })()
   }, [])
 
-  /*
-   * Story 4.3: 이 화면의 수동 동기화가 성공하면 그 결과가 광고로 이어질 수 있는지 한 번 묻는다. 무언가를 바꾸는 것은
-   * 자격 있음 답 하나뿐이다 — 서버의 불투명 참조를 들고 중립 전환 화면으로 문서를 이동한다. 다른 답(건너뜀, 404,
-   * 실패, 시한)은 아무것도 바꾸지 않는다: 새 결과, 그 문장, 그 초점이 그대로다. passive다: 요청을 시작할 뿐이고 요청 시작은
-   * 커밋과 함께 성립할 필요가 없다. 세션 토큰이 도착하면 다시 돈다(그 전에 판정된 작업은 그때 묻는다). `adAsked`가 작업마다
-   * 한 번으로 묶는다.
-   */
+  // 광고 링크의 GET이 직전 문서의 keepalive POST보다 먼저 도착할 수 있다. 자동 접수 없이 새 작업을 찾는다.
   useEffect(() => {
-    if (adJob === null || csrfToken === null || adAsked.current.has(adJob)) return
-    adAsked.current.add(adJob)
-    void (async () => {
-      const transition = await requestAdEligibility(adJob, csrfToken)
-      if (transition === null || !live.current) return
-      /*
-       * 답이 오는 사이 사용자가 다른 일로 넘어갔다: 확인 대화상자가 열려 있거나(계획 종료, 연결 해제…), 새 접수 —
-       * 동기화·검증 — 가 진행 중이거나 따라가는 중이다. 지금 문서를 떠나면 그것을 버리게 된다. 광고는 결과의 조건이
-       * 아니므로 건너뛰는 쪽이 안전하다(fail-open). 참조는 쓰이지 않은 채 만료된다.
-       */
-      if (document.querySelector('[aria-modal="true"]') !== null) return
-      if (posts.current > 0 || followedRef.current !== null) return
-      navigateTo(adTransitionHref(transition))
-    })()
-  }, [adJob, csrfToken])
+    if (!fromManualSync || csrfToken === null || returnObserved.current) return
+    const firstRead = performance.now()
+    const timer = window.setInterval(() => {
+      if (
+        followedRef.current !== null ||
+        performance.now() - firstRead > SESSION_REQUEST_TIMEOUT_MS
+      ) {
+        window.clearInterval(timer)
+        returnObserved.current = true
+        return
+      }
+      const current = viewRef.current
+      if (
+        document.visibilityState !== 'hidden' &&
+        (current.kind === 'READY' ||
+          current.kind === 'COMPLETED' ||
+          current.kind === 'lastGood' ||
+          current.kind === 'retryable')
+      ) {
+        dashboardRef.current.refresh()
+      }
+    }, SYNC_POLL_INTERVAL_MS)
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [fromManualSync, csrfToken])
 
   // ENTRY: once per mount, on the first ready answer — never on the record of a plan ended early (Story 2.13), but on a
   // plan completed at its scheduled end (Story 2.14), whose first observation after the end only a sync fixes.
@@ -1002,17 +981,21 @@ export function useDashboardSync(dashboard: Dashboard, csrfToken: string | null)
     outcome !== 'notLongGap' &&
     outcome !== 'notUseful'
 
-  const request = useCallback((): void => {
-    if (manualInFlight.current || !canRequest) return
-    if (csrfRef.current === null) {
-      setSaid(say('error', 'SYNC'))
-      setFocus(focusOn('summary'))
-      return
-    }
-    setSaid(null)
-    setRequesting('SYNC')
-    admit({ kind: 'sync', trigger: 'MANUAL' })
-  }, [canRequest, admit])
+  const request = useCallback(
+    (keepalive = false): boolean => {
+      if (manualInFlight.current || !canRequest) return false
+      if (csrfRef.current === null) {
+        setSaid(say('error', 'SYNC'))
+        setFocus(focusOn('summary'))
+        return false
+      }
+      setSaid(null)
+      setRequesting('SYNC')
+      admit({ kind: 'sync', trigger: 'MANUAL' }, keepalive)
+      return true
+    },
+    [canRequest, admit],
+  )
 
   const requestVerification = useCallback(
     (kind: VerificationKind): void => {

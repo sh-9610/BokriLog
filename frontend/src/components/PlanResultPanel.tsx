@@ -260,10 +260,12 @@ function Trust({
   bundle,
   terminal,
   sync,
+  adExpiresAt,
   newPlan,
 }: {
   readonly bundle: Accepted
   readonly terminal: PlanTerminal | null
+  readonly adExpiresAt?: number | null
   readonly sync: DashboardSync
   readonly newPlan: NewPlanChoice | undefined
 }): ReactElement {
@@ -330,6 +332,7 @@ function Trust({
               inactive ? null : (
                 <>
                   <SyncControl
+                    adExpiresAt={adExpiresAt}
                     newPlan={newPlan}
                     status={bundle.sync}
                     sync={sync}
@@ -469,7 +472,7 @@ function Notice({
       <div className={styles.notice}>
         {view.cause === 'signedOut' ? (
           // A document link: the entry screen checks the session again and offers the sign-in.
-          <a className={styles.action} href={ENTRY_PATH}>
+          <a data-google-interstitial="false" className={styles.action} href={ENTRY_PATH}>
             {copy.signInLink}
           </a>
         ) : (
@@ -582,10 +585,12 @@ export function PlanResultPanel({
   sync,
   planEnd,
   reauthentication,
+  adExpiresAt,
 }: {
   readonly dashboard: Dashboard
   readonly evidence: EvidenceState
   readonly adjustments: AdjustmentHistoryState
+  readonly adExpiresAt?: number | null
   readonly sync: DashboardSync
   readonly planEnd: PlanEnd
   readonly reauthentication: ReauthenticationAccess
@@ -710,7 +715,13 @@ export function PlanResultPanel({
               ))}
             </ul>
           </section>
-          <Trust bundle={bundle} newPlan={undefined} sync={sync} terminal={terminal} />
+          <Trust
+            adExpiresAt={adExpiresAt}
+            bundle={bundle}
+            newPlan={undefined}
+            sync={sync}
+            terminal={terminal}
+          />
           <section aria-labelledby="plan-result-records" className={styles.group}>
             <h3 id="plan-result-records">{planCompletionContent.evidenceHeading}</h3>
             <CalculationEvidence evidence={evidence} result={result} />
@@ -718,6 +729,7 @@ export function PlanResultPanel({
           </section>
           {dashboard.historical ? null : (
             <PostEndValue
+              adExpiresAt={adExpiresAt}
               completion={completion}
               postEnd={bundle.postEnd ?? null}
               status={bundle.sync}
@@ -743,7 +755,13 @@ export function PlanResultPanel({
             </section>
           )}
           {bundle === null ? null : (
-            <Trust bundle={bundle} newPlan={newPlan} sync={sync} terminal={terminal} />
+            <Trust
+              adExpiresAt={adExpiresAt}
+              bundle={bundle}
+              newPlan={newPlan}
+              sync={sync}
+              terminal={terminal}
+            />
           )}
           {result === null ? null : (
             <section aria-labelledby="plan-result-metrics" className={styles.group}>
@@ -782,7 +800,11 @@ export function PlanResultPanel({
               : completionNextActionCopy(nextActionOf(view))}
           </p>
           {view.kind === 'NO_PLAN' ? (
-            <a className={styles.action} href={planConditionContent.path}>
+            <a
+              data-google-interstitial="false"
+              className={styles.action}
+              href={planConditionContent.path}
+            >
               {planConditionContent.openConditions}
             </a>
           ) : null}

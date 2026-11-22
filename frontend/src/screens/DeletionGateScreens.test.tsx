@@ -200,7 +200,7 @@ describe('삭제 진행 게이트', () => {
       expect(vi.mocked(replaceLocation)).toHaveBeenCalledWith(DASHBOARD_PATH)
     })
     expect(vi.mocked(replaceLocation)).toHaveBeenCalledTimes(1)
-    expect(getObservedAllowedRequests()).toEqual([`GET ${SESSION_ENDPOINT}`])
+    expect(getObservedAllowedRequests()).toEqual([])
     expect(getObservedRequests()).toEqual([])
     expect(vi.mocked(showInterstitial)).not.toHaveBeenCalled()
   })

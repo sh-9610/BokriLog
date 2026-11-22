@@ -277,13 +277,10 @@ class AuthSecurityConfig {
     static final String SUPPORT_PATH = "/api/support";
 
     /**
-     * 광고 참여(Story 4.1~4.5). 광고 동의의 조회와 변경({@code GET}·{@code POST /api/engagement/ad-consent}), 광고 자격
-     * 판정({@code POST /api/engagement/ad-eligibility}), transition 소비({@code POST /api/engagement/ad-transition}, Story 4.3),
-     * 브라우저 계측 beacon({@code POST /api/engagement/telemetry}, Story 4.5)이 이 접두사 아래에 있다.
+     * 대시보드 광고 설정 조회와 브라우저 계측 요청이 이 접두사 아래에 있다.
      *
-     * <p>인가와 CSRF·{@code Origin}이 같은 판정 함수({@link #isEngagementPath})를 본다. 동의 변경·자격 판정·소비·계측은 상태 변경이라
-     * 세션 귀속 CSRF 토큰과 동일 출처 {@code Origin}을 요구한다. 하위 경로도 같은 판정에 걸려 인증 없이는 401, 인증되면 없는 경로와 같은
-     * 404다.
+     * <p>인가와 CSRF·{@code Origin}은 같은 경로 판정 함수({@link #isEngagementPath})를 쓴다. 계측 POST에는 세션 귀속
+     * CSRF 토큰과 동일 출처 {@code Origin}이 필요하다.
      */
     static final String ENGAGEMENT_PATH = "/api/engagement";
 

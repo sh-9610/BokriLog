@@ -37,6 +37,7 @@
   font-weight: var(--type-label-font-weight);
   line-height: var(--type-body-line-height);
   overflow-wrap: anywhere;
+  text-decoration: none;
   cursor: pointer;
 }
 

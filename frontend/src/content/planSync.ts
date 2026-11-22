@@ -1,3 +1,7 @@
+import { DASHBOARD_PATH } from './auth'
+
+export const DASHBOARD_AD_CONFIG_PATH = '/api/engagement/dashboard-ad'
+
 /**
  * 활성 계획의 사용자 시점 증분 동기화 카피(Story 2.11).
  *
@@ -11,6 +15,10 @@
  */
 
 /** 동기화 접수. 본문은 트리거 하나이며 금융값·식별자를 싣지 않는다. */
+/** 광고 링크의 동일 출처 복귀 주소. 주소를 직접 열어도 수동 동기화 요청은 보내지 않는다. */
+export const DASHBOARD_SYNC_RETURN_QUERY = '?from=sync'
+export const DASHBOARD_SYNC_RETURN_PATH = `${DASHBOARD_PATH}${DASHBOARD_SYNC_RETURN_QUERY}`
+
 export const DASHBOARD_SYNC_PATH = '/api/dashboard/sync'
 
 /** 상태 리전 문장이 공유하는 꼬리. 동기화가 공식 값을 바꾸지 않은 모든 결과가 같은 말로 끝난다. */

@@ -18,7 +18,6 @@ import {
   verificationJobFixture,
 } from '../test/planResultFixture'
 import {
-  getObservedAdEligibilityRequests,
   getObservedAllowedRequests,
   getObservedRequests,
   getObservedStorageEntries,
@@ -608,7 +607,7 @@ describe('useDashboardSync: a precision verification', () => {
     await advance(SYNC_POLL_INTERVAL_MS)
     expect(result.current.sync.phase).toBe('succeeded')
     expect(result.current.sync.purpose).toBe('VERIFY')
-    expect(getObservedAdEligibilityRequests()).toEqual([])
+    expect(getObservedAllowedRequests()).not.toContain('POST /api/engagement/ad-eligibility')
     expect(
       getObservedAllowedRequests().filter((entry) => entry.includes('/api/engagement')),
     ).toEqual([])

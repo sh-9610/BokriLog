@@ -2,7 +2,6 @@ package com.bokrilog;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.bokrilog.engagement.AdConsentApi;
 import com.bokrilog.engagement.AdTelemetry;
 import com.bokrilog.engagement.ClientTelemetryApi;
 import com.bokrilog.operations.AdvertisingStopApi;
@@ -25,8 +24,7 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 
 /**
- * Story 4.5: 동일 출처 beacon({@code POST /api/engagement/telemetry})의 계약, 광고 문서 Vitals 표본, 성능 kill switch 판정, 소비
- * 결말 카운터 — SPEC I/O 매트릭스의 서버 행 전부.
+ * Story 4.5: 동일 출처 beacon({@code POST /api/engagement/telemetry})의 계약, 광고 문서 Vitals 표본, 성능 kill switch 판정 — SPEC I/O 매트릭스의 서버 행 전부.
  *
  * <p>표본의 전제(SHOW로 소비된 attempt)는 자격·소비 왕복이 아니라 그 사용자의 attempt 행을 DB 시각 식으로 직접 넣어 만든다 — 소비
  * 시각(10분 창)을 결정적으로 고르기 위해서다. 판정은 스케줄을 기다리지 않고 {@link TelemetryProbe}로 지금 한 번 돌린다. 판정이 5분
@@ -251,36 +249,6 @@ class ClientTelemetryTest extends AdTestBase {
         }
     }
 
-    // ------------------------------------------------------------------ 소비 결말 카운터·SHOW 표지
-
-    @Test
-    void 소비_결말을_세고_SHOW_소비만_SHOW_표지를_세운다() throws Exception {
-        Signed signed = signedIn("telemetry-claim");
-        grant(signed.user());
-        double show = transitions(AdTelemetry.SHOW);
-        double consumed = transitions("CONSUMED");
-        double notFound = transitions(AdTelemetry.NOT_FOUND);
-        double consent = transitions("CONSENT_REQUIRED");
-
-        String transition = insertEligible(signed.user());
-        assertThat(claim(signed, transition).statusCode()).isEqualTo(200);
-        assertThat(shownOf(transition)).isTrue();
-        assertThat(claim(signed, transition).statusCode()).isEqualTo(200);
-        assertThat(claim(signed, newTransition()).statusCode()).isEqualTo(404);
-        this.consents.decide(signed.user(), key("telemetry-claim-deny"), AdConsentApi.Choice.DENIED,
-                AdConsentApi.POLICY_VERSION);
-        String skipped = insertEligible(signed.user());
-        assertThat(claim(signed, skipped).statusCode()).isEqualTo(200);
-        assertThat(shownOf(skipped)).isFalse();
-
-        assertThat(transitions(AdTelemetry.SHOW)).isEqualTo(show + 1);
-        assertThat(transitions("CONSUMED")).isEqualTo(consumed + 1);
-        assertThat(transitions(AdTelemetry.NOT_FOUND)).isEqualTo(notFound + 1);
-        assertThat(transitions("CONSENT_REQUIRED")).isEqualTo(consent + 1);
-        assertThat(AdTelemetry.TRANSITION_OUTCOMES).containsExactlyInAnyOrder("SHOW", "CONSUMED", "EXPIRED",
-                "CONSENT_REQUIRED", "RESTRICTED", "PROVIDER_DISABLED", "NOT_FOUND");
-    }
-
     // ------------------------------------------------------------------ kill switch 판정
 
     @Test
@@ -492,11 +460,6 @@ class ClientTelemetryTest extends AdTestBase {
                 + "FROM engagement_ad_attempt WHERE id = :id").param("id", attempt).query(String.class).single();
     }
 
-    private boolean shownOf(String transition) {
-        return Boolean.TRUE.equals(jdbc().sql("SELECT transition_shown FROM engagement_ad_attempt "
-                + "WHERE transition_ref = :t").param("t", transition).query(Boolean.class).single());
-    }
-
     private long sampleCount() {
         return jdbc().sql("SELECT count(*) FROM engagement_ad_vital_sample").query(Long.class).single();
     }
@@ -515,11 +478,6 @@ class ClientTelemetryTest extends AdTestBase {
 
     private double clientEvents(String event, String reason) {
         var counter = meters.find(AdTelemetry.CLIENT_EVENT).tag("event", event).tag("reason", reason).counter();
-        return counter == null ? 0.0 : counter.count();
-    }
-
-    private double transitions(String outcome) {
-        var counter = meters.find(AdTelemetry.TRANSITION).tag("outcome", outcome).counter();
         return counter == null ? 0.0 : counter.count();
     }
 

@@ -630,11 +630,8 @@ normalized_error_body() {
 # 값을 바꿀 때는 `deploy/nginx/bokrilog.conf`와 이 상수를 함께 바꾼다.
 expected_csp="default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
-# 중립 전환 화면(`/ad-transition`, Story 4.3)만 받는 CSP 전문. 광고 공급자(GPT web interstitial)의 script·이미지·연결·frame
-# origin을 그 경로에만 연다. map이 메서드·상태가 아니라 경로로 고르므로 그 경로의 문서가 아닌 응답(`POST /ad-transition`의
-# 405 JSON)도 이 정책을 받는다. 다른 모든 경로의 응답은 위 `expected_csp` 그대로여야 한다 — 그 단정이 `assert_security_headers`의
-# 기본값이다. 값을 바꿀 때는 `deploy/nginx/bokrilog.conf`의 `$content_security_policy` map과 함께 바꾼다.
-expected_ad_transition_csp="default-src 'none'; script-src 'self' https://securepubads.g.doubleclick.net https://pagead2.googlesyndication.com https://tpc.googlesyndication.com; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: https://*.doubleclick.net https://*.googlesyndication.com https://*.gstatic.com; connect-src 'self' https://securepubads.g.doubleclick.net https://pagead2.googlesyndication.com; frame-src https://*.doubleclick.net https://tpc.googlesyndication.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+# 대시보드 CSP 전문은 `deploy/nginx/bokrilog.conf`와 함께 갱신한다.
+expected_dashboard_csp="default-src 'none'; script-src 'self' https://securepubads.g.doubleclick.net https://pagead2.googlesyndication.com https://tpc.googlesyndication.com; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: https://*.doubleclick.net https://*.googlesyndication.com https://*.gstatic.com; connect-src 'self' https://securepubads.g.doubleclick.net https://pagead2.googlesyndication.com; frame-src https://*.doubleclick.net https://tpc.googlesyndication.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 # 해시가 박힌 정적 자산의 캐시 지시. 파일 이름이 곧 내용이므로 영구 캐시가 안전하다.
 expected_asset_cache_control='public, max-age=31536000, immutable'
@@ -667,9 +664,8 @@ assert_cache_control() {
 # 해시 자산을 확인하는 호출만 값을 넘긴다. 캐시 단정을 이 함수에 두어 모든 응답 그룹에 한 번에
 # 전파시킨다 — 그룹마다 따로 적으면 새 그룹이 조용히 빠진다.
 #
-# 세 번째 인자는 기대하는 CSP 전문이다. 생략하면 기본 정책(`expected_csp`)이며 `/ad-transition` 경로의 응답 — 문서(쿼리가
-# 붙은 것 포함)와 `POST`의 405 오류 응답 — 을 확인하는 호출만 값을 넘긴다(Story 4.3, Epic 4 회고 B-4). 그래서 나머지 모든 호출이
-# "CSP가 4.2 시점과 같다"를 그대로 단정한다.
+# 세 번째 인자는 기대하는 CSP 전문이다. 생략하면 기본 정책(`expected_csp`)을 쓴다.
+
 assert_security_headers() {
   local context="$1" value
   local want_cache="${2:-${expected_document_cache_control}}"
@@ -1494,6 +1490,18 @@ else
 fi
 
 
+
+# 대시보드가 광고 준비 여부를 별도 요청으로 확인한다. 공급자를 켠 검증도 같은 Compose·Nginx 경로를 지난다.
+fetch GET /api/engagement/dashboard-ad
+assert_equals '미인증 대시보드 광고 설정 조회 401' "${last_status}" '401'
+fetch GET /api/engagement/dashboard-ad -H "Cookie: BOKRILOG_SESSION=${google_session_cookie}"
+if [ "${BOKRILOG_AD_PROVIDER_ENABLED:-false}" = true ] && [ -n "${BOKRILOG_AD_UNIT_PATH:-}" ]; then
+  assert_equals '활성 대시보드 광고 설정 조회 200' "${last_status}" '200'
+  assert_body_contains '광고 단위가 Compose와 Nginx를 지나 응답에 담긴다' '"adUnitPath":'
+else
+  assert_equals '기본 비활성 대시보드 광고 설정 조회 204' "${last_status}" '204'
+fi
+assert_security_headers '대시보드 광고 설정 조회'
 
 printf '\n연결 왕복\n'
 
@@ -2838,8 +2846,7 @@ assert_rows '되돌린 뒤 계정 행이 0개다(운영자 왕복)' 'SELECT coun
 
 printf '\n알려진 내부 경로 허용 목록\n'
 
-# 폴백이 아니라 허용 목록이다. 이름을 적은 여섯 경로만 진입 문서를 받는다. 중립 전환 화면(`/ad-transition`, Story 4.3)은
-# CSP가 다르므로 이 루프 뒤에 따로 확인한다.
+# 허용 목록의 각 문서에는 기본 CSP가 적용된다. 대시보드만 따로 확인한다.
 while read -r allowed_path; do
   [ -n "${allowed_path}" ] || continue
   fetch GET "${allowed_path}"
@@ -2851,37 +2858,33 @@ while read -r allowed_path; do
   assert_body_lacks "\`GET ${allowed_path}\` 문서에 계정 식별자가 없다" 'user_id'
 done <<'ALLOWED_PATHS'
 /onboarding
-/dashboard
 /settings
 /plan-conditions
 /operator
 ALLOWED_PATHS
 
-# 중립 전환 화면(Story 4.3). 같은 진입 문서를 받고, 이 경로만 광고 공급자 origin을 연 CSP를 받는다. 쿼리(transition 참조)가
-# 붙어도 같다 — map이 쿼리를 뗀 경로로 고른다. 나머지 보안 헤더(`Referrer-Policy: no-referrer` 포함)와 캐시 지시는 다른 문서와
-# 같다.
-# 참조 모양 값은 리터럴로 쓰지 않는다(gitleaks) — 실행마다 난수 32바이트를 base64url 43자로 만든다. 실행마다 다른 값이라
-# 뒤의 access log 단정이 다른 요청의 우연한 문자열과 섞이지 않는다.
+# 이전 광고 주소에는 기본 CSP를 적용한다. 난수는 access log가 쿼리를 기록하지 않는지 확인할 때 쓴다.
 ad_transition_reference="$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n' | cut -c 1-43)"
-for ad_transition_target in /ad-transition "/ad-transition?t=${ad_transition_reference}"; do
-  fetch GET "${ad_transition_target}"
-  assert_equals "\`GET ${ad_transition_target}\` 상태 200" "${last_status}" '200'
-  assert_equals "\`GET ${ad_transition_target}\` Content-Type" "$(header_value 'Content-Type')" 'text/html'
-  assert_body_contains "\`GET ${ad_transition_target}\`가 진입 문서다" '<div id="root">'
-  assert_security_headers "\`GET ${ad_transition_target}\`" "${expected_document_cache_control}" \
-    "${expected_ad_transition_csp}"
-  assert_body_lacks "\`GET ${ad_transition_target}\` 문서에 계정 식별자가 없다" 'user_id'
-done
+fetch GET "/ad-transition?t=${ad_transition_reference}"
+assert_equals '이전 광고 주소 문서 응답' "${last_status}" '200'
+assert_security_headers '이전 광고 주소 문서 응답'
 fetch POST /ad-transition
 assert_equals '`POST /ad-transition` 상태 405' "${last_status}" '405'
-assert_equals '`POST /ad-transition` Content-Type' "$(header_value 'Content-Type')" 'application/json'
-# 문서가 아닌 405 오류 응답도 CSP map이 경로로 고르므로 광고 정책 전문을 받는다(Epic 4 회고 B-4). 캐시 지시는 오류 응답이라
-# `$cache_control` map의 `no-store`(문서와 같은 값)이고, 나머지 보안 헤더도 이웃 404와 같은 한 벌로 단정한다.
-assert_security_headers '`POST /ad-transition`' "${expected_document_cache_control}" "${expected_ad_transition_csp}"
-# 접두사가 겹치는 경로는 허용 목록 밖의 404이고 기본 CSP다 — 광고 정책은 정확히 그 경로 하나에만 열린다.
-for ad_transition_neighbor in /ad-transition/x /ad-transition-x; do
-  fetch GET "${ad_transition_neighbor}"
-  assert_security_headers "\`GET ${ad_transition_neighbor}\`"
+assert_security_headers '`POST /ad-transition`'
+
+# 표시·복귀 주소만 광고 CSP를 받고 이웃 경로는 기본 정책을 받는다.
+for dashboard_target in /dashboard '/dashboard?from=sync'; do
+  fetch GET "${dashboard_target}"
+  assert_equals "\`GET ${dashboard_target}\` 상태 200" "${last_status}" '200'
+  assert_equals "\`GET ${dashboard_target}\` Content-Type" "$(header_value 'Content-Type')" 'text/html'
+  assert_body_contains "\`GET ${dashboard_target}\`가 진입 문서다" '<div id="root">'
+  assert_security_headers "\`GET ${dashboard_target}\`" "${expected_document_cache_control}" "${expected_dashboard_csp}"
+  assert_body_lacks "\`GET ${dashboard_target}\` 문서에 계정 식별자가 없다" 'user_id'
+done
+for dashboard_neighbor in /dashboard/x /dashboard-x /ad-transition/x /ad-transition-x; do
+  fetch GET "${dashboard_neighbor}"
+  assert_equals "\`GET ${dashboard_neighbor}\` 상태 404" "${last_status}" '404'
+  assert_security_headers "\`GET ${dashboard_neighbor}\`"
 done
 
 # 정적 경로의 잘못된 메서드. 허용 목록 location도 파일을 찾기 전에 되돌린다.

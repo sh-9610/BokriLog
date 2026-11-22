@@ -2,7 +2,7 @@
  * 설정 화면의 `계정 삭제` 영역(Story 5.1).
  *
  * `DESIGN.md`가 소유하는 범주(색·타이포그래피·모서리·간격)는 tokens.css의 변수만 참조한다. 구조적 1px 테두리 두께만
- * 리터럴이다(대응하는 토큰이 없다). 영역의 모양은 `AdConsentPanel.module.css`와 같고, 실행 버튼만 파괴적 조작의 테두리·글자색
+ * 리터럴이다(대응하는 토큰이 없다). 실행 버튼은 파괴적 조작의 테두리·글자색
  * (`operator-control`의 파괴적 토큰)이다 — 채움은 확인 대화상자 안의 최종 확인에만 둔다(`SettingsScreen.module.css`의 해제
  * 버튼과 같은 위계). 새 토큰을 만들지 않았다.
  *
@@ -99,8 +99,7 @@
 }
 
 /*
- * 누를 수 없는 상태. `:disabled`가 아니라 `[aria-disabled='true']`다 — 포커스를 남긴다(`AdConsentPanel.module.css`와 같은
- * 관용). 커서를 바꾸지 않는다.
+ * 누를 수 없는 상태. `:disabled`가 아니라 `[aria-disabled='true']`다 — 포커스를 남긴다. 커서를 바꾸지 않는다.
  */
 .secondary[aria-disabled='true'],
 .destructive[aria-disabled='true'] {
